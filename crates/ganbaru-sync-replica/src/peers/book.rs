@@ -17,7 +17,7 @@ use ganbaru_handoff::protocol::{
 };
 use serde::{Deserialize, Serialize};
 
-const PEER_BOOK_SCHEMA_VERSION: u32 = 1;
+const PEER_BOOK_SCHEMA_VERSION: u32 = 2;
 
 /// Most endpoints the book keeps across all members, the most a sync state reports.
 pub const MAX_PEER_ENDPOINTS: usize = MAX_MEMBER_ENDPOINTS;
@@ -35,59 +35,109 @@ struct PeerBookFile {
     endpoints: Vec<PeerBookEntry>,
 }
 
+/// How much newer an observation of a known endpoint must be to replace the recorded one, so
+/// every hello of a member does not rewrite the file.
+pub const OBSERVATION_STEP_MS: u64 = 60_000;
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PeerBookEntry {
     device_id: String,
     endpoint: String,
     observed_ms: u64,
+    first_hand: bool,
+}
+
+/// When an endpoint was last seen, and whether the member itself announced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Observation {
+    observed_ms: u64,
+    /// The member's own hello named the endpoint, rather than another member's report.
+    first_hand: bool,
 }
 
 /// The member endpoints of one vault, keyed by device and endpoint with the newest observation.
+///
+/// Observation times are local: a member's own hello is recorded at receipt, and a time another
+/// member reports is clamped to when the report arrived, so no reporter can date an endpoint in
+/// the future. Endpoints a member announced itself outrank reported ones when the bounds evict.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeerEndpoints {
-    entries: BTreeMap<(String, String), u64>,
+    entries: BTreeMap<(String, String), Observation>,
 }
 
 impl PeerEndpoints {
-    /// Records that `device_id` listened on `endpoints` at `observed_ms`. Endpoints that fail
-    /// the dial policy are dropped; an older observation never replaces a newer one. Returns
-    /// whether the book changed.
-    pub fn observe(&mut self, device_id: &str, endpoints: &[String], observed_ms: u64) -> bool {
-        if validate_identifier("peer device id", device_id).is_err() {
-            return false;
-        }
-        let mut changed = false;
-        for endpoint in endpoints.iter().take(MAX_ENDPOINTS_PER_PEER) {
-            if validate_coordinator_endpoint(endpoint).is_err() {
-                continue;
-            }
-            let slot = self
-                .entries
-                .entry((device_id.to_string(), endpoint.clone()))
-                .or_insert(0);
-            if observed_ms > *slot {
-                *slot = observed_ms;
-                changed = true;
-            }
-        }
-        if changed {
-            self.trim();
-        }
-        changed
+    /// Records that `device_id` itself announced listening on `endpoints`, received at
+    /// `received_ms`. Endpoints that fail the dial policy are dropped. Returns whether the book
+    /// changed.
+    pub fn observe(&mut self, device_id: &str, endpoints: &[String], received_ms: u64) -> bool {
+        let observation = Observation {
+            observed_ms: received_ms,
+            first_hand: true,
+        };
+        self.record_all(
+            endpoints
+                .iter()
+                .take(MAX_ENDPOINTS_PER_PEER)
+                .map(|endpoint| (device_id, endpoint.as_str(), observation)),
+        )
     }
 
-    /// Records every endpoint a sync state reported. Returns whether the book changed.
-    pub fn observe_reported(&mut self, members: &[MemberEndpoint]) -> bool {
-        let mut changed = false;
-        for member in members {
-            changed |= self.observe(
-                &member.device_id,
-                std::slice::from_ref(&member.endpoint),
-                member.observed_ms,
-            );
+    /// Records every endpoint a sync state reported, received at `received_ms`. A reported time
+    /// later than the receipt is clamped to it, and a report never replaces an endpoint the
+    /// member announced itself. Returns whether the book changed.
+    pub fn observe_reported(&mut self, members: &[MemberEndpoint], received_ms: u64) -> bool {
+        self.record_all(members.iter().map(|member| {
+            let observation = Observation {
+                observed_ms: member.observed_ms.min(received_ms),
+                first_hand: false,
+            };
+            (
+                member.device_id.as_str(),
+                member.endpoint.as_str(),
+                observation,
+            )
+        }))
+    }
+
+    /// Records observations, then trims to the bounds. Returns whether the book changed.
+    fn record_all<'a>(
+        &mut self,
+        observations: impl Iterator<Item = (&'a str, &'a str, Observation)>,
+    ) -> bool {
+        let before = self.entries.clone();
+        let mut recorded = false;
+        for (device_id, endpoint, observation) in observations {
+            recorded |= self.record(device_id, endpoint, observation);
         }
-        changed
+        if !recorded {
+            return false;
+        }
+        self.trim();
+        self.entries != before
+    }
+
+    /// Records one observation without trimming. Returns whether the entry changed.
+    fn record(&mut self, device_id: &str, endpoint: &str, observation: Observation) -> bool {
+        if validate_identifier("peer device id", device_id).is_err()
+            || validate_coordinator_endpoint(endpoint).is_err()
+        {
+            return false;
+        }
+        let key = (device_id.to_string(), endpoint.to_string());
+        let Some(slot) = self.entries.get_mut(&key) else {
+            self.entries.insert(key, observation);
+            return true;
+        };
+        let replaces = match (slot.first_hand, observation.first_hand) {
+            (true, false) => false,
+            (false, true) => observation.observed_ms >= slot.observed_ms,
+            _ => observation.observed_ms >= slot.observed_ms.saturating_add(OBSERVATION_STEP_MS),
+        };
+        if replaces {
+            *slot = observation;
+        }
+        replaces
     }
 
     /// Keeps only the endpoints of `members`, the devices the selected log enrolled and did not
@@ -105,7 +155,7 @@ impl PeerEndpoints {
             .entries
             .iter()
             .filter(|((device, _), _)| device == device_id)
-            .map(|((_, endpoint), observed)| (endpoint, *observed))
+            .map(|((_, endpoint), observed)| (endpoint, observed.observed_ms))
             .collect();
         found.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
         found
@@ -145,17 +195,24 @@ impl PeerEndpoints {
         let mut all: Vec<(&(String, String), u64)> = self
             .entries
             .iter()
-            .map(|(key, observed)| (key, *observed))
+            .map(|(key, observed)| (key, observed.observed_ms))
             .collect();
         all.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
         all
     }
 
-    /// Drops the oldest endpoints beyond the per member and total bounds.
+    /// Drops endpoints beyond the per member and total bounds: reported ones before those a
+    /// member announced itself, and older ones first.
     fn trim(&mut self) {
+        let mut ranked: Vec<(&(String, String), &Observation)> = self.entries.iter().collect();
+        ranked.sort_by(|left, right| {
+            (right.1.first_hand, right.1.observed_ms)
+                .cmp(&(left.1.first_hand, left.1.observed_ms))
+                .then_with(|| left.0.cmp(right.0))
+        });
         let mut per_device: BTreeMap<String, usize> = BTreeMap::new();
         let mut keep = BTreeSet::new();
-        for (key, _) in self.newest_first() {
+        for (key, _) in ranked {
             if keep.len() >= MAX_PEER_ENDPOINTS {
                 break;
             }
@@ -217,7 +274,10 @@ impl PeerBook {
             if entries
                 .insert(
                     (entry.device_id.clone(), entry.endpoint.clone()),
-                    entry.observed_ms,
+                    Observation {
+                        observed_ms: entry.observed_ms,
+                        first_hand: entry.first_hand,
+                    },
                 )
                 .is_some()
             {
@@ -245,10 +305,11 @@ impl PeerBook {
             endpoints: endpoints
                 .entries
                 .iter()
-                .map(|((device_id, endpoint), observed_ms)| PeerBookEntry {
+                .map(|((device_id, endpoint), observation)| PeerBookEntry {
                     device_id: device_id.clone(),
                     endpoint: endpoint.clone(),
-                    observed_ms: *observed_ms,
+                    observed_ms: observation.observed_ms,
+                    first_hand: observation.first_hand,
                 })
                 .collect(),
         };

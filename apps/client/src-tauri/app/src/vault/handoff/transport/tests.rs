@@ -2188,3 +2188,6 @@ async fn the_listener_refuses_a_quarantined_device_and_survives_an_unreadable_li
         "an unreadable list turns no linked device away"
     );
 }
+
+#[cfg(desktop)]
+mod member;

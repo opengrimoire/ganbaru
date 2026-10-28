@@ -22,6 +22,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
@@ -38,7 +39,7 @@ pub(crate) type MemberAdmissionSource = Arc<
 pub(crate) struct MemberServices {
     /// The hub that answers admitted sync requests.
     pub hub: SyncHub,
-    /// Admission from the selected log, read for every connection.
+    /// Admission from the selected log, read for every authenticated connection.
     pub admission: MemberAdmissionSource,
     /// Whether the network behind each local address may reach the listener at all.
     pub lan: LanAdmission,
@@ -82,6 +83,35 @@ impl MemberConfigCache {
     }
 }
 
+/// How long the admission a handshake is configured from may be reused, so connections that
+/// never authenticate cannot make the listener read the log for each of them. Every connection
+/// that completes the handshake is checked again against a fresh read.
+const HANDSHAKE_ADMISSION_TTL: Duration = Duration::from_secs(5);
+
+/// The admission handshakes were last configured from, and when it was read.
+type CachedAdmission = Option<(Instant, Option<MemberAdmission>)>;
+
+/// The admission read for configuring handshakes, reused for [`HANDSHAKE_ADMISSION_TTL`].
+#[derive(Clone, Default)]
+struct HandshakeAdmission(Arc<tokio::sync::Mutex<CachedAdmission>>);
+
+impl HandshakeAdmission {
+    async fn current(
+        &self,
+        source: &MemberAdmissionSource,
+    ) -> Result<Option<MemberAdmission>, String> {
+        let mut cached = self.0.lock().await;
+        if let Some((read_at, admission)) = cached.as_ref()
+            && read_at.elapsed() < HANDSHAKE_ADMISSION_TTL
+        {
+            return Ok(admission.clone());
+        }
+        let admission = source().await?;
+        *cached = Some((Instant::now(), admission.clone()));
+        Ok(admission)
+    }
+}
+
 /// Serves `listener` as a member sync listener until shutdown.
 pub(crate) async fn serve_member(
     listener: CoordinatorListener,
@@ -92,6 +122,7 @@ pub(crate) async fn serve_member(
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     let configs = MemberConfigCache::default();
+    let handshakes = HandshakeAdmission::default();
     accept_connections(
         || listener.accept(),
         shutdown,
@@ -105,15 +136,20 @@ pub(crate) async fn serve_member(
                 return;
             };
             let configs = configs.clone();
+            let handshakes = handshakes.clone();
             let manager = manager.clone();
             let services = services.clone();
             tokio::spawn(async move {
                 if !services.lan.admits(local).await {
                     return;
                 }
-                if let Err(error) =
-                    handle_member_connection(socket, &manager, &services, &configs, permit).await
-                {
+                let connection = MemberConnection {
+                    manager: &manager,
+                    services: &services,
+                    configs: &configs,
+                    handshakes: &handshakes,
+                };
+                if let Err(error) = handle_member_connection(socket, &connection, permit).await {
                     eprintln!("sync member listener: connection from {source} failed: {error}");
                 }
             });
@@ -122,21 +158,34 @@ pub(crate) async fn serve_member(
     .await;
 }
 
+/// What one accepted connection is served with.
+struct MemberConnection<'a> {
+    manager: &'a PairingManager,
+    services: &'a MemberServices,
+    configs: &'a MemberConfigCache,
+    handshakes: &'a HandshakeAdmission,
+}
+
 async fn handle_member_connection(
     socket: TcpStream,
-    manager: &PairingManager,
-    services: &MemberServices,
-    configs: &MemberConfigCache,
+    connection: &MemberConnection<'_>,
     permit: super::limits::PendingPermit,
 ) -> Result<(), String> {
-    let Some(admission) = (services.admission)().await? else {
+    let Some(admission) = connection
+        .handshakes
+        .current(&connection.services.admission)
+        .await?
+    else {
         return Err("sync does not run in the active vault".to_string());
     };
     let fingerprints = admission.admitted_fingerprints();
     if fingerprints.is_empty() {
         return Err("no member is admitted".to_string());
     }
-    let config = configs.current(manager, fingerprints).await?;
+    let config = connection
+        .configs
+        .current(connection.manager, fingerprints)
+        .await?;
     let mut stream = tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
         TlsAcceptor::from(config).accept(socket),
@@ -151,9 +200,12 @@ async fn handle_member_connection(
         .and_then(|certificates| certificates.first())
         .map(|certificate| certificate_fingerprint(certificate.as_ref()))
         .ok_or_else(|| "the peer presented no certificate".to_string())?;
-    if let Err(refusal) = admission.certificate(&fingerprint) {
-        return refuse(&mut stream, refusal).await;
-    }
+    // The handshake may have used an admission read a few seconds ago; an authenticated peer
+    // is checked against the log as it is now. The request is read before a refusal is sent,
+    // so closing does not reset the connection under unread data and the peer sees the code.
+    let Some(admission) = (connection.services.admission)().await? else {
+        return Err("sync does not run in the active vault".to_string());
+    };
     let Some(_authenticated) = permit.authenticate() else {
         return send_error(
             &mut stream,
@@ -177,7 +229,7 @@ async fn handle_member_connection(
     if let Err(refusal) = admission.request(&fingerprint, &request) {
         return refuse(&mut stream, refusal).await;
     }
-    let response = services.hub.respond(request).await;
+    let response = connection.services.hub.respond(request).await;
     timeout_control(write_control(&mut stream, &response)).await
 }
 

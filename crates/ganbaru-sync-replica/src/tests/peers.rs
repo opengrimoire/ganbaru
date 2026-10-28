@@ -9,7 +9,8 @@ use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind, DevicePublicKey, Device
 use super::TestDirectory;
 use crate::peers::admission::{MemberAdmission, MemberRefusal, fingerprint_hex};
 use crate::peers::book::{
-    MAX_ENDPOINTS_PER_PEER, MAX_PEER_BOOK_BYTES, MAX_PEER_ENDPOINTS, PeerBook, PeerEndpoints,
+    MAX_ENDPOINTS_PER_PEER, MAX_PEER_BOOK_BYTES, MAX_PEER_ENDPOINTS, OBSERVATION_STEP_MS, PeerBook,
+    PeerEndpoints,
 };
 use crate::peers::plan::{
     DESKTOP_MAX_EXCHANGES, MOBILE_MAX_EXCHANGES, PeerSource, PlanInput, plan_pass,
@@ -167,17 +168,23 @@ fn peer_book_round_trips_and_keeps_the_newest_observation() {
     let mut book = PeerBook::load(&path).expect("missing file is empty");
     assert!(book.endpoints().is_empty());
 
+    let minute = OBSERVATION_STEP_MS;
     let mut endpoints = book.endpoints().clone();
-    assert!(endpoints.observe("device-2", &[endpoint(20), endpoint(21)], 200));
-    assert!(!endpoints.observe("device-2", &[endpoint(20)], 100));
-    assert!(endpoints.observe("device-2", &[endpoint(21)], 300));
-    assert!(!endpoints.observe("device 2", &[endpoint(22)], 400));
-    assert!(!endpoints.observe("device-3", &["8.8.8.8:43821".to_string()], 400));
-    assert!(endpoints.observe_reported(&[MemberEndpoint {
-        device_id: "device-3".to_string(),
-        endpoint: endpoint(30),
-        observed_ms: 250,
-    }]));
+    assert!(endpoints.observe("device-2", &[endpoint(20), endpoint(21)], 2 * minute));
+    assert!(!endpoints.observe("device-2", &[endpoint(20)], minute));
+    // A newer hello within the step changes nothing, so repeated hellos write no file.
+    assert!(!endpoints.observe("device-2", &[endpoint(21)], 2 * minute + 1));
+    assert!(endpoints.observe("device-2", &[endpoint(21)], 3 * minute));
+    assert!(!endpoints.observe("device 2", &[endpoint(22)], 4 * minute));
+    assert!(!endpoints.observe("device-3", &["8.8.8.8:43821".to_string()], 4 * minute));
+    assert!(endpoints.observe_reported(
+        &[MemberEndpoint {
+            device_id: "device-3".to_string(),
+            endpoint: endpoint(30),
+            observed_ms: 2 * minute + 500,
+        }],
+        5 * minute
+    ));
     book.store(endpoints.clone()).expect("store");
 
     let reloaded = PeerBook::load(&path).expect("reload");
@@ -195,15 +202,66 @@ fn peer_book_round_trips_and_keeps_the_newest_observation() {
     assert_eq!(
         reported,
         vec![
-            (endpoint(21), 300),
-            (endpoint(30), 250),
-            (endpoint(20), 200)
+            (endpoint(21), 3 * minute),
+            (endpoint(30), 2 * minute + 500),
+            (endpoint(20), 2 * minute)
         ]
     );
 
     let mut retained = reloaded.endpoints().clone();
     assert!(retained.retain_members(&BTreeSet::from(["device-3".to_string()])));
     assert_eq!(retained.devices(), BTreeSet::from(["device-3".to_string()]));
+}
+
+#[test]
+fn peer_book_clamps_reported_times_and_keeps_first_hand_endpoints() {
+    let received = 10 * OBSERVATION_STEP_MS;
+    let mut endpoints = PeerEndpoints::default();
+    for index in 0..4u8 {
+        let addresses: Vec<String> = (1..=8u8)
+            .map(|last| format!("10.0.{index}.{last}:43821"))
+            .collect();
+        endpoints.observe(&format!("member-{index}"), &addresses, received);
+    }
+    assert_eq!(endpoints.report().len(), MAX_PEER_ENDPOINTS);
+
+    // A member reports far future times for another device's endpoints: they are dated at
+    // receipt and cannot evict endpoints members announced themselves.
+    let flood: Vec<MemberEndpoint> = (1..=8u8)
+        .map(|last| MemberEndpoint {
+            device_id: "member-flood".to_string(),
+            endpoint: format!("10.9.0.{last}:43821"),
+            observed_ms: u64::MAX,
+        })
+        .collect();
+    assert!(!endpoints.observe_reported(&flood, received));
+    assert!(endpoints.endpoints("member-flood").is_empty());
+    for index in 0..4u8 {
+        assert_eq!(
+            endpoints.endpoints(&format!("member-{index}")).len(),
+            MAX_ENDPOINTS_PER_PEER
+        );
+    }
+
+    // With room, a reported endpoint is kept at its receipt time.
+    let mut roomy = PeerEndpoints::default();
+    assert!(roomy.observe_reported(&flood[..1], received));
+    assert_eq!(roomy.report()[0].observed_ms, received);
+    // A report never replaces an endpoint the member announced itself.
+    roomy.observe(
+        "member-flood",
+        &["10.9.0.2:43821".to_string()],
+        received - 1,
+    );
+    assert!(!roomy.observe_reported(&flood[1..2], received + OBSERVATION_STEP_MS));
+    let times: BTreeMap<String, u64> = roomy
+        .report()
+        .into_iter()
+        .map(|member| (member.endpoint, member.observed_ms))
+        .collect();
+    assert_eq!(times["10.9.0.2:43821"], received - 1);
+    // The member's own hello replaces a reported endpoint.
+    assert!(roomy.observe("member-flood", &["10.9.0.1:43821".to_string()], received));
 }
 
 #[test]
@@ -238,34 +296,34 @@ fn peer_book_refuses_corrupt_oversized_or_unbounded_files() {
 
     std::fs::write(&path, b"{not json").expect("write corrupt");
     assert!(PeerBook::load(&path).is_err());
-    std::fs::write(&path, br#"{"schemaVersion":2,"endpoints":[]}"#).expect("write newer");
+    std::fs::write(&path, br#"{"schemaVersion":3,"endpoints":[]}"#).expect("write newer");
     assert!(PeerBook::load(&path).is_err());
-    std::fs::write(&path, br#"{"schemaVersion":1,"endpoints":[],"extra":true}"#)
+    std::fs::write(&path, br#"{"schemaVersion":2,"endpoints":[],"extra":true}"#)
         .expect("write unknown field");
     assert!(PeerBook::load(&path).is_err());
     std::fs::write(
         &path,
-        br#"{"schemaVersion":1,"endpoints":[{"deviceId":"device-2","endpoint":"8.8.8.8:43821","observedMs":1}]}"#,
+        br#"{"schemaVersion":2,"endpoints":[{"deviceId":"device-2","endpoint":"8.8.8.8:43821","observedMs":1,"firstHand":true}]}"#,
     )
     .expect("write public endpoint");
     assert!(PeerBook::load(&path).is_err());
     let repeated = format!(
-        r#"{{"schemaVersion":1,"endpoints":[{entry},{entry}]}}"#,
-        entry = r#"{"deviceId":"device-2","endpoint":"192.168.1.20:43821","observedMs":1}"#
+        r#"{{"schemaVersion":2,"endpoints":[{entry},{entry}]}}"#,
+        entry = r#"{"deviceId":"device-2","endpoint":"192.168.1.20:43821","observedMs":1,"firstHand":true}"#
     );
     std::fs::write(&path, repeated).expect("write repeated");
     assert!(PeerBook::load(&path).is_err());
     let crowded: Vec<String> = (1..=9u8)
         .map(|last| {
             format!(
-                r#"{{"deviceId":"device-2","endpoint":"192.168.1.{last}:43821","observedMs":1}}"#
+                r#"{{"deviceId":"device-2","endpoint":"192.168.1.{last}:43821","observedMs":1,"firstHand":true}}"#
             )
         })
         .collect();
     std::fs::write(
         &path,
         format!(
-            r#"{{"schemaVersion":1,"endpoints":[{}]}}"#,
+            r#"{{"schemaVersion":2,"endpoints":[{}]}}"#,
             crowded.join(",")
         ),
     )

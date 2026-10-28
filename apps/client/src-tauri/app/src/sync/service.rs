@@ -450,7 +450,8 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
 
 /// The hub a member listener routes admitted sync requests to, serving the active vault. It
 /// takes no proposals and forwards none: those go to the coordinator, so only the anchor's
-/// signed answer settles one.
+/// answer settles one. It relays geneses of other members, which the engine admits only for
+/// enrolled devices.
 #[cfg(desktop)]
 pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
     let opener = app.clone();
@@ -459,7 +460,9 @@ pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         Box::pin(async move { open_hub_vault(&app).await })
     });
     let runtime = app.state::<SyncRuntime>();
-    SyncHub::new(open, runtime.changes.clone()).with_stability(runtime.stability.clone())
+    SyncHub::new(open, runtime.changes.clone())
+        .with_stability(runtime.stability.clone())
+        .with_relayed_geneses()
 }
 
 /// Admission of the active vault's member listener, read from the selected log and the
@@ -1071,9 +1074,11 @@ impl ServiceState {
         resets: &mut Vec<ResetReply>,
     ) -> Result<Next, String> {
         if !host.sync_enabled()? {
+            host.stop_serving_members().await;
             return Ok(Next::Idle);
         }
         let Some(pool) = host.connect_for_sync().await? else {
+            host.stop_serving_members().await;
             return Ok(Next::Idle);
         };
         let vault_id = host.active_vault_id()?;

@@ -13,7 +13,7 @@ use ganbaru_handoff::protocol::MemberEndpoint;
 use ganbaru_sync::local;
 use ganbaru_sync::{AuthorizationView, Engine, SpaceContext};
 use ganbaru_sync_contracts::{DeviceKind, WriterId};
-use ganbaru_sync_replica::client::{ClientSession, Exchange, PeerIds};
+use ganbaru_sync_replica::client::{ClientSession, Exchange, Exchanged, PeerIds};
 #[cfg(desktop)]
 use ganbaru_sync_replica::peers::admission::MemberAdmission;
 use ganbaru_sync_replica::peers::admission::fingerprint_hex;
@@ -53,9 +53,10 @@ pub(super) async fn record_reported_peers(
         .map_err(|error| format!("read sync authorization: {error}"))?;
     drop(conn);
     let members = view.map(|view| live_members(&view, quarantined));
+    let received_ms = super::now_ms()?;
     blocking(move || {
         update_peer_book(&path, |book| {
-            book.observe_reported(&reported);
+            book.observe_reported(&reported, received_ms);
             if let Some(members) = &members {
                 book.retain_members(members);
             }
@@ -233,7 +234,7 @@ pub(super) async fn exchange_with_members(
     let Some(view) = view else {
         return Ok(MemberPassOutcome::default());
     };
-    let members = live_members(&view, pass.quarantined);
+    let mut members = live_members(&view, pass.quarantined);
     let path = pass.peers_path.clone();
     let known = blocking(move || {
         Ok(PeerBook::load(&path)
@@ -250,11 +251,17 @@ pub(super) async fn exchange_with_members(
         anchor_is_coordinator,
         endpoints: anchor_endpoints,
     } = anchor_dial(&view, &pin, &known);
+    // The coordinator exchange already covers an anchor that is the coordinator, so it takes no
+    // slot of the fan-out.
+    if anchor_is_coordinator {
+        members.remove(&pin.device_id);
+    }
     let plan = plan_pass(&PlanInput {
         kind,
         own_device_id: &pass.ids.device_id,
         members: &members,
-        anchor: Some((&view.anchor_device_id, &anchor_endpoints)),
+        anchor: (!anchor_is_coordinator)
+            .then_some((view.anchor_device_id.as_str(), anchor_endpoints.as_slice())),
         anchor_reachable: !anchor_is_coordinator || coordinator_reachable,
         discovered: &BTreeMap::new(),
         known: &known,
@@ -262,7 +269,6 @@ pub(super) async fn exchange_with_members(
     let targets: Vec<(PlannedPeer, String)> = plan
         .peers
         .into_iter()
-        .filter(|peer| !(anchor_is_coordinator && peer.device_id == pin.device_id))
         .filter(|peer| !peer.endpoints.is_empty())
         .filter_map(|peer| {
             let fingerprint = view
@@ -303,6 +309,10 @@ pub(super) async fn exchange_with_members(
         match result {
             Ok(Exchange::Done(done)) => {
                 outcome.pulled += done.pulled;
+                if device_id == view.anchor_device_id {
+                    record_direct_anchor_marks(pass.engine, pass.pool, pass.ctx, &view, &done)
+                        .await?;
+                }
                 if let Some(problem) = done.problem {
                     eprintln!("sync: member {device_id} refused part of an exchange: {problem}");
                 }
@@ -317,18 +327,38 @@ pub(super) async fn exchange_with_members(
             Err(error) => eprintln!("sync: exchange with member {device_id}: {error}"),
         }
     }
-    if !reported.is_empty() {
-        record_reported_peers(
-            pass.peers_path,
-            pass.engine,
-            pass.pool,
-            pass.ctx,
-            pass.quarantined,
-            reported,
-        )
-        .await?;
-    }
+    // Also prunes the book against the log when no member reported anything; the file is
+    // written only when its content changed.
+    record_reported_peers(
+        pass.peers_path,
+        pass.engine,
+        pass.pool,
+        pass.ctx,
+        pass.quarantined,
+        reported,
+    )
+    .await?;
     Ok(outcome)
+}
+
+/// Records what the log's anchor reported storing in a direct exchange as anchor marks, so
+/// displaced versions it covers are released without waiting for the coordinator to relay it.
+async fn record_direct_anchor_marks(
+    engine: &Engine,
+    pool: &SqlitePool,
+    ctx: &SpaceContext,
+    view: &AuthorizationView,
+    done: &Exchanged,
+) -> Result<(), String> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire sync connection: {error}"))?;
+    engine
+        .record_anchor_marks(&mut conn, ctx, &view.anchor_device_id, &done.hub)
+        .await
+        .map_err(|error| format!("record anchor marks: {error}"))?;
+    Ok(())
 }
 
 /// How a pass reaches the anchor the selected log names.

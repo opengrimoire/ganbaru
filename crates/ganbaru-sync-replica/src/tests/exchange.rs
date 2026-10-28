@@ -1689,8 +1689,62 @@ fn fork_evidence_travels_between_members_through_the_hub() {
 fn member_hub(replica: &Replica) -> DirectTransport {
     DirectTransport(
         SyncHub::new(open_hub(replica), watch::Sender::new(0))
-            .with_contact(contact_source(test_contact())),
+            .with_contact(contact_source(test_contact()))
+            .with_relayed_geneses(),
     )
+}
+
+#[test]
+fn a_member_hub_relays_the_genesis_of_another_member() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-relay", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-relay", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-relay", TABLET_DEVICE).await;
+        let (anchor, _changes) = hub(&hub_replica);
+        phone.seal_note("note-phone-relayed").await;
+        done(
+            phone
+                .exchange(&anchor, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.seal_note("note-hub-relayed").await;
+        let hub_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: HUB_DEVICE.to_string(),
+        };
+
+        // The coordinator's hub takes a genesis only from the device it certifies.
+        let strict = DirectTransport(
+            SyncHub::new(open_hub(&tablet), watch::Sender::new(0))
+                .with_contact(contact_source(test_contact())),
+        );
+        let refused = done(
+            hub_replica
+                .exchange(&strict, &hub_ids)
+                .await
+                .expect("exchange with a strict hub"),
+        );
+        assert_eq!(refused.refusal, Some(SyncRefusalCode::UnknownWriter));
+        assert!(!tablet.stored().await.dominates(&phone.stored().await));
+
+        // A member hub relays the phone's genesis the hub pushes, so the tablet holds every
+        // writer the hub holds after one exchange.
+        let relayed = done(
+            hub_replica
+                .exchange(&member_hub(&tablet), &hub_ids)
+                .await
+                .expect("exchange with the tablet"),
+        );
+        assert_eq!(relayed.problem, None);
+        assert_eq!(tablet.stored().await, hub_replica.stored().await);
+        tablet.apply().await;
+        assert!(tablet.has_note("note-phone-relayed").await);
+        assert!(tablet.has_note("note-hub-relayed").await);
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
 }
 
 #[test]

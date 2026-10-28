@@ -116,8 +116,13 @@ impl CoordinatorLifecycle {
         if let Some(port) = self.port()? {
             return Ok(port);
         }
-        // The member listener holds the same port while this desktop was a linked member.
-        app.state::<MemberListenerLifecycle>().stop().await;
+        // The member listener holds the same port while this desktop was a linked member. Its
+        // lock stays held until the coordinator records its port, so a pass cannot start the
+        // member listener again in between.
+        let member_app = app.clone();
+        let member = member_app.state::<MemberListenerLifecycle>();
+        let mut member_runtime = member.runtime.lock().await;
+        MemberListenerLifecycle::stop_locked(&mut member_runtime).await;
         let listener = transport::CoordinatorListener::bind(port)
             .map_err(|error| format!("bind vault handoff coordinator: {error}"))?;
         let port = listener
@@ -168,6 +173,8 @@ impl CoordinatorLifecycle {
             requests,
             _advertiser: discovery::Advertiser::spawn(advertiser_app, advertiser_manager, port),
         });
+        drop(runtime);
+        drop(member_runtime);
         Ok(port)
     }
 
@@ -410,8 +417,12 @@ struct MemberListenerRuntime {
 impl MemberListenerLifecycle {
     /// Stops the listener and waits until it released its port.
     pub(crate) async fn stop(&self) {
-        let runtime = self.runtime.lock().await.take();
-        if let Some(runtime) = runtime {
+        Self::stop_locked(&mut *self.runtime.lock().await).await;
+    }
+
+    /// Stops the listener `runtime` holds and waits until it released its port.
+    async fn stop_locked(runtime: &mut Option<MemberListenerRuntime>) {
+        if let Some(runtime) = runtime.take() {
             let _ = runtime.shutdown.send(());
             if let Err(error) = runtime.served.await {
                 eprintln!("sync member listener: stop: {error}");
@@ -438,15 +449,17 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
 ) -> Result<Vec<String>, String> {
     let lifecycle = app.state::<MemberListenerLifecycle>();
     let manager = app.state::<PairingManager>().inner().clone();
+    // The coordinator takes the same lock while it binds the port, so this check holds until
+    // the listener below is recorded.
+    let mut runtime = lifecycle.runtime.lock().await;
     let Some(pin) = manager.coordinator_pin()? else {
-        lifecycle.stop().await;
+        MemberListenerLifecycle::stop_locked(&mut runtime).await;
         return Ok(Vec::new());
     };
     if app.state::<CoordinatorLifecycle>().port()?.is_some() {
-        lifecycle.stop().await;
+        MemberListenerLifecycle::stop_locked(&mut runtime).await;
         return Ok(Vec::new());
     }
-    let mut runtime = lifecycle.runtime.lock().await;
     if let Some(running) = runtime.as_ref()
         && running.vault_id == pin.vault_id
         && !running.served.inner().is_finished()

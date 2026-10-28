@@ -281,6 +281,43 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             hold(&hub_replica, &duplicate).await,
             Err(ProposalRejection::AlreadyEnrolled)
         );
+
+        // A member that learned the handover exchanges with the new anchor's member listener
+        // directly, and what that listener reports storing counts as anchor marks, while the
+        // same report attributed to the old anchor counts for nothing.
+        let mut phone = Replica::new("phone-handover", PHONE_DEVICE).await;
+        phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("pull the handover");
+        phone.apply().await;
+        let direct = super::member_hub(&laptop);
+        let exchanged = match phone
+            .exchange(&direct, &phone_ids())
+            .await
+            .expect("exchange with the new anchor")
+        {
+            client::Exchange::Done(done) => done,
+            client::Exchange::Fork(fork) => panic!("unexpected fork: {fork:?}"),
+        };
+        phone.apply().await;
+        let mut conn = acquire(&phone.pool).await;
+        assert!(
+            !phone
+                .engine
+                .record_anchor_marks(&mut conn, &phone.ctx, HUB_DEVICE, &exchanged.hub)
+                .await
+                .expect("marks of the old anchor")
+        );
+        assert!(
+            phone
+                .engine
+                .record_anchor_marks(&mut conn, &phone.ctx, LAPTOP_DEVICE, &exchanged.hub)
+                .await
+                .expect("marks of the new anchor")
+        );
+        drop(conn);
+        phone.close().await;
         hub_replica.close().await;
         laptop.close().await;
     });
@@ -1125,6 +1162,61 @@ fn a_new_anchor_catches_up_with_the_hubs_writers_but_not_quarantined_ones() {
         hub_replica.close().await;
         laptop.close().await;
         desk.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn only_the_anchor_finalizes_a_rejection() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-final-rejection", HUB_DEVICE).await;
+        let (laptop, _) = promoted_desktop(&mut hub_replica, LAPTOP_DEVICE, 47).await;
+        let mut phone = Replica::new("phone-final-rejection", PHONE_DEVICE).await;
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        phone
+            .exchange(&forwarding_hub(&hub_replica), &phone_ids())
+            .await
+            .expect("pull the log");
+        phone.apply().await;
+
+        // The anchor would reject this enrollment as a duplicate, but a member hub that does
+        // not anchor answers only that it cannot sequence, so the proposal keeps waiting.
+        let duplicate = enroll_mobile(space, charter, PHONE_DEVICE, 48);
+        let mut outbox =
+            Outbox::load(&phone.directory.files().outbox_path()).expect("phone outbox");
+        outbox.add(duplicate.clone()).expect("queue");
+        let member = super::member_hub(&laptop);
+        let sequenced = client::replay_outbox(&member, &phone_ids(), &mut outbox)
+            .await
+            .expect("replay to a member hub");
+        assert_eq!(sequenced, 0);
+        let entry = outbox.get(&duplicate.hash()).expect("still in the outbox");
+        assert!(entry.pending(), "{entry:?}");
+
+        // A hub holding the proposal for the anchor answers no final rejection either, and a
+        // device the log does not name as anchor cannot settle one through a forward.
+        let tablet_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: TABLET_DEVICE.to_string(),
+        };
+        assert_eq!(
+            hold(&hub_replica, &duplicate).await,
+            Err(ProposalRejection::NotAnchor)
+        );
+        client::forward(
+            &forwarding_hub(&hub_replica),
+            &tablet_ids,
+            &[(duplicate.hash(), ProposalRejection::AlreadyEnrolled)],
+        )
+        .await
+        .expect("forward");
+        assert_eq!(
+            hold(&hub_replica, &duplicate).await,
+            Err(ProposalRejection::NotAnchor)
+        );
+        hub_replica.close().await;
+        laptop.close().await;
         phone.close().await;
     });
 }

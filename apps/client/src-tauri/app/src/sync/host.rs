@@ -137,6 +137,11 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
         async { Vec::new() }
     }
 
+    /// Stops this device's member sync listener while sync does not run in the active vault.
+    fn stop_serving_members(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
     /// This device's id.
     fn device_id(&self) -> Result<String, String> {
         crate::vault::ensure_device_id_in(&self.config_dir()?)
@@ -283,6 +288,13 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
                 Vec::new()
             }
         }
+    }
+
+    #[cfg(desktop)]
+    async fn stop_serving_members(&self) {
+        self.state::<crate::vault::handoff::MemberListenerLifecycle>()
+            .stop()
+            .await;
     }
 
     async fn note_platform_degraded(

@@ -199,6 +199,10 @@ pub struct SyncHub {
     proposals: Option<HubProposals>,
     /// Where an anchor that is not the hub collects proposals; without it the hub holds none.
     forwards: Option<HubForwards>,
+    /// Whether a pushed genesis may name another device than the pusher. A member hub relays
+    /// geneses and leaves enrollment and device key checks to the engine; the coordinator
+    /// takes a genesis only from the device it certifies.
+    relay_geneses: bool,
 }
 
 /// The received prefix of an upload, staged in a temporary file beside its final path.
@@ -221,6 +225,7 @@ impl SyncHub {
             stability: HubStability::default(),
             proposals: None,
             forwards: None,
+            relay_geneses: false,
         }
     }
 
@@ -233,6 +238,14 @@ impl SyncHub {
     /// Sets where an anchor that is not the hub collects the proposals the hub holds for it.
     pub fn with_forwards(mut self, forwards: HubForwards) -> Self {
         self.forwards = Some(forwards);
+        self
+    }
+
+    /// Lets peers push geneses of other devices, for a member listener that relays writers
+    /// between members while the anchor is away. The engine still refuses a genesis of a device
+    /// the selected log has not enrolled, or whose certificate names another device key.
+    pub fn with_relayed_geneses(mut self) -> Self {
+        self.relay_geneses = true;
         self
     }
 
@@ -363,7 +376,7 @@ impl SyncHub {
             }
             ControlMessage::SyncPush { ops, .. } => {
                 let ops = ops_from_wire(&ops).map_err(invalid)?;
-                let (response, stored_any) = hub.push(&device_id, &ops).await?;
+                let (response, stored_any) = hub.push(&device_id, &ops, self.relay_geneses).await?;
                 if stored_any {
                     self.changes.send_modify(|generation| *generation += 1);
                 }
@@ -813,15 +826,18 @@ impl HubSession {
             .await
     }
 
-    /// Stores pushed operations up to the first refusal. A genesis of a writer the hub does not
-    /// hold is accepted only when its certificate names the pushing device.
+    /// Stores pushed operations up to the first refusal. Unless `relay_geneses`, a genesis of a
+    /// writer the hub does not hold is accepted only when its certificate names the pushing
+    /// device.
     async fn push(
         &self,
         device_id: &str,
         ops: &[Vec<u8>],
+        relay_geneses: bool,
     ) -> Result<(ControlMessage, bool), HubError> {
         let known = self.stored().await?;
-        let (accepted, mut refusal) = admit_geneses(ops, &known, device_id);
+        let (accepted, mut refusal) =
+            admit_geneses(ops, &known, (!relay_geneses).then_some(device_id));
         let outcomes = if accepted == 0 {
             Vec::new()
         } else {
@@ -917,16 +933,19 @@ impl HubSession {
 }
 
 /// How many leading operations may be stored, and the refusal of the first that may not: an
-/// envelope that does not decode, or the genesis of an unknown writer certified for another
-/// device. Later checks are the engine's.
+/// envelope that does not decode, or, when `pusher` is set, the genesis of an unknown writer
+/// certified for another device. Later checks are the engine's.
 fn admit_geneses(
     ops: &[Vec<u8>],
     known: &VersionVector,
-    device_id: &str,
+    pusher: Option<&str>,
 ) -> (usize, Option<SyncRefusal>) {
     for (index, op) in ops.iter().enumerate() {
         let Ok(envelope) = Envelope::decode(op) else {
             return (index, Some(invalid_refusal()));
+        };
+        let Some(device_id) = pusher else {
+            continue;
         };
         if envelope.seq != 1 || known.get(&envelope.writer) > 0 {
             continue;

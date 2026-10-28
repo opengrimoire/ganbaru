@@ -52,6 +52,8 @@ Order keys are variable-length base62 strings compared by bytes. The first chara
 
 When two rows end up with equal keys, which concurrent placement can cause, the row id breaks the tie. A later local placement between two equal neighbors re-keys only the run of rows equal to the lower neighbor. When keys would exceed their length bound, the local command re-keys the whole group, which is an ordinary write.
 
+Append-only timelines, such as Chat conversation items, take a key after the last row the writing device has seen and never move. Concurrent or offline posts can share a key or land before rows another device already read, so readers order by `(order_key, id)` and compare cursors with that same pair.
+
 ## Deletion and recovery
 
 - A deletion is a tombstone carrying the causal context of its operation. A tombstoned row is deleted from the domain table, its key is never reused, and older operations never resurrect it.
@@ -155,6 +157,12 @@ If P later renames `t7` concurrently with the repair, the rename is discarded wi
 1. A deletes status S while P, offline, moves task K into S.
 2. Referenced settings rows are never tombstoned except with their project: A's delete sets `deleted_at`. The two writes touch different groups and both apply.
 3. K stays in S. S is hidden from pickers and settings but still shown where K uses it, so no task points at a missing row.
+
+### Revocation against widening
+
+1. A removes teammate T from channel C while P, offline, widens T's membership in C to full history.
+2. Both writes touch the membership's access group. The merge ranks a removal above any widening, whatever the clocks say.
+3. T ends removed on both devices. When the rows apply on T's executing device, it revokes T's active authorizations in C and stops their runs. Re-adding T is an edit made after seeing the removal, so it wins.
 
 ### Fork re-seal
 

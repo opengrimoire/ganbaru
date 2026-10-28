@@ -179,6 +179,7 @@ commands.allow = [
   "chat_set_review_comment_resolved",
   "chat_set_thread_read",
   "chat_set_working_folder_provider_preference",
+  "chat_start_mentioned_assignment",
   "chat_steer_turn",
   "chat_stop_all_processes",
   "chat_stop_session",

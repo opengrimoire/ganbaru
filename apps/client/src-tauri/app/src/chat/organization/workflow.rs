@@ -1,14 +1,13 @@
 //! Assignment routing, frozen context, and durable organizational messages.
 
 use super::common::{
-    AttachmentReferenceOwner, conversation_item_id, has_thread_eligible_mention,
-    insert_attachment_references, json_object, message_revision_id, new_id, parse_participant_kind,
-    reply_thread_id, serialization_error, wire_participant_kind,
+    AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
+    has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
+    new_id, parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
+    work_assignment_id,
 };
 #[cfg(desktop)]
-use super::common::{
-    assignment_input_id, wire_approval_policy, wire_work_state, work_assignment_id,
-};
+use super::common::{wire_approval_policy, wire_work_state};
 #[cfg(desktop)]
 use super::context::freeze_context_package;
 #[cfg(desktop)]
@@ -29,13 +28,27 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 pub(super) struct ResolvedInvocation {
     pub(super) teammate_id: ChatParticipantId,
     pub(super) active_assignment: Option<ChatWorkAssignmentRead>,
-    #[cfg(desktop)]
     pub(super) latest_assignment: Option<ChatWorkAssignmentRead>,
 }
 
+/// Where a post routed its invocation.
 pub(super) struct AssignmentWrite {
     pub(super) assignment_id: Option<ChatWorkAssignmentId>,
+    /// Whether the post became an input of an active assignment.
     pub(super) input_queued: bool,
+    /// Whether this device executes the assignment, so it dispatches or delivers now. Only
+    /// desktop executes assignments.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub(super) executes_here: bool,
+}
+
+impl AssignmentWrite {
+    /// A post that routed to no assignment.
+    pub(super) const NONE: Self = Self {
+        assignment_id: None,
+        input_queued: false,
+        executes_here: false,
+    };
 }
 
 pub(super) fn has_authority_bearing_references(references: &[ChatMessageReference]) -> bool {
@@ -128,25 +141,124 @@ pub(super) async fn resolve_invoked_teammate(
     Ok(Some(ResolvedInvocation {
         teammate_id,
         active_assignment,
-        #[cfg(desktop)]
         latest_assignment,
     }))
 }
 
-#[cfg(desktop)]
+/// The devices that can write Chat. An assignment writes its states, messages, and runs into
+/// Chat, so only these devices execute assignments. While Chat is owner-only that is the vault
+/// owner, which a whole-vault handoff moves.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct ChatWriters {
+    devices: std::collections::BTreeSet<String>,
+}
+
+impl ChatWriters {
+    /// The writers `devices`.
+    pub(super) fn new(devices: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            devices: devices.into_iter().collect(),
+        }
+    }
+
+    /// Whether the device `device_id` can write Chat.
+    pub(super) fn includes(&self, device_id: &str) -> bool {
+        self.devices.contains(device_id)
+    }
+
+    /// The writer ids as a JSON array, for queries that read them with `json_each`.
+    #[cfg(desktop)]
+    pub(super) fn json(&self) -> ChatResult<String> {
+        serde_json::to_string(&self.devices).map_err(serialization_error)
+    }
+}
+
+/// The device writing a post, which decides where the work a mention starts runs.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PostingDevice<'a> {
+    /// Stable id of this device.
+    pub(super) id: &'a str,
+    /// Whether this device executes assignments; Android never does.
+    pub(super) can_execute: bool,
+    /// Devices that can write Chat, the only ones an assignment may run on.
+    pub(super) chat_writers: &'a ChatWriters,
+}
+
+impl<'a> PostingDevice<'a> {
+    /// This device under its stable id `id`, with the Chat writers `chat_writers`.
+    pub(super) fn this_device(id: &'a str, chat_writers: &'a ChatWriters) -> Self {
+        Self {
+            id,
+            can_execute: cfg!(desktop),
+            chat_writers,
+        }
+    }
+
+    /// Whether this device executes the work of `executing_device_id`.
+    pub(super) fn executes(&self, executing_device_id: Option<&str>) -> bool {
+        self.can_execute && executing_device_id == Some(self.id)
+    }
+
+    /// Whether this device can run new work: it executes assignments and writes Chat.
+    pub(super) fn runs_new_work(&self) -> bool {
+        self.can_execute && self.chat_writers.includes(self.id)
+    }
+}
+
+/// The device an assignment of `teammate_id` runs on when `device` creates it: the teammate's
+/// home device when it can write Chat, else the posting device when it can run the work, else
+/// none, so the post records the mention only and a desktop starts the work later. A home
+/// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
+/// assignment it executes would stay queued forever.
+async fn new_assignment_executing_device(
+    transaction: &mut Transaction<'_, Sqlite>,
+    teammate_id: &ChatParticipantId,
+    device: PostingDevice<'_>,
+) -> ChatResult<Option<String>> {
+    let home_device_id: Option<Option<String>> =
+        sqlx::query_scalar("SELECT home_device_id FROM chat_teammates WHERE participant_id = ?")
+            .bind(teammate_id.as_str())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(persistence_error)?;
+    Ok(home_device_id
+        .flatten()
+        .filter(|home| device.chat_writers.includes(home))
+        .or_else(|| device.runs_new_work().then(|| device.id.to_owned())))
+}
+
+/// The executing device of assignment `assignment_id`, if it names one.
+pub(super) async fn read_assignment_executing_device<'e, E>(
+    executor: E,
+    assignment_id: &str,
+) -> ChatResult<Option<String>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let executing_device_id: Option<Option<String>> =
+        sqlx::query_scalar("SELECT executing_device_id FROM chat_work_assignments WHERE id = ?")
+            .bind(assignment_id)
+            .fetch_optional(executor)
+            .await
+            .map_err(persistence_error)?;
+    Ok(executing_device_id.flatten())
+}
+
+/// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
+/// the active assignment, else a new assignment that runs on the teammate's home device or the
+/// posting desktop. A post from a device that cannot execute, for a teammate without a home
+/// device, records the mention only.
 pub(super) async fn persist_assignment_routing(
     transaction: &mut Transaction<'_, Sqlite>,
     reply_thread_id: &ChatReplyThreadId,
     message_item_id: &ChatConversationItemId,
     invocation: Option<&ResolvedInvocation>,
     execution_target: Option<&ChatExecutionTarget>,
+    device: PostingDevice<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<AssignmentWrite> {
     let Some(invocation) = invocation else {
-        return Ok(AssignmentWrite {
-            assignment_id: None,
-            input_queued: false,
-        });
+        return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
         let ordinal: i64 = sqlx::query_scalar(
@@ -176,20 +288,72 @@ pub(super) async fn persist_assignment_routing(
         .execute(&mut **transaction)
         .await
         .map_err(persistence_error)?;
+        let executing_device_id =
+            read_assignment_executing_device(&mut **transaction, active.id.as_str()).await?;
         return Ok(AssignmentWrite {
             assignment_id: Some(active.id.clone()),
             input_queued: true,
+            executes_here: device.executes(executing_device_id.as_deref()),
         });
     }
-    let assignment_id = work_assignment_id()?;
-    let previous_id = invocation
+    let Some(executing_device_id) =
+        new_assignment_executing_device(transaction, &invocation.teammate_id, device).await?
+    else {
+        return Ok(AssignmentWrite::NONE);
+    };
+    let assignment_id = create_assignment(
+        transaction,
+        NewAssignment {
+            reply_thread_id,
+            message_item_id,
+            teammate_id: &invocation.teammate_id,
+            latest_assignment: invocation.latest_assignment.as_ref(),
+            executing_device_id: &executing_device_id,
+            execution_target,
+        },
+        device,
+        now,
+    )
+    .await?;
+    Ok(AssignmentWrite {
+        assignment_id: Some(assignment_id),
+        input_queued: false,
+        executes_here: device.executes(Some(&executing_device_id)),
+    })
+}
+
+/// An assignment a post or a Start action creates.
+pub(super) struct NewAssignment<'a> {
+    pub(super) reply_thread_id: &'a ChatReplyThreadId,
+    /// Message that triggers it.
+    pub(super) message_item_id: &'a ChatConversationItemId,
+    pub(super) teammate_id: &'a ChatParticipantId,
+    /// Newest assignment of the reply thread, which the new one follows.
+    pub(super) latest_assignment: Option<&'a ChatWorkAssignmentRead>,
+    pub(super) executing_device_id: &'a str,
+    pub(super) execution_target: Option<&'a ChatExecutionTarget>,
+}
+
+/// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
+/// predecessor. A trigger message that is already an input moves to the new assignment, since
+/// its input id derives from the message. When this device executes it, the same transaction
+/// freezes its context and queues its dispatch; another executing device does both when the
+/// assignment arrives.
+pub(super) async fn create_assignment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment: NewAssignment<'_>,
+    device: PostingDevice<'_>,
+    now: &UtcTimestamp,
+) -> ChatResult<ChatWorkAssignmentId> {
+    let previous_id = assignment.latest_assignment.map(|latest| &latest.id);
+    let assignment_id = work_assignment_id(
+        assignment.message_item_id,
+        assignment.teammate_id,
+        previous_id,
+    )?;
+    if let Some(previous) = assignment
         .latest_assignment
-        .as_ref()
-        .map(|assignment| &assignment.id);
-    if let Some(previous) = invocation
-        .latest_assignment
-        .as_ref()
-        .filter(|assignment| assignment.state == ChatWorkAssignmentState::ReadyForReview)
+        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)
     {
         let settled = sqlx::query(
             "UPDATE chat_work_assignments
@@ -213,14 +377,15 @@ pub(super) async fn persist_assignment_routing(
     sqlx::query(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, teammate_id, triggering_message_item_id,
-             previous_assignment_id, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+             previous_assignment_id, executing_device_id, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
     )
     .bind(assignment_id.as_str())
-    .bind(reply_thread_id.as_str())
-    .bind(invocation.teammate_id.as_str())
-    .bind(message_item_id.as_str())
+    .bind(assignment.reply_thread_id.as_str())
+    .bind(assignment.teammate_id.as_str())
+    .bind(assignment.message_item_id.as_str())
     .bind(previous_id.map(ChatWorkAssignmentId::as_str))
+    .bind(assignment.executing_device_id)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut **transaction)
@@ -229,11 +394,14 @@ pub(super) async fn persist_assignment_routing(
     sqlx::query(
         "INSERT INTO chat_work_assignment_inputs
             (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
-         VALUES (?, ?, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            assignment_id = excluded.assignment_id, ordinal = 1,
+            routing_kind = excluded.routing_kind",
     )
-    .bind(assignment_input_id(message_item_id.as_str())?)
+    .bind(assignment_input_id(assignment.message_item_id.as_str())?)
     .bind(assignment_id.as_str())
-    .bind(message_item_id.as_str())
+    .bind(assignment.message_item_id.as_str())
     .bind(if previous_id.is_some() {
         "follow_up"
     } else {
@@ -243,12 +411,41 @@ pub(super) async fn persist_assignment_routing(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
+    #[cfg(desktop)]
+    if device.executes(Some(assignment.executing_device_id)) {
+        queue_assignment_dispatch(
+            transaction,
+            &assignment_id,
+            assignment.reply_thread_id,
+            assignment.message_item_id,
+            assignment.teammate_id,
+            assignment.execution_target,
+            now,
+        )
+        .await?;
+    }
+    #[cfg(mobile)]
+    let _ = (device, assignment.execution_target);
+    Ok(assignment_id)
+}
+
+/// Freezes the context of assignment `assignment_id` and queues its dispatch on this device.
+#[cfg(desktop)]
+pub(super) async fn queue_assignment_dispatch(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    reply_thread_id: &ChatReplyThreadId,
+    message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+    execution_target: Option<&ChatExecutionTarget>,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
     freeze_context_package(
         transaction,
-        &assignment_id,
+        assignment_id,
         reply_thread_id,
         message_item_id,
-        &invocation.teammate_id,
+        teammate_id,
         execution_target,
         now,
     )
@@ -266,32 +463,7 @@ pub(super) async fn persist_assignment_routing(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    Ok(AssignmentWrite {
-        assignment_id: Some(assignment_id),
-        input_queued: false,
-    })
-}
-
-#[cfg(mobile)]
-pub(super) async fn persist_assignment_routing(
-    _transaction: &mut Transaction<'_, Sqlite>,
-    _reply_thread_id: &ChatReplyThreadId,
-    _message_item_id: &ChatConversationItemId,
-    invocation: Option<&ResolvedInvocation>,
-    _execution_target: Option<&ChatExecutionTarget>,
-    _now: &UtcTimestamp,
-) -> ChatResult<AssignmentWrite> {
-    if invocation.is_some() {
-        return Err(ChatError::new(
-            ChatErrorCode::DriverUnavailable,
-            "Local coding-agent execution is unavailable on this device",
-            true,
-        ));
-    }
-    Ok(AssignmentWrite {
-        assignment_id: None,
-        input_queued: false,
-    })
+    Ok(())
 }
 
 pub(super) struct CommunicationMessageWrite<'a> {
@@ -301,6 +473,7 @@ pub(super) struct CommunicationMessageWrite<'a> {
     pub(super) reply_thread_id: Option<&'a ChatReplyThreadId>,
     pub(super) order_key: &'a str,
     pub(super) request: &'a PostChatMessageCommand,
+    pub(super) attachments: AttachmentSource<'a>,
     pub(super) invoked_teammate_id: Option<&'a ChatParticipantId>,
     pub(super) now: &'a UtcTimestamp,
 }
@@ -361,13 +534,7 @@ pub(super) async fn insert_communication_message(
         )
         .await?;
     }
-    insert_attachment_references(
-        transaction,
-        AttachmentReferenceOwner::Revision,
-        write.revision_id.as_str(),
-        &write.request.attachment_ids,
-    )
-    .await?;
+    insert_revision_attachments(transaction, write.revision_id.as_str(), write.attachments).await?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
         .bind(write.revision_id.as_str())
         .bind(write.item_id.as_str())
@@ -825,15 +992,26 @@ async fn require_destination_project_folder(
     Ok(())
 }
 
+/// Identity and attachment source of the channel copy of a reply.
+pub(super) struct ChannelCopy<'a> {
+    /// Derived ids for a scheduled send, or `None` for random ids.
+    pub(super) ids: Option<ScheduledPostIds>,
+    /// Where the copy's attachment references come from.
+    pub(super) attachments: AttachmentSource<'a>,
+}
+
 pub(super) async fn insert_channel_copy(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     request: &PostChatMessageCommand,
+    copy: ChannelCopy<'_>,
     invoked_teammate_id: Option<&ChatParticipantId>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let item_id = conversation_item_id()?;
-    let revision_id = message_revision_id()?;
+    let (item_id, revision_id) = match copy.ids {
+        Some(ids) => (ids.item_id, ids.revision_id),
+        None => (conversation_item_id()?, message_revision_id()?),
+    };
     let order_key = next_item_order_key(transaction, conversation_id, None).await?;
     let mut copied_request = request.clone();
     for reference in &mut copied_request.references {
@@ -849,6 +1027,7 @@ pub(super) async fn insert_channel_copy(
             reply_thread_id: None,
             order_key: &order_key,
             request: &copied_request,
+            attachments: copy.attachments,
             invoked_teammate_id,
             now,
         },
@@ -1282,22 +1461,39 @@ pub(super) async fn set_assignment_state(
         ));
     }
     if !state.is_active() {
-        sqlx::query(
-            "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
-             WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-        )
-        .bind(if state == ChatWorkAssignmentState::Cancelled {
-            "cancelled"
-        } else {
-            "failed"
-        })
-        .bind(now.as_str())
-        .bind(assignment_id.as_str())
-        .execute(pool)
-        .await
-        .map_err(persistence_error)?;
+        end_assignment_dispatch_jobs(pool, assignment_id, state, &now).await?;
     }
     read_assignment(pool, assignment_id).await
+}
+
+/// Ends the local dispatch jobs still queued or claimed for `assignment_id`, which settled as
+/// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
+/// settled work.
+#[cfg(desktop)]
+pub(super) async fn end_assignment_dispatch_jobs<'e, E>(
+    executor: E,
+    assignment_id: &ChatWorkAssignmentId,
+    state: ChatWorkAssignmentState,
+    now: &UtcTimestamp,
+) -> ChatResult<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
+         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+    )
+    .bind(if state == ChatWorkAssignmentState::Cancelled {
+        "cancelled"
+    } else {
+        "failed"
+    })
+    .bind(now.as_str())
+    .bind(assignment_id.as_str())
+    .execute(executor)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

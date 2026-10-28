@@ -262,9 +262,9 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_authorized_channel_source_immutable_update",
             "chat_scratch_generation_source_delete_denied",
             "chat_scratch_generation_source_monotonic",
-            "idx_chat_work_assignments_one_active",
+            "idx_chat_work_assignments_thread",
             "idx_chat_assignment_dispatch_jobs_ready",
-            "idx_chat_scheduled_messages_due",
+            "idx_chat_scheduled_messages_device",
             "idx_chat_scheduled_messages_destination",
             "idx_chat_scheduled_message_attachment_references_attachment",
             "idx_chat_scheduled_message_attachment_references_digest",
@@ -272,7 +272,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_communication_attachment_references_digest",
             "idx_chat_attachments_path",
             "idx_chat_resources_path",
-            "idx_chat_scheduled_message_references_target",
+            "idx_chat_scheduled_message_references_folder",
         ] {
             let exists: Option<i64> =
                 sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE name = ?")
@@ -1006,11 +1006,10 @@ fn scheduled_message_attachments_are_held_by_value_until_the_schedule_is_removed
         sqlx::query(
             "INSERT INTO chat_scheduled_messages
                 (id, client_command_id, channel_id, request_data, scheduled_for,
-                 available_at, created_at, updated_at)
-             VALUES ('scheduled-message-1', 'scheduled-command-1', ?, '{}', ?, ?, ?, ?)",
+                 created_at, updated_at)
+             VALUES ('scheduled-message-1', 'scheduled-command-1', ?, '{}', ?, ?, ?)",
         )
         .bind(&channel_id)
-        .bind("2026-08-03T15:00:00Z")
         .bind("2026-08-03T15:00:00Z")
         .bind(NOW)
         .bind(NOW)

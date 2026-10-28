@@ -112,6 +112,45 @@ pub(super) fn live_members(
         .collect()
 }
 
+/// Endpoints of `members` that answered LAN discovery, found by the certificate fingerprints
+/// their enrollments recorded. Only desktops browse; a phone plans from the anchor and the peer
+/// book alone.
+#[cfg(desktop)]
+async fn discovered_members(
+    vault_id: &str,
+    own_device_id: &str,
+    view: &AuthorizationView,
+    members: &BTreeSet<String>,
+) -> BTreeMap<String, Vec<String>> {
+    let fingerprints: Vec<(String, [u8; 32])> = view
+        .devices
+        .iter()
+        .filter(|device| device.device_id != own_device_id && members.contains(&device.device_id))
+        .map(|device| (device.device_id.clone(), device.tls_fingerprint))
+        .collect();
+    if fingerprints.is_empty() {
+        return BTreeMap::new();
+    }
+    crate::vault::handoff::discovery::discover_members(vault_id, &fingerprints)
+        .await
+        .into_iter()
+        .map(|(device_id, endpoints)| {
+            let endpoints = endpoints.iter().map(ToString::to_string).collect();
+            (device_id, endpoints)
+        })
+        .collect()
+}
+
+#[cfg(mobile)]
+async fn discovered_members(
+    _vault_id: &str,
+    _own_device_id: &str,
+    _view: &AuthorizationView,
+    _members: &BTreeSet<String>,
+) -> BTreeMap<String, Vec<String>> {
+    BTreeMap::new()
+}
+
 /// Admission of the active vault's member listener: the selected log and this installation's
 /// quarantine. `None` while sync does not run there.
 #[cfg(desktop)]
@@ -269,13 +308,15 @@ pub(super) async fn exchange_with_members(
     if direct_anchor.is_none() {
         members.remove(&pin.device_id);
     }
+    let discovered =
+        discovered_members(&pass.ids.vault_id, &pass.ids.device_id, &view, &members).await;
     let plan = plan_pass(&PlanInput {
         kind,
         own_device_id: &pass.ids.device_id,
         members: &members,
         anchor: direct_anchor.map(|dial| (dial.device_id.as_str(), dial.endpoints.as_slice())),
         anchor_reachable: direct_anchor.is_some() || coordinator_reachable,
-        discovered: &BTreeMap::new(),
+        discovered: &discovered,
         known: &known,
     });
     let targets: Vec<(PlannedPeer, String)> = plan

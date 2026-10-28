@@ -1,6 +1,6 @@
-//! DNS-SD discovery records for finding a coordinator whose address changed.
+//! DNS-SD discovery records for finding a coordinator or member whose address changed.
 //!
-//! A coordinator advertises `_ganbaru._tcp` over mDNS under an instance name that is an hourly
+//! A coordinator, or a desktop member whose member listener runs, advertises `_ganbaru._tcp` over mDNS under an instance name that is an hourly
 //! member tag: an HMAC of its certificate fingerprint and the current hour under the vault's
 //! discovery key. Linked devices know the key and the fingerprint, so they compute the names to
 //! look for; any other device sees only that a coordinator exists, a name that changes every
@@ -12,6 +12,7 @@ use crate::dial::{reportable_address, validate_dial_endpoint};
 use crate::protocol::DISCOVERY_KEY_BYTES;
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
@@ -234,6 +235,42 @@ pub fn match_candidates(expected: &[String], records: &[DiscoveredRecord]) -> Ve
     endpoints
 }
 
+/// The endpoints of each member found in `records`: a record counts for the member whose
+/// certificate fingerprint its instance name was derived from under one of `keys` at
+/// `unix_seconds`, with the same rules as [`match_candidates`]. Members without a matching
+/// record are left out, and a name two members could share (never in practice, since tags are
+/// HMAC outputs over distinct fingerprints) counts for neither.
+pub fn attribute_candidates(
+    keys: &[DiscoveryKey],
+    members: &[(String, [u8; FINGERPRINT_BYTES])],
+    records: &[DiscoveredRecord],
+    unix_seconds: u64,
+) -> BTreeMap<String, Vec<SocketAddr>> {
+    let names: Vec<(&str, Vec<String>)> = members
+        .iter()
+        .map(|(device_id, fingerprint)| {
+            (
+                device_id.as_str(),
+                expected_instance_names(keys, std::slice::from_ref(fingerprint), unix_seconds),
+            )
+        })
+        .collect();
+    let mut found = BTreeMap::new();
+    for (index, (device_id, expected)) in names.iter().enumerate() {
+        let shared = names.iter().enumerate().any(|(other, (_, other_names))| {
+            other != index && other_names.iter().any(|name| expected.contains(name))
+        });
+        if shared {
+            continue;
+        }
+        let endpoints = match_candidates(expected, records);
+        if !endpoints.is_empty() {
+            found.insert((*device_id).to_string(), endpoints);
+        }
+    }
+    found
+}
+
 fn lower_hex(bytes: &[u8]) -> String {
     use fmt::Write;
     let mut text = String::with_capacity(bytes.len() * 2);
@@ -374,6 +411,60 @@ mod tests {
         assert!(names.contains(&member_tag(&current, &fingerprint(), 478_000)));
         assert!(names.contains(&member_tag(&previous, &fingerprint(), 478_000)));
         assert!(expected_instance_names(&[], &[fingerprint()], HOUR_START).is_empty());
+    }
+
+    #[test]
+    fn candidates_are_attributed_to_the_member_whose_tag_they_carry() {
+        let current = sequential_key();
+        let previous = DiscoveryKey::from_bytes([9; DISCOVERY_KEY_BYTES]);
+        let other = [0xcd; FINGERPRINT_BYTES];
+        let members = vec![
+            ("device-a".to_string(), fingerprint()),
+            ("device-b".to_string(), other),
+            ("device-c".to_string(), [0xef; FINGERPRINT_BYTES]),
+        ];
+        let records = vec![
+            record(
+                &member_tag(&current, &fingerprint(), 478_000),
+                43_821,
+                &["192.168.1.20"],
+            ),
+            record(
+                &member_tag(&previous, &other, 477_999),
+                43_822,
+                &["192.168.1.21"],
+            ),
+            record(
+                &member_tag(
+                    &DiscoveryKey::from_bytes([7; DISCOVERY_KEY_BYTES]),
+                    &[0xef; 32],
+                    478_000,
+                ),
+                43_823,
+                &["192.168.1.22"],
+            ),
+            record(
+                "ffffffffffffffffffffffffffffffff",
+                43_824,
+                &["192.168.1.23"],
+            ),
+        ];
+        let found = attribute_candidates(
+            &[current.clone(), previous.clone()],
+            &members,
+            &records,
+            HOUR_START,
+        );
+        assert_eq!(found.len(), 2);
+        assert_eq!(found["device-a"], endpoints(&["192.168.1.20:43821"]));
+        assert_eq!(found["device-b"], endpoints(&["192.168.1.21:43822"]));
+        assert!(attribute_candidates(&[], &members, &records, HOUR_START).is_empty());
+
+        let duplicated = vec![
+            ("device-a".to_string(), fingerprint()),
+            ("device-z".to_string(), fingerprint()),
+        ];
+        assert!(attribute_candidates(&[current], &duplicated, &records, HOUR_START).is_empty());
     }
 
     #[test]

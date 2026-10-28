@@ -268,9 +268,10 @@ fn a_guarded_vault_pool_installs_guards_on_its_connection() {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("ganbaru.sqlite");
+        ganbaru_db::test_support::write_migrated_database(&path)
+            .await
+            .unwrap();
         let registry = ganbaru_db::DatabasePoolRegistry::default();
-        registry.connect_path(&path).await.unwrap();
-        registry.close_all().await.unwrap();
 
         registry.set_connection_hook(Some(ganbaru_db::connection_hook(guard_hook)));
         let (pool, access) = registry.connect_path_guarded(&path).await.unwrap();

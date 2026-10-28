@@ -315,7 +315,7 @@ pub(crate) async fn generation_sources_readable_by(
 ) -> ChatResult<bool> {
     let mut connection = pool.acquire().await.map_err(persistence_error)?;
     let sources = sqlx::query(
-        "SELECT conversation_id, lower_ordinal
+        "SELECT conversation_id, lower_order_key
          FROM chat_scratch_generation_sources
          WHERE scratch_generation_id = ?",
     )
@@ -327,12 +327,14 @@ pub(crate) async fn generation_sources_readable_by(
         let conversation_id: String = source
             .try_get("conversation_id")
             .map_err(persistence_error)?;
-        let lower_ordinal: i64 = source.try_get("lower_ordinal").map_err(persistence_error)?;
+        let lower_order_key: String = source
+            .try_get("lower_order_key")
+            .map_err(persistence_error)?;
         if !participant_can_read_source(
             &mut connection,
             participant_id,
             &conversation_id,
-            lower_ordinal,
+            &lower_order_key,
         )
         .await?
         {
@@ -374,7 +376,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         return Ok(false);
     }
     let sources = sqlx::query(
-        "SELECT conversation_id, lower_ordinal, audience_revision
+        "SELECT conversation_id, lower_order_key, audience_revision
          FROM chat_scratch_generation_sources
          WHERE scratch_generation_id = ?",
     )
@@ -425,7 +427,9 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         let conversation_id: String = source
             .try_get("conversation_id")
             .map_err(persistence_error)?;
-        let lower_ordinal: i64 = source.try_get("lower_ordinal").map_err(persistence_error)?;
+        let lower_order_key: String = source
+            .try_get("lower_order_key")
+            .map_err(persistence_error)?;
         let audience_revision: i64 = source
             .try_get("audience_revision")
             .map_err(persistence_error)?;
@@ -434,14 +438,14 @@ pub(crate) async fn generation_constraints_hold_in_connection(
                 &mut *connection,
                 teammate_id,
                 &conversation_id,
-                lower_ordinal,
+                &lower_order_key,
             )
             .await?
             || !participant_can_read_source(
                 &mut *connection,
                 requester_participant_id,
                 &conversation_id,
-                lower_ordinal,
+                &lower_order_key,
             )
             .await?
         {
@@ -453,7 +457,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
                 &mut *connection,
                 &participant_id,
                 &conversation_id,
-                lower_ordinal,
+                &lower_order_key,
             )
             .await?
             {
@@ -468,7 +472,7 @@ async fn participant_can_read_source(
     connection: &mut SqliteConnection,
     participant_id: &str,
     conversation_id: &str,
-    lower_ordinal: i64,
+    lower_order_key: &str,
 ) -> ChatResult<bool> {
     sqlx::query_scalar(
         "SELECT EXISTS(
@@ -503,8 +507,8 @@ async fn participant_can_read_source(
                      ELSE 'entire'
                    END = 'entire'
                    OR (
-                     channel_access.history_from_ordinal IS NOT NULL
-                     AND channel_access.history_from_ordinal <= ?
+                     channel_access.history_from_order_key IS NOT NULL
+                     AND channel_access.history_from_order_key <= ?
                    )
                  )
                )
@@ -513,7 +517,7 @@ async fn participant_can_read_source(
     )
     .bind(conversation_id)
     .bind(participant_id)
-    .bind(lower_ordinal)
+    .bind(lower_order_key)
     .fetch_one(&mut *connection)
     .await
     .map_err(persistence_error)
@@ -749,8 +753,8 @@ mod tests {
                      'access-profile:conversation-only',
                      1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
-                (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item:scratch', '{conversation}', 'message', 1, '{NOW}');
+                (id, conversation_id, item_kind, order_key, created_at)
+             VALUES ('item:scratch', '{conversation}', 'message', 'c000', '{NOW}');
              INSERT INTO chat_communication_messages
                 (item_id, author_participant_id, created_at)
              VALUES ('item:scratch', 'participant:local-owner', '{NOW}');
@@ -810,9 +814,9 @@ mod tests {
     async fn retain_destination_source(pool: &SqlitePool) {
         let inserted = sqlx::query(
             "INSERT INTO chat_scratch_generation_sources
-                (scratch_generation_id, conversation_id, lower_ordinal, high_ordinal,
-                 audience_revision, created_at)
-             SELECT ?, conversation_id, 1, 1, revision, ?
+                (scratch_generation_id, conversation_id, lower_order_key, lower_item_id,
+                 high_order_key, high_item_id, audience_revision, created_at)
+             SELECT ?, conversation_id, 'c000', '', 'c000', 'item:scratch', revision, ?
              FROM chat_conversation_audience_state WHERE conversation_id = ?",
         )
         .bind(GENERATION)

@@ -155,11 +155,11 @@ describe("Chat provider contracts", () => {
         attachmentIds: [],
         references: [],
         replyThread: null,
-        ordinal: 1,
+        orderKey: "c001",
         editedAt: null,
         createdAt: timestamp,
       }],
-      previousCursor: "1",
+      previousCursor: "before:c001:message-1",
       revision: 8,
     });
 
@@ -172,6 +172,21 @@ describe("Chat provider contracts", () => {
     }).replyThreadId).toBeNull();
     expect(() => parseChatChannelPage({ ...page, revision: -1 }))
       .toThrow("revision must not be negative");
+    for (const orderKey of ["", "c00:1", "c".repeat(129), 1]) {
+      expect(() => parseChatChannelPage({
+        ...page,
+        messages: [{ ...page.messages[0]!, orderKey }],
+      })).toThrow("orderKey must");
+    }
+    const unattributed = parseChatChannelPage({
+      ...page,
+      messages: [{ ...page.messages[0]!, author: null, authorLabelSnapshot: "Former member" }],
+    });
+    expect(unattributed.messages[0]?.author).toBeNull();
+    expect(() => parseChatChannelPage({
+      ...page,
+      messages: [{ ...page.messages[0]!, author: "participant:local-owner" }],
+    })).toThrow("author");
 
     const referenced = parseChatChannelPage({
       ...page,
@@ -216,7 +231,7 @@ describe("Chat provider contracts", () => {
       conversationId: "conversation:general",
       replyThreadId: null,
       messageItemId: "message-1",
-      ordinal: 1,
+      anchorCursor: "through:c001:message-1",
       authorParticipantId: "participant:local-owner",
       authorKind: "local_user",
       authorDisplayName: "You",

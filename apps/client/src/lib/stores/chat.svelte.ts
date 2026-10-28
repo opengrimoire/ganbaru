@@ -775,13 +775,12 @@ export class ChatStore {
     await this.projects.selectProject(result.projectId);
     await this.loadProjectChannels(result.projectId);
     await this.selectChannel(result.channelId);
-    const anchorCursor = String(result.ordinal + 1);
     if (result.replyThreadId) {
       this.openReplyThreadId = result.replyThreadId;
       this.selectedExecutionRunId = null;
-      await this.communicationController.loadReplyThreadAtCursor(result.replyThreadId, anchorCursor);
+      await this.communicationController.loadReplyThreadAtCursor(result.replyThreadId, result.anchorCursor);
     } else {
-      await this.communicationController.loadChannelAtCursor(result.channelId, anchorCursor);
+      await this.communicationController.loadChannelAtCursor(result.channelId, result.anchorCursor);
     }
     this.messageAnchorId = result.messageItemId;
   }

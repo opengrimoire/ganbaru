@@ -44,13 +44,13 @@ function message(
   itemId: string,
   author: ChatParticipantRead,
   markdown: string,
-  ordinal: number,
+  position: number,
   agentRunId: string | null = author.kind === "ai_teammate" ? "run:test" : null,
 ): ChatMessageRead {
   return {
     itemId,
     conversationId: "conversation:test",
-    replyThreadId: ordinal === 0 ? null : "reply-thread:test",
+    replyThreadId: position === 0 ? null : "reply-thread:test",
     revisionId: `revision:${itemId}`,
     revision: 1,
     author,
@@ -65,9 +65,9 @@ function message(
     attachmentIds: [],
     references: [],
     replyThread: null,
-    ordinal,
+    orderKey: `c${String(position).padStart(3, "0")}`,
     editedAt: null,
-    createdAt: `2026-08-04T17:0${ordinal}:00.000Z`,
+    createdAt: `2026-08-04T17:0${position}:00.000Z`,
   };
 }
 

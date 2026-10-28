@@ -1,9 +1,9 @@
 //! Chat conversion pass run at vault open, before sync captures are seeded, and the derived
 //! keys of the Chat tables keyed by several columns.
 //!
-//! The conversations replication migration leaves `'pending:'` placeholders in the `sync_key`
-//! of conversation memberships, AI channel memberships, and working folder grants. This pass
-//! rewrites each placeholder to the key every device derives from the row's key columns. It is
+//! The conversations and timeline replication migrations leave `'pending:'` placeholders in the
+//! `sync_key` of conversation memberships, AI channel memberships, working folder grants, and
+//! conversation and reply thread read cursors. This pass rewrites each placeholder to the key every device derives from the row's key columns. It is
 //! idempotent, so a vault that is already converted is left unchanged.
 
 use ganbaru_sync_contracts::{PENDING_KEY_PREFIX, derived_key};
@@ -15,6 +15,10 @@ pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
 /// Prefix of working folder grant keys, over the conversation, teammate, and working folder.
 pub const FOLDER_GRANT_KEY_PREFIX: &str = "folder-grant";
+/// Prefix of conversation read cursor keys, over the conversation and participant.
+pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
+/// Prefix of reply thread read cursor keys, over the reply thread and participant.
+pub const REPLY_CURSOR_KEY_PREFIX: &str = "reply-thread-read-cursor";
 
 fn key(prefix: &str, parts: &[&str]) -> Result<String, String> {
     derived_key(prefix, parts)
@@ -47,6 +51,22 @@ pub fn folder_grant_key(
     )
 }
 
+/// The `sync_key` of a participant's conversation read cursor.
+pub fn conversation_cursor_key(
+    conversation_id: &str,
+    participant_id: &str,
+) -> Result<String, String> {
+    key(
+        CONVERSATION_CURSOR_KEY_PREFIX,
+        &[conversation_id, participant_id],
+    )
+}
+
+/// The `sync_key` of a participant's reply thread read cursor.
+pub fn reply_cursor_key(reply_thread_id: &str, participant_id: &str) -> Result<String, String> {
+    key(REPLY_CURSOR_KEY_PREFIX, &[reply_thread_id, participant_id])
+}
+
 /// A table whose placeholder keys are rewritten from its primary key columns.
 struct KeyedTable {
     table: &'static str,
@@ -54,7 +74,7 @@ struct KeyedTable {
     derive: fn(&[String]) -> Result<String, String>,
 }
 
-const KEYED_TABLES: [KeyedTable; 3] = [
+const KEYED_TABLES: [KeyedTable; 5] = [
     KeyedTable {
         table: "chat_conversation_memberships",
         parts: &["conversation_id", "participant_id"],
@@ -69,6 +89,16 @@ const KEYED_TABLES: [KeyedTable; 3] = [
         table: "chat_teammate_working_folder_grants",
         parts: &["conversation_id", "teammate_id", "working_folder_id"],
         derive: |parts| folder_grant_key(&parts[0], &parts[1], &parts[2]),
+    },
+    KeyedTable {
+        table: "chat_conversation_read_cursors",
+        parts: &["conversation_id", "participant_id"],
+        derive: |parts| conversation_cursor_key(&parts[0], &parts[1]),
+    },
+    KeyedTable {
+        table: "chat_reply_thread_read_cursors",
+        parts: &["reply_thread_id", "participant_id"],
+        derive: |parts| reply_cursor_key(&parts[0], &parts[1]),
     },
 ];
 

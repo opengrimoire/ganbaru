@@ -1,7 +1,7 @@
 //! SQLite read models for organizational Chat state.
 
 use super::common::{
-    ACTIVE_FOLDER_GRANTS_SQL, parse_access_profile_builtin_key, parse_approval_policy,
+    ACTIVE_FOLDER_GRANTS_SQL, PageCursor, parse_access_profile_builtin_key, parse_approval_policy,
     parse_folder_capability, parse_history_boundary, parse_json, parse_participant_kind,
     parse_runtime_approval_policy, parse_work_state, u32_value,
 };
@@ -10,6 +10,8 @@ use super::{
     LOCAL_PARTICIPANT_ID, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
 };
+use crate::chat::channels::sync_key;
+use ganbaru_chat::conversion::reply_cursor_key;
 use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
@@ -95,7 +97,7 @@ async fn read_roster_ai_access(
                 membership.participate, membership.participate_inherits_profile,
                 membership.history_boundary,
                 membership.history_boundary_inherits_profile,
-                membership.history_from_ordinal,
+                membership.history_from_order_key,
                 membership.runtime_approval_policy,
                 membership.scratch_runtime_approval_policy
          FROM chat_teammate_channel_memberships membership
@@ -171,7 +173,7 @@ async fn read_roster_ai_access(
     let stored_history_boundary = parse_history_boundary(
         &row.try_get::<String, _>("history_boundary")
             .map_err(persistence_error)?,
-        row.try_get("history_from_ordinal")
+        row.try_get("history_from_order_key")
             .map_err(persistence_error)?,
     )?;
     let history_inherits_profile = row
@@ -182,24 +184,21 @@ async fn read_roster_ai_access(
         match profile_history_boundary {
             ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
             ChatHistoryBoundary::FromGrant { .. } => ChatHistoryBoundary::FromGrant {
-                lower_ordinal: match stored_history_boundary {
-                    ChatHistoryBoundary::FromGrant { lower_ordinal } => lower_ordinal,
+                lower_order_key: match stored_history_boundary {
+                    ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key,
                     ChatHistoryBoundary::Entire => None,
                 },
             },
         }
     } else if history_boundary_is_expansion(&profile_history_boundary, &stored_history_boundary) {
-        let lower_ordinal: i64 = sqlx::query_scalar(
-            "SELECT coalesce(max(ordinal), 0) + 1
-             FROM chat_conversation_items
-             WHERE conversation_id = ? AND reply_thread_id IS NULL",
-        )
-        .bind(conversation_id.as_str())
-        .fetch_one(pool)
-        .await
-        .map_err(persistence_error)?;
         ChatHistoryBoundary::FromGrant {
-            lower_ordinal: Some(u64_value(lower_ordinal)?),
+            lower_order_key: Some(
+                super::common::from_grant_lower_order_key(
+                    &mut *pool.acquire().await.map_err(persistence_error)?,
+                    conversation_id.as_str(),
+                )
+                .await?,
+            ),
         }
     } else {
         stored_history_boundary
@@ -425,14 +424,14 @@ pub(super) async fn read_message(
     item_id: &ChatConversationItemId,
 ) -> ChatResult<ChatMessageRead> {
     let row = sqlx::query(
-        "SELECT item.conversation_id, item.reply_thread_id, item.ordinal, item.created_at,
+        "SELECT item.conversation_id, item.reply_thread_id, item.order_key, item.created_at,
                 message.author_participant_id, message.author_label_snapshot,
                 message.current_revision_id,
                 message.edited_at, revision.revision, revision.normalized_markdown,
                 revision.rich_content_schema_version, revision.rich_content_data
          FROM chat_conversation_items item
          JOIN chat_communication_messages message ON message.item_id = item.id
-         JOIN chat_communication_message_revisions revision
+         JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
          WHERE item.id = ?",
     )
@@ -446,11 +445,16 @@ pub(super) async fn read_message(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let participant_id = ChatParticipantId::new(
-        row.try_get::<String, _>("author_participant_id")
-            .map_err(persistence_error)?,
-    )
-    .map_err(identifier_error)?;
+    let author_id = row
+        .try_get::<Option<String>, _>("author_participant_id")
+        .map_err(persistence_error)?
+        .map(ChatParticipantId::new)
+        .transpose()
+        .map_err(identifier_error)?;
+    let author = match author_id {
+        Some(participant_id) => Some(read_participant(pool, &participant_id).await?),
+        None => None,
+    };
     let references = read_message_references(pool, &revision_id).await?;
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment_id FROM chat_communication_attachment_references
@@ -492,7 +496,7 @@ pub(super) async fn read_message(
         reply_thread_id,
         revision_id,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
-        author: read_participant(pool, &participant_id).await?,
+        author,
         author_label_snapshot: row
             .try_get("author_label_snapshot")
             .map_err(persistence_error)?,
@@ -515,7 +519,7 @@ pub(super) async fn read_message(
             Some(thread_id) => Some(read_reply_thread_summary(pool, &thread_id).await?),
             None => None,
         },
-        ordinal: u64_value(row.try_get("ordinal").map_err(persistence_error)?)?,
+        order_key: row.try_get("order_key").map_err(persistence_error)?,
         edited_at: optional_timestamp(row.try_get("edited_at").map_err(persistence_error)?)?,
         created_at: timestamp(row.try_get("created_at").map_err(persistence_error)?)?,
     })
@@ -526,8 +530,14 @@ pub(super) async fn read_reply_thread_summary(
     reply_thread_id: &ChatReplyThreadId,
 ) -> ChatResult<ChatReplyThreadSummaryRead> {
     let row = sqlx::query(
-        "SELECT reply_count, last_activity_at
-         FROM chat_reply_threads WHERE id = ?",
+        "SELECT thread.last_activity_at,
+            (SELECT count(*)
+             FROM chat_conversation_items item
+             JOIN chat_communication_messages message ON message.item_id = item.id
+             WHERE item.reply_thread_id = thread.id
+               AND item.item_kind = 'message'
+               AND message.deleted_at IS NULL) AS reply_count
+         FROM chat_reply_threads thread WHERE thread.id = ?",
     )
     .bind(reply_thread_id.as_str())
     .fetch_optional(pool)
@@ -538,8 +548,8 @@ pub(super) async fn read_reply_thread_summary(
         "SELECT DISTINCT message.author_participant_id
          FROM chat_conversation_items item
          JOIN chat_communication_messages message ON message.item_id = item.id
-         WHERE item.reply_thread_id = ?
-         ORDER BY item.ordinal DESC LIMIT 3",
+         WHERE item.reply_thread_id = ? AND message.author_participant_id IS NOT NULL
+         ORDER BY item.order_key DESC, item.id DESC LIMIT 3",
     )
     .bind(reply_thread_id.as_str())
     .fetch_all(pool)
@@ -563,12 +573,13 @@ pub(super) async fn read_reply_thread_summary(
             JOIN chat_communication_messages message ON message.item_id = item.id
             WHERE item.reply_thread_id = ?
               AND item.item_kind = 'message'
-              AND message.author_participant_id != ?
-              AND item.ordinal > coalesce((
-                  SELECT cursor.last_read_reply_ordinal
-                  FROM chat_reply_thread_read_cursors cursor
+              AND message.author_participant_id IS NOT ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_reply_thread_read_cursors cursor
                   WHERE cursor.reply_thread_id = ? AND cursor.participant_id = ?
-              ), 0)
+                    AND (cursor.last_read_order_key, cursor.last_read_item_id)
+                        >= (item.order_key, item.id)
+              )
          )",
     )
     .bind(reply_thread_id.as_str())
@@ -593,7 +604,7 @@ pub(super) async fn read_reply_thread_summary(
 pub(super) async fn read_reply_thread_page(
     pool: &SqlitePool,
     reply_thread_id: &ChatReplyThreadId,
-    before: Option<i64>,
+    end: Option<PageCursor>,
     limit: u32,
 ) -> ChatResult<ChatReplyThreadPageRead> {
     let row = sqlx::query("SELECT root_item_id, revision FROM chat_reply_threads WHERE id = ?")
@@ -610,25 +621,33 @@ pub(super) async fn read_reply_thread_page(
     )
     .map_err(identifier_error)?;
     let reply_rows = sqlx::query(
-        "SELECT id, ordinal FROM chat_conversation_items
+        "SELECT id, order_key FROM chat_conversation_items
          WHERE reply_thread_id = ? AND item_kind = 'message'
-           AND (? IS NULL OR ordinal < ?)
-         ORDER BY ordinal DESC LIMIT ?",
+           AND (? IS NULL OR (order_key, id) < (?, ?) OR (? AND order_key = ? AND id = ?))
+         ORDER BY order_key DESC, id DESC LIMIT ?",
     )
     .bind(reply_thread_id.as_str())
-    .bind(before)
-    .bind(before)
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.item_id.as_str()))
+    .bind(end.as_ref().is_some_and(|end| end.inclusive))
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.item_id.as_str()))
     .bind(i64::from(limit))
     .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
     let previous_cursor = reply_rows
         .last()
-        .map(|reply| reply.try_get::<i64, _>("ordinal"))
-        .transpose()
-        .map_err(persistence_error)?
         .filter(|_| reply_rows.len() == limit as usize)
-        .map(|ordinal| ordinal.to_string());
+        .map(|reply| {
+            Ok::<_, sqlx::Error>(PageCursor::before(
+                &reply.try_get::<String, _>("order_key")?,
+                &reply.try_get::<String, _>("id")?,
+            ))
+        })
+        .transpose()
+        .map_err(persistence_error)?;
     let mut replies = Vec::with_capacity(reply_rows.len());
     for reply in reply_rows.into_iter().rev() {
         let item_id = ChatConversationItemId::new(
@@ -641,32 +660,13 @@ pub(super) async fn read_reply_thread_page(
     }
     let runs = read_agent_runs(pool, reply_thread_id).await?;
     let summary = read_reply_thread_summary(pool, reply_thread_id).await?;
-    let latest_ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0)
-         FROM chat_conversation_items WHERE reply_thread_id = ?",
+    mark_reply_thread_read(
+        pool,
+        reply_thread_id,
+        LOCAL_PARTICIPANT_ID,
+        &now_timestamp()?,
     )
-    .bind(reply_thread_id.as_str())
-    .fetch_one(pool)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_reply_thread_read_cursors
-            (reply_thread_id, participant_id, last_read_reply_ordinal, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(reply_thread_id, participant_id) DO UPDATE SET
-            last_read_reply_ordinal = max(
-                last_read_reply_ordinal,
-                excluded.last_read_reply_ordinal
-            ),
-            updated_at = excluded.updated_at",
-    )
-    .bind(reply_thread_id.as_str())
-    .bind(LOCAL_PARTICIPANT_ID)
-    .bind(latest_ordinal)
-    .bind(now_timestamp()?.as_str())
-    .execute(pool)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     Ok(ChatReplyThreadPageRead {
         thread: ChatReplyThreadSummaryRead {
             unread: false,
@@ -679,6 +679,55 @@ pub(super) async fn read_reply_thread_page(
         previous_cursor,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
     })
+}
+
+/// Advances a participant's read cursor of a reply thread to its last reply.
+///
+/// The cursor never moves backward and the row is not rewritten when the position does not
+/// grow, because sync merges read cursors as a maximum.
+pub(super) async fn mark_reply_thread_read(
+    pool: &SqlitePool,
+    reply_thread_id: &ChatReplyThreadId,
+    participant_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let last = sqlx::query_as::<_, (String, String)>(
+        "SELECT order_key, id FROM chat_conversation_items
+         WHERE reply_thread_id = ?
+         ORDER BY order_key DESC, id DESC LIMIT 1",
+    )
+    .bind(reply_thread_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    let Some((order_key, item_id)) = last else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO chat_reply_thread_read_cursors
+            (reply_thread_id, participant_id, sync_key, last_read_order_key,
+             last_read_item_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(reply_thread_id, participant_id) DO UPDATE SET
+            last_read_order_key = excluded.last_read_order_key,
+            last_read_item_id = excluded.last_read_item_id,
+            updated_at = excluded.updated_at
+         WHERE (excluded.last_read_order_key, excluded.last_read_item_id)
+             > (last_read_order_key, last_read_item_id)",
+    )
+    .bind(reply_thread_id.as_str())
+    .bind(participant_id)
+    .bind(sync_key(reply_cursor_key(
+        reply_thread_id.as_str(),
+        participant_id,
+    ))?)
+    .bind(order_key)
+    .bind(item_id)
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 pub(super) async fn read_assignment(

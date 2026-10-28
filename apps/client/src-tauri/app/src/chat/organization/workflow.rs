@@ -298,7 +298,7 @@ pub(super) struct CommunicationMessageWrite<'a> {
     pub(super) revision_id: &'a ChatMessageRevisionId,
     pub(super) conversation_id: &'a ChatConversationId,
     pub(super) reply_thread_id: Option<&'a ChatReplyThreadId>,
-    pub(super) ordinal: i64,
+    pub(super) order_key: &'a str,
     pub(super) request: &'a PostChatMessageCommand,
     pub(super) invoked_teammate_id: Option<&'a ChatParticipantId>,
     pub(super) now: &'a UtcTimestamp,
@@ -310,13 +310,13 @@ pub(super) async fn insert_communication_message(
 ) -> ChatResult<()> {
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(write.item_id.as_str())
     .bind(write.conversation_id.as_str())
     .bind(write.reply_thread_id.map(ChatReplyThreadId::as_str))
-    .bind(write.ordinal)
+    .bind(write.order_key)
     .bind(write.now.as_str())
     .execute(&mut **transaction)
     .await
@@ -335,9 +335,9 @@ pub(super) async fn insert_communication_message(
     .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(write.revision_id.as_str())
     .bind(write.item_id.as_str())
@@ -476,23 +476,25 @@ async fn insert_message_reference(
             let source_conversation_id: String = source
                 .try_get("conversation_id")
                 .map_err(persistence_error)?;
-            let source_high_ordinal = sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT max(item.ordinal)
-                 FROM chat_conversation_items item
-                 JOIN chat_communication_messages message ON message.item_id = item.id
-                 WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
-                   AND message.deleted_at IS NULL",
-            )
-            .bind(&source_conversation_id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?
-            .ok_or_else(|| {
-                ChatError::validation(
-                    "references",
-                    "An empty channel cannot be used as an assignment context source",
+            let (source_high_order_key, source_high_item_id) =
+                sqlx::query_as::<_, (String, String)>(
+                    "SELECT item.order_key, item.id
+                     FROM chat_conversation_items item
+                     JOIN chat_communication_messages message ON message.item_id = item.id
+                     WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
+                       AND message.deleted_at IS NULL
+                     ORDER BY item.order_key DESC, item.id DESC LIMIT 1",
                 )
-            })?;
+                .bind(&source_conversation_id)
+                .fetch_optional(&mut **transaction)
+                .await
+                .map_err(persistence_error)?
+                .ok_or_else(|| {
+                    ChatError::validation(
+                        "references",
+                        "An empty channel cannot be used as an assignment context source",
+                    )
+                })?;
             let audience_gap: i64 = sqlx::query_scalar(
                 "SELECT count(*)
                  FROM chat_conversation_memberships destination
@@ -555,7 +557,19 @@ async fn insert_message_reference(
                     true,
                 ));
             }
-            let mut source_lower_ordinal: i64 = sqlx::query_scalar(
+            // Entire history starts at the first root item; an unstamped grant boundary sorts
+            // after the high bound and leaves the range empty.
+            let first_root_order_key: String = sqlx::query_scalar(
+                "SELECT min(order_key) FROM chat_conversation_items
+                 WHERE conversation_id = ? AND reply_thread_id IS NULL",
+            )
+            .bind(&source_conversation_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(persistence_error)?;
+            let after_high_order_key =
+                ganbaru_chat::timeline::order_key_after(Some(&source_high_order_key))?;
+            let mut source_lower_order_key: String = sqlx::query_scalar(
                 "SELECT coalesce(max(
                    CASE
                      WHEN participant.participant_kind = 'ai_teammate'
@@ -564,10 +578,10 @@ async fn insert_message_reference(
                          WHEN source_revision.default_history_boundary = 'from_grant'
                            OR source_ai.history_boundary = 'from_grant'
                          THEN 'from_grant' ELSE 'entire' END = 'from_grant'
-                     THEN coalesce(source_ai.history_from_ordinal, ? + 1)
-                     ELSE 1
+                     THEN coalesce(source_ai.history_from_order_key, ?)
+                     ELSE ?
                    END
-                 ), 1)
+                 ), ?)
                  FROM chat_conversation_memberships destination
                  JOIN chat_participants participant ON participant.id = destination.participant_id
                  LEFT JOIN chat_teammate_channel_memberships destination_ai
@@ -603,14 +617,16 @@ async fn insert_message_reference(
                      )
                    )",
             )
-            .bind(source_high_ordinal)
+            .bind(&after_high_order_key)
+            .bind(&first_root_order_key)
+            .bind(&first_root_order_key)
             .bind(&source_conversation_id)
             .bind(destination_conversation_id.as_str())
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
             if let Some(teammate_id) = invoked_teammate_id {
-                let teammate_lower_ordinal = sqlx::query_scalar::<_, i64>(
+                let teammate_lower_order_key = sqlx::query_scalar::<_, String>(
                     "SELECT CASE
                               WHEN CASE
                                 WHEN ai_membership.history_boundary_inherits_profile = 1
@@ -618,8 +634,8 @@ async fn insert_message_reference(
                                 WHEN ai_membership.history_boundary = 'from_grant'
                                   OR profile_revision.default_history_boundary = 'from_grant'
                                 THEN 'from_grant' ELSE 'entire' END = 'from_grant'
-                              THEN coalesce(ai_membership.history_from_ordinal, ? + 1)
-                              ELSE 1
+                              THEN coalesce(ai_membership.history_from_order_key, ?)
+                              ELSE ?
                             END
                         FROM chat_conversation_memberships membership
                         JOIN chat_teammate_channel_memberships ai_membership
@@ -639,22 +655,23 @@ async fn insert_message_reference(
                                      profile_revision.default_read_history)
                           END = 1",
                 )
-                .bind(source_high_ordinal)
+                .bind(&after_high_order_key)
+                .bind(&first_root_order_key)
                 .bind(&source_conversation_id)
                 .bind(teammate_id.as_str())
                 .fetch_optional(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-                let Some(teammate_lower_ordinal) = teammate_lower_ordinal else {
+                let Some(teammate_lower_order_key) = teammate_lower_order_key else {
                     return Err(ChatError::new(
                         ChatErrorCode::Conflict,
                         "The assigned teammate cannot read the referenced channel history",
                         true,
                     ));
                 };
-                source_lower_ordinal = source_lower_ordinal.max(teammate_lower_ordinal);
+                source_lower_order_key = source_lower_order_key.max(teammate_lower_order_key);
             }
-            if source_lower_ordinal > source_high_ordinal {
+            if source_lower_order_key > source_high_order_key {
                 return Err(ChatError::new(
                     ChatErrorCode::Conflict,
                     "No referenced channel history is readable by the complete destination audience",
@@ -662,61 +679,36 @@ async fn insert_message_reference(
                 ));
             }
             let source_revision_cutoff_id = sqlx::query_scalar::<_, String>(
-                "SELECT frozen.id
-                 FROM (
-                   SELECT revision.id, revision_ordinal.ordinal
-                   FROM chat_conversation_items item
-                   JOIN chat_communication_messages message ON message.item_id = item.id
-                   JOIN chat_communication_message_revisions revision
-                     ON revision.id = message.current_revision_id
-                   JOIN chat_communication_message_revision_ordinals revision_ordinal
-                     ON revision_ordinal.message_revision_id = revision.id
-                   WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
-                     AND message.deleted_at IS NULL
-                   UNION ALL
-                   SELECT revision.id, revision_ordinal.ordinal
-                   FROM chat_conversation_items item
-                   JOIN chat_communication_messages message ON message.item_id = item.id
-                   JOIN chat_communication_message_revisions revision
-                     ON revision.id = message.current_revision_id
-                   JOIN chat_communication_message_revision_ordinals revision_ordinal
-                     ON revision_ordinal.message_revision_id = revision.id
-                   WHERE item.conversation_id = ? AND item.reply_thread_id IS NOT NULL
-                     AND message.deleted_at IS NULL
-                 ) frozen
-                 ORDER BY frozen.ordinal DESC
+                "SELECT revision.id
+                 FROM chat_conversation_items item
+                 JOIN chat_communication_messages message ON message.item_id = item.id
+                 JOIN chat_communication_message_revisions revision
+                   ON revision.id = message.current_revision_id
+                 WHERE item.conversation_id = ? AND message.deleted_at IS NULL
+                 ORDER BY revision.created_at DESC, revision.id DESC
                  LIMIT 1",
             )
-            .bind(&source_conversation_id)
             .bind(&source_conversation_id)
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?
             .unwrap_or_else(|| revision_id.as_str().to_string());
-            let destination_audience_revision: i64 = sqlx::query_scalar(
-                "SELECT revision FROM chat_conversation_audience_state
-                 WHERE conversation_id = ?",
-            )
-            .bind(destination_conversation_id.as_str())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
             sqlx::query(
                 "INSERT INTO chat_channel_reference_targets
                     (reference_id, channel_id, source_conversation_id,
-                     destination_conversation_id, source_lower_ordinal,
-                     source_high_ordinal, source_revision_cutoff_id,
-                     destination_audience_revision)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     destination_conversation_id, source_lower_order_key,
+                     source_lower_item_id, source_high_order_key, source_high_item_id,
+                     source_revision_cutoff_id)
+                 VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)",
             )
             .bind(metadata.reference_id.as_str())
             .bind(channel_id.as_str())
             .bind(&source_conversation_id)
             .bind(destination_conversation_id.as_str())
-            .bind(source_lower_ordinal)
-            .bind(source_high_ordinal)
+            .bind(&source_lower_order_key)
+            .bind(&source_high_order_key)
+            .bind(&source_high_item_id)
             .bind(&source_revision_cutoff_id)
-            .bind(destination_audience_revision)
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
@@ -848,7 +840,7 @@ pub(super) async fn insert_channel_copy(
 ) -> ChatResult<()> {
     let item_id = conversation_item_id()?;
     let revision_id = message_revision_id()?;
-    let ordinal = next_item_ordinal(transaction, conversation_id, None).await?;
+    let order_key = next_item_order_key(transaction, conversation_id, None).await?;
     let mut copied_request = request.clone();
     for reference in &mut copied_request.references {
         reference.metadata_mut().reference_id =
@@ -861,7 +853,7 @@ pub(super) async fn insert_channel_copy(
             revision_id: &revision_id,
             conversation_id,
             reply_thread_id: None,
-            ordinal,
+            order_key: &order_key,
             request: &copied_request,
             invoked_teammate_id,
             now,
@@ -888,23 +880,17 @@ pub(super) async fn insert_channel_copy(
     Ok(())
 }
 
-pub(super) async fn next_item_ordinal(
+pub(super) async fn next_item_order_key(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     reply_thread_id: Option<&ChatReplyThreadId>,
-) -> ChatResult<i64> {
-    sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1
-         FROM chat_conversation_items
-         WHERE conversation_id = ?
-           AND ((? IS NULL AND reply_thread_id IS NULL) OR reply_thread_id = ?)",
+) -> ChatResult<String> {
+    ganbaru_chat::timeline::next_order_key(
+        transaction,
+        conversation_id.as_str(),
+        reply_thread_id.map(ChatReplyThreadId::as_str),
     )
-    .bind(conversation_id.as_str())
-    .bind(reply_thread_id.map(ChatReplyThreadId::as_str))
-    .bind(reply_thread_id.map(ChatReplyThreadId::as_str))
-    .fetch_one(&mut **transaction)
     .await
-    .map_err(persistence_error)
 }
 
 pub(super) async fn require_reply_thread(

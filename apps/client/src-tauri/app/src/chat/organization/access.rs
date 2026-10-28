@@ -386,16 +386,16 @@ pub async fn chat_replace_teammate_access(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
-        let history_from_ordinal = match channel.history_boundary {
+        let history_from_order_key = match &channel.history_boundary {
             ChatHistoryBoundary::Entire => None,
-            ChatHistoryBoundary::FromGrant { lower_ordinal } => {
-                Some(i64_value(lower_ordinal.ok_or_else(|| {
+            ChatHistoryBoundary::FromGrant { lower_order_key } => {
+                Some(lower_order_key.clone().ok_or_else(|| {
                     ChatError::new(
                         ChatErrorCode::Persistence,
-                        "Resolved history boundary is missing its lower ordinal",
+                        "Resolved history boundary is missing its lower order key",
                         false,
                     )
-                })?)?)
+                })?)
             }
         };
         let read_history_inherits_profile = channel.capabilities.read_history
@@ -410,7 +410,7 @@ pub async fn chat_replace_teammate_access(
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
-                 history_from_ordinal, runtime_approval_policy,
+                 history_from_order_key, runtime_approval_policy,
                  scratch_runtime_approval_policy, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(conversation_id, teammate_id) DO UPDATE SET
@@ -421,7 +421,7 @@ pub async fn chat_replace_teammate_access(
                 participate_inherits_profile = excluded.participate_inherits_profile,
                 history_boundary = excluded.history_boundary,
                 history_boundary_inherits_profile = excluded.history_boundary_inherits_profile,
-                history_from_ordinal = excluded.history_from_ordinal,
+                history_from_order_key = excluded.history_from_order_key,
                 runtime_approval_policy = excluded.runtime_approval_policy,
                 scratch_runtime_approval_policy = excluded.scratch_runtime_approval_policy,
                 removed_at = NULL, updated_at = excluded.updated_at",
@@ -439,7 +439,7 @@ pub async fn chat_replace_teammate_access(
         .bind(participate_inherits_profile)
         .bind(wire_history_boundary(&channel.history_boundary))
         .bind(history_boundary_inherits_profile)
-        .bind(history_from_ordinal)
+        .bind(history_from_order_key)
         .bind(
             channel
                 .runtime_approval_override

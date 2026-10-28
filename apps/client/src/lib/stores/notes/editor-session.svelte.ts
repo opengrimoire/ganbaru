@@ -54,6 +54,8 @@ import { createNotesSidebarController } from "./sidebar.svelte";
 import { createNotesPageTemplatesController } from "./page-templates.svelte";
 import { createNotesFoldersController } from "./folders.svelte";
 import { createNotesPageActions } from "./page-actions";
+import { notesHeldEditNotice, notesRemovedHeldEditNotice } from "./held-edit-notice.svelte";
+import { notesBlockUpdateText } from "$lib/notes/conflicts/presentation";
 import { BLOCK_HYDRATION_LIMIT, createNotesHydrationController } from "./hydration";
 import { createNotesWorkspaceController } from "./workspace.svelte";
 import {
@@ -1132,6 +1134,18 @@ export function createNotesEditorStore(
     blockActions.discardPendingDatabaseCreations();
   }
 
+  /**
+   * Abandon the writes of a page removed here or elsewhere. Its held edits cannot be resolved once the page is gone,
+   * so their text moves to the app notice, where it can still be copied, instead of being dropped.
+   */
+  function discardRemovedPageWrites(): void {
+    const removedHeld = notesRemovedHeldEditNotice(
+      Object.values(blockConflicts).map((conflict) => notesBlockUpdateText(conflict.mine)),
+    );
+    if (removedHeld) notesHeldEditNotice.show(removedHeld);
+    discardPendingEditorWrites();
+  }
+
   /** Reconcile an acknowledged database rename without another write or replacing its identity. */
   function reconcileDatabaseTitle(blockId: string, databaseId: string, title: string): void {
     const block = blockById(blockId);
@@ -1251,7 +1265,7 @@ export function createNotesEditorStore(
     applyPostMutation,
     selectPage: (pageId) => selectPage(pageId),
     selectPageAfterRemoval,
-    discardRemovedPageWrites: () => discardPendingEditorWrites(),
+    discardRemovedPageWrites,
     reloadPageBreadcrumb: (pageId) => reloadPageBreadcrumb(pageId),
     flushBlockSave,
     flushPendingBlockSaves,
@@ -1730,7 +1744,7 @@ export function createNotesEditorStore(
       blockActions.databasePaste.dismiss();
       databaseDeletion.cancel();
       resetDatabaseSelection();
-      discardPendingEditorWrites();
+      discardRemovedPageWrites();
       pageSession.select(null);
       hydrationController.invalidate();
       treeProjection.clearSelection();

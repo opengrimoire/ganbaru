@@ -2,6 +2,7 @@ import { appendNotesBlockChildren, trashNotesBlock, updateNotesBlock } from "$li
 import { isNotesEditConflict } from "$lib/api/notes/mutation";
 import { applyBlockUpdate, blockUpdateFromBlock } from "$lib/notes/blocks/factory";
 import { rebaseNotesBlockEdit } from "$lib/notes/editor/block-rebase";
+import { NotesHeldEditError } from "./held-edit-notice.svelte";
 import type { NotesBlock, NotesBlockUpdate, NotesBlockWrite } from "$lib/notes/types";
 
 interface PendingBlockSave {
@@ -29,16 +30,7 @@ export interface NotesBlockEditConflict {
  */
 export type NotesBlockConflictChoice = "mine" | "theirs" | "both";
 
-/**
- * Raised by a flush while a block edit waits for the user to choose, so navigation and window close keep the page
- * and its draft open instead of leaving the held edit behind.
- */
-export class NotesHeldEditError extends Error {
-  constructor(readonly blockIds: readonly string[]) {
-    super(`Notes block edits wait for a choice: ${blockIds.join(", ")}`);
-    this.name = "NotesHeldEditError";
-  }
-}
+export { NotesHeldEditError };
 
 export interface NotesBlockPersistenceContext {
   reconcileCanonicalBlocks?: (blocks: readonly NotesBlock[]) => void;
@@ -261,7 +253,10 @@ export function createNotesBlockPersistence(
   }
 
   function assertNoHeldEdits(): void {
-    if (heldConflicts.size > 0) throw new NotesHeldEditError([...heldConflicts.keys()]);
+    if (heldConflicts.size === 0) return;
+    const pageIds = new Set<string>();
+    for (const held of heldConflicts.values()) if (held.pageId) pageIds.add(held.pageId);
+    throw new NotesHeldEditError([...heldConflicts.keys()], [...pageIds]);
   }
 
   /** Releases a held block once the user's choice is saved. */

@@ -400,6 +400,11 @@ describe("notes block persistence after a remote change", () => {
     await persistence.saveBlockNow(blockId, draft);
 
     expect(() => persistence.assertNoHeldEdits()).toThrow(NotesHeldEditError);
+    try {
+      persistence.assertNoHeldEdits();
+    } catch (error) {
+      expect(error).toMatchObject({ blockIds: [blockId], pageIds: [pageId] });
+    }
 
     await persistence.resolveBlockConflict(blockId, "theirs");
 

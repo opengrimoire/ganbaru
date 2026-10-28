@@ -37,6 +37,7 @@
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
   import { flushBeforeWindowClose } from "$lib/windows/close-flush";
   import { MAIN_WINDOW_LABEL } from "$lib/windows/tab-windows";
+  import { reportNotesHeldEditFailure } from "$lib/stores/notes/held-edit-notice.svelte";
   import { MUSIC_HOST_OPEN_EVENT } from "$lib/music/host-window";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
 
@@ -256,7 +257,14 @@
     beforeClose: async () => { await Promise.all([flushQuickNoteEditors(), flushBeforeWindowClose()]); },
     themeEditOpen: () => !!themeEditor.editingId,
     cancelThemeEdit: () => themeEditor.cancel(),
-    reportError: (message, error) => { console.error(message, error); },
+    reportError: (message, error) => {
+      if (!reportNotesHeldEditFailure(error)) {
+        console.error(message, error);
+        return;
+      }
+      // A held Notes edit keeps the window open; the notice leads to the page, so the quit dialog steps aside.
+      cancelClose();
+    },
   });
 
   const handleClose = windowController.requestClose;
@@ -293,7 +301,9 @@
       tabContextId = null;
     },
     tabs,
-    reportError: (message, error) => { console.error(message, error); },
+    reportError: (message, error) => {
+      if (!reportNotesHeldEditFailure(error)) console.error(message, error);
+    },
   });
 
   const titleBarControls: { id: TitleBarControlId; label: () => string }[] = [

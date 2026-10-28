@@ -80,6 +80,7 @@ import {
 import { notesPageSubtreeIds } from "$lib/notes/pages/selection";
 import {
   createNotesBlockPersistence,
+  NotesHeldEditError,
   type NotesBlockConflictChoice,
   type NotesBlockEditConflict,
 } from "./persistence";
@@ -1026,6 +1027,7 @@ export function createNotesEditorStore(
     flushPendingBlockSaves,
     discardPendingEditorWrites: discardQueuedEditorWrites,
     resolveBlockConflict,
+    assertNoHeldEdits,
   } = createNotesBlockPersistence({
     reconcileCanonicalBlocks: (blocks) => undoController.reconcileCanonicalBlocks(blocks),
     readBlock: (blockId) => treeProjection.blocksById[blockId],
@@ -1039,7 +1041,8 @@ export function createNotesEditorStore(
       editorConflict = true;
       refreshAfterConflict();
     },
-    readCanonicalBlock: readCanonicalBlock,
+    readCanonicalBlock,
+    currentPageId: () => pageSession.selectedPageId,
     onBlockConflict: (blockId, conflict) => {
       const { [blockId]: _settled, ...others } = blockConflicts;
       blockConflicts = conflict ? { ...others, [blockId]: conflict } : others;
@@ -1051,6 +1054,8 @@ export function createNotesEditorStore(
   let editorConflict = $state(false);
   /** Block edits held because another device changed or removed the same block, by block ID. */
   let blockConflicts = $state<Record<string, NotesBlockEditConflict>>({});
+  /** Counts the times leaving the page was refused because an edit is held, so the conflict strip can call for a choice. */
+  let heldEditRefusals = $state(0);
 
   function refreshAfterConflict(): void {
     void refreshCanonicalPage().catch((error: unknown) => {
@@ -1058,9 +1063,8 @@ export function createNotesEditorStore(
     });
   }
 
-  /** Reads one block of the open page as saved, or `null` when it is trashed or gone. */
-  async function readCanonicalBlock(blockId: string): Promise<NotesBlock | null> {
-    const pageId = pageSession.selectedPageId;
+  /** Reads one block of a page as saved, or `null` when it is trashed or gone. */
+  async function readCanonicalBlock(blockId: string, pageId: string | null): Promise<NotesBlock | null> {
     if (!pageId) return null;
     const [block] = await hydrateNotesBlocks({ page_id: pageId, block_ids: [blockId] });
     return block ?? null;
@@ -1691,11 +1695,21 @@ export function createNotesEditorStore(
     return true;
   }
 
+  /**
+   * Saves every pending edit of the open page. Rejects with `NotesHeldEditError` while a block edit waits for a sync
+   * conflict choice, so navigation and window close keep the page and its draft open until the user chooses.
+   */
   async function flushPendingWrites(): Promise<void> {
     await Promise.all([
       flushPendingBlockSaves(),
       blockActions.flushOptimisticBlockWrites(),
     ]);
+    try {
+      assertNoHeldEdits();
+    } catch (error: unknown) {
+      if (error instanceof NotesHeldEditError) heldEditRefusals += 1;
+      throw error;
+    }
   }
 
   const facade = {
@@ -1750,6 +1764,8 @@ export function createNotesEditorStore(
     dismissEditorConflict: (): void => { editorConflict = false; },
     /** Block edits of the open page held for the user because another device changed or removed the block. */
     get blockConflicts(): readonly NotesBlockEditConflict[] { return Object.values(blockConflicts); },
+    /** Grows each time leaving the page or closing the window was refused because a block edit is held. */
+    get heldEditRefusals(): number { return heldEditRefusals; },
     resolveBlockConflict: (blockId: string, choice: NotesBlockConflictChoice): Promise<void> =>
       resolveBlockConflict(blockId, choice),
     refreshCanonicalPage,

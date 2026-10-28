@@ -583,7 +583,17 @@
     if (!(active instanceof HTMLElement) || !editorRoot?.contains(active)) return null;
     const blockId = active.dataset.notesBlockId;
     if (!blockId) return null;
-    return { blockId, offset: notesTextSelectionFromEditableRoot(active)?.start ?? 0 };
+    const selection = notesTextSelectionFromEditableRoot(active);
+    return { blockId, start: selection?.start ?? 0, end: selection?.end ?? 0 };
+  }
+
+  /** Forgets the caret when the user moves focus away, keeping it only when a refresh replaced the focused block. */
+  function forgetCaretOnLeave(event: FocusEvent): void {
+    const left = event.target;
+    if (!(left instanceof HTMLElement)) return;
+    queueMicrotask(() => {
+      if (left.isConnected) lastCaret = null;
+    });
   }
 
   function rememberEditingCaret(): void {
@@ -594,22 +604,29 @@
 
   $effect(() => {
     if (!editorRoot) return;
+    const root = editorRoot;
     document.addEventListener("selectionchange", rememberEditingCaret);
-    return () => document.removeEventListener("selectionchange", rememberEditingCaret);
+    root.addEventListener("focusout", forgetCaretOnLeave);
+    return () => {
+      document.removeEventListener("selectionchange", rememberEditingCaret);
+      root.removeEventListener("focusout", forgetCaretOnLeave);
+    };
   });
 
   $effect(() => {
     const order = notes.flatBlockOutlines.map((item) => item.outline.id);
     untrack(() => {
       const remembered = lastCaret;
-      if (!remembered || order.includes(remembered.caret.blockId) || readEditingCaret()) return;
+      if (!remembered || readEditingCaret()) return;
+      // Focus elsewhere means the user left the editor, so a refresh does not pull it back.
+      if (document.activeElement && document.activeElement !== document.body) return;
       lastCaret = null;
       if (remembered.pageId !== notes.loadedPage?.id) return;
       const next = notesCaretAfterRefresh(remembered.caret, remembered.order, order, (blockId) => {
         const block = notes.blockById(blockId);
         return block ? blockPlainText(block).length : 0;
       });
-      if (next) notes.focusBlock(next.blockId, { start: next.offset, end: next.offset });
+      if (next) notes.focusBlock(next.blockId, { start: next.start, end: next.end });
     });
   });
 
@@ -1164,7 +1181,11 @@
     {/if}
     {#if page && (notes.blockConflicts.length > 0 || fieldConflictCount > 0)}
       <div class="flex max-h-2/5 shrink-0 flex-col gap-2 overflow-y-auto border-b border-border px-4 py-2">
-        <NotesBlockEditConflicts conflicts={notes.blockConflicts} onResolve={notes.resolveBlockConflict} />
+        <NotesBlockEditConflicts
+          conflicts={notes.blockConflicts}
+          refusals={notes.heldEditRefusals}
+          onResolve={notes.resolveBlockConflict}
+        />
         <NotesPageFieldConflicts
           pageId={page.id}
           properties={page.properties}

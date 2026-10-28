@@ -63,6 +63,7 @@ describe("notes block edit conflict view", () => {
   it("offers mine, theirs, and keep both for a block edited on both sides", () => {
     const view = notesBlockEditConflictView({
       blockId: "block",
+      pageId: "page",
       kind: "text",
       mine: paragraph("Mine"),
       theirs: canonical("Theirs"),
@@ -77,14 +78,14 @@ describe("notes block edit conflict view", () => {
   });
 
   it("offers restoring or discarding for a block removed elsewhere, without keep both", () => {
-    const view = notesBlockEditConflictView({ blockId: "block", kind: "removed", mine: paragraph("Mine"), theirs: null });
+    const view = notesBlockEditConflictView({ blockId: "block", pageId: "page", kind: "removed", mine: paragraph("Mine"), theirs: null });
     expect(view.removed).toBe(true);
     expect(view.theirs).toBeNull();
     expect(view.choices).toEqual(["mine", "theirs"]);
   });
 
   it("treats a text conflict whose canonical block is gone as removed", () => {
-    const view = notesBlockEditConflictView({ blockId: "block", kind: "text", mine: paragraph("Mine"), theirs: null });
+    const view = notesBlockEditConflictView({ blockId: "block", pageId: "page", kind: "text", mine: paragraph("Mine"), theirs: null });
     expect(view.removed).toBe(true);
     expect(view.choices).not.toContain("both");
   });

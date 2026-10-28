@@ -86,33 +86,43 @@ describe("notesCaretAfterRefresh", () => {
   const length = (id: string) => id.length * 10;
 
   it("keeps the caret when blocks are inserted above it", () => {
-    const caret = { blockId: "b", offset: 3 };
+    const caret = { blockId: "b", start: 3, end: 3 };
     expect(notesCaretAfterRefresh(caret, ["a", "b", "c"], ["new", "a", "b", "c"], length)).toEqual(caret);
   });
 
   it("keeps the caret when blocks are inserted below it", () => {
-    const caret = { blockId: "b", offset: 3 };
+    const caret = { blockId: "b", start: 3, end: 3 };
     expect(notesCaretAfterRefresh(caret, ["a", "b", "c"], ["a", "b", "new", "c"], length)).toEqual(caret);
   });
 
-  it("moves to the end of the nearest earlier block when its block was deleted", () => {
-    expect(notesCaretAfterRefresh({ blockId: "c", offset: 1 }, ["a", "bb", "c"], ["a", "bb"], length)).toEqual({
+  it("keeps a selected range when its block remains", () => {
+    const range = { blockId: "b", start: 2, end: 7 };
+    expect(notesCaretAfterRefresh(range, ["a", "b"], ["a", "b"], length)).toEqual(range);
+  });
+
+  it("clamps a selected range to the block's shorter text", () => {
+    expect(notesCaretAfterRefresh({ blockId: "b", start: 4, end: 15 }, ["b"], ["b"], () => 6)).toEqual({ blockId: "b", start: 4, end: 6 });
+  });
+
+  it("collapses at the end of the nearest earlier block when its block was deleted", () => {
+    expect(notesCaretAfterRefresh({ blockId: "c", start: 1, end: 5 }, ["a", "bb", "c"], ["a", "bb"], length)).toEqual({
       blockId: "bb",
-      offset: 20,
+      start: 20,
+      end: 20,
     });
   });
 
   it("moves to the start of the next block when nothing before it remains", () => {
-    expect(notesCaretAfterRefresh({ blockId: "a", offset: 1 }, ["a", "b"], ["b"], length)).toEqual({ blockId: "b", offset: 0 });
+    expect(notesCaretAfterRefresh({ blockId: "a", start: 1, end: 1 }, ["a", "b"], ["b"], length)).toEqual({ blockId: "b", start: 0, end: 0 });
   });
 
   it("follows the block when a remote move reorders the page", () => {
-    const caret = { blockId: "a", offset: 2 };
+    const caret = { blockId: "a", start: 2, end: 2 };
     expect(notesCaretAfterRefresh(caret, ["a", "b", "c"], ["b", "c", "a"], length)).toEqual(caret);
   });
 
   it("is null when no block remains or there was no caret", () => {
-    expect(notesCaretAfterRefresh({ blockId: "a", offset: 0 }, ["a"], [], length)).toBeNull();
+    expect(notesCaretAfterRefresh({ blockId: "a", start: 0, end: 0 }, ["a"], [], length)).toBeNull();
     expect(notesCaretAfterRefresh(null, ["a"], ["a"], length)).toBeNull();
   });
 });

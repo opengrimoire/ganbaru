@@ -7,7 +7,7 @@ import {
   createBlockWrite,
 } from "$lib/notes/blocks/factory";
 import type { NotesBlock, NotesBlockUpdate, NotesParent } from "$lib/notes/types";
-import { createNotesBlockPersistence, type NotesBlockEditConflict } from "./persistence";
+import { createNotesBlockPersistence, NotesHeldEditError, type NotesBlockEditConflict } from "./persistence";
 
 const { updateNotesBlock, appendNotesBlockChildren, trashNotesBlock } = vi.hoisted(() => ({
   updateNotesBlock: vi.fn(),
@@ -19,28 +19,39 @@ vi.mock("$lib/api/notes", () => ({ updateNotesBlock, appendNotesBlockChildren, t
 
 const refused = () => new Error(`Notes edit conflict: block ${blockId} changed; reload before retrying`);
 
-/** A Notes block store with one block and a canonical copy another device changed. */
 /** Plain text of a block the test expects to exist. */
 function presentText(block: NotesBlock | undefined): string {
   if (!block) throw new Error("expected a block");
   return blockPlainText(block);
 }
 
+/** A Notes block store with one block on an open page and a canonical copy another device changed. */
 function conflictHarness(local: NotesBlock, canonical: NotesBlock | null) {
   let current: NotesBlock | undefined = local;
+  let openPageId: string | null = pageId;
   const conflicts: Array<NotesBlockEditConflict | null> = [];
   const onCanonicalChanged = vi.fn();
+  const readCanonicalBlock = vi.fn(async (_blockId: string, _pageId: string | null) => canonical);
   const persistence = createNotesBlockPersistence({
     beforeSave: async () => undefined,
     readBlock: () => current,
     replaceBlock: (block) => { current = block; },
     setLoadError: vi.fn(),
-    readCanonicalBlock: async () => canonical,
+    readCanonicalBlock,
+    currentPageId: () => openPageId,
     onBlockConflict: (_id, conflict) => conflicts.push(conflict),
     onCanonicalChanged,
     debounceMs: 250,
   });
-  return { persistence, conflicts, onCanonicalChanged, read: () => current };
+  return {
+    persistence,
+    conflicts,
+    onCanonicalChanged,
+    readCanonicalBlock,
+    read: () => current,
+    write: (block: NotesBlock | undefined) => { current = block; },
+    openPage: (id: string | null) => { openPageId = id; },
+  };
 }
 
 const blockId = "00000000-0000-4000-8000-000000000001";
@@ -312,7 +323,7 @@ describe("notes block persistence after a remote change", () => {
     await persistence.saveBlockNow(blockId, draft);
 
     expect(updateNotesBlock).toHaveBeenCalledOnce();
-    expect(conflicts).toEqual([{ blockId, kind: "text", mine: draft, theirs: canonical }]);
+    expect(conflicts).toEqual([{ blockId, pageId, kind: "text", mine: draft, theirs: canonical }]);
     expect(persistence.readBlockConflict(blockId)?.kind).toBe("text");
     expect(persistence.hasLocalChanges(blockId)).toBe(true);
     expect(presentText(read())).toBe("Mine");
@@ -378,5 +389,66 @@ describe("notes block persistence after a remote change", () => {
     expect(trashNotesBlock).toHaveBeenCalledWith(blockId, false);
     expect(updateNotesBlock).toHaveBeenLastCalledWith(blockId, expect.anything(), "c".repeat(64));
     expect(onCanonicalChanged).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to let the page go while an edit is held, and settles once the user chooses", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused());
+    const { persistence } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+
+    expect(() => persistence.assertNoHeldEdits()).toThrow(NotesHeldEditError);
+
+    await persistence.resolveBlockConflict(blockId, "theirs");
+
+    expect(() => persistence.assertNoHeldEdits()).not.toThrow();
+  });
+
+  it("reads the canonical block from the page the edit was held on, not the page open now", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementation(async (_id: string, update: NotesBlockUpdate) => applyBlockUpdate(canonical, update));
+    trashNotesBlock.mockClear();
+    const { persistence, readCanonicalBlock, openPage, write } = conflictHarness(base, canonical);
+    const draft = blockWithText(base, "Mine");
+    persistence.localApplyBlockUpdate(blockId, draft);
+    await persistence.saveBlockNow(blockId, draft);
+    openPage("00000000-0000-4000-8000-000000000003");
+    write(undefined);
+
+    await persistence.resolveBlockConflict(blockId, "mine");
+
+    expect(readCanonicalBlock).toHaveBeenLastCalledWith(blockId, pageId);
+    expect(trashNotesBlock).not.toHaveBeenCalled();
+    expect(updateNotesBlock).toHaveBeenLastCalledWith(blockId, draft, "b".repeat(64));
+  });
+
+  it("holds typing made during a replay that clashes with the text the replay took", async () => {
+    const canonical = { ...paragraph("Theirs"), content_revision: "b".repeat(64) };
+    let finishReplay!: () => void;
+    updateNotesBlock.mockReset().mockRejectedValueOnce(refused())
+      .mockImplementationOnce(async (_id: string, update: NotesBlockUpdate) => {
+        await new Promise<void>((resolve) => { finishReplay = resolve; });
+        return applyBlockUpdate(canonical, update);
+      });
+    const { persistence, conflicts, read } = conflictHarness(base, canonical);
+    const converted = blockConvertedToType(base, "heading_1");
+    persistence.localApplyBlockUpdate(blockId, converted);
+    const save = persistence.saveBlockNow(blockId, converted);
+    await vi.waitFor(() => expect(updateNotesBlock).toHaveBeenCalledTimes(2));
+    const typed = blockWithText(applyBlockUpdate(base, converted), "Base typed later");
+    persistence.localApplyBlockUpdate(blockId, typed);
+    persistence.scheduleBlockSave(blockId, typed);
+
+    finishReplay();
+    await save;
+    await persistence.flushPendingBlockSaves();
+
+    expect(updateNotesBlock).toHaveBeenCalledTimes(2);
+    expect(conflicts.at(-1)).toMatchObject({ blockId, pageId, kind: "text" });
+    expect(presentText(read())).toBe("Base typed later");
+    expect(persistence.readBlockConflict(blockId)?.theirs).toMatchObject({ type: "heading_1" });
   });
 });

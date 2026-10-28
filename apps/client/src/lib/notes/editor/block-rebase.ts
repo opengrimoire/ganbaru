@@ -109,18 +109,20 @@ export function notesBlockContentEqual(left: NotesBlockUpdate, right: NotesBlock
   return kindKey(a) === kindKey(b) && textKey(a) === textKey(b);
 }
 
-/** Where the caret was, by block and character offset. */
+/** Where the caret or selected range was, by block and character offsets. `start` equals `end` for a caret. */
 export interface NotesCaret {
   blockId: string;
-  offset: number;
+  start: number;
+  end: number;
 }
 
 /**
  * Where the caret goes after the open page refreshed from canonical blocks.
  *
- * The caret is held by block id and offset, so blocks inserted above or below it leave it where it is. When its
- * block is gone, the caret moves to the end of the nearest block before it that remains, or the start of the
- * nearest one after it, and is `null` when no block remains.
+ * The caret is held by block id and offsets, so blocks inserted above or below it leave it where it is. When its
+ * block remains, a selected range stays selected, clamped to the block's new text. When its block is gone, the caret
+ * collapses at the end of the nearest block before it that remains, or the start of the nearest one after it, and
+ * is `null` when no block remains.
  *
  * @param caret The caret before the refresh, or `null` when the editor had none.
  * @param previousOrder Visible block ids in document order before the refresh.
@@ -135,16 +137,23 @@ export function notesCaretAfterRefresh(
 ): NotesCaret | null {
   if (!caret) return null;
   const remaining = new Set(nextOrder);
-  if (remaining.has(caret.blockId)) return caret;
+  if (remaining.has(caret.blockId)) {
+    const length = textLength(caret.blockId);
+    return { blockId: caret.blockId, start: Math.min(caret.start, length), end: Math.min(caret.end, length) };
+  }
   const index = previousOrder.indexOf(caret.blockId);
   for (let before = index - 1; before >= 0; before -= 1) {
     const id = previousOrder[before];
-    if (id !== undefined && remaining.has(id)) return { blockId: id, offset: textLength(id) };
+    if (id !== undefined && remaining.has(id)) return collapsedCaret(id, textLength(id));
   }
   for (let after = index + 1; index >= 0 && after < previousOrder.length; after += 1) {
     const id = previousOrder[after];
-    if (id !== undefined && remaining.has(id)) return { blockId: id, offset: 0 };
+    if (id !== undefined && remaining.has(id)) return collapsedCaret(id, 0);
   }
   const first = nextOrder[0];
-  return first === undefined ? null : { blockId: first, offset: 0 };
+  return first === undefined ? null : collapsedCaret(first, 0);
+}
+
+function collapsedCaret(blockId: string, offset: number): NotesCaret {
+  return { blockId, start: offset, end: offset };
 }

@@ -385,3 +385,76 @@ fn entries_of_a_frozen_epoch_past_its_freeze_are_no_evidence() {
     let forced = log.handover(&base, &device_admin(FIRST), &device_id(FIRST));
     log.assert_selects(&forced);
 }
+
+/// The enrollment of a fourth device after `base`, then the anchor's planned handover to
+/// [`SECOND`] from it. Returns the enrollment and the handover.
+fn planned_handover(log: &mut Log, base: &At) -> (At, At) {
+    let anchor = anchor_admin(&person());
+    let next = log.append(
+        base,
+        &anchor,
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let planned = log.handover(&next, &anchor, &device_id(SECOND));
+    (next, planned)
+}
+
+#[test]
+fn a_stale_admin_forking_beside_a_planned_handover_that_revokes_it_is_vetoed() {
+    for revoke in [remove, demote] {
+        let (mut log, base) = Log::new();
+        let (next, planned) = planned_handover(&mut log, &base);
+        let revoked = log.append(&planned, &device_admin(SECOND), revoke(&device_id(FIRST)));
+        let stale = self_handovers(&mut log, &next, &device_admin(FIRST), &device_id(FIRST), 5);
+        assert!(stale.epoch > revoked.epoch);
+        log.assert_selects(&revoked);
+    }
+}
+
+#[test]
+fn a_stale_admin_forking_beside_a_restored_anchors_self_handover_that_removes_it_is_vetoed() {
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    let restored = log.handover(&base, &anchor, ANCHOR_DEVICE_ID);
+    let removed = log.append(&restored, &anchor, remove(&device_id(FIRST)));
+    self_handovers(&mut log, &base, &device_admin(FIRST), &device_id(FIRST), 4);
+    log.assert_selects(&removed);
+}
+
+#[test]
+fn a_leaked_old_kit_forking_before_a_planned_handover_that_preceded_its_rotation_is_vetoed() {
+    let (mut log, base) = Log::new();
+    let leaked = recovery_admin(&person());
+    let (next, planned) = planned_handover(&mut log, &base);
+    let rotated = log.append(&planned, &leaked, rotate_recovery(&other_recovery(93)));
+    let kit = log.handover(&next, &leaked, &device_id(MEMBER));
+    log.append(&kit, &leaked, remove(&device_id(SECOND)));
+    log.assert_selects(&rotated);
+}
+
+#[test]
+fn admins_forcing_handovers_after_an_anchor_loss_rank_rather_than_veto_each_other() {
+    let (mut log, base) = Log::new();
+    let first = log.handover(&base, &device_admin(FIRST), &device_id(FIRST));
+    log.append(&first, &device_admin(FIRST), remove(&device_id(SECOND)));
+    let second = self_handovers(
+        &mut log,
+        &base,
+        &device_admin(SECOND),
+        &device_id(SECOND),
+        2,
+    );
+    let second = log.append(&second, &device_admin(SECOND), remove(&device_id(FIRST)));
+    log.assert_selects(&second);
+}
+
+#[test]
+fn a_leaked_old_kit_is_vetoed_by_its_rotation_inside_a_forced_handover_beside_it() {
+    let (mut log, base) = Log::new();
+    let leaked = recovery_admin(&person());
+    let forced = log.handover(&base, &device_admin(SECOND), &device_id(SECOND));
+    let rotated = log.append(&forced, &leaked, rotate_recovery(&other_recovery(94)));
+    let kit = log.handover(&base, &leaked, &device_id(MEMBER));
+    log.append(&kit, &leaked, remove(&device_id(SECOND)));
+    log.assert_selects(&rotated);
+}

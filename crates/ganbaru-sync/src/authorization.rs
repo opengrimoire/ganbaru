@@ -161,11 +161,21 @@ enum Revocation {
     KitRotation(AdminPublicKey),
 }
 
+/// Who signed a handover, judged at its fork point, in the order the veto test settles them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoverSigner {
+    /// The kit-lineage recovery key.
+    Kit,
+    /// The admin key of the anchor of the fork point's epoch: the anchor's own continuation.
+    Anchor,
+    /// Any other admin key, which forces the handover.
+    Admin,
+}
+
 /// What the veto test of a handover needs from its fork point.
 #[derive(Debug, Clone)]
 struct HandoverFacts {
-    /// Whether a kit-lineage recovery key signed it.
-    by_kit: bool,
+    signer: HandoverSigner,
     author: AdminPublicKey,
     target: String,
     /// Live devices that hold the author key as their admin role.
@@ -176,7 +186,7 @@ impl HandoverFacts {
     /// Whether the revocations `evidence` of the continuation of the fork point veto the
     /// handover.
     fn vetoed_by(&self, evidence: &BTreeSet<Revocation>) -> bool {
-        if self.by_kit {
+        if self.signer == HandoverSigner::Kit {
             return evidence.contains(&Revocation::KitRotation(self.author));
         }
         evidence.contains(&Revocation::Key(self.author))
@@ -464,8 +474,22 @@ impl AuthState {
             return None;
         };
         let author = proposal.author;
+        let anchor_key =
+            self.devices
+                .get(&self.anchor_device_id)
+                .and_then(|device| match device.role {
+                    DeviceRole::Admin(key) if device.removed.is_none() => Some(key),
+                    _ => None,
+                });
+        let signer = if self.signed_by_kit(&author) {
+            HandoverSigner::Kit
+        } else if anchor_key == Some(author) {
+            HandoverSigner::Anchor
+        } else {
+            HandoverSigner::Admin
+        };
         Some(HandoverFacts {
-            by_kit: self.signed_by_kit(&author),
+            signer,
             author,
             target: handover.new_anchor_device_id.clone(),
             holders: self
@@ -719,14 +743,18 @@ struct Visit {
 ///
 /// Trust at a fork point P, the entry competing branches continue from, runs from a handover a
 /// kit-lineage recovery key signed, through the anchor's continuation of its own epoch, to a
-/// handover a device admin key signed. A handover H that an admin key `a` which is not of kit
-/// lineage signed for target T is vetoed when the continuation of P (the entries after P that
-/// are not handovers, and what follows them unless itself vetoed) revokes `a`, or removes or
-/// demotes T or the device holding `a`. A handover a kit-lineage key `k` signed is vetoed only by
-/// a rotation away from `k` that `k` signed. Sibling handovers never veto each other. Vetoed
-/// subtrees are skipped, and the live entry of highest rank is selected, so a chain through
-/// more kit handovers wins. The result depends only on the stored entries, not on the order
-/// they arrived in.
+/// handover a device admin key signed. The continuation of P is the entries after P that are
+/// not handovers, the handovers the kit-lineage key or the admin key of the anchor of P's epoch
+/// signed, and what follows them. A handover H that an admin key `a` which is not of kit lineage
+/// signed for target T is vetoed when the continuation, H's own subtree excluded, revokes `a`, or
+/// removes or demotes T or the device holding `a`. A handover a kit-lineage key `k` signed is
+/// vetoed only by a rotation away from `k` that `k` signed, anywhere after P. Kit handovers are
+/// settled first, then the anchor's, which read only kit handovers left standing, then device
+/// admin handovers, which read only continuation handovers left standing. Device admin handovers
+/// are otherwise never evidence, so two admins forcing handovers after an anchor loss rank rather
+/// than veto each other. Vetoed subtrees are skipped, and the live entry of highest rank is
+/// selected, so a chain through more kit handovers wins. The result depends only on the stored
+/// entries, not on the order they arrived in.
 struct Walk<'a> {
     stored: &'a Stored,
     visits: Vec<Visit>,
@@ -832,24 +860,57 @@ impl<'a> Walk<'a> {
         let mut evidence: Vec<BTreeSet<Revocation>> = vec![BTreeSet::new(); count];
         // A visit comes after its parent, so the reverse order is a post-order.
         for index in (0..count).rev() {
+            let signer = |child: &usize| {
+                self.visits[*child]
+                    .handover
+                    .as_ref()
+                    .map(|facts| facts.signer)
+            };
             let mut continuation = BTreeSet::new();
-            for child in &children[index] {
-                if self.visits[*child].handover.is_none() {
-                    continuation.append(&mut evidence[*child]);
+            for child in children[index]
+                .iter()
+                .filter(|child| signer(child).is_none())
+            {
+                continuation.append(&mut evidence[*child]);
+            }
+            // Kit handovers first, then the anchor's, then forced ones, so a handover's veto
+            // reads only evidence from handovers it does not outrank or already settled ones.
+            for stage in [
+                HandoverSigner::Kit,
+                HandoverSigner::Anchor,
+                HandoverSigner::Admin,
+            ] {
+                for child in children[index]
+                    .iter()
+                    .filter(|child| signer(child) == Some(stage))
+                {
+                    let mut against = continuation.clone();
+                    for sibling in &children[index] {
+                        // Only the kit key signs a rotation away from itself, so every sibling
+                        // subtree is evidence against a kit handover.
+                        let counts = match signer(sibling) {
+                            None => false,
+                            Some(_) if stage == HandoverSigner::Kit => true,
+                            Some(HandoverSigner::Admin) => false,
+                            Some(HandoverSigner::Anchor) if stage != HandoverSigner::Admin => true,
+                            Some(_) => !vetoed[*sibling],
+                        };
+                        if counts && sibling != child {
+                            against.extend(evidence[*sibling].iter().cloned());
+                        }
+                    }
+                    let facts = self.visits[*child].handover.as_ref();
+                    vetoed[*child] = facts.is_some_and(|facts| facts.vetoed_by(&against));
                 }
             }
             let mut own: BTreeSet<Revocation> =
                 self.visits[index].revocations.iter().cloned().collect();
+            own.append(&mut continuation);
             for child in &children[index] {
-                if let Some(facts) = &self.visits[*child].handover {
-                    if facts.vetoed_by(&continuation) {
-                        vetoed[*child] = true;
-                    } else {
-                        own.append(&mut evidence[*child]);
-                    }
+                if signer(child).is_some() && !vetoed[*child] {
+                    own.append(&mut evidence[*child]);
                 }
             }
-            own.append(&mut continuation);
             evidence[index] = own;
         }
         for (index, vetoed) in vetoed.iter().enumerate().skip(1) {

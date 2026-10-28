@@ -4,7 +4,6 @@ import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 
 export interface VaultInfo {
   path: string;
-  configPath: string;
   databasePath: string;
   vaultId: string;
   displayName: string;
@@ -134,14 +133,13 @@ function readNonNegativeInteger(value: unknown): number | null {
 function parseVaultInfo(value: unknown): VaultInfo {
   if (!isRecord(value)) throw new Error("vault info response is not an object");
   const path = readString(value.path);
-  const configPath = readString(value.configPath);
   const databasePath = readString(value.databasePath);
   const vaultId = readString(value.vaultId);
   const displayName = readString(value.displayName);
-  if (!path || !configPath || !databasePath || !vaultId || !displayName) {
+  if (!path || !databasePath || !vaultId || !displayName) {
     throw new Error("vault info response is incomplete");
   }
-  return { path, configPath, databasePath, vaultId, displayName };
+  return { path, databasePath, vaultId, displayName };
 }
 
 function parseVaultDefaultLocation(value: unknown): VaultDefaultLocation {

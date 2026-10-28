@@ -17,6 +17,10 @@ import type {
   RemoveProviderResult,
 } from "$lib/chat/contracts";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
+
+/** Portable preference branch holding the Chat behavior, which another window or device may change. */
+const CHAT_BEHAVIOR_CONFIG_KEY = "chat.behavior";
 
 const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
@@ -38,7 +42,14 @@ export class ChatConfigurationController {
   private providerDiscoveryPromise: Promise<ChatSettingsRead> | null = null;
   private workingFolderRefreshPromise: Promise<void> | null = null;
 
-  constructor(private readonly options: ChatConfigurationControllerOptions) {}
+  constructor(private readonly options: ChatConfigurationControllerOptions) {
+    onConfigChangedElsewhere((keys) => {
+      if (this.settings === null || !configKeyChanged(keys, CHAT_BEHAVIOR_CONFIG_KEY)) return;
+      void this.refreshSettings().catch((error: unknown) => {
+        console.error("Chat settings refresh after a behavior change failed", error);
+      });
+    });
+  }
 
   reset(): void {
     this.generation += 1;

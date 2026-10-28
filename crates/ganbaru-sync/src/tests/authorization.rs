@@ -46,6 +46,15 @@ async fn tag(replica: &mut Replica, id: &str) {
     replica.seal().await.unwrap();
 }
 
+/// The revision that removed `device_id` on `replica`, `None` for a device it does not know.
+async fn removed_revision(replica: &mut Replica, device_id: &str) -> Option<Option<i64>> {
+    sqlx::query_scalar("SELECT removed_revision FROM sync_devices WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_optional(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
 pub(super) async fn view(replica: &mut Replica) -> AuthorizationView {
     replica
         .engine
@@ -663,6 +672,79 @@ fn an_anchors_two_handovers_from_one_head_freeze_it_until_an_admin_forces_a_hand
         );
         hub.pull(&mut third).await;
         assert_eq!(view(&mut hub).await, recovered);
+    });
+}
+
+#[test]
+fn a_removal_of_the_anchor_that_one_of_its_two_targets_sealed_survives_the_freeze() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 45).await;
+        for index in [20, 21, 22] {
+            hub.sequence(admin_entry(index)).await.unwrap().unwrap();
+        }
+        tag(&mut hub, "tag-before").await;
+        let mut first = Replica::new(20, 45).await;
+        let mut second = Replica::new(21, 45).await;
+        let mut third = Replica::new(22, 45).await;
+        for replica in [&mut first, &mut second, &mut third] {
+            replica.pull(&mut hub).await;
+        }
+        let (_, point, _) = head(&mut hub).await;
+        let anchor = anchor_admin(&person());
+
+        // Both targets act under the handovers the anchor key signed to each: the first
+        // removes the old anchor, the second enrolls a device.
+        let to_first = first.handover_proposal(&anchor).await;
+        first.seal_handover(&to_first, None).await.unwrap().unwrap();
+        let to_second = second.handover_proposal(&anchor).await;
+        second
+            .seal_handover(&to_second, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let removal = proposal(
+            first.ctx.space,
+            &device_admin(20),
+            first.now_ms,
+            remove_entry(ANCHOR_DEVICE_ID),
+        );
+        first.sequence_signed(&removal).await.unwrap().unwrap();
+        let enroll = proposal(
+            second.ctx.space,
+            &device_admin(21),
+            second.now_ms,
+            enroll_entry(&person(), 23, DeviceRole::Member),
+        );
+        second.sequence_signed(&enroll).await.unwrap().unwrap();
+        // The old anchor keeps writing past the cutoff the removal sealed.
+        tag(&mut hub, "tag-after").await;
+
+        for from in [&mut hub, &mut first, &mut second] {
+            third.pull(from).await;
+        }
+        let frozen = view(&mut third).await;
+        assert_eq!((frozen.revision, frozen.frozen_at), (point, Some(point)));
+        assert_eq!(frozen.anchor_device_id, "", "the removal vacates the slot");
+        assert!(matches!(
+            removed_revision(&mut third, ANCHOR_DEVICE_ID).await,
+            Some(Some(_))
+        ));
+        assert_eq!(removed_revision(&mut third, &device_id(23)).await, None);
+        assert_eq!(tags(&mut third).await, vec!["tag-before".to_owned()]);
+
+        // An admin's forced handover at the point still recovers the space.
+        let forced = third.handover_proposal(&device_admin(22)).await;
+        third.seal_handover(&forced, None).await.unwrap().unwrap();
+        let recovered = view(&mut third).await;
+        assert_eq!(
+            (recovered.anchor_device_id.as_str(), recovered.frozen_at),
+            (device_id(22).as_str(), None)
+        );
+        assert!(matches!(
+            removed_revision(&mut third, ANCHOR_DEVICE_ID).await,
+            Some(Some(_))
+        ));
+        assert_eq!(tags(&mut third).await, vec!["tag-before".to_owned()]);
     });
 }
 

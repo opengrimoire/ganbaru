@@ -663,9 +663,11 @@ fn an_anchors_equivocation_without_a_lone_active_target_freezes_its_point() {
                     enroll_entry(&person(), 6, DeviceRole::Member),
                 );
             }
-            // Neither handover opens an epoch, and the old anchor holds the point frozen.
+            // Neither handover opens an epoch, and the point stays frozen. The old anchor stays
+            // named there unless the removal its target sealed survives and vacates the slot.
             let frozen = log.assert_selected(&next);
-            assert_eq!(frozen.anchor, ANCHOR_DEVICE_ID);
+            let anchor = if active { "" } else { ANCHOR_DEVICE_ID };
+            assert_eq!(frozen.anchor, anchor);
             assert_eq!(frozen.frozen_at, Some(next.revision));
             // An admin's forced handover at the point recovers the space.
             let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
@@ -703,4 +705,133 @@ fn an_anchors_self_handovers_from_above_its_handover_point_lose_to_it() {
     let removal = log.append(&taken, &anchor, remove(&device_id(SECOND)));
     log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
     log.assert_selects(&removal);
+}
+
+/// The anchor's equivocation at `next`: its planned handover to [`SECOND`] and a better ranked
+/// one to [`FIRST`]. With `active` each target seals an entry under its handover: [`SECOND`]
+/// the removal of the old anchor in [`handed`], and [`FIRST`] the enrollment of device 6.
+fn equivocation(fresh: bool, active: bool) -> Handed {
+    let mut handed = handed(fresh, active);
+    let other = better_ranked_handover(&mut handed.log, &handed.next, &handed.planned);
+    if active {
+        handed.log.append(
+            &other,
+            &device_admin(FIRST),
+            enroll_entry(&person(), 6, DeviceRole::Member),
+        );
+    }
+    handed
+}
+
+#[test]
+fn a_target_the_anchor_enrolls_off_its_handover_point_carries_no_authority() {
+    for fresh in [false, true] {
+        for active in [true, false] {
+            let Handed {
+                mut log,
+                next,
+                reached,
+                ..
+            } = handed(fresh, active);
+            let anchor = anchor_admin(&person());
+            let minted = log.append(&next, &anchor, admin_entry(5));
+            let taken = log.handover(&minted, &anchor, &device_id(5));
+            log.append(&taken, &device_admin(5), remove(&device_id(SECOND)));
+            log.assert_selects(&reached);
+            let selected = log.assert_selected(&reached);
+            assert!(!selected.devices.contains_key(&device_id(5)));
+            let removed = active.then_some(reached.revision);
+            assert_eq!(selected.devices[ANCHOR_DEVICE_ID], removed);
+        }
+    }
+}
+
+#[test]
+fn a_device_the_anchor_promotes_off_its_handover_point_carries_no_authority() {
+    for fresh in [false, true] {
+        for active in [true, false] {
+            let Handed {
+                mut log,
+                next,
+                reached,
+                ..
+            } = handed(fresh, active);
+            let anchor = anchor_admin(&person());
+            let promoted = log.append(
+                &next,
+                &anchor,
+                Entry::SetRole(SetRole::Device {
+                    device_id: device_id(MEMBER),
+                    role: DeviceRole::Admin(device_admin(MEMBER).public_key()),
+                }),
+            );
+            let taken = log.handover(&promoted, &anchor, &device_id(MEMBER));
+            log.append(&taken, &device_admin(MEMBER), remove(&device_id(SECOND)));
+            log.assert_selects(&reached);
+        }
+    }
+}
+
+#[test]
+fn an_anchors_self_handover_from_an_earlier_point_does_not_move_its_freeze() {
+    for fresh in [false, true] {
+        for active in [false, true] {
+            let Handed {
+                mut log,
+                base,
+                next,
+                ..
+            } = equivocation(fresh, active);
+            let anchor = anchor_admin(&person());
+            let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 3);
+            log.append(&taken, &anchor, remove(&device_id(SECOND)));
+            let frozen = log.assert_selected(&next);
+            assert_eq!(frozen.frozen_at, Some(next.revision));
+        }
+    }
+}
+
+#[test]
+fn an_admins_forced_recovery_sticks_after_the_anchor_tries_to_walk_its_freeze_back() {
+    for fresh in [false, true] {
+        for active in [false, true] {
+            let Handed {
+                mut log,
+                base,
+                next,
+                reached,
+                ..
+            } = equivocation(fresh, active);
+            let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
+            let anchor = anchor_admin(&person());
+            let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 4);
+            log.append(&taken, &anchor, remove(&device_id(SECOND)));
+            log.assert_selects(&forced);
+            let selected = log.assert_selected(&forced);
+            let removed = active.then_some(reached.revision);
+            assert_eq!(selected.devices[ANCHOR_DEVICE_ID], removed);
+            assert!(!selected.devices.contains_key(&device_id(6)));
+        }
+    }
+}
+
+#[test]
+fn a_removal_of_the_old_anchor_survives_its_freeze_and_vacates_the_slot() {
+    for fresh in [false, true] {
+        let Handed {
+            log, next, reached, ..
+        } = equivocation(fresh, true);
+        let frozen = log.assert_selected(&next);
+        assert_eq!(frozen.frozen_at, Some(next.revision));
+        assert_eq!(frozen.anchor, "");
+        assert_eq!(
+            frozen.devices[ANCHOR_DEVICE_ID],
+            Some(reached.revision),
+            "the removal the target sealed narrows the frozen point"
+        );
+        assert!(
+            !frozen.devices.contains_key(&device_id(6)),
+            "the enrollment the other target sealed does not widen it"
+        );
+    }
 }

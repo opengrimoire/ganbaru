@@ -17,7 +17,7 @@
 //! message revision within an operation.
 
 use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::manifest::vault::chat::{
@@ -615,8 +615,8 @@ fn validate_reference(group: GroupId, fields: &[Field]) -> Result<(), AdapterErr
     }
 }
 
-/// A channel reference range: every bound null for an empty range, or a lower point whose item
-/// may be `''`, a high point, and a revision cutoff.
+/// A channel reference range: every bound null for an empty range, or well-formed order keys with
+/// a lower point whose item may be `''` at or before a high point, and a revision cutoff.
 fn validate_channel_target(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (
@@ -641,7 +641,17 @@ fn validate_channel_target(group: GroupId, fields: &[Field]) -> Result<(), Adapt
             }
             bounded(lower_key, 1, MAX_ORDER_KEY_BYTES, "chat channel range key")?;
             bounded(lower_item, 0, MAX_ID_CHARS, "chat channel range item")?;
-            bounded(high_key, 1, MAX_ORDER_KEY_BYTES, "chat channel range key")
+            bounded(high_key, 1, MAX_ORDER_KEY_BYTES, "chat channel range key")?;
+            let lower = (text(lower_key)?, text(lower_item)?);
+            let high = (text(high_key)?, text(high_item)?);
+            for key in [lower.0, high.0] {
+                OrderKey::parse(key).map_err(|_| AdapterError("chat channel range key"))?;
+            }
+            if lower <= high {
+                Ok(())
+            } else {
+                Err(AdapterError("chat channel reference range order"))
+            }
         }
         _ => Err(AdapterError("chat channel reference target value")),
     }
@@ -1398,5 +1408,49 @@ mod tests {
         assert!(details("", "").is_err());
         assert!(details(&"n".repeat(MAX_CHANNEL_NAME_CHARS + 1), "").is_err());
         assert!(details("general", &"t".repeat(MAX_CHANNEL_TOPIC_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn chat_channel_reference_ranges_need_ordered_well_formed_keys() {
+        let adapter = ChatAdapter;
+        let range = |lower: (&str, &str), high: (&str, &str)| {
+            adapter.validate(
+                CHANNEL_TARGETS_TABLE,
+                timeline_group::CREATED,
+                &value(vec![
+                    t("reference-1"),
+                    t("channel-1"),
+                    t("channel-2"),
+                    t(lower.0),
+                    t(lower.1),
+                    t(high.0),
+                    t(high.1),
+                    t("revision-1"),
+                ]),
+            )
+        };
+        assert!(range(("a0", ""), ("a0", "item-1")).is_ok());
+        assert!(range(("a0", "item-1"), ("a0", "item-1")).is_ok());
+        assert!(range(("a0", "item-1"), ("a1", "")).is_ok());
+        assert!(range(("a1", ""), ("a0", "item-1")).is_err());
+        assert!(range(("a0", "item-2"), ("a0", "item-1")).is_err());
+        assert!(range(("!", ""), ("a0", "item-1")).is_err());
+        assert!(range(("a0", ""), ("a", "item-1")).is_err());
+
+        let empty = adapter.validate(
+            CHANNEL_TARGETS_TABLE,
+            timeline_group::CREATED,
+            &value(vec![
+                t("reference-1"),
+                t("channel-1"),
+                t("channel-2"),
+                Field::Null,
+                Field::Null,
+                Field::Null,
+                Field::Null,
+                Field::Null,
+            ]),
+        );
+        assert!(empty.is_ok());
     }
 }

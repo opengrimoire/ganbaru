@@ -71,7 +71,7 @@ Table rows support sub-items within one source. Parents must be active rows in t
 
 Supported types are title, rich text, text, number, select, multi-select, status, date, checkbox, URL, email, phone, files, people, place, created and edited metadata, unique ID, relation, rollup, formula, and button. The title cannot be hidden, deleted, or converted. Select-like properties own stable option identities, labels, colors, and status groups. System metadata, computed values, and local people edits are read-only.
 
-Between linked devices, each property, option, and cell value merges on its own: edits to different properties or cells, and options added to one property on two devices, all survive. Two devices that give properties the same name keep both, the later one by id shown as `Name (id)` until renamed. A cell written on one device while another changes the property's type keeps its written value; until it is edited, the cell shows a mismatch (empty in filters, sorts, and reminders), and the next edit stores the current type.
+Between linked devices, each property, option, and cell value merges on its own: edits to different properties or cells, and options added to one property on two devices, all survive. Two devices that give properties the same name keep both, the later one by id shown as `Name (id)` until renamed. A cell written on one device while another changes the property's type keeps its written value; until it is edited, the cell shows a mismatch (empty in filters, sorts, and reminders) with Convert, which converts the value to the current type or its empty value when it cannot be represented, and Discard, which clears it; the next edit also stores the current type.
 
 ## Layouts
 

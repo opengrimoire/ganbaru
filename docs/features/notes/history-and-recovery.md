@@ -1,6 +1,6 @@
 # Notes history and recovery
 
-Status: implemented. Sync-aware restoration is planned.
+Status: implemented.
 
 Notes provides page-local history, project-wide versions, reusable page templates, Archive, Trash, and safety versions. These surfaces recover canonical data without turning history snapshots into a second live graph.
 
@@ -40,7 +40,7 @@ Pages and blocks created after the selected version move to Trash. If a historic
 
 Historical pending notifications do not become newly deliverable.
 
-**Planned for device synchronization:** restoration must create a safety version and new operations against the current replica, including text and structural changes. It cannot rewind causal history or peer acknowledgements. Tombstones and incompatible concurrent changes remain recoverable, and compaction must retain state required by enrolled offline devices. The current comment and suggestion operation log does not provide that general replication boundary. See [Synchronization](../../data/sync.md).
+Between linked devices, history stays on each device. When history is enabled, each sync apply records a snapshot of the pages another device changed, and a restore writes ordinary edits against the current page, which replicate like any other edit; it never rewinds what other devices hold. Notes changes that a deletion on another device missed are offered in sync recovery for discard only. See [Device linking and synchronization](../../data/sync.md).
 
 ## Page templates
 

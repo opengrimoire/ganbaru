@@ -171,7 +171,7 @@ Whole-vault refresh, ownership transfer, and backup restore never lose operation
 
 SQLite remains the durable local store. Replicas exchange validated domain operations and immutable assets, never raw database pages, arbitrary SQL, or unclassified configuration. Foreground saves never wait for the network.
 
-Collaborative text uses Rust Yrs with a compatible Yjs editor adapter. Binary CRDT state is canonical in SQLite; rich-text payloads and plain-text columns are deterministic projections. Text document identities are independent of block placement.
+Between one person's devices, Notes text replicates per block as one value with surfaced conflicts, independent of block placement and kind. Character-level collaborative text (Rust Yrs with a compatible Yjs editor adapter, binary CRDT state canonical in SQLite and rich-text payloads as projections) is planned with multi-person sharing.
 
 Local network linking works without an account or server. An optional user-hosted Rust relay stores opaque encrypted records for cross-network and asynchronous delivery. Hocuspocus was rejected as the relay because its normal persistence stores server-side Yjs documents, which breaks the encrypted record boundary.
 
@@ -201,7 +201,8 @@ Every persisted field needs an explicit replication classification before it can
 
 | Domain | Portable data | Device-local data |
 | --- | --- | --- |
-| Notes, Projects, Calendar, Quick notes | Content, relationships, templates, archive, Trash, retained history, favorites | Recents, current selection, navigation, viewport layout |
+| Notes | Folders, pages, blocks, databases, templates, comments, suggestions, reactions, Trash, assets | Page history, editor undo, held edits, comment read and mute state, mention delivery, notification settings, block view state, search and link indexes |
+| Projects, Calendar, Quick notes | Content, relationships, templates, archive, Trash, retained history, favorites | Recents, current selection, navigation, viewport layout |
 | Preferences | Profile, themes, quick-toggle theme pair, language, time format, rhythm defaults, favorites, sidebar orders | Active theme, font family and scale, Calendar view mode, title bar, Notes notification delivery, update check time, recents, selection, and collapsed sidebar state |
 | Distraction blocker | Rule definitions, daily usage totals per device, block history | Raw usage samples, permissions, application bindings, enforcement state, the native host spool |
 | Music | Library items and metadata, roots, locations, source collections, playlists and memberships, snoozes, soundscapes and presets, assignments, artwork, and listening statistics per device | Root bindings, availability and file observations, media bytes, sessions and checkpoints, refresh jobs, current playback, volume, routing |
@@ -234,7 +235,7 @@ Valid concurrent operations converge regardless of delivery order; rejecting whi
 
 ### Notes editing
 
-Whole-block replacement is not a collaborative text protocol, and current Notes writes still replace complete block payloads. The editor must submit incremental operations, preserve relative selections and comment anchors, and keep local undo separate from remote changes. TypeScript and Rust share UTF-16 positions. Incoming changes are prepared in isolated working state and committed atomically with their SQL projections before reaching the active cache. Writer IDs must be unique across installations, restored copies, and windows. See [Yrs](https://docs.rs/yrs/latest/yrs/).
+Notes writes replace complete block payloads, and a block's text replicates as one surfaced value, so concurrent edits to the same block's text are a conflict rather than a character merge. Received changes commit with their SQL projections in the apply transaction; an open page then reloads around held local edits, rebasing an edit when at most one side changed the block's text and otherwise offering the choices described in [Editor](../features/notes/editor.md#persistence). Local undo never replays remote changes. Writer IDs are unique across installations, restored copies, and windows. Character-level merging with [Yrs](https://docs.rs/yrs/latest/yrs/), with relative selections, comment anchors, and shared UTF-16 positions, is planned with multi-person sharing.
 
 ### Keys and enrollment
 
@@ -288,7 +289,7 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of distraction rules, usage totals, and block history | Implemented | Physical multi-device acceptance, including the first Android build of the Guardian export |
 | Connectivity: address refresh, DNS-SD discovery, overlay networks, firewall scopes, and Android background sync | Implemented | Physical multi-device acceptance, including the first Android build of the background sync module |
 | Concurrent replication of the Notes structure, databases, comments, suggestions, and assets | Partial | Notes writes on replicas, and physical multi-device acceptance |
-| Concurrent replication of other domains | Planned | Chat organizational content, Notes text merging, managed assets, and retiring whole-vault handoff |
+| Concurrent replication of other domains | Planned | Chat organizational content and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, and typed bootstrap |
 | Delivery beyond the LAN | Planned | Encrypted relay or always-on anchor, encrypted backup, measurements, and physical acceptance |
 

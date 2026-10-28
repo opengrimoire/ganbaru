@@ -643,6 +643,12 @@ fn notes_files_at_the_class_bound_stream_into_place_and_larger_ones_are_refused(
 
 /// SQL adding a page with one file block naming the Notes file `contents` as a PDF.
 fn notes_file_block_sql(contents: &[u8]) -> String {
+    notes_file_block_named_sql(contents, "pdf")
+}
+
+/// SQL adding a page with one file block naming the Notes file `contents` as a PDF stored
+/// under the extension `extension`.
+fn notes_file_block_named_sql(contents: &[u8], extension: &str) -> String {
     let sha = digest(contents);
     let size = contents.len();
     format!(
@@ -655,7 +661,7 @@ fn notes_file_block_sql(contents: &[u8]) -> String {
          VALUES ('block', 'page', 'page_id', 'page', 'file',
                  '{{\"type\":\"file\",\"file\":{{\"content_type\":\"application/pdf\",
                    \"byte_size\":{size},\"sha256\":\"{sha}\",
-                   \"ganbaru_asset_path\":\"notes/files/{sha}.pdf\"}}}}',
+                   \"ganbaru_asset_path\":\"notes/files/{sha}.{extension}\"}}}}',
                  'a0', '2027-01-01T00:00:00.000Z', '2027-01-01T00:00:00.000Z');"
     )
 }
@@ -694,6 +700,80 @@ fn assets_sweep_keeps_notes_files_a_block_or_a_history_pin_names() {
             "only the file nothing names goes"
         );
         let mut kept = vec![name(&referenced), name(&pinned)];
+        kept.sort();
+        assert_eq!(entries(vault.root(), &FILES_CLASS), kept);
+    });
+}
+
+#[test]
+fn assets_sweep_keeps_a_notes_file_a_block_names_under_an_older_extension() {
+    block_on(async {
+        let vault = SweepVault::new("assets-collect-notes-old-name").await;
+        let contents = bytes(64, 63);
+        let old_name = format!("{}.docx", digest(&contents));
+        vault.aged_entry(&FILES_CLASS, &old_name, &contents);
+        let mut conn = acquire(&vault.pool).await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(notes_file_block_named_sql(
+            &contents, "docx",
+        )))
+        .execute(&mut *conn)
+        .await
+        .expect("insert file block");
+        drop(conn);
+
+        let in_flight = Arc::new(InFlightAssets::default());
+        assert_eq!(
+            vault
+                .sweep(&in_flight, SystemTime::now() + SWEEP_GRACE * 2, admit_all)
+                .await,
+            Ok(0),
+            "a file whose stem is a referenced digest stays whatever its extension"
+        );
+        assert_eq!(entries(vault.root(), &FILES_CLASS), vec![old_name]);
+    });
+}
+
+#[test]
+fn assets_sweep_keeps_notes_files_only_page_history_or_undo_state_names() {
+    block_on(async {
+        let vault = SweepVault::new("assets-collect-notes-history").await;
+        let [snapshot, undo, orphan] = [64, 65, 66].map(|seed| bytes(64, seed));
+        let name = |contents: &[u8]| format!("{}.pdf", digest(contents));
+        for contents in [&snapshot, &undo, &orphan] {
+            vault.aged_entry(&FILES_CLASS, &name(contents), contents);
+        }
+        let mut conn = acquire(&vault.pool).await;
+        // The page and author are not under test, so foreign keys are off while both rows are
+        // written.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO notes_page_history_snapshots (
+                 id, page_id, parent_type, properties, blocks, reason, created_by,
+                 page_created_time, page_last_edited_time, asset_ids
+             ) VALUES ('snapshot', 'page', 'workspace', '{{}}', '[]', 'edit', 'user', 't', 't',
+                       '[\"notes/files:{}\"]');
+             INSERT INTO notes_undo_state (page_id, state_payload)
+             VALUES ('page', '{{\"undo\":[{{\"blocks\":[{{\"payload\":{{\"file\":{{
+                 \"sha256\":\"{}\",\"ganbaru_asset_path\":\"notes/files/{}.pdf\"}}}}}}]}}]}}');
+             PRAGMA foreign_keys = ON;",
+            digest(&snapshot),
+            digest(&undo),
+            digest(&undo)
+        )))
+        .execute(&mut *conn)
+        .await
+        .expect("insert snapshot and undo state");
+        drop(conn);
+
+        let in_flight = Arc::new(InFlightAssets::default());
+        assert_eq!(
+            vault
+                .sweep(&in_flight, SystemTime::now() + SWEEP_GRACE * 2, admit_all)
+                .await,
+            Ok(1),
+            "only the file nothing names goes"
+        );
+        let mut kept = vec![name(&snapshot), name(&undo)];
         kept.sort();
         assert_eq!(entries(vault.root(), &FILES_CLASS), kept);
     });

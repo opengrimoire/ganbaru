@@ -870,24 +870,26 @@ pub async fn file_asset_data_url(
     vault_root: &Path,
     relative_path: String,
 ) -> Result<String, String> {
-    let path = asset_path_for_relative(vault_root, &relative_path)?;
-    let asset: Option<(String, i64)> = sqlx::query_as(
-        "SELECT content_type, byte_size
-         FROM notes_assets
-         WHERE asset_path = ? AND asset_path GLOB 'notes/files/*'",
-    )
-    .bind(relative_path.trim())
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("load notes file asset metadata: {e}"))?;
-    let Some((content_type, byte_size)) = asset else {
-        return Err("notes file asset not found".to_string());
-    };
+    let referenced = asset_path_for_relative(vault_root, &relative_path)?;
+    let asset = assets::resolve_asset_row(pool, &relative_path)
+        .await?
+        .filter(|asset| asset.asset_path.starts_with(&format!("{NOTES_FILE_DIR}/")))
+        .ok_or_else(|| "notes file asset not found".to_string())?;
+    let stored = asset_path_for_relative(vault_root, &asset.asset_path)?;
+    let byte_size = asset.byte_size;
     let encoded = run_blocking(move || {
+        // A reference may name its bytes under another content type's extension than the row
+        // that holds them, and only the row's path is guaranteed to arrive from a peer.
+        let path = if ganbaru_atomic_files::is_regular_file(&referenced) {
+            referenced
+        } else {
+            stored
+        };
         read_preview_file_capped(&path, byte_size)
             .map(|bytes| general_purpose::STANDARD.encode(bytes))
     })
     .await;
+    let content_type = asset.content_type;
     let encoded = match encoded {
         Ok(encoded) => encoded,
         Err(error) => {

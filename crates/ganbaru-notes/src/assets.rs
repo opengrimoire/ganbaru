@@ -77,6 +77,45 @@ pub fn managed_asset_id(relative_path: &str, sha256: &str) -> Result<String, Str
     Ok(format!("{class}:{}", sha256.trim()))
 }
 
+/// The sorted, distinct asset ids of the managed files the JSON documents `documents` name,
+/// as a JSON array. A managed file is any object with a `ganbaru_asset_path` under a Notes
+/// asset directory and a `sha256`, whatever else it holds, so the list errs toward naming more.
+/// Documents that are not JSON name nothing.
+pub(crate) fn json_documents_asset_ids<'a>(
+    documents: impl IntoIterator<Item = &'a str>,
+) -> Result<String, String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for document in documents {
+        if let Ok(json) = serde_json::from_str::<Value>(document) {
+            collect_json_asset_ids(&json, &mut ids);
+        }
+    }
+    serde_json::to_string(&ids).map_err(|e| format!("serialize notes asset ids: {e}"))
+}
+
+fn collect_json_asset_ids(json: &Value, ids: &mut std::collections::BTreeSet<String>) {
+    match json {
+        Value::Object(object) => {
+            let path = object.get("ganbaru_asset_path").and_then(Value::as_str);
+            let sha256 = object.get("sha256").and_then(Value::as_str);
+            if let (Some(path), Some(sha256)) = (path, sha256)
+                && let Ok(id) = managed_asset_id(path, sha256)
+            {
+                ids.insert(id);
+            }
+            for nested in object.values() {
+                collect_json_asset_ids(nested, ids);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_json_asset_ids(item, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// How a reference refresh treats the asset rows its references name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetRecording {
@@ -99,7 +138,9 @@ impl AssetRecording {
 }
 
 /// The asset row `asset` names, recorded first on a local write. A sync apply resolves only a
-/// row that exists, by the id its reference derives.
+/// row that exists, by the id its reference derives, and only when that row's own path and
+/// digest derive the same id, so a replicated row whose id disagrees with its content is never
+/// referenced.
 async fn record_asset_tx(
     tx: &mut Transaction<'_, Sqlite>,
     asset: ManagedAssetWrite<'_>,
@@ -111,13 +152,82 @@ async fn record_asset_tx(
     let Ok(id) = managed_asset_id(asset.relative_path, asset.sha256) else {
         return Ok(None);
     };
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT id, asset_path FROM notes_assets WHERE id = ?")
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT id, asset_path, sha256 FROM notes_assets WHERE id = ?")
             .bind(&id)
             .fetch_optional(&mut **tx)
             .await
             .map_err(|e| format!("load notes asset: {e}"))?;
-    Ok(row.map(|(id, asset_path)| ManagedAssetRecord { id, asset_path }))
+    Ok(row.and_then(|(id, asset_path, sha256)| {
+        managed_asset_id(&asset_path, &sha256)
+            .is_ok_and(|derived| derived == id)
+            .then_some(ManagedAssetRecord { id, asset_path })
+    }))
+}
+
+/// The row id and digest a reference to `relative_path` resolves by: a managed file is named
+/// by its digest whatever its extension, so two paths of the same bytes in one class name one
+/// row. A path whose stem is not a digest resolves by path alone and yields `None`.
+fn asset_lookup_keys(relative_path: &str) -> Option<(String, String)> {
+    let relative_path = relative_path.trim();
+    let file_name = relative_path.rsplit('/').next()?;
+    let stem = file_name
+        .split_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+    if stem.len() != 64
+        || !stem
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    let id = managed_asset_id(relative_path, stem).ok()?;
+    Some((id, stem.to_string()))
+}
+
+/// The asset row a reference names.
+pub(crate) struct ResolvedAsset {
+    pub(crate) id: String,
+    pub(crate) asset_path: String,
+    pub(crate) content_type: String,
+    pub(crate) byte_size: i64,
+}
+
+/// The asset row a reference to `relative_path` names: the row stored under that path, or else
+/// the row of the same class and digest whose id is the class and digest of its own path and
+/// content. The same bytes recorded or replicated under two content types share one row and
+/// one path, so a reference may name a path no row holds.
+pub(crate) async fn resolve_asset_row(
+    pool: &SqlitePool,
+    relative_path: &str,
+) -> Result<Option<ResolvedAsset>, String> {
+    let relative_path = relative_path.trim();
+    let (id, sha256) = asset_lookup_keys(relative_path).unwrap_or_default();
+    let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, asset_path, sha256, content_type, byte_size FROM notes_assets
+         WHERE asset_path = ?1 OR (id = ?2 AND sha256 = ?3)
+         ORDER BY asset_path = ?1 DESC",
+    )
+    .bind(relative_path)
+    .bind(&id)
+    .bind(&sha256)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load notes asset: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .find(|(id, asset_path, sha256, _, _)| {
+            asset_path == relative_path
+                || managed_asset_id(asset_path, sha256).is_ok_and(|derived| derived == *id)
+        })
+        .map(
+            |(id, asset_path, _, content_type, byte_size)| ResolvedAsset {
+                id,
+                asset_path,
+                content_type,
+                byte_size,
+            },
+        ))
 }
 
 /// Records a managed asset and returns the row it resolves to.
@@ -200,6 +310,8 @@ pub async fn upsert_managed_asset_tx(
     })
 }
 
+/// Records whether the file of the asset row a reference to `relative_path` names is present.
+/// A path no row resolves to changes nothing.
 pub async fn mark_managed_asset_storage_state(
     pool: &SqlitePool,
     relative_path: &str,
@@ -211,6 +323,9 @@ pub async fn mark_managed_asset_storage_state(
     } else {
         ASSET_STATE_AVAILABLE
     };
+    let Some(asset) = resolve_asset_row(pool, relative_path).await? else {
+        return Ok(());
+    };
     sqlx::query(
         "UPDATE notes_assets
          SET storage_state = ?,
@@ -219,11 +334,11 @@ pub async fn mark_managed_asset_storage_state(
                 ELSE NULL
              END,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE asset_path = ?",
+         WHERE id = ?",
     )
     .bind(storage_state)
     .bind(if missing { 1_i64 } else { 0_i64 })
-    .bind(relative_path.trim())
+    .bind(&asset.id)
     .execute(pool)
     .await
     .map_err(|e| format!("update {context} asset storage state: {e}"))?;
@@ -1016,6 +1131,28 @@ mod tests {
             storage_state: ASSET_STATE_AVAILABLE,
             missing_at: None,
         }
+    }
+
+    #[test]
+    fn json_documents_name_the_managed_files_nested_anywhere_in_them() {
+        let sha = "c".repeat(64);
+        let blocks = format!(
+            r#"[{{"payload":{{"file":{{"sha256":"{sha}",
+                "ganbaru_asset_path":"notes/files/{sha}.docx"}}}}}},
+               {{"payload":{{"file":{{"sha256":"{sha}",
+                "ganbaru_asset_path":"notes/files/{sha}.pdf"}}}}}},
+               {{"payload":{{"file":{{"sha256":"{sha}",
+                "ganbaru_asset_path":"elsewhere/{sha}.pdf"}}}}}}]"#
+        );
+        let icon = format!(
+            r#"{{"file":{{"sha256":"{sha}","ganbaru_asset_path":"notes/page-icons/{sha}.png"}}}}"#
+        );
+        assert_eq!(
+            json_documents_asset_ids([blocks.as_str(), icon.as_str(), "not json"]).unwrap(),
+            format!(r#"["notes/files:{sha}","notes/page-icons:{sha}"]"#),
+            "an old extension names the same file, and a path outside Notes names none"
+        );
+        assert_eq!(json_documents_asset_ids(["{}"]).unwrap(), "[]");
     }
 
     #[test]

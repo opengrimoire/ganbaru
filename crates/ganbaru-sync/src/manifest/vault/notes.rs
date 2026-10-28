@@ -1576,9 +1576,10 @@ pub const SUGGESTIONS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `notes_assets`, keyed by its asset id `{class}:{sha256}`. The content group holds only
-/// values computed from the bytes, so two devices that add the same bytes write equal values;
-/// the source type, original name, and creation time are a register. A row is never deleted.
+/// `notes_assets`, keyed by its asset id `{class}:{sha256}`. The content group is immutable:
+/// when two devices add the same bytes under different content types, one write wins
+/// everywhere and references under the other path still resolve the row by digest; the source
+/// type, original name, and creation time are a register. A row is never deleted.
 /// Whether this device holds the bytes (`storage_state` and `missing_at`) and when this device
 /// last changed the row (`updated_at`, which the Notes hook stamps on arrival) stay local.
 pub const ASSETS: TableSpec = TableSpec {
@@ -1630,6 +1631,23 @@ pub const ASSETS: TableSpec = TableSpec {
     resolutions: &[within(&["kind", "content_type"], asset_group::CONTENT)],
     ..BASE
 };
+
+/// The managed files a page's undo and redo entries name: the block snapshots they hold carry
+/// each file's bare digest, which keeps a file of that digest in every Notes class.
+const UNDO_STATE_ASSETS: [LocalAssetColumn; 3] = [
+    undo_state_asset(PAGE_ICONS_CLASS.name),
+    undo_state_asset(PAGE_COVERS_CLASS.name),
+    undo_state_asset(FILES_CLASS.name),
+];
+
+/// A digest anywhere in the undo state payload naming a file of `class`.
+const fn undo_state_asset(class: &'static str) -> LocalAssetColumn {
+    LocalAssetColumn {
+        column: "state_payload",
+        json_path: Some("$"),
+        digest: LocalDigest::Sha256 { class },
+    }
+}
 
 /// A device table without domain triggers or assets.
 const fn device(name: &'static str) -> DeviceTable {
@@ -1694,7 +1712,17 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_mention_notifications"),
         device("notes_page_history_pending"),
         device("notes_page_history_settings"),
-        device("notes_page_history_snapshots"),
+        DeviceTable {
+            name: "notes_page_history_snapshots",
+            triggers: &[],
+            assets: &[LocalAssetColumn {
+                column: "asset_ids",
+                json_path: Some("$"),
+                digest: LocalDigest::AssetId {
+                    classes: ASSET_CLASS_NAMES,
+                },
+            }],
+        },
         device("notes_page_notification_settings"),
         DeviceTable {
             name: "notes_project_history_asset_pins",
@@ -1711,7 +1739,11 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_project_history_dirty"),
         device("notes_project_history_versions"),
         device("notes_sync_repair_pending"),
-        device("notes_undo_state"),
+        DeviceTable {
+            name: "notes_undo_state",
+            triggers: &[],
+            assets: &UNDO_STATE_ASSETS,
+        },
     ],
     engine: &[],
     replica_writable: false,

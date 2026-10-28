@@ -2,12 +2,12 @@
 //! the reference and report the file for transfer, an asset row that arrives after the block
 //! naming it refreshes that block, a remote block edit moves the reference, a remote template
 //! edit changes the referenced files, a history pin keeps a file after its last block reference
-//! is removed remotely, two replicas adding the same bytes agree on one row, and a crash while
-//! sealing or applying asset rows leaves nothing partial.
+//! is removed remotely, two replicas adding the same bytes agree on one row, also under two
+//! content types, and a crash while sealing or applying asset rows leaves nothing partial.
 
 use super::block_on;
 use super::chat::after_rollback;
-use super::notes::{BLOCK_A, CREATED, EDITED, assert_converged, shared, texts};
+use super::notes::{BLOCK_A, BLOCK_B, CREATED, EDITED, assert_converged, shared, texts};
 use super::projects::{PROJECT, project_sql};
 use super::replica::{Replica, converge, quoted};
 use crate::assets::AssetRef;
@@ -287,6 +287,85 @@ fn two_replicas_adding_the_same_bytes_agree_on_one_row() {
                 )
                 .await,
                 [format!("{} {} 2048", asset_id('a'), asset_path('a'))]
+            );
+        }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+/// SQL adding the asset row of digest `character` as `content_type` under `extension`, and
+/// turning `block` into a file block naming that path.
+fn typed_file_sql(block: &str, character: char, extension: &str, content_type: &str) -> String {
+    let path = format!("{FILES}/{}.{extension}", digest(character));
+    let payload = serde_json::json!({
+        "caption": [],
+        "type": "file",
+        "file": {
+            "url": format!("ganbaru-asset:{path}"),
+            "content_type": content_type,
+            "byte_size": 64,
+            "sha256": digest(character),
+            "ganbaru_asset_path": path,
+        }
+    })
+    .to_string();
+    format!(
+        "INSERT INTO notes_assets
+             (id, asset_path, kind, source_type, content_type, byte_size, sha256, created_at,
+              updated_at)
+         VALUES ({id}, {path}, 'file', 'local_upload', {content_type}, 64, {digest}, {created},
+                 {created});
+         UPDATE notes_blocks
+         SET type = 'file', attrs = {attrs}, plain_text = {url}, last_edited_time = {edited}
+         WHERE id = {block};",
+        id = quoted(&asset_id(character)),
+        path = quoted(&path),
+        content_type = quoted(content_type),
+        digest = quoted(&digest(character)),
+        created = quoted(CREATED),
+        attrs = quoted(&payload),
+        url = quoted(&format!("ganbaru-asset:{path}")),
+        edited = quoted(EDITED),
+        block = quoted(block),
+    )
+}
+
+#[test]
+fn the_same_bytes_added_under_two_content_types_resolve_to_one_row_on_every_replica() {
+    block_on(async {
+        let mut replicas = shared(2, "").await;
+        replicas[0]
+            .exec(&typed_file_sql(BLOCK_A, 'c', "txt", "text/plain"))
+            .await;
+        replicas[1]
+            .exec(&typed_file_sql(BLOCK_B, 'c', "csv", "text/csv"))
+            .await;
+        converge(&mut replicas).await;
+        // Raw SQL records no local references, so each replica checks the block it received.
+        // The replica whose row lost the content merge also rescans its own block by digest.
+        for (replica, received) in replicas.iter_mut().zip([BLOCK_B, BLOCK_A]) {
+            assert_eq!(
+                replica.count("SELECT count(*) FROM notes_assets").await,
+                1,
+                "one id names the bytes"
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || ' ' || json_extract(attrs, '$.file.ganbaru_asset_path')
+                     FROM notes_blocks WHERE type = 'file' ORDER BY id",
+                )
+                .await,
+                [
+                    format!("{BLOCK_A} {FILES}/{}.txt", digest('c')),
+                    format!("{BLOCK_B} {FILES}/{}.csv", digest('c')),
+                ],
+                "each block keeps the path it named"
+            );
+            let references = references(replica).await;
+            assert!(
+                references.contains(&format!("{} block_file {received}", asset_id('c'))),
+                "the received block references the one row whatever its path: {references:?}"
             );
         }
         assert_converged(&mut replicas).await;

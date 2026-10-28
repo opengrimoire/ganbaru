@@ -709,21 +709,32 @@ async fn stamp_assets(conn: &mut SqliteConnection, asset_ids: &[String]) -> Resu
 
 /// Refreshes the asset references of the pages, blocks, comments, and data sources whose JSON
 /// names the content of the asset rows `asset_ids`, since an asset row may materialize after the
-/// rows that reference it. Owners are found by the asset digest in their stored JSON.
+/// rows that reference it. Owners are found by the asset digest in their stored JSON. A row
+/// whose id is not the class and digest its path and content name is ignored, since references
+/// resolve rows by that id and would never name it.
 async fn refresh_asset_owners(
     conn: &mut SqliteConnection,
     asset_ids: &[String],
 ) -> Result<(), String> {
-    let digests: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT sha256 FROM notes_assets WHERE id IN (SELECT value FROM json_each(?1))",
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT id, asset_path, sha256 FROM notes_assets
+         WHERE id IN (SELECT value FROM json_each(?1))",
     )
     .bind(keys_json(asset_ids)?)
     .fetch_all(&mut *conn)
     .await
     .map_err(|error| format!("load synced Notes asset digests: {error}"))?;
+    let digests: BTreeSet<String> = rows
+        .into_iter()
+        .filter(|(id, asset_path, sha256)| {
+            crate::assets::managed_asset_id(asset_path, sha256).is_ok_and(|derived| derived == *id)
+        })
+        .map(|(_, _, sha256)| sha256)
+        .collect();
     if digests.is_empty() {
         return Ok(());
     }
+    let digests = digests.into_iter().collect::<Vec<_>>();
     let digests = keys_json(&digests)?;
     let mut owners = AssetOwners::default();
     for (target, sql) in [

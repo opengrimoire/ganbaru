@@ -151,7 +151,7 @@ export const sync = {
     regenerateFailed: "A new recovery kit could not be made",
     useDescription: "Enter a kit code to make this computer an admin. The anchor confirms it.",
     useSubmit: "Use kit",
-    forceDescription: "The anchor is not answering. Enter a kit code to make this computer an admin and the anchor without it.",
+    forceDescription: "The anchor is not answering. Enter a kit code to make this computer an admin and the anchor without it. The old anchor is removed from the vault and must be linked again.",
     forceSubmit: "Use kit and take over the anchor",
     forceDone: "This computer is now an admin and the anchor.",
     useSent: "Sent to the anchor. This computer becomes an admin once the anchor confirms it.",

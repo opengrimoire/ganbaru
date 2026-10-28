@@ -681,6 +681,13 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
             LAPTOP_DEVICE,
             &laptop_admin.public_key()
         ));
+        // A kit forced handover also removes the lost anchor, so a stolen one cannot return.
+        assert!(
+            view.devices
+                .iter()
+                .any(|device| device.device_id == HUB_DEVICE && device.removed_revision.is_some()),
+            "the lost anchor is removed"
+        );
         assert!(
             authority::recovery_admin(&view, &RecoverySeed::from_bytes([78; 32]).kit_code())
                 .is_err()

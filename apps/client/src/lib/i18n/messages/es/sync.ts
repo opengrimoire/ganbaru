@@ -163,7 +163,7 @@ export const sync = {
     regenerateFailed: "No se pudo crear un kit de recuperación nuevo",
     useDescription: "Escribe un código de kit para hacer administradora a esta computadora. El ancla lo confirma.",
     useSubmit: "Usar kit",
-    forceDescription: "El ancla no responde. Escribe un código de kit para hacer que esta computadora sea administradora y el ancla sin ella.",
+    forceDescription: "El ancla no responde. Escribe un código de kit para hacer que esta computadora sea administradora y el ancla sin ella. El ancla anterior se quita de la bóveda y hay que vincularla de nuevo.",
     forceSubmit: "Usar el kit y tomar el ancla",
     forceDone: "Esta computadora ahora es administradora y el ancla.",
     useSent: "Se envió al ancla. Esta computadora será administradora cuando el ancla lo confirme.",

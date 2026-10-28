@@ -523,15 +523,22 @@ pub fn forget_recovery_seed(
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 
+/// The recovery admin key `kit_code` derives, whether or not any log names it. Refuses a code
+/// that does not parse. A forced handover uses it unchecked, because a stolen anchor may have
+/// replaced the recovery key on the selected chain, and the engine admits the handover only
+/// where the key is of kit lineage. Callers keep the key only as long as they sign with it.
+pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code)
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    seed.recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))
+}
+
 /// The recovery admin key `kit_code` derives. Refuses a code that does not parse or a kit
 /// whose key the selected log does not name. Callers keep the key only as long as they sign
 /// with it.
 pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminKeyPair, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
-        .map_err(|error| format!("read the recovery kit: {error}"))?;
-    let recovery = seed
-        .recovery_admin_key()
-        .map_err(|error| format!("derive the recovery admin key: {error}"))?;
+    let recovery = kit_admin(kit_code)?;
     if recovery.public_key() != view.recovery_admin_key {
         return Err("this recovery kit does not belong to the vault's current log".to_string());
     }
@@ -749,12 +756,15 @@ pub async fn seal_handover_here(
         .map_err(|error| format!("seal sync handover: {error}"))
 }
 
-/// Forces the anchor to this desktop after the anchor is lost: signs with `signer` and seals a
-/// handover without an old anchor vector, so operations only the lost anchor stored can become
-/// provisional again. When `promote` is set, which is when the recovery key signs for a desktop
-/// that is not an admin yet, the new anchor then sequences the promotion of its own device to
-/// admin with that key, signed by the same `signer`. Returns the revision of the last entry, or
-/// why the engine rejected one.
+/// Forces the anchor to this desktop after the anchor is lost or stolen: signs with `signer`
+/// and seals a handover without an old anchor vector, so operations only the lost anchor stored
+/// can become provisional again. A kit-lineage recovery key continues from the live entry of
+/// highest rank where this desktop is still live, which may lie below a stolen anchor's removal
+/// of it, and then removes the old anchor; any other signer continues from the selected head.
+/// When `promote` is set, which is when the recovery key signs for a desktop that is not an
+/// admin yet, the new anchor then sequences the promotion of its own device to admin with that
+/// key, signed by the same `signer`. Returns the revision of the last entry, or why the engine
+/// rejected one.
 pub async fn force_handover_here(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -764,27 +774,63 @@ pub async fn force_handover_here(
     writer: &mut LocalWriter<'_>,
     now_ms: u64,
 ) -> Result<Result<u64, ProposalRejection>, String> {
-    let sealed = seal_handover_here(engine, conn, ctx, signer, writer, None, now_ms).await?;
-    let (Ok(revision), Some(admin_key)) = (sealed, promote) else {
-        return Ok(sealed);
-    };
-    let view = engine
-        .authorization(conn, ctx)
+    let device_id = writer.certificate.certificate.device_id.clone();
+    let point = engine
+        .handover_point(conn, ctx, &signer.public_key(), &device_id)
         .await
         .map_err(|error| format!("read sync authorization: {error}"))?
         .ok_or_else(|| "the sync space has no charter".to_string())?;
-    let device_id = writer.certificate.certificate.device_id.clone();
-    let promotion = propose(
+    if point.revision == 0 {
+        return Err(
+            "the log holds only its charter, so no epoch can continue it; link the devices again"
+                .to_string(),
+        );
+    }
+    let charter = engine
+        .charter(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync charter: {error}"))?
+        .ok_or_else(|| "the sync space has no charter".to_string())?
+        .hash();
+    let epoch = point
+        .epoch
+        .checked_add(1)
+        .ok_or_else(|| "the sync epoch is exhausted".to_string())?;
+    let handover = propose(
         ctx.space,
-        view.charter,
+        charter,
         signer,
-        promote_entry(&device_id, admin_key),
+        Entry::Handover(Handover {
+            new_anchor_device_id: device_id.clone(),
+            epoch,
+            continues_from_revision: point.revision,
+            continues_from_hash: point.entry_hash,
+        }),
         now_ms,
     )?;
-    match sequence(engine, conn, ctx, writer, &promotion, now_ms).await? {
-        Ok(promoted) => Ok(Ok(promoted.max(revision))),
-        Err(rejection) => Ok(Err(rejection)),
+    let mut revision = match engine
+        .seal_handover(conn, ctx, &handover, None, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync handover: {error}"))?
+    {
+        Ok(revision) => revision,
+        Err(rejection) => return Ok(Err(rejection)),
+    };
+    let mut follow_up = Vec::new();
+    if point.by_kit && point.anchor_device_id != device_id {
+        follow_up.push(remove_entry(&point.anchor_device_id));
     }
+    if let Some(admin_key) = promote {
+        follow_up.push(promote_entry(&device_id, admin_key));
+    }
+    for entry in follow_up {
+        let proposal = propose(ctx.space, charter, signer, entry, now_ms)?;
+        match sequence(engine, conn, ctx, writer, &proposal, now_ms).await? {
+            Ok(sealed) => revision = revision.max(sealed),
+            Err(rejection) => return Ok(Err(rejection)),
+        }
+    }
+    Ok(Ok(revision))
 }
 
 fn millis(now_ms: u64) -> Result<i64, String> {

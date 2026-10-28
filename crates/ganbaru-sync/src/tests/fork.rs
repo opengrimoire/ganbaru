@@ -890,6 +890,60 @@ fn a_removal_beyond_the_bound_ends_the_same_whether_the_operation_applied_was_re
 }
 
 #[test]
+fn an_authorization_entry_past_the_removal_bound_is_stored_where_a_domain_operation_is_not() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 314).await;
+        let mut removed = Replica::new(1, 314).await;
+        edit(&mut removed, &note("note-early", "Early", 0)).await;
+        deliver(&mut anchor, &mut removed).await;
+        let writer = removed.writer();
+        let cutoff = anchor.stored_vector().await.get(&writer);
+        anchor.remove(&removed.device_id).await.unwrap();
+        edit(&mut removed, &note("note-bound", "Bound", 5)).await;
+        for index in 1..MAX_EXCLUDED_PER_WRITER {
+            edit(
+                &mut removed,
+                &format!("UPDATE quick_notes SET title = 'Bound {index}' WHERE id = 'note-bound'"),
+            )
+            .await;
+        }
+        let excluded = removed.own_ops().await[usize::try_from(cutoff).unwrap()..].to_vec();
+        assert_eq!(excluded.len() as u64, MAX_EXCLUDED_PER_WRITER);
+
+        // The same next sequence carries a domain operation on one copy of the device and an
+        // authorization entry on the other.
+        let mut copy = removed.clone_device().await;
+        edit(&mut removed, &note("note-late", "Late", 6)).await;
+        let domain = removed.own_ops().await.pop().unwrap();
+        let (_, entry) = forge_handover(&mut copy, 1).await;
+
+        let mut refusing = Replica::new(3, 314).await;
+        let mut keeping = Replica::new(4, 314).await;
+        for replica in [&mut refusing, &mut keeping] {
+            deliver(replica, &mut anchor).await;
+            take(replica, &excluded).await;
+        }
+        assert_eq!(take(&mut refusing, &[domain]).await, vec![REVOKED]);
+        assert!(matches!(
+            take(&mut keeping, &[entry]).await[..],
+            [StoreOutcome::Stored { .. }]
+        ));
+        assert_eq!(
+            refusing.stored_vector().await.get(&writer),
+            cutoff + MAX_EXCLUDED_PER_WRITER
+        );
+        assert_eq!(
+            keeping.stored_vector().await.get(&writer),
+            cutoff + MAX_EXCLUDED_PER_WRITER + 1
+        );
+        for replica in [&mut refusing, &mut keeping] {
+            assert_eq!(title(replica, "note-late").await, None);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
 fn a_removed_device_stores_only_a_few_writers_its_removal_does_not_name() {
     block_on(async {
         let mut anchor = Replica::anchor(0, 313).await;

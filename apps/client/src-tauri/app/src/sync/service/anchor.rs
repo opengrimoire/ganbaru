@@ -557,11 +557,12 @@ impl<H: SyncHost> Session<'_, H> {
         Ok(AuthorityAnswer::Anchored(revision))
     }
 
-    /// Forces the anchor to this linked desktop after the anchor is lost, without its stored
-    /// vector, so operations only the lost anchor stored can become provisional again. An admin
-    /// desktop signs with its admin key. Any other enrolled desktop needs `kit`: the recovery
-    /// admin key it derives signs the handover and then this desktop's promotion to admin, and
-    /// is dropped at once. The coordinator does not force the anchor: while it anchors nothing
+    /// Forces the anchor to this linked desktop after the anchor is lost or stolen, without its
+    /// stored vector, so operations only the lost anchor stored can become provisional again.
+    /// With `kit`, the recovery admin key it derives signs the handover, the removal of the old
+    /// anchor, and this desktop's promotion to admin when it is not one, and is dropped at once;
+    /// a stolen anchor that removed this desktop does not stop it. Without it, an admin desktop
+    /// signs with its admin key. The coordinator does not force the anchor: while it anchors nothing
     /// is lost, and otherwise its members reach it, so a planned handover applies.
     async fn force_anchor(
         &self,
@@ -581,20 +582,29 @@ impl<H: SyncHost> Session<'_, H> {
             .view
             .devices
             .iter()
-            .find(|device| device.device_id == admin.device_id && device.removed_revision.is_none())
+            .find(|device| device.device_id == admin.device_id)
             .ok_or_else(|| "this desktop is not enrolled in the vault's sync space".to_string())?;
         if device.kind != DeviceKind::Desktop {
             return Err("only a desktop can anchor the vault".to_string());
         }
+        // A stolen anchor may have removed this desktop from the selected chain. The kit can
+        // still continue from an entry before that removal; an admin key cannot.
+        if device.removed_revision.is_some() && kit.is_none() {
+            return Err("this desktop is not enrolled in the vault's sync space".to_string());
+        }
         let recovery;
-        let (signer, promote) = if admin.is_admin() {
-            (&admin.admin, None)
-        } else {
-            let code = kit.ok_or_else(|| {
-                "only an admin desktop or the recovery kit can take the anchor".to_string()
-            })?;
-            recovery = authority::recovery_admin(&admin.view, code)?;
-            (&recovery, Some(admin.admin.public_key()))
+        let (signer, promote) = match kit {
+            Some(code) => {
+                recovery = authority::kit_admin(code)?;
+                let promote = (!admin.is_admin()).then(|| admin.admin.public_key());
+                (&recovery, promote)
+            }
+            None if admin.is_admin() => (&admin.admin, None),
+            None => {
+                return Err(
+                    "only an admin desktop or the recovery kit can take the anchor".to_string(),
+                );
+            }
         };
         let Some(active) = writer.as_mut() else {
             return Err("the sync writer is not ready".to_string());

@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Hlc, Operation, OperationError, PayloadError, Seq, VersionVector, WriterId,
+    Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
+    VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -90,7 +91,9 @@ pub enum StoreRefusal {
     /// The writer was forked or re-sealed and the operation is above its cutoff, its device was
     /// removed and the operation is more than
     /// [`MAX_EXCLUDED_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_PER_WRITER) past the removal's
-    /// cutoff, or the genesis names a removed device that already stored
+    /// cutoff (an authorization entry, up to
+    /// [`MAX_EXCLUDED_ENTRIES_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_ENTRIES_PER_WRITER)
+    /// further, contiguous from it), or the genesis names a removed device that already stored
     /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](crate::exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
     /// writers its removal does not name.
     Revoked,
@@ -356,6 +359,20 @@ async fn store_genesis(
             authorization::removal_cutoff(conn, ctx.space, &cert.device_id, envelope.writer)
                 .await?,
         )),
+        // A chain this replica did not select may enroll the device, and its entries can be the
+        // evidence that vetoes the selected one. The writer's operations still apply only once
+        // the selected chain enrolls the device.
+        Enrollment::Absent
+            if authorization::enrolled_on_any_chain(
+                conn,
+                ctx.space,
+                &cert.device_id,
+                &cert.device_key,
+            )
+            .await? =>
+        {
+            None
+        }
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
     };
     if matches!(removal, Some((_, 0)))
@@ -471,10 +488,14 @@ async fn store_next(
         });
     }
     // A removed device's writer is revoked at its removal cutoff, but the operations past it are
-    // still stored, up to a bound, so their late changes can be derived and forwarded.
-    let beyond_removal = writer
-        .removal_cutoff
-        .is_some_and(|cutoff| envelope.seq > exclusion::excluded_limit(cutoff));
+    // still stored, up to a bound, so their late changes can be derived and forwarded. Its
+    // authorization entries have a bound of their own past that one: on a chain this replica
+    // did not select the device may be an anchor whose entries veto the selected chain.
+    let beyond_removal = writer.removal_cutoff.is_some_and(|cutoff| {
+        envelope.seq > exclusion::excluded_limit(cutoff)
+            && (envelope.kind != OperationKind::Authorization.as_u8()
+                || envelope.seq > exclusion::entry_limit(cutoff))
+    });
     let beyond_cutoff = writer.state != WriterState::Revoked
         && writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff);
     if beyond_removal || beyond_cutoff {

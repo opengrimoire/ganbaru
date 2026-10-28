@@ -45,9 +45,21 @@ pub const MAX_EXCLUDED_PER_WRITER: u64 = 1024;
 /// so a removed device that mints writers stores a bounded amount anywhere.
 pub const MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE: i64 = 2;
 
+/// Most authorization entries past [`excluded_limit`] a removed device's writer may still have
+/// stored, contiguous from it. On a chain the replica did not select, the device may be an
+/// anchor whose entries veto the selected chain, so they are kept past the bound on excluded
+/// operations.
+pub const MAX_EXCLUDED_ENTRIES_PER_WRITER: u64 = 1024;
+
 /// Highest sequence a removed device's writer with removal cutoff `cutoff` may have stored.
 pub(crate) const fn excluded_limit(cutoff: Seq) -> Seq {
     cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER)
+}
+
+/// Highest sequence of an authorization entry a removed device's writer with removal cutoff
+/// `cutoff` may have stored, see [`MAX_EXCLUDED_ENTRIES_PER_WRITER`].
+pub(crate) const fn entry_limit(cutoff: Seq) -> Seq {
+    excluded_limit(cutoff).saturating_add(MAX_EXCLUDED_ENTRIES_PER_WRITER)
 }
 
 /// Revision of the selected removal of `device_id`.
@@ -592,8 +604,9 @@ pub(crate) async fn settle(
 /// Drops the operations a removed device's writers have stored past the
 /// [`excluded_limit`] of their removal cutoff, which a replica stores only while it
 /// does not know the removal yet: a replica that learned it first refuses them, so dropping
-/// them leaves what never storing them leaves. Their entries go with them, so a removed anchor
-/// device's chain counts for selection only within the bound. Rows a dropped operation created
+/// them leaves what never storing them leaves. Authorization entries contiguous past that
+/// bound stay up to [`entry_limit`], as a replica that knew the removal stores them too; the
+/// entries of what is dropped go with it. Rows a dropped operation created
 /// lose their whole merge state, honest changes included, since a replica that never stored
 /// the creation skips those changes (see [`beyond_bound`]). The local device keeps its own
 /// operations. Returns whether a dropped operation carried an entry.
@@ -621,7 +634,23 @@ async fn drop_beyond_bound(
     let mut entries = false;
     for (writer, cutoff, applied) in rows {
         let writer = log::writer_id(&writer)?;
-        let bound = excluded_limit(stored_u64(cutoff, "removal cutoff")?);
+        let cutoff = stored_u64(cutoff, "removal cutoff")?;
+        // Authorization entries contiguous past the bound stay, up to their own bound.
+        let first_dropped: Option<i64> = sqlx::query_scalar(
+            "SELECT min(seq) FROM sync_ops
+             WHERE space_id = ? AND writer_id = ? AND seq > ? AND (kind <> ? OR seq > ?)",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(excluded_limit(cutoff))?)
+        .bind(i64::from(OperationKind::Authorization.as_u8()))
+        .bind(seq_i64(entry_limit(cutoff))?)
+        .fetch_one(&mut *conn)
+        .await?;
+        let Some(first_dropped) = first_dropped else {
+            continue;
+        };
+        let bound = stored_u64(first_dropped, "sequence")?.saturating_sub(1);
         let carried: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?",
         )

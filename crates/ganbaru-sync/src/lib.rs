@@ -62,7 +62,7 @@ mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
-pub use authorization::{AuthorizationView, EnrolledDevice};
+pub use authorization::{AuthorizationView, EnrolledDevice, HandoverPoint};
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
 };
@@ -71,7 +71,9 @@ pub use conflicts::{
 };
 pub use devices::{DeviceNames, DeviceRef};
 pub use error::{SyncError, SyncResult};
-pub use exclusion::{LateChange, LateKind, MAX_EXCLUDED_PER_WRITER};
+pub use exclusion::{
+    LateChange, LateKind, MAX_EXCLUDED_ENTRIES_PER_WRITER, MAX_EXCLUDED_PER_WRITER,
+};
 pub use fork::{EvidenceOutcome, EvidenceRefusal, ForkEvidence};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};

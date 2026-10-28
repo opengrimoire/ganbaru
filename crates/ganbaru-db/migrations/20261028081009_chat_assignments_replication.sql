@@ -9,9 +9,10 @@
 -- their scheduled message, keyed by ordinal like its attachment references, and a removed
 -- participant now removes the reference instead of clearing it. Assignments name their
 -- executing device as well, and a removed teammate removes its assignments. Existing scheduled
--- messages and assignments take the device of the vault's local sync writer when one is
--- recorded, so a vault that already syncs never has two devices sending the same row; a vault
--- that never synced has only the migrating device. The uniques two
+-- messages and assignments take the anchor device of the vault's sync space, which every
+-- linked copy reads alike, so the coordinator and its replicas name the same executor and
+-- never two devices send the same row; a space without an anchor yet falls back to the local
+-- sync writer, and a vault that never synced has only the migrating device. The uniques two
 -- devices could break concurrently (one active assignment per reply thread, one input per
 -- message and per ordinal) become plain indexes: input ids derive from their message, and
 -- readers order concurrent rows deterministically. The scheduled client command id stays
@@ -66,7 +67,8 @@ INSERT INTO chat_scheduled_messages_next (
 )
 SELECT
     id, client_command_id, channel_id, reply_thread_id,
-    (SELECT local_device_id FROM sync_spaces WHERE local_device_id IS NOT NULL
+    (SELECT coalesce(anchor_device_id, local_device_id) FROM sync_spaces
+     WHERE coalesce(anchor_device_id, local_device_id) IS NOT NULL
      ORDER BY space_id LIMIT 1),
     request_schema_version, request_data, scheduled_for,
     CASE WHEN state = 'failed' THEN updated_at END, last_error, created_at, updated_at
@@ -183,7 +185,8 @@ INSERT INTO chat_work_assignments_next (
 )
 SELECT
     id, reply_thread_id, teammate_id, triggering_message_item_id,
-    (SELECT local_device_id FROM sync_spaces WHERE local_device_id IS NOT NULL
+    (SELECT coalesce(anchor_device_id, local_device_id) FROM sync_spaces
+     WHERE coalesce(anchor_device_id, local_device_id) IS NOT NULL
      ORDER BY space_id LIMIT 1),
     previous_assignment_id, state, state_reason, revision, settled_at, created_at, updated_at
 FROM chat_work_assignments;

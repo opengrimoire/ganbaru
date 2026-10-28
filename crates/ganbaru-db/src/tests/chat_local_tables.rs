@@ -578,19 +578,27 @@ fn replicated_chat_deletes_never_stop_on_a_device_local_foreign_key() {
 const BEFORE_CHAT_ASSIGNMENTS_REPLICATION: i64 = 20261028072808;
 const CHAT_ASSIGNMENTS_REPLICATION: i64 = 20261028081009;
 
+/// The sync space a vault copy records before the assignments replication migration.
+struct RecordedSyncSpace<'a> {
+    local_device_id: &'a str,
+    anchor_device_id: Option<&'a str>,
+}
+
 /// The executing devices the assignments replication migration gives the graph's scheduled
-/// messages and assignments, after recording `local_device_id` as the local sync writer.
+/// messages and assignments of a vault copy that recorded `space`, if any.
 async fn executors_after_assignments_replication(
-    local_device_id: Option<&str>,
+    space: Option<RecordedSyncSpace<'_>>,
 ) -> Vec<Option<String>> {
     let pool = memory_pool_migrated_through(BEFORE_CHAT_ASSIGNMENTS_REPLICATION).await;
     load_project_chat_graph(&pool).await;
-    if let Some(device_id) = local_device_id {
+    if let Some(space) = space {
         sqlx::query(
-            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms, local_device_id)
-             VALUES (zeroblob(16), 'vault-migrating', 0, ?)",
+            "INSERT INTO sync_spaces
+                 (space_id, vault_id, created_at_ms, local_device_id, anchor_device_id)
+             VALUES (zeroblob(16), 'vault-migrating', 0, ?, ?)",
         )
-        .bind(device_id)
+        .bind(space.local_device_id)
+        .bind(space.anchor_device_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -610,13 +618,38 @@ async fn executors_after_assignments_replication(
 }
 
 #[test]
-fn assignments_replication_gives_existing_work_to_the_local_sync_writer() {
+fn assignments_replication_gives_existing_work_to_the_anchor_on_every_linked_copy() {
     super::block_on(async {
-        let executors = executors_after_assignments_replication(Some("device:migrating")).await;
+        let coordinator = executors_after_assignments_replication(Some(RecordedSyncSpace {
+            local_device_id: "device:coordinator",
+            anchor_device_id: Some("device:coordinator"),
+        }))
+        .await;
+        let replica = executors_after_assignments_replication(Some(RecordedSyncSpace {
+            local_device_id: "device:replica",
+            anchor_device_id: Some("device:coordinator"),
+        }))
+        .await;
         assert!(
-            executors
+            coordinator
                 .iter()
-                .all(|executor| executor.as_deref() == Some("device:migrating"))
+                .all(|executor| executor.as_deref() == Some("device:coordinator"))
+        );
+        assert_eq!(
+            replica, coordinator,
+            "the coordinator and replica copies name the same executor"
+        );
+
+        let unanchored = executors_after_assignments_replication(Some(RecordedSyncSpace {
+            local_device_id: "device:migrating",
+            anchor_device_id: None,
+        }))
+        .await;
+        assert!(
+            unanchored
+                .iter()
+                .all(|executor| executor.as_deref() == Some("device:migrating")),
+            "a space without an anchor yet keeps the local sync writer"
         );
         let unsynced = executors_after_assignments_replication(None).await;
         assert!(unsynced.iter().all(Option::is_none));

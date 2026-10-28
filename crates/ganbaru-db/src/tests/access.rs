@@ -41,12 +41,13 @@ fn recording_hook(calls: Arc<Mutex<Vec<DatabaseAccessMode>>>) -> ConnectionHook 
     })
 }
 
-/// A migrated vault database. The hook guards one of its tables and leaves another open.
+/// A migrated vault database written from the shared template. The hook guards one of its
+/// tables and leaves another open.
 async fn seeded_vault(directory: &Path) -> PathBuf {
     let path = directory.join("ganbaru.sqlite");
-    let registry = DatabasePoolRegistry::default();
-    registry.connect_path(&path).await.unwrap();
-    registry.close_all().await.unwrap();
+    crate::test_support::write_migrated_database(&path)
+        .await
+        .unwrap();
     path
 }
 

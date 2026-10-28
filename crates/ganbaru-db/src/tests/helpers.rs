@@ -85,7 +85,8 @@ impl sqlx::migrate::MigrationSource<'static> for MigrationsThrough {
     }
 }
 
-/// A memory pool migrated through `version`; `run_migrations` later applies the rest.
+/// A memory pool holding the shared template migrated through `version`; `run_migrations` later
+/// applies the rest.
 pub(super) async fn memory_pool_migrated_through(version: i64) -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -96,7 +97,9 @@ pub(super) async fn memory_pool_migrated_through(version: i64) -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    migrate_through(&pool, version).await.unwrap();
+    crate::test_support::apply_migrated_template_through(&pool, version)
+        .await
+        .unwrap();
     pool
 }
 

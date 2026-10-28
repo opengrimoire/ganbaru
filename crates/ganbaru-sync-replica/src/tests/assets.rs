@@ -10,6 +10,7 @@ use ganbaru_handoff::protocol::SYNC_ASSET_CHUNK_BYTES;
 use ganbaru_sync::Engine;
 use ganbaru_sync::assets::{AssetClass, AssetRef, MAX_ASSET_BYTES};
 use ganbaru_sync::domains::quick_notes::{NoteImage, encode_images};
+use ganbaru_sync::manifest::vault::notes::FILES_CLASS;
 use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::{IMAGES_CLASS, NOTES_TABLE, note_group};
 use ganbaru_sync_contracts::{Field, Value};
@@ -607,5 +608,93 @@ fn assets_sweep_waits_for_an_archive_in_progress() {
         assert_eq!(entries(vault.root(), &IMAGES_CLASS).len(), 1);
         drop(archive);
         assert_eq!(sweep().await, Ok(1));
+    });
+}
+
+#[test]
+fn notes_files_at_the_class_bound_stream_into_place_and_larger_ones_are_refused() {
+    let directory = TestDirectory::new("assets-notes-files");
+    let store = ContentAddressedStore::new(directory.path().to_path_buf());
+    let largest = bytes(FILES_CLASS.max_bytes as usize, 50);
+    let asset = reference(&FILES_CLASS, &largest);
+    receive(&store, &asset, &largest).expect("receive");
+    assert!(store.holds(&asset).expect("holds"));
+    assert_eq!(
+        entries(directory.path(), &FILES_CLASS),
+        vec![asset.file_name()]
+    );
+    assert_eq!(
+        std::fs::metadata(asset.path(directory.path()))
+            .expect("metadata")
+            .len(),
+        u64::from(FILES_CLASS.max_bytes)
+    );
+    assert!(
+        AssetRef::new(
+            &FILES_CLASS,
+            digest(&largest),
+            "application/octet-stream".to_string(),
+            FILES_CLASS.max_bytes + 1,
+        )
+        .is_err(),
+        "a reference above the class bound is refused before any transfer"
+    );
+}
+
+/// SQL adding a page with one file block naming the Notes file `contents` as a PDF.
+fn notes_file_block_sql(contents: &[u8]) -> String {
+    let sha = digest(contents);
+    let size = contents.len();
+    format!(
+        "INSERT INTO notes_pages (id, parent_type, title, created_time, last_edited_time)
+         VALUES ('page', 'workspace', 'Files', '2027-01-01T00:00:00.000Z',
+                 '2027-01-01T00:00:00.000Z');
+         INSERT INTO notes_blocks
+             (id, page_id, parent_type, parent_page_id, type, attrs, order_key, created_time,
+              last_edited_time)
+         VALUES ('block', 'page', 'page_id', 'page', 'file',
+                 '{{\"type\":\"file\",\"file\":{{\"content_type\":\"application/pdf\",
+                   \"byte_size\":{size},\"sha256\":\"{sha}\",
+                   \"ganbaru_asset_path\":\"notes/files/{sha}.pdf\"}}}}',
+                 'a0', '2027-01-01T00:00:00.000Z', '2027-01-01T00:00:00.000Z');"
+    )
+}
+
+#[test]
+fn assets_sweep_keeps_notes_files_a_block_or_a_history_pin_names() {
+    block_on(async {
+        let vault = SweepVault::new("assets-collect-notes").await;
+        let [referenced, pinned, orphan] = [60, 61, 62].map(|seed| bytes(64, seed));
+        let name = |contents: &[u8]| format!("{}.pdf", digest(contents));
+        for contents in [&referenced, &pinned, &orphan] {
+            vault.aged_entry(&FILES_CLASS, &name(contents), contents);
+        }
+        let mut conn = acquire(&vault.pool).await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(notes_file_block_sql(&referenced)))
+            .execute(&mut *conn)
+            .await
+            .expect("insert file block");
+        // The pin's version is not under test, so foreign keys are off while it is written.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO notes_project_history_asset_pins (version_id, asset_id)
+             VALUES ('version', 'notes/files:{}');
+             PRAGMA foreign_keys = ON;",
+            digest(&pinned)
+        )))
+        .execute(&mut *conn)
+        .await
+        .expect("insert history pin");
+        drop(conn);
+
+        let in_flight = Arc::new(InFlightAssets::default());
+        assert_eq!(
+            vault.sweep(&in_flight, SystemTime::now(), admit_all).await,
+            Ok(1),
+            "only the file nothing names goes"
+        );
+        let mut kept = vec![name(&referenced), name(&pinned)];
+        kept.sort();
+        assert_eq!(entries(vault.root(), &FILES_CLASS), kept);
     });
 }

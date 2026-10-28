@@ -130,6 +130,17 @@ fn write_binary_file_atomically(
     .map_err(|e| format!("save page icon: {e}"))
 }
 
+/// Content check of a page icon a sync peer sent, after its size and digest matched the
+/// reference: the bytes must be a page icon image of the content type the reference names.
+pub fn check_synced_page_icon(
+    asset: &ganbaru_sync::assets::AssetRef,
+    path: &Path,
+) -> Result<(), String> {
+    let bytes = read_file_capped(path, FinalSymlink::Refuse)?;
+    let kind = validate_page_icon_image(&bytes)?.kind;
+    assets::ensure_synced_content_type(kind.mime_type(), asset)
+}
+
 /// Reads a page icon image the user chose in the native picker, following a final link.
 pub fn read_picked_file_capped(path: &Path) -> Result<Vec<u8>, String> {
     read_file_capped(path, FinalSymlink::Follow)

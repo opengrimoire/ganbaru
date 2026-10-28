@@ -560,6 +560,65 @@ fn classify_generic_file(extension: &str, bytes: &[u8]) -> (NotesFileAssetKind, 
     (NotesFileAssetKind::File, generic_content_type(extension))
 }
 
+/// Leading bytes a synced file check reads, enough for every signature the classifier matches.
+const SYNCED_FILE_SIGNATURE_BYTES: u64 = 64 * 1024;
+
+/// Content check of a Notes file a sync peer sent, after its size and digest matched the
+/// reference. A previewable content type must match the signature of the bytes, as it does when
+/// the file is chosen locally; other content types are opaque downloads and any bytes pass.
+pub fn check_synced_notes_file(
+    asset: &ganbaru_sync::assets::AssetRef,
+    path: &Path,
+) -> Result<(), String> {
+    let content_type = asset.content_type();
+    let previewable = content_type.starts_with("image/")
+        || content_type.starts_with("audio/")
+        || content_type.starts_with("video/")
+        || content_type == "application/pdf";
+    if !previewable {
+        return Ok(());
+    }
+    let head = read_synced_file_head(path)?;
+    let matches = if content_type.starts_with("image/") {
+        sniff_image_kind(&head).is_some_and(|kind| kind.content_type() == content_type)
+    } else if content_type == "application/pdf" {
+        head.starts_with(b"%PDF-")
+    } else if content_type.starts_with("audio/") {
+        sniff_media_container(&head)
+            .and_then(audio_content_type)
+            .is_some_and(|detected| detected == content_type)
+    } else {
+        sniff_media_container(&head).is_some_and(|container| {
+            VIDEO_EXTENSIONS
+                .iter()
+                .any(|extension| video_content_type(container, extension) == Some(content_type))
+        })
+    };
+    if !matches {
+        return Err(format!(
+            "the bytes do not match the content type {content_type} the reference names"
+        ));
+    }
+    Ok(())
+}
+
+fn read_synced_file_head(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("read synced file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("synced notes file must be a regular file".to_string());
+    }
+    let mut head = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| {
+            file.take(SYNCED_FILE_SIGNATURE_BYTES)
+                .read_to_end(&mut head)
+        })
+        .map_err(|error| format!("read synced file: {error}"))?;
+    Ok(head)
+}
+
 /// Audio and video container families recognized by their leading bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MediaContainer {

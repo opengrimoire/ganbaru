@@ -254,23 +254,43 @@ pub async fn update_comment(
 ) -> Result<NoteCommentThreadDto, String> {
     let comment_id = comment_id.trim();
     require_uuid(comment_id, "comment_id")?;
-    match update.attachments.as_deref() {
-        Some(attachments) => {
-            validate_comment_body_rich_text(&update.rich_text, !attachments.is_empty())?;
-        }
-        None => validate_comment_rich_text(&update.rich_text)?,
-    }
+    validate_comment_update(&update)?;
     ensure_comment_baseline(pool, comment_id).await?;
-    if let Some(attachments) = update.attachments.as_ref() {
-        validate_comment_attachments(attachments)?;
-    }
-    let plain_text = rich_text_items_plain_text(&update.rich_text);
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| format!("begin notes comment update: {e}"))?;
-    let row = load_comment_row(&mut tx, comment_id).await?;
-    let thread = load_thread_row(&mut tx, &row.thread_id).await?;
+    let thread_id = update_comment_tx(&mut tx, comment_id, update).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes comment update: {e}"))?;
+    load_thread(pool, &thread_id).await
+}
+
+fn validate_comment_update(update: &NoteCommentUpdate) -> Result<(), String> {
+    match update.attachments.as_deref() {
+        Some(attachments) => {
+            validate_comment_body_rich_text(&update.rich_text, !attachments.is_empty())?;
+            validate_comment_attachments(attachments)
+        }
+        None => validate_comment_rich_text(&update.rich_text),
+    }
+}
+
+/// Updates a comment body inside the caller's transaction and returns its thread id.
+///
+/// The update is validated here; the caller ensures the project history baseline of the
+/// comment's page before it opens the transaction, as [`update_comment`] does.
+pub(crate) async fn update_comment_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    comment_id: &str,
+    update: NoteCommentUpdate,
+) -> Result<String, String> {
+    require_uuid(comment_id, "comment_id")?;
+    validate_comment_update(&update)?;
+    let plain_text = rich_text_items_plain_text(&update.rich_text);
+    let row = load_comment_row(tx, comment_id).await?;
+    let thread = load_thread_row(tx, &row.thread_id).await?;
     if let Some(attachments) = update.attachments.as_ref() {
         sqlx::query(
             "UPDATE notes_comments
@@ -284,7 +304,7 @@ pub async fn update_comment(
         .bind(&plain_text)
         .bind(Value::Array(attachments.clone()).to_string())
         .bind(comment_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes comment: {e}"))?;
     } else {
@@ -298,18 +318,18 @@ pub async fn update_comment(
         .bind(Value::Array(update.rich_text.clone()).to_string())
         .bind(&plain_text)
         .bind(comment_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes comment: {e}"))?;
     }
     if let Some(attachments) = update.attachments.as_ref() {
-        assets::sync_comment_asset_references_tx(&mut tx, &thread.page_id, comment_id, attachments)
+        assets::sync_comment_asset_references_tx(tx, &thread.page_id, comment_id, attachments)
             .await?;
     }
-    crate::project_history::mark_page_dirty_tx(&mut tx, &thread.page_id, "comment_update", false)
+    crate::project_history::mark_page_dirty_tx(tx, &thread.page_id, "comment_update", false)
         .await?;
     mention_notifications::sync_comment_tx(
-        &mut tx,
+        tx,
         comment_id,
         &thread.page_id,
         thread.parent_block_id.as_deref(),
@@ -317,12 +337,9 @@ pub async fn update_comment(
         &plain_text,
     )
     .await?;
-    touch_thread(&mut tx, &row.thread_id).await?;
-    mark_thread_read_for_current_user_tx(&mut tx, &row.thread_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit notes comment update: {e}"))?;
-    load_thread(pool, &row.thread_id).await
+    touch_thread(tx, &row.thread_id).await?;
+    mark_thread_read_for_current_user_tx(tx, &row.thread_id).await?;
+    Ok(row.thread_id)
 }
 
 pub async fn delete_comment(
@@ -373,9 +390,26 @@ pub async fn resolve_comment_thread(
         .begin()
         .await
         .map_err(|e| format!("begin notes comment thread resolve: {e}"))?;
-    let thread = load_thread_row(&mut tx, discussion_id).await?;
-    ensure_thread_target_active(&mut tx, &thread).await?;
-    let local_user = local_user::current_local_user_tx(&mut tx).await?;
+    resolve_comment_thread_tx(&mut tx, discussion_id, resolved).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes comment thread resolve: {e}"))?;
+    load_thread(pool, discussion_id).await
+}
+
+/// Resolves or reopens a discussion inside the caller's transaction.
+///
+/// The caller ensures the project history baseline of the discussion's page before it opens
+/// the transaction, as [`resolve_comment_thread`] does.
+pub(crate) async fn resolve_comment_thread_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    discussion_id: &str,
+    resolved: bool,
+) -> Result<(), String> {
+    require_uuid(discussion_id, "discussion_id")?;
+    let thread = load_thread_row(tx, discussion_id).await?;
+    ensure_thread_target_active(tx, &thread).await?;
+    let local_user = local_user::current_local_user_tx(tx).await?;
     if resolved {
         sqlx::query(
             "UPDATE notes_comment_threads
@@ -387,7 +421,7 @@ pub async fn resolve_comment_thread(
         )
         .bind(&local_user.id)
         .bind(discussion_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("resolve notes comment thread: {e}"))?;
     } else {
@@ -400,7 +434,7 @@ pub async fn resolve_comment_thread(
              WHERE id = ?",
         )
         .bind(discussion_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("reopen notes comment thread: {e}"))?;
     }
@@ -409,13 +443,9 @@ pub async fn resolve_comment_thread(
     } else {
         "comment_thread_reopen"
     };
-    crate::project_history::mark_page_dirty_tx(&mut tx, &thread.page_id, operation_type, false)
-        .await?;
-    mark_thread_read_for_current_user_tx(&mut tx, discussion_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit notes comment thread resolve: {e}"))?;
-    load_thread(pool, discussion_id).await
+    crate::project_history::mark_page_dirty_tx(tx, &thread.page_id, operation_type, false).await?;
+    mark_thread_read_for_current_user_tx(tx, discussion_id).await?;
+    Ok(())
 }
 
 /// Adds the current person's emoji reaction to a comment, or removes it when they already chose it.

@@ -63,9 +63,12 @@ export interface NotesConflictResolution {
   choice: NotesConflictChoice;
 }
 
-/** A conflict read or resolution failure. `resolved` means the conflict or version is gone. */
+/**
+ * A conflict read or resolution failure. `resolved` means the conflict or version is gone; `unfit` means the chosen
+ * block version no longer fits the block's type, so only the shown version can be kept.
+ */
 export class NotesConflictError extends Error {
-  constructor(readonly code: "resolved" | "failed", message: string) {
+  constructor(readonly code: "resolved" | "unfit" | "failed", message: string) {
     super(message);
     this.name = "NotesConflictError";
   }
@@ -100,7 +103,7 @@ export function mapNotesPageConflicts(value: unknown): NotesPageConflicts {
   };
 }
 
-const CONFLICT_ERROR_CODES = ["resolved", "failed"] as const;
+const CONFLICT_ERROR_CODES = ["resolved", "unfit", "failed"] as const;
 
 /** Turns a native `{ code, message }` rejection into a {@link NotesConflictError}, and passes other errors through. */
 export function toNotesConflictError(error: unknown): unknown {
@@ -121,9 +124,31 @@ export async function loadNotesPageConflicts(pageId: string): Promise<NotesPageC
   }
 }
 
+/** What settling a mismatched row value would do. */
+export interface NotesMismatchedValuePreview {
+  /** Whether converting drops part or all of the stored value. */
+  conversionLosesData: boolean;
+}
+
+/** Validates a mismatched value preview from the native side. */
+export function mapNotesMismatchedValuePreview(value: unknown): NotesMismatchedValuePreview {
+  const row = readRecord(value, "notes mismatched value preview");
+  return {
+    conversionLosesData: readBoolean(row.conversionLosesData, "notes mismatched value preview.conversionLosesData"),
+  };
+}
+
+/** Reads whether converting a row value stored under another type than its property's drops data. */
+export async function previewNotesMismatchedValue(pageId: string, propertyId: string): Promise<NotesMismatchedValuePreview> {
+  const dbUrl = await ensureDbUrl();
+  return mapNotesMismatchedValuePreview(
+    await invoke<unknown>("notes_preview_mismatched_value", { dbUrl, pageId, propertyId }),
+  );
+}
+
 /**
  * Converts a row value stored under another type than its property's current type, or discards it. A value the new
- * type cannot represent converts to that type's empty value.
+ * type cannot represent converts to that type's empty value; {@link previewNotesMismatchedValue} tells beforehand.
  */
 export async function settleNotesMismatchedValue(pageId: string, propertyId: string, convert: boolean): Promise<void> {
   const dbUrl = await ensureDbUrl();

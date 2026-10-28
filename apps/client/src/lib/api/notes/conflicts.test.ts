@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { NotesConflictError, mapNotesPageConflicts, toNotesConflictError } from "./conflicts";
+import {
+  NotesConflictError,
+  mapNotesMismatchedValuePreview,
+  mapNotesPageConflicts,
+  toNotesConflictError,
+} from "./conflicts";
 
 const device = { deviceId: "device-a", deviceLabel: "Phone", ownDevice: false };
 
@@ -40,7 +45,7 @@ describe("Notes conflict mapping", () => {
 
 describe("Notes conflict errors", () => {
   it("turns known native codes into typed errors", () => {
-    for (const code of ["resolved", "failed"] as const) {
+    for (const code of ["resolved", "unfit", "failed"] as const) {
       const error = toNotesConflictError({ code, message: "text" });
       expect(error).toBeInstanceOf(NotesConflictError);
       expect(error).toMatchObject({ code, message: "text" });
@@ -52,5 +57,13 @@ describe("Notes conflict errors", () => {
     expect(toNotesConflictError(unknownCode)).toBe(unknownCode);
     expect(toNotesConflictError({ code: "failed", message: 3 })).toEqual({ code: "failed", message: 3 });
     expect(toNotesConflictError("plain")).toBe("plain");
+  });
+});
+
+describe("Notes mismatched value previews", () => {
+  it("reads whether converting drops data and refuses malformed previews", () => {
+    expect(mapNotesMismatchedValuePreview({ conversionLosesData: true })).toEqual({ conversionLosesData: true });
+    expect(() => mapNotesMismatchedValuePreview({ conversionLosesData: "yes" })).toThrow();
+    expect(() => mapNotesMismatchedValuePreview(null)).toThrow();
   });
 });

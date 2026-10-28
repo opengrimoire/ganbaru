@@ -6,7 +6,7 @@
 //! group; using another version writes it through the same path as a local edit, then seals the
 //! group, so the conflict closes on every device.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use ganbaru_sync::manifest::vault::notes::{
     BLOCKS_TABLE, COMMENTS_TABLE, PAGES_TABLE, THREADS_TABLE, VALUES_TABLE, block_group,
@@ -19,12 +19,12 @@ use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::block_storage::compose_block_content;
-use crate::comments::{resolve_comment_thread, update_comment};
+use crate::comments::{resolve_comment_thread_tx, update_comment_tx};
 use crate::models::{NoteBlockUpdate, NoteCommentUpdate, NotePageUpdate};
 use crate::page_property_storage::write_page_property_value;
-use crate::project_history::mark_page_dirty_tx;
-use crate::validation::require_uuid;
-use crate::writes::{update_block_if_unchanged, update_page};
+use crate::project_history::{ensure_page_baseline_for_mutation, mark_page_dirty_tx};
+use crate::validation::{require_uuid, validate_page_update};
+use crate::writes::{rich_text, update_block_tx, update_page_tx};
 
 /// Stable conflict outcomes, independent of diagnostic wording.
 #[derive(Debug, Serialize)]
@@ -32,6 +32,9 @@ use crate::writes::{update_block_if_unchanged, update_page};
 pub enum NotesConflictError {
     /// The conflict or the chosen version no longer exists; reload and show the current state.
     Resolved(String),
+    /// The chosen block version cannot be written because the block's type no longer stores
+    /// text it can hold; keep the shown version or edit the block.
+    Unfit(String),
     Failed(String),
 }
 
@@ -101,6 +104,27 @@ impl NotesConflictTarget {
             }
         }
     }
+
+    /// The sync row key of one field, bound to the page id and the field id, found only when
+    /// the field belongs to that page.
+    fn key_sql(self) -> &'static str {
+        match self {
+            Self::PageTitle => "SELECT id FROM notes_pages WHERE id = ? AND id = ?",
+            Self::BlockText => "SELECT id FROM notes_blocks WHERE page_id = ? AND id = ?",
+            Self::PropertyValue => {
+                "SELECT sync_key FROM notes_page_property_values
+                 WHERE page_id = ? AND property_id = ?"
+            }
+            Self::ThreadStatus => {
+                "SELECT id FROM notes_comment_threads WHERE page_id = ? AND id = ?"
+            }
+            Self::CommentBody => {
+                "SELECT c.id FROM notes_comments c
+                 JOIN notes_comment_threads t ON t.id = c.thread_id
+                 WHERE t.page_id = ? AND c.id = ?"
+            }
+        }
+    }
 }
 
 /// One concurrent version of a field.
@@ -145,8 +169,8 @@ pub enum NotesConflictChoice {
     Version { version: String },
 }
 
-/// A conflict resolution request. `page_id` scopes property values, whose rows are keyed by
-/// page and property.
+/// A conflict resolution request. The field must belong to `page_id`, which also keys property
+/// values with the property id.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotesConflictResolution {
@@ -332,101 +356,116 @@ pub async fn conflicts_from_pool(
     })
 }
 
-/// The sync row key of a field: the property value's sync key, or the id itself.
+/// The sync row key of a field on the page: the property value's sync key, or the id itself.
+/// A field that is gone or belongs to another page reads as resolved.
 async fn row_key(
     tx: &mut Transaction<'_, Sqlite>,
     target: NotesConflictTarget,
     page_id: &str,
     id: &str,
 ) -> Result<String, NotesConflictError> {
-    let found: Option<String> = match target {
-        NotesConflictTarget::PropertyValue => sqlx::query_scalar(
-            "SELECT sync_key FROM notes_page_property_values WHERE page_id = ? AND property_id = ?",
-        )
+    let found: Option<String> = sqlx::query_scalar(target.key_sql())
         .bind(page_id)
         .bind(id)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(|error| format!("read notes property value key: {error}"))?,
-        _ => Some(id.to_string()),
-    };
-    found.ok_or_else(|| NotesConflictError::Resolved("the value is gone".to_string()))
+        .map_err(|error| format!("read notes conflict row key: {error}"))?;
+    found.ok_or_else(|| NotesConflictError::Resolved("the field is gone".to_string()))
 }
 
 async fn open_detail(
-    pool: &SqlitePool,
+    tx: &mut Transaction<'_, Sqlite>,
     vault_id: &str,
     target: NotesConflictTarget,
     key: &str,
 ) -> Result<ConflictDetail, NotesConflictError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|error| format!("begin notes conflict read: {error}"))?;
-    let space = linked_sync_space(&mut tx, vault_id)
+    let space = linked_sync_space(tx, vault_id)
         .await?
         .ok_or_else(|| NotesConflictError::Resolved("this vault does not sync".to_string()))?;
     let details = Engine::vault()
-        .conflict_details(&mut tx, space, target.table(), key)
+        .conflict_details(tx, space, target.table(), key)
         .await
         .map_err(|error| format!("read notes conflicts: {error}"))?;
-    tx.rollback()
-        .await
-        .map_err(|error| format!("end notes conflict read: {error}"))?;
     details
         .into_iter()
         .find(|detail| detail.group == target.group())
         .ok_or_else(|| NotesConflictError::Resolved("the conflict is resolved".to_string()))
 }
 
-/// Writes a chosen version through the same path as a local edit of that field.
-pub(crate) async fn write_version(
-    pool: &SqlitePool,
+/// The stored text group a block version writes: the version itself when its parts are the
+/// ones the block's current type stores, or else its plain text as the block's rich text, so a
+/// version written before the block changed type stays usable.
+fn fitted_block_text(current: &str, version: &str) -> Result<String, NotesConflictError> {
+    let invalid = || NotesConflictError::Failed("notes conflict value is invalid".to_string());
+    let Ok(Value::Object(mut stored)) = serde_json::from_str::<Value>(current) else {
+        return Err(invalid());
+    };
+    let Ok(Value::Object(chosen)) = serde_json::from_str::<Value>(version) else {
+        return Err(invalid());
+    };
+    if stored.keys().collect::<BTreeSet<_>>() == chosen.keys().collect::<BTreeSet<_>>() {
+        return Ok(version.to_string());
+    }
+    if !stored.contains_key("rich_text") {
+        return Err(NotesConflictError::Unfit(
+            "the version does not fit the block's type".to_string(),
+        ));
+    }
+    let plain = block_text_plain_text(version);
+    let runs = if plain.is_empty() {
+        Vec::new()
+    } else {
+        vec![rich_text(&plain)]
+    };
+    stored.insert("rich_text".to_string(), Value::Array(runs));
+    Ok(Value::Object(stored).to_string())
+}
+
+/// Writes a chosen version through the same path as a local edit of that field, inside the
+/// resolution's transaction. The caller ensures the page's project history baseline first.
+pub(crate) async fn write_version_tx(
+    tx: &mut Transaction<'_, Sqlite>,
     target: NotesConflictTarget,
     page_id: &str,
     id: &str,
     value: &SyncValue,
-) -> Result<(), String> {
+) -> Result<(), NotesConflictError> {
     let invalid = || "notes conflict value is invalid".to_string();
     match target {
         NotesConflictTarget::PageTitle => {
             let title = text_field(value, 0).ok_or_else(invalid)?;
             let update: NotePageUpdate = serde_json::from_value(json!({ "title": title }))
                 .map_err(|error| format!("build notes page title update: {error}"))?;
-            update_page(pool, id, update).await?;
+            validate_page_update(&update)?;
+            update_page_tx(tx, id, update).await?;
         }
         NotesConflictTarget::BlockText => {
-            let text = text_field(value, 0).ok_or_else(invalid)?;
-            let (block_type, attrs): (String, String) =
-                sqlx::query_as("SELECT type, attrs FROM notes_blocks WHERE id = ?")
-                    .bind(id)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|error| format!("read notes block kind: {error}"))?
-                    .ok_or_else(|| "the block is gone".to_string())?;
-            let payload = compose_block_content(&block_type, &attrs, text)?;
+            let version = text_field(value, 0).ok_or_else(invalid)?;
+            let (block_type, attrs, current): (String, String, String) = sqlx::query_as(
+                "SELECT type, attrs, text FROM notes_blocks WHERE id = ? AND in_trash = 0",
+            )
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| format!("read notes block kind: {error}"))?
+            .ok_or_else(|| NotesConflictError::Resolved("the block is gone".to_string()))?;
+            let text = fitted_block_text(&current, version)?;
+            let payload = compose_block_content(&block_type, &attrs, &text)?;
             let update: NoteBlockUpdate =
                 serde_json::from_value(json!({ "type": block_type, block_type.as_str(): payload }))
                     .map_err(|error| format!("build notes block update: {error}"))?;
-            update_block_if_unchanged(pool, id, update, None).await?;
+            update_block_tx(tx, id, update, true).await?;
         }
         NotesConflictTarget::PropertyValue => {
             let value_type = text_field(value, 0).ok_or_else(invalid)?;
             let stored = text_field(value, 1).ok_or_else(invalid)?;
             let stored: Value = serde_json::from_str(stored).map_err(|_| invalid())?;
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|error| format!("begin notes property value write: {error}"))?;
-            write_page_property_value(&mut tx, page_id, id, value_type, &stored).await?;
-            mark_page_dirty_tx(&mut tx, page_id, "update_page", false).await?;
-            tx.commit()
-                .await
-                .map_err(|error| format!("commit notes property value write: {error}"))?;
+            write_page_property_value(tx, page_id, id, value_type, &stored).await?;
+            mark_page_dirty_tx(tx, page_id, "update_page", false).await?;
         }
         NotesConflictTarget::ThreadStatus => {
             let status = text_field(value, 0).ok_or_else(invalid)?;
-            resolve_comment_thread(pool, id, status == "resolved").await?;
+            resolve_comment_thread_tx(tx, id, status == "resolved").await?;
         }
         NotesConflictTarget::CommentBody => {
             let rich_text = text_field(value, 0).ok_or_else(invalid)?;
@@ -436,7 +475,7 @@ pub(crate) async fn write_version(
                 "attachments": serde_json::from_str::<Value>(attachments).map_err(|_| invalid())?,
             }))
             .map_err(|error| format!("build notes comment update: {error}"))?;
-            update_comment(pool, id, update).await?;
+            update_comment_tx(tx, id, update).await?;
         }
     }
     Ok(())
@@ -444,10 +483,10 @@ pub(crate) async fn write_version(
 
 /// Resolves a field in conflict by keeping the displayed version or using another one.
 ///
-/// Another version is written as a local edit first, so derived state (plain text, mentions,
-/// asset references, history) follows the same path as typing it; the group is then sealed in
-/// its own transaction. A failure between the two leaves the chosen value written and the
-/// conflict open, which a second resolution closes.
+/// Another version is written as a local edit, so derived state (plain text, mentions, asset
+/// references, history) follows the same path as typing it. The write and the sealing of the
+/// group share one transaction, so the field never holds the chosen value with its conflict
+/// still open.
 pub async fn resolve_from_pool(
     pool: &SqlitePool,
     vault_id: &str,
@@ -461,18 +500,15 @@ pub async fn resolve_from_pool(
         return Err("id must not be empty".to_string().into());
     }
     let target = request.target;
-    let key = {
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|error| format!("begin notes conflict resolution: {error}"))?;
-        let key = row_key(&mut tx, target, page_id, id).await?;
-        tx.rollback()
-            .await
-            .map_err(|error| format!("end notes conflict read: {error}"))?;
-        key
-    };
-    let detail = open_detail(pool, vault_id, target, &key).await?;
+    if matches!(request.choice, NotesConflictChoice::Version { .. }) {
+        ensure_page_baseline_for_mutation(pool, page_id).await?;
+    }
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| format!("begin notes conflict resolution: {error}"))?;
+    let key = row_key(&mut tx, target, page_id, id).await?;
+    let detail = open_detail(&mut tx, vault_id, target, &key).await?;
     if let NotesConflictChoice::Version { version } = &request.choice {
         let writer = WriterId::from_hex(version);
         let chosen = detail
@@ -480,12 +516,8 @@ pub async fn resolve_from_pool(
             .iter()
             .find(|candidate| Some(candidate.writer) == writer)
             .ok_or_else(|| NotesConflictError::Resolved("the version is gone".to_string()))?;
-        write_version(pool, target, page_id, id, &chosen.value).await?;
+        write_version_tx(&mut tx, target, page_id, id, &chosen.value).await?;
     }
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|error| format!("begin notes conflict resolution: {error}"))?;
     Engine::vault()
         .force_group(&mut tx, target.table(), &key, target.group(), now_ms)
         .await

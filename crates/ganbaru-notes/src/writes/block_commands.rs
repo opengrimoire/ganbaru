@@ -127,7 +127,7 @@ fn content_conflict(block_id: &str) -> String {
 }
 
 /// Validate and update one block using the transaction's current graph.
-pub(super) async fn update_block_tx(
+pub(crate) async fn update_block_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     block_id: &str,
     update: NoteBlockUpdate,

@@ -6,6 +6,7 @@
     type NotesFieldConflict,
   } from "$lib/api/notes/conflicts";
   import SyncConflictCard from "$lib/components/sync/SyncConflictCard.svelte";
+  import SyncConflictChoice from "$lib/components/sync/SyncConflictChoice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     notesFieldConflictTitleKey,
@@ -37,7 +38,7 @@
   const { t } = localization;
   const conflicts = $derived(orderNotesFieldConflicts(notesConflicts.read(pageId)?.conflicts ?? [], blockOrder));
   let busy = $state(false);
-  let outcome = $state<{ key: string; kind: "resolved" | "error" } | null>(null);
+  let outcome = $state<{ key: string; kind: "resolved" | "error"; message: string } | null>(null);
 
   function conflictKey(conflict: NotesFieldConflict): string {
     return `${conflict.target}:${conflict.id}`;
@@ -72,10 +73,12 @@
       await onResolved();
     } catch (cause: unknown) {
       if (cause instanceof NotesConflictError && cause.code === "resolved") {
-        outcome = { key, kind: "resolved" };
+        outcome = { key, kind: "resolved", message: t("notes.conflict.resolved") };
+      } else if (cause instanceof NotesConflictError && cause.code === "unfit") {
+        outcome = { key, kind: "error", message: t("notes.conflict.unfit") };
       } else {
         console.warn("Notes conflict could not be resolved", cause);
-        outcome = { key, kind: "error" };
+        outcome = { key, kind: "error", message: t("notes.conflict.failed") };
       }
     } finally {
       busy = false;
@@ -88,7 +91,7 @@
   <SyncConflictCard
     title={title(conflict)}
     hint={t("notes.conflict.hint")}
-    message={outcome?.key === key ? (outcome.kind === "resolved" ? t("notes.conflict.resolved") : t("notes.conflict.failed")) : ""}
+    message={outcome?.key === key ? outcome.message : ""}
     messageKind={outcome?.key === key ? outcome.kind : "error"}
   >
     {#each conflict.versions as version (version.version)}
@@ -106,12 +109,10 @@
           {#if version.displayed}<span>{t("notes.conflict.shown")}</span>{/if}
         </div>
         <div class="flex flex-wrap items-center gap-1">
-          <button
-            class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-            type="button"
+          <SyncConflictChoice
             disabled={busy}
             onclick={() => void resolve(conflict, version.displayed ? { kind: "displayed" } : { kind: "version", version: version.version })}
-          >{version.displayed ? t("notes.conflict.keepThis") : t("notes.conflict.useOther")}</button>
+          >{version.displayed ? t("notes.conflict.keepThis") : t("notes.conflict.useOther")}</SyncConflictChoice>
         </div>
       </div>
     {/each}

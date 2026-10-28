@@ -54,8 +54,9 @@ Updated by the orchestrator session on the mini PC (2026-10-28). Milestone 11 st
 
 Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
-1. `feat/sync-peer-exchange`: milestone 11 step 9. Parts A to C are committed. The four-part internal security review (`briefs/m11-security-review-brief.md`, findings in `briefs/m11-security-findings.md`) returned fix first. The first fix round (`briefs/m11-step-9-security-fix-brief.md`) landed on the branch; its delta security review (`briefs/m11-step-9-delta-security-review-brief.md`) returned fix first, and fix round 2 (`briefs/m11-step-9-security-fix2-message.md`) is running. A focused delta security review follows, then landing with protocol 15 or the next free number.
+1. `feat/sync-peer-exchange`: milestone 11 step 9. Parts A to C are committed. The four-part internal security review (`briefs/m11-security-review-brief.md`, findings in `briefs/m11-security-findings.md`) returned fix first. The first fix round (`briefs/m11-step-9-security-fix-brief.md`) landed on the branch; its delta security review (`briefs/m11-step-9-delta-security-review-brief.md`) returned fix first, and fix round 2 (`briefs/m11-step-9-security-fix2-message.md`, head 974cff5c, all checks passed) had its focused delta security review (`briefs/m11-step-9-delta2-security-review-brief.md`, fix first on the former-anchor handover hole), and fix round 3 (`briefs/m11-step-9-security-fix3-message.md`) is running; a delta review of that one item follows, then landing with protocol 15 or the next free number.
 2. `feat/sync-chat-config`: milestone 9 step 8 (brief `briefs/m9-step-8-brief.md`), implementer finishing its checks; it merges feat/sync (step 7 landed) before review and landing.
+3. `perf/test-migration-speed`: test suite speed (brief `briefs/test-speed-brief.md`), implementer running. Not a plan step; it lands like one after a review.
 
 WIP patches: none. Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.
 

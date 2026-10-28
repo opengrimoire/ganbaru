@@ -55,7 +55,7 @@ Updated by the orchestrator session on the mini PC (2026-10-27). Milestone 11 st
 Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
 1. `feat/sync-chat-attachments`: milestone 9 step 6 (brief `briefs/m9-step-6-brief.md`; step 7 follow-ups in `briefs/m9-step-7-followups.md`), implementer running.
-2. `feat/sync-peer-exchange`: milestone 11 step 9. Part A committed (28bb1032, reviewed); part B (brief `briefs/m11-step-9b-brief.md`) implementer running; the whole-package internal security review follows on the same branch.
+2. `feat/sync-peer-exchange`: milestone 11 step 9. Part A committed (28bb1032, reviewed); part B (brief `briefs/m11-step-9b-brief.md`) did the review fixes (7651271d); part C (brief `briefs/m11-step-9c-brief.md`) implementer running on the remaining items; the whole-package internal security review follows on the same branch.
 3. `feat/sync-notes-assets`: milestone 8 step 6 (Notes assets, brief `briefs/m8-step-6-brief.md` with `briefs/m8-step-6-followups.md`), implementer running.
 
 WIP patches: none. Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.

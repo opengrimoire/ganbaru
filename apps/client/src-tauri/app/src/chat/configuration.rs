@@ -27,11 +27,35 @@ pub(crate) fn config_io_error(_error: String) -> ChatError {
     )
 }
 
+/// Runs device preference file `work` on the blocking pool, so an async command never holds
+/// the async runtime during file I/O.
+pub(crate) async fn on_blocking_pool<T: Send + 'static>(
+    work: impl FnOnce() -> ChatResult<T> + Send + 'static,
+) -> ChatResult<T> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| config_io_error(format!("Chat settings worker stopped: {error}")))?
+}
+
 /// The device Chat settings with the portable behavior preferences of the active vault.
 pub(crate) async fn read_chat_configuration<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> ChatResult<ChatConfiguration> {
-    let device = read_chat_config(app)?;
+    let handle = app.clone();
+    let device = on_blocking_pool(move || read_chat_config(&handle)).await?;
+    with_behavior(app, device).await
+}
+
+/// Applies `mutate` to the device Chat settings on the blocking pool, see
+/// [`update_chat_device_config`], and returns them with the portable behavior preferences.
+/// Desktop commands go through the settings mutation lock instead.
+#[cfg(mobile)]
+pub(crate) async fn update_chat_configuration<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    mutate: impl FnOnce(&mut ChatDeviceConfig) -> ChatResult<()> + Send + 'static,
+) -> ChatResult<ChatConfiguration> {
+    let handle = app.clone();
+    let device = on_blocking_pool(move || update_chat_device_config(&handle, mutate)).await?;
     with_behavior(app, device).await
 }
 

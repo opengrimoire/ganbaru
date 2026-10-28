@@ -1,7 +1,7 @@
 //! Provider-free Chat settings used by mobile clients.
 
 use crate::chat::configuration::{
-    read_chat_configuration, update_chat_device_config, with_behavior, write_chat_behavior,
+    read_chat_configuration, update_chat_configuration, write_chat_behavior,
 };
 use ganbaru_chat::credentials::CredentialStoreAvailability;
 use ganbaru_chat_contracts::config::{
@@ -69,9 +69,9 @@ pub async fn chat_update_panels(
     app: tauri::AppHandle,
     panels: ChatPanelPreferences,
 ) -> ChatResult<ChatConfiguration> {
-    let device = update_chat_device_config(&app, |config| {
+    update_chat_configuration(&app, |config| {
         config.panels = panels;
         Ok(())
-    })?;
-    with_behavior(&app, device).await
+    })
+    .await
 }

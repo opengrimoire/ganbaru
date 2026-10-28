@@ -194,9 +194,10 @@ pub(crate) struct ResolvedAsset {
 }
 
 /// The asset row a reference to `relative_path` names: the row stored under that path, or else
-/// the row of the same class and digest whose id is the class and digest of its own path and
-/// content. The same bytes recorded or replicated under two content types share one row and
-/// one path, so a reference may name a path no row holds.
+/// the row of the same class and digest. Either way the row's id must be the class and digest
+/// of its own path and content, since references resolve rows by that id. The same bytes
+/// recorded or replicated under two content types share one row and one path, so a reference
+/// may name a path no row holds.
 pub(crate) async fn resolve_asset_row(
     pool: &SqlitePool,
     relative_path: &str,
@@ -217,8 +218,7 @@ pub(crate) async fn resolve_asset_row(
     Ok(rows
         .into_iter()
         .find(|(id, asset_path, sha256, _, _)| {
-            asset_path == relative_path
-                || managed_asset_id(asset_path, sha256).is_ok_and(|derived| derived == *id)
+            managed_asset_id(asset_path, sha256).is_ok_and(|derived| derived == *id)
         })
         .map(
             |(id, asset_path, _, content_type, byte_size)| ResolvedAsset {

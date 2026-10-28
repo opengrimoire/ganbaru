@@ -227,15 +227,18 @@ pub async fn record_page_snapshot_tx(
     let snapshot_id = new_note_id(tx, &mut HashSet::new()).await?;
     let block_bundle_hash =
         crate::project_history::store_page_history_blocks_tx(tx, &blocks_payload).await?;
+    // Each block payload is a JSON document stored as a string inside the snapshot, so the
+    // payloads are read one by one rather than through the serialized snapshot.
     let asset_ids = crate::assets::json_documents_asset_ids(
-        [
-            Some(blocks_payload.as_str()),
-            Some(page.properties.as_str()),
-            page.icon.as_deref(),
-            page.cover.as_deref(),
-        ]
-        .into_iter()
-        .flatten(),
+        blocks.iter().map(|block| block.payload.as_str()).chain(
+            [
+                Some(page.properties.as_str()),
+                page.icon.as_deref(),
+                page.cover.as_deref(),
+            ]
+            .into_iter()
+            .flatten(),
+        ),
     )?;
     sqlx::query(
         "INSERT INTO notes_page_history_snapshots (

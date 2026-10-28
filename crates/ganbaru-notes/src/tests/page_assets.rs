@@ -452,6 +452,26 @@ fn page_media_asset_references_follow_local_file_payloads() {
         .unwrap();
         assert_eq!(recovered_icon, ("available".to_string(), None));
 
+        let file_digest = "c".repeat(64);
+        let file_path = format!("notes/files/{file_digest}.pdf");
+        let file_payload = json!({
+            "caption": [],
+            "type": "file",
+            "file": {
+                "url": format!("ganbaru-asset:{file_path}"),
+                "content_type": "application/pdf",
+                "byte_size": 64,
+                "sha256": file_digest,
+                "ganbaru_asset_path": file_path,
+            }
+        });
+        sqlx::query("UPDATE notes_blocks SET type = 'file', attrs = ? WHERE id = ?")
+            .bind(file_payload.to_string())
+            .bind(BLOCK_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+
         let mut tx = pool.begin().await.unwrap();
         let snapshot = page_history::record_page_snapshot_tx(&mut tx, PAGE_A, "restore")
             .await
@@ -467,10 +487,11 @@ fn page_media_asset_references_follow_local_file_payloads() {
         assert_eq!(
             serde_json::from_str::<Vec<String>>(&pinned).unwrap(),
             [
+                format!("notes/files:{file_digest}"),
                 format!("notes/page-covers:{}", "a".repeat(64)),
                 format!("notes/page-icons:{}", "b".repeat(64)),
             ],
-            "a snapshot names the files its page refers to, so the sweep keeps them"
+            "a snapshot names the files its page and blocks refer to, so the sweep keeps them"
         );
 
         writes::update_page(
@@ -627,6 +648,13 @@ fn a_file_reference_reads_the_row_of_its_digest_under_another_extension() {
                 .unwrap_err(),
             "notes file asset not found",
             "a row whose id is not its own class and digest names nothing"
+        );
+        assert_eq!(
+            assets::files::file_asset_data_url(&pool, &vault, format!("notes/files/{sha}.md"))
+                .await
+                .unwrap(),
+            "data:text/plain;base64,aGVsbG8=",
+            "a path held only by an inconsistent row resolves to the row of its digest"
         );
         let _ = std::fs::remove_dir_all(&vault);
     });

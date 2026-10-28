@@ -1650,3 +1650,80 @@ fn a_vetoed_branch_enrolls_writers_only_within_the_unselected_bounds() {
         observer.check_invariants().await;
     });
 }
+
+#[test]
+fn a_writer_keeps_the_unselected_bound_when_the_selection_enrolls_its_device_under_another_key() {
+    block_on(async {
+        let salt = 332;
+        let mut hub = Replica::anchor(0, salt).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut stale = Replica::new(20, salt).await;
+        stale.pull(&mut hub).await;
+        tag(&mut stale, "tag-20").await;
+
+        // The removed admin enrolls device 30 on its vetoed branch, whose writer seals one
+        // operation past the bound.
+        hub.remove(&device_id(20)).await.unwrap();
+        let (_, handover) = forge_handover(&mut stale, 20).await;
+        assert_eq!(stale.receive(&[handover]).await, vec![STORED]);
+        stale.apply_all().await.unwrap();
+        let signed = proposal(
+            stale.ctx.space,
+            &device_admin(20),
+            stale.now_ms,
+            enroll_entry(&person(), 30, DeviceRole::Member),
+        );
+        stale.sequence_signed(&signed).await.unwrap().unwrap();
+        let branch = stale.own_ops().await;
+        let enrolled = stale.stored_vector().await;
+        stale.identity = phantom_identity(&stale, 0, 30);
+        edit(&mut stale, &note("note-phantom", "Phantom", 0)).await;
+        for index in 1..MAX_EXCLUDED_PER_WRITER {
+            edit(
+                &mut stale,
+                &format!(
+                    "UPDATE quick_notes SET title = 'Phantom {index}' WHERE id = 'note-phantom'"
+                ),
+            )
+            .await;
+        }
+        let first = stale.ops_since(&enrolled).await;
+        assert_eq!(first.len() as u64, MAX_EXCLUDED_PER_WRITER + 1);
+
+        let mut observer = Replica::new(2, salt).await;
+        observer.pull(&mut hub).await;
+        observer.receive(&branch).await;
+        observer.apply_all().await.unwrap();
+        assert!(matches!(
+            observer.receive(&first[..1]).await.first(),
+            Some(StoreOutcome::Stored { .. })
+        ));
+
+        // The anchor then enrolls the same device id with another key, which does not lift the
+        // bound of the writer the vetoed branch enrolled.
+        hub.sequence(Entry::Enroll(Enroll {
+            device_id: device_id(30),
+            device_key: device_key(&person(), 99).public_key(),
+            tls_fingerprint: tls_fingerprint(99),
+            label: "Device 30".to_owned(),
+            device_kind: DeviceKind::Desktop,
+            role: DeviceRole::Member,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+        observer.pull(&mut hub).await;
+        observer.apply_all().await.unwrap();
+        let outcomes = observer.receive(&first[1..]).await;
+        assert!(
+            outcomes[..outcomes.len() - 1]
+                .iter()
+                .all(|outcome| matches!(outcome, StoreOutcome::Stored { .. }))
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::Revoked))
+        );
+        observer.check_invariants().await;
+    });
+}

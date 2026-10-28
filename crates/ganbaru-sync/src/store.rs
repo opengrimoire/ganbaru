@@ -10,7 +10,7 @@ use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPA
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
     Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
-    VersionVector, WriterId,
+    SignedCertificate, VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -502,10 +502,11 @@ async fn store_next(
             exclusion::excluded_limit(cutoff),
             exclusion::entry_limit(cutoff),
         )),
-        // A writer of a device the selected chain does not name, which a chain it did not
-        // select enrolls, is bounded as an unnamed writer of a removed device is.
+        // A writer whose device the selected chain does not name with the key of its certificate,
+        // which a chain it did not select enrolls, is bounded as an unnamed writer of a removed
+        // device is.
         None if envelope.seq > exclusion::excluded_limit(0)
-            && !names_device(conn, ctx, &writer.device_id).await? =>
+            && !names_writer_device(conn, ctx, writer.id).await? =>
         {
             Some((exclusion::excluded_limit(0), exclusion::entry_limit(0)))
         }
@@ -759,18 +760,27 @@ async fn within_writer_limits(
     Ok(below(device, MAX_WRITERS_PER_DEVICE) && space)
 }
 
-/// Whether the selected chain names `device_id`, enrolled or removed.
-async fn names_device(
+/// Whether the selected chain names the device of `writer`, enrolled or removed, with the device
+/// key its certificate carries. Another chain may enroll the same device id with another key.
+async fn names_writer_device(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
-    device_id: &str,
+    writer: WriterId,
 ) -> SyncResult<bool> {
-    let named: i64 = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM sync_devices WHERE space_id = ? AND device_id = ?)",
+    let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT d.device_key, w.certificate
+         FROM sync_writers w
+         JOIN sync_devices d ON d.space_id = w.space_id AND d.device_id = w.device_id
+         WHERE w.space_id = ? AND w.writer_id = ?",
     )
     .bind(ctx.space.as_bytes().as_slice())
-    .bind(device_id)
-    .fetch_one(&mut *conn)
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
     .await?;
-    Ok(named != 0)
+    let Some((device_key, certificate)) = row else {
+        return Ok(false);
+    };
+    let certificate = SignedCertificate::decode(&certificate)
+        .map_err(|_| corrupt("a stored writer certificate does not decode"))?;
+    Ok(certificate.certificate.device_key.as_bytes().as_slice() == device_key.as_slice())
 }

@@ -1005,11 +1005,13 @@ pub(crate) async fn enrolled_on_any_chain(
     Ok(enrolled.contains(&wanted))
 }
 
-/// What the enrollments of every stored chain depend on: the space, the hashes of its stored
-/// authorization entries, and its freezes.
+/// What the enrollments of every stored chain depend on: the space, its charter, the hashes of
+/// its stored authorization entries, and its freezes. The charter keeps a reset space that a
+/// new charter founds, or another vault with the same space, from reading a stale answer.
 #[derive(Debug, PartialEq, Eq)]
 struct EnrolledKey {
     space: SpaceId,
+    charter: Option<Digest32>,
     entries: Vec<Digest32>,
     freezes: BTreeMap<String, Vec<u64>>,
 }
@@ -1028,6 +1030,9 @@ impl EnrolledKey {
             .collect::<SyncResult<Vec<_>>>()?;
         Ok(Self {
             space,
+            charter: load_charter(conn, space)
+                .await?
+                .map(|charter| charter.hash()),
             entries,
             freezes: fork::freezes(conn, space).await?,
         })

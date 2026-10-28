@@ -37,6 +37,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "projects::conflicts::projects_resolve_conflict",
         "notes::conflicts::notes_conflicts",
         "notes::conflicts::notes_resolve_conflict",
+        "notes::conflicts::notes_preview_mismatched_value",
         "notes::conflicts::notes_settle_mismatched_value",
         "notes::notes_load_workspace_shell",
         "notes::notes_toggle_comment_reaction",

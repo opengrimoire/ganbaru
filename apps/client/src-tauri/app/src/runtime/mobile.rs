@@ -258,6 +258,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::conflicts::projects_resolve_conflict,
             notes::conflicts::notes_conflicts,
             notes::conflicts::notes_resolve_conflict,
+            notes::conflicts::notes_preview_mismatched_value,
             notes::conflicts::notes_settle_mismatched_value,
             projects::relationship_commands::projects_create_task_dependency,
             projects::relationship_commands::projects_delete_task_dependency,

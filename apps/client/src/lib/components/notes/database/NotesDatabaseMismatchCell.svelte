@@ -1,10 +1,16 @@
 <script lang="ts">
-  import { settleNotesMismatchedValue } from "$lib/api/notes/conflicts";
+  import { previewNotesMismatchedValue, settleNotesMismatchedValue } from "$lib/api/notes/conflicts";
+  import SyncConflictChoice from "$lib/components/sync/SyncConflictChoice.svelte";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { portal } from "$lib/utils/portal";
+  import { notesStoredPropertyTypeLabel } from "./property-kinds";
 
   /**
-   * A row value stored under another type than its column, written on another device while the type changed. It
-   * offers converting the value to the column type or discarding it.
+   * A row value stored under another type than its property, written on another device while the type changed. It
+   * offers converting the value to the property type, warning first when that drops data, or discarding it after a
+   * confirmation. Table cells and the row page both show it.
    */
   let {
     pageId,
@@ -24,6 +30,25 @@
   const { t } = getLocalization();
   let busy = $state(false);
   let failed = $state(false);
+  let hintOpen = $state(false);
+  let confirmingDiscard = $state(false);
+  let conversionLosesData = $state(false);
+
+  $effect(() => {
+    const target = { pageId, propertyId, storedType };
+    let current = true;
+    conversionLosesData = false;
+    previewNotesMismatchedValue(target.pageId, target.propertyId)
+      .then((preview) => {
+        if (current) conversionLosesData = preview.conversionLosesData;
+      })
+      .catch((cause: unknown) => {
+        console.warn("Notes mismatched value preview could not be read", cause);
+      });
+    return () => {
+      current = false;
+    };
+  });
 
   async function settle(convert: boolean): Promise<void> {
     if (busy) return;
@@ -41,19 +66,35 @@
   }
 </script>
 
-<div class="flex min-w-0 flex-wrap items-center gap-1 px-2 py-1 text-[0.8rem]" title={t("notes.mismatch.hint")}>
-  <span class="truncate text-muted-foreground">{t("notes.mismatch.label", storedType)}</span>
-  <button
-    class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-    type="button"
-    disabled={disabled || busy}
-    onclick={() => void settle(true)}
-  >{t("notes.mismatch.convert")}</button>
-  <button
-    class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-    type="button"
-    disabled={disabled || busy}
-    onclick={() => void settle(false)}
-  >{t("notes.mismatch.discard")}</button>
-  {#if failed}<span class="text-destructive" role="alert">{t("notes.mismatch.failed")}</span>{/if}
+<div class="flex min-w-0 flex-col gap-0.5 px-2 py-1 text-xs">
+  <div class="flex min-w-0 flex-wrap items-center gap-1">
+    <button
+      class="truncate rounded-md text-left text-muted-foreground hover:text-foreground"
+      type="button"
+      aria-expanded={hintOpen}
+      onclick={() => { hintOpen = !hintOpen; }}
+    >{t("notes.mismatch.label", notesStoredPropertyTypeLabel(storedType, t))}</button>
+    <SyncConflictChoice disabled={disabled || busy} onclick={() => void settle(true)}>
+      {t("notes.mismatch.convert")}
+    </SyncConflictChoice>
+    <SyncConflictChoice disabled={disabled || busy} onclick={() => { confirmingDiscard = true; }}>
+      {t("notes.mismatch.discard")}
+    </SyncConflictChoice>
+  </div>
+  {#if conversionLosesData}<span class="text-muted-foreground">{t("notes.mismatch.lossy")}</span>{/if}
+  {#if hintOpen}<span class="text-muted-foreground">{t("notes.mismatch.hint")}</span>{/if}
+  {#if failed}<Notice message={t("notes.mismatch.failed")} copy={false} />{/if}
 </div>
+
+{#if confirmingDiscard}
+  <div class="contents" use:portal>
+    <ConfirmDialog
+      title={t("notes.mismatch.discardTitle")}
+      message={t("notes.mismatch.discardBody")}
+      confirmLabel={t("notes.mismatch.discard")}
+      cancelLabel={t("common.cancel")}
+      onConfirm={() => { confirmingDiscard = false; void settle(false); }}
+      onCancel={() => { confirmingDiscard = false; }}
+    />
+  </div>
+{/if}

@@ -471,6 +471,7 @@ commands.allow = [
   "notes_pick_file_asset",
   "notes_pick_page_cover_file",
   "notes_pick_page_icon_file",
+  "notes_preview_mismatched_value",
   "notes_preview_project_history_restore",
   "notes_prune_project_history",
   "notes_read_working_markdown",

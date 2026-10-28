@@ -19,6 +19,18 @@ pub async fn notes_conflicts<R: Runtime>(
     ganbaru_notes::conflicts::conflicts_from_pool(&pool, &vault_id, &devices, &page_id).await
 }
 
+/// Reads whether converting a row value stored under another type than its property's drops data.
+#[tauri::command]
+pub async fn notes_preview_mismatched_value<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    page_id: String,
+    property_id: String,
+) -> Result<ganbaru_notes::data_sources::MismatchedValuePreview, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    ganbaru_notes::data_sources::preview_mismatched_value(&pool, &page_id, &property_id).await
+}
+
 /// Converts a row value stored under another type than its property's current type, or discards it.
 #[tauri::command]
 pub async fn notes_settle_mismatched_value<R: Runtime>(

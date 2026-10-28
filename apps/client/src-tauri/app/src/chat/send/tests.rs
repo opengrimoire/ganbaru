@@ -699,6 +699,69 @@ async fn late_provider_events_cannot_reopen_or_rewrite_a_settled_run() {
     assert_eq!(projected, 0, "a settled run projects no late messages");
 }
 
+#[tokio::test]
+async fn provider_events_of_a_settled_assignment_project_no_messages_and_never_reopen_its_run() {
+    use crate::chat::tests::repository::canonical_request;
+    use ganbaru_chat::repository::events::append_canonical_event;
+    use ganbaru_chat_contracts::events::RequestOpenedEvent;
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    // Another device cancelled the assignment while this device's run still works.
+    sqlx::query(
+        "UPDATE chat_work_assignments SET state = 'cancelled', settled_at = '2026-10-20T12:01:00.000Z'
+         WHERE id = (SELECT assignment_id FROM chat_agent_runs WHERE id = 'run:working')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    append_canonical_event(
+        &pool,
+        canonical_request(
+            "event:approval",
+            Some("turn:working"),
+            CanonicalEvent::RequestOpened(RequestOpenedEvent {
+                request_id: ProviderRequestId::new("request-settled").unwrap(),
+                kind: CanonicalRequestKind::CommandExecution,
+                title: "Approve".to_string(),
+                detail: None,
+                allowed_decisions: Vec::new(),
+                safe_payload: VersionedJson {
+                    schema_version: 1,
+                    value: serde_json::json!({}),
+                },
+                subject: None,
+                session_grants: Vec::new(),
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    let run_state: String =
+        sqlx::query_scalar("SELECT state FROM chat_agent_runs WHERE id = 'run:working'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        run_state, "working",
+        "the run never waits for a settled assignment"
+    );
+
+    assert_eq!(
+        complete_working_turn(&pool, true).await,
+        ("cancelled".to_string(), "completed".to_string()),
+        "the run records that its turn ended while the assignment stays settled"
+    );
+    let projected: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_conversation_items WHERE id LIKE 'organizational-item:%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        projected, 0,
+        "a settled assignment shows no late approval or review"
+    );
+}
+
 async fn working_run_binding(pool: &sqlx::SqlitePool) -> ganbaru_chat::agent_runs::AgentRunBinding {
     let execution_environment_id: String = sqlx::query_scalar(
         "SELECT execution_environment_id FROM chat_agent_runs WHERE id = 'run:working'",

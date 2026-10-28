@@ -2291,6 +2291,209 @@ fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here(
         .await
         .unwrap();
         assert_eq!(trigger, started.as_str());
+
+        // Start, takeover, and Retry derive the successor from the stranded assignment alone,
+        // so two devices moving the same work on different paths merge into one row.
+        let old = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let expected = super::common::work_assignment_id(
+            &ChatConversationItemId::new("item:review-reply-1").unwrap(),
+            &teammate_id,
+            Some(&old),
+        )
+        .unwrap();
+        assert_eq!(started, expected);
+        let pool = review_thread_with_unrouted_mention().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+            .await
+            .unwrap();
+        let (_, _, _, taken_over) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(taken_over.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            retried, expected,
+            "Retry of started work derives the same successor"
+        );
+    });
+}
+
+#[test]
+fn start_refuses_finished_work_whose_device_can_no_longer_write_chat() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        for state in ["completed", "ready_for_review", "failed", "cancelled"] {
+            let pool = review_thread_with_unrouted_mention().await;
+            seed_assignment_on_old_owner(&pool, state).await;
+            let refused = assignments::persist_started_assignment(
+                &pool,
+                &mention,
+                &teammate_id,
+                new_owner,
+                &now,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused.code, ChatErrorCode::Conflict, "{state} work reruns");
+            let (kept, _, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+            assert_eq!(kept, state);
+            assert_eq!(successor, None, "{state} work gets no successor");
+        }
+    });
+}
+
+#[test]
+fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        for (seeded, job_state) in [("working", "failed"), ("queued", "cancelled")] {
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, seeded).await;
+            sqlx::query(
+                "INSERT INTO chat_assignment_dispatch_jobs
+                    (id, assignment_id, state, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+            )
+            .bind(now.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+            assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+                .await
+                .unwrap();
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM chat_assignment_dispatch_jobs WHERE id = 'dispatch:old'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(state, job_state, "{seeded} work ends its dispatch");
+        }
+    });
+}
+
+#[test]
+fn takeover_visits_every_stranded_assignment_past_one_batch() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        let stranded = 70_i64;
+        for index in 0..stranded {
+            sqlx::query(
+                "INSERT INTO chat_work_assignments
+                     (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                      executing_device_id, state, created_at, updated_at)
+                 VALUES (?, 'reply-thread:review', 'participant:review-agent',
+                         'item:review-reply-1', 'device:old', 'working',
+                         '2026-08-04T17:01:00.000Z', '2026-08-04T17:01:00.000Z')",
+            )
+            .bind(format!("assignment:old-{index:03}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+            .await
+            .unwrap();
+        assert_eq!(i64::from(taken), stranded);
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_work_assignments WHERE state = 'working'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            active, 0,
+            "no stranded work stays hidden past the first batch"
+        );
+    });
+}
+
+#[test]
+fn after_a_whole_vault_handoff_the_new_owner_takes_over_through_its_ownership_status() {
+    use crate::vault::ownership::VaultOwnershipManager;
+    tauri::async_runtime::block_on(async {
+        let directory = std::env::temp_dir().join(format!(
+            "ganbaru-chat-handoff-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let old_owner = VaultOwnershipManager::default();
+        old_owner
+            .initialize_from_path(directory.join("old.json"), "device:old".to_owned())
+            .unwrap();
+        let new_owner = VaultOwnershipManager::default();
+        new_owner
+            .initialize_from_path(directory.join("new.json"), NEW_OWNER.to_owned())
+            .unwrap();
+        old_owner.status("vault").unwrap();
+        new_owner
+            .register_remote_owner("vault", "device:old".to_owned(), 0)
+            .unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+
+        let before = super::common::chat_writers_from_status(&new_owner.status("vault").unwrap());
+        assert_eq!(
+            assignments::take_over_stranded_assignments(
+                &pool,
+                super::workflow::PostingDevice::this_device(NEW_OWNER, &before),
+                &now,
+            )
+            .await
+            .unwrap(),
+            0,
+            "work on the owner is not stranded before the handoff"
+        );
+
+        old_owner
+            .begin_outgoing("vault", 0, "transfer".to_owned(), NEW_OWNER.to_owned())
+            .unwrap();
+        let generation = old_owner.commit_outgoing("vault", "transfer").unwrap();
+        new_owner
+            .accept_incoming_grant(
+                "vault",
+                "transfer".to_owned(),
+                "device:old".to_owned(),
+                generation,
+            )
+            .unwrap();
+        new_owner
+            .finalize_incoming("vault", "transfer", generation)
+            .unwrap();
+        let after = super::common::chat_writers_from_status(&new_owner.status("vault").unwrap());
+        assert!(after.includes(NEW_OWNER));
+        assert!(!after.includes("device:old"));
+        let taken = assignments::take_over_stranded_assignments(
+            &pool,
+            super::workflow::PostingDevice::this_device(NEW_OWNER, &after),
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(taken, 1);
+        let (state, _, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "cancelled");
+        let successor = successor.expect("the new owner runs the work");
+        let (_, _, executor, _) = assignment_takeover(&pool, &successor).await;
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+
+        let old_writers =
+            super::common::chat_writers_from_status(&old_owner.status("vault").unwrap());
+        assert!(!old_writers.includes("device:old"));
+        let _ = std::fs::remove_dir_all(directory);
     });
 }
 

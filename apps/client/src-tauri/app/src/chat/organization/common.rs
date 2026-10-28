@@ -900,11 +900,19 @@ pub(super) fn chat_writers<R: tauri::Runtime>(
             true,
         )
     })?;
+    Ok(chat_writers_from_status(&status))
+}
+
+/// The devices that write Chat under the ownership `status`: the vault owner, and this device
+/// when it may write the Chat domain.
+pub(super) fn chat_writers_from_status(
+    status: &crate::vault::ownership::VaultOwnershipStatus,
+) -> super::workflow::ChatWriters {
     let mut devices = vec![status.owner_device_id.clone()];
     if status.can_write_domain(ganbaru_sync::manifest::vault::chat::DOMAIN_NAME) {
         devices.push(status.device_id.clone());
     }
-    Ok(super::workflow::ChatWriters::new(devices))
+    super::workflow::ChatWriters::new(devices)
 }
 
 pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {

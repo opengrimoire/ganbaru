@@ -1,12 +1,12 @@
 //! Work assignment cancellation, retry, and dispatch recovery.
 
-use super::common::{chat_writers, new_id, this_device_id};
+use super::common::{chat_writers, new_id, this_device_id, wire_work_state};
 use super::context::freeze_context_package;
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
-    NewAssignment, PostingDevice, create_assignment, read_assignment_executing_device,
-    require_participating_teammate, set_assignment_state,
+    NewAssignment, PostingDevice, create_assignment, end_assignment_dispatch_jobs,
+    read_assignment_executing_device, require_participating_teammate, set_assignment_state,
 };
 use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error};
 use crate::chat::sync::SyncedAssignmentWork;
@@ -109,59 +109,86 @@ pub(super) async fn take_over_stranded_assignments(
     if !device.runs_new_work() {
         return Ok(0);
     }
-    let stranded = sqlx::query(
-        "SELECT assignment.id,
-                assignment.state = 'queued' AND NOT EXISTS (
-                  SELECT 1 FROM chat_agent_runs run WHERE run.assignment_id = assignment.id
-                ) AS unstarted
-         FROM chat_work_assignments assignment
-         WHERE assignment.state IN
-                 ('queued', 'working', 'waiting_for_answer', 'waiting_for_approval')
-           AND assignment.executing_device_id IS NOT NULL
-           AND assignment.executing_device_id NOT IN (SELECT value FROM json_each(?))
-         ORDER BY assignment.updated_at, assignment.id LIMIT 32",
-    )
-    .bind(device.chat_writers.json()?)
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?;
+    let writers = device.chat_writers.json()?;
+    let mut after_id = String::new();
     let mut taken_over = 0_u32;
-    for row in stranded {
-        let assignment_id =
-            ChatWorkAssignmentId::new(row.try_get::<String, _>("id").map_err(persistence_error)?)
-                .map_err(identifier_error)?;
-        let unstarted: bool = row.try_get("unstarted").map_err(persistence_error)?;
-        let assignment = read_assignment(pool, &assignment_id).await?;
-        let mut transaction = pool.begin().await.map_err(persistence_error)?;
-        let moved = if unstarted {
-            let trigger = assignment.triggering_message_item_id.clone();
-            reroute_assignment(&mut transaction, &assignment, &trigger, device, now)
-                .await?
-                .is_some()
-        } else {
-            settle_stranded_assignment(
-                &mut transaction,
-                &assignment,
-                "failed",
-                STRANDED_REASON,
-                now,
+    loop {
+        let stranded = sqlx::query(
+            "SELECT assignment.id,
+                    assignment.state = 'queued' AND NOT EXISTS (
+                      SELECT 1 FROM chat_agent_runs run WHERE run.assignment_id = assignment.id
+                    ) AS unstarted
+             FROM chat_work_assignments assignment
+             WHERE assignment.state IN
+                     ('queued', 'working', 'waiting_for_answer', 'waiting_for_approval')
+               AND assignment.executing_device_id IS NOT NULL
+               AND assignment.executing_device_id NOT IN (SELECT value FROM json_each(?))
+               AND assignment.id > ?
+             ORDER BY assignment.id LIMIT ?",
+        )
+        .bind(writers.as_str())
+        .bind(after_id.as_str())
+        .bind(i64::from(TAKEOVER_BATCH_SIZE))
+        .fetch_all(pool)
+        .await
+        .map_err(persistence_error)?;
+        let batch_len = stranded.len();
+        for row in stranded {
+            let assignment_id = ChatWorkAssignmentId::new(
+                row.try_get::<String, _>("id").map_err(persistence_error)?,
             )
-            .await?
-        };
-        transaction.commit().await.map_err(persistence_error)?;
-        if moved {
-            taken_over = taken_over.saturating_add(1);
+            .map_err(identifier_error)?;
+            let unstarted: bool = row.try_get("unstarted").map_err(persistence_error)?;
+            if take_over_stranded_assignment(pool, &assignment_id, unstarted, device, now).await? {
+                taken_over = taken_over.saturating_add(1);
+            }
+            after_id = assignment_id.as_str().to_owned();
+        }
+        if batch_len < usize::from(TAKEOVER_BATCH_SIZE) {
+            return Ok(taken_over);
         }
     }
-    Ok(taken_over)
+}
+
+/// Number of stranded assignments one takeover query reads at a time; takeover keeps reading
+/// batches until every stranded assignment was visited.
+const TAKEOVER_BATCH_SIZE: u16 = 32;
+
+/// Takes over the stranded assignment `assignment_id`, moving unstarted work to a successor
+/// `device` runs and failing started work, reporting whether it changed.
+async fn take_over_stranded_assignment(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    unstarted: bool,
+    device: PostingDevice<'_>,
+    now: &UtcTimestamp,
+) -> ChatResult<bool> {
+    let assignment = read_assignment(pool, assignment_id).await?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let moved = if unstarted {
+        reroute_assignment(&mut transaction, &assignment, device, now)
+            .await?
+            .is_some()
+    } else {
+        settle_stranded_assignment(
+            &mut transaction,
+            &assignment,
+            ChatWorkAssignmentState::Failed,
+            STRANDED_REASON,
+            now,
+        )
+        .await?
+    };
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(moved)
 }
 
 /// Settles the active assignment `assignment` as `state` with `reason`, unless it changed since
-/// it was read, reporting whether it did.
+/// it was read, and ends its local dispatch jobs, reporting whether it settled.
 async fn settle_stranded_assignment(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment: &ChatWorkAssignmentRead,
-    state: &str,
+    state: ChatWorkAssignmentState,
     reason: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
@@ -171,7 +198,7 @@ async fn settle_stranded_assignment(
          WHERE id = ? AND revision = ? AND state IN
                  ('queued', 'working', 'waiting_for_answer', 'waiting_for_approval')",
     )
-    .bind(state)
+    .bind(wire_work_state(state))
     .bind(reason)
     .bind(now.as_str())
     .bind(now.as_str())
@@ -180,17 +207,22 @@ async fn settle_stranded_assignment(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    Ok(settled.rows_affected() == 1)
+    if settled.rows_affected() != 1 {
+        return Ok(false);
+    }
+    end_assignment_dispatch_jobs(&mut **transaction, &assignment.id, state, now).await?;
+    Ok(true)
 }
 
 /// Moves the work of `assignment`, whose executing device can no longer write Chat, onto a
-/// successor that `device` runs, triggered by `message_item_id`: an active `assignment` is
-/// cancelled first, and its pending inputs follow the trigger in order. Returns the successor,
-/// or none when `assignment` changed since it was read or already has a successor.
+/// successor that `device` runs: an active `assignment` is cancelled first, and its pending
+/// inputs follow the trigger in order. The successor keeps the trigger of `assignment` and
+/// names it as its predecessor, so its id derives from `assignment` alone and every device
+/// and path that moves the same work merges into one successor. Returns the successor, or
+/// none when `assignment` changed since it was read or already has a successor.
 async fn reroute_assignment(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment: &ChatWorkAssignmentRead,
-    message_item_id: &ChatConversationItemId,
     device: PostingDevice<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<Option<ChatWorkAssignmentId>> {
@@ -206,8 +238,14 @@ async fn reroute_assignment(
     }
     let mut previous = assignment.clone();
     if previous.state.accepts_continuation() {
-        if !settle_stranded_assignment(transaction, assignment, "cancelled", REROUTED_REASON, now)
-            .await?
+        if !settle_stranded_assignment(
+            transaction,
+            assignment,
+            ChatWorkAssignmentState::Cancelled,
+            REROUTED_REASON,
+            now,
+        )
+        .await?
         {
             return Ok(None);
         }
@@ -217,7 +255,7 @@ async fn reroute_assignment(
         transaction,
         NewAssignment {
             reply_thread_id: &assignment.reply_thread_id,
-            message_item_id,
+            message_item_id: &assignment.triggering_message_item_id,
             teammate_id: &assignment.teammate.id,
             latest_assignment: Some(&previous),
             executing_device_id: device.id,
@@ -498,8 +536,7 @@ pub(super) async fn persist_retry(
             ));
         }
         let mut transaction = pool.begin().await.map_err(persistence_error)?;
-        let trigger = current.triggering_message_item_id.clone();
-        let successor = reroute_assignment(&mut transaction, &current, &trigger, device, now)
+        let successor = reroute_assignment(&mut transaction, &current, device, now)
             .await?
             .ok_or_else(|| {
                 ChatError::new(
@@ -790,16 +827,6 @@ pub(super) async fn persist_started_assignment(
     let routed_assignment_id: Option<String> = row
         .try_get("routed_assignment_id")
         .map_err(persistence_error)?;
-    if let Some(routed_assignment_id) = routed_assignment_id {
-        let executor = read_assignment_executing_device(pool, &routed_assignment_id).await?;
-        if !(device.runs_new_work() && stranded_executor(executor.as_deref(), device)) {
-            return Err(ChatError::new(
-                ChatErrorCode::Conflict,
-                "This mention already started work",
-                true,
-            ));
-        }
-    }
     let reply_thread_id = ChatReplyThreadId::new(reply_thread_id).map_err(identifier_error)?;
     let conversation_id = ChatConversationId::new(
         row.try_get::<String, _>("conversation_id")
@@ -807,53 +834,75 @@ pub(super) async fn persist_started_assignment(
     )
     .map_err(identifier_error)?;
     require_participating_teammate(pool, &conversation_id, teammate_id).await?;
+    if let Some(routed_assignment_id) = routed_assignment_id {
+        let routed_assignment_id =
+            ChatWorkAssignmentId::new(routed_assignment_id).map_err(identifier_error)?;
+        return take_over_routed_assignment(pool, &routed_assignment_id, teammate_id, device, now)
+            .await;
+    }
     let latest = read_active_or_latest_assignment(pool, &reply_thread_id).await?;
-    let mut stranded_latest = None;
-    if let Some(assignment) = &latest {
-        let executor = read_assignment_executing_device(pool, assignment.id.as_str()).await?;
-        if assignment.teammate.id == *teammate_id
-            && device.runs_new_work()
-            && stranded_executor(executor.as_deref(), device)
-        {
-            stranded_latest = Some(assignment);
-        } else if assignment.state.accepts_continuation() {
-            return Err(ChatError::new(
-                ChatErrorCode::Conflict,
-                "This reply thread already has active work",
-                true,
-            ));
-        }
+    if latest
+        .as_ref()
+        .is_some_and(|assignment| assignment.state.accepts_continuation())
+    {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "This reply thread already has active work",
+            true,
+        ));
     }
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
-    let assignment_id = match stranded_latest {
-        Some(stranded) => {
-            reroute_assignment(&mut transaction, stranded, message_item_id, device, now)
-                .await?
-                .ok_or_else(|| {
-                    ChatError::new(
-                        ChatErrorCode::Conflict,
-                        "This work changed before it moved to this device",
-                        true,
-                    )
-                })?
-        }
-        None => {
-            create_assignment(
-                &mut transaction,
-                NewAssignment {
-                    reply_thread_id: &reply_thread_id,
-                    message_item_id,
-                    teammate_id,
-                    latest_assignment: latest.as_ref(),
-                    executing_device_id: device.id,
-                    execution_target: None,
-                },
-                device,
-                now,
-            )
-            .await?
-        }
-    };
+    let assignment_id = create_assignment(
+        &mut transaction,
+        NewAssignment {
+            reply_thread_id: &reply_thread_id,
+            message_item_id,
+            teammate_id,
+            latest_assignment: latest.as_ref(),
+            executing_device_id: device.id,
+            execution_target: None,
+        },
+        device,
+        now,
+    )
+    .await?;
     transaction.commit().await.map_err(persistence_error)?;
     Ok(assignment_id)
+}
+
+/// Moves the work of `assignment_id`, which a mention of `teammate_id` already routed to, onto
+/// a successor `device` runs. Only work that is still active and whose executing device can no
+/// longer write Chat moves; finished work and work a Chat writer runs refuse the Start.
+async fn take_over_routed_assignment(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    teammate_id: &ChatParticipantId,
+    device: PostingDevice<'_>,
+    now: &UtcTimestamp,
+) -> ChatResult<ChatWorkAssignmentId> {
+    let routed = read_assignment(pool, assignment_id).await?;
+    let executor = read_assignment_executing_device(pool, assignment_id.as_str()).await?;
+    if routed.teammate.id != *teammate_id
+        || !routed.state.accepts_continuation()
+        || !device.runs_new_work()
+        || !stranded_executor(executor.as_deref(), device)
+    {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "This mention already started work",
+            true,
+        ));
+    }
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let successor = reroute_assignment(&mut transaction, &routed, device, now)
+        .await?
+        .ok_or_else(|| {
+            ChatError::new(
+                ChatErrorCode::Conflict,
+                "This work changed before it moved to this device",
+                true,
+            )
+        })?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(successor)
 }

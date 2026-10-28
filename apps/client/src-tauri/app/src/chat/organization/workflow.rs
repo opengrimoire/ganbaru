@@ -1461,22 +1461,39 @@ pub(super) async fn set_assignment_state(
         ));
     }
     if !state.is_active() {
-        sqlx::query(
-            "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
-             WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-        )
-        .bind(if state == ChatWorkAssignmentState::Cancelled {
-            "cancelled"
-        } else {
-            "failed"
-        })
-        .bind(now.as_str())
-        .bind(assignment_id.as_str())
-        .execute(pool)
-        .await
-        .map_err(persistence_error)?;
+        end_assignment_dispatch_jobs(pool, assignment_id, state, &now).await?;
     }
     read_assignment(pool, assignment_id).await
+}
+
+/// Ends the local dispatch jobs still queued or claimed for `assignment_id`, which settled as
+/// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
+/// settled work.
+#[cfg(desktop)]
+pub(super) async fn end_assignment_dispatch_jobs<'e, E>(
+    executor: E,
+    assignment_id: &ChatWorkAssignmentId,
+    state: ChatWorkAssignmentState,
+    now: &UtcTimestamp,
+) -> ChatResult<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
+         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+    )
+    .bind(if state == ChatWorkAssignmentState::Cancelled {
+        "cancelled"
+    } else {
+        "failed"
+    })
+    .bind(now.as_str())
+    .bind(assignment_id.as_str())
+    .execute(executor)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

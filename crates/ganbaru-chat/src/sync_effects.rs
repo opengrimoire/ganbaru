@@ -66,6 +66,9 @@ pub struct ChatSyncEffects {
     /// target them, with their runs, so no revocation job can name those runs; the caller stops
     /// running work whose authorization no longer exists.
     pub removed_conversations: BTreeSet<String>,
+    /// Attachments whose device row, created for a replicated revision, was removed because no
+    /// reference on this device names them any more.
+    pub reclaimed_attachments: BTreeSet<String>,
 }
 
 impl ChatSyncEffects {
@@ -78,6 +81,7 @@ impl ChatSyncEffects {
             && self.search_rebuilt.is_empty()
             && self.mismatched_pointers.is_empty()
             && self.removed_conversations.is_empty()
+            && self.reclaimed_attachments.is_empty()
     }
 }
 
@@ -88,7 +92,9 @@ impl ChatSyncEffects {
 /// its audience state, a profile whose effective revision arrived or changed bumps the audience
 /// of the conversations whose teammates use that profile, and a message or revision rebuilds the
 /// message's search row (a deleted message loses it). A revision also creates the attachment and
-/// resource rows of the attachments it names in a working folder this device has. An effective profile revision that narrows
+/// resource rows of the attachments it names in a working folder this device has, and a changed
+/// revision, message, or deleted conversation removes such rows once nothing on this device
+/// references them. An effective profile revision that narrows
 /// authority also bumps the access revision of those teammates and revokes the active
 /// authorizations granted under a wider revision, as the command that saves a reduction does.
 /// A conversation membership, AI channel membership, or folder grant bumps the audience (for
@@ -144,6 +150,7 @@ pub async fn after_materialize(
             }
             if !effects.removed_conversations.is_empty() {
                 sweep_uncovered_authorizations(connection, &mut effects).await?;
+                reclaim_applied_attachments(connection, &mut effects).await?;
             }
         }
         ACCESS_PROFILES_TABLE => {
@@ -213,8 +220,10 @@ pub async fn after_materialize(
             for key in keys {
                 rebuild_message_search(connection, key, &mut effects).await?;
             }
+            reclaim_applied_attachments(connection, &mut effects).await?;
         }
         MESSAGE_REVISIONS_TABLE => {
+            reclaim_applied_attachments(connection, &mut effects).await?;
             let mut message_ids = BTreeSet::new();
             for key in keys {
                 record_applied_attachments(connection, key).await?;
@@ -279,8 +288,8 @@ async fn record_applied_attachments(
         let created = sqlx::query(
             "INSERT OR IGNORE INTO chat_attachments
                  (id, working_folder_id, kind, original_display_name, mime_type, byte_size,
-                  sha256, managed_relative_path, signature_kind, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  sha256, managed_relative_path, signature_kind, created_at, origin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'replicated')",
         )
         .bind(&attachment.attachment_id)
         .bind(&attachment.working_folder_id)
@@ -320,6 +329,46 @@ async fn record_applied_attachments(
         .await
         .map_err(persistence_error)?;
     }
+    Ok(())
+}
+
+/// Removes the attachment rows this device created for replicated revisions that no reference
+/// on this device names any more, after an applied delete of a revision, message, or
+/// conversation took the last one away. A draft, queued, message, scheduled message, terminal
+/// context, or resource thread reference keeps the row. Removing the row cascades to its
+/// resource. The file stays: the sync asset sweep removes it once nothing names its digest.
+async fn reclaim_applied_attachments(
+    connection: &mut SqliteConnection,
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
+    let reclaimed: Vec<String> = sqlx::query_scalar(
+        "DELETE FROM chat_attachments
+         WHERE origin = 'replicated'
+           AND NOT EXISTS (SELECT 1 FROM chat_attachment_references r WHERE r.attachment_id = chat_attachments.id)
+           AND NOT EXISTS (SELECT 1 FROM chat_queued_attachment_references q WHERE q.attachment_id = chat_attachments.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_communication_attachment_references c
+               WHERE c.attachment_id = chat_attachments.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_scheduled_message_attachment_references s
+               WHERE s.attachment_id = chat_attachments.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_terminal_attachment_contexts t
+               WHERE t.attachment_id = chat_attachments.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_resources resource
+               JOIN chat_resource_thread_references reference ON reference.resource_id = resource.id
+               WHERE resource.attachment_id = chat_attachments.id
+           )
+         RETURNING id",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    effects.reclaimed_attachments.extend(reclaimed);
     Ok(())
 }
 

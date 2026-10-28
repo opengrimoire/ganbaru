@@ -109,6 +109,7 @@ fn only_revoked_teammates_and_removed_conversations_are_reported() {
             search_rebuilt: BTreeSet::from(["item:rebuilt".to_string()]),
             mismatched_pointers: BTreeSet::from(["participant:mismatched".to_string()]),
             removed_conversations: BTreeSet::from(["conversation:removed".to_string()]),
+            reclaimed_attachments: BTreeSet::from(["attachment:reclaimed".to_string()]),
         },
         &mut sink,
     );
@@ -391,6 +392,76 @@ async fn applied_attachment_references_create_local_rows_and_keep_their_files() 
         .unwrap();
     let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
     assert!(!kept.contains(&kept_file));
+}
+
+/// Deleting the last replicated revision that names an attachment removes the row this device
+/// created for it, while attachments this device imported and replicated attachments a local
+/// draft still names stay.
+#[tokio::test]
+async fn applied_message_delete_reclaims_unreferenced_replicated_attachment_rows() {
+    let pool = migrated_pool().await;
+    seed_applied_attachment_revision(&pool).await;
+    let mut connection = pool.acquire().await.unwrap();
+    let mut sink = CollectingSink::default();
+    ChatApplyHook
+        .after_materialize(
+            &mut connection,
+            &chat::REVISIONS,
+            &["revision:sync".to_string()],
+            &mut sink,
+        )
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;
+         INSERT INTO chat_attachments
+             (id, working_folder_id, kind, original_display_name, mime_type, byte_size, sha256,
+              managed_relative_path, signature_kind, created_at)
+         VALUES ('attachment:imported', 'folder:sync', 'text_snippet', 'notes.txt', 'text/plain',
+                 0, '{EMPTY_DIGEST}', 'assets/chat/attachments/{EMPTY_DIGEST}.txt', 'utf8',
+                 '{NOW}');
+         INSERT INTO chat_drafts (id, working_folder_id, text, updated_at)
+         VALUES ('draft:sync', 'folder:sync', 'Forwarding', '{NOW}');
+         INSERT INTO chat_attachment_references (id, attachment_id, draft_id, created_at)
+         VALUES ('reference:draft', 'attachment:empty', 'draft:sync', '{NOW}');
+         UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         DELETE FROM chat_conversation_items WHERE id = 'item:sync';"
+    )))
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+
+    ChatApplyHook
+        .after_materialize(
+            &mut connection,
+            &chat::MESSAGES,
+            &["item:sync".to_string()],
+            &mut sink,
+        )
+        .await
+        .unwrap();
+    drop(connection);
+
+    let remaining: Vec<(String, String)> = sqlx::query_as(
+        "SELECT attachment.id, attachment.origin FROM chat_attachments attachment
+         ORDER BY attachment.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        remaining,
+        vec![
+            ("attachment:empty".to_string(), "replicated".to_string()),
+            ("attachment:imported".to_string(), "imported".to_string()),
+        ]
+    );
+    let resources: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_resources WHERE id = 'attachment:image'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(resources, 0);
 }
 
 #[tokio::test]

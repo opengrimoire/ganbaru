@@ -650,6 +650,15 @@ async fn load_assets(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes assets for HTML export: {e}"))?;
+    let mut fallback_paths: HashMap<&str, Vec<String>> = HashMap::new();
+    for path in &referenced_paths {
+        if let Some(stored) = stored_paths.get(path).filter(|stored| *stored != path) {
+            fallback_paths
+                .entry(stored.as_str())
+                .or_default()
+                .push(path.clone());
+        }
+    }
     let assets = rows
         .into_iter()
         .map(|row| {
@@ -665,6 +674,10 @@ async fn load_assets(
                     "Managed asset is not available on disk and was not exported",
                 ));
             }
+            let fallback_source_paths = fallback_paths
+                .get(row.source_path.as_str())
+                .cloned()
+                .unwrap_or_default();
             NoteHtmlExportAssetDto {
                 id: row.id,
                 archive_path: asset_archive_path(&row.source_path),
@@ -674,6 +687,7 @@ async fn load_assets(
                 sha256: row.sha256,
                 storage_state: row.storage_state,
                 exported,
+                fallback_source_paths,
             }
         })
         .collect();

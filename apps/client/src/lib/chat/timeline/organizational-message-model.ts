@@ -18,11 +18,21 @@ export function unreadMessageStartIndex(
   let remaining = Math.max(0, Math.floor(unreadCount));
   if (remaining === 0) return messages.length;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.author.kind === "local_user") continue;
+    if (messages[index]?.author?.kind === "local_user") continue;
     remaining -= 1;
     if (remaining === 0) return index;
   }
   return 0;
+}
+
+/** Rich content key the native side sets when it shortened a projected message to fit shared history. */
+const TRUNCATED_RICH_CONTENT_KEY = "truncated";
+
+/** Returns whether the message text or details were shortened, so the full text is only in local run history. */
+export function isTruncatedChatMessage(message: Pick<ChatMessageRead, "richContent">): boolean {
+  const value = message.richContent.value;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return value[TRUNCATED_RICH_CONTENT_KEY] === true;
 }
 
 /** Applies the latest reply-thread summary to its root message when it is loaded. */

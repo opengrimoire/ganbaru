@@ -478,8 +478,8 @@ const PARTICIPATES: &str = "CASE
 END = 1";
 
 /// SQL condition that holds when the channel membership `access`, with its profile's effective
-/// revision joined as `profile_revision`, lets the teammate read history from the ordinal of
-/// the disclosed channel `source`, as the context checks of channel disclosure do.
+/// revision joined as `profile_revision`, lets the teammate read history from the lower bound
+/// of the disclosed channel `source`, as the context checks of channel disclosure do.
 const READS_HISTORY_FROM: &str = "(
     CASE
         WHEN access.read_history_inherits_profile = 1 THEN profile_revision.default_read_history
@@ -495,8 +495,8 @@ const READS_HISTORY_FROM: &str = "(
             ELSE 'entire'
         END = 'entire'
         OR (
-            access.history_from_ordinal IS NOT NULL
-            AND access.history_from_ordinal <= source.lower_ordinal
+            access.history_from_order_key IS NOT NULL
+            AND access.history_from_order_key <= source.lower_order_key
         )
     )
 )";
@@ -532,7 +532,7 @@ END";
 ///
 /// An authorization is uncovered when the teammate's conversation membership or AI channel
 /// membership of its destination has ended, when a channel it disclosed can no longer be read
-/// from the disclosed ordinal, when a folder it was granted has no active grant of at least the
+/// from the disclosed lower bound, when a folder it was granted has no active grant of at least the
 /// authorized capability, or when the runtime approval override that governs its target (see
 /// [`RESOLVED_OVERRIDE`]) is now stricter than the authorized policy.
 async fn holds_uncovered_authorization(
@@ -817,10 +817,12 @@ async fn rebuild_message_search(
              author_display_name, normalized_markdown
          )
          SELECT message.item_id, item.conversation_id, item.reply_thread_id,
-                participant.display_name, revision.normalized_markdown
+                coalesce(participant.display_name, message.author_label_snapshot),
+                revision.normalized_markdown
          FROM chat_communication_messages message
          JOIN chat_conversation_items item ON item.id = message.item_id
-         JOIN chat_participants participant ON participant.id = message.author_participant_id
+         LEFT JOIN chat_participants participant
+           ON participant.id = message.author_participant_id
          JOIN chat_communication_message_revisions revision
            ON revision.id = message.current_revision_id
          WHERE message.item_id = ?",

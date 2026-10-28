@@ -43,7 +43,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       attachmentIds: [],
       references: [],
       replyThread: null,
-      ordinal: 1,
+      orderKey: "c001",
       editedAt: null,
       createdAt: timestamp,
     },

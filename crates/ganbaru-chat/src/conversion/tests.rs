@@ -7,6 +7,8 @@ const PROJECT_ID: &str = "project-chat-conversion";
 const TEAMMATE_ID: &str = "participant:conversion-agent";
 const FOLDER_ID: &str = "folder:conversion";
 const PROFILE_ID: &str = "access-profile:conversion";
+const ROOT_ITEM_ID: &str = "item:conversion-root";
+const REPLY_THREAD_ID: &str = "reply-thread:conversion";
 
 async fn migrated_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -71,7 +73,22 @@ async fn seed_placeholders(pool: &SqlitePool) -> String {
             (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
              is_default, created_at)
          VALUES ('{conversation}', '{TEAMMATE_ID}', '{FOLDER_ID}', 'pending:1', '{PROJECT_ID}',
-                 'read', 1, '{NOW}');"
+                 'read', 1, '{NOW}');
+         INSERT INTO chat_conversation_items
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+         VALUES ('{ROOT_ITEM_ID}', '{conversation}', NULL, 'message', 'c000', '{NOW}');
+         INSERT INTO chat_reply_threads
+            (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES ('{REPLY_THREAD_ID}', '{conversation}', '{ROOT_ITEM_ID}', '{NOW}', '{NOW}',
+                 '{NOW}');
+         INSERT INTO chat_conversation_read_cursors
+            (conversation_id, participant_id, sync_key, last_read_order_key, last_read_item_id,
+             updated_at)
+         VALUES ('{conversation}', '{TEAMMATE_ID}', 'pending:1', 'c000', '{ROOT_ITEM_ID}',
+                 '{NOW}');
+         INSERT INTO chat_reply_thread_read_cursors
+            (reply_thread_id, participant_id, sync_key, updated_at)
+         VALUES ('{REPLY_THREAD_ID}', '{TEAMMATE_ID}', 'pending:1', '{NOW}');"
     )))
     .execute(pool)
     .await
@@ -95,8 +112,26 @@ async fn conversion_rewrites_every_placeholder_to_the_derived_key_once() {
     let error = assert_converted(&pool).await.unwrap_err();
     assert!(error.contains("chat_conversation_memberships"), "{error}");
 
-    assert_eq!(convert(&pool).await.unwrap(), 4);
+    assert_eq!(convert(&pool).await.unwrap(), 6);
     assert_converted(&pool).await.unwrap();
+    assert_eq!(
+        key_of(
+            &pool,
+            "chat_conversation_read_cursors",
+            &format!("conversation_id = '{conversation}' AND participant_id = '{TEAMMATE_ID}'"),
+        )
+        .await,
+        conversation_cursor_key(&conversation, TEAMMATE_ID).unwrap()
+    );
+    assert_eq!(
+        key_of(
+            &pool,
+            "chat_reply_thread_read_cursors",
+            &format!("reply_thread_id = '{REPLY_THREAD_ID}' AND participant_id = '{TEAMMATE_ID}'"),
+        )
+        .await,
+        reply_cursor_key(REPLY_THREAD_ID, TEAMMATE_ID).unwrap()
+    );
 
     let teammate = format!("conversation_id = '{conversation}' AND teammate_id = '{TEAMMATE_ID}'");
     assert_eq!(
@@ -146,5 +181,13 @@ fn derived_keys_depend_on_every_key_column_and_its_order() {
     assert_ne!(
         membership_key("a", "b").unwrap(),
         channel_membership_key("a", "b").unwrap()
+    );
+    assert_ne!(
+        conversation_cursor_key("a", "b").unwrap(),
+        reply_cursor_key("a", "b").unwrap()
+    );
+    assert_ne!(
+        membership_key("a", "b").unwrap(),
+        conversation_cursor_key("a", "b").unwrap()
     );
 }

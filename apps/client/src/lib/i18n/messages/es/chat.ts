@@ -105,6 +105,7 @@ export const chat = {
   organization: {
     teammate: "agente",
     mentionTeammate: "Mencionar a un miembro del canal",
+    truncatedMessage: "Acortado para el historial compartido. El texto completo queda en la ejecución del dispositivo que la realizó.",
     noMentionResults: "Ningún miembro del canal coincide con esta mención.",
     needsSetup: "Requiere configuración",
     configure: "Configurar",

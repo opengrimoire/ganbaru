@@ -181,9 +181,38 @@ const SYNC_KEY_FRAGMENTS: [&str; 8] = [
     "'grant-archived', ",
 ];
 
+/// The graph's timeline inserts in the current shape and in the shape schemas before Chat
+/// timeline replication store, with integer ordinals and revision numbers.
+const ORDINAL_TIMELINE_FRAGMENTS: [(&str, &str); 6] = [
+    (
+        "(id, conversation_id, item_kind, order_key, created_at)\nVALUES ('item-root', 'conversation-general', 'message', 'c000',",
+        "(id, conversation_id, item_kind, ordinal, created_at)\nVALUES ('item-root', 'conversation-general', 'message', 1,",
+    ),
+    (
+        "(id, message_item_id, normalized_markdown, created_at)\nVALUES ('message-revision-root', 'item-root', ",
+        "(id, message_item_id, revision, normalized_markdown, created_at)\nVALUES ('message-revision-root', 'item-root', 1, ",
+    ),
+    (
+        "lower_order_key, lower_item_id, high_order_key, high_item_id, source_revision_cutoff_id,\n     destination_audience_revision,",
+        "lower_ordinal, high_ordinal, source_revision_cutoff_id, destination_audience_revision,",
+    ),
+    (
+        "'general', 'c000', '', 'c000', 'item-root', 'message-revision-root',",
+        "'general', 1, 1, 'message-revision-root',",
+    ),
+    (
+        "lower_order_key, lower_item_id, high_order_key, high_item_id, audience_revision,",
+        "lower_ordinal, high_ordinal, audience_revision,",
+    ),
+    (
+        "'conversation-general', 'c000', '', 'c000', 'item-root', 1,",
+        "'conversation-general', 1, 1, 1,",
+    ),
+];
+
 /// Loads the project and Chat graph in the shape the schema of `pool` stores, so upgrade tests
-/// that stop before Chat identity or conversations replication share the graph with current
-/// schema tests.
+/// that stop before Chat identity, conversations, or timeline replication share the graph with
+/// current schema tests.
 pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
     assert!(
         PROJECT_CHAT_GRAPH.contains(POLICY_REVISION),
@@ -191,6 +220,7 @@ pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
     );
     let numbered = has_column(pool, "chat_teammate_policy_revisions", "revision").await;
     let keyed = has_column(pool, "chat_conversation_memberships", "sync_key").await;
+    let ordered = has_column(pool, "chat_conversation_items", "order_key").await;
     let mut graph = if numbered {
         PROJECT_CHAT_GRAPH.replace(POLICY_REVISION, NUMBERED_POLICY_REVISION)
     } else {
@@ -204,6 +234,13 @@ pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
             };
             let replaced = graph.replace(fragment, &keyless);
             assert_ne!(replaced, graph, "the graph names {fragment:?}");
+            graph = replaced;
+        }
+    }
+    if !ordered {
+        for (current, ordinal) in ORDINAL_TIMELINE_FRAGMENTS {
+            let replaced = graph.replace(current, ordinal);
+            assert_ne!(replaced, graph, "the graph names {current:?}");
             graph = replaced;
         }
     }

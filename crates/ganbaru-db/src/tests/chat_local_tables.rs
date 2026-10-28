@@ -369,13 +369,13 @@ fn a_message_deleted_while_sync_applies_leaves_the_search_index() {
         let pool = migrated_memory_pool().await;
         load_seeded_graph(&pool).await;
         sqlx::raw_sql(
-            "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item-reply', 'conversation-general', 'message', 2, '2026-10-24T00:00:00.000Z');
+            "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+             VALUES ('item-reply', 'conversation-general', 'message', 'c001', '2026-10-24T00:00:00.000Z');
              INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
              VALUES ('item-reply', 'participant:local-owner', '2026-10-24T00:00:00.000Z');
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
-             VALUES ('message-revision-reply', 'item-reply', 1, 'Searchable reply',
+                 (id, message_item_id, normalized_markdown, created_at)
+             VALUES ('message-revision-reply', 'item-reply', 'Searchable reply',
                      '2026-10-24T00:00:00.000Z');
              UPDATE chat_communication_messages SET current_revision_id = 'message-revision-reply'
              WHERE item_id = 'item-reply';",

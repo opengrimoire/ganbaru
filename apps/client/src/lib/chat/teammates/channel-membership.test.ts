@@ -45,7 +45,7 @@ function channelAccess(
     accessProfileRevisionId: "profile:build:revision:2",
     accessProfileRevision: 2,
     capabilities: { readHistory: true, participate: true },
-    historyBoundary: { kind: "fromGrant", lowerOrdinal: 12 },
+    historyBoundary: { kind: "fromGrant", lowerOrderKey: "c00C" },
     runtimeApprovalOverride: "autoApprove",
     scratchRuntimeApprovalOverride: null,
     folderGrants: [

@@ -1,6 +1,6 @@
 //! Shared validation, wire conversion, and identifier helpers.
 
-use super::super::channels::{identifier_error, persistence_error, u64_value};
+use super::super::channels::{identifier_error, persistence_error};
 use ganbaru_chat::coordination::contracts::*;
 pub(super) use ganbaru_chat::ids::new_id;
 use ganbaru_chat::ids::{REPLY_THREAD_ID_PREFIX, derived_id};
@@ -10,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-pub(super) const MAX_MESSAGE_BYTES: usize = 128 * 1024;
+pub(super) use ganbaru_chat::timeline::MAX_MESSAGE_MARKDOWN_BYTES as MAX_MESSAGE_BYTES;
 
 /// Active folder grants of one AI channel membership, bound to the conversation and teammate.
 ///
@@ -95,7 +95,11 @@ pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> Chat
             "Message content exceeds the 128 KiB limit",
         ));
     }
-    json_object(&request.rich_content, "richContent")?;
+    if json_object(&request.rich_content, "richContent")?.len()
+        > ganbaru_chat::timeline::MAX_RICH_CONTENT_BYTES
+    {
+        return Err(ganbaru_chat::timeline::rich_content_too_large());
+    }
     let mut ranges = Vec::with_capacity(request.references.len());
     let mut reference_ids = BTreeSet::new();
     let mut semantic_targets = BTreeSet::new();
@@ -261,16 +265,59 @@ pub(super) fn parse_json(data: String) -> ChatResult<Value> {
     serde_json::from_str(&data).map_err(serialization_error)
 }
 
-pub(super) fn parse_cursor(cursor: Option<&str>) -> ChatResult<Option<i64>> {
+/// A timeline page cursor: a position `(order_key, item_id)` and whether the page includes it.
+///
+/// Cursors are `before:{order_key}:{item_id}` for pages that end just before the position and
+/// `through:{order_key}:{item_id}` for pages that end at it. Order keys never contain `:`, so
+/// the first `:` after the prefix ends the key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PageCursor {
+    pub(super) order_key: String,
+    pub(super) item_id: String,
+    pub(super) inclusive: bool,
+}
+
+const BEFORE_CURSOR_PREFIX: &str = "before:";
+const THROUGH_CURSOR_PREFIX: &str = "through:";
+
+impl PageCursor {
+    /// The cursor of a page that ends just before `(order_key, item_id)`.
+    pub(super) fn before(order_key: &str, item_id: &str) -> String {
+        format!("{BEFORE_CURSOR_PREFIX}{order_key}:{item_id}")
+    }
+
+    /// The cursor of a page that ends at `(order_key, item_id)`.
+    pub(super) fn through(order_key: &str, item_id: &str) -> String {
+        format!("{THROUGH_CURSOR_PREFIX}{order_key}:{item_id}")
+    }
+}
+
+pub(super) fn parse_cursor(cursor: Option<&str>) -> ChatResult<Option<PageCursor>> {
     cursor
         .map(|value| {
-            value
-                .parse::<i64>()
-                .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| ChatError::validation("cursor", "Chat page cursor is invalid"))
+            let (inclusive, position) = if let Some(rest) = value.strip_prefix(BEFORE_CURSOR_PREFIX)
+            {
+                (false, rest)
+            } else if let Some(rest) = value.strip_prefix(THROUGH_CURSOR_PREFIX) {
+                (true, rest)
+            } else {
+                return Err(invalid_cursor());
+            };
+            let (order_key, item_id) = position.split_once(':').ok_or_else(invalid_cursor)?;
+            if ganbaru_sync_contracts::OrderKey::parse(order_key).is_err() || item_id.is_empty() {
+                return Err(invalid_cursor());
+            }
+            Ok(PageCursor {
+                order_key: order_key.to_owned(),
+                item_id: item_id.to_owned(),
+                inclusive,
+            })
         })
         .transpose()
+}
+
+fn invalid_cursor() -> ChatError {
+    ChatError::validation("cursor", "Chat page cursor is invalid")
 }
 
 pub(super) fn normalized_fts_query(query: &str) -> ChatResult<String> {
@@ -395,15 +442,24 @@ pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static st
     }
 }
 
+/// Order key a `from_grant` history boundary stamps when it is granted now: the first root
+/// position after the conversation's last root item, so only later root items are visible.
+pub(super) async fn from_grant_lower_order_key(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+) -> ChatResult<String> {
+    let last_key =
+        ganbaru_chat::timeline::last_order_key(connection, conversation_id, None).await?;
+    ganbaru_chat::timeline::order_key_after(last_key.as_deref())
+}
+
 pub(super) fn parse_history_boundary(
     kind: &str,
-    lower_ordinal: Option<i64>,
+    lower_order_key: Option<String>,
 ) -> ChatResult<ChatHistoryBoundary> {
     match kind {
-        "entire" if lower_ordinal.is_none() => Ok(ChatHistoryBoundary::Entire),
-        "from_grant" => Ok(ChatHistoryBoundary::FromGrant {
-            lower_ordinal: lower_ordinal.map(u64_value).transpose()?,
-        }),
+        "entire" if lower_order_key.is_none() => Ok(ChatHistoryBoundary::Entire),
+        "from_grant" => Ok(ChatHistoryBoundary::FromGrant { lower_order_key }),
         _ => Err(stored_value_error("history boundary")),
     }
 }
@@ -411,35 +467,42 @@ pub(super) fn parse_history_boundary(
 /// Channel history one teammate membership may read, resolved from the
 /// membership and its access profile revision.
 ///
-/// Positions are top-level channel ordinals. A reply thread sits at its root's
-/// position, because reply ordinals count within their thread.
+/// Positions are root timeline order keys. A reply thread sits at its root's
+/// position, because reply order keys count within their thread.
 #[cfg(desktop)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TeammateHistoryAccess {
-    visible_from: Option<u64>,
+    visible_from: Option<String>,
 }
 
 #[cfg(desktop)]
 impl TeammateHistoryAccess {
     /// Resolves effective history access. A `from_grant` boundary without a
-    /// lower ordinal admits nothing.
-    pub(super) fn resolve(read_history: bool, from_grant: bool, from_ordinal: Option<u64>) -> Self {
+    /// lower order key admits nothing; entire history starts at the empty key,
+    /// which sorts before every order key.
+    pub(super) fn resolve(
+        read_history: bool,
+        from_grant: bool,
+        from_order_key: Option<String>,
+    ) -> Self {
         let visible_from = match (read_history, from_grant) {
             (false, _) => None,
-            (true, true) => from_ordinal,
-            (true, false) => Some(1),
+            (true, true) => from_order_key,
+            (true, false) => Some(String::new()),
         };
         Self { visible_from }
     }
 
-    /// Returns the lowest readable position, or `None` when no history is readable.
-    pub(super) fn visible_from(self) -> Option<u64> {
-        self.visible_from
+    /// Returns the lowest readable order key, or `None` when no history is readable.
+    pub(super) fn visible_from(&self) -> Option<&str> {
+        self.visible_from.as_deref()
     }
 
-    /// Returns whether the message or reply thread at `position` is readable.
-    pub(super) fn admits_position(self, position: u64) -> bool {
-        self.visible_from.is_some_and(|lower| lower <= position)
+    /// Returns whether the message or reply thread at `order_key` is readable.
+    pub(super) fn admits_position(&self, order_key: &str) -> bool {
+        self.visible_from
+            .as_deref()
+            .is_some_and(|lower| lower <= order_key)
     }
 }
 

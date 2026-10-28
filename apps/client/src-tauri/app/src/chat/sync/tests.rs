@@ -49,6 +49,18 @@ fn chat_derives_sync_keys_with_the_manifest_prefixes() {
         conversion::FOLDER_GRANT_KEY_PREFIX,
         chat::FOLDER_GRANT_KEY_PREFIX
     );
+    assert_eq!(
+        ganbaru_chat::ids::REPLY_THREAD_ID_PREFIX,
+        chat::REPLY_THREAD_KEY_PREFIX
+    );
+    assert_eq!(
+        conversion::CONVERSATION_CURSOR_KEY_PREFIX,
+        chat::CONVERSATION_CURSOR_KEY_PREFIX
+    );
+    assert_eq!(
+        conversion::REPLY_CURSOR_KEY_PREFIX,
+        chat::REPLY_CURSOR_KEY_PREFIX
+    );
 }
 
 #[test]

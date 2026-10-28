@@ -36,8 +36,8 @@ function scratchScopeFixture(): Record<string, unknown> {
       retainedSources: [{
         channelId: "channel:leadership",
         channelName: "leadership",
-        lowerOrdinal: 4,
-        highOrdinal: 18,
+        lowerOrderKey: "c004",
+        highOrderKey: "c00I",
         audienceRevision: 7,
       }],
       createdAt: timestamp,
@@ -55,7 +55,7 @@ describe("private scratch lifecycle contracts", () => {
     expect(scope.generations[0]).toMatchObject({
       lifecycleState: "quarantined",
       deviceAvailability: "unavailableOnThisDevice",
-      retainedSources: [{ channelId: "channel:leadership", highOrdinal: 18 }],
+      retainedSources: [{ channelId: "channel:leadership", highOrderKey: "c00I" }],
     });
     expect(JSON.stringify(scope)).not.toContain("/home/");
   });
@@ -162,10 +162,10 @@ describe("private scratch lifecycle contracts", () => {
     const scope = scratchScopeFixture();
     const generations = scope.generations as Array<Record<string, unknown>>;
     const sources = generations[0]?.retainedSources as Array<Record<string, unknown>>;
-    if (sources[0]) sources[0].highOrdinal = 3;
+    if (sources[0]) sources[0].highOrderKey = "c003";
 
     expect(() => parseChatScratchScope(scope)).toThrow(
-      "highOrdinal must not precede lowerOrdinal",
+      "highOrderKey must not precede lowerOrderKey",
     );
   });
 });

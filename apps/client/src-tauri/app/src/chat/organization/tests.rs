@@ -248,9 +248,9 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
          SET access_revision = 1, updated_at = '2026-08-04T17:00:00.000Z'
          WHERE teammate_id = 'participant:review-agent';
          INSERT INTO chat_conversation_items
-             (id, conversation_id, item_kind, ordinal, created_at)
+             (id, conversation_id, item_kind, order_key, created_at)
          VALUES (
-             'item:review-root', 'conversation:review', 'message', 1,
+             'item:review-root', 'conversation:review', 'message', 'a1',
              '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_communication_messages
@@ -260,29 +260,29 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_communication_message_revisions
-             (id, message_item_id, revision, normalized_markdown, created_at)
+             (id, message_item_id, normalized_markdown, created_at)
          VALUES (
-             'revision:review-root', 'item:review-root', 1, 'Create hello.py',
+             'revision:review-root', 'item:review-root', 'Create hello.py',
              '2026-08-04T17:00:00.000Z'
          );
          UPDATE chat_communication_messages
          SET current_revision_id = 'revision:review-root'
          WHERE item_id = 'item:review-root';
          INSERT INTO chat_reply_threads
-             (id, conversation_id, root_item_id, reply_count, last_activity_at,
+             (id, conversation_id, root_item_id, last_activity_at,
               created_at, updated_at)
          VALUES (
-             'reply-thread:review', 'conversation:review', 'item:review-root', 2,
+             'reply-thread:review', 'conversation:review', 'item:review-root',
              '2026-08-04T17:02:00.000Z', '2026-08-04T17:00:00.000Z',
              '2026-08-04T17:02:00.000Z'
          );
          INSERT INTO chat_conversation_items
-             (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES
              ('item:review-reply-1', 'conversation:review', 'reply-thread:review',
-              'message', 1, '2026-08-04T17:01:00.000Z'),
+              'message', 'a1', '2026-08-04T17:01:00.000Z'),
              ('item:review-reply-2', 'conversation:review', 'reply-thread:review',
-              'message', 2, '2026-08-04T17:02:00.000Z');
+              'message', 'a2', '2026-08-04T17:02:00.000Z');
          INSERT INTO chat_communication_messages
              (item_id, author_participant_id, author_label_snapshot, created_at)
          VALUES
@@ -291,11 +291,11 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              ('item:review-reply-2', 'participant:local-owner', 'You',
               '2026-08-04T17:02:00.000Z');
          INSERT INTO chat_communication_message_revisions
-             (id, message_item_id, revision, normalized_markdown, created_at)
+             (id, message_item_id, normalized_markdown, created_at)
          VALUES
-             ('revision:review-reply-1', 'item:review-reply-1', 1,
+             ('revision:review-reply-1', 'item:review-reply-1',
               'Ok, remove it now.', '2026-08-04T17:01:00.000Z'),
-             ('revision:review-reply-2', 'item:review-reply-2', 1,
+             ('revision:review-reply-2', 'item:review-reply-2',
               '@review-agent Ok, remove it now.', '2026-08-04T17:02:00.000Z');
          UPDATE chat_communication_messages
          SET current_revision_id = 'revision:review-reply-1'
@@ -700,11 +700,11 @@ fn channel_unread_count_excludes_local_messages() {
                  '2026-08-04T19:00:00.000Z', '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_conversation_items
-                 (id, conversation_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES
-                 ('item:local-unread', 'conversation:unread', 'message', 1,
+                 ('item:local-unread', 'conversation:unread', 'message', 'a1',
                   '2026-08-04T19:00:00.000Z'),
-                 ('item:incoming-unread', 'conversation:unread', 'message', 2,
+                 ('item:incoming-unread', 'conversation:unread', 'message', 'a2',
                   '2026-08-04T19:01:00.000Z');
              INSERT INTO chat_communication_messages
                  (item_id, author_participant_id, author_label_snapshot, created_at)
@@ -731,7 +731,7 @@ fn channel_unread_count_excludes_local_messages() {
 }
 
 #[test]
-fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
+fn reply_thread_unread_excludes_local_messages_and_tracks_item_positions() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         sqlx::raw_sql(
@@ -754,9 +754,9 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:00:00.000Z', '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_conversation_items
-                 (id, conversation_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, item_kind, order_key, created_at)
              VALUES (
-                 'item:thread-root', 'conversation:thread-unread', 'message', 1,
+                 'item:thread-root', 'conversation:thread-unread', 'message', 'a1',
                  '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_communication_messages
@@ -766,30 +766,30 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:00:00.000Z'
              );
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
+                 (id, message_item_id, normalized_markdown, created_at)
              VALUES (
-                 'revision:thread-root', 'item:thread-root', 1, 'Root',
+                 'revision:thread-root', 'item:thread-root', 'Root',
                  '2026-08-04T19:00:00.000Z'
              );
              UPDATE chat_communication_messages
              SET current_revision_id = 'revision:thread-root'
              WHERE item_id = 'item:thread-root';
              INSERT INTO chat_reply_threads
-                 (id, conversation_id, root_item_id, reply_count, last_activity_at,
+                 (id, conversation_id, root_item_id, last_activity_at,
                   created_at, updated_at)
              VALUES (
                  'reply-thread:unread', 'conversation:thread-unread',
-                 'item:thread-root', 1, '2026-08-04T19:02:00.000Z',
+                 'item:thread-root', '2026-08-04T19:02:00.000Z',
                  '2026-08-04T19:00:00.000Z', '2026-08-04T19:02:00.000Z'
              );
              INSERT INTO chat_conversation_items
-                 (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
              VALUES
                  ('item:thread-work', 'conversation:thread-unread',
-                  'reply-thread:unread', 'work_update', 1,
+                  'reply-thread:unread', 'work_update', 'a1',
                   '2026-08-04T19:01:00.000Z'),
                  ('item:thread-local', 'conversation:thread-unread',
-                  'reply-thread:unread', 'message', 2,
+                  'reply-thread:unread', 'message', 'a2',
                   '2026-08-04T19:02:00.000Z');
              INSERT INTO chat_communication_messages
                  (item_id, author_participant_id, author_label_snapshot, created_at)
@@ -798,9 +798,9 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:02:00.000Z'
              );
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
+                 (id, message_item_id, normalized_markdown, created_at)
              VALUES (
-                 'revision:thread-local', 'item:thread-local', 1, 'Local reply',
+                 'revision:thread-local', 'item:thread-local', 'Local reply',
                  '2026-08-04T19:02:00.000Z'
              );
              UPDATE chat_communication_messages
@@ -819,10 +819,10 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
 
         sqlx::raw_sql(
             "INSERT INTO chat_conversation_items
-                 (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
              VALUES (
                  'item:thread-incoming', 'conversation:thread-unread',
-                 'reply-thread:unread', 'message', 3,
+                 'reply-thread:unread', 'message', 'a3',
                  '2026-08-04T19:03:00.000Z'
              );
              INSERT INTO chat_communication_messages
@@ -832,16 +832,16 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
                  '2026-08-04T19:03:00.000Z'
              );
              INSERT INTO chat_communication_message_revisions
-                 (id, message_item_id, revision, normalized_markdown, created_at)
+                 (id, message_item_id, normalized_markdown, created_at)
              VALUES (
-                 'revision:thread-incoming', 'item:thread-incoming', 1,
+                 'revision:thread-incoming', 'item:thread-incoming',
                  'Incoming reply', '2026-08-04T19:03:00.000Z'
              );
              UPDATE chat_communication_messages
              SET current_revision_id = 'revision:thread-incoming'
              WHERE item_id = 'item:thread-incoming';
              UPDATE chat_reply_threads
-             SET reply_count = 2, last_activity_at = '2026-08-04T19:03:00.000Z',
+             SET last_activity_at = '2026-08-04T19:03:00.000Z',
                  updated_at = '2026-08-04T19:03:00.000Z'
              WHERE id = 'reply-thread:unread';",
         )
@@ -857,15 +857,18 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
         super::reads::read_reply_thread_page(&pool, &thread_id, None, 50)
             .await
             .unwrap();
-        let read_ordinal: i64 = sqlx::query_scalar(
-            "SELECT last_read_reply_ordinal FROM chat_reply_thread_read_cursors
+        let read_position: (String, String) = sqlx::query_as(
+            "SELECT last_read_order_key, last_read_item_id FROM chat_reply_thread_read_cursors
              WHERE reply_thread_id = ? AND participant_id = 'participant:local-owner'",
         )
         .bind(thread_id.as_str())
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(read_ordinal, 3);
+        assert_eq!(
+            read_position,
+            ("a3".to_owned(), "item:thread-incoming".to_owned())
+        );
         let read = super::reads::read_reply_thread_summary(&pool, &thread_id)
             .await
             .unwrap();
@@ -873,10 +876,10 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
 
         sqlx::raw_sql(
             "INSERT INTO chat_conversation_items
-                 (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
              VALUES (
                  'item:thread-local-after-read', 'conversation:thread-unread',
-                 'reply-thread:unread', 'message', 4,
+                 'reply-thread:unread', 'message', 'a4',
                  '2026-08-04T19:04:00.000Z'
              );
              INSERT INTO chat_communication_messages
@@ -884,9 +887,7 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
              VALUES (
                  'item:thread-local-after-read', 'participant:local-owner', 'You',
                  '2026-08-04T19:04:00.000Z'
-             );
-             UPDATE chat_reply_threads SET reply_count = 3
-             WHERE id = 'reply-thread:unread';",
+             );",
         )
         .execute(&pool)
         .await
@@ -972,16 +973,18 @@ fn fts_queries_are_bounded_and_quote_each_term() {
 #[test]
 fn history_access_admits_positions_from_its_lower_bound() {
     let entire = super::common::TeammateHistoryAccess::resolve(true, false, None);
-    assert_eq!(entire.visible_from(), Some(1));
-    assert!(entire.admits_position(1));
+    assert_eq!(entire.visible_from(), Some(""));
+    assert!(entire.admits_position("c000"));
 
-    let from_grant = super::common::TeammateHistoryAccess::resolve(true, true, Some(5));
-    assert!(!from_grant.admits_position(4));
-    assert!(from_grant.admits_position(5));
+    let from_grant =
+        super::common::TeammateHistoryAccess::resolve(true, true, Some("c005".to_owned()));
+    assert!(!from_grant.admits_position("c004"));
+    assert!(from_grant.admits_position("c005"));
+    assert!(from_grant.admits_position("c0050"));
 
     let unreadable = super::common::TeammateHistoryAccess::resolve(false, false, None);
     assert_eq!(unreadable.visible_from(), None);
-    assert!(!unreadable.admits_position(u64::MAX));
+    assert!(!unreadable.admits_position("zzzz"));
 
     let unstamped = super::common::TeammateHistoryAccess::resolve(true, true, None);
     assert_eq!(unstamped.visible_from(), None);
@@ -992,22 +995,22 @@ fn history_access_admits_positions_from_its_lower_bound() {
 /// the excluded thread reply count.
 async fn freeze_review_reply_context(
     read_history: bool,
-    history_from_ordinal: Option<i64>,
+    history_from_order_key: Option<&str>,
 ) -> (Vec<String>, i64) {
     let pool = migrated_pool().await;
     seed_review_assignment_with_stranded_replies(&pool).await;
     sqlx::raw_sql(
         "INSERT INTO chat_conversation_items
-             (id, conversation_id, item_kind, ordinal, created_at)
-         VALUES ('item:review-later', 'conversation:review', 'message', 2,
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:review-later', 'conversation:review', 'message', 'a2',
                  '2026-08-04T17:03:00.000Z');
          INSERT INTO chat_communication_messages
              (item_id, author_participant_id, author_label_snapshot, created_at)
          VALUES ('item:review-later', 'participant:local-owner', 'You',
                  '2026-08-04T17:03:00.000Z');
          INSERT INTO chat_communication_message_revisions
-             (id, message_item_id, revision, normalized_markdown, created_at)
-         VALUES ('revision:review-later', 'item:review-later', 1, 'Later update',
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:review-later', 'item:review-later', 'Later update',
                  '2026-08-04T17:03:00.000Z');
          UPDATE chat_communication_messages
          SET current_revision_id = 'revision:review-later'
@@ -1020,16 +1023,16 @@ async fn freeze_review_reply_context(
         "UPDATE chat_teammate_channel_memberships
          SET read_history = ?, read_history_inherits_profile = 0,
              history_boundary = ?, history_boundary_inherits_profile = 0,
-             history_from_ordinal = ?
+             history_from_order_key = ?
          WHERE teammate_id = 'participant:review-agent'",
     )
     .bind(read_history)
-    .bind(if history_from_ordinal.is_some() {
+    .bind(if history_from_order_key.is_some() {
         "from_grant"
     } else {
         "entire"
     })
-    .bind(history_from_ordinal)
+    .bind(history_from_order_key)
     .execute(&pool)
     .await
     .unwrap();
@@ -1073,8 +1076,8 @@ fn context_packages_include_threads_within_the_history_boundary() {
         assert_eq!(
             kinds,
             [
-                "thread_reply:item:review-reply-1",
                 "thread_root:item:review-root",
+                "thread_reply:item:review-reply-1",
                 "trigger:item:review-reply-2",
                 "channel_message:item:review-later",
             ]
@@ -1082,7 +1085,7 @@ fn context_packages_include_threads_within_the_history_boundary() {
         );
         assert_eq!(excluded, 0);
 
-        let (kinds, _) = freeze_review_reply_context(true, Some(1)).await;
+        let (kinds, _) = freeze_review_reply_context(true, Some("a1")).await;
         assert!(kinds.contains(&"thread_root:item:review-root".to_string()));
     });
 }
@@ -1090,7 +1093,7 @@ fn context_packages_include_threads_within_the_history_boundary() {
 #[test]
 fn context_packages_exclude_threads_rooted_before_the_history_boundary() {
     tauri::async_runtime::block_on(async {
-        let (kinds, excluded) = freeze_review_reply_context(true, Some(2)).await;
+        let (kinds, excluded) = freeze_review_reply_context(true, Some("a2")).await;
         assert_eq!(
             kinds,
             [
@@ -1278,5 +1281,224 @@ fn saved_access_drafts_compare_effective_profile_revision_ids_not_numbers() {
             check_draft_profile_revision(&pool, "revision:synced").await,
             Ok(())
         );
+    });
+}
+
+/// Seeds root messages of the review channel as `(item id, order key, deleted)`.
+async fn seed_review_root_messages(pool: &SqlitePool, messages: &[(&str, &str, bool)]) {
+    for (item_id, order_key, deleted) in messages {
+        let revision_id = format!("revision:{item_id}");
+        sqlx::query(
+            "INSERT INTO chat_conversation_items
+                 (id, conversation_id, item_kind, order_key, created_at)
+             VALUES (?, 'conversation:review', 'message', ?, '2026-08-04T17:05:00.000Z')",
+        )
+        .bind(item_id)
+        .bind(order_key)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_communication_messages
+                 (item_id, author_participant_id, author_label_snapshot, deleted_at, created_at)
+             VALUES (?, 'participant:local-owner', 'You', ?, '2026-08-04T17:05:00.000Z')",
+        )
+        .bind(item_id)
+        .bind(deleted.then_some("2026-08-04T17:06:00.000Z"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_communication_message_revisions
+                 (id, message_item_id, normalized_markdown, created_at)
+             VALUES (?, ?, ?, '2026-08-04T17:05:00.000Z')",
+        )
+        .bind(&revision_id)
+        .bind(item_id)
+        .bind(format!("Text of {item_id}"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?",
+        )
+        .bind(&revision_id)
+        .bind(item_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+#[test]
+fn channel_pages_break_equal_order_keys_by_item_id_without_gaps() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_review_root_messages(
+            &pool,
+            &[("item:tie-b", "a2", false), ("item:tie-a", "a2", false)],
+        )
+        .await;
+        let channel_id = ChatChannelId::new("channel:review").unwrap();
+        let ids = |page: &ChatChannelPageRead| {
+            page.messages
+                .iter()
+                .map(|message| message.item_id.as_str().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let newest = read_channel_page(&pool, channel_id.clone(), None, Some(1))
+            .await
+            .unwrap();
+        assert_eq!(ids(&newest), ["item:tie-b"]);
+        assert_eq!(newest.messages[0].order_key, "a2");
+        let middle = read_channel_page(
+            &pool,
+            channel_id.clone(),
+            newest.previous_cursor.as_deref(),
+            Some(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&middle), ["item:tie-a"]);
+        let oldest = read_channel_page(
+            &pool,
+            channel_id.clone(),
+            middle.previous_cursor.as_deref(),
+            Some(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&oldest), ["item:review-root"]);
+        assert_eq!(oldest.previous_cursor, None);
+
+        let through = super::common::PageCursor::through("a2", "item:tie-a");
+        let anchored = read_channel_page(&pool, channel_id, Some(&through), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(ids(&anchored), ["item:review-root", "item:tie-a"]);
+    });
+}
+
+#[test]
+fn reply_thread_summaries_count_only_live_reply_messages() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let thread_id = ChatReplyThreadId::new("reply-thread:review").unwrap();
+        let summary = super::reads::read_reply_thread_summary(&pool, &thread_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.reply_count, 2);
+
+        sqlx::raw_sql(
+            "INSERT INTO chat_conversation_items
+                 (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+             VALUES ('item:review-update', 'conversation:review', 'reply-thread:review',
+                     'work_update', 'a3', '2026-08-04T17:03:00.000Z');
+             UPDATE chat_communication_messages SET deleted_at = '2026-08-04T17:04:00.000Z'
+             WHERE item_id = 'item:review-reply-1';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let summary = super::reads::read_reply_thread_summary(&pool, &thread_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.reply_count, 1);
+    });
+}
+
+#[test]
+fn channel_reference_ranges_break_equal_order_keys_at_both_ends() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_review_root_messages(
+            &pool,
+            &[
+                ("item:tie-a", "a2", false),
+                ("item:tie-b", "a2", false),
+                ("item:tie-c", "a2", true),
+            ],
+        )
+        .await;
+        sqlx::raw_sql(
+            "UPDATE chat_teammate_channel_memberships
+             SET history_boundary = 'from_grant', history_boundary_inherits_profile = 0,
+                 history_from_order_key = 'a2'
+             WHERE teammate_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut request = message("See general");
+        request.channel_id = ChatChannelId::new("channel:review").unwrap();
+        request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+        request.references = vec![ChatMessageReference::Channel {
+            metadata: ChatReferenceMetadata {
+                reference_id: ChatMessageReferenceId::new("reference:general").unwrap(),
+                label_snapshot: "general".to_owned(),
+                start_offset: 4,
+                end_offset: 11,
+                plain_text_projection: "#general".to_owned(),
+            },
+            channel_id: ChatChannelId::new("channel:review").unwrap(),
+        }];
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        super::workflow::insert_communication_message(
+            &mut transaction,
+            super::workflow::CommunicationMessageWrite {
+                item_id: &ChatConversationItemId::new("item:review-reference").unwrap(),
+                revision_id: &ChatMessageRevisionId::new("revision:review-reference").unwrap(),
+                conversation_id: &ChatConversationId::new("conversation:review").unwrap(),
+                reply_thread_id: request.reply_thread_id.as_ref(),
+                order_key: "a3",
+                request: &request,
+                invoked_teammate_id: Some(&teammate_id),
+                now: &UtcTimestamp::new("2026-08-04T17:07:00.000Z").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let bounds: (String, String, String, String) = sqlx::query_as(
+            "SELECT source_lower_order_key, source_lower_item_id,
+                    source_high_order_key, source_high_item_id
+             FROM chat_channel_reference_targets WHERE reference_id = 'reference:general'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            bounds,
+            (
+                "a2".to_owned(),
+                String::new(),
+                "a2".to_owned(),
+                "item:tie-b".to_owned()
+            )
+        );
+
+        seed_review_root_messages(&pool, &[("item:tie-z", "a2", false)]).await;
+        let in_range: Vec<String> = sqlx::query_scalar(
+            "SELECT item.id FROM chat_conversation_items item
+             JOIN chat_channel_reference_targets target
+               ON target.reference_id = 'reference:general'
+             WHERE item.conversation_id = target.source_conversation_id
+               AND item.reply_thread_id IS NULL
+               AND (item.order_key, item.id)
+                   >= (target.source_lower_order_key, target.source_lower_item_id)
+               AND (item.order_key, item.id)
+                   <= (target.source_high_order_key, target.source_high_item_id)
+             ORDER BY item.order_key, item.id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(in_range, ["item:tie-a", "item:tie-b"]);
     });
 }

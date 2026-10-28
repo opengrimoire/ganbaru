@@ -72,3 +72,16 @@ export function readTurnModeSnapshot(value: unknown, label: string): TurnModeSna
     interactionMode: readEnum(record.interactionMode, INTERACTION_MODES, `${label}.interactionMode`),
   };
 }
+
+const MAX_ORDER_KEY_LENGTH = 128;
+const ORDER_KEY_PATTERN = /^[0-9A-Za-z]+$/;
+
+/** Reads a timeline order key: base 62 text of at most 128 characters, or `""` when `allowEmpty`. */
+export function readOrderKey(value: unknown, label: string, allowEmpty = false): string {
+  const key = readString(value, label);
+  if (key.length === 0 && allowEmpty) return key;
+  if (key.length > MAX_ORDER_KEY_LENGTH || !ORDER_KEY_PATTERN.test(key)) {
+    throw new Error(`${label} must be an order key`);
+  }
+  return key;
+}

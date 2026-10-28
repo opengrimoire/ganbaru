@@ -68,12 +68,12 @@ VALUES ('conversation-general', 'participant-teammate', 'project-chat', 'folder-
        ('conversation-general', 'participant-teammate', 'project-chat', 'folder-archived',
         'grant-archived', 'read', '2026-10-23T00:00:00.000Z');
 
-INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
-VALUES ('item-root', 'conversation-general', 'message', 1, '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+VALUES ('item-root', 'conversation-general', 'message', 'c000', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_communication_messages (item_id, author_participant_id, current_revision_id, created_at)
 VALUES ('item-root', 'participant:local-owner', 'message-revision-root', '2026-10-23T00:00:00.000Z');
-INSERT INTO chat_communication_message_revisions (id, message_item_id, revision, normalized_markdown, created_at)
-VALUES ('message-revision-root', 'item-root', 1, 'Look at the folder', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_communication_message_revisions (id, message_item_id, normalized_markdown, created_at)
+VALUES ('message-revision-root', 'item-root', 'Look at the folder', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_message_references
     (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
      start_offset, end_offset, ordinal, created_at)
@@ -115,9 +115,10 @@ VALUES ('authorization-1', 'root-handle-managed-0000000000000000', 'folder-manag
         '2026-10-23T00:00:00.000Z', 'ask');
 INSERT INTO chat_assignment_authorized_channel_sources
     (authorization_revision_id, source_handle, message_reference_id, conversation_id, label_snapshot,
-     lower_ordinal, high_ordinal, source_revision_cutoff_id, destination_audience_revision, created_at)
+     lower_order_key, lower_item_id, high_order_key, high_item_id, source_revision_cutoff_id,
+     destination_audience_revision, created_at)
 VALUES ('authorization-1', 'source-handle-general-0000000000000', 'reference-folder',
-        'conversation-general', 'general', 1, 1, 'message-revision-root', 1, '2026-10-23T00:00:00.000Z');
+        'conversation-general', 'general', 'c000', '', 'c000', 'item-root', 'message-revision-root', 1, '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_threads
     (id, working_folder_id, project_id, title, provider_family_id, provider_instance_id,
@@ -222,8 +223,8 @@ VALUES ('run-scratch', 'assignment-1', 'project-chat', 'scratch-environment', 's
         '2222222222222222222222222222222222222222222222222222222222222222', 'turn-scratch',
         'thread-scratch', 'working', 2, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scratch_generation_sources
-    (scratch_generation_id, conversation_id, lower_ordinal, high_ordinal, audience_revision, created_at)
-VALUES ('scratch-generation', 'conversation-general', 1, 1, 1, '2026-10-23T00:00:00.000Z');
+    (scratch_generation_id, conversation_id, lower_order_key, lower_item_id, high_order_key, high_item_id, audience_revision, created_at)
+VALUES ('scratch-generation', 'conversation-general', 'c000', '', 'c000', 'item-root', 1, '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scratch_promotions
     (id, scratch_generation_id, source_relative_path, source_content_revision, request_digest,
      destination_kind, destination_channel_id, destination_working_folder_id, destination_relative_path,

@@ -12,18 +12,29 @@
 //! the narrower access: removal and revocation win, then the lower folder capability or more
 //! cleared channel capabilities, then the stricter approval override.
 //!
+//! The timeline replicates as well (tables 370 to 381): reply threads, conversation items,
+//! communication messages, their immutable revisions, message references and their five target
+//! tables, and both read cursors. Items order by `(order_key, id)` within their conversation root
+//! or reply thread, and history boundaries, channel reference ranges, and read cursors hold
+//! `(order_key, item_id)` points of that order. Reply thread ids derive from their root item and
+//! cursors use a derived `sync_key`. Revisions are bounded so one fits an operation.
+//!
 //! Execution, drafts, review history, provider state, receipts, cleanup jobs, and the access
 //! and audience counters stay on the device as `Local` tables, and message search is `Derived`.
 //! The remaining organizational tables stay unconverted until later steps convert them. Chat is
-//! owner-only: replicas refuse Chat writes until its presentation lands. Ids 357 to 359 and 365
-//! to 399 are reserved.
+//! owner-only: replicas refuse Chat writes until its presentation lands. Ids 357 to 359, 365 to
+//! 369, and 382 to 399 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::{GroupId, TableId};
 
+use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
+
 use crate::domains::chat::{
     MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_TOPIC_CHARS, MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS,
-    MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS, MAX_PROVIDER_INSTANCE_CHARS, MAX_ROLE_CHARS,
+    MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS, MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS,
+    MAX_LABEL_CHARS, MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS,
+    MAX_RELATIVE_PATH_CHARS, MAX_RICH_CONTENT_BYTES, MAX_ROLE_CHARS,
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
@@ -58,6 +69,30 @@ pub const CHANNEL_MEMBERSHIPS_TABLE: TableId = TableId(362);
 pub const FOLDER_GRANTS_TABLE: TableId = TableId(363);
 /// `chat_channels`.
 pub const CHANNELS_TABLE: TableId = TableId(364);
+/// `chat_reply_threads`.
+pub const REPLY_THREADS_TABLE: TableId = TableId(370);
+/// `chat_conversation_items`.
+pub const ITEMS_TABLE: TableId = TableId(371);
+/// `chat_communication_messages`.
+pub const MESSAGES_TABLE: TableId = TableId(372);
+/// `chat_communication_message_revisions`.
+pub const REVISIONS_TABLE: TableId = TableId(373);
+/// `chat_message_references`.
+pub const REFERENCES_TABLE: TableId = TableId(374);
+/// `chat_channel_reference_targets`.
+pub const CHANNEL_TARGETS_TABLE: TableId = TableId(375);
+/// `chat_execution_environment_reference_targets`.
+pub const ENVIRONMENT_TARGETS_TABLE: TableId = TableId(376);
+/// `chat_participant_reference_targets`.
+pub const PARTICIPANT_TARGETS_TABLE: TableId = TableId(377);
+/// `chat_working_folder_reference_targets`.
+pub const FOLDER_TARGETS_TABLE: TableId = TableId(378);
+/// `chat_workspace_path_reference_targets`.
+pub const PATH_TARGETS_TABLE: TableId = TableId(379);
+/// `chat_conversation_read_cursors`.
+pub const CONVERSATION_CURSORS_TABLE: TableId = TableId(380);
+/// `chat_reply_thread_read_cursors`.
+pub const REPLY_CURSORS_TABLE: TableId = TableId(381);
 
 /// Prefix of conversation membership keys, over the conversation and participant.
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
@@ -65,6 +100,12 @@ pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
 pub const CHANNEL_MEMBERSHIP_KEY_PREFIX: &str = "ai-channel-membership";
 /// Prefix of working folder grant keys, over the conversation, teammate, and working folder.
 pub const FOLDER_GRANT_KEY_PREFIX: &str = "folder-grant";
+/// Prefix of reply thread ids, over the root item.
+pub const REPLY_THREAD_KEY_PREFIX: &str = "reply-thread";
+/// Prefix of conversation read cursor keys, over the conversation and participant.
+pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
+/// Prefix of reply thread read cursor keys, over the reply thread and participant.
+pub const REPLY_CURSOR_KEY_PREFIX: &str = "reply-thread-read-cursor";
 
 /// Participant field groups.
 pub mod participant_group {
@@ -204,6 +245,67 @@ pub mod channel_group {
     pub const UPDATED: GroupId = group_id(3);
 }
 
+/// Reply thread field groups.
+pub mod reply_thread_group {
+    use super::{GroupId, group_id};
+
+    /// `root_item_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `conversation_id` and `created_at`.
+    pub const CREATED: GroupId = group_id(1);
+    /// `last_activity_at`.
+    pub const ACTIVITY: GroupId = group_id(2);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(3);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(4);
+}
+
+/// Conversation item field groups.
+pub mod item_group {
+    use super::{GroupId, group_id};
+
+    /// Every column, fixed when the item is posted.
+    pub const CREATED: GroupId = group_id(0);
+}
+
+/// Communication message field groups.
+pub mod message_group {
+    use super::{GroupId, group_id};
+
+    /// `author_label_snapshot` and `created_at`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `author_participant_id`.
+    pub const AUTHOR: GroupId = group_id(1);
+    /// `current_revision_id` and `edited_at`.
+    pub const CONTENT: GroupId = group_id(2);
+    /// `deleted_at`.
+    pub const LIFECYCLE: GroupId = group_id(3);
+}
+
+/// Groups of the immutable timeline tables: message revisions, message references, and the five
+/// reference target tables.
+pub mod timeline_group {
+    use super::{GroupId, group_id};
+
+    /// Every column, fixed when the row is written.
+    pub const CREATED: GroupId = group_id(0);
+}
+
+/// Read cursor field groups, shared by conversation and reply thread cursors.
+pub mod read_cursor_group {
+    use super::{GroupId, group_id};
+
+    /// The scope and the participant.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `last_read_order_key` and `last_read_item_id`.
+    pub const READ: GroupId = group_id(1);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(2);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(3);
+}
+
 /// A hidden, non-recoverable group without references.
 const fn group(
     id: GroupId,
@@ -301,14 +403,26 @@ const fn cascade(column: &'static str, table: TableId) -> ReferenceColumn {
     }
 }
 
-/// An optional integer of at least 1.
-const fn optional_positive(name: &'static str) -> ColumnSpec {
+const fn set_null(column: &'static str, table: TableId) -> ReferenceColumn {
+    ReferenceColumn {
+        column,
+        table,
+        on_delete: OnDelete::SetNull,
+    }
+}
+
+/// An integer of at least `min`.
+const fn integer(name: &'static str, min: i64) -> ColumnSpec {
     ColumnSpec {
         name,
-        ty: ColumnType::OptionalInteger {
-            min: 1,
-            max: i64::MAX,
-        },
+        ty: ColumnType::Integer { min, max: i64::MAX },
+    }
+}
+
+const fn order_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::OrderKey,
     }
 }
 
@@ -379,6 +493,14 @@ const fn applier_visible(name: &'static str) -> DomainTrigger {
     DomainTrigger {
         name,
         policy: TriggerPolicy::ApplierVisible,
+    }
+}
+
+/// A trigger that writes only the device-local search index and keeps firing during apply.
+const fn derived_index(name: &'static str) -> DomainTrigger {
+    DomainTrigger {
+        name,
+        policy: TriggerPolicy::DerivedIndex,
     }
 }
 
@@ -723,7 +845,7 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
                     flag("participate_inherits_profile"),
                     text("history_boundary", MAX_ENUM_CHARS),
                     flag("history_boundary_inherits_profile"),
-                    optional_positive("history_from_ordinal"),
+                    optional_text("history_from_order_key", MAX_ORDER_KEY_BYTES),
                     optional_text("runtime_approval_policy", MAX_ENUM_CHARS),
                     optional_text("scratch_runtime_approval_policy", MAX_ENUM_CHARS),
                     optional_timestamp("removed_at"),
@@ -740,7 +862,7 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
         exists(channel_membership_group::EXISTS),
     ],
     resolutions: &[within(
-        &["history_boundary", "history_from_ordinal"],
+        &["history_boundary", "history_from_order_key"],
         channel_membership_group::ACCESS,
     )],
     triggers: &[
@@ -864,6 +986,323 @@ pub const CHANNELS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// `chat_reply_threads`. The id derives from the root item, so devices that open a thread on one
+/// message concurrently create one row. Activity keeps the latest time.
+pub const REPLY_THREADS: TableSpec = TableSpec {
+    id: REPLY_THREADS_TABLE,
+    name: "chat_reply_threads",
+    groups: &[
+        identity(
+            reply_thread_group::IDENTITY,
+            &[row_key("root_item_id")],
+            &[],
+        ),
+        referencing(
+            register(
+                reply_thread_group::CREATED,
+                "created",
+                &[row_key("conversation_id"), timestamp("created_at")],
+            ),
+            &[cascade("conversation_id", CONVERSATIONS_TABLE)],
+        ),
+        bumps(group(
+            reply_thread_group::ACTIVITY,
+            "activity",
+            MergeKind::Max,
+            &[timestamp("last_activity_at")],
+        )),
+        updated(reply_thread_group::UPDATED),
+        exists(reply_thread_group::EXISTS),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    triggers: &[gated("chat_reply_threads_root_item_insert")],
+    derived_key: Some(DerivedKey {
+        exists_group: reply_thread_group::EXISTS,
+        prefix: Some(REPLY_THREAD_KEY_PREFIX),
+        key_inputs: &["root_item_id"],
+    }),
+    ..BASE
+};
+
+/// `chat_conversation_items`, immutable. Items order by `(order_key, id)` within their scope,
+/// so concurrent posts that take one key order by id on every device.
+pub const ITEMS: TableSpec = TableSpec {
+    id: ITEMS_TABLE,
+    name: "chat_conversation_items",
+    groups: &[immutable(
+        item_group::CREATED,
+        &[
+            row_key("conversation_id"),
+            row_key("reply_thread_id"),
+            text("item_kind", MAX_ENUM_CHARS),
+            order_key("order_key"),
+            timestamp("created_at"),
+        ],
+        &[
+            cascade("conversation_id", CONVERSATIONS_TABLE),
+            cascade("reply_thread_id", REPLY_THREADS_TABLE),
+        ],
+    )],
+    triggers: &[applier_visible(
+        "chat_conversation_items_reply_thread_insert",
+    )],
+    ..BASE
+};
+
+/// `chat_communication_messages`. An edit points at a new immutable revision, a concurrent
+/// delete wins over an edit, and a removed author leaves the label snapshot. Search rows are
+/// rebuilt by the Chat sync hook for applied rows.
+pub const MESSAGES: TableSpec = TableSpec {
+    id: MESSAGES_TABLE,
+    name: "chat_communication_messages",
+    key_column: "item_id",
+    groups: &[
+        immutable(
+            message_group::CREATED,
+            &[
+                trimmed("author_label_snapshot", MAX_DISPLAY_NAME_CHARS),
+                timestamp("created_at"),
+            ],
+            &[],
+        ),
+        referencing(
+            register(
+                message_group::AUTHOR,
+                "author",
+                &[row_key("author_participant_id")],
+            ),
+            &[set_null("author_participant_id", PARTICIPANTS_TABLE)],
+        ),
+        surfaced(register(
+            message_group::CONTENT,
+            "content",
+            &[
+                row_key("current_revision_id"),
+                optional_timestamp("edited_at"),
+            ],
+        )),
+        coupled(
+            message_group::LIFECYCLE,
+            "lifecycle",
+            &[optional_timestamp("deleted_at")],
+        ),
+    ],
+    triggers: &[
+        gated("chat_communication_message_current_revision_update"),
+        derived_index("chat_communication_search_delete"),
+        gated("chat_communication_search_insert"),
+    ],
+    ..BASE
+};
+
+/// `chat_communication_message_revisions`, immutable and bounded so one revision fits an
+/// operation. Display numbers come from `(created_at, id)` order within the message.
+pub const REVISIONS: TableSpec = TableSpec {
+    id: REVISIONS_TABLE,
+    name: "chat_communication_message_revisions",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[
+            row_key("message_item_id"),
+            text("normalized_markdown", MAX_MESSAGE_MARKDOWN_BYTES),
+            version("rich_content_schema_version"),
+            text("rich_content_data", MAX_RICH_CONTENT_BYTES),
+            timestamp("created_at"),
+        ],
+        &[cascade("message_item_id", MESSAGES_TABLE)],
+    )],
+    triggers: &[applier_visible(
+        "chat_communication_message_revision_immutable_update",
+    )],
+    ..BASE
+};
+
+/// `chat_message_references`, immutable mention spans of one revision.
+pub const REFERENCES: TableSpec = TableSpec {
+    id: REFERENCES_TABLE,
+    name: "chat_message_references",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[
+            row_key("message_revision_id"),
+            text("reference_kind", MAX_ENUM_CHARS),
+            text("label_snapshot", MAX_LABEL_CHARS),
+            text("plain_text_projection", MAX_LABEL_CHARS),
+            integer("start_offset", 0),
+            integer("end_offset", 1),
+            integer("ordinal", 0),
+            timestamp("created_at"),
+        ],
+        &[cascade("message_revision_id", REVISIONS_TABLE)],
+    )],
+    resolutions: &[within(
+        &["start_offset", "end_offset"],
+        timeline_group::CREATED,
+    )],
+    ..BASE
+};
+
+/// The base of the immutable mention target tables, keyed by their reference. Targets hold
+/// values without foreign keys; a missing target renders the label snapshot.
+const TARGET: TableSpec = TableSpec {
+    key_column: "reference_id",
+    ..BASE
+};
+
+/// `chat_channel_reference_targets`. A channel range holds `(order_key, item_id)` bounds and a
+/// revision cutoff, all null for an empty range.
+pub const CHANNEL_TARGETS: TableSpec = TableSpec {
+    id: CHANNEL_TARGETS_TABLE,
+    name: "chat_channel_reference_targets",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[
+            row_key("channel_id"),
+            row_key("source_conversation_id"),
+            row_key("destination_conversation_id"),
+            optional_text("source_lower_order_key", MAX_ORDER_KEY_BYTES),
+            optional_text("source_lower_item_id", MAX_ID_CHARS),
+            optional_text("source_high_order_key", MAX_ORDER_KEY_BYTES),
+            row_key("source_high_item_id"),
+            row_key("source_revision_cutoff_id"),
+        ],
+        &[],
+    )],
+    resolutions: &[within(
+        &[
+            "source_lower_order_key",
+            "source_lower_item_id",
+            "source_high_order_key",
+            "source_high_item_id",
+            "source_revision_cutoff_id",
+        ],
+        timeline_group::CREATED,
+    )],
+    ..TARGET
+};
+
+/// `chat_execution_environment_reference_targets`.
+pub const ENVIRONMENT_TARGETS: TableSpec = TableSpec {
+    id: ENVIRONMENT_TARGETS_TABLE,
+    name: "chat_execution_environment_reference_targets",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[text("execution_environment_id", MAX_ENVIRONMENT_ID_CHARS)],
+        &[],
+    )],
+    ..TARGET
+};
+
+/// `chat_participant_reference_targets`.
+pub const PARTICIPANT_TARGETS: TableSpec = TableSpec {
+    id: PARTICIPANT_TARGETS_TABLE,
+    name: "chat_participant_reference_targets",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[row_key("participant_id")],
+        &[],
+    )],
+    ..TARGET
+};
+
+/// `chat_working_folder_reference_targets`.
+pub const FOLDER_TARGETS: TableSpec = TableSpec {
+    id: FOLDER_TARGETS_TABLE,
+    name: "chat_working_folder_reference_targets",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[row_key("working_folder_id")],
+        &[],
+    )],
+    ..TARGET
+};
+
+/// `chat_workspace_path_reference_targets`.
+pub const PATH_TARGETS: TableSpec = TableSpec {
+    id: PATH_TARGETS_TABLE,
+    name: "chat_workspace_path_reference_targets",
+    groups: &[immutable(
+        timeline_group::CREATED,
+        &[
+            row_key("working_folder_id"),
+            text("path_kind", MAX_ENUM_CHARS),
+            text("relative_path", MAX_RELATIVE_PATH_CHARS),
+        ],
+        &[],
+    )],
+    ..TARGET
+};
+
+/// The columns of a read cursor's `read` group: `''` for both when nothing is read.
+const READ_COLUMNS: &[ColumnSpec] = &[
+    text("last_read_order_key", MAX_ORDER_KEY_BYTES),
+    text("last_read_item_id", MAX_ID_CHARS),
+];
+
+/// `chat_conversation_read_cursors`. Concurrent reads keep the later item; marking a channel
+/// unread replicates when it follows the read it clears.
+pub const CONVERSATION_CURSORS: TableSpec = TableSpec {
+    id: CONVERSATION_CURSORS_TABLE,
+    name: "chat_conversation_read_cursors",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        identity(
+            read_cursor_group::IDENTITY,
+            &[row_key("conversation_id"), row_key("participant_id")],
+            &[
+                cascade("conversation_id", CONVERSATIONS_TABLE),
+                cascade("participant_id", PARTICIPANTS_TABLE),
+            ],
+        ),
+        group(
+            read_cursor_group::READ,
+            "read",
+            MergeKind::Max,
+            READ_COLUMNS,
+        ),
+        updated(read_cursor_group::UPDATED),
+        exists(read_cursor_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: read_cursor_group::EXISTS,
+        prefix: Some(CONVERSATION_CURSOR_KEY_PREFIX),
+        key_inputs: &["conversation_id", "participant_id"],
+    }),
+    ..BASE
+};
+
+/// `chat_reply_thread_read_cursors`. Concurrent reads keep the later item.
+pub const REPLY_CURSORS: TableSpec = TableSpec {
+    id: REPLY_CURSORS_TABLE,
+    name: "chat_reply_thread_read_cursors",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        identity(
+            read_cursor_group::IDENTITY,
+            &[row_key("reply_thread_id"), row_key("participant_id")],
+            &[
+                cascade("reply_thread_id", REPLY_THREADS_TABLE),
+                cascade("participant_id", PARTICIPANTS_TABLE),
+            ],
+        ),
+        group(
+            read_cursor_group::READ,
+            "read",
+            MergeKind::Max,
+            READ_COLUMNS,
+        ),
+        updated(read_cursor_group::UPDATED),
+        exists(read_cursor_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: read_cursor_group::EXISTS,
+        prefix: Some(REPLY_CURSOR_KEY_PREFIX),
+        key_inputs: &["reply_thread_id", "participant_id"],
+    }),
+    ..BASE
+};
+
 /// A device table with its triggers.
 const fn device(name: &'static str, triggers: &'static [DomainTrigger]) -> DeviceTable {
     DeviceTable {
@@ -891,6 +1330,18 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         CHANNEL_MEMBERSHIPS,
         FOLDER_GRANTS,
         CHANNELS,
+        REPLY_THREADS,
+        ITEMS,
+        MESSAGES,
+        REVISIONS,
+        REFERENCES,
+        CHANNEL_TARGETS,
+        ENVIRONMENT_TARGETS,
+        PARTICIPANT_TARGETS,
+        FOLDER_TARGETS,
+        PATH_TARGETS,
+        CONVERSATION_CURSORS,
+        REPLY_CURSORS,
     ],
     derived: &["chat_communication_search_fts"],
     local: &[

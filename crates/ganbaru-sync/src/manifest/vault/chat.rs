@@ -25,11 +25,16 @@
 //! resource rows stay `Local`; the Chat hook creates them for applied references, and the
 //! attachment rows keep their files alive while queued or unsent work names them.
 //!
-//! Execution, drafts, review history, provider state, receipts, cleanup jobs, and the access
-//! and audience counters stay on the device as `Local` tables, and message search is `Derived`.
-//! The remaining organizational tables stay unconverted until later steps convert them. Chat is
-//! owner-only: replicas refuse Chat writes until its presentation lands. Ids 357 to 359, 365 to
-//! 369, and 382 to 399 are reserved.
+//! Scheduled messages, work assignments, assignment inputs, and semantic updates replicate
+//! (tables 390 and 395 to 397). A scheduled message owns its attachment and mention references
+//! and names the device that sends it; an assignment names the device that executes it. Input
+//! ids derive from their message, so concurrent routing of one message converges, and a settled
+//! assignment state wins over a concurrent active one.
+//!
+//! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
+//! and the access and audience counters stay on the device as `Local` tables, and message search
+//! is `Derived`. Chat is owner-only: replicas refuse Chat writes until its presentation lands.
+//! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, and 399 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::{GroupId, TableId};
@@ -42,15 +47,16 @@ use crate::domains::chat::{
     MAX_ATTACHMENT_NAME_CHARS, MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_TOPIC_CHARS,
     MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS, MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS,
     MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS, MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS,
-    MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS, MAX_RELATIVE_PATH_CHARS,
-    MAX_RICH_CONTENT_BYTES, MAX_ROLE_CHARS, SHA256_HEX_CHARS,
+    MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS, MAX_REASON_CHARS,
+    MAX_RELATIVE_PATH_CHARS, MAX_RICH_CONTENT_BYTES, MAX_ROLE_CHARS, MAX_SCHEDULED_REFERENCES,
+    MAX_SCHEDULED_REQUEST_BYTES, MAX_SEMANTIC_PAYLOAD_BYTES, SHA256_HEX_CHARS,
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
     GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
-    TriggerPolicy, group_id,
+    OwnedReference, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange,
+    TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Chat.
@@ -103,6 +109,14 @@ pub const PATH_TARGETS_TABLE: TableId = TableId(379);
 pub const CONVERSATION_CURSORS_TABLE: TableId = TableId(380);
 /// `chat_reply_thread_read_cursors`.
 pub const REPLY_CURSORS_TABLE: TableId = TableId(381);
+/// `chat_scheduled_messages`.
+pub const SCHEDULED_TABLE: TableId = TableId(390);
+/// `chat_work_assignments`.
+pub const ASSIGNMENTS_TABLE: TableId = TableId(395);
+/// `chat_work_assignment_inputs`.
+pub const INPUTS_TABLE: TableId = TableId(396);
+/// `chat_work_semantic_updates`.
+pub const SEMANTIC_UPDATES_TABLE: TableId = TableId(397);
 
 /// Prefix of conversation membership keys, over the conversation and participant.
 pub const MEMBERSHIP_KEY_PREFIX: &str = "conversation-membership";
@@ -116,6 +130,8 @@ pub const REPLY_THREAD_KEY_PREFIX: &str = "reply-thread";
 pub const CONVERSATION_CURSOR_KEY_PREFIX: &str = "conversation-read-cursor";
 /// Prefix of reply thread read cursor keys, over the reply thread and participant.
 pub const REPLY_CURSOR_KEY_PREFIX: &str = "reply-thread-read-cursor";
+/// Prefix of assignment input ids, over the routed message.
+pub const ASSIGNMENT_INPUT_KEY_PREFIX: &str = "assignment-input";
 
 /// Participant field groups.
 pub mod participant_group {
@@ -316,6 +332,61 @@ pub mod read_cursor_group {
     pub const UPDATED: GroupId = group_id(2);
     /// Whether the row exists.
     pub const EXISTS: GroupId = group_id(3);
+}
+
+/// Scheduled message field groups.
+pub mod scheduled_group {
+    use super::{GroupId, group_id};
+
+    /// `client_command_id`, `channel_id`, `reply_thread_id`, `executing_device_id`, and
+    /// `created_at`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `request_schema_version`, `request_data`, and `scheduled_for`, with the attachment and
+    /// mention references as owned rows.
+    pub const CONTENT: GroupId = group_id(1);
+    /// `failed_at` and `last_error`.
+    pub const FAILURE: GroupId = group_id(2);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(3);
+}
+
+/// Work assignment field groups.
+pub mod assignment_group {
+    use super::{GroupId, group_id};
+
+    /// `reply_thread_id`, `teammate_id`, `triggering_message_item_id`, `executing_device_id`,
+    /// and `created_at`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `previous_assignment_id`.
+    pub const PREVIOUS: GroupId = group_id(1);
+    /// `state`, `state_reason`, and `settled_at`.
+    pub const STATE: GroupId = group_id(2);
+    /// `updated_at`.
+    pub const UPDATED: GroupId = group_id(3);
+}
+
+/// Assignment input field groups.
+pub mod input_group {
+    use super::{GroupId, group_id};
+
+    /// `message_item_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `created_at`.
+    pub const CREATED: GroupId = group_id(1);
+    /// `assignment_id`, `ordinal`, and `routing_kind`.
+    pub const ROUTING: GroupId = group_id(2);
+    /// `delivery_state` and `delivered_at`.
+    pub const DELIVERY: GroupId = group_id(3);
+    /// Whether the row exists.
+    pub const EXISTS: GroupId = group_id(4);
+}
+
+/// Semantic update field groups.
+pub mod semantic_update_group {
+    use super::{GroupId, group_id};
+
+    /// Every column, fixed when the update is posted.
+    pub const CREATED: GroupId = group_id(0);
 }
 
 /// A hidden, non-recoverable group without references.
@@ -1365,6 +1436,215 @@ pub const REPLY_CURSORS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// `chat_scheduled_message_attachment_references`, the attachments of one scheduled message in
+/// order, carried by value like a revision's attachment references so the send succeeds after
+/// the device's attachment row is gone.
+pub const SCHEDULED_ATTACHMENT_REFERENCES: OwnedTable = OwnedTable {
+    table: "chat_scheduled_message_attachment_references",
+    parent_column: "scheduled_message_id",
+    ..ATTACHMENT_REFERENCES
+};
+
+/// `chat_scheduled_message_references`, the mention spans of one scheduled message in order.
+/// A row whose participant, channel, or working folder is gone is not materialized.
+pub const SCHEDULED_REFERENCES: OwnedTable = OwnedTable {
+    table: "chat_scheduled_message_references",
+    parent_column: "scheduled_message_id",
+    order: OwnedOrder::Ordinal("ordinal"),
+    columns: &[
+        text("reference_kind", MAX_ENUM_CHARS),
+        text("label_snapshot", MAX_LABEL_CHARS),
+        text("plain_text_projection", MAX_LABEL_CHARS),
+        integer("start_offset", 0),
+        integer("end_offset", 1),
+        row_key("participant_id"),
+        optional_text("participant_kind", MAX_ENUM_CHARS),
+        row_key("channel_id"),
+        row_key("working_folder_id"),
+        optional_text("path_kind", MAX_ENUM_CHARS),
+        optional_text("relative_path", MAX_RELATIVE_PATH_CHARS),
+        optional_text("execution_environment_id", MAX_ENVIRONMENT_ID_CHARS),
+    ],
+    references: &[
+        OwnedReference {
+            column: "participant_id",
+            table: PARTICIPANTS_TABLE,
+        },
+        OwnedReference {
+            column: "channel_id",
+            table: CHANNELS_TABLE,
+        },
+        OwnedReference {
+            column: "working_folder_id",
+            table: FOLDERS_TABLE,
+        },
+    ],
+    unique: &[],
+    max_rows: MAX_SCHEDULED_REFERENCES,
+    codec: OwnedCodec::Generic,
+    nested: &[],
+    bound: OwnedBound::Domain,
+};
+
+/// `chat_scheduled_messages`. The executing device sends the message, posting it under ids
+/// derived from the scheduled message and deleting the row in one transaction. Claims and
+/// retries stay in the device's `chat_scheduled_message_dispatch` row; only the executing device
+/// writes a failure.
+pub const SCHEDULED: TableSpec = TableSpec {
+    id: SCHEDULED_TABLE,
+    name: "chat_scheduled_messages",
+    groups: &[
+        immutable(
+            scheduled_group::CREATED,
+            &[
+                text("client_command_id", MAX_ID_CHARS),
+                row_key("channel_id"),
+                row_key("reply_thread_id"),
+                optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
+                timestamp("created_at"),
+            ],
+            &[
+                cascade("channel_id", CHANNELS_TABLE),
+                cascade("reply_thread_id", REPLY_THREADS_TABLE),
+            ],
+        ),
+        GroupSpec {
+            storage: GroupStorage::Owned {
+                columns: &[
+                    version("request_schema_version"),
+                    text("request_data", MAX_SCHEDULED_REQUEST_BYTES),
+                    timestamp("scheduled_for"),
+                ],
+                tables: &[SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES],
+            },
+            ..register(scheduled_group::CONTENT, "content", &[])
+        },
+        register(
+            scheduled_group::FAILURE,
+            "failure",
+            &[
+                optional_timestamp("failed_at"),
+                optional_text("last_error", MAX_REASON_CHARS),
+            ],
+        ),
+        updated(scheduled_group::UPDATED),
+    ],
+    resolutions: &[Resolution::DuplicateRepair {
+        columns: &["client_command_id"],
+        collation: Collation::Binary,
+    }],
+    redirects: true,
+    triggers: &[applier_visible("chat_scheduled_messages_reply_thread_insert")],
+    ..BASE
+};
+
+/// `chat_work_assignments`. Only the executing device dispatches an assignment and writes its
+/// active states; any device may settle it. A settled state wins over a concurrent active one,
+/// and a review request over the other active states.
+pub const ASSIGNMENTS: TableSpec = TableSpec {
+    id: ASSIGNMENTS_TABLE,
+    name: "chat_work_assignments",
+    groups: &[
+        immutable(
+            assignment_group::CREATED,
+            &[
+                row_key("reply_thread_id"),
+                row_key("teammate_id"),
+                row_key("triggering_message_item_id"),
+                optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
+                timestamp("created_at"),
+            ],
+            &[
+                cascade("reply_thread_id", REPLY_THREADS_TABLE),
+                cascade("teammate_id", TEAMMATES_TABLE),
+                cascade("triggering_message_item_id", MESSAGES_TABLE),
+            ],
+        ),
+        referencing(
+            register(
+                assignment_group::PREVIOUS,
+                "previous",
+                &[row_key("previous_assignment_id")],
+            ),
+            &[set_null("previous_assignment_id", ASSIGNMENTS_TABLE)],
+        ),
+        bumps(coupled(
+            assignment_group::STATE,
+            "state",
+            &[
+                text("state", MAX_ENUM_CHARS),
+                optional_text("state_reason", MAX_REASON_CHARS),
+                optional_timestamp("settled_at"),
+            ],
+        )),
+        updated(assignment_group::UPDATED),
+    ],
+    local_columns: &[REVISION],
+    revision_column: Some("revision"),
+    ..BASE
+};
+
+/// `chat_work_assignment_inputs`. The id derives from the routed message, so devices that route
+/// one message concurrently create one row; rerouting moves it to another assignment.
+pub const INPUTS: TableSpec = TableSpec {
+    id: INPUTS_TABLE,
+    name: "chat_work_assignment_inputs",
+    groups: &[
+        identity(
+            input_group::IDENTITY,
+            &[row_key("message_item_id")],
+            &[cascade("message_item_id", MESSAGES_TABLE)],
+        ),
+        register(input_group::CREATED, "created", &[timestamp("created_at")]),
+        referencing(
+            register(
+                input_group::ROUTING,
+                "routing",
+                &[
+                    row_key("assignment_id"),
+                    integer("ordinal", 1),
+                    text("routing_kind", MAX_ENUM_CHARS),
+                ],
+            ),
+            &[cascade("assignment_id", ASSIGNMENTS_TABLE)],
+        ),
+        register(
+            input_group::DELIVERY,
+            "delivery",
+            &[
+                text("delivery_state", MAX_ENUM_CHARS),
+                optional_timestamp("delivered_at"),
+            ],
+        ),
+        exists(input_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: input_group::EXISTS,
+        prefix: Some(ASSIGNMENT_INPUT_KEY_PREFIX),
+        key_inputs: &["message_item_id"],
+    }),
+    ..BASE
+};
+
+/// `chat_work_semantic_updates`, keyed by their conversation item and immutable.
+pub const SEMANTIC_UPDATES: TableSpec = TableSpec {
+    id: SEMANTIC_UPDATES_TABLE,
+    name: "chat_work_semantic_updates",
+    key_column: "item_id",
+    groups: &[immutable(
+        semantic_update_group::CREATED,
+        &[
+            row_key("assignment_id"),
+            text("update_kind", MAX_ENUM_CHARS),
+            version("payload_schema_version"),
+            text("payload_data", MAX_SEMANTIC_PAYLOAD_BYTES),
+            timestamp("created_at"),
+        ],
+        &[cascade("assignment_id", ASSIGNMENTS_TABLE)],
+    )],
+    ..BASE
+};
+
 /// A device table with its triggers.
 const fn device(name: &'static str, triggers: &'static [DomainTrigger]) -> DeviceTable {
     DeviceTable {
@@ -1404,6 +1684,10 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         PATH_TARGETS,
         CONVERSATION_CURSORS,
         REPLY_CURSORS,
+        SCHEDULED,
+        ASSIGNMENTS,
+        INPUTS,
+        SEMANTIC_UPDATES,
     ],
     derived: &["chat_communication_search_fts"],
     local: &[
@@ -1571,19 +1855,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     ],
     engine: &[],
     replica_writable: false,
-    // Scheduled messages travel with the vault unconverted until they replicate. Their
-    // attachments carry their files by digest and may outlive the attachment row of a deleted
-    // working folder, so they keep their files until their send.
-    unconverted: &[DeviceTable {
-        name: "chat_scheduled_message_attachment_references",
-        triggers: &[],
-        assets: &[LocalAssetColumn {
-            column: "sha256",
-            json_path: None,
-            digest: LocalDigest::Sha256 {
-                class: ATTACHMENTS_CLASS.name,
-            },
-        }],
-    }],
+    unconverted: &[],
     assets: &[ATTACHMENTS_CLASS],
 };

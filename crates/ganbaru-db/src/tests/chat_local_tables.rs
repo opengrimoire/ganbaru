@@ -574,3 +574,84 @@ fn replicated_chat_deletes_never_stop_on_a_device_local_foreign_key() {
         );
     });
 }
+
+const BEFORE_CHAT_ASSIGNMENTS_REPLICATION: i64 = 20261028072808;
+const CHAT_ASSIGNMENTS_REPLICATION: i64 = 20261028081009;
+
+/// The sync space a vault copy records before the assignments replication migration.
+struct RecordedSyncSpace<'a> {
+    local_device_id: &'a str,
+    anchor_device_id: Option<&'a str>,
+}
+
+/// The executing devices the assignments replication migration gives the graph's scheduled
+/// messages and assignments of a vault copy that recorded `space`, if any.
+async fn executors_after_assignments_replication(
+    space: Option<RecordedSyncSpace<'_>>,
+) -> Vec<Option<String>> {
+    let pool = memory_pool_migrated_through(BEFORE_CHAT_ASSIGNMENTS_REPLICATION).await;
+    load_project_chat_graph(&pool).await;
+    if let Some(space) = space {
+        sqlx::query(
+            "INSERT INTO sync_spaces
+                 (space_id, vault_id, created_at_ms, local_device_id, anchor_device_id)
+             VALUES (zeroblob(16), 'vault-migrating', 0, ?, ?)",
+        )
+        .bind(space.local_device_id)
+        .bind(space.anchor_device_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    migrate_through(&pool, CHAT_ASSIGNMENTS_REPLICATION)
+        .await
+        .unwrap();
+    let executors: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT executing_device_id FROM chat_scheduled_messages
+         UNION ALL SELECT executing_device_id FROM chat_work_assignments",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(executors.len() >= 2, "the graph holds scheduled work");
+    executors
+}
+
+#[test]
+fn assignments_replication_gives_existing_work_to_the_anchor_on_every_linked_copy() {
+    super::block_on(async {
+        let coordinator = executors_after_assignments_replication(Some(RecordedSyncSpace {
+            local_device_id: "device:coordinator",
+            anchor_device_id: Some("device:coordinator"),
+        }))
+        .await;
+        let replica = executors_after_assignments_replication(Some(RecordedSyncSpace {
+            local_device_id: "device:replica",
+            anchor_device_id: Some("device:coordinator"),
+        }))
+        .await;
+        assert!(
+            coordinator
+                .iter()
+                .all(|executor| executor.as_deref() == Some("device:coordinator"))
+        );
+        assert_eq!(
+            replica, coordinator,
+            "the coordinator and replica copies name the same executor"
+        );
+
+        let unanchored = executors_after_assignments_replication(Some(RecordedSyncSpace {
+            local_device_id: "device:migrating",
+            anchor_device_id: None,
+        }))
+        .await;
+        assert!(
+            unanchored
+                .iter()
+                .all(|executor| executor.as_deref() == Some("device:migrating")),
+            "a space without an anchor yet keeps the local sync writer"
+        );
+        let unsynced = executors_after_assignments_replication(None).await;
+        assert!(unsynced.iter().all(Option::is_none));
+    });
+}

@@ -77,6 +77,72 @@ pub(super) async fn insert_attachment_references(
     Ok(())
 }
 
+/// Where a posted revision takes its attachment references from.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AttachmentSource<'a> {
+    /// The device's attachment rows named by the request.
+    Device(&'a [ChatAttachmentId]),
+    /// The values a scheduled message stored, so a send needs no attachment row on this device.
+    Scheduled {
+        /// Scheduled message whose references are copied.
+        scheduled_message_id: &'a str,
+        /// Number of attachments the scheduled request names.
+        expected: usize,
+    },
+}
+
+/// Inserts the attachment references of the revision `revision_id` from `source`.
+///
+/// # Errors
+///
+/// Returns a validation error when a device attachment does not exist, or when the scheduled
+/// message holds a different number of attachment references than its request names.
+pub(super) async fn insert_revision_attachments(
+    connection: &mut sqlx::SqliteConnection,
+    revision_id: &str,
+    source: AttachmentSource<'_>,
+) -> ChatResult<()> {
+    match source {
+        AttachmentSource::Device(attachment_ids) => {
+            insert_attachment_references(
+                connection,
+                AttachmentReferenceOwner::Revision,
+                revision_id,
+                attachment_ids,
+            )
+            .await
+        }
+        AttachmentSource::Scheduled {
+            scheduled_message_id,
+            expected,
+        } => {
+            let inserted = sqlx::query(
+                "INSERT INTO chat_communication_attachment_references
+                     (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+                      original_display_name, mime_type, byte_size, sha256)
+                 SELECT ?, ordinal, attachment_id, working_folder_id, kind,
+                        original_display_name, mime_type, byte_size, sha256
+                 FROM chat_scheduled_message_attachment_references
+                 WHERE scheduled_message_id = ?
+                 ORDER BY ordinal",
+            )
+            .bind(revision_id)
+            .bind(scheduled_message_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?
+            .rows_affected();
+            if usize::try_from(inserted).ok() != Some(expected) {
+                return Err(ChatError::validation(
+                    "attachmentIds",
+                    "The scheduled message attachments are incomplete",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Active folder grants of one AI channel membership, bound to the conversation and teammate.
 ///
 /// Concurrent edits on two devices can each leave a default grant after sync merges them, so
@@ -435,6 +501,47 @@ pub(super) fn message_revision_id() -> ChatResult<ChatMessageRevisionId> {
     ChatMessageRevisionId::new(new_id("message-revision")?).map_err(identifier_error)
 }
 
+/// Item and revision ids of one message a scheduled send posts, derived from the scheduled
+/// message so a repeated send names the same rows.
+pub(super) struct ScheduledPostIds {
+    /// The posted message item.
+    pub(super) item_id: ChatConversationItemId,
+    /// The posted message's first revision.
+    pub(super) revision_id: ChatMessageRevisionId,
+}
+
+/// Which message of a scheduled send an id names.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ScheduledPostTarget {
+    /// The message posted where the scheduled message was written.
+    Message,
+    /// The channel copy of a reply that is also sent to the channel.
+    ChannelCopy,
+}
+
+/// Returns the derived ids of a scheduled send's message or channel copy.
+pub(super) fn scheduled_post_ids(
+    scheduled_message_id: &str,
+    target: ScheduledPostTarget,
+) -> ChatResult<ScheduledPostIds> {
+    let role = match target {
+        ScheduledPostTarget::Message => "scheduled",
+        ScheduledPostTarget::ChannelCopy => "scheduled-channel-copy",
+    };
+    Ok(ScheduledPostIds {
+        item_id: ChatConversationItemId::new(derived_id(
+            "conversation-item",
+            &[role, scheduled_message_id],
+        )?)
+        .map_err(identifier_error)?,
+        revision_id: ChatMessageRevisionId::new(derived_id(
+            "message-revision",
+            &[role, scheduled_message_id],
+        )?)
+        .map_err(identifier_error)?,
+    })
+}
+
 /// Returns the reply thread id derived from its root item, so every device that opens the thread
 /// for the same root message agrees on its id.
 pub(super) fn reply_thread_id(
@@ -449,7 +556,6 @@ pub(super) fn reply_thread_id(
 
 /// Returns the work assignment input id derived from its message, so one message routes to at
 /// most one input whichever device writes it.
-#[cfg(desktop)]
 pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     derived_id(
         ganbaru_chat::ids::ASSIGNMENT_INPUT_ID_PREFIX,
@@ -457,9 +563,21 @@ pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     )
 }
 
-#[cfg(desktop)]
-pub(super) fn work_assignment_id() -> ChatResult<ChatWorkAssignmentId> {
-    ChatWorkAssignmentId::new(new_id("assignment")?).map_err(identifier_error)
+/// Returns the work assignment id derived from its triggering message, its teammate, and the
+/// assignment it follows, so concurrent Starts of one mention on two devices write one
+/// assignment that sync merges instead of two that both run.
+pub(super) fn work_assignment_id(
+    message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+    previous_assignment_id: Option<&ChatWorkAssignmentId>,
+) -> ChatResult<ChatWorkAssignmentId> {
+    let mut parts = vec![message_item_id.as_str(), teammate_id.as_str()];
+    parts.extend(previous_assignment_id.map(ChatWorkAssignmentId::as_str));
+    ChatWorkAssignmentId::new(derived_id(
+        ganbaru_chat::ids::WORK_ASSIGNMENT_ID_PREFIX,
+        &parts,
+    )?)
+    .map_err(identifier_error)
 }
 
 pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantKind> {
@@ -756,6 +874,45 @@ pub(super) fn serialization_error<E>(_error: E) -> ChatError {
         "Chat JSON data is invalid",
         false,
     )
+}
+
+/// The stable id of this device, which decides where assignments and scheduled messages run.
+pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> ChatResult<String> {
+    crate::sync::devices::stable_device_id(app).map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            "This device's identity is unavailable",
+            true,
+        )
+    })
+}
+
+/// The devices that can write Chat in the active vault: its owner, and this device when it is a
+/// linked replica that Chat lets write. Other linked replicas are not listed, so while Chat is
+/// owner-only the owner is the only writer.
+pub(super) fn chat_writers<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> ChatResult<super::workflow::ChatWriters> {
+    let status = crate::vault::ownership::active_status(app).map_err(|error| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            format!("This vault's owner is unavailable: {error}"),
+            true,
+        )
+    })?;
+    Ok(chat_writers_from_status(&status))
+}
+
+/// The devices that write Chat under the ownership `status`: the vault owner, and this device
+/// when it may write the Chat domain.
+pub(super) fn chat_writers_from_status(
+    status: &crate::vault::ownership::VaultOwnershipStatus,
+) -> super::workflow::ChatWriters {
+    let mut devices = vec![status.owner_device_id.clone()];
+    if status.can_write_domain(ganbaru_sync::manifest::vault::chat::DOMAIN_NAME) {
+        devices.push(status.device_id.clone());
+    }
+    super::workflow::ChatWriters::new(devices)
 }
 
 pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {

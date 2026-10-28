@@ -1709,3 +1709,5 @@ fn chat_a_crash_while_sealing_or_applying_attachment_references_leaves_nothing_p
         assert_converged(&mut replicas).await;
     });
 }
+
+mod assignments;

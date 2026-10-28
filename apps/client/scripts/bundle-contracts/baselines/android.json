@@ -52,7 +52,7 @@
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 328
+      "maxSourceModules": 329
     }
   ],
   "maxTotalSourceModules": 1342,

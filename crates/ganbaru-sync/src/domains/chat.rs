@@ -16,24 +16,32 @@
 //! Timeline values mirror their table checks too, including the byte bounds that keep one
 //! message revision within an operation. A revision's attachments carry their working folder,
 //! kind, display name, content type, size, and digest by value, and each non-empty one
-//! references its `chat/attachments` file.
+//! references its `chat/attachments` file. A scheduled message's content carries its
+//! attachments the same way, and its request and mention references stay within one operation.
+//!
+//! A settled work assignment outranks a concurrent active state, and a review request
+//! outranks the other active states.
 
-use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
+use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::assets::AssetRef;
 use crate::codec;
+use crate::manifest::OwnedTable;
 use crate::manifest::vault::chat::{
-    ADAPTER, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS, CHANNEL_MEMBERSHIPS_TABLE,
-    CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE,
-    ENVIRONMENT_TARGETS_TABLE, FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, ITEMS_TABLE,
-    MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE,
-    PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
-    REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE, TEAMMATES_TABLE,
-    channel_group, channel_membership_group, conversation_group, folder_grant_group, item_group,
-    membership_group, message_group, participant_group, policy_revision_group, profile_group,
-    profile_revision_group, read_cursor_group, reply_thread_group, teammate_group, timeline_group,
+    ADAPTER, ASSIGNMENTS_TABLE, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS,
+    CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE,
+    CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE, FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE,
+    INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE,
+    PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
+    PROFILES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
+    TEAMMATES_TABLE, assignment_group, channel_group, channel_membership_group, conversation_group,
+    folder_grant_group, input_group, item_group, membership_group, message_group,
+    participant_group, policy_revision_group, profile_group, profile_revision_group,
+    read_cursor_group, reply_thread_group, scheduled_group, semantic_update_group, teammate_group,
+    timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -141,6 +149,40 @@ pub const REFERENCE_KINDS: [&str; 5] = [
 ];
 /// Kinds of a workspace path in a mention.
 pub const PATH_KINDS: [&str; 2] = ["file", "folder"];
+/// Bytes of a scheduled message's request, which also bounds its characters.
+pub const MAX_SCHEDULED_REQUEST_BYTES: usize = 256 * 1024;
+/// Bytes of a scheduled message's request and encoded mention references together, so its
+/// content with every attachment fits one operation.
+pub const MAX_SCHEDULED_CONTENT_BYTES: usize = 320 * 1024;
+/// Most mention references of one scheduled message.
+pub const MAX_SCHEDULED_REFERENCES: usize = 256;
+/// Characters of a failure or state reason.
+pub const MAX_REASON_CHARS: usize = 4000;
+/// Bytes of a semantic update payload, which also bounds its characters.
+pub const MAX_SEMANTIC_PAYLOAD_BYTES: usize = MAX_RICH_CONTENT_BYTES;
+/// The version of a scheduled message request.
+pub const SCHEDULED_REQUEST_VERSION: i64 = 1;
+/// Work assignment states, active first.
+pub const ASSIGNMENT_STATES: [&str; 8] = [
+    "queued",
+    "working",
+    "waiting_for_answer",
+    "waiting_for_approval",
+    "ready_for_review",
+    "completed",
+    "failed",
+    "cancelled",
+];
+/// Settled work assignment states.
+pub const SETTLED_ASSIGNMENT_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+/// How a message reached an assignment.
+pub const ROUTING_KINDS: [&str; 4] = ["trigger", "steer", "queued_continuation", "follow_up"];
+/// Delivery states of an assignment input.
+pub const DELIVERY_STATES: [&str; 4] = ["pending", "delivered", "failed", "ignored"];
+/// Kinds of semantic work updates.
+pub const SEMANTIC_UPDATE_KINDS: [&str; 7] = [
+    "plan", "replan", "question", "approval", "failure", "result", "review",
+];
 /// Rank of no approval override, the least restrictive.
 const INHERITED_APPROVAL_RANK: u8 = 1;
 
@@ -609,7 +651,7 @@ fn validate_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterErro
                 .map_err(|_| AdapterError("chat message rich content"))?;
             timestamp(created_at)
         }
-        (timeline_group::ATTACHMENTS, [_]) => attachments(fields).map(|_| ()),
+        (timeline_group::ATTACHMENTS, [blob]) => attachments(blob).map(|_| ()),
         _ => Err(AdapterError("chat message revision value")),
     }
 }
@@ -624,8 +666,9 @@ struct Attachment {
 /// The attachments of a revision's attachments group value, each checked as the table checks
 /// it: a lowercase hex digest, a known content type matching the kind, and a size within the
 /// asset class bound. Only a text snippet may be empty.
-fn attachments(fields: &[Field]) -> Result<Vec<Attachment>, AdapterError> {
-    let [Field::Blob(bytes)] = fields else {
+/// Revisions and scheduled messages encode their attachment references alike.
+fn attachments(blob: &Field) -> Result<Vec<Attachment>, AdapterError> {
+    let Field::Blob(bytes) = blob else {
         return Err(AdapterError("chat attachments value"));
     };
     let rows = codec::decode(&ATTACHMENT_REFERENCES, bytes)
@@ -807,6 +850,204 @@ fn validate_read_cursor(group: GroupId, fields: &[Field]) -> Result<(), AdapterE
     }
 }
 
+/// A device id: null, or 1 to [`MAX_DEVICE_ID_BYTES`] bytes.
+fn executing_device(field: &Field) -> Result<(), AdapterError> {
+    match optional_text(field)? {
+        None => Ok(()),
+        Some(device) if (1..=MAX_DEVICE_ID_BYTES).contains(&device.len()) => Ok(()),
+        Some(_) => Err(AdapterError("chat executing device")),
+    }
+}
+
+/// Optional text of at most `max` characters.
+fn optional_bounded(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
+    match field {
+        Field::Null => Ok(()),
+        field => bounded(field, 0, max, what),
+    }
+}
+
+fn validate_scheduled(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (scheduled_group::CREATED, [command, _channel, _thread, device, created_at]) => {
+            bounded(command, 1, MAX_ID_CHARS, "chat scheduled command id")?;
+            executing_device(device)?;
+            timestamp(created_at)
+        }
+        (
+            scheduled_group::CONTENT,
+            [
+                version,
+                request,
+                scheduled_for,
+                attachment_blob,
+                reference_blob,
+            ],
+        ) => {
+            if integer(version)? != SCHEDULED_REQUEST_VERSION {
+                return Err(AdapterError("chat scheduled request version"));
+            }
+            within_bytes(
+                request,
+                MAX_SCHEDULED_REQUEST_BYTES,
+                "chat scheduled request is too large",
+            )?;
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text(request)?)
+                .map_err(|_| AdapterError("chat scheduled request"))?;
+            timestamp(scheduled_for)?;
+            attachments(attachment_blob)?;
+            let Field::Blob(references) = reference_blob else {
+                return Err(AdapterError("chat scheduled references value"));
+            };
+            if text(request)?.len() + references.len() > MAX_SCHEDULED_CONTENT_BYTES {
+                return Err(AdapterError("chat scheduled message is too large"));
+            }
+            scheduled_references(references)
+        }
+        (scheduled_group::FAILURE, [failed_at, error]) => {
+            optional_timestamp(failed_at)?;
+            optional_bounded(error, MAX_REASON_CHARS, "chat scheduled failure")
+        }
+        (scheduled_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat scheduled message value")),
+    }
+}
+
+/// The mention references of a scheduled message: well-formed spans, distinct per message, each
+/// naming exactly the target its kind needs.
+fn scheduled_references(bytes: &[u8]) -> Result<(), AdapterError> {
+    let rows = codec::decode(&SCHEDULED_REFERENCES, bytes)
+        .map_err(|_| AdapterError("chat scheduled references encoding"))?;
+    let mut spans = std::collections::BTreeSet::new();
+    for row in rows {
+        let [
+            kind,
+            label,
+            projection,
+            start,
+            end,
+            participant,
+            participant_kind,
+            channel,
+            folder,
+            path_kind,
+            path,
+            environment,
+        ] = row.fields.as_slice()
+        else {
+            return Err(AdapterError("chat scheduled reference value"));
+        };
+        one_of(kind, &REFERENCE_KINDS, "chat reference kind")?;
+        bounded(label, 1, MAX_LABEL_CHARS, "chat reference label")?;
+        bounded(projection, 1, MAX_LABEL_CHARS, "chat reference projection")?;
+        let start = at_least(start, 0, "chat reference span")?;
+        let end = at_least(end, start.saturating_add(1), "chat reference span")?;
+        if !spans.insert((start, end)) {
+            return Err(AdapterError("chat reference span repeats"));
+        }
+        let set = |field: &Field| !matches!(field, Field::Null);
+        let shape = [
+            set(participant),
+            set(participant_kind),
+            set(channel),
+            set(folder),
+            set(path_kind),
+            set(path),
+            set(environment),
+        ];
+        let expected = match text(kind)? {
+            "participant" => [true, true, false, false, false, false, false],
+            "channel" => [false, false, true, false, false, false, false],
+            "working_folder" => [false, false, false, true, false, false, false],
+            "workspace_path" => [false, false, false, true, true, true, false],
+            _ => [false, false, false, false, false, false, true],
+        };
+        if shape != expected {
+            return Err(AdapterError("chat scheduled reference target"));
+        }
+        optional_one_of(
+            participant_kind,
+            &PARTICIPANT_KINDS,
+            "chat reference participant kind",
+        )?;
+        optional_one_of(path_kind, &PATH_KINDS, "chat workspace path kind")?;
+        if set(path) {
+            relative_path(path)?;
+        }
+        if set(environment) {
+            bounded(
+                environment,
+                1,
+                MAX_ENVIRONMENT_ID_CHARS,
+                "chat environment reference",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_assignment(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (assignment_group::CREATED, [_thread, _teammate, _trigger, device, created_at]) => {
+            executing_device(device)?;
+            timestamp(created_at)
+        }
+        (assignment_group::PREVIOUS, [_previous]) => Ok(()),
+        (assignment_group::STATE, [state, reason, settled_at]) => {
+            one_of(state, &ASSIGNMENT_STATES, "chat assignment state")?;
+            optional_bounded(reason, MAX_REASON_CHARS, "chat assignment state reason")?;
+            optional_timestamp(settled_at)
+        }
+        (assignment_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat assignment value")),
+    }
+}
+
+fn validate_input(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (input_group::IDENTITY, [_]) | (input_group::EXISTS, []) => Ok(()),
+        (input_group::CREATED, [created_at]) => timestamp(created_at),
+        (input_group::ROUTING, [_assignment, ordinal, kind]) => {
+            at_least(ordinal, 1, "chat assignment input ordinal")?;
+            one_of(kind, &ROUTING_KINDS, "chat assignment input routing")
+        }
+        (input_group::DELIVERY, [state, delivered_at]) => {
+            one_of(state, &DELIVERY_STATES, "chat assignment input delivery")?;
+            optional_timestamp(delivered_at)
+        }
+        _ => Err(AdapterError("chat assignment input value")),
+    }
+}
+
+fn validate_semantic_update(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (semantic_update_group::CREATED, [_assignment, kind, version, payload, created_at]) => {
+            one_of(kind, &SEMANTIC_UPDATE_KINDS, "chat semantic update kind")?;
+            schema_version(version)?;
+            within_bytes(
+                payload,
+                MAX_SEMANTIC_PAYLOAD_BYTES,
+                "chat semantic update payload is too large",
+            )?;
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text(payload)?)
+                .map_err(|_| AdapterError("chat semantic update payload"))?;
+            timestamp(created_at)
+        }
+        _ => Err(AdapterError("chat semantic update value")),
+    }
+}
+
+/// A settled assignment outranks a concurrent active one, so a cancel, failure, or completion is
+/// never undone by progress a device reported before seeing it; a review request outranks the
+/// other active states.
+fn assignment_priority(fields: &[Field]) -> u8 {
+    match fields.first() {
+        Some(Field::Text(state)) if SETTLED_ASSIGNMENT_STATES.contains(&state.as_str()) => 3,
+        Some(Field::Text(state)) if state == "ready_for_review" => 2,
+        _ => 1,
+    }
+}
+
 /// Priority of an ended row: a removal or revocation outranks every live value.
 const ENDED: u8 = u8::MAX;
 
@@ -909,6 +1150,17 @@ fn restrictiveness(field: Option<&Field>, ranked: &[&str]) -> u8 {
         .unwrap_or(0)
 }
 
+/// The attachment references `owned` of `table`: a revision's or a scheduled message's.
+fn attachment_table(table: TableId, owned: &str) -> Result<&'static OwnedTable, AdapterError> {
+    if table == REVISIONS_TABLE && owned == ATTACHMENT_REFERENCES.table {
+        Ok(&ATTACHMENT_REFERENCES)
+    } else if table == SCHEDULED_TABLE && owned == SCHEDULED_ATTACHMENT_REFERENCES.table {
+        Ok(&SCHEDULED_ATTACHMENT_REFERENCES)
+    } else {
+        Err(AdapterError("owned table"))
+    }
+}
+
 /// Adapter of the Chat domain.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ChatAdapter;
@@ -926,15 +1178,12 @@ impl DomainAdapter for ChatAdapter {
         owned: &str,
         rows: Vec<Vec<Field>>,
     ) -> Result<Vec<u8>, AdapterError> {
-        if table != REVISIONS_TABLE || owned != ATTACHMENT_REFERENCES.table {
-            return Err(AdapterError("owned table"));
-        }
+        let references = attachment_table(table, owned)?;
         for row in &rows {
             attachment(row)?;
         }
         let rows: Vec<_> = rows.into_iter().map(codec::OwnedRow::flat).collect();
-        codec::encode(&ATTACHMENT_REFERENCES, &rows)
-            .map_err(|_| AdapterError("chat attachments encoding"))
+        codec::encode(references, &rows).map_err(|_| AdapterError("chat attachments encoding"))
     }
 
     fn decode_owned(
@@ -943,10 +1192,7 @@ impl DomainAdapter for ChatAdapter {
         owned: &str,
         bytes: &[u8],
     ) -> Result<Vec<Vec<Field>>, AdapterError> {
-        if table != REVISIONS_TABLE || owned != ATTACHMENT_REFERENCES.table {
-            return Err(AdapterError("owned table"));
-        }
-        codec::decode(&ATTACHMENT_REFERENCES, bytes)
+        codec::decode(attachment_table(table, owned)?, bytes)
             .map_err(|_| AdapterError("chat attachments encoding"))?
             .into_iter()
             .map(|row| attachment(&row.fields).map(|_| row.fields))
@@ -954,7 +1200,7 @@ impl DomainAdapter for ChatAdapter {
     }
 
     fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {
-        if table == REVISIONS_TABLE && owned == ATTACHMENT_REFERENCES.table {
+        if attachment_table(table, owned).is_ok() {
             attachment_samples()
         } else {
             Vec::new()
@@ -988,6 +1234,8 @@ impl DomainAdapter for ChatAdapter {
             || (table == MESSAGES_TABLE && group == message_group::LIFECYCLE)
         {
             lifecycle_priority(value.fields())
+        } else if table == ASSIGNMENTS_TABLE && group == assignment_group::STATE {
+            assignment_priority(value.fields())
         } else {
             0
         }
@@ -1035,6 +1283,14 @@ impl DomainAdapter for ChatAdapter {
             validate_target(table, group, fields)
         } else if table == CONVERSATION_CURSORS_TABLE || table == REPLY_CURSORS_TABLE {
             validate_read_cursor(group, fields)
+        } else if table == SCHEDULED_TABLE {
+            validate_scheduled(group, fields)
+        } else if table == ASSIGNMENTS_TABLE {
+            validate_assignment(group, fields)
+        } else if table == INPUTS_TABLE {
+            validate_input(group, fields)
+        } else if table == SEMANTIC_UPDATES_TABLE {
+            validate_semantic_update(group, fields)
         } else {
             Ok(())
         }
@@ -1043,6 +1299,8 @@ impl DomainAdapter for ChatAdapter {
     fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
         if table == REVISIONS_TABLE {
             &[timeline_group::ATTACHMENTS]
+        } else if table == SCHEDULED_TABLE {
+            &[scheduled_group::CONTENT]
         } else {
             &[]
         }
@@ -1056,10 +1314,14 @@ impl DomainAdapter for ChatAdapter {
         group: GroupId,
         value: &Value,
     ) -> Result<Vec<AssetRef>, AdapterError> {
-        if table != REVISIONS_TABLE || group != timeline_group::ATTACHMENTS {
+        let blob = if table == REVISIONS_TABLE && group == timeline_group::ATTACHMENTS {
+            value.fields().first()
+        } else if table == SCHEDULED_TABLE && group == scheduled_group::CONTENT {
+            value.fields().get(3)
+        } else {
             return Ok(Vec::new());
-        }
-        attachments(value.fields())?
+        };
+        attachments(blob.ok_or(AdapterError("chat attachments value"))?)?
             .into_iter()
             .filter(|attachment| attachment.byte_size > 0)
             .map(|attachment| {

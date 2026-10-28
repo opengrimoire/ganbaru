@@ -181,6 +181,32 @@ const SYNC_KEY_FRAGMENTS: [&str; 8] = [
     "'grant-archived', ",
 ];
 
+/// The graph's scheduled message inserts in the current shape and in the shape schemas before
+/// Chat assignments replication store, with a dispatch time on the message and an id on each
+/// reference.
+const UNREPLICATED_SCHEDULE_FRAGMENTS: [(&str, &str); 5] = [
+    (
+        "scheduled_for, created_at, updated_at)\nVALUES ('scheduled-1', 'command-1', 'channel-general', '{}', '2026-10-24T00:00:00.000Z',\n",
+        "scheduled_for, available_at, created_at, updated_at)\nVALUES ('scheduled-1', 'command-1', 'channel-general', '{}', '2026-10-24T00:00:00.000Z',\n        '2026-10-24T00:00:00.000Z',\n",
+    ),
+    (
+        "    (scheduled_message_id, reference_kind,",
+        "    (id, scheduled_message_id, reference_kind,",
+    ),
+    (
+        "VALUES ('scheduled-1', 'working_folder',",
+        "VALUES ('scheduled-reference-folder', 'scheduled-1', 'working_folder',",
+    ),
+    (
+        "       ('scheduled-1', 'workspace_path',",
+        "       ('scheduled-reference-path', 'scheduled-1', 'workspace_path',",
+    ),
+    (
+        "VALUES ('scheduled-1', 'execution_environment',",
+        "VALUES ('scheduled-reference-environment', 'scheduled-1', 'execution_environment',",
+    ),
+];
+
 /// The graph's timeline inserts in the current shape and in the shape schemas before Chat
 /// timeline replication store, with integer ordinals and revision numbers.
 const ORDINAL_TIMELINE_FRAGMENTS: [(&str, &str); 6] = [
@@ -211,8 +237,8 @@ const ORDINAL_TIMELINE_FRAGMENTS: [(&str, &str); 6] = [
 ];
 
 /// Loads the project and Chat graph in the shape the schema of `pool` stores, so upgrade tests
-/// that stop before Chat identity, conversations, or timeline replication share the graph with
-/// current schema tests.
+/// that stop before Chat identity, conversations, timeline, or assignments replication share the
+/// graph with current schema tests.
 pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
     assert!(
         PROJECT_CHAT_GRAPH.contains(POLICY_REVISION),
@@ -221,6 +247,7 @@ pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
     let numbered = has_column(pool, "chat_teammate_policy_revisions", "revision").await;
     let keyed = has_column(pool, "chat_conversation_memberships", "sync_key").await;
     let ordered = has_column(pool, "chat_conversation_items", "order_key").await;
+    let assigned = has_column(pool, "chat_scheduled_messages", "executing_device_id").await;
     let mut graph = if numbered {
         PROJECT_CHAT_GRAPH.replace(POLICY_REVISION, NUMBERED_POLICY_REVISION)
     } else {
@@ -240,6 +267,13 @@ pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
     if !ordered {
         for (current, ordinal) in ORDINAL_TIMELINE_FRAGMENTS {
             let replaced = graph.replace(current, ordinal);
+            assert_ne!(replaced, graph, "the graph names {current:?}");
+            graph = replaced;
+        }
+    }
+    if !assigned {
+        for (current, unreplicated) in UNREPLICATED_SCHEDULE_FRAGMENTS {
+            let replaced = graph.replace(current, unreplicated);
             assert_ne!(replaced, graph, "the graph names {current:?}");
             graph = replaced;
         }

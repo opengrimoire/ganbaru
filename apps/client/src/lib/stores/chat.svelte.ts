@@ -55,6 +55,7 @@ import {
 import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+import { getVaultOwnership } from "$lib/vault/ownership.svelte";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
@@ -200,7 +201,19 @@ export class ChatStore {
       setSettings: (settings) => { this.settings = settings; },
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
     });
+    if (this.owner && localExecutionAvailable) {
+      getVaultOwnership().onOwnerChange((status) => {
+        if (status.canWrite) this.recoverAssignments();
+      });
+    }
     paneStores.add(this);
+  }
+
+  /** Resumes queued local work and takes over work stranded on a device that can no longer write Chat. */
+  private recoverAssignments(): void {
+    void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
+      console.error("Chat assignment recovery failed", error);
+    });
   }
 
   get selectedWorkingFolder(): ProjectWorkingFolderRead | null {
@@ -445,11 +458,7 @@ export class ChatStore {
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
       if (discoverProviders) this.startProviderDiscovery();
-      if (this.owner && localExecutionAvailable) {
-        void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
-          console.error("Chat assignment recovery failed", error);
-        });
-      }
+      if (this.owner && localExecutionAvailable) this.recoverAssignments();
       await this.projects.ensureLoaded();
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       const projectId = this.projects.selectedProjectId;

@@ -7,7 +7,9 @@
 //! it. It never writes replicated rows.
 
 use crate::attachment_files;
-use crate::coordination::revocation::revoke_teammate_authorizations;
+use crate::coordination::revocation::{
+    revoke_assignment_authorizations, revoke_teammate_authorizations,
+};
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use chrono::{DateTime, SecondsFormat, Utc};
 use sqlx::SqliteConnection;
@@ -34,7 +36,13 @@ pub const FOLDER_GRANTS_TABLE: &str = "chat_teammate_working_folder_grants";
 pub const MESSAGES_TABLE: &str = "chat_communication_messages";
 /// Replicated table of message revisions, keyed by id.
 pub const MESSAGE_REVISIONS_TABLE: &str = "chat_communication_message_revisions";
+/// Replicated table of work assignments, keyed by id.
+pub const ASSIGNMENTS_TABLE: &str = "chat_work_assignments";
+/// Replicated table of work assignment inputs, keyed by id.
+pub const ASSIGNMENT_INPUTS_TABLE: &str = "chat_work_assignment_inputs";
 
+/// Reason recorded on authorizations revoked because their assignment settled on another device.
+pub const ASSIGNMENT_SETTLED_REASON: &str = "The work assignment settled on another device";
 /// Reason recorded on authorizations revoked because an applied profile revision narrowed it.
 pub const PROFILE_REDUCTION_REASON: &str = "Access profile authority was reduced";
 /// Reason recorded on authorizations revoked because an applied membership or folder grant no
@@ -66,6 +74,19 @@ pub struct ChatSyncEffects {
     /// target them, with their runs, so no revocation job can name those runs; the caller stops
     /// running work whose authorization no longer exists.
     pub removed_conversations: BTreeSet<String>,
+    /// Attachments whose device row, created for a replicated revision, was removed because no
+    /// reference on this device names them any more.
+    pub reclaimed_attachments: BTreeSet<String>,
+    /// Queued assignments that arrived or changed, which their executing device starts.
+    pub queued_assignments: BTreeSet<String>,
+    /// Settled assignments whose local dispatch jobs ended or whose active authorizations were
+    /// revoked, so the runs they granted stop.
+    pub settled_assignments: BTreeSet<String>,
+    /// Assignments with an arrived input still pending delivery to their running work.
+    pub routed_inputs: BTreeSet<String>,
+    /// Assignments the apply deleted. The delete cascades away their runs and authorizations,
+    /// so the caller stops running work whose authorization no longer exists.
+    pub removed_assignments: BTreeSet<String>,
 }
 
 impl ChatSyncEffects {
@@ -78,6 +99,11 @@ impl ChatSyncEffects {
             && self.search_rebuilt.is_empty()
             && self.mismatched_pointers.is_empty()
             && self.removed_conversations.is_empty()
+            && self.reclaimed_attachments.is_empty()
+            && self.queued_assignments.is_empty()
+            && self.settled_assignments.is_empty()
+            && self.routed_inputs.is_empty()
+            && self.removed_assignments.is_empty()
     }
 }
 
@@ -88,7 +114,9 @@ impl ChatSyncEffects {
 /// its audience state, a profile whose effective revision arrived or changed bumps the audience
 /// of the conversations whose teammates use that profile, and a message or revision rebuilds the
 /// message's search row (a deleted message loses it). A revision also creates the attachment and
-/// resource rows of the attachments it names in a working folder this device has. An effective profile revision that narrows
+/// resource rows of the attachments it names in a working folder this device has, and a changed
+/// revision, message, or deleted conversation removes such rows once nothing on this device
+/// references them. An effective profile revision that narrows
 /// authority also bumps the access revision of those teammates and revokes the active
 /// authorizations granted under a wider revision, as the command that saves a reduction does.
 /// A conversation membership, AI channel membership, or folder grant bumps the audience (for
@@ -97,7 +125,10 @@ impl ChatSyncEffects {
 /// reported, and deleted rows sweep every teammate with an active authorization. Timestamps
 /// come from the changed rows, except revocations, which happen now on this device.
 /// Running it again for the same keys leaves the same rows, apart from the counters a profile
-/// revision bumps again. Tables without derived state return no effects.
+/// revision bumps again. A queued work assignment is reported for its executing device to start,
+/// a settled one ends its local dispatch job and revokes its active authorizations, and an input
+/// still pending names its assignment for delivery. Tables without derived state return no
+/// effects.
 ///
 /// When a teammate or profile pointer copies a safety mode or maximum folder capability that
 /// differs from the revision it names, once both rows are present, it revokes the affected
@@ -144,6 +175,7 @@ pub async fn after_materialize(
             }
             if !effects.removed_conversations.is_empty() {
                 sweep_uncovered_authorizations(connection, &mut effects).await?;
+                reclaim_applied_attachments(connection, &mut effects).await?;
             }
         }
         ACCESS_PROFILES_TABLE => {
@@ -213,8 +245,10 @@ pub async fn after_materialize(
             for key in keys {
                 rebuild_message_search(connection, key, &mut effects).await?;
             }
+            reclaim_applied_attachments(connection, &mut effects).await?;
         }
         MESSAGE_REVISIONS_TABLE => {
+            reclaim_applied_attachments(connection, &mut effects).await?;
             let mut message_ids = BTreeSet::new();
             for key in keys {
                 record_applied_attachments(connection, key).await?;
@@ -230,6 +264,28 @@ pub async fn after_materialize(
             }
             for message_id in message_ids {
                 rebuild_message_search(connection, &message_id, &mut effects).await?;
+            }
+        }
+        ASSIGNMENTS_TABLE => {
+            for key in keys {
+                follow_assignment_state(connection, key, &mut effects).await?;
+            }
+        }
+        ASSIGNMENT_INPUTS_TABLE => {
+            for key in keys {
+                let assignment_id: Option<String> = sqlx::query_scalar(
+                    "SELECT input.assignment_id
+                     FROM chat_work_assignment_inputs input
+                     JOIN chat_work_assignments assignment
+                       ON assignment.id = input.assignment_id
+                     WHERE input.id = ? AND input.delivery_state = 'pending'
+                       AND assignment.state NOT IN ('completed', 'failed', 'cancelled')",
+                )
+                .bind(key)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(persistence_error)?;
+                effects.routed_inputs.extend(assignment_id);
             }
         }
         _ => {}
@@ -279,8 +335,8 @@ async fn record_applied_attachments(
         let created = sqlx::query(
             "INSERT OR IGNORE INTO chat_attachments
                  (id, working_folder_id, kind, original_display_name, mime_type, byte_size,
-                  sha256, managed_relative_path, signature_kind, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  sha256, managed_relative_path, signature_kind, created_at, origin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'replicated')",
         )
         .bind(&attachment.attachment_id)
         .bind(&attachment.working_folder_id)
@@ -320,6 +376,51 @@ async fn record_applied_attachments(
         .await
         .map_err(persistence_error)?;
     }
+    Ok(())
+}
+
+/// Removes the attachment rows this device created for replicated revisions that no reference
+/// on this device names any more, after an applied delete of a revision, message, or
+/// conversation took the last one away. A draft, queued, message, scheduled message, terminal
+/// context, or resource thread reference keeps the row. Removing the row cascades to its
+/// resource. The file stays: the sync asset sweep removes it once nothing names its digest.
+///
+/// Assignment context packages list message sources only, never attachments. A provider turn
+/// names its attachments through the message references it persists with the turn, which keep
+/// the row; a launch that read an attachment just before its row was reclaimed fails on that
+/// reference's foreign key instead of naming a missing row.
+async fn reclaim_applied_attachments(
+    connection: &mut SqliteConnection,
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
+    let reclaimed: Vec<String> = sqlx::query_scalar(
+        "DELETE FROM chat_attachments
+         WHERE origin = 'replicated'
+           AND NOT EXISTS (SELECT 1 FROM chat_attachment_references r WHERE r.attachment_id = chat_attachments.id)
+           AND NOT EXISTS (SELECT 1 FROM chat_queued_attachment_references q WHERE q.attachment_id = chat_attachments.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_communication_attachment_references c
+               WHERE c.attachment_id = chat_attachments.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_scheduled_message_attachment_references s
+               WHERE s.attachment_id = chat_attachments.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_terminal_attachment_contexts t
+               WHERE t.attachment_id = chat_attachments.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_resources resource
+               JOIN chat_resource_thread_references reference ON reference.resource_id = resource.id
+               WHERE resource.attachment_id = chat_attachments.id
+           )
+         RETURNING id",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    effects.reclaimed_attachments.extend(reclaimed);
     Ok(())
 }
 
@@ -452,6 +553,77 @@ async fn sweep_uncovered_authorizations(
             )
             .await?;
         }
+    }
+    Ok(())
+}
+
+/// Follows the applied state of the work assignment `assignment_id` on this device.
+///
+/// A queued assignment is reported so its executing device starts it. A settled assignment
+/// ends the device's queued or claimed dispatch job and revokes its active authorizations with
+/// their revocation jobs, so a run this device executes stops when another device settled the
+/// work. A deleted assignment, whose cascade removed its local runs and authorizations, is
+/// reported so the caller stops the work those runs still execute. Other states change nothing.
+/// Repeating it for a settled assignment revokes nothing more.
+async fn follow_assignment_state(
+    connection: &mut SqliteConnection,
+    assignment_id: &str,
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT state, teammate_id FROM chat_work_assignments WHERE id = ?")
+            .bind(assignment_id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
+    let Some((state, teammate_id)) = row else {
+        // The delete cascaded away the assignment's runs and authorizations, so no revocation
+        // job can name them; the report wakes the sweep that stops running work whose
+        // authorization no longer exists.
+        effects
+            .removed_assignments
+            .insert(assignment_id.to_string());
+        return Ok(());
+    };
+    match state.as_str() {
+        "queued" => {
+            effects.queued_assignments.insert(assignment_id.to_string());
+        }
+        "completed" | "failed" | "cancelled" => {
+            let now = now();
+            let ended_jobs = sqlx::query(
+                "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
+                 WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+            )
+            .bind(if state == "cancelled" {
+                "cancelled"
+            } else {
+                "failed"
+            })
+            .bind(&now)
+            .bind(assignment_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?
+            .rows_affected();
+            let revoked = revoke_assignment_authorizations(
+                connection,
+                assignment_id,
+                &now,
+                ASSIGNMENT_SETTLED_REASON,
+            )
+            .await?;
+            // A claim that has not authorized yet has nothing to revoke; ending its job stops
+            // the launch, which refuses a settled assignment, and the report wakes the drain
+            // for a run that started meanwhile.
+            if ended_jobs > 0 || revoked > 0 {
+                effects.revoked_teammates.insert(teammate_id);
+                effects
+                    .settled_assignments
+                    .insert(assignment_id.to_string());
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

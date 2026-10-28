@@ -163,15 +163,15 @@ VALUES ('cleanup-1', 'folder-archived', 'thread-archived', 'diagnostic_event', '
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_scheduled_messages
-    (id, client_command_id, channel_id, request_data, scheduled_for, available_at, created_at, updated_at)
+    (id, client_command_id, channel_id, request_data, scheduled_for, created_at, updated_at)
 VALUES ('scheduled-1', 'command-1', 'channel-general', '{}', '2026-10-24T00:00:00.000Z',
-        '2026-10-24T00:00:00.000Z', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+        '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scheduled_message_references
-    (id, scheduled_message_id, reference_kind, label_snapshot, plain_text_projection, start_offset,
+    (scheduled_message_id, reference_kind, label_snapshot, plain_text_projection, start_offset,
      end_offset, working_folder_id, path_kind, relative_path, ordinal)
-VALUES ('scheduled-reference-folder', 'scheduled-1', 'working_folder', 'Archived', 'Archived', 0, 4,
+VALUES ('scheduled-1', 'working_folder', 'Archived', 'Archived', 0, 4,
         'folder-archived', NULL, NULL, 0),
-       ('scheduled-reference-path', 'scheduled-1', 'workspace_path', 'src', 'src', 5, 8,
+       ('scheduled-1', 'workspace_path', 'src', 'src', 5, 8,
         'folder-managed', 'file', 'src/main.rs', 1);
 
 INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
@@ -191,9 +191,9 @@ VALUES ('reference-environment', 'message-revision-root', 'execution_environment
 INSERT INTO chat_execution_environment_reference_targets (reference_id, execution_environment_id)
 VALUES ('reference-environment', 'scratch-environment');
 INSERT INTO chat_scheduled_message_references
-    (id, scheduled_message_id, reference_kind, label_snapshot, plain_text_projection, start_offset,
+    (scheduled_message_id, reference_kind, label_snapshot, plain_text_projection, start_offset,
      end_offset, execution_environment_id, ordinal)
-VALUES ('scheduled-reference-environment', 'scheduled-1', 'execution_environment', 'Scratch', 'Scratch',
+VALUES ('scheduled-1', 'execution_environment', 'Scratch', 'Scratch',
         9, 12, 'scratch-environment', 2);
 INSERT INTO chat_assignment_authorization_revisions
     (id, assignment_id, revision, requester_participant_id, teammate_policy_revision_id,

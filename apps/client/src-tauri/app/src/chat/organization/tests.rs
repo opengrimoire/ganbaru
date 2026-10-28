@@ -305,10 +305,10 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
          WHERE item_id = 'item:review-reply-2';
          INSERT INTO chat_work_assignments
              (id, reply_thread_id, teammate_id, triggering_message_item_id,
-              state, created_at, updated_at)
+              executing_device_id, state, created_at, updated_at)
          VALUES (
              'assignment:review', 'reply-thread:review', 'participant:review-agent',
-             'item:review-root', 'ready_for_review',
+             'item:review-root', 'device:desk', 'ready_for_review',
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:02:00.000Z'
          );
          INSERT INTO chat_work_assignment_inputs
@@ -412,6 +412,45 @@ fn scheduled_delivery_requires_a_near_future_time_within_one_year() {
     );
 }
 
+/// Device that scheduled the test messages.
+const SCHEDULING_DEVICE: &str = "device:scheduling";
+
+/// Stores `request_data` as the scheduled message `scheduled:test` executed by `executing`,
+/// with the local dispatch row the scheduling device keeps when `dispatches_here`.
+async fn insert_test_scheduled_message(
+    pool: &SqlitePool,
+    request_data: &str,
+    executing: Option<&str>,
+    dispatches_here: bool,
+    now: &UtcTimestamp,
+) {
+    sqlx::query(
+        "INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, executing_device_id, request_data,
+             scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
+    )
+    .bind(executing)
+    .bind(request_data)
+    .bind("2026-08-04T00:00:00.000Z")
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    if dispatches_here {
+        sqlx::query(
+            "INSERT INTO chat_scheduled_message_dispatch
+                (scheduled_message_id, attempt_count, available_at, updated_at)
+             VALUES ('scheduled:test', 0, '2026-08-04T00:00:00.000Z', ?)",
+        )
+        .bind(now.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 #[test]
 fn immediate_scheduled_delivery_claim_is_atomic() {
     tauri::async_runtime::block_on(async {
@@ -419,24 +458,13 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
         let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
         seed_test_channel(&pool, &now).await;
         let request_data = serde_json::to_string(&message("Send this now")).unwrap();
-        sqlx::query(
-            "INSERT INTO chat_scheduled_messages
-                (id, client_command_id, channel_id, request_data, scheduled_for,
-                 available_at, created_at, updated_at)
-             VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
-        )
-        .bind(&request_data)
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
         let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
         let claimed = claim_scheduled_message_for_immediate_send(
             &pool,
             &scheduled_message_id,
+            SCHEDULING_DEVICE,
             &now,
             "claim:first",
         )
@@ -444,18 +472,18 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
         .unwrap();
         assert_eq!(claimed, request_data);
         let row = sqlx::query(
-            "SELECT state, attempt_count, claim_token
-             FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+            "SELECT attempt_count, claim_token
+             FROM chat_scheduled_message_dispatch WHERE scheduled_message_id = 'scheduled:test'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(row.get::<String, _>("state"), "dispatching");
         assert_eq!(row.get::<i64, _>("attempt_count"), 1);
         assert_eq!(row.get::<String, _>("claim_token"), "claim:first");
         let duplicate = claim_scheduled_message_for_immediate_send(
             &pool,
             &scheduled_message_id,
+            SCHEDULING_DEVICE,
             &now,
             "claim:second",
         )
@@ -463,6 +491,110 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
         .unwrap_err();
         assert_eq!(duplicate.code, ChatErrorCode::Busy);
     });
+}
+
+#[test]
+fn only_the_executing_device_sends_a_scheduled_message() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Send from the desk")).unwrap();
+        // The scheduled message arrived through sync: this device keeps no dispatch row.
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), false, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+
+        let refused = claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            "device:phone",
+            &now,
+            "claim:phone",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        scheduling::prepare_scheduled_dispatch(&pool, "device:phone", &now)
+            .await
+            .unwrap();
+        let dispatch_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_scheduled_message_dispatch")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(dispatch_rows, 0);
+
+        // The executing device adopts the message even without its dispatch row.
+        scheduling::prepare_scheduled_dispatch(&pool, SCHEDULING_DEVICE, &now)
+            .await
+            .unwrap();
+        scheduling::require_scheduled_executor(&pool, &scheduled_message_id, SCHEDULING_DEVICE)
+            .await
+            .unwrap();
+        let available_at: String = sqlx::query_scalar(
+            "SELECT available_at FROM chat_scheduled_message_dispatch
+             WHERE scheduled_message_id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(available_at, "2026-08-04T00:00:00.000Z");
+    });
+}
+
+#[test]
+fn a_scheduled_message_without_an_executing_device_is_sent_where_it_dispatches() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request_data = serde_json::to_string(&message("Older schedule")).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, None, false, &now).await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+
+        let refused =
+            scheduling::require_scheduled_executor(&pool, &scheduled_message_id, "device:any")
+                .await
+                .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        sqlx::query(
+            "INSERT INTO chat_scheduled_message_dispatch
+                (scheduled_message_id, attempt_count, available_at, updated_at)
+             VALUES ('scheduled:test', 0, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        scheduling::require_scheduled_executor(&pool, &scheduled_message_id, "device:any")
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn scheduled_content_must_fit_one_sync_operation() {
+    let request = message("Short");
+    let serialized = serde_json::to_string(&request).unwrap();
+    scheduling::validate_scheduled_content(&serialized, &request.references).unwrap();
+
+    let oversized = "x".repeat(ganbaru_sync::domains::chat::MAX_SCHEDULED_REQUEST_BYTES + 1);
+    let error = scheduling::validate_scheduled_content(&oversized, &[]).unwrap_err();
+    assert_eq!(error.field.as_deref(), Some("message"));
+
+    let mention = participant_reference(
+        "reference:atlas",
+        ChatParticipantId::new("participant:atlas").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Atlas",
+        "@Atlas",
+        0,
+        6,
+    );
+    let mentions = vec![mention; ganbaru_sync::domains::chat::MAX_SCHEDULED_REFERENCES + 1];
+    let error = scheduling::validate_scheduled_content(&serialized, &mentions).unwrap_err();
+    assert_eq!(error.field.as_deref(), Some("references"));
 }
 
 #[test]
@@ -474,20 +606,8 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
         let mut request = message("Send the screenshot");
         request.attachment_ids = vec![ChatAttachmentId::new("attachment:gone").unwrap()];
         let request_data = serde_json::to_string(&request).unwrap();
-        sqlx::query(
-            "INSERT INTO chat_scheduled_messages
-                (id, client_command_id, channel_id, request_data, scheduled_for,
-                 available_at, created_at, updated_at)
-             VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
-        )
-        .bind(&request_data)
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
         // The device row of the attachment is absent, as after its working folder was deleted
         // or on a device that received the scheduled message through sync.
         let digest = "a".repeat(64);
@@ -503,15 +623,24 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
         .await
         .unwrap();
         let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
-        claim_scheduled_message_for_immediate_send(&pool, &scheduled_message_id, &now, "claim:a")
-            .await
-            .unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
         };
+        let device = PostingDevice::this_device(SCHEDULING_DEVICE);
 
-        let posted = persist_post(&pool, &request, Some(send)).await.unwrap();
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
 
         let expected = super::common::scheduled_post_ids(
             "scheduled:test",
@@ -546,7 +675,9 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
         .unwrap();
         assert_eq!(scheduled_rows, 0);
 
-        let repeated = persist_post(&pool, &request, Some(send)).await.unwrap();
+        let repeated = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
         assert_eq!(repeated.item_id, expected.item_id);
         let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
             .fetch_one(&pool)
@@ -564,30 +695,31 @@ fn scheduled_send_rejects_a_claim_that_changed() {
         seed_test_channel(&pool, &now).await;
         let request = message("Send this once");
         let request_data = serde_json::to_string(&request).unwrap();
-        sqlx::query(
-            "INSERT INTO chat_scheduled_messages
-                (id, client_command_id, channel_id, request_data, scheduled_for,
-                 available_at, created_at, updated_at)
-             VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
         )
-        .bind(&request_data)
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind("2026-08-04T00:00:00.000Z")
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
         .await
         .unwrap();
-        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
-        claim_scheduled_message_for_immediate_send(&pool, &scheduled_message_id, &now, "claim:a")
-            .await
-            .unwrap();
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:stale",
         };
 
-        let Err(error) = persist_post(&pool, &request, Some(send)).await else {
+        let Err(error) = persist_post(
+            &pool,
+            &request,
+            Some(send),
+            PostingDevice::this_device(SCHEDULING_DEVICE),
+        )
+        .await
+        else {
             panic!("a stale claim posted");
         };
 
@@ -643,12 +775,71 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
         let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-
-        let recovered = assignments::recover_stranded_follow_up_assignments(&pool, &now)
+        let mut input_ids = Vec::new();
+        for message in [
+            "item:review-root",
+            "item:review-reply-1",
+            "item:review-reply-2",
+        ] {
+            // Input ids are immutable keys, so the seeded input is written again under the id
+            // that derives from its message.
+            let id = super::common::assignment_input_id(message).unwrap();
+            let seeded = sqlx::query(
+                "SELECT assignment_id, ordinal, routing_kind, delivery_state, created_at,
+                        delivered_at
+                 FROM chat_work_assignment_inputs WHERE message_item_id = ?",
+            )
+            .bind(message)
+            .fetch_one(&pool)
             .await
             .unwrap();
+            sqlx::query("DELETE FROM chat_work_assignment_inputs WHERE message_item_id = ?")
+                .bind(message)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO chat_work_assignment_inputs
+                    (id, assignment_id, message_item_id, ordinal, routing_kind,
+                     delivery_state, created_at, delivered_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(seeded.get::<String, _>("assignment_id"))
+            .bind(message)
+            .bind(seeded.get::<i64, _>("ordinal"))
+            .bind(seeded.get::<String, _>("routing_kind"))
+            .bind(seeded.get::<String, _>("delivery_state"))
+            .bind(seeded.get::<String, _>("created_at"))
+            .bind(seeded.get::<Option<String>, _>("delivered_at"))
+            .execute(&pool)
+            .await
+            .unwrap();
+            input_ids.push(id);
+        }
+
+        let elsewhere =
+            assignments::recover_stranded_follow_up_assignments(&pool, "device:phone", &now)
+                .await
+                .unwrap();
+        assert_eq!(elsewhere, 0, "only the executing device rehomes replies");
+        let recovered =
+            assignments::recover_stranded_follow_up_assignments(&pool, "device:desk", &now)
+                .await
+                .unwrap();
 
         assert_eq!(recovered, 1);
+        let all_inputs: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM chat_work_assignment_inputs ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let mut expected_ids = input_ids.clone();
+        expected_ids.sort();
+        assert_eq!(
+            all_inputs, expected_ids,
+            "inputs move instead of being replaced"
+        );
         let old_state: String = sqlx::query_scalar(
             "SELECT state FROM chat_work_assignments WHERE id = 'assignment:review'",
         )
@@ -657,13 +848,18 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
         .unwrap();
         assert_eq!(old_state, "completed");
         let follow_up = sqlx::query(
-            "SELECT id, triggering_message_item_id, previous_assignment_id, state
+            "SELECT id, triggering_message_item_id, previous_assignment_id, state,
+                    executing_device_id
              FROM chat_work_assignments WHERE previous_assignment_id = 'assignment:review'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let follow_up_id = follow_up.get::<String, _>("id");
+        assert_eq!(
+            follow_up.get::<String, _>("executing_device_id"),
+            "device:desk"
+        );
         assert_eq!(
             follow_up.get::<String, _>("triggering_message_item_id"),
             "item:review-reply-1"
@@ -1695,5 +1891,286 @@ fn message_search_keeps_messages_whose_author_identity_is_gone() {
         assert_eq!(unattributed.author_participant_id, None);
         assert_eq!(unattributed.author_kind, None);
         assert_eq!(unattributed.author_display_name, "You");
+    });
+}
+
+/// Removes the seeded review assignment so the review thread holds plain replies only.
+async fn clear_review_assignment(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "DELETE FROM chat_work_assignment_inputs;
+         DELETE FROM chat_work_assignments;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_review_agent_home_device(pool: &SqlitePool, home_device_id: Option<&str>) {
+    sqlx::query(
+        "UPDATE chat_teammates SET home_device_id = ?
+         WHERE participant_id = 'participant:review-agent'",
+    )
+    .bind(home_device_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Routes the review reply `item:review-reply-1` to the review agent as `device` posts it.
+async fn route_review_reply(
+    pool: &SqlitePool,
+    device: super::workflow::PostingDevice<'_>,
+) -> super::workflow::AssignmentWrite {
+    let invocation = super::workflow::ResolvedInvocation {
+        teammate_id: ChatParticipantId::new("participant:review-agent").unwrap(),
+        active_assignment: None,
+        latest_assignment: None,
+    };
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    let write = super::workflow::persist_assignment_routing(
+        &mut transaction,
+        &ChatReplyThreadId::new("reply-thread:review").unwrap(),
+        &ChatConversationItemId::new("item:review-reply-1").unwrap(),
+        Some(&invocation),
+        None,
+        device,
+        &now,
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    write
+}
+
+/// The executing device and dispatch job count of the assignment the review reply triggers.
+async fn routed_assignment(pool: &SqlitePool) -> Option<(Option<String>, i64)> {
+    sqlx::query(
+        "SELECT assignment.executing_device_id,
+                (SELECT count(*) FROM chat_assignment_dispatch_jobs job
+                 WHERE job.assignment_id = assignment.id) AS dispatch_jobs
+         FROM chat_work_assignments assignment
+         WHERE assignment.triggering_message_item_id = 'item:review-reply-1'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|row| {
+        (
+            row.get::<Option<String>, _>("executing_device_id"),
+            row.get::<i64, _>("dispatch_jobs"),
+        )
+    })
+}
+
+async fn review_thread_without_assignment() -> SqlitePool {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    clear_review_assignment(&pool).await;
+    pool
+}
+
+#[test]
+fn a_new_assignment_runs_on_the_home_device_else_the_posting_desktop_else_nowhere() {
+    tauri::async_runtime::block_on(async {
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+        };
+        let desk = super::workflow::PostingDevice {
+            id: "device:desk",
+            can_execute: true,
+        };
+
+        let pool = review_thread_without_assignment().await;
+        let write = route_review_reply(&pool, phone).await;
+        assert!(
+            write.assignment_id.is_none(),
+            "the mention is recorded only"
+        );
+        assert!(!write.executes_here);
+        assert_eq!(routed_assignment(&pool).await, None);
+
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:desk")).await;
+        let write = route_review_reply(&pool, phone).await;
+        assert!(write.assignment_id.is_some());
+        assert!(
+            !write.executes_here,
+            "the home device dispatches on arrival"
+        );
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some("device:desk".to_owned()), 0))
+        );
+
+        let pool = review_thread_without_assignment().await;
+        let write = route_review_reply(&pool, desk).await;
+        assert!(write.executes_here);
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some("device:desk".to_owned()), 1))
+        );
+
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:laptop")).await;
+        let write = route_review_reply(&pool, desk).await;
+        assert!(
+            !write.executes_here,
+            "the home device outranks the posting desktop"
+        );
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some("device:laptop".to_owned()), 0))
+        );
+    });
+}
+
+#[test]
+fn only_the_executing_device_claims_dispatch_and_writes_active_states() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        sqlx::query(
+            "INSERT INTO chat_assignment_dispatch_jobs
+                (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:review', 'assignment:review', 'queued', ?1, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let refused = assignments::require_executing_device(&pool, &assignment_id, "device:phone")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        assignments::require_executing_device(&pool, &assignment_id, "device:desk")
+            .await
+            .unwrap();
+        let claim =
+            super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:phone", &now)
+                .await
+                .unwrap();
+        assert!(claim.is_none(), "another device never claims the dispatch");
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:desk", &now)
+            .await
+            .unwrap();
+        assert!(claim.is_some());
+
+        // An assignment written before executing devices existed names none.
+        sqlx::raw_sql(
+            "DELETE FROM chat_assignment_dispatch_jobs;
+             DELETE FROM chat_work_assignment_inputs;
+             DELETE FROM chat_work_assignments;
+             INSERT INTO chat_work_assignments
+                 (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                  executing_device_id, state, created_at, updated_at)
+             VALUES ('assignment:review', 'reply-thread:review', 'participant:review-agent',
+                     'item:review-root', NULL, 'queued', '2026-08-04T17:00:00.000Z',
+                     '2026-08-04T17:00:00.000Z');
+             INSERT INTO chat_assignment_dispatch_jobs
+                 (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:review', 'assignment:review', 'queued',
+                     '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z',
+                     '2026-08-04T17:00:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assignments::require_executing_device(&pool, &assignment_id, "device:phone")
+            .await
+            .expect("an assignment without an executing device runs where its job is");
+        sqlx::query("DELETE FROM chat_assignment_dispatch_jobs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let refused = assignments::require_executing_device(&pool, &assignment_id, "device:phone")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+    });
+}
+
+#[test]
+fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_message_references
+                 (id, message_revision_id, reference_kind, label_snapshot,
+                  plain_text_projection, start_offset, end_offset, ordinal, created_at)
+             VALUES ('reference:review-agent', 'revision:review-reply-2', 'participant',
+                     'review-agent', '@review-agent', 0, 13, 0, '2026-08-04T17:02:00.000Z');
+             INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
+             VALUES ('reference:review-agent', 'participant:review-agent');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+
+        let unmentioned = assignments::persist_started_assignment(
+            &pool,
+            &ChatConversationItemId::new("item:review-reply-1").unwrap(),
+            &teammate_id,
+            "device:desk",
+            &now,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unmentioned.code, ChatErrorCode::Validation);
+
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let assignment_id = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            "device:desk",
+            &now,
+        )
+        .await
+        .unwrap();
+        let started = sqlx::query(
+            "SELECT assignment.executing_device_id, assignment.triggering_message_item_id,
+                    input.id AS input_id,
+                    (SELECT count(*) FROM chat_assignment_dispatch_jobs job
+                     WHERE job.assignment_id = assignment.id AND job.state = 'queued')
+                        AS queued_jobs
+             FROM chat_work_assignments assignment
+             JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
+             WHERE assignment.id = ?",
+        )
+        .bind(assignment_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            started.get::<String, _>("executing_device_id"),
+            "device:desk"
+        );
+        assert_eq!(
+            started.get::<String, _>("triggering_message_item_id"),
+            "item:review-reply-2"
+        );
+        assert_eq!(
+            started.get::<String, _>("input_id"),
+            super::common::assignment_input_id("item:review-reply-2").unwrap()
+        );
+        assert_eq!(started.get::<i64, _>("queued_jobs"), 1);
+
+        let again = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            "device:laptop",
+            &now,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(again.code, ChatErrorCode::Conflict);
     });
 }

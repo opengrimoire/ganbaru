@@ -36,12 +36,12 @@ use crate::manifest::vault::chat::{
     INPUTS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE,
     PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
     PROFILES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE,
-    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE,
-    SEMANTIC_UPDATES_TABLE, TEAMMATES_TABLE, assignment_group, channel_group,
-    channel_membership_group, conversation_group, folder_grant_group, input_group, item_group,
-    membership_group, message_group, participant_group, policy_revision_group, profile_group,
-    profile_revision_group, read_cursor_group, reply_thread_group, scheduled_group,
-    semantic_update_group, teammate_group, timeline_group,
+    SCHEDULED_ATTACHMENT_REFERENCES, SCHEDULED_REFERENCES, SCHEDULED_TABLE, SEMANTIC_UPDATES_TABLE,
+    TEAMMATES_TABLE, assignment_group, channel_group, channel_membership_group, conversation_group,
+    folder_grant_group, input_group, item_group, membership_group, message_group,
+    participant_group, policy_revision_group, profile_group, profile_revision_group,
+    read_cursor_group, reply_thread_group, scheduled_group, semantic_update_group, teammate_group,
+    timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -876,7 +876,13 @@ fn validate_scheduled(group: GroupId, fields: &[Field]) -> Result<(), AdapterErr
         }
         (
             scheduled_group::CONTENT,
-            [version, request, scheduled_for, attachment_blob, reference_blob],
+            [
+                version,
+                request,
+                scheduled_for,
+                attachment_blob,
+                reference_blob,
+            ],
         ) => {
             if integer(version)? != SCHEDULED_REQUEST_VERSION {
                 return Err(AdapterError("chat scheduled request version"));

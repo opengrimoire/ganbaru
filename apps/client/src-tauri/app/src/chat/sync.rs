@@ -12,7 +12,10 @@
 //! it revoked and each conversation the apply deleted, whose cascade removed the authorizations
 //! and runs that targeted it. On desktop the app host hands those reports to
 //! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs and the runs
-//! whose authorization is gone stop. Android
+//! whose authorization is gone stop. A work assignment that settled on another device ends its
+//! local dispatch job and revokes its authorizations the same way, so the executing device stops
+//! its run. Queued assignments and pending inputs are reported too, and desktop dispatch starts
+//! the ones whose executing device is this one. Android
 //! never holds an active authorization, since runs execute only on desktop, so it has no drain to
 //! wake. Dispatch and the readers of teammates and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
@@ -38,9 +41,17 @@ pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 /// Change notice topic of a conversation an apply deleted; the key is the conversation id.
 pub(crate) const CHAT_CONVERSATION_REMOVED_TOPIC: &str = "chat-conversation-removed";
 
+/// Change notice topic of a queued work assignment that arrived or changed; the key is the
+/// assignment id.
+pub(crate) const CHAT_ASSIGNMENT_QUEUED_TOPIC: &str = "chat-assignment-queued";
+
+/// Change notice topic of a work assignment with an arrived input pending delivery; the key is
+/// the assignment id.
+pub(crate) const CHAT_ASSIGNMENT_INPUT_TOPIC: &str = "chat-assignment-input";
+
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
-const HOOKED_TABLES: [&TableSpec; 10] = [
+const HOOKED_TABLES: [&TableSpec; 12] = [
     &chat::TEAMMATES,
     &chat::POLICY_REVISIONS,
     &chat::PROFILES,
@@ -51,6 +62,8 @@ const HOOKED_TABLES: [&TableSpec; 10] = [
     &chat::FOLDER_GRANTS,
     &chat::MESSAGES,
     &chat::REVISIONS,
+    &chat::ASSIGNMENTS,
+    &chat::INPUTS,
 ];
 
 /// Recomputes device-local Chat state after sync materializes Chat rows and reports revocations.
@@ -76,6 +89,12 @@ fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     }
     for conversation_id in effects.removed_conversations {
         changes.report(CHAT_CONVERSATION_REMOVED_TOPIC, conversation_id);
+    }
+    for assignment_id in effects.queued_assignments {
+        changes.report(CHAT_ASSIGNMENT_QUEUED_TOPIC, assignment_id);
+    }
+    for assignment_id in effects.routed_inputs {
+        changes.report(CHAT_ASSIGNMENT_INPUT_TOPIC, assignment_id);
     }
 }
 
@@ -105,13 +124,54 @@ pub(crate) fn with_hooks(hooks: Hooks) -> Hooks {
 }
 
 #[cfg(desktop)]
-pub(crate) use waker::{RevocationWaker, on_sync_notices};
+pub(crate) use waker::{AssignmentWaker, RevocationWaker, SyncedAssignmentWork, on_sync_notices};
 
 #[cfg(desktop)]
 mod waker {
-    use super::{CHAT_ACCESS_REVOKED_TOPIC, CHAT_CONVERSATION_REMOVED_TOPIC};
+    use super::{
+        CHAT_ACCESS_REVOKED_TOPIC, CHAT_ASSIGNMENT_INPUT_TOPIC, CHAT_ASSIGNMENT_QUEUED_TOPIC,
+        CHAT_CONVERSATION_REMOVED_TOPIC,
+    };
     use ganbaru_sync::ChangeNotice;
+    use std::collections::BTreeSet;
     use tauri::{AppHandle, Manager, Runtime};
+
+    /// Assignment work that sync change notices hand to this device.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct SyncedAssignmentWork {
+        /// Queued assignments to start when this device executes them.
+        pub(crate) queued: BTreeSet<String>,
+        /// Assignments with inputs pending delivery to the work this device runs.
+        pub(crate) routed: BTreeSet<String>,
+    }
+
+    /// The assignment work `notices` report.
+    pub(super) fn assignment_work(notices: &[ChangeNotice]) -> SyncedAssignmentWork {
+        let mut work = SyncedAssignmentWork::default();
+        for notice in notices {
+            if notice.topic == CHAT_ASSIGNMENT_QUEUED_TOPIC {
+                work.queued.insert(notice.key.clone());
+            } else if notice.topic == CHAT_ASSIGNMENT_INPUT_TOPIC {
+                work.routed.insert(notice.key.clone());
+            }
+        }
+        work
+    }
+
+    /// Starts synced assignment work on the running app.
+    ///
+    /// Dispatch needs the concrete desktop runtime while the sync host is generic over it, so
+    /// desktop setup manages this waker with a handle that can start it.
+    pub(crate) struct AssignmentWaker(Box<dyn Fn(SyncedAssignmentWork) + Send + Sync>);
+
+    impl AssignmentWaker {
+        /// A waker that starts the synced assignment work of `app`.
+        pub(crate) fn new(app: tauri::AppHandle) -> Self {
+            Self(Box::new(move |work| {
+                crate::chat::organization::start_synced_assignment_work(&app, work);
+            }))
+        }
+    }
 
     /// Whether sync change `notices` report revoked Chat authorizations or deleted
     /// conversations, whose cascade removed the authorizations that targeted them.
@@ -138,10 +198,19 @@ mod waker {
     }
 
     /// Wakes the access revocation drain when sync change `notices` report revoked
-    /// authorizations, so the runs they granted stop on this device.
+    /// authorizations, so the runs they granted stop on this device, and hands queued
+    /// assignments and pending inputs to dispatch, which acts only on the work this device
+    /// executes.
     pub(crate) fn on_sync_notices<R: Runtime>(app: &AppHandle<R>, notices: &[ChangeNotice]) {
         if access_revoked(notices) {
             super::RevocationWake::wake_revocation_drain(app);
+        }
+        let work = assignment_work(notices);
+        if work.queued.is_empty() && work.routed.is_empty() {
+            return;
+        }
+        if let Some(waker) = app.try_state::<AssignmentWaker>() {
+            (waker.0)(work);
         }
     }
 

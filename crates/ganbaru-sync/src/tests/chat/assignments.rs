@@ -186,7 +186,10 @@ fn chat_coordination_rows_round_trip_with_their_derived_keys() {
                        ON update_row.assignment_id = assignment.id",
                 )
                 .await,
-            Some(format!("{EXECUTOR} queued {} trigger plan", input_id(MENTION)))
+            Some(format!(
+                "{EXECUTOR} queued {} trigger plan",
+                input_id(MENTION)
+            ))
         );
         assert_eq!(
             reader
@@ -308,7 +311,9 @@ fn chat_rerouting_an_input_updates_its_row_and_no_op_writes_capture_nothing() {
             Some(format!("{} {FOLLOW_UP} follow_up", input_id(MENTION)))
         );
         assert_eq!(
-            reader.count("SELECT count(*) FROM temp.input_deletes").await,
+            reader
+                .count("SELECT count(*) FROM temp.input_deletes")
+                .await,
             0,
             "the input is updated in place"
         );
@@ -337,7 +342,10 @@ fn chat_a_concurrent_settle_outranks_progress_and_a_review_request_outranks_work
         replicas[1].exec(&state_sql("working", &at(1, 30))).await;
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
-        assert_eq!(assignment_state(&mut replicas[2]).await, "ready_for_review 0");
+        assert_eq!(
+            assignment_state(&mut replicas[2]).await,
+            "ready_for_review 0"
+        );
 
         replicas[0].exec(&state_sql("working", &at(2, 30))).await;
         replicas[2].exec(&state_sql("cancelled", &at(2, 0))).await;

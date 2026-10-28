@@ -1147,3 +1147,108 @@ async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_author
     assert!(replayed.revoked_teammates.is_empty());
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
+
+async fn dispatch_job_state(pool: &SqlitePool) -> String {
+    sqlx::query_scalar(
+        "SELECT state FROM chat_assignment_dispatch_jobs
+         WHERE assignment_id = 'assignment:sync-effects'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn set_assignment_state(pool: &SqlitePool, state: &str) {
+    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = 'assignment:sync-effects'")
+        .bind(state)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_remotely_settled_assignment_ends_its_dispatch_and_revokes_its_runs_once() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    sqlx::query(
+        "INSERT INTO chat_assignment_dispatch_jobs
+            (id, assignment_id, state, available_at, created_at, updated_at)
+         VALUES ('dispatch:sync-effects', 'assignment:sync-effects', 'claimed', ?, ?, ?)",
+    )
+    .bind(NOW)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let working = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert!(working.is_empty());
+    assert_eq!(dispatch_job_state(&pool).await, "claimed");
+
+    set_assignment_state(&pool, "cancelled").await;
+    let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert_eq!(
+        settled.settled_assignments,
+        BTreeSet::from(["assignment:sync-effects".to_string()])
+    );
+    assert_eq!(
+        settled.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(dispatch_job_state(&pool).await, "cancelled");
+    assert_eq!(
+        authorization_states(&pool).await,
+        vec![(
+            "authorization:first".to_string(),
+            "revoked".to_string(),
+            ASSIGNMENT_SETTLED_REASON.to_string()
+        )]
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+
+    let replayed = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert!(replayed.is_empty());
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+}
+
+#[tokio::test]
+async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_device() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    set_assignment_state(&pool, "queued").await;
+    sqlx::query(
+        "INSERT INTO chat_work_assignment_inputs
+            (id, assignment_id, message_item_id, ordinal, routing_kind, delivery_state,
+             created_at)
+         VALUES ('input:first', 'assignment:sync-effects', 'item:first', 1, 'trigger',
+                 'delivered', ?),
+                ('input:second', 'assignment:sync-effects', 'item:second', 2, 'steer',
+                 'pending', ?)",
+    )
+    .bind(NOW)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let queued = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert_eq!(
+        queued.queued_assignments,
+        BTreeSet::from(["assignment:sync-effects".to_string()])
+    );
+    assert!(queued.revoked_teammates.is_empty());
+
+    let delivered = run_hook(&pool, ASSIGNMENT_INPUTS_TABLE, &["input:first"]).await;
+    assert!(delivered.is_empty());
+    let pending = run_hook(
+        &pool,
+        ASSIGNMENT_INPUTS_TABLE,
+        &["input:second", "input:gone"],
+    )
+    .await;
+    assert_eq!(
+        pending.routed_inputs,
+        BTreeSet::from(["assignment:sync-effects".to_string()])
+    );
+}

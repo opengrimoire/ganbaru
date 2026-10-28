@@ -2,7 +2,7 @@
 
 use super::common::{
     native_assignment_safety_mode, new_id, parse_runtime_approval_policy, serialization_error,
-    sha256_hex,
+    sha256_hex, this_device_id,
 };
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
@@ -15,26 +15,13 @@ pub(super) async fn dispatch_assignment_job(
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
 ) -> ChatResult<()> {
+    let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
-    let claim_token = new_id("dispatch-claim")?;
-    let claimed = sqlx::query(
-        "UPDATE chat_assignment_dispatch_jobs
-         SET state = 'claimed', claimed_at = ?, claim_token = ?,
-             attempt_count = attempt_count + 1, updated_at = ?
-         WHERE assignment_id = ? AND state = 'queued' AND available_at <= ?",
-    )
-    .bind(now.as_str())
-    .bind(&claim_token)
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .bind(now.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
-    if claimed.rows_affected() != 1 {
+    let Some(claim_token) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await?
+    else {
         return Ok(());
-    }
+    };
     let result = dispatch_claimed_assignment(
         app.clone(),
         db_url.clone(),
@@ -49,6 +36,37 @@ pub(super) async fn dispatch_assignment_job(
     }
     mark_initial_assignment_input_delivered(&pool, &assignment_id).await?;
     deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
+}
+
+/// Claims the queued dispatch job of `assignment_id` when the device `device_id` executes the
+/// assignment, returning the claim token. An assignment without an executing device runs on
+/// the device that holds its device-local dispatch job.
+pub(super) async fn claim_dispatch_job(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<String>> {
+    let claim_token = new_id("dispatch-claim")?;
+    let claimed = sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs
+         SET state = 'claimed', claimed_at = ?1, claim_token = ?2,
+             attempt_count = attempt_count + 1, updated_at = ?1
+         WHERE assignment_id = ?3 AND state = 'queued' AND available_at <= ?1
+           AND EXISTS (
+             SELECT 1 FROM chat_work_assignments assignment
+             WHERE assignment.id = ?3
+               AND coalesce(assignment.executing_device_id, ?4) = ?4
+           )",
+    )
+    .bind(now.as_str())
+    .bind(&claim_token)
+    .bind(assignment_id.as_str())
+    .bind(device_id)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok((claimed.rows_affected() == 1).then_some(claim_token))
 }
 
 async fn mark_initial_assignment_input_delivered(

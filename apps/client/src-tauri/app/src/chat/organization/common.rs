@@ -556,7 +556,6 @@ pub(super) fn reply_thread_id(
 
 /// Returns the work assignment input id derived from its message, so one message routes to at
 /// most one input whichever device writes it.
-#[cfg(desktop)]
 pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     derived_id(
         ganbaru_chat::ids::ASSIGNMENT_INPUT_ID_PREFIX,
@@ -564,7 +563,6 @@ pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     )
 }
 
-#[cfg(desktop)]
 pub(super) fn work_assignment_id() -> ChatResult<ChatWorkAssignmentId> {
     ChatWorkAssignmentId::new(new_id("assignment")?).map_err(identifier_error)
 }
@@ -863,6 +861,17 @@ pub(super) fn serialization_error<E>(_error: E) -> ChatError {
         "Chat JSON data is invalid",
         false,
     )
+}
+
+/// The stable id of this device, which decides where assignments and scheduled messages run.
+pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> ChatResult<String> {
+    crate::sync::devices::stable_device_id(app).map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            "This device's identity is unavailable",
+            true,
+        )
+    })
 }
 
 pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {

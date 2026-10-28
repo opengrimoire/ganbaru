@@ -76,6 +76,8 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
         sync_effects::FOLDER_GRANTS_TABLE,
         sync_effects::MESSAGES_TABLE,
         sync_effects::MESSAGE_REVISIONS_TABLE,
+        sync_effects::ASSIGNMENTS_TABLE,
+        sync_effects::ASSIGNMENT_INPUTS_TABLE,
     ];
     let mut expected: Vec<&str> = chat::DOMAIN
         .tables
@@ -95,7 +97,7 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
 }
 
 #[test]
-fn only_revoked_teammates_and_removed_conversations_are_reported() {
+fn only_revocations_removals_and_assignment_work_are_reported() {
     let mut sink = CollectingSink::default();
     report_effects(
         ChatSyncEffects {
@@ -110,6 +112,9 @@ fn only_revoked_teammates_and_removed_conversations_are_reported() {
             mismatched_pointers: BTreeSet::from(["participant:mismatched".to_string()]),
             removed_conversations: BTreeSet::from(["conversation:removed".to_string()]),
             reclaimed_attachments: BTreeSet::from(["attachment:reclaimed".to_string()]),
+            queued_assignments: BTreeSet::from(["assignment:queued".to_string()]),
+            settled_assignments: BTreeSet::from(["assignment:settled".to_string()]),
+            routed_inputs: BTreeSet::from(["assignment:routed".to_string()]),
         },
         &mut sink,
     );
@@ -124,6 +129,8 @@ fn only_revoked_teammates_and_removed_conversations_are_reported() {
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:a"),
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:b"),
             (CHAT_CONVERSATION_REMOVED_TOPIC, "conversation:removed"),
+            (CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
+            (CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
         ]
     );
 }
@@ -147,6 +154,32 @@ fn revocation_notices_wake_the_drain_and_other_notices_do_not() {
     assert!(waker::access_revoked(&[unrelated.clone(), removed]));
     assert!(!waker::access_revoked(&[unrelated]));
     assert!(!waker::access_revoked(&[]));
+}
+
+#[cfg(desktop)]
+#[test]
+fn assignment_notices_hand_queued_work_and_pending_inputs_to_dispatch() {
+    let notice = |topic: &'static str, key: &str| ChangeNotice {
+        topic,
+        key: key.to_string(),
+    };
+    let work = waker::assignment_work(&[
+        notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
+        notice(CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
+        notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
+        notice(CHAT_ACCESS_REVOKED_TOPIC, TEAMMATE_ID),
+    ]);
+    assert_eq!(
+        work,
+        waker::SyncedAssignmentWork {
+            queued: BTreeSet::from(["assignment:queued".to_string()]),
+            routed: BTreeSet::from(["assignment:routed".to_string()]),
+        }
+    );
+    assert_eq!(
+        waker::assignment_work(&[notice("music-root", "assignment:queued")]),
+        waker::SyncedAssignmentWork::default()
+    );
 }
 
 #[tokio::test]
@@ -471,9 +504,15 @@ async fn a_scheduled_attachment_keeps_its_file_after_its_attachment_row_is_gone(
     let kept_file = (chat::ATTACHMENTS_CLASS.name, ATTACHMENT_DIGEST.to_string());
     let mut connection = pool.acquire().await.unwrap();
     // A working folder delete cascades the attachment row away while the scheduled message
-    // still names its digest; only the reference is seeded, without its scheduled message.
+    // still names its digest; the scheduled message is seeded without its channel.
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "PRAGMA foreign_keys = OFF;
+         INSERT INTO chat_scheduled_messages
+             (id, client_command_id, channel_id, executing_device_id, request_data,
+              scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:sync', 'command:sync', 'channel:gone', 'device:desk', '{{}}',
+                 '2026-08-04T00:00:00.000Z', '2026-08-03T00:00:00.000Z',
+                 '2026-08-03T00:00:00.000Z');
          INSERT INTO chat_scheduled_message_attachment_references
              (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
               original_display_name, mime_type, byte_size, sha256)
@@ -494,7 +533,7 @@ async fn a_scheduled_attachment_keeps_its_file_after_its_attachment_row_is_gone(
             .manifest()
             .local
             .contains(&"chat_scheduled_message_attachment_references"),
-        "scheduled references travel with their unconverted scheduled message"
+        "scheduled references travel as owned rows of their scheduled message"
     );
 
     // A whole-vault archive keeps scheduled references, since their scheduled message travels

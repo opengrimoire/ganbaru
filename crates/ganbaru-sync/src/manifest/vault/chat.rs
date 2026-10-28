@@ -1534,7 +1534,9 @@ pub const SCHEDULED: TableSpec = TableSpec {
         collation: Collation::Binary,
     }],
     redirects: true,
-    triggers: &[applier_visible("chat_scheduled_messages_reply_thread_insert")],
+    triggers: &[applier_visible(
+        "chat_scheduled_messages_reply_thread_insert",
+    )],
     ..BASE
 };
 

@@ -317,6 +317,7 @@ async fn insert_op(
 }
 
 async fn store_genesis(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     envelope: &Envelope<'_>,
@@ -364,6 +365,7 @@ async fn store_genesis(
         Enrollment::Absent
             if authorization::enrolled_on_any_chain(
                 conn,
+                &engine.enrolled,
                 ctx.space,
                 &cert.device_id,
                 &cert.device_key,
@@ -621,7 +623,7 @@ async fn store_one(
         return Ok(StoreOutcome::Refused(StoreRefusal::WrongSpace));
     }
     match log::writer(conn, ctx.space, envelope.writer).await? {
-        None => store_genesis(conn, ctx, &envelope, bytes, quarantined, now_ms).await,
+        None => store_genesis(engine, conn, ctx, &envelope, bytes, quarantined, now_ms).await,
         Some(writer) if quarantined.contains(&writer.device_id) => {
             Ok(StoreOutcome::Refused(StoreRefusal::Quarantined))
         }

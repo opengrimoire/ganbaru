@@ -14,7 +14,7 @@
 //! handover continues the log.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ganbaru_sync_contracts::bounds::DISCOVERY_KEY_BYTES;
 use ganbaru_sync_contracts::{
@@ -983,19 +983,76 @@ pub(crate) async fn select(
 
 /// Whether any check-valid stored chain enrolls `device_id` with `device_key`, selected or not.
 /// A replica that selected one branch still stores the writers of another, whose entries may be
-/// the evidence that vetoes its selection.
+/// the evidence that vetoes its selection. The walk is cached per stored entry set and freezes,
+/// so a batch of geneses walks the tree once.
 pub(crate) async fn enrolled_on_any_chain(
     conn: &mut SqliteConnection,
+    cache: &EnrolledCache,
     space: SpaceId,
     device_id: &str,
     device_key: &DevicePublicKey,
 ) -> SyncResult<bool> {
+    let key = EnrolledKey::load(conn, space).await?;
+    let wanted = (device_id.to_string(), *device_key);
+    if let Some(hit) = cache.lookup(&key) {
+        return Ok(hit.contains(&wanted));
+    }
     let Some(stored) = Stored::load(conn, space).await? else {
         return Ok(false);
     };
-    Ok(Walk::new(&stored)
-        .enrolled
-        .contains(&(device_id.to_string(), *device_key)))
+    let enrolled = Arc::new(Walk::new(&stored).enrolled);
+    cache.store(key, Arc::clone(&enrolled));
+    Ok(enrolled.contains(&wanted))
+}
+
+/// What the enrollments of every stored chain depend on: the space, the hashes of its stored
+/// authorization entries, and its freezes.
+#[derive(Debug, PartialEq, Eq)]
+struct EnrolledKey {
+    space: SpaceId,
+    entries: Vec<Digest32>,
+    freezes: BTreeMap<String, Vec<u64>>,
+}
+
+impl EnrolledKey {
+    async fn load(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Self> {
+        let rows: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT entry_hash FROM sync_auth_entries WHERE space_id = ? ORDER BY entry_hash",
+        )
+        .bind(space.as_bytes().as_slice())
+        .fetch_all(&mut *conn)
+        .await?;
+        let entries = rows
+            .iter()
+            .map(|hash| log::digest(hash))
+            .collect::<SyncResult<Vec<_>>>()?;
+        Ok(Self {
+            space,
+            entries,
+            freezes: fork::freezes(conn, space).await?,
+        })
+    }
+}
+
+/// The device ids and keys any check-valid chain enrolls, kept for the last stored entry set an
+/// engine walked. The key is the stored content, so a rolled back transaction cannot leave a
+/// stale answer behind.
+#[derive(Debug, Default)]
+pub(crate) struct EnrolledCache(Mutex<Option<(EnrolledKey, Arc<EnrolledSet>)>>);
+
+type EnrolledSet = BTreeSet<(String, DevicePublicKey)>;
+
+impl EnrolledCache {
+    fn lookup(&self, key: &EnrolledKey) -> Option<Arc<EnrolledSet>> {
+        let slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        slot.as_ref()
+            .filter(|(cached, _)| cached == key)
+            .map(|(_, enrolled)| Arc::clone(enrolled))
+    }
+
+    fn store(&self, key: EnrolledKey, enrolled: Arc<EnrolledSet>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((key, enrolled));
+    }
 }
 
 /// The state after the live stored entry at `revision` with `entry_hash` when `author` is its

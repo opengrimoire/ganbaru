@@ -148,6 +148,9 @@ pub struct Engine {
     manifest: &'static Manifest,
     adapters: Adapters,
     hooks: Hooks,
+    /// Enrollments of every stored chain, for the last stored entry set a genesis was checked
+    /// against.
+    enrolled: authorization::EnrolledCache,
 }
 
 impl Engine {
@@ -222,6 +225,7 @@ impl Engine {
             manifest,
             adapters,
             hooks,
+            enrolled: authorization::EnrolledCache::default(),
         })
     }
 

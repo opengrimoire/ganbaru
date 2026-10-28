@@ -10,14 +10,12 @@ use sqlx::{Connection, SqliteConnection, SqlitePool};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use zip::CompressionMethod;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
 /// File name of the vault marker.
 pub const VAULT_MANIFEST_FILE: &str = "vault.json";
-/// File name of the vault configuration.
-pub const CONFIG_FILE: &str = "config.json";
 /// File name of the vault database.
 pub const DATABASE_FILE: &str = "ganbaru.sqlite";
 /// Most entries one archive holds.
@@ -41,10 +39,10 @@ pub const BUNDLE_DIRECTORIES: &[&str] = &[
 /// Directory whose direct children are project working folders.
 const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
 
-/// Whether `relative` belongs to the vault layout a bundle carries: the vault marker,
-/// configuration, and database files, the skeleton directories with their contents, and only
-/// folders directly below `projects`. Anything else, such as a `.git`, `.claude`, `.codex`, or
-/// `.vscode` folder at the vault root, stays out of bundles in both directions.
+/// Whether `relative` belongs to the vault layout a bundle carries: the vault marker and
+/// database files, the skeleton directories with their contents, and only folders directly
+/// below `projects`. Anything else, such as a `.git`, `.claude`, `.codex`, or `.vscode` folder
+/// or a stray `config.json` at the vault root, stays out of bundles in both directions.
 pub fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
     let mut components = relative.components().map(|component| match component {
         Component::Normal(name) => name.to_str(),
@@ -55,7 +53,7 @@ pub fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
     };
     match components.next() {
         None if directory => BUNDLE_DIRECTORIES.contains(&top),
-        None => [VAULT_MANIFEST_FILE, CONFIG_FILE, DATABASE_FILE].contains(&top),
+        None => [VAULT_MANIFEST_FILE, DATABASE_FILE].contains(&top),
         Some(None) => false,
         Some(Some(_)) if top == BUNDLE_PROJECTS_DIRECTORY => {
             directory || components.next().is_some()
@@ -113,19 +111,17 @@ pub async fn vacuum_database(pool: &SqlitePool, destination: &Path) -> Result<()
 
 /// Archives the vault at `vault_root` to `destination` with a consistent snapshot of the
 /// database `pool` serves, written to `database_snapshot` first. The archive keeps every
-/// device-local row and sync state, so it restores this installation as it was. `config_lock`
-/// is held while the files are read, so the configuration is read whole.
+/// device-local row and sync state, so it restores this installation as it was.
 pub async fn create_backup_archive(
     gate: &ArchiveGate,
     pool: &SqlitePool,
     vault_root: &Path,
     database_snapshot: &Path,
     destination: &Path,
-    config_lock: &Mutex<()>,
 ) -> Result<(), String> {
     let _gate = gate.lock().await;
     vacuum_database(pool, database_snapshot).await?;
-    write_archive(vault_root, database_snapshot, destination, config_lock)
+    write_archive(vault_root, database_snapshot, destination)
 }
 
 /// Archives the vault at `vault_root` to `archive_path` as the snapshot another installation
@@ -136,7 +132,6 @@ pub async fn create_snapshot_archive(
     vault_root: &Path,
     database_snapshot: &Path,
     archive_path: &Path,
-    config_lock: &Mutex<()>,
 ) -> Result<(), String> {
     let _gate = gate.lock().await;
     for path in [database_snapshot, archive_path] {
@@ -154,7 +149,7 @@ pub async fn create_snapshot_archive(
     registry.close_all().await?;
     snapshot_result?;
     prepare_snapshot_copy(database_snapshot).await?;
-    write_archive(vault_root, database_snapshot, archive_path, config_lock)
+    write_archive(vault_root, database_snapshot, archive_path)
 }
 
 /// Clears installation-local sync state and device-local rows from a snapshot copy before it
@@ -264,11 +259,7 @@ fn write_archive(
     vault_root: &Path,
     database_snapshot: &Path,
     destination: &Path,
-    config_lock: &Mutex<()>,
 ) -> Result<(), String> {
-    let _config_guard = config_lock
-        .lock()
-        .map_err(|_| "vault config lock is unavailable".to_string())?;
     let mut entries = Vec::new();
     let mut total_bytes = 0;
     collect_archive_entries(vault_root, vault_root, &mut entries, &mut total_bytes)?;

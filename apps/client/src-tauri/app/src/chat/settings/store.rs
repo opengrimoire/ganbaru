@@ -1,23 +1,17 @@
-use super::{
-    config_io_error, config_shape_error, device_state_error, mapping::provider_instance_read,
-    provider_not_found_error,
-};
+use super::{device_state_error, mapping::provider_instance_read, provider_not_found_error};
+use crate::chat::configuration::{read_chat_configuration, update_chat_device_config};
 use crate::chat::credentials::{CredentialStore, PlatformCredentialStore};
 use crate::chat::device_state::read_active_device_scope;
 use crate::chat::settings_commands::{ChatSettingsRead, ChatSettingsState};
-use crate::vault;
-use ganbaru_chat_contracts::config::{
-    ChatPortableProviderConfig, ChatVaultConfig, parse_chat_config_branch,
-    replace_chat_config_branch,
-};
+use ganbaru_chat_contracts::config::{ChatDeviceConfig, ChatPortableProviderConfig};
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult, ProviderInstanceId};
 use ganbaru_chat_providers::ProviderDriverRegistry;
-use serde_json::Value;
 
-pub(crate) fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSettingsRead> {
-    let configuration = read_chat_config(app)?;
+pub(crate) async fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSettingsRead> {
+    let configuration = read_chat_configuration(app).await?;
     let scope = read_active_device_scope(app).map_err(device_state_error)?;
     let provider_instances = configuration
+        .device
         .providers
         .iter()
         .map(|portable| provider_instance_read(portable, &scope.provider_instances))
@@ -31,11 +25,13 @@ pub(crate) fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSettingsRe
     })
 }
 
-pub(crate) fn mutate_chat_config(
-    app: &tauri::AppHandle,
+/// Applies `mutate` to the device Chat settings under the settings mutation lock, which keeps
+/// read-modify-write command sequences on this device in order.
+pub(crate) fn mutate_chat_config<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     state: &ChatSettingsState,
-    mutate: impl FnOnce(&mut ChatVaultConfig) -> ChatResult<()>,
-) -> ChatResult<ChatVaultConfig> {
+    mutate: impl FnOnce(&mut ChatDeviceConfig) -> ChatResult<()>,
+) -> ChatResult<ChatDeviceConfig> {
     let _guard = state.mutation_lock.lock().map_err(|_| {
         ChatError::new(
             ChatErrorCode::Internal,
@@ -43,27 +39,11 @@ pub(crate) fn mutate_chat_config(
             true,
         )
     })?;
-    vault::mutate_active_vault_config(
-        app,
-        |root| {
-            let mut config = parse_chat_config_branch(root)?;
-            mutate(&mut config)?;
-            config.validate()?;
-            replace_chat_config_branch(root, config.clone())?;
-            Ok(config)
-        },
-        config_io_error,
-    )
-}
-
-pub(crate) fn read_chat_config(app: &tauri::AppHandle) -> ChatResult<ChatVaultConfig> {
-    let raw = vault::read_active_config_bounded(app).map_err(config_io_error)?;
-    let root: Value = serde_json::from_str(&raw).map_err(|_| config_shape_error())?;
-    parse_chat_config_branch(&root)
+    update_chat_device_config(app, mutate)
 }
 
 pub(crate) fn provider_mut<'a>(
-    config: &'a mut ChatVaultConfig,
+    config: &'a mut ChatDeviceConfig,
     instance_id: &ProviderInstanceId,
 ) -> ChatResult<&'a mut ChatPortableProviderConfig> {
     config

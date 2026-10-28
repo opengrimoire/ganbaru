@@ -7,7 +7,7 @@
 //! layout, flagged for review on this device.
 
 use super::backup::holds_vault;
-use super::{APP_SQLITE_FILE, CONFIG_FILE, VAULT_MANIFEST_FILE, active_writable_vault_path};
+use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, active_writable_vault_path};
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
 use ganbaru_atomic_files::FileAccess;
 use ganbaru_sync_replica::backup::BUNDLE_DIRECTORIES;
@@ -120,15 +120,15 @@ fn database_file(directory: &Path, suffix: &str) -> PathBuf {
     directory.join(format!("{APP_SQLITE_FILE}{suffix}"))
 }
 
-/// Entry names a copy moves: the database files, plus the vault marker,
-/// configuration, and bundle directories for a full copy.
+/// Entry names a copy moves: the database files, plus the vault marker and bundle
+/// directories for a full copy.
 fn moved_entry_names(full: bool) -> Vec<String> {
     let mut names: Vec<String> = DATABASE_FILE_SUFFIXES
         .iter()
         .map(|suffix| format!("{APP_SQLITE_FILE}{suffix}"))
         .collect();
     if full {
-        names.extend([VAULT_MANIFEST_FILE, CONFIG_FILE].map(str::to_string));
+        names.push(VAULT_MANIFEST_FILE.to_string());
         names.extend(BUNDLE_DIRECTORIES.iter().map(|name| (*name).to_string()));
     }
     names

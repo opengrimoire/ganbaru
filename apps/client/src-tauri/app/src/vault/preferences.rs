@@ -4,31 +4,25 @@
 //! are rows of `vault_preferences`, shared by every device of the vault and written by the owner
 //! and by linked replicas, since the preferences sync domain replicates concurrently. Device
 //! values live in a file per vault in the app config directory and are written on every device.
-//! `chat` stays in `config.json`, which native Chat commands own.
+//! The device file also holds native-owned entries, such as [`CHAT_DEVICE_ENTRY`], that native
+//! commands validate and write and that the registry never routes a patch to.
 //!
 //! [`PreferencesState`] caches the effective view: the portable rows and device entries
-//! composed into the nested object the frontend and native readers expect. The first load of a
-//! vault, and the first load after a vault replacement, runs the import of values that
-//! `config.json` still holds. Loading the view runs no side effects; vault replacement resumes
-//! the native runtimes itself.
+//! composed into the nested object the frontend and native readers expect. Loading the view runs
+//! no side effects; vault replacement resumes the native runtimes itself.
 //!
 //! After a change, [`run_preference_effects`] tells native owners that cache a preference. Native
 //! Focus caches its presentation preferences, so a change under `preferences` invalidates it.
 //! Music and Contacts read the view when they act, so they need no notice.
 
 mod device;
-mod import;
 mod registry;
 mod view;
 
 pub(crate) use view::value_at;
 
-use super::config::{NATIVE_OWNED_BRANCH_ERROR, VaultConfigPatch, validate_config_patch_path};
-use super::ownership::VaultOwnershipStatus;
-use super::{
-    active_replicated_asset_path, active_vault_id, mutate_active_vault_config, now_utc,
-    read_active_config_bounded,
-};
+use super::config::{VaultConfigPatch, validate_config_patch_path};
+use super::{active_replicated_asset_path, active_vault_id, now_utc};
 use chrono::SecondsFormat;
 use ganbaru_sync::ChangeNotice;
 use ganbaru_sync::domains::preferences::PREFERENCE_TOPIC;
@@ -44,16 +38,22 @@ use view::PortableRow;
 
 /// The top-level branch whose values native Focus presentation parses.
 const FOCUS_PREFERENCE_BRANCH: &str = "preferences";
+/// The device file entry that holds native Chat device settings: provider settings, remembered
+/// selections, working folder provider preferences, and panels. It never replicates.
+pub(crate) const CHAT_DEVICE_ENTRY: &str = "chat";
+/// Device file entries that native commands own. The registry never routes a patch to them and
+/// the composed view leaves them out.
+const NATIVE_DEVICE_ENTRIES: &[&str] = &[CHAT_DEVICE_ENTRY];
 
 /// Managed cache of the active vault's effective preference view.
 #[derive(Default)]
 pub(crate) struct PreferencesState {
     view: RwLock<Option<CachedView>>,
     /// Bumped by [`PreferencesState::reset`], so a load that began before a vault replacement
-    /// never stores its result and the import runs again for the replaced vault.
+    /// never stores its result.
     generation: AtomicU64,
     /// Serializes loads and patch batches.
-    load: tauri::async_runtime::Mutex<LoadState>,
+    load: tauri::async_runtime::Mutex<()>,
 }
 
 struct CachedView {
@@ -62,15 +62,8 @@ struct CachedView {
     view: Arc<Value>,
 }
 
-#[derive(Default)]
-struct LoadState {
-    /// The vault and generation whose `config.json` import already ran.
-    imported: Option<(String, u64)>,
-}
-
 impl PreferencesState {
-    /// Drops the cached view and schedules a new import, after the vault was replaced or the
-    /// active vault changed.
+    /// Drops the cached view after the vault was replaced or the active vault changed.
     pub(crate) fn reset(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.invalidate_view();
@@ -121,11 +114,11 @@ pub(crate) async fn effective_view<R: Runtime>(app: &AppHandle<R>) -> Result<Arc
     if let Some(view) = state.cached(&vault_id) {
         return Ok(view);
     }
-    let mut load = state.load.lock().await;
+    let _load = state.load.lock().await;
     if let Some(view) = state.cached(&vault_id) {
         return Ok(view);
     }
-    load_locked(app, &state, &mut load, &vault_id).await
+    load_locked(app, &state, &vault_id).await
 }
 
 fn managed_state<R: Runtime>(
@@ -139,10 +132,9 @@ fn managed_state<R: Runtime>(
 async fn load_locked<R: Runtime>(
     app: &AppHandle<R>,
     state: &PreferencesState,
-    load: &mut LoadState,
     vault_id: &str,
 ) -> Result<Arc<Value>, String> {
-    let generation = ensure_imported(app, state, load, vault_id).await;
+    let generation = state.generation.load(Ordering::Acquire);
     let pool = crate::db::connect_vault(app).await?;
     let rows = view::load_portable_rows(&pool).await?;
     let device_path = device_path(app, vault_id)?;
@@ -156,78 +148,6 @@ async fn load_locked<R: Runtime>(
     let composed = Arc::new(view::compose(&rows, &device));
     state.store(vault_id, generation, Arc::clone(&composed));
     Ok(composed)
-}
-
-/// Runs the `config.json` import once per vault and generation, and returns the generation
-/// it ran for. A failed import is logged and retried after the next vault replacement or
-/// restart; the values it did not move read as defaults meanwhile.
-async fn ensure_imported<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &PreferencesState,
-    load: &mut LoadState,
-    vault_id: &str,
-) -> u64 {
-    let generation = state.generation.load(Ordering::Acquire);
-    let marker = (vault_id.to_owned(), generation);
-    if load.imported.as_ref() != Some(&marker) {
-        if let Err(error) = import_vault_config(app, vault_id).await {
-            eprintln!("import preferences from config.json: {error}");
-        }
-        load.imported = Some(marker);
-    }
-    generation
-}
-
-/// Whether a device with `status` imports the portable values of `config.json` and then strips
-/// the moved keys from it. Only the owner does both. A linked replica may write the preferences
-/// domain, but it never strips its `config.json`, so importing from it would insert stale values
-/// again at every open and resurrect preferences reset since; it imports its device values only.
-fn imports_portable_values(status: &VaultOwnershipStatus) -> bool {
-    status.can_write
-}
-
-/// Moves the preferences `config.json` still holds into their stores, in the order and with
-/// the idempotence [`import`] describes. Every device imports its device values; see
-/// [`imports_portable_values`] for the portable values and the strip of `config.json`.
-async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<(), String> {
-    let config_app = app.clone();
-    let raw = blocking(move || read_active_config_bounded(&config_app)).await?;
-    let config = serde_json::from_str::<Value>(&raw)
-        .map_err(|error| format!("vault config is not valid JSON: {error}"))?;
-    if !import::has_moved_branches(&config) {
-        return Ok(());
-    }
-    let status = super::ownership::active_status(app)?;
-    let owner_import = imports_portable_values(&status);
-    if owner_import {
-        let _write_permit = active_replicated_asset_path(app, PREFERENCES_DOMAIN)?;
-        let pool = crate::db::connect_vault(app).await?;
-        import::insert_missing_rows(&pool, &import::portable_entries(&config), &timestamp())
-            .await?;
-    }
-    let device_path = device_path(app, vault_id)?;
-    let entries = import::device_entries(&config);
-    blocking(move || {
-        device::update_device_file(&device_path, |existing| {
-            import::merge_missing_device_entries(existing, entries)
-        })
-    })
-    .await?;
-    if owner_import {
-        let strip_app = app.clone();
-        blocking(move || {
-            mutate_active_vault_config(
-                &strip_app,
-                |root| {
-                    import::retain_vault_config_branches(root);
-                    Ok(())
-                },
-                |error| error,
-            )
-        })
-        .await?;
-    }
-    Ok(())
 }
 
 /// One portable write of a patch batch.
@@ -276,7 +196,6 @@ fn plan_patches(patches: Vec<VaultConfigPatch>) -> Result<PatchPlan, String> {
         };
         let value = (!patch.remove).then_some(&patch.value);
         match (spec.scope, child) {
-            (Scope::VaultConfig, _) => return Err(NATIVE_OWNED_BRANCH_ERROR.to_owned()),
             (Scope::Device, _) => plan.device.push(match value {
                 Some(value) => DeviceOp::Set {
                     key: spec.path.to_owned(),
@@ -446,8 +365,7 @@ fn apply_device_ops(entries: &mut Map<String, Value>, ops: Vec<DeviceOp>) -> boo
 }
 
 /// Applies a validated patch batch: portable values in one transaction and device values in one
-/// file write. The import runs first, so it
-/// never overwrites values of this batch. The view is composed again afterwards and the side
+/// file write. The view is composed again afterwards and the side
 /// effects of the changed paths run, also when a later store failed after an earlier one
 /// committed.
 pub(crate) async fn apply_patches<R: Runtime>(
@@ -457,12 +375,11 @@ pub(crate) async fn apply_patches<R: Runtime>(
     let plan = plan_patches(patches)?;
     let state = managed_state(app)?;
     let vault_id = active_vault_id(app)?;
-    let mut load = state.load.lock().await;
-    ensure_imported(app, &state, &mut load, &vault_id).await;
+    let load = state.load.lock().await;
     let changed_paths = plan.changed_paths.clone();
     let result = write_plan(app, &vault_id, plan).await;
     state.invalidate_view();
-    if let Err(error) = load_locked(app, &state, &mut load, &vault_id).await {
+    if let Err(error) = load_locked(app, &state, &vault_id).await {
         eprintln!("compose preferences after a change: {error}");
     }
     drop(load);
@@ -547,16 +464,61 @@ async fn on_replicated_keys<R: Runtime>(app: &AppHandle<R>, keys: &[String]) {
     run_preference_effects(app, keys);
 }
 
-/// The view with the vault config branches of `config` added, as `vault_read_config` returns
-/// it. Only registered vault config branches are taken from `config`.
-pub(crate) fn compose_with_vault_config(view: &Value, config: &Value) -> Value {
-    let mut composed = view.as_object().cloned().unwrap_or_default();
-    for spec in registry::specs(Scope::VaultConfig) {
-        if let Some(value) = value_at(config, spec.path) {
-            view::insert_at(&mut composed, spec.segments(), value.clone());
+/// The native-owned entry `name` of the active vault's device preference file, if present.
+pub(crate) fn read_native_device_entry<R: Runtime>(
+    app: &AppHandle<R>,
+    name: &'static str,
+) -> Result<Option<Value>, String> {
+    let path = native_device_path(app, name)?;
+    Ok(device::read_device_file(&path)?.remove(name))
+}
+
+/// Replaces the native-owned entry `name` of the active vault's device preference file with the
+/// value `replace` returns for the current entry, under the device file lock, and returns the
+/// rest of its result. An error from `replace` leaves the file unchanged.
+pub(crate) fn update_native_device_entry<R: Runtime, T, E>(
+    app: &AppHandle<R>,
+    name: &'static str,
+    replace: impl FnOnce(Option<&Value>) -> Result<(Value, T), E>,
+    storage_error: impl Fn(String) -> E,
+) -> Result<T, E> {
+    let path = native_device_path(app, name).map_err(&storage_error)?;
+    let mut outcome = None;
+    device::update_device_file(&path, |entries| {
+        let (changed, result) = replace_native_entry(entries, name, replace);
+        outcome = Some(result);
+        changed
+    })
+    .map_err(&storage_error)?;
+    outcome.unwrap_or_else(|| Err(storage_error("device preferences were not read".to_owned())))
+}
+
+/// Applies `replace` to the entry `name` of `entries`. Returns whether the entry changed.
+fn replace_native_entry<T, E>(
+    entries: &mut Map<String, Value>,
+    name: &str,
+    replace: impl FnOnce(Option<&Value>) -> Result<(Value, T), E>,
+) -> (bool, Result<T, E>) {
+    match replace(entries.get(name)) {
+        Ok((value, result)) => {
+            let changed = entries.get(name) != Some(&value);
+            entries.insert(name.to_owned(), value);
+            (changed, Ok(result))
         }
+        Err(error) => (false, Err(error)),
     }
-    Value::Object(composed)
+}
+
+fn native_device_path<R: Runtime>(
+    app: &AppHandle<R>,
+    name: &'static str,
+) -> Result<PathBuf, String> {
+    if !NATIVE_DEVICE_ENTRIES.contains(&name) {
+        return Err(format!(
+            "device preference entry {name} is not native-owned"
+        ));
+    }
+    device_path(app, &active_vault_id(app)?)
 }
 
 fn device_path<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<PathBuf, String> {
@@ -697,7 +659,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn preferences_batches_refuse_unregistered_paths_invalid_values_and_chat() {
+    fn preferences_batches_refuse_unregistered_paths_and_invalid_values() {
         for (refused, value, named) in [
             (
                 "preferences.unknownKey",
@@ -726,8 +688,27 @@ pub(crate) mod tests {
             .unwrap_err();
             assert!(error.contains(named), "{refused}: {error}");
         }
-        let error = plan_patches(vec![patch("chat.behavior.sendKey", json!("enter"))]).unwrap_err();
-        assert_eq!(error, "vault config patch targets a native-owned branch");
+        for (refused, value) in [
+            ("chat", json!({})),
+            ("chat.providers", json!({})),
+            ("chat.panels", json!({})),
+            ("chat.behavior.sendKey", json!("shift_enter")),
+            ("chat.behavior.terminalScrollbackLines", json!(999)),
+            ("chat.behavior.unknownKey", json!(true)),
+        ] {
+            assert!(
+                plan_patches(vec![patch(refused, value)]).is_err(),
+                "{refused}"
+            );
+        }
+        let plan = plan_patches(vec![patch("chat.behavior.sendKey", json!("mod_enter"))]).unwrap();
+        assert_eq!(
+            plan.portable,
+            [PortableOp::Upsert {
+                key: "chat.behavior.sendKey".to_owned(),
+                value: "\"mod_enter\"".to_owned(),
+            }]
+        );
     }
 
     #[tokio::test]
@@ -811,76 +792,60 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn preferences_read_config_composes_the_view_with_vault_config_branches() {
-        let view = view::compose(
-            &[row("profile.color", "7")],
-            json!({ "theme.activeId": "dark" }).as_object().unwrap(),
-        );
-        let config = json!({
-            "distractions": { "rules": [] },
-            "chat": { "schemaVersion": 1 },
-            "profile": { "color": 3, "displayName": "Stale" },
-        });
-        assert_eq!(
-            compose_with_vault_config(&view, &config),
-            json!({
-                "profile": { "color": 7 },
-                "theme": { "activeId": "dark" },
-                "chat": { "schemaVersion": 1 },
-            })
-        );
-    }
-
-    fn ownership_status(can_write: bool, linked_replica: bool) -> VaultOwnershipStatus {
-        VaultOwnershipStatus {
-            vault_id: "vault".to_owned(),
-            device_id: "device".to_owned(),
-            owner_device_id: if can_write { "device" } else { "owner" }.to_owned(),
-            generation: 1,
-            role: if can_write { "owner" } else { "replica" },
-            can_write,
-            linked_replica,
-            replica_writable_domains: if linked_replica {
-                vec![PREFERENCES_DOMAIN.to_owned()]
-            } else {
-                Vec::new()
-            },
-            transfer_phase: super::super::ownership::TransferPhase::Stable,
+    fn preferences_native_device_entries_are_never_routed_or_composed() {
+        for name in NATIVE_DEVICE_ENTRIES {
+            assert!(
+                registry::specs(Scope::Device).all(|spec| spec.path != *name),
+                "{name}"
+            );
+            assert!(registry::route(&[(*name).to_owned()]).is_err(), "{name}");
         }
+        let mut entries = Map::new();
+        entries.insert(
+            CHAT_DEVICE_ENTRY.to_owned(),
+            json!({ "providers": { "codex": { "enabled": true } } }),
+        );
+        entries.insert("theme.activeId".to_owned(), json!("dark"));
+        assert_eq!(
+            view::compose(&[], &entries),
+            json!({ "theme": { "activeId": "dark" } })
+        );
     }
 
     #[test]
-    fn preferences_portable_import_runs_only_on_the_owner() {
-        let owner = ownership_status(true, false);
-        assert!(imports_portable_values(&owner));
-
-        // A linked replica writes the preferences domain but keeps a stale `config.json`.
-        let replica = ownership_status(false, true);
-        assert!(replica.can_write_domain(PREFERENCES_DOMAIN));
-        assert!(!imports_portable_values(&replica));
-
-        let unlinked = ownership_status(false, false);
-        assert!(!imports_portable_values(&unlinked));
+    fn preferences_device_patches_keep_native_entries() {
+        let chat = json!({ "panels": { "sessionList": { "collapsed": true } } });
+        let mut entries = Map::new();
+        entries.insert(CHAT_DEVICE_ENTRY.to_owned(), chat.clone());
+        let plan = plan_patches(vec![
+            patch("theme.activeId", json!("dark")),
+            removal("projects.activeProjectId"),
+        ])
+        .unwrap();
+        assert!(apply_device_ops(&mut entries, plan.device));
+        assert_eq!(entries[CHAT_DEVICE_ENTRY], chat);
     }
 
-    #[tokio::test]
-    async fn preferences_replica_import_moves_only_device_values() {
-        let config = json!({
-            "profile": { "displayName": "Ada" },
-            "theme": { "activeId": "dark" },
-            "chat": { "schemaVersion": 1 },
+    #[test]
+    fn preferences_native_entry_replacement_reports_changes_and_keeps_failures_out() {
+        let mut entries = Map::new();
+        let set = |value: Value| {
+            move |current: Option<&Value>| Ok::<_, String>((value, current.cloned()))
+        };
+        let (changed, previous) =
+            replace_native_entry(&mut entries, "chat", set(json!({ "a": 1 })));
+        assert!(changed);
+        assert_eq!(previous, Ok(None));
+        let (changed, previous) =
+            replace_native_entry(&mut entries, "chat", set(json!({ "a": 1 })));
+        assert!(!changed);
+        assert_eq!(previous, Ok(Some(json!({ "a": 1 }))));
+
+        let (changed, result) = replace_native_entry(&mut entries, "chat", |_| {
+            Err::<(Value, ()), _>("refused".to_owned())
         });
-        let pool = memory_pool().await;
-        let mut device = Map::new();
-        // A replica skips the portable insert and the `config.json` rewrite.
-        assert!(import::merge_missing_device_entries(
-            &mut device,
-            import::device_entries(&config)
-        ));
-        let view = compose_with_vault_config(&view::compose(&rows(&pool).await, &device), &config);
-        assert_eq!(
-            view,
-            json!({ "theme": { "activeId": "dark" }, "chat": { "schemaVersion": 1 } })
-        );
+        assert!(!changed);
+        assert_eq!(result, Err("refused".to_owned()));
+        assert_eq!(entries["chat"], json!({ "a": 1 }));
     }
 }

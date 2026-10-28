@@ -96,6 +96,93 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     );
 }
 
+/// The folder grant settle returns the strictest override by the Chat order, so that order must
+/// be the one sync ranks grant versions by, or a settled value could rank below a version.
+#[test]
+fn the_settle_approval_order_is_the_sync_grant_ranking() {
+    assert_eq!(
+        ganbaru_chat::sync_effects::APPROVAL_ORDER,
+        ganbaru_sync::domains::chat::APPROVAL_POLICIES
+    );
+}
+
+/// The engine refuses a hook that settles a group it cannot write back, so building the vault
+/// engine with the Chat hooks proves the folder grant settle is admissible.
+#[test]
+fn the_vault_engine_accepts_the_chat_folder_grant_settle() {
+    let hooks = with_hooks(Hooks::new());
+    assert!(
+        ganbaru_sync::Engine::with(
+            &ganbaru_sync::manifest::vault::VAULT_MANIFEST,
+            ganbaru_sync::domains::vault_adapters(),
+            hooks,
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        ChatApplyHook.settled_groups(&chat::FOLDER_GRANTS),
+        &[folder_grant_group::GRANT]
+    );
+    assert!(
+        ChatApplyHook
+            .settled_groups(&chat::CHANNEL_MEMBERSHIPS)
+            .is_empty()
+    );
+}
+
+fn grant_version(
+    writer: u8,
+    approval: Option<&str>,
+    revoked: bool,
+    won: bool,
+) -> ConcurrentVersion {
+    ConcurrentVersion {
+        writer: ganbaru_sync_contracts::WriterId::from_bytes([writer; 16]),
+        clock: ganbaru_sync_contracts::Hlc::new(u64::from(writer), 0),
+        value: Value::new(vec![
+            Field::Text("edit".to_string()),
+            Field::Integer(0),
+            Field::Integer(1),
+            approval.map_or(Field::Null, |policy| Field::Text(policy.to_string())),
+            if revoked {
+                Field::Text(NOW.to_string())
+            } else {
+                Field::Null
+            },
+        ])
+        .unwrap(),
+        won,
+    }
+}
+
+/// A revoked winner stands, and a grant whose row or channel is missing keeps its winner, since
+/// the settle reads only replicated rows.
+#[tokio::test]
+async fn a_folder_grant_settle_keeps_a_revocation_and_a_grant_without_a_channel_override() {
+    let pool = migrated_pool().await;
+    let mut connection = pool.acquire().await.unwrap();
+    let revoked = [
+        grant_version(1, Some("unattended"), true, true),
+        grant_version(2, None, false, false),
+    ];
+    assert_eq!(
+        settle_folder_grant(&mut connection, "grant:missing", &revoked)
+            .await
+            .unwrap(),
+        None
+    );
+    let live = [
+        grant_version(1, Some("unattended"), false, true),
+        grant_version(2, None, false, false),
+    ];
+    assert_eq!(
+        settle_folder_grant(&mut connection, "grant:missing", &live)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 #[test]
 fn only_revocations_removals_and_assignment_work_are_reported() {
     let mut sink = CollectingSink::default();
@@ -113,6 +200,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             removed_conversations: BTreeSet::from(["conversation:removed".to_string()]),
             reclaimed_attachments: BTreeSet::from(["attachment:reclaimed".to_string()]),
             queued_assignments: BTreeSet::from(["assignment:queued".to_string()]),
+            started_assignments: BTreeSet::from(["assignment:started".to_string()]),
             settled_assignments: BTreeSet::from(["assignment:settled".to_string()]),
             routed_inputs: BTreeSet::from(["assignment:routed".to_string()]),
             removed_assignments: BTreeSet::from(["assignment:removed".to_string()]),
@@ -132,6 +220,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             (CHAT_CONVERSATION_REMOVED_TOPIC, "conversation:removed"),
             (CHAT_ASSIGNMENT_REMOVED_TOPIC, "assignment:removed"),
             (CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
+            (CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
             (CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
         ]
     );
@@ -168,7 +257,7 @@ fn revocation_notices_wake_the_drain_and_other_notices_do_not() {
 
 #[cfg(desktop)]
 #[test]
-fn assignment_notices_hand_queued_work_and_pending_inputs_to_dispatch() {
+fn assignment_notices_hand_queued_and_started_work_and_pending_inputs_to_dispatch() {
     let notice = |topic: &'static str, key: &str| ChangeNotice {
         topic,
         key: key.to_string(),
@@ -176,6 +265,7 @@ fn assignment_notices_hand_queued_work_and_pending_inputs_to_dispatch() {
     let work = waker::assignment_work(&[
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
         notice(CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
+        notice(CHAT_ASSIGNMENT_STARTED_TOPIC, "assignment:started"),
         notice(CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
         notice(CHAT_ACCESS_REVOKED_TOPIC, TEAMMATE_ID),
     ]);
@@ -183,6 +273,7 @@ fn assignment_notices_hand_queued_work_and_pending_inputs_to_dispatch() {
         work,
         waker::SyncedAssignmentWork {
             queued: BTreeSet::from(["assignment:queued".to_string()]),
+            started: BTreeSet::from(["assignment:started".to_string()]),
             routed: BTreeSet::from(["assignment:routed".to_string()]),
         }
     );

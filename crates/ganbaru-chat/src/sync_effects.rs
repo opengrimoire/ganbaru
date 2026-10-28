@@ -79,6 +79,9 @@ pub struct ChatSyncEffects {
     pub reclaimed_attachments: BTreeSet<String>,
     /// Queued assignments that arrived or changed, which their executing device starts.
     pub queued_assignments: BTreeSet<String>,
+    /// Started assignments that arrived or changed and are not settled. A device that started
+    /// one whose concurrent creates merged onto another executing device stops its own run.
+    pub started_assignments: BTreeSet<String>,
     /// Settled assignments whose local dispatch jobs ended or whose active authorizations were
     /// revoked, so the runs they granted stop.
     pub settled_assignments: BTreeSet<String>,
@@ -101,6 +104,7 @@ impl ChatSyncEffects {
             && self.removed_conversations.is_empty()
             && self.reclaimed_attachments.is_empty()
             && self.queued_assignments.is_empty()
+            && self.started_assignments.is_empty()
             && self.settled_assignments.is_empty()
             && self.routed_inputs.is_empty()
             && self.removed_assignments.is_empty()
@@ -559,7 +563,8 @@ async fn sweep_uncovered_authorizations(
 
 /// Follows the applied state of the work assignment `assignment_id` on this device.
 ///
-/// A queued assignment is reported so its executing device starts it. A settled assignment
+/// A queued assignment is reported so its executing device starts it, and a started one so a
+/// device that runs it without being its executing device stops its run. A settled assignment
 /// ends the device's queued or claimed dispatch job and revokes its active authorizations with
 /// their revocation jobs, so a run this device executes stops when another device settled the
 /// work. A deleted assignment, whose cascade removed its local runs and authorizations, is
@@ -588,6 +593,11 @@ async fn follow_assignment_state(
     match state.as_str() {
         "queued" => {
             effects.queued_assignments.insert(assignment_id.to_string());
+        }
+        "working" | "waiting_for_answer" | "waiting_for_approval" => {
+            effects
+                .started_assignments
+                .insert(assignment_id.to_string());
         }
         "completed" | "failed" | "cancelled" => {
             let now = now();
@@ -1197,6 +1207,65 @@ async fn contain_mismatched_pointer(
         effects.mismatched_pointers.insert(owner_id);
     }
     Ok(())
+}
+
+/// Runtime approval policies from least to most restrictive, the order sync ranks overrides in.
+/// The app pins it equal to the sync folder grant ranking, since a settled value must rank at
+/// or above every version it settles.
+pub const APPROVAL_ORDER: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
+
+/// Position of `policy` in [`APPROVAL_ORDER`], or `None` for an unknown policy.
+fn approval_strictness(policy: &str) -> Option<usize> {
+    APPROVAL_ORDER
+        .iter()
+        .position(|candidate| *candidate == policy)
+}
+
+/// The explicit approval override that settles concurrent edits of the folder grant `grant_key`,
+/// or `None` when the merge's winner keeps its own.
+///
+/// `winner` is the override of the version the merge kept and `versions` the overrides of every
+/// concurrent version. An inherited override (`None`) follows the channel override at runtime,
+/// which can be stricter than an explicit grant override the static priority ranks above
+/// inheriting. When a version inherits and the channel override of the grant's teammate is
+/// stricter than the winner's explicit override, that channel override settles the grant, so a
+/// concurrent widening never loosens what an inheriting edit kept. A winner that inherits, or a
+/// channel without an override, needs no settle: the teammate's default narrows every version
+/// alike. The result reads only replicated rows and is stricter than the winner, so the static
+/// priority ranks it above every version.
+pub async fn settled_grant_approval(
+    conn: &mut SqliteConnection,
+    grant_key: &str,
+    winner: Option<&str>,
+    versions: &[Option<&str>],
+) -> ChatResult<Option<String>> {
+    let Some(winner) = winner else {
+        return Ok(None);
+    };
+    if versions.iter().all(Option::is_some) {
+        return Ok(None);
+    }
+    let channel: Option<String> = sqlx::query_scalar(
+        "SELECT access.runtime_approval_policy
+         FROM chat_teammate_working_folder_grants grant_row
+         JOIN chat_teammate_channel_memberships access
+           ON access.conversation_id = grant_row.conversation_id
+          AND access.teammate_id = grant_row.teammate_id
+         WHERE grant_row.sync_key = ? AND access.removed_at IS NULL",
+    )
+    .bind(grant_key)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(persistence_error)?
+    .flatten();
+    let Some(channel) = channel else {
+        return Ok(None);
+    };
+    let stricter = match (approval_strictness(&channel), approval_strictness(winner)) {
+        (Some(channel_rank), Some(winner_rank)) => channel_rank > winner_rank,
+        _ => false,
+    };
+    Ok(stricter.then_some(channel))
 }
 
 fn persistence_error(_error: sqlx::Error) -> ChatError {

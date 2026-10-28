@@ -799,7 +799,7 @@ struct Visit {
 /// evidence against any handover but a kit handover. A device admin handover continuing from an
 /// orphaned entry is vetoed. Several handovers the anchor signed out of one epoch have no honest
 /// explanation, and their hashes and depths are the anchor's to choose, so rank never decides
-/// between them. The one that gives the anchor to another device stands, since its target sealed
+/// between them. A lone one giving the anchor to another device stands, since its target sealed
 /// it; when several do, the one whose target alone sealed entries after it stands. Self
 /// handovers alone, which leave the anchor where it was, stand by rank. Otherwise every one of
 /// them is vetoed and the epoch freezes at their common fork point, so the old anchor sequences

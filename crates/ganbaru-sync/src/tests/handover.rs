@@ -489,6 +489,8 @@ fn a_leaked_old_kit_is_vetoed_by_its_rotation_inside_a_forced_handover_beside_it
 /// A planned handover and the head its target reaches.
 struct Handed {
     log: Log,
+    /// The head of [`Log::new`].
+    base: At,
     /// The enrollment the handover continues from.
     next: At,
     planned: At,
@@ -515,6 +517,7 @@ fn handed(fresh: bool, active: bool) -> Handed {
     }
     Handed {
         log,
+        base,
         next,
         planned,
         reached,
@@ -624,6 +627,7 @@ fn an_anchors_better_ranked_second_handover_yields_to_the_target_that_acted() {
             next,
             planned,
             reached,
+            ..
         } = handed(fresh, true);
         better_ranked_handover(&mut log, &next, &planned);
         log.assert_selects(&reached);
@@ -668,4 +672,35 @@ fn an_anchors_equivocation_without_a_lone_active_target_freezes_its_point() {
             log.assert_selects(&forced);
         }
     }
+}
+
+#[test]
+fn an_anchors_self_handovers_from_above_its_handover_point_lose_to_it() {
+    for fresh in [false, true] {
+        for active in [true, false] {
+            let Handed {
+                mut log,
+                base,
+                reached,
+                ..
+            } = handed(fresh, active);
+            let anchor = anchor_admin(&person());
+            let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 3);
+            log.append(&taken, &anchor, remove(&device_id(SECOND)));
+            log.assert_selects(&reached);
+        }
+    }
+    // Without a handover to another device the anchor's self-handovers are its continuation,
+    // which vetoes a forced handover by the admin it removes.
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    let next = log.append(
+        &base,
+        &anchor,
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 3);
+    let removal = log.append(&taken, &anchor, remove(&device_id(SECOND)));
+    log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
+    log.assert_selects(&removal);
 }

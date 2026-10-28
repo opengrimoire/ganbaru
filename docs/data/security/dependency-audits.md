@@ -1,8 +1,8 @@
 # Dependency audit posture
 
-This file records reviewed Rust advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
+This file records reviewed Rust and npm advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-10-20, `pnpm -w run audit:deps` reports no known npm vulnerabilities, and `pnpm -w run audit:rust` exits successfully with the two configured ignores and ten allowed warnings listed below.
+As of 2026-10-28, `pnpm -w run audit:deps` reports no known npm vulnerabilities beyond the one reviewed ignore below, and `pnpm -w run audit:rust` exits successfully with the two configured ignores and eleven allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -28,6 +28,14 @@ Affected quick-xml versions are locked through constrained paths:
 
 The vulnerable parsing is not reachable from user-controlled runtime XML. Remove the ignores when these dependencies accept fixed quick-xml releases, or immediately if a runtime parser reaches an affected version.
 
+## Configured npm ignores
+
+These advisories are ignored through `auditConfig.ignoreGhsas` in `pnpm-workspace.yaml` after path review.
+
+### GHSA-gcqx-w48m-w2h4, deepmerge prototype poisoning
+
+deepmerge 4.3.1 lets a merged source object poison the prototype of the returned object, and no fixed release exists. It is reached only as a development dependency through `@sveltejs/vite-plugin-svelte`, which uses it once to merge plugin options from the repository's own Svelte and Vite configuration at build time; no user, vault, or network data reaches it, and it is not shipped in the app. Remove the ignore when a fixed deepmerge ships or the plugin drops it.
+
 ## Allowed upstream warnings
 
 ### GTK3 and GLib
@@ -44,6 +52,10 @@ RUSTSEC-2025-0075, RUSTSEC-2025-0080, RUSTSEC-2025-0081, RUSTSEC-2025-0098, and 
 ### D-Bus split crates
 
 RUSTSEC-2026-0370, RUSTSEC-2026-0371, and RUSTSEC-2026-0372 report zvariant, zbus_names, and zvariant_derive as unmaintained because zbus 6 absorbed them. They are reached through zbus 5 in notify-rust (Linux notifications) and secret-service (the Linux keyring store). Remove them when those dependencies move to zbus 6.
+
+### Tokio AsyncFd
+
+RUSTSEC-2026-0386 reports that tokio's safe `AsyncFd` constructors accept file descriptors they do not own, which can lead to a use-after-free if the descriptor is closed and reused while the `AsyncFd` lives. First-party code does not construct `AsyncFd`. Remove the warning by moving to a patched tokio release (1.53.3 or later) once it passes dependency review.
 
 ## Bundled SQLite
 

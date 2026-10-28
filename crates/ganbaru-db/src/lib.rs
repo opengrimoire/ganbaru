@@ -462,12 +462,34 @@ async fn validate_migration_prefix(pool: &SqlitePool) -> Result<Vec<i64>, String
     Ok(versions)
 }
 
-/// Builds, or returns the cached, catalog of an empty database migrated through `version`.
+/// Returns the version of the last embedded up migration.
+fn latest_migration_version() -> Option<i64> {
+    up_migrations().last().map(|migration| migration.version)
+}
+
+/// Returns the cached catalog of an empty database migrated through `version`, or computes it.
+///
+/// The catalog for the complete embedded chain comes from the committed snapshot when it was
+/// built from exactly that chain; any other version runs the migrations on an empty database.
 async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
     let mut catalogs = REFERENCE_CATALOGS.lock().await;
     if let Some(catalog) = catalogs.get(&version) {
         return Ok(catalog.clone());
     }
+    let committed = (latest_migration_version() == Some(version))
+        .then(schema_snapshot::committed_catalog)
+        .flatten();
+    let catalog = Arc::new(match committed {
+        Some(catalog) => catalog,
+        None => build_reference_catalog(version).await?,
+    });
+    catalogs.insert(version, catalog.clone());
+    Ok(catalog)
+}
+
+/// Runs the embedded migrations through `version` on an empty in-memory database and reads its
+/// catalog.
+async fn build_reference_catalog(version: i64) -> Result<SchemaCatalog, String> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(hardened_options(
@@ -484,9 +506,7 @@ async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
     }
     .await;
     pool.close().await;
-    let catalog = Arc::new(built?);
-    catalogs.insert(version, catalog.clone());
-    Ok(catalog)
+    built
 }
 
 /// Records the reference catalog of a database that the embedded migrations through `version`
@@ -548,6 +568,8 @@ fn hardened_options(options: SqliteConnectOptions) -> SqliteConnectOptions {
         .pragma("trusted_schema", "OFF")
         .pragma("cell_size_check", "ON")
 }
+
+mod schema_snapshot;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

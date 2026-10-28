@@ -6,7 +6,7 @@ use ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES;
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value, derived_key};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
-use crate::assets::{AssetClass, AssetRef, file_name};
+use crate::assets::{AssetClass, AssetRef, CONTENT_TYPE_EXTENSIONS, file_name};
 use crate::codec;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::notes::{
@@ -591,8 +591,11 @@ fn asset_class_of(asset_path: &str) -> Option<(&'static AssetClass, &str)> {
         })
 }
 
-/// The `notes_assets.kind` of a content type, or `None` for a type Notes refuses.
+/// The `notes_assets.kind` of a content type, or `None` for a type Notes refuses. The type is
+/// compared in lowercase, so SVG is refused whatever its case.
 pub fn asset_kind(content_type: &str) -> Option<&'static str> {
+    let content_type = content_type.to_ascii_lowercase();
+    let content_type = content_type.as_str();
     if ASSET_IMAGE_CONTENT_TYPES.contains(&content_type) {
         Some("image")
     } else if content_type.starts_with("image/svg") {
@@ -608,21 +611,54 @@ pub fn asset_kind(content_type: &str) -> Option<&'static str> {
     }
 }
 
-/// The asset a managed file names: its path is `{class}/{sha256}.{ext}` in a Notes class, the
-/// size fits the class, and page icons and covers are images. Anything else names no
-/// transferable asset.
+/// How strictly a managed file's name must match its digest and content type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AssetName {
+    /// An asset row: the name is exactly `{sha256}.{ext}` of its content type, and the content
+    /// type is a lowercase type of the sync extension table or `application/octet-stream`.
+    Canonical,
+    /// A reference in a value: the stem is the digest and the extension is any alphanumeric
+    /// one, so a file written under the extension of its source path stays referenced and the
+    /// sweep keeps it. Such a file never transfers, since peers ask for the canonical name.
+    Digest,
+}
+
+/// Content types an asset row may carry: those of the sync extension table and the generic
+/// binary type Notes gives a file of unknown type.
+fn asset_content_type_allowed(content_type: &str) -> bool {
+    content_type == "application/octet-stream"
+        || CONTENT_TYPE_EXTENSIONS
+            .iter()
+            .any(|(known, _)| *known == content_type)
+}
+
+/// The asset a managed file names: its path is in a Notes class, its name follows `naming`,
+/// the size fits the class, and page icons and covers are images. Anything else names no
+/// asset.
 fn managed_asset(
     asset_path: &str,
     content_type: &str,
     byte_size: i64,
     sha256: &str,
+    naming: AssetName,
 ) -> Option<AssetRef> {
     let (class, name) = asset_class_of(asset_path)?;
     let kind = asset_kind(content_type)?;
     if !std::ptr::eq(class, &FILES_CLASS) && kind != "image" {
         return None;
     }
-    if file_name(sha256, content_type).ok()? != name {
+    let named = match naming {
+        AssetName::Canonical => {
+            asset_content_type_allowed(content_type)
+                && file_name(sha256, content_type).ok()? == name
+        }
+        AssetName::Digest => name.split_once('.').is_some_and(|(stem, extension)| {
+            stem == sha256
+                && !extension.is_empty()
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }),
+    };
+    if !named {
         return None;
     }
     let byte_size = u32::try_from(byte_size).ok()?;
@@ -641,7 +677,8 @@ fn collect_json_assets(json: &serde_json::Value, assets: &mut Vec<AssetRef>) {
                 object.get("sha256").and_then(|v| v.as_str()),
             );
             if let (Some(path), Some(content_type), Some(size), Some(sha256)) = file
-                && let Some(asset) = managed_asset(path.trim(), content_type, size, sha256)
+                && let Some(asset) =
+                    managed_asset(path.trim(), content_type, size, sha256, AssetName::Digest)
             {
                 assets.push(asset);
             }
@@ -686,8 +723,14 @@ fn collect_field_assets(fields: &[Field], owned: Option<&OwnedTable>, assets: &m
 fn validate_asset(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (asset_group::CONTENT, [path, kind, content_type, Field::Integer(size), sha256]) => {
-            let asset = managed_asset(text(path)?, text(content_type)?, *size, text(sha256)?)
-                .ok_or(AdapterError("notes asset content"))?;
+            let asset = managed_asset(
+                text(path)?,
+                text(content_type)?,
+                *size,
+                text(sha256)?,
+                AssetName::Canonical,
+            )
+            .ok_or(AdapterError("notes asset content"))?;
             if asset_kind(asset.content_type()) != Some(text(kind)?) {
                 return Err(AdapterError("notes asset kind"));
             }
@@ -734,9 +777,9 @@ impl DomainAdapter for NotesAdapter {
         }
     }
 
-    /// The managed files a group's JSON names. A reference that does not name a file of a
-    /// Notes class by its digest name is skipped rather than refused, so one stale reference
-    /// never blocks the referenced set of the whole vault.
+    /// The managed files a group's JSON names, by digest whatever the file's extension. A
+    /// reference that does not name a file of a Notes class by its digest is skipped rather
+    /// than refused, so one stale reference never blocks the referenced set of the whole vault.
     fn asset_refs(
         &self,
         table: TableId,
@@ -1355,6 +1398,10 @@ mod tests {
                 10,
             ),
             (file("svg"), "file", "image/svg+xml", 10),
+            (file("bin"), "file", "IMAGE/SVG+XML", 10),
+            // A content type outside the sync extension table, or not in lowercase.
+            (file("bin"), "file", "application/zip", 10),
+            (file("bin"), "pdf", "Application/PDF", 10),
             // Outside the Notes classes.
             (format!("project-icons/{sha}.png"), "image", "image/png", 10),
         ] {
@@ -1406,8 +1453,15 @@ mod tests {
         assert_eq!(found[0].class().name, "notes/files");
         assert_eq!(found[0].file_name(), format!("{sha}.pdf"));
         assert_eq!(found[0].byte_size(), 42);
+        // A file named by its digest under the extension of its source path stays referenced,
+        // so the sweep keeps it.
+        let old_name = refs(file(&format!("notes/files/{sha}.docx"), 42));
+        assert_eq!(old_name.len(), 1);
+        assert_eq!(old_name[0].sha256(), sha);
         // A stale or foreign reference is skipped rather than refused.
         assert!(refs(file("notes/files/report.pdf", 42)).is_empty());
+        assert!(refs(file(&format!("notes/files/{}.pdf", "d".repeat(64)), 42)).is_empty());
+        assert!(refs(file(&format!("notes/files/{sha}.p-df"), 42)).is_empty());
         assert!(refs(file(&format!("notes/files/{sha}.pdf"), -1)).is_empty());
         assert!(refs(file(&format!("project-icons/{sha}.pdf"), 42)).is_empty());
         assert!(refs("not json ganbaru_asset_path".to_string()).is_empty());

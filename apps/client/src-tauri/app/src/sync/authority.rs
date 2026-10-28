@@ -255,7 +255,9 @@ async fn own_is_admin<R: Runtime>(
     if !enrolled_admin {
         return Ok(false);
     }
-    let key = super::ensure_admin_key(app, vault_id).await?;
+    let Some(key) = super::stored_admin_key(app, vault_id).await? else {
+        return Ok(false);
+    };
     Ok(ganbaru_sync_replica::authority::is_admin(view, own, &key))
 }
 

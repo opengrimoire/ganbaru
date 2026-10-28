@@ -177,6 +177,24 @@ impl HubError {
     }
 }
 
+/// Why the selected log refuses every sync request of `device_id`: the log does not enroll it,
+/// or removed it. A hub serves only the devices its log admits, whatever pairing still links.
+pub fn log_refusal(
+    view: &ganbaru_sync::AuthorizationView,
+    device_id: &str,
+) -> Option<super::peers::admission::MemberRefusal> {
+    use super::peers::admission::MemberRefusal;
+    match view
+        .devices
+        .iter()
+        .find(|device| device.device_id == device_id)
+    {
+        None => Some(MemberRefusal::Unknown),
+        Some(device) if device.removed_revision.is_some() => Some(MemberRefusal::Removed),
+        Some(_) => None,
+    }
+}
+
 /// The hub handle the coordinator listener routes sync requests to.
 #[derive(Clone)]
 pub struct SyncHub {
@@ -326,6 +344,16 @@ impl SyncHub {
                 "the hub vault has no person identity",
             ));
         };
+        {
+            let mut conn = acquire(&vault.pool).await?;
+            let view = Engine::vault()
+                .authorization(&mut conn, &ctx)
+                .await
+                .map_err(|error| HubError::failed(format!("read sync authorization: {error}")))?;
+            if let Some(refusal) = view.as_ref().and_then(|view| log_refusal(view, &device_id)) {
+                return Err(HubError::rejected(refusal.code(), refusal.describe()));
+            }
+        }
         let assets = vault.assets;
         let hub = HubSession {
             engine: Engine::vault(),

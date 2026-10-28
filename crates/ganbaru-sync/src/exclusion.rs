@@ -2,7 +2,7 @@
 //!
 //! A selected removal lists a cutoff per writer of the removed device: what the anchor had
 //! stored when it sequenced the removal. Operations past it are excluded on every replica but
-//! the removed device itself. They are still stored, up to [`MAX_EXCLUDED_PER_WRITER`] per
+//! the removed device itself. They are still stored, up to [`excluded_limit`] per
 //! writer, and forwarded, but held as invalid, and the merge effects of those already applied
 //! are removed. The versions such an operation superseded come back from
 //! `sync_displaced_versions`, which a member fills while the anchor has not confirmed storing
@@ -39,6 +39,16 @@ use crate::{Engine, LocalWriter, SpaceContext, SyncError, reseal, sql, store};
 /// Most operations past its removal cutoff a removed device's writer may still have stored.
 /// Later ones are refused as revoked.
 pub const MAX_EXCLUDED_PER_WRITER: u64 = 1024;
+
+/// Most writers the removal does not name, with cutoff 0, that a removed device may have stored.
+/// Each keeps up to [`MAX_EXCLUDED_PER_WRITER`] operations; later geneses are refused as revoked,
+/// so a removed device that mints writers stores a bounded amount anywhere.
+pub const MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE: i64 = 2;
+
+/// Highest sequence a removed device's writer with removal cutoff `cutoff` may have stored.
+pub(crate) const fn excluded_limit(cutoff: Seq) -> Seq {
+    cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER)
+}
 
 /// Revision of the selected removal of `device_id`.
 pub(crate) async fn removal_revision(
@@ -149,7 +159,7 @@ pub(crate) async fn excluding(
 /// - Fork: `s` is past the last sequence the copies of the forked writer `W` share, and `W` is
 ///   applied through that sequence. No replica stores either branch once it holds the evidence.
 /// - Removal: `s` is past the removal cutoff of `W`, `W` is applied through the cutoff, and the
-///   excluded operation is stored, or `s` is more than [`MAX_EXCLUDED_PER_WRITER`] past the
+///   excluded operation is stored, or `s` is past the [`excluded_limit`] of the
 ///   cutoff, where no replica stores it. Storing the excluded operations first lets the late
 ///   changes they leave know the rows they created.
 ///
@@ -170,7 +180,7 @@ pub(crate) fn ready(
         let seq = excluded.fork.map_or(seq, |keep| seq.min(keep));
         match excluded.removal {
             Some((cutoff, stored)) if seq > cutoff => {
-                let beyond = seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER);
+                let beyond = seq > excluded_limit(cutoff);
                 applied.get(&writer) >= cutoff && (stored >= seq || beyond)
             }
             _ => applied.get(&writer) >= seq,
@@ -178,7 +188,7 @@ pub(crate) fn ready(
     })
 }
 
-/// Whether `context` covers an operation more than [`MAX_EXCLUDED_PER_WRITER`] past the
+/// Whether `context` covers an operation past the [`excluded_limit`] of the
 /// removal cutoff of an excluded writer. No replica keeps such an operation, so a row only it
 /// created is unknown everywhere, and an honest change to that row is dropped on every replica
 /// alike instead of holding its writer.
@@ -191,7 +201,7 @@ pub(crate) fn beyond_bound(
             excluding
                 .get(&writer)
                 .and_then(|excluded| excluded.removal)
-                .is_some_and(|(cutoff, _)| seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER))
+                .is_some_and(|(cutoff, _)| seq > excluded_limit(cutoff))
         })
 }
 
@@ -579,8 +589,8 @@ pub(crate) async fn settle(
     rebuild_late(engine, conn, batch, &resolutions).await
 }
 
-/// Drops the operations a removed device's writers have stored more than
-/// [`MAX_EXCLUDED_PER_WRITER`] past their removal cutoff, which a replica stores only while it
+/// Drops the operations a removed device's writers have stored past the
+/// [`excluded_limit`] of their removal cutoff, which a replica stores only while it
 /// does not know the removal yet: a replica that learned it first refuses them, so dropping
 /// them leaves what never storing them leaves. Their entries go with them, so a removed anchor
 /// device's chain counts for selection only within the bound. Rows a dropped operation created
@@ -611,7 +621,7 @@ async fn drop_beyond_bound(
     let mut entries = false;
     for (writer, cutoff, applied) in rows {
         let writer = log::writer_id(&writer)?;
-        let bound = stored_u64(cutoff, "removal cutoff")?.saturating_add(MAX_EXCLUDED_PER_WRITER);
+        let bound = excluded_limit(stored_u64(cutoff, "removal cutoff")?);
         let carried: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?",
         )

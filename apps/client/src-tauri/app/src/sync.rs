@@ -37,7 +37,9 @@ pub(crate) use service::{
     stop_for_vault_handoff, sync_files,
 };
 #[cfg(desktop)]
-pub(crate) use service::{enrollment_sealer, ensure_admin_key, quarantined_devices, sync_hub};
+pub(crate) use service::{
+    enrollment_sealer, ensure_admin_key, quarantined_devices, stored_admin_key, sync_hub,
+};
 pub(crate) use status::SyncSubscribers;
 #[cfg(desktop)]
 pub(crate) use status::emit_applied;

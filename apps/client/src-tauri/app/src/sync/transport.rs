@@ -20,6 +20,8 @@ impl SyncTransport for PairedTransport {
 #[derive(Clone)]
 pub(crate) struct MemberTransport {
     pub manager: PairingManager,
+    /// The device the pinned fingerprint belongs to in the selected log.
+    pub device_id: String,
     pub endpoints: Vec<String>,
     pub fingerprint: String,
 }

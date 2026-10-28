@@ -104,6 +104,7 @@ impl LocalPair {
                 Box::pin(async move { Ok(Some(charter)) })
             }),
             None,
+            None,
         )
         .await
     }
@@ -117,6 +118,7 @@ impl LocalPair {
             LanAdmission::default(),
             test_enrollment_sealer(),
             Some(quarantined),
+            None,
         )
         .await
     }
@@ -147,6 +149,7 @@ impl LocalPair {
             admission,
             test_enrollment_sealer(),
             None,
+            None,
         )
         .await
     }
@@ -158,6 +161,7 @@ impl LocalPair {
         admission: LanAdmission,
         sealer: EnrollmentSealer,
         quarantined: Option<QuarantinedDevices>,
+        log_admission: Option<MemberAdmissionSource>,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -197,6 +201,7 @@ impl LocalPair {
                 approvals: approvals.clone(),
                 admission,
                 quarantined,
+                log_admission,
                 ..CoordinatorServices::default()
             },
             receiver,
@@ -473,7 +478,7 @@ async fn peers_outside_the_address_policy_are_closed_before_the_tls_handshake() 
     let endpoint = listener.local_addr().expect("coordinator endpoint");
     // One pending slot: a refused peer that took it would keep the next connection waiting for
     // its TLS handshake instead of closing.
-    let limits = server::limits::ConnectionLimits::new(1, 1, 64);
+    let limits = server::limits::ConnectionLimits::new(1, 1, 64, 16);
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     tokio::spawn(server::serve_with_limits(
         listener.into(),
@@ -1744,7 +1749,7 @@ async fn closed_by_coordinator(stream: &mut TcpStream, wait: Duration) -> bool {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn connection_flood_is_closed_while_linked_devices_still_connect() {
-    let limits = server::limits::ConnectionLimits::new(6, 3, 64);
+    let limits = server::limits::ConnectionLimits::new(6, 3, 64, 16);
     let pair = LocalPair::start_with_limits(None, limits).await;
     pair.enroll().await;
     let endpoint: SocketAddr = pair.invitation.endpoint.parse().expect("endpoint");

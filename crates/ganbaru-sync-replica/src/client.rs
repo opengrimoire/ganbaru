@@ -695,18 +695,23 @@ pub async fn propose<T: SyncTransport>(
 
 /// Sends every waiting proposal of the outbox to the hub and records each answer. A revision
 /// leaves the proposal waiting until [`Outbox::prune`] finds it in the selected chain, after the
-/// exchange brings the entry and the pass applies it. Returns how many proposals the anchor
-/// sequenced.
+/// exchange brings the entry and the pass applies it. A final rejection settles the proposal only
+/// when `answered_by_anchor`, since a rejection carries no anchor signature and a hub that does
+/// not anchor could otherwise drop a proposal that removes it. Returns how many proposals the
+/// anchor sequenced.
 pub async fn replay_outbox<T: SyncTransport>(
     transport: &T,
     ids: &PeerIds,
     outbox: &mut Outbox,
+    answered_by_anchor: bool,
 ) -> Result<usize, String> {
     let mut sequenced = 0;
     for proposal in outbox.pending() {
         let outcome = propose(transport, ids, &proposal).await?;
         sequenced += usize::from(outcome.is_ok());
-        outbox.settle(&proposal.hash(), outcome)?;
+        if answered_by_anchor {
+            outbox.settle(&proposal.hash(), outcome)?;
+        }
     }
     Ok(sequenced)
 }
@@ -714,6 +719,8 @@ pub async fn replay_outbox<T: SyncTransport>(
 /// Follows the local replica's selected chain with [`Outbox::prune`], which also puts a held
 /// proposal a handover superseded back to waiting, then sends what waits with
 /// [`replay_outbox`]. A member runs this after each exchange, even when nothing waited before.
+/// `answering_device_id` is the authenticated device behind `transport`; its rejections settle
+/// proposals only while the local selected log names it as the anchor.
 pub async fn prune_and_replay_outbox<T: SyncTransport>(
     engine: &Engine,
     pool: &SqlitePool,
@@ -721,18 +728,24 @@ pub async fn prune_and_replay_outbox<T: SyncTransport>(
     transport: &T,
     ids: &PeerIds,
     outbox: &mut Outbox,
+    answering_device_id: &str,
 ) -> Result<usize, String> {
     if outbox.entries().is_empty() {
         return Ok(0);
     }
-    {
+    let answered_by_anchor = {
         let mut conn = acquire(pool).await?;
         outbox.prune(engine, &mut conn, ctx).await?;
-    }
+        engine
+            .authorization(&mut conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .is_some_and(|view| view.anchor_device_id == answering_device_id)
+    };
     if outbox.pending().is_empty() {
         return Ok(0);
     }
-    replay_outbox(transport, ids, outbox).await
+    replay_outbox(transport, ids, outbox, answered_by_anchor).await
 }
 
 /// On an anchor that is not the hub, reports the final rejections it gave proposals of an

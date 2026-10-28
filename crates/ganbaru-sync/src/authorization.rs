@@ -119,6 +119,8 @@ pub(crate) struct AuthState {
     /// The current discovery key and the one the latest removal replaced.
     discovery_key: [u8; DISCOVERY_KEY_BYTES],
     previous_discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
+    /// Hashes of the proposals the chain holds, so a chain never orders one proposal twice.
+    proposals: Arc<BTreeSet<Digest32>>,
 }
 
 /// Revision past which an epoch that `anchor` opened at revision `start` is frozen: the lowest
@@ -163,6 +165,7 @@ impl AuthState {
             catch_up: None,
             discovery_key: body.discovery_key,
             previous_discovery_key: None,
+            proposals: Arc::default(),
         }
     }
 
@@ -193,6 +196,11 @@ impl AuthState {
             return Err(ProposalRejection::WrongSpace);
         }
         if record.revision != self.revision + 1 || record.previous_entry_hash != self.entry_hash {
+            return Err(ProposalRejection::Malformed);
+        }
+        // The anchor orders each proposal once, so a replayed one, such as an old recovery key
+        // or admin role after a later entry replaced it, is refused.
+        if self.proposals.contains(&record.proposal.hash()) {
             return Err(ProposalRejection::Malformed);
         }
         if !self.is_admin(&proposal.author) {
@@ -227,6 +235,15 @@ impl AuthState {
         match &proposal.entry {
             Entry::Enroll(enroll) => {
                 if self.devices.contains_key(&enroll.device_id) {
+                    return Err(ProposalRejection::AlreadyEnrolled);
+                }
+                // A certificate names one device for the life of the log, removed or not, so
+                // enrolling and removing a decoy cannot refuse the device that holds it.
+                if self
+                    .devices
+                    .values()
+                    .any(|device| device.tls_fingerprint == enroll.tls_fingerprint)
+                {
                     return Err(ProposalRejection::AlreadyEnrolled);
                 }
                 if matches!(enroll.role, DeviceRole::Admin(_))
@@ -269,6 +286,7 @@ impl AuthState {
     fn advance(&mut self, record: &AuthorizationRecord, hash: Digest32) {
         self.revision = record.revision;
         self.entry_hash = hash;
+        Arc::make_mut(&mut self.proposals).insert(record.proposal.hash());
         match &record.proposal.proposal.entry {
             Entry::Handover(handover) => {
                 self.epoch = record.epoch;
@@ -814,6 +832,40 @@ pub(crate) async fn enrollment(
     })
 }
 
+/// The cutoff the selected removal of `device_id` lists for `writer`, 0 when it names none.
+pub(crate) async fn removal_cutoff(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    device_id: &str,
+    writer: WriterId,
+) -> SyncResult<Seq> {
+    let envelope: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT o.envelope
+         FROM sync_devices d
+         JOIN sync_auth_entries e
+            ON e.space_id = d.space_id AND e.revision = d.removed_revision AND e.selected = 1
+         JOIN sync_ops o ON o.space_id = e.space_id AND o.writer_id = e.writer_id AND o.seq = e.seq
+         WHERE d.space_id = ? AND d.device_id = ?
+         LIMIT 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(device_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let cutoff = match envelope
+        .as_deref()
+        .and_then(record_of)
+        .map(|record| record.sequencing)
+    {
+        Some(Sequencing::Removal { cutoffs, .. }) => cutoffs
+            .iter()
+            .find(|(named, _)| *named == writer)
+            .map_or(0, |(_, seq)| *seq),
+        _ => 0,
+    };
+    Ok(cutoff)
+}
+
 /// Fails with [`SyncError::ResetRequired`] when the space holds writers but no charter, or a
 /// writer certificate this build cannot read: state from before the authorization log.
 pub(crate) async fn refuse_legacy(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<()> {
@@ -1166,6 +1218,10 @@ impl Engine {
     }
 }
 
+/// How far past what the anchor stored a removal cutoff may follow the covered vector the
+/// coordinator reports: operations other replicas stored that have not reached the anchor yet.
+pub(crate) const MAX_COVERED_AHEAD: Seq = 1024;
+
 /// How a proposal is ordered into the log.
 enum Ordering<'a> {
     /// By the selected anchor, in its epoch; a removal takes the rotated discovery key, and its
@@ -1185,7 +1241,10 @@ enum Ordering<'a> {
 /// old anchor stored, because those operations are final, and it is at least what `covered`
 /// holds, which other replicas already store. `None` while a writer of the old anchor vector is
 /// unknown here: it may belong to the removed device, whose cutoff could not be set. A writer
-/// `covered` names but this replica never stored has no row and gets no cutoff.
+/// `covered` names but this replica never stored has no row and gets no cutoff. `covered` comes
+/// from the coordinator, so it raises a cutoff at most [`MAX_COVERED_AHEAD`] past what this
+/// replica stored or the old anchor finalized: a coordinator cannot keep a removal from
+/// excluding anything by reporting an unbounded vector.
 async fn removal_cutoffs(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -1223,7 +1282,11 @@ async fn removal_cutoffs(
             let writer = log::writer_id(writer)?;
             let stored = stored_u64(*seq, "stored sequence")?;
             let finalized = catch_up.map_or(0, |old_anchor| old_anchor.get(&writer));
-            Ok((writer, stored.max(finalized).max(covered.get(&writer))))
+            let known = stored.max(finalized);
+            let reported = covered
+                .get(&writer)
+                .min(known.saturating_add(MAX_COVERED_AHEAD));
+            Ok((writer, known.max(reported)))
         })
         .collect::<SyncResult<_>>()
         .map(Some)

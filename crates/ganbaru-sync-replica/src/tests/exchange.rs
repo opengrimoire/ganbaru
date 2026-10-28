@@ -144,7 +144,7 @@ async fn shared_vault_image() -> Vec<u8> {
     )
     .expect("certify authority writer");
     let mut reservation = Unreserved;
-    for device_id in [PHONE_DEVICE, TABLET_DEVICE] {
+    for (device_id, fingerprint) in [(PHONE_DEVICE, 26), (TABLET_DEVICE, 30)] {
         let mut writer = LocalWriter {
             key: &key,
             certificate: &certificate,
@@ -153,7 +153,7 @@ async fn shared_vault_image() -> Vec<u8> {
         let enrollment = Enrollment {
             device_id: device_id.to_string(),
             device_key: device_key(device_id).public_key(),
-            tls_fingerprint: [26; 32],
+            tls_fingerprint: [fingerprint; 32],
             label: device_id.to_string(),
             device_kind: DeviceKind::Mobile,
         };
@@ -1085,19 +1085,11 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
             vault_id: VAULT_ID.to_string(),
             device_id: "device-other".to_string(),
         };
-        let refused = done(
-            phone
-                .exchange(&transport, &impostor)
-                .await
-                .expect("exchange"),
-        );
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("UnknownWriter")),
-            "{refused:?}"
-        );
+        let error = phone
+            .exchange(&transport, &impostor)
+            .await
+            .expect_err("a device the log never enrolled is refused");
+        assert!(error.contains("member_unknown"), "{error}");
         assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), 0);
 
         done(
@@ -1114,39 +1106,16 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
             .remove(PHONE_DEVICE)
             .await
             .expect("remove the phone");
-        // Operations past the cutoff are stored excluded up to the bound and refused beyond it.
-        let bound = ganbaru_sync::MAX_EXCLUDED_PER_WRITER;
-        let mut index = 0;
-        while phone.seal_note(&format!("note-after-unlink-{index}")).await <= cutoff + bound {
-            index += 1;
-        }
-        let mut refused = None;
-        for _ in 0..64 {
-            let exchanged = done(
-                phone
-                    .exchange(&transport, &phone_ids())
-                    .await
-                    .expect("exchange"),
-            );
-            if exchanged.problem.is_some() || !exchanged.more {
-                refused = Some(exchanged);
-                break;
-            }
-        }
-        let refused = refused.expect("the exchange stops");
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("Revoked")),
-            "{refused:?}"
-        );
-        assert_eq!(
-            hub_replica.stored().await.get(&phone.writer.id()),
-            cutoff + bound
-        );
+        // A removed device reaches no hub service, so nothing past the cutoff arrives from it.
+        phone.seal_note("note-after-unlink").await;
+        let error = phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect_err("a removed device is refused");
+        assert!(error.contains("member_removed"), "{error}");
+        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), cutoff);
         hub_replica.apply().await;
-        assert!(!hub_replica.has_note("note-after-unlink-0").await);
+        assert!(!hub_replica.has_note("note-after-unlink").await);
         hub_replica.close().await;
         phone.close().await;
     });
@@ -1172,6 +1141,56 @@ fn only_the_anchor_sequences_authorization_entries() {
             .remove(PHONE_DEVICE)
             .await
             .expect("the anchor removes");
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// A hub that answers every proposal with a final rejection, as a compromised coordinator that
+/// does not anchor could.
+struct RejectingHub;
+
+impl SyncTransport for RejectingHub {
+    async fn request(&self, _message: ControlMessage) -> Result<ControlMessage, String> {
+        Ok(crate::wire::proposed_to_wire(Err(
+            ProposalRejection::DeviceRemoved,
+        )))
+    }
+}
+
+#[test]
+fn only_the_anchor_settles_a_final_rejection() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-final-rejection", HUB_DEVICE).await;
+        let phone = Replica::new("phone-final-rejection", PHONE_DEVICE).await;
+        let removal = authority::propose(
+            hub_replica.ctx.space,
+            hub_replica.charter().await,
+            &hub_keys().admin,
+            authority::remove_entry(TABLET_DEVICE),
+            NOW_MS,
+        )
+        .expect("sign removal");
+        let mut outbox = Outbox::load(&phone.directory.files().outbox_path()).expect("outbox");
+        outbox.add(removal.clone()).expect("queue removal");
+        // The device the proposal removes answers as a hub, but the selected log names another
+        // anchor, so only the anchor's answer settles the proposal.
+        for answering in [TABLET_DEVICE, HUB_DEVICE] {
+            client::prune_and_replay_outbox(
+                &phone.engine,
+                &phone.pool,
+                &phone.ctx,
+                &RejectingHub,
+                &phone_ids(),
+                &mut outbox,
+                answering,
+            )
+            .await
+            .expect("replay");
+            let rejection = outbox.get(&removal.hash()).expect("kept").rejection;
+            let expected = (answering == HUB_DEVICE).then_some(ProposalRejection::DeviceRemoved);
+            assert_eq!(rejection, expected, "answered by {answering}");
+        }
         hub_replica.close().await;
         phone.close().await;
     });
@@ -1269,7 +1288,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         .expect("sign duplicate");
         outbox.add(enroll.clone()).expect("queue enrollment");
         outbox.add(duplicate.clone()).expect("queue duplicate");
-        let sequenced = client::replay_outbox(&transport, &phone_ids(), &mut outbox)
+        let sequenced = client::replay_outbox(&transport, &phone_ids(), &mut outbox, true)
             .await
             .expect("replay");
         assert_eq!(sequenced, 1);
@@ -1280,7 +1299,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         );
         // Replaying again is idempotent: the anchor answers the revision it already holds.
         assert_eq!(
-            client::replay_outbox(&transport, &phone_ids(), &mut outbox)
+            client::replay_outbox(&transport, &phone_ids(), &mut outbox, true)
                 .await
                 .expect("replay again"),
             1

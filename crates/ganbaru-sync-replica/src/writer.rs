@@ -378,8 +378,19 @@ impl SyncFiles {
     }
 }
 
+/// Largest writer record read. A record holds one certificate, a few counters, and the ids of
+/// retired writers whose keys wait to be removed, far below this.
+const MAX_WRITER_RECORD_BYTES: u64 = 1024 * 1024;
+
+/// Reads the writer record at `path`, `None` when the file does not exist. Refuses a symbolic
+/// link, a file over [`MAX_WRITER_RECORD_BYTES`], and a record that does not parse, has another
+/// schema version, or names a malformed writer id.
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match ganbaru_atomic_files::read_regular_file_capped(
+        path,
+        MAX_WRITER_RECORD_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    ) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read sync writer record: {error}")),

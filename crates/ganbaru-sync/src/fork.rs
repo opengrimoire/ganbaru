@@ -707,6 +707,19 @@ impl Engine {
         let Some(local) = exclusion::local_device(conn, ctx.space).await? else {
             return Ok(Vec::new());
         };
+        // A removed device cannot seal a new writer, and every other replica already excludes
+        // what it sealed past its removal, so its forks have nothing to re-seal.
+        let removed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sync_devices
+             WHERE space_id = ? AND device_id = ? AND removed_revision IS NOT NULL)",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(&local)
+        .fetch_one(&mut *conn)
+        .await?;
+        if removed {
+            return Ok(Vec::new());
+        }
         let mut own = Vec::new();
         for (writer, fork) in forked(conn, ctx.space).await? {
             if fork.device_id != local {

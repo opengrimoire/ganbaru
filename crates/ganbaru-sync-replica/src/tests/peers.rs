@@ -221,6 +221,7 @@ fn peer_book_round_trips_and_keeps_the_newest_observation() {
             endpoint: endpoint(30),
             observed_ms: 2 * minute + 500,
         }],
+        &BTreeSet::from(["device-3".to_string()]),
         5 * minute
     ));
     book.store(endpoints.clone()).expect("store");
@@ -272,7 +273,8 @@ fn peer_book_clamps_reported_times_and_keeps_first_hand_endpoints() {
             observed_ms: u64::MAX,
         })
         .collect();
-    assert!(!endpoints.observe_reported(&flood, received));
+    let flood_members = BTreeSet::from(["member-flood".to_string()]);
+    assert!(!endpoints.observe_reported(&flood, &flood_members, received));
     assert!(endpoints.endpoints("member-flood").is_empty());
     for index in 0..4u8 {
         assert_eq!(
@@ -283,7 +285,7 @@ fn peer_book_clamps_reported_times_and_keeps_first_hand_endpoints() {
 
     // With room, a reported endpoint is kept at its receipt time.
     let mut roomy = PeerEndpoints::default();
-    assert!(roomy.observe_reported(&flood[..1], received));
+    assert!(roomy.observe_reported(&flood[..1], &flood_members, received));
     assert_eq!(roomy.report()[0].observed_ms, received);
     // A report never replaces an endpoint the member announced itself.
     roomy.observe(
@@ -291,7 +293,7 @@ fn peer_book_clamps_reported_times_and_keeps_first_hand_endpoints() {
         &["10.9.0.2:43821".to_string()],
         received - 1,
     );
-    assert!(!roomy.observe_reported(&flood[1..2], received + OBSERVATION_STEP_MS));
+    assert!(!roomy.observe_reported(&flood[1..2], &flood_members, received + OBSERVATION_STEP_MS,));
     let times: BTreeMap<String, u64> = roomy
         .report()
         .into_iter()
@@ -300,6 +302,52 @@ fn peer_book_clamps_reported_times_and_keeps_first_hand_endpoints() {
     assert_eq!(times["10.9.0.2:43821"], received - 1);
     // The member's own hello replaces a reported endpoint.
     assert!(roomy.observe("member-flood", &["10.9.0.1:43821".to_string()], received));
+}
+
+#[test]
+fn reported_endpoints_of_unknown_devices_never_evict_and_dial_after_first_hand_ones() {
+    let received = 10 * OBSERVATION_STEP_MS;
+    let live = BTreeSet::from(["member-a".to_string(), "member-b".to_string()]);
+    let mut endpoints = PeerEndpoints::default();
+    let real = MemberEndpoint {
+        device_id: "member-b".to_string(),
+        endpoint: "10.1.0.1:43821".to_string(),
+        observed_ms: received,
+    };
+    assert!(endpoints.observe_reported(std::slice::from_ref(&real), &live, received));
+
+    // A member invents device ids to fill the bounds: none of them are kept, so the real
+    // second-hand endpoint stays.
+    let invented: Vec<MemberEndpoint> = (0..MAX_PEER_ENDPOINTS * 2)
+        .map(|index| MemberEndpoint {
+            device_id: format!("invented-{index}"),
+            endpoint: format!("10.2.{}.{}:43821", index / 200, index % 200 + 1),
+            observed_ms: received,
+        })
+        .collect();
+    assert!(!endpoints.observe_reported(&invented, &live, received + 1));
+    assert_eq!(
+        endpoints.devices(),
+        BTreeSet::from(["member-b".to_string()])
+    );
+    assert_eq!(endpoints.endpoints("member-b"), vec![real.endpoint.clone()]);
+
+    // Newer reported endpoints for a real member dial after the one it announced itself.
+    endpoints.observe("member-a", &["10.3.0.1:43821".to_string()], received);
+    let false_endpoints: Vec<MemberEndpoint> = (1..=3u8)
+        .map(|last| MemberEndpoint {
+            device_id: "member-a".to_string(),
+            endpoint: format!("10.4.0.{last}:43821"),
+            observed_ms: received + 5,
+        })
+        .collect();
+    assert!(endpoints.observe_reported(&false_endpoints, &live, received + 10));
+    let dial_order = endpoints.endpoints("member-a");
+    assert_eq!(
+        dial_order.first().map(String::as_str),
+        Some("10.3.0.1:43821")
+    );
+    assert_eq!(dial_order.len(), 4);
 }
 
 #[test]
@@ -414,6 +462,11 @@ fn pass_plan_prefers_the_anchor_then_discovered_then_known_members_within_the_li
         ]
     );
     assert_eq!(plan.long_poll.as_deref(), Some("anchor"));
+    assert_eq!(
+        plan.peers[1].endpoints,
+        vec![endpoint(11), endpoint(31)],
+        "a discovery answer goes first and never hides the endpoints the book knows"
+    );
 
     let phone = plan_pass(&PlanInput {
         kind: DeviceKind::Mobile,

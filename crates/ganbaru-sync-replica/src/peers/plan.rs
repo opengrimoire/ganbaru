@@ -109,9 +109,17 @@ pub fn plan_pass(input: &PlanInput<'_>) -> PassPlan {
         if endpoints.is_empty() || !eligible(device_id) || !chosen.insert(device_id) {
             continue;
         }
+        // Discovery answers are unauthenticated, so a spoofed record only adds endpoints to
+        // try first and never hides the ones the book already knows.
+        let mut dial = endpoints.clone();
+        for known in input.known.endpoints(device_id) {
+            if !dial.contains(&known) {
+                dial.push(known);
+            }
+        }
         planned.push(PlannedPeer {
             device_id: device_id.clone(),
-            endpoints: endpoints.clone(),
+            endpoints: dial,
             source: PeerSource::Discovered,
         });
     }

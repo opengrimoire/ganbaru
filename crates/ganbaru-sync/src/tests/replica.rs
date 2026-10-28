@@ -191,12 +191,20 @@ pub(super) fn person_proposal(
     .expect("test proposal should sign")
 }
 
+/// The TLS fingerprint of replica device `index`, distinct for every device and from the
+/// charter anchor's.
+pub(super) fn tls_fingerprint(index: usize) -> [u8; 32] {
+    let mut fingerprint = [3; 32];
+    fingerprint[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+    fingerprint
+}
+
 /// An enrollment of replica device `index` as a desktop with `role`.
 pub(super) fn enroll_entry(person: &PersonKeyPair, index: usize, role: DeviceRole) -> Entry {
     Entry::Enroll(Enroll {
         device_id: device_id(index),
         device_key: device_key(person, index).public_key(),
-        tls_fingerprint: [3; 32],
+        tls_fingerprint: tls_fingerprint(index),
         label: format!("Device {index}"),
         device_kind: DeviceKind::Desktop,
         role,

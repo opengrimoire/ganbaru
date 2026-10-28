@@ -53,8 +53,9 @@ pub(super) async fn record_reported_peers(
     let received_ms = super::now_ms()?;
     blocking(move || {
         update_peer_book(&path, |book| {
-            book.observe_reported(&reported, received_ms);
+            // Without a selected log no device is known to be a member, so reports wait.
             if let Some(members) = &members {
+                book.observe_reported(&reported, members, received_ms);
                 book.retain_members(members);
             }
         })
@@ -331,6 +332,7 @@ pub(super) async fn exchange_with_members(
         .collect();
     let transport = |peer: &PlannedPeer, fingerprint: &str| MemberTransport {
         manager: pass.manager.clone(),
+        device_id: peer.device_id.clone(),
         endpoints: peer.endpoints.clone(),
         fingerprint: fingerprint.to_string(),
     };

@@ -42,7 +42,7 @@ use ganbaru_sync_contracts::{Digest32, ProposalRejection, SignedCharter, SignedP
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
-    ensure_charter,
+    ensure_charter, read_admin_key,
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
@@ -1344,6 +1344,10 @@ impl ServiceState {
         if let Some((assets, _)) = asset_peer.as_ref()
             && view.state != SyncState::Offline
         {
+            let coordinator = manager
+                .coordinator_pin()?
+                .map(|pin| pin.device_id)
+                .unwrap_or_default();
             #[cfg(desktop)]
             {
                 let hub_stored = match &next {
@@ -1393,18 +1397,24 @@ impl ServiceState {
                         }
                     }
                 } else if anchor_link.is_none() {
-                    session.replay_outbox(&assets.transport, &assets.ids).await;
+                    session
+                        .replay_outbox(&assets.transport, &assets.ids, &coordinator)
+                        .await;
                 }
             }
             #[cfg(mobile)]
             if anchor_link.is_none() {
-                session.replay_outbox(&assets.transport, &assets.ids).await;
+                session
+                    .replay_outbox(&assets.transport, &assets.ids, &coordinator)
+                    .await;
             }
         }
         // An anchor that is not the coordinator and answered this pass takes the proposals
         // directly, also while the coordinator is away.
         if let (Some(link), Some((assets, _))) = (anchor_link.as_ref(), asset_peer.as_ref()) {
-            session.replay_outbox(link, &assets.ids).await;
+            session
+                .replay_outbox(link, &assets.ids, &link.device_id)
+                .await;
         }
         #[cfg(desktop)]
         for request in take_anchor {
@@ -1435,6 +1445,8 @@ impl ServiceState {
         }
         let acknowledged = session.acknowledge(&mut self.writer).await?;
         if is_hub {
+            #[cfg(desktop)]
+            session.unlink_removed_devices(&manager, &vault_id).await?;
             #[cfg(desktop)]
             let anchor_ready = {
                 let members_reachable = !manager.linked_peers_for(&vault_id)?.is_empty();
@@ -2694,6 +2706,39 @@ impl<'a, H: SyncHost> Session<'a, H> {
         blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id)).await
     }
 
+    /// On the coordinator, unlinks every linked device the selected log removed, whichever admin
+    /// proposed the removal and whether or not this desktop anchors, so pairing stops serving
+    /// it the person key, vault bundles, and every other coordinator service. A device with a
+    /// handoff in progress is reported and unlinked on a later pass; the listener refuses it
+    /// from the log meanwhile.
+    #[cfg(desktop)]
+    async fn unlink_removed_devices(
+        &self,
+        manager: &PairingManager,
+        vault_id: &str,
+    ) -> Result<(), String> {
+        let mut conn = acquire(&self.pool).await?;
+        let Some(view) = self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+        else {
+            return Ok(());
+        };
+        drop(conn);
+        let peers = manager.linked_peers_for(vault_id)?;
+        let removed = authority::removed_linked_devices(&view, |device_id| {
+            peers.iter().any(|peer| peer.device_id == device_id)
+        });
+        for device_id in removed {
+            if let Err(error) = manager.unlink_device(&device_id) {
+                eprintln!("sync: unlink removed device {device_id}: {error}");
+            }
+        }
+        Ok(())
+    }
+
     /// On an admin coordinator, enrolls linked devices the space does not know yet and removes
     /// enrolled devices that are no longer linked, so a crash between linking and sealing heals
     /// on the next pass. Each change goes through the outbox as a proposal signed by this
@@ -2709,9 +2754,6 @@ impl<'a, H: SyncHost> Session<'a, H> {
     ) -> Result<(), String> {
         #[cfg(desktop)]
         {
-            let Some(active) = writer.as_mut() else {
-                return Ok(());
-            };
             let mut conn = acquire(&self.pool).await?;
             let Some(view) = self
                 .engine
@@ -2719,6 +2761,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 .await
                 .map_err(|error| format!("read sync authorization: {error}"))?
             else {
+                return Ok(());
+            };
+            let Some(active) = writer.as_mut() else {
                 return Ok(());
             };
             let own_device_id = manager.device_id()?;
@@ -2888,8 +2933,8 @@ impl<'a, H: SyncHost> Session<'a, H> {
     /// On a client, drops outbox proposals the applied chain holds and sends the rest to the
     /// hub, which hands them to the anchor. A failure is reported and the proposals wait for the
     /// next pass.
-    async fn replay_outbox<T: SyncTransport>(&self, transport: &T, ids: &PeerIds) {
-        if let Err(error) = self.replay_outbox_inner(transport, ids).await {
+    async fn replay_outbox<T: SyncTransport>(&self, transport: &T, ids: &PeerIds, answering: &str) {
+        if let Err(error) = self.replay_outbox_inner(transport, ids, answering).await {
             eprintln!("sync: send waiting proposals: {error}");
         }
     }
@@ -2898,6 +2943,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         &self,
         transport: &T,
         ids: &PeerIds,
+        answering: &str,
     ) -> Result<(), String> {
         let path = self.files.outbox_path();
         let mut outbox = blocking(move || Outbox::load(&path)).await?;
@@ -2908,6 +2954,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             transport,
             ids,
             &mut outbox,
+            answering,
         )
         .await?;
         Ok(())
@@ -2982,6 +3029,21 @@ pub(crate) async fn ensure_admin_key<H: SyncHost>(
     let vault_id = vault_id.to_string();
     blocking(move || {
         ensure_stored_admin_key(keys.as_ref(), &vault_id).map(|admin| admin.public_key())
+    })
+    .await
+}
+
+/// The public half of this desktop's admin key for `vault_id`, `None` when it has none. Unlike
+/// [`ensure_admin_key`], it never creates a key.
+#[cfg(desktop)]
+pub(crate) async fn stored_admin_key<H: SyncHost>(
+    host: &H,
+    vault_id: &str,
+) -> Result<Option<ganbaru_sync_contracts::AdminPublicKey>, String> {
+    let keys = host.key_store()?;
+    let vault_id = vault_id.to_string();
+    blocking(move || {
+        read_admin_key(keys.as_ref(), &vault_id).map(|admin| admin.map(|admin| admin.public_key()))
     })
     .await
 }

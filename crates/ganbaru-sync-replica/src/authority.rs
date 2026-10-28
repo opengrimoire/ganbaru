@@ -55,9 +55,8 @@ pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<Anc
 /// sends its public half at pairing, so an admin can later promote it without another link.
 /// Key stores may block, so callers run this off the async runtime.
 pub fn ensure_admin_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AdminKeyPair, String> {
-    match keys.read(vault_id, SyncKey::Admin)? {
-        Some(pkcs8) => AdminKeyPair::from_pkcs8(&pkcs8)
-            .map_err(|error| format!("decode sync admin key: {error}")),
+    match read_admin_key(keys, vault_id)? {
+        Some(admin) => Ok(admin),
         None => {
             let (pkcs8, admin) = AdminKeyPair::generate()
                 .map_err(|error| format!("create sync admin key: {error}"))?;
@@ -65,6 +64,20 @@ pub fn ensure_admin_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<Admin
             Ok(admin)
         }
     }
+}
+
+/// Reads the admin key of a vault without creating one, `None` when this installation has none.
+/// Key stores may block, so callers run this off the async runtime.
+pub fn read_admin_key(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<Option<AdminKeyPair>, String> {
+    keys.read(vault_id, SyncKey::Admin)?
+        .map(|pkcs8| {
+            AdminKeyPair::from_pkcs8(&pkcs8)
+                .map_err(|error| format!("decode sync admin key: {error}"))
+        })
+        .transpose()
 }
 
 /// What the first anchor founds a space with besides its keys.
@@ -563,6 +576,20 @@ pub fn unlinked_devices(
                 && device.device_id != own_device_id
                 && !linked(&device.device_id)
         })
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
+/// The devices the selected log removed that `linked` still reports as linked. The coordinator
+/// unlinks them, so pairing never serves a device the log removed, whichever admin proposed the
+/// removal.
+pub fn removed_linked_devices(
+    view: &AuthorizationView,
+    linked: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    view.devices
+        .iter()
+        .filter(|device| device.removed_revision.is_some() && linked(&device.device_id))
         .map(|device| device.device_id.clone())
         .collect()
 }

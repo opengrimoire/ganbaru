@@ -4,6 +4,8 @@
 //! bound of stored excluded operations are covered here too, since the same readiness rule and
 //! branch drop serve both causes.
 
+use std::collections::BTreeSet;
+
 use ganbaru_sync_contracts::{DeviceRole, Envelope, ProposalRejection};
 
 use super::authorization::{admin_entry, forge_handover, remove_entry, superseded, view};
@@ -882,6 +884,59 @@ fn a_removal_beyond_the_bound_ends_the_same_whether_the_operation_applied_was_re
             assert_eq!(replica.domain_dump().await, expected);
             assert_eq!(title(replica, "note-early").await.as_deref(), Some("Early"));
             assert_eq!(title(replica, "note-bound").await, None);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
+fn a_removed_device_stores_only_a_few_writers_its_removal_does_not_name() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 313).await;
+        let mut removed = Replica::new(1, 313).await;
+        let mut a = Replica::new(3, 313).await;
+        let mut b = Replica::new(4, 313).await;
+        // The anchor never stores the device's writers, so its removal names none of them.
+        let mut writers = Vec::new();
+        for (position, id) in ["note-first", "note-second", "note-third"]
+            .into_iter()
+            .enumerate()
+        {
+            if position > 0 {
+                removed.rotate();
+            }
+            edit(&mut removed, &note(id, "Late", 0)).await;
+            writers.push((removed.writer(), removed.own_ops().await));
+        }
+        let distinct: BTreeSet<_> = writers.iter().map(|(writer, _)| *writer).collect();
+        assert_eq!(distinct.len(), writers.len());
+        anchor.remove(&removed.device_id).await.unwrap();
+
+        // A stored every writer before the removal; B learned of the removal first.
+        for (_, ops) in &writers {
+            take(&mut a, ops).await;
+        }
+        deliver(&mut a, &mut anchor).await;
+        deliver(&mut b, &mut anchor).await;
+        let (named, rest) = writers.split_at(2);
+        for (writer, ops) in named {
+            take(&mut b, ops).await;
+            assert_eq!(
+                b.stored_vector().await.get(writer),
+                a.stored_vector().await.get(writer),
+                "an unnamed writer within the bound keeps its excluded operations"
+            );
+        }
+        let (writer, ops) = &rest[0];
+        assert_eq!(take(&mut b, ops).await.first(), Some(&REVOKED));
+        assert_eq!(b.stored_vector().await.get(writer), 0);
+
+        let expected = anchor.domain_dump().await;
+        for replica in [&mut a, &mut b] {
+            assert_eq!(replica.domain_dump().await, expected);
+            for id in ["note-first", "note-second", "note-third"] {
+                assert_eq!(title(replica, id).await, None);
+            }
             replica.check_invariants().await;
         }
     });

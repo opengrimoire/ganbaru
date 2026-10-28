@@ -8,8 +8,8 @@ use super::super::{
 use super::client_verifier::PinnedClientVerifier;
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::{
-    COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, accept_connections,
-    admitted_local_address, send_error,
+    COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, MemberAdmissionSource,
+    accept_connections, admitted_local_address, send_error,
 };
 use crate::contacts::requests::PeerReply;
 use crate::sync::hub::SyncHub;
@@ -107,6 +107,9 @@ pub(crate) struct CoordinatorServices {
     pub admission: LanAdmission,
     /// Devices whose connections are refused while they stay quarantined.
     pub quarantined: Option<QuarantinedDevices>,
+    /// The selected log's admission: a linked device the log removed reaches no service, and
+    /// sync requests need a device the log enrolled.
+    pub log_admission: Option<MemberAdmissionSource>,
 }
 
 pub(crate) async fn serve_with_coordinator(
@@ -197,6 +200,7 @@ async fn handle_connection(
                 approvals,
                 admission: _,
                 quarantined,
+                log_admission,
             },
         limits,
     } = services;
@@ -258,6 +262,12 @@ async fn handle_connection(
             false,
         )
         .await;
+    }
+
+    if let (Some(source), Some(certificate)) = (log_admission.as_ref(), peer_certificate.as_ref())
+        && let Some(refusal) = log_refusal(source().await, certificate, &request)
+    {
+        return send_error(&mut stream, refusal.code(), refusal.describe(), false).await;
     }
 
     if let Some((vault_id, device_id)) = request.sync_peer() {
@@ -997,6 +1007,34 @@ fn server_config(
     .with_single_cert(vec![identity.certificate], identity.private_key.clone_key())
     .map_err(|error| format!("configure coordinator TLS identity: {error}"))?;
     Ok(config)
+}
+
+/// Why the selected log turns away `request` from the device whose certificate is
+/// `certificate`: a device the log removed reaches no coordinator service, pairing still linking
+/// it or not, and a sync request needs a device the log enrolled. A request from a certificate
+/// the log does not know, such as a device linked before its enrollment was sequenced, keeps
+/// every other service. Without a log, or when it cannot be read, pairing alone decides.
+pub(crate) fn log_refusal(
+    admission: Result<Option<ganbaru_sync_replica::peers::admission::MemberAdmission>, String>,
+    certificate: &CertificateDer<'_>,
+    request: &ControlMessage,
+) -> Option<ganbaru_sync_replica::peers::admission::MemberRefusal> {
+    use ganbaru_sync_replica::peers::admission::MemberRefusal;
+    let admission = match admission {
+        Ok(Some(admission)) => admission,
+        Ok(None) => return None,
+        Err(error) => {
+            eprintln!("sync: read the log admission: {error}");
+            return None;
+        }
+    };
+    let fingerprint = crate::vault::handoff::pairing::certificate_fingerprint(certificate.as_ref());
+    match admission.certificate(&fingerprint) {
+        Ok(_) | Err(MemberRefusal::Quarantined) => None,
+        Err(MemberRefusal::Removed) => Some(MemberRefusal::Removed),
+        Err(refusal) if request.sync_peer().is_some() => Some(refusal),
+        Err(_) => None,
+    }
 }
 
 /// Whether the listener turns a linked device away as quarantined. A quarantine list that

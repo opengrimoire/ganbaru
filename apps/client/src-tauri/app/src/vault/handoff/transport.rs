@@ -526,6 +526,8 @@ pub(crate) async fn sync_request(
 
 /// Sends one sync message to the member listener whose certificate has `fingerprint`, the one
 /// its enrollment recorded in the selected log, trying `endpoints` in order until one answers.
+/// Each endpoint gets [`MEMBER_CONNECT_TIMEOUT`] to accept, so stale or false endpoints ahead of
+/// a live one cost little.
 pub(crate) async fn member_sync_request(
     manager: &PairingManager,
     endpoints: &[String],
@@ -542,7 +544,7 @@ pub(crate) async fn member_sync_request(
                 continue;
             }
         };
-        let mut stream = match connect_pinned(address, fingerprint, Some(identity.clone())).await {
+        let mut stream = match connect_member(address, fingerprint, identity.clone()).await {
             Ok(stream) => stream,
             Err(error) => {
                 failures.push(format!("{endpoint}: {error}"));
@@ -800,6 +802,20 @@ async fn connect_pinned(
         .map_err(|failure| failure.error)
 }
 
+/// Connects to the member listener at `endpoint` whose certificate must match `fingerprint`,
+/// presenting this device's `identity`.
+async fn connect_member(
+    endpoint: SocketAddr,
+    fingerprint: &str,
+    identity: TlsIdentity,
+) -> Result<PinnedStream, String> {
+    authorize_endpoint(endpoint)?;
+    let config = pinned_client_config(fingerprint, Some(identity))?;
+    pinned_handshake(endpoint, config, MEMBER_CONNECT_TIMEOUT)
+        .await
+        .map_err(|failure| failure.error)
+}
+
 /// TLS 1.3 client configuration that accepts only the certificate with `fingerprint` and
 /// presents `identity` when one is given.
 fn pinned_client_config(
@@ -865,6 +881,8 @@ impl HandshakeFailure {
 
 /// How long one coordinator candidate gets to accept a TCP connection.
 const COORDINATOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long one member endpoint gets to accept a TCP connection.
+const MEMBER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long the resolver waits on pending candidates before it also dials the next one.
 const COORDINATOR_DIAL_STAGGER: Duration = Duration::from_millis(250);
 /// Most coordinator candidates one dial considers.

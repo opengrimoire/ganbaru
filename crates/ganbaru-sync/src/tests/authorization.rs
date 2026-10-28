@@ -12,7 +12,7 @@ use ganbaru_sync_contracts::{
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, device_key,
-    enroll_entry, person, proposal, recovery_admin,
+    enroll_entry, person, proposal, recovery_admin, tls_fingerprint,
 };
 use crate::{AuthorizationView, HoldReason, LateChange, StoreOutcome, StoreRefusal};
 
@@ -615,7 +615,7 @@ fn only_the_recovery_key_forces_a_handover_to_a_member_desktop() {
         hub.sequence(Entry::Enroll(Enroll {
             device_id: device_id(22),
             device_key: device_key(&person(), 22).public_key(),
-            tls_fingerprint: [3; 32],
+            tls_fingerprint: tls_fingerprint(22),
             label: "Phone".to_owned(),
             device_kind: DeviceKind::Mobile,
             role: DeviceRole::Member,
@@ -1232,7 +1232,7 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
             Entry::Enroll(Enroll {
                 device_id: device_id(22),
                 device_key: device_key(&person(), 22).public_key(),
-                tls_fingerprint: [3; 32],
+                tls_fingerprint: tls_fingerprint(22),
                 label: "Phone".to_owned(),
                 device_kind: DeviceKind::Mobile,
                 role,
@@ -1281,6 +1281,89 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
             Err(ProposalRejection::NotAnchor)
         );
         assert_devices_replay_the_selected_chain(&mut hub).await;
+    });
+}
+
+#[test]
+fn a_chain_never_orders_one_proposal_twice() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 64).await;
+        let mut observer = Replica::new(2, 64).await;
+        let space = hub.ctx.space;
+        let set_recovery = |seed: u8| {
+            Entry::SetRole(SetRole::Recovery {
+                recovery_admin_key: AdminKeyPair::from_seed(&[seed; 32]).unwrap().public_key(),
+            })
+        };
+        let leaked = proposal(
+            space,
+            &anchor_admin(&person()),
+            hub.now_ms,
+            set_recovery(90),
+        );
+        hub.sequence_signed(&leaked).await.unwrap().unwrap();
+        hub.sequence(set_recovery(91)).await.unwrap().unwrap();
+        let before = view(&mut hub).await;
+
+        // An anchor that carries the old proposal again cannot reinstate the replaced key.
+        let record = next_record(&mut hub, ANCHOR_DEVICE_ID, leaked, Sequencing::Empty).await;
+        let replayed = forge(
+            &mut hub,
+            Content::Authorization(Box::new(record)),
+            before.revision,
+        )
+        .await;
+        assert_eq!(hub.receive(&[replayed]).await, vec![STORED]);
+        hub.apply_all().await.unwrap();
+        observer.pull(&mut hub).await;
+        for replica in [&mut hub, &mut observer] {
+            let after = view(replica).await;
+            assert_eq!(after.revision, before.revision);
+            assert_eq!(
+                after.recovery_admin_key,
+                AdminKeyPair::from_seed(&[91; 32]).unwrap().public_key()
+            );
+        }
+    });
+}
+
+#[test]
+fn a_certificate_enrolls_one_device_for_the_life_of_the_log() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 65).await;
+        hub.sequence(enroll_entry(&person(), 20, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        hub.remove(&device_id(20)).await.unwrap();
+        let decoy = |index: usize, fingerprint: [u8; 32]| {
+            Entry::Enroll(Enroll {
+                device_id: device_id(index),
+                device_key: device_key(&person(), index).public_key(),
+                tls_fingerprint: fingerprint,
+                label: "Decoy".to_owned(),
+                device_kind: DeviceKind::Desktop,
+                role: DeviceRole::Member,
+            })
+        };
+        let anchor_fingerprint = hub
+            .engine
+            .charter(&mut hub.conn, &hub.ctx)
+            .await
+            .unwrap()
+            .unwrap()
+            .charter
+            .anchor_tls_fingerprint;
+        for fingerprint in [tls_fingerprint(20), anchor_fingerprint] {
+            assert_eq!(
+                hub.sequence(decoy(21, fingerprint)).await.unwrap(),
+                Err(ProposalRejection::AlreadyEnrolled)
+            );
+        }
+        hub.sequence(decoy(21, tls_fingerprint(21)))
+            .await
+            .unwrap()
+            .unwrap();
     });
 }
 
@@ -1359,6 +1442,51 @@ fn a_removal_cutoff_covers_what_the_coordinator_reported_beyond_the_anchor() {
                 .await
                 .unwrap();
         assert_eq!(cutoff, Some(i64::try_from(reported).unwrap()));
+    });
+}
+
+#[test]
+fn a_reported_covered_vector_raises_a_cutoff_only_a_bounded_distance_past_the_anchor() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 63).await;
+        let mut member = Replica::new(1, 63).await;
+        tag(&mut member, "tag-first").await;
+        let ops = member.own_ops().await;
+        anchor.receive(&ops).await;
+        let stored = u64::try_from(ops.len()).unwrap();
+        let mut covered = ganbaru_sync_contracts::VersionVector::new();
+        covered.set(member.writer(), u64::MAX);
+        let signed = super::replica::person_proposal(
+            &anchor.person,
+            anchor.ctx.space,
+            &anchor_admin(&anchor.person),
+            anchor.now_ms,
+            remove_entry(&member.device_id),
+        );
+        anchor
+            .engine
+            .sequence_proposal_covering(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &signed,
+                [6; 32],
+                &covered,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let cutoff: Option<i64> =
+            sqlx::query_scalar("SELECT cutoff_seq FROM sync_writers WHERE device_id = ?")
+                .bind(&member.device_id)
+                .fetch_one(&mut anchor.conn)
+                .await
+                .unwrap();
+        assert_eq!(
+            cutoff,
+            Some(i64::try_from(stored + crate::authorization::MAX_COVERED_AHEAD).unwrap())
+        );
     });
 }
 

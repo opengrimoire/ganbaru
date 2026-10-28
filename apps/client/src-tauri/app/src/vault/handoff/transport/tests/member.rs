@@ -244,3 +244,59 @@ async fn a_member_client_refuses_a_listener_with_another_certificate() {
         "the client must refuse a listener whose certificate the log did not enroll"
     );
 }
+
+#[tokio::test]
+async fn the_coordinator_serves_nothing_to_a_device_the_log_removed() {
+    let open: OpenHubVault = std::sync::Arc::new(|| Box::pin(async { Ok(None) }));
+    let hub = SyncHub::new(open, tokio::sync::watch::Sender::new(0));
+    let admission: SharedAdmission = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let source = admission.clone();
+    let pair = LocalPair::start_with_sealer(
+        Some(hub),
+        server::limits::ConnectionLimits::default(),
+        EnrollmentApprovals::default(),
+        LanAdmission::default(),
+        test_enrollment_sealer(),
+        None,
+        Some(std::sync::Arc::new(move || {
+            let current = source.lock().expect("admission").clone();
+            Box::pin(async move { Ok(current) })
+        })),
+    )
+    .await;
+    pair.enroll().await;
+    let phone_fingerprint =
+        certificate_fingerprint(pair.phone.certificate().expect("certificate").as_ref());
+    *admission.lock().expect("admission") = Some(admission_with(&phone_fingerprint, false));
+    let pull = || {
+        sync_request(
+            &pair.phone,
+            ControlMessage::SyncWait {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT.to_string(),
+                device_id: PHONE.to_string(),
+                known: Vec::new(),
+            },
+        )
+    };
+    let served = pull().await.expect("sync exchange");
+    assert!(
+        !refused_with(&served, "member_removed"),
+        "an enrolled device reaches the hub: {served:?}"
+    );
+
+    // Another admin removed the phone; the coordinator's pairing still lists it as linked.
+    *admission.lock().expect("admission") = Some(admission_with(&phone_fingerprint, true));
+    let key = request_person_key(&pair.phone)
+        .await
+        .expect("person key exchange");
+    assert!(refused_with(&key, "member_removed"), "{key:?}");
+    let pulled = pull().await.expect("sync exchange");
+    assert!(refused_with(&pulled, "member_removed"), "{pulled:?}");
+    let metadata = pair.register_bundle(b"whole-vault bundle", "transfer-removed");
+    let download = download_bundle(&pair.phone, metadata, &TransferCancellation::default()).await;
+    assert!(
+        download.is_err_and(|error| error.contains("removed from the vault")),
+        "a removed device downloads no bundle"
+    );
+}

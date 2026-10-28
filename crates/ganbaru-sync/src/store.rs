@@ -15,7 +15,7 @@ use sqlx::{Connection, SqliteConnection};
 
 use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::exclusion::{self, MAX_EXCLUDED_PER_WRITER};
+use crate::exclusion;
 use crate::log::{self, WriterRow, WriterState, clamp_ms, seq_i64};
 use crate::{Engine, SpaceContext, fork, validate};
 
@@ -90,7 +90,9 @@ pub enum StoreRefusal {
     /// The writer was forked or re-sealed and the operation is above its cutoff, its device was
     /// removed and the operation is more than
     /// [`MAX_EXCLUDED_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_PER_WRITER) past the removal's
-    /// cutoff, or the genesis names a removed device.
+    /// cutoff, or the genesis names a removed device that already stored
+    /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](crate::exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+    /// writers its removal does not name.
     Revoked,
     /// The genesis would exceed the writers its device or the space may have.
     WriterLimit,
@@ -335,9 +337,10 @@ async fn store_genesis(
     if quarantined.contains(&cert.device_id) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Quarantined));
     }
-    // A writer of a removed device that this replica never stored has a removal cutoff of
-    // zero: its chain is stored, excluded, so the late changes other replicas applied before
-    // the removal are derived here too.
+    // A writer of a removed device that this replica never stored takes the cutoff the removal
+    // lists for it, 0 when the removal does not name it. Its excluded operations are stored up
+    // to the bound, so the late changes other replicas applied before the removal are derived
+    // here too, but only a few unnamed writers per removed device are stored at all.
     let removal = match authorization::enrollment(
         conn,
         ctx.space,
@@ -348,11 +351,19 @@ async fn store_genesis(
     {
         Enrollment::Enrolled => None,
         Enrollment::WrongKey => return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted)),
-        Enrollment::Removed => {
-            Some(exclusion::removal_revision(conn, ctx.space, &cert.device_id).await?)
-        }
+        Enrollment::Removed => Some((
+            exclusion::removal_revision(conn, ctx.space, &cert.device_id).await?,
+            authorization::removal_cutoff(conn, ctx.space, &cert.device_id, envelope.writer)
+                .await?,
+        )),
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
     };
+    if matches!(removal, Some((_, 0)))
+        && unnamed_writers(conn, ctx, &cert.device_id).await?
+            >= exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE
+    {
+        return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
+    }
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
@@ -381,21 +392,22 @@ async fn store_genesis(
         cert.predecessor
             .map(|predecessor| predecessor.as_bytes().to_vec()),
     )
-    .bind(removal.map(|_| 0_i64))
+    .bind(removal.map(|(_, cutoff)| seq_i64(cutoff)).transpose()?)
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
     .bind(cert.created_at_ms.max(0))
-    .bind(removal.map(|_| 0_i64))
+    .bind(removal.map(|(_, cutoff)| seq_i64(cutoff)).transpose()?)
     .execute(&mut *conn)
     .await?;
+    // The genesis is past only a cutoff of 0, and the removed device never excludes its own.
     let excluded = match removal {
-        Some(_)
+        Some((revision, 0))
             if exclusion::local_device(conn, ctx.space).await?.as_deref()
-                == Some(cert.device_id.as_str()) =>
+                != Some(cert.device_id.as_str()) =>
         {
-            None
+            Some(revision)
         }
-        removal => removal,
+        _ => None,
     };
     let held = excluded.map(|_| HoldReason::Invalid);
     insert_op(
@@ -462,7 +474,7 @@ async fn store_next(
     // still stored, up to a bound, so their late changes can be derived and forwarded.
     let beyond_removal = writer
         .removal_cutoff
-        .is_some_and(|cutoff| envelope.seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER));
+        .is_some_and(|cutoff| envelope.seq > exclusion::excluded_limit(cutoff));
     let beyond_cutoff = writer.state != WriterState::Revoked
         && writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff);
     if beyond_removal || beyond_cutoff {
@@ -646,6 +658,22 @@ impl Engine {
         tx.commit().await?;
         Ok(outcomes)
     }
+}
+
+/// How many stored writers of the removed device `device_id` its removal does not name.
+async fn unnamed_writers(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    device_id: &str,
+) -> SyncResult<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM sync_writers
+         WHERE space_id = ? AND device_id = ? AND removal_cutoff_seq = 0",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(device_id)
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 /// Whether the space can admit one more writer of `device_id` within

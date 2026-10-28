@@ -1087,6 +1087,7 @@ fn a_members_proposal_the_handover_superseded_reaches_the_new_anchor() {
             &forwarding_hub(&hub_replica),
             &phone_ids(),
             &mut outbox,
+            HUB_DEVICE,
         )
         .await
         .expect("prune");
@@ -1132,6 +1133,7 @@ fn a_members_proposal_the_handover_superseded_reaches_the_new_anchor() {
             &transport,
             &phone_ids(),
             &mut outbox,
+            HUB_DEVICE,
         )
         .await
         .expect("replay");
@@ -1268,7 +1270,7 @@ fn only_the_anchor_finalizes_a_rejection() {
             Outbox::load(&phone.directory.files().outbox_path()).expect("phone outbox");
         outbox.add(duplicate.clone()).expect("queue");
         let member = super::member_hub(&laptop);
-        let sequenced = client::replay_outbox(&member, &phone_ids(), &mut outbox)
+        let sequenced = client::replay_outbox(&member, &phone_ids(), &mut outbox, false)
             .await
             .expect("replay to a member hub");
         assert_eq!(sequenced, 0);

@@ -83,11 +83,21 @@ impl PeerEndpoints {
         )
     }
 
-    /// Records every endpoint a sync state reported, received at `received_ms`. A reported time
-    /// later than the receipt is clamped to it, and a report never replaces an endpoint the
-    /// member announced itself. Returns whether the book changed.
-    pub fn observe_reported(&mut self, members: &[MemberEndpoint], received_ms: u64) -> bool {
-        self.record_all(members.iter().map(|member| {
+    /// Records the endpoints a sync state reported for `members`, the live members of the
+    /// selected log, received at `received_ms`. Entries for other devices are dropped before the
+    /// bounds apply, so invented device ids cannot evict real endpoints. A reported time later
+    /// than the receipt is clamped to it, and a report never replaces an endpoint the member
+    /// announced itself. Returns whether the book changed.
+    pub fn observe_reported(
+        &mut self,
+        reported: &[MemberEndpoint],
+        members: &BTreeSet<String>,
+        received_ms: u64,
+    ) -> bool {
+        let live = reported
+            .iter()
+            .filter(|member| members.contains(&member.device_id));
+        self.record_all(live.map(|member| {
             let observation = Observation {
                 observed_ms: member.observed_ms.min(received_ms),
                 first_hand: false,
@@ -149,15 +159,20 @@ impl PeerEndpoints {
         self.entries.len() != before
     }
 
-    /// The endpoints of `device_id`, newest first.
+    /// The endpoints of `device_id` in dial order: those the member announced itself before
+    /// those another member reported, newest first within each.
     pub fn endpoints(&self, device_id: &str) -> Vec<String> {
-        let mut found: Vec<(&String, u64)> = self
+        let mut found: Vec<(&String, Observation)> = self
             .entries
             .iter()
             .filter(|((device, _), _)| device == device_id)
-            .map(|((_, endpoint), observed)| (endpoint, observed.observed_ms))
+            .map(|((_, endpoint), observed)| (endpoint, *observed))
             .collect();
-        found.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+        found.sort_by(|left, right| {
+            (right.1.first_hand, right.1.observed_ms)
+                .cmp(&(left.1.first_hand, left.1.observed_ms))
+                .then_with(|| left.0.cmp(right.0))
+        });
         found
             .into_iter()
             .map(|(endpoint, _)| endpoint.clone())

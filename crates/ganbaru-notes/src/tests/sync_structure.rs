@@ -655,6 +655,67 @@ fn sync_hook_recomputes_derived_columns_queues_history_and_drops_index_fingerpri
 }
 
 #[test]
+fn search_finds_a_word_from_a_replicated_block_edit_and_forgets_the_replaced_one() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: block_parent(BLOCK_A),
+                after: None,
+                children: vec![block(
+                    BLOCK_C,
+                    "paragraph",
+                    paragraph_payload("local lantern"),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+        let before = search::search(&pool, "lantern", None, false).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(before)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A received edit replaces the replicated text; the derived plain text keeps its old value.
+        set_applying(&pool, true).await;
+        sqlx::query("UPDATE notes_blocks SET text = ? WHERE id = ?")
+            .bind(paragraph_payload("remote harbor").to_string())
+            .bind(BLOCK_C)
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_applying(&pool, false).await;
+        let mut conn = pool.acquire().await.unwrap();
+        refresh_after_apply(&mut conn, BLOCKS_TABLE, &[BLOCK_C.to_string()])
+            .await
+            .unwrap();
+        drop(conn);
+
+        let found =
+            serde_json::to_value(search::search(&pool, "harbor", None, false).await.unwrap())
+                .unwrap();
+        let found = found.as_array().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["block_id"], BLOCK_C);
+        let replaced = search::search(&pool, "lantern", None, false).await.unwrap();
+        assert!(
+            serde_json::to_value(replaced)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    });
+}
+
+#[test]
 fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

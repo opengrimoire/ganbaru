@@ -1,18 +1,15 @@
+use crate::attachment_files::{
+    self, ATTACHMENT_DIRECTORY as CHAT_ATTACHMENT_DIRECTORY, MAX_ATTACHMENT_BYTES,
+};
 use crate::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
-use ganbaru_atomic_files::{
-    FinalSymlink, create_directories_within, read_regular_file_capped, remove_file_within,
-};
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped, remove_file_within};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
-const CHAT_ATTACHMENT_DIRECTORY: &str = "assets/chat/attachments";
 const CHAT_BROWSER_ARTIFACT_DIRECTORY: &str = "assets/chat/browser-artifacts";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -132,20 +129,13 @@ async fn persist_attachment_bytes(
     vault_root: &Path,
     request: AttachmentBytesImport<'_>,
 ) -> ChatResult<ChatAttachmentRead> {
-    let (mime_type, signature_kind, extension) =
-        inspect_signature(request.bytes, request.requested_kind)?;
-    let sha256 = format!("{:x}", Sha256::digest(request.bytes));
-    let relative_path = format!(
-        "{CHAT_ATTACHMENT_DIRECTORY}/{}-{}.{}",
-        &sha256[..16],
-        safe_file_segment(request.attachment_id.as_str()),
-        extension
-    );
-    let destination = resolve_managed_path(vault_root, &relative_path)?;
-    let parent = destination.parent().ok_or_else(invalid_path_error)?;
-    create_directories_within(vault_root, parent).map_err(io_error)?;
-    write_restrictive(&destination, request.bytes)?;
-    let inserted = sqlx::query(
+    let (mime_type, signature_kind) = inspect_signature(request.bytes, request.requested_kind)?;
+    let sha256 = attachment_files::digest(request.bytes);
+    // Attachments with equal bytes share one digest named file, so a failed insert leaves the
+    // file for the sync asset sweep instead of removing a file another row may name.
+    let relative_path =
+        attachment_files::store(vault_root, &sha256, mime_type, request.bytes).map_err(io_error)?;
+    sqlx::query(
         "INSERT INTO chat_attachments
             (id, working_folder_id, kind, original_display_name, mime_type, byte_size,
              sha256, managed_relative_path, signature_kind, created_at)
@@ -162,11 +152,8 @@ async fn persist_attachment_bytes(
     .bind(signature_kind)
     .bind(request.now.as_str())
     .execute(pool)
-    .await;
-    if let Err(error) = inserted {
-        let _ = remove_file_within(vault_root, &destination);
-        return Err(persistence_error(error));
-    }
+    .await
+    .map_err(persistence_error)?;
     read_attachment(pool, &request.attachment_id)
         .await?
         .ok_or_else(corrupt_data_error)
@@ -227,6 +214,10 @@ pub fn read_managed_attachment_bytes(
     attachment: &ChatAttachmentRead,
 ) -> ChatResult<(PathBuf, Vec<u8>)> {
     let path = resolve_managed_path(vault_root, &attachment.managed_relative_path)?;
+    // An empty attachment has no file.
+    if attachment.byte_size == 0 {
+        return Ok((path, Vec::new()));
+    }
     let bytes = read_regular_file_capped(
         &path,
         attachment.byte_size.min(MAX_ATTACHMENT_BYTES),
@@ -236,7 +227,7 @@ pub fn read_managed_attachment_bytes(
     if bytes.len() as u64 != attachment.byte_size {
         return Err(invalid_attachment_error());
     }
-    if format!("{:x}", Sha256::digest(&bytes)) != attachment.sha256 {
+    if attachment_files::digest(&bytes) != attachment.sha256 {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
             "Managed Chat attachment changed after import",
@@ -278,16 +269,13 @@ pub async fn run_due_attachment_cleanup(
         if claimed.rows_affected() != 1 {
             continue;
         }
+        if relative_path.starts_with(&format!("{CHAT_ATTACHMENT_DIRECTORY}/")) {
+            release_unreferenced_attachments(pool, &relative_path, &cleanup_id, now).await?;
+            completed += 1;
+            continue;
+        }
         let still_referenced: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                SELECT 1 FROM chat_attachments a
-                WHERE a.managed_relative_path = ? AND (
-                    EXISTS (SELECT 1 FROM chat_attachment_references r WHERE r.attachment_id = a.id)
-                    OR EXISTS (SELECT 1 FROM chat_queued_attachment_references q WHERE q.attachment_id = a.id)
-                    OR EXISTS (SELECT 1 FROM chat_communication_attachment_references c WHERE c.attachment_id = a.id)
-                    OR EXISTS (SELECT 1 FROM chat_scheduled_message_attachment_references s WHERE s.attachment_id = a.id)
-                )
-                UNION ALL
                 SELECT 1 FROM chat_resources resource
                 WHERE resource.managed_relative_path = ?
                   AND EXISTS (
@@ -296,7 +284,6 @@ pub async fn run_due_attachment_cleanup(
                   )
              )",
         )
-        .bind(&relative_path)
         .bind(&relative_path)
         .fetch_one(pool)
         .await
@@ -319,19 +306,6 @@ pub async fn run_due_attachment_cleanup(
         match result {
             Ok(()) => {
                 let mut transaction = pool.begin().await.map_err(persistence_error)?;
-                sqlx::query(
-                    "UPDATE chat_attachments SET deletion_state = 'deleted', deleted_at = ?
-                     WHERE managed_relative_path = ?
-                       AND NOT EXISTS (SELECT 1 FROM chat_attachment_references r WHERE r.attachment_id = chat_attachments.id)
-                       AND NOT EXISTS (SELECT 1 FROM chat_queued_attachment_references q WHERE q.attachment_id = chat_attachments.id)
-                       AND NOT EXISTS (SELECT 1 FROM chat_communication_attachment_references c WHERE c.attachment_id = chat_attachments.id)
-                       AND NOT EXISTS (SELECT 1 FROM chat_scheduled_message_attachment_references s WHERE s.attachment_id = chat_attachments.id)",
-                )
-                .bind(now.as_str())
-                .bind(&relative_path)
-                .execute(&mut *transaction)
-                .await
-                .map_err(persistence_error)?;
                 sqlx::query(
                     "UPDATE chat_resources SET integrity_state = 'deleted', deleted_at = ?
                      WHERE managed_relative_path = ?
@@ -373,39 +347,82 @@ pub async fn run_due_attachment_cleanup(
     Ok(completed)
 }
 
+/// Completes the cleanup of an attachment file path. Chat never deletes an attachment file,
+/// since attachments with equal bytes share it and replicated references keep it: the sync
+/// asset sweep removes it once nothing names its digest. The cleanup only removes the
+/// attachment rows at the path that are being deleted and that no local reference, message or
+/// scheduled message reference, or resource thread reference still names, together with their
+/// resources.
+async fn release_unreferenced_attachments(
+    pool: &SqlitePool,
+    relative_path: &str,
+    cleanup_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    sqlx::query(
+        "DELETE FROM chat_attachments
+         WHERE managed_relative_path = ?
+           AND deletion_state != 'active'
+           AND NOT EXISTS (SELECT 1 FROM chat_attachment_references r WHERE r.attachment_id = chat_attachments.id)
+           AND NOT EXISTS (SELECT 1 FROM chat_queued_attachment_references q WHERE q.attachment_id = chat_attachments.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_communication_attachment_references c
+               WHERE c.attachment_id = chat_attachments.id OR c.sha256 = chat_attachments.sha256
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_scheduled_message_attachment_references s
+               WHERE s.attachment_id = chat_attachments.id OR s.sha256 = chat_attachments.sha256
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_resources resource
+               JOIN chat_resource_thread_references reference ON reference.resource_id = resource.id
+               WHERE resource.attachment_id = chat_attachments.id
+           )",
+    )
+    .bind(relative_path)
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_cleanup_jobs SET state = 'completed', last_error_code = NULL,
+                updated_at = ? WHERE id = ?",
+    )
+    .bind(now.as_str())
+    .bind(cleanup_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    transaction.commit().await.map_err(persistence_error)
+}
+
+/// The content type and signature kind of attachment bytes of the requested kind.
 fn inspect_signature(
     bytes: &[u8],
     kind: ChatAttachmentKind,
-) -> ChatResult<(&'static str, &'static str, &'static str)> {
-    match kind {
-        ChatAttachmentKind::Image if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => {
-            Ok(("image/png", "png", "png"))
-        }
-        ChatAttachmentKind::Image if bytes.starts_with(&[0xff, 0xd8, 0xff]) => {
-            Ok(("image/jpeg", "jpeg", "jpg"))
-        }
-        ChatAttachmentKind::Image
-            if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") =>
-        {
-            Ok(("image/gif", "gif", "gif"))
-        }
-        ChatAttachmentKind::Image
-            if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" =>
-        {
-            Ok(("image/webp", "webp", "webp"))
-        }
-        ChatAttachmentKind::TextSnippet
-            if bytes.len() <= MAX_ATTACHMENT_BYTES as usize
-                && !bytes.contains(&0)
-                && std::str::from_utf8(bytes).is_ok() =>
-        {
-            Ok(("text/plain", "utf8", "txt"))
-        }
-        _ => Err(ChatError::validation(
-            "attachment.signature",
-            "Attachment signature does not match a supported type",
-        )),
-    }
+) -> ChatResult<(&'static str, &'static str)> {
+    let candidates: &[&'static str] = match kind {
+        ChatAttachmentKind::Image => attachment_files::IMAGE_CONTENT_TYPES,
+        ChatAttachmentKind::TextSnippet => &[attachment_files::TEXT_CONTENT_TYPE],
+    };
+    candidates
+        .iter()
+        .find(|content_type| {
+            bytes.len() as u64 <= MAX_ATTACHMENT_BYTES
+                && attachment_files::content_type_matches(content_type, bytes)
+        })
+        .map(|content_type| {
+            (
+                *content_type,
+                attachment_files::signature_kind(content_type),
+            )
+        })
+        .ok_or_else(|| {
+            ChatError::validation(
+                "attachment.signature",
+                "Attachment signature does not match a supported type",
+            )
+        })
 }
 
 pub(super) fn resolve_managed_path(vault_root: &Path, relative_path: &str) -> ChatResult<PathBuf> {
@@ -431,34 +448,6 @@ pub(super) fn resolve_managed_chat_path(
         return Err(invalid_path_error());
     }
     Ok(vault_root.join(relative))
-}
-
-fn safe_file_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '_'
-            }
-        })
-        .take(80)
-        .collect()
-}
-
-fn write_restrictive(path: &Path, bytes: &[u8]) -> ChatResult<()> {
-    use std::io::Write;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(io_error)?;
-    file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)
 }
 
 fn wire_kind(value: ChatAttachmentKind) -> &'static str {

@@ -6,6 +6,7 @@
 //! with plain SQL and no dependency on the engine, so any caller holding the connection can run
 //! it. It never writes replicated rows.
 
+use crate::attachment_files;
 use crate::coordination::revocation::revoke_teammate_authorizations;
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -86,7 +87,8 @@ impl ChatSyncEffects {
 /// It mirrors the gated command triggers: a teammate gets its access state and a conversation
 /// its audience state, a profile whose effective revision arrived or changed bumps the audience
 /// of the conversations whose teammates use that profile, and a message or revision rebuilds the
-/// message's search row (a deleted message loses it). An effective profile revision that narrows
+/// message's search row (a deleted message loses it). A revision also creates the attachment and
+/// resource rows of the attachments it names in a working folder this device has. An effective profile revision that narrows
 /// authority also bumps the access revision of those teammates and revokes the active
 /// authorizations granted under a wider revision, as the command that saves a reduction does.
 /// A conversation membership, AI channel membership, or folder grant bumps the audience (for
@@ -215,6 +217,7 @@ pub async fn after_materialize(
         MESSAGE_REVISIONS_TABLE => {
             let mut message_ids = BTreeSet::new();
             for key in keys {
+                record_applied_attachments(connection, key).await?;
                 let message_id: Option<String> = sqlx::query_scalar(
                     "SELECT message_item_id FROM chat_communication_message_revisions
                      WHERE id = ?",
@@ -232,6 +235,92 @@ pub async fn after_materialize(
         _ => {}
     }
     Ok(effects)
+}
+
+/// One attachment a revision names by value, as its owned reference row holds it.
+#[derive(sqlx::FromRow)]
+struct AppliedAttachment {
+    attachment_id: String,
+    working_folder_id: String,
+    kind: String,
+    original_display_name: String,
+    mime_type: String,
+    byte_size: i64,
+    sha256: String,
+    created_at: String,
+}
+
+/// Creates the device's attachment row and its resource for every attachment the revision
+/// names whose working folder exists here, so the revision's attachments read like local ones.
+/// The file arrives through the asset transfer under its digest name; an attachment row the
+/// device already has is kept unchanged.
+async fn record_applied_attachments(
+    connection: &mut SqliteConnection,
+    revision_id: &str,
+) -> ChatResult<()> {
+    let attachments: Vec<AppliedAttachment> = sqlx::query_as(
+        "SELECT reference.attachment_id, reference.working_folder_id, reference.kind,
+                reference.original_display_name, reference.mime_type, reference.byte_size,
+                reference.sha256, revision.created_at
+         FROM chat_communication_attachment_references reference
+         JOIN chat_communication_message_revisions revision
+           ON revision.id = reference.message_revision_id
+         JOIN project_working_folders folder ON folder.id = reference.working_folder_id
+         WHERE reference.message_revision_id = ?
+         ORDER BY reference.ordinal",
+    )
+    .bind(revision_id)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    for attachment in attachments {
+        let relative_path =
+            attachment_files::relative_path(&attachment.sha256, &attachment.mime_type);
+        let created = sqlx::query(
+            "INSERT OR IGNORE INTO chat_attachments
+                 (id, working_folder_id, kind, original_display_name, mime_type, byte_size,
+                  sha256, managed_relative_path, signature_kind, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&attachment.attachment_id)
+        .bind(&attachment.working_folder_id)
+        .bind(&attachment.kind)
+        .bind(&attachment.original_display_name)
+        .bind(&attachment.mime_type)
+        .bind(attachment.byte_size)
+        .bind(&attachment.sha256)
+        .bind(&relative_path)
+        .bind(attachment_files::signature_kind(&attachment.mime_type))
+        .bind(&attachment.created_at)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?
+        .rows_affected();
+        if created == 0 {
+            continue;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO chat_resources
+                 (id, working_folder_id, attachment_id, resource_kind, display_name, mime_type,
+                  byte_size, sha256, managed_relative_path, resource_uri, integrity_state,
+                  created_at)
+             VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6, ?7, ?8, 'ganbaru://chat/resource/' || ?1,
+                     'verified', ?9)",
+        )
+        .bind(&attachment.attachment_id)
+        .bind(&attachment.working_folder_id)
+        .bind(&attachment.kind)
+        .bind(&attachment.original_display_name)
+        .bind(&attachment.mime_type)
+        .bind(attachment.byte_size)
+        .bind(&attachment.sha256)
+        .bind(&relative_path)
+        .bind(&attachment.created_at)
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
+    }
+    Ok(())
 }
 
 async fn create_access_state(

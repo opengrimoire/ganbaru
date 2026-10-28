@@ -49,6 +49,7 @@ pub const CONTENT_TYPE_EXTENSIONS: &[(&str, &str)] = &[
     ("image/jpeg", "jpg"),
     ("image/webp", "webp"),
     ("image/gif", "gif"),
+    ("text/plain", "txt"),
 ];
 
 /// A kind of managed file a domain stores, such as Quick note images.

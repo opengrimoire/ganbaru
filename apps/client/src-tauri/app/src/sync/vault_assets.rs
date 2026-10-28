@@ -14,6 +14,7 @@ use ganbaru_music_library::managed_artwork;
 use ganbaru_quick_notes::images;
 use ganbaru_sync::Engine;
 use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::manifest::vault::chat::ATTACHMENTS_CLASS;
 use ganbaru_sync::manifest::vault::music::ARTWORK_CLASS;
 use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
 use ganbaru_sync::manifest::vault::projects::ICON_CLASS;
@@ -47,6 +48,10 @@ impl<H: SyncHost> ActiveVaultAssets<H> {
             .with_check(
                 &PROFILE_CLASS,
                 crate::profile_images::check_synced_profile_image,
+            )
+            .with_check(
+                &ATTACHMENTS_CLASS,
+                crate::chat::sync::check_synced_attachment,
             );
         files
             .remove_stale_staging(engine.manifest().asset_classes(), STALE_STAGING_AGE)

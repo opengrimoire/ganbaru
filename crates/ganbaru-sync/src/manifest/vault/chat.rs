@@ -19,6 +19,12 @@
 //! `(order_key, item_id)` points of that order. Reply thread ids derive from their root item and
 //! cursors use a derived `sync_key`. Revisions are bounded so one fits an operation.
 //!
+//! A revision owns its attachment references (`chat_communication_attachment_references`), each
+//! carrying the attachment by value with its digest, so the referenced files of the
+//! `chat/attachments` asset class travel through the asset store. The device's attachment and
+//! resource rows stay `Local`; the Chat hook creates them for applied references, and the
+//! attachment rows keep their files alive while queued or unsent work names them.
+//!
 //! Execution, drafts, review history, provider state, receipts, cleanup jobs, and the access
 //! and audience counters stay on the device as `Local` tables, and message search is `Derived`.
 //! The remaining organizational tables stay unconverted until later steps convert them. Chat is
@@ -30,17 +36,21 @@ use ganbaru_sync_contracts::{GroupId, TableId};
 
 use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
 
+use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::chat::{
-    MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_TOPIC_CHARS, MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS,
-    MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS, MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS,
-    MAX_LABEL_CHARS, MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS,
-    MAX_RELATIVE_PATH_CHARS, MAX_RICH_CONTENT_BYTES, MAX_ROLE_CHARS,
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_ID_CHARS, MAX_ATTACHMENT_MIME_CHARS,
+    MAX_ATTACHMENT_NAME_CHARS, MAX_CHANNEL_NAME_CHARS, MAX_CHANNEL_TOPIC_CHARS,
+    MAX_DISPLAY_NAME_CHARS, MAX_ENUM_CHARS, MAX_ENVIRONMENT_ID_CHARS, MAX_ID_CHARS,
+    MAX_INSTRUCTIONS_CHARS, MAX_JSON_CHARS, MAX_LABEL_CHARS, MAX_MESSAGE_ATTACHMENTS,
+    MAX_MESSAGE_MARKDOWN_BYTES, MAX_PROVIDER_INSTANCE_CHARS, MAX_RELATIVE_PATH_CHARS,
+    MAX_RICH_CONTENT_BYTES, MAX_ROLE_CHARS, SHA256_HEX_CHARS,
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, ReferenceColumn, Resolution,
-    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
+    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
+    TriggerPolicy, group_id,
 };
 
 /// Domain name for Chat.
@@ -290,6 +300,8 @@ pub mod timeline_group {
 
     /// Every column, fixed when the row is written.
     pub const CREATED: GroupId = group_id(0);
+    /// The attachments of a message revision, as owned rows. Other timeline tables have none.
+    pub const ATTACHMENTS: GroupId = group_id(1);
 }
 
 /// Read cursor field groups, shared by conversation and reply thread cursors.
@@ -1096,22 +1108,72 @@ pub const MESSAGES: TableSpec = TableSpec {
     ..BASE
 };
 
+/// Managed Chat attachment files under `assets/chat/attachments`.
+pub const ATTACHMENTS_CLASS: AssetClass = AssetClass {
+    name: "chat/attachments",
+    max_bytes: MAX_ATTACHMENT_BYTES,
+};
+
+/// `chat_communication_attachment_references`, the attachments of one revision in order. Each
+/// row carries the attachment by value, so a replica can show and fetch it without the
+/// device's attachment row.
+pub const ATTACHMENT_REFERENCES: OwnedTable = OwnedTable {
+    table: "chat_communication_attachment_references",
+    parent_column: "message_revision_id",
+    order: OwnedOrder::Ordinal("ordinal"),
+    columns: &[
+        text("attachment_id", MAX_ATTACHMENT_ID_CHARS),
+        text("working_folder_id", MAX_ATTACHMENT_ID_CHARS),
+        text("kind", MAX_ENUM_CHARS),
+        trimmed("original_display_name", MAX_ATTACHMENT_NAME_CHARS),
+        text("mime_type", MAX_ATTACHMENT_MIME_CHARS),
+        ColumnSpec {
+            name: "byte_size",
+            ty: ColumnType::Integer {
+                min: 0,
+                max: MAX_ATTACHMENT_BYTES as i64,
+            },
+        },
+        text("sha256", SHA256_HEX_CHARS),
+    ],
+    references: &[],
+    unique: &[],
+    max_rows: MAX_MESSAGE_ATTACHMENTS,
+    codec: OwnedCodec::Custom,
+    nested: &[],
+    bound: OwnedBound::Static,
+};
+
 /// `chat_communication_message_revisions`, immutable and bounded so one revision fits an
 /// operation. Display numbers come from `(created_at, id)` order within the message.
 pub const REVISIONS: TableSpec = TableSpec {
     id: REVISIONS_TABLE,
     name: "chat_communication_message_revisions",
-    groups: &[immutable(
-        timeline_group::CREATED,
-        &[
-            row_key("message_item_id"),
-            text("normalized_markdown", MAX_MESSAGE_MARKDOWN_BYTES),
-            version("rich_content_schema_version"),
-            text("rich_content_data", MAX_RICH_CONTENT_BYTES),
-            timestamp("created_at"),
-        ],
-        &[cascade("message_item_id", MESSAGES_TABLE)],
-    )],
+    groups: &[
+        immutable(
+            timeline_group::CREATED,
+            &[
+                row_key("message_item_id"),
+                text("normalized_markdown", MAX_MESSAGE_MARKDOWN_BYTES),
+                version("rich_content_schema_version"),
+                text("rich_content_data", MAX_RICH_CONTENT_BYTES),
+                timestamp("created_at"),
+            ],
+            &[cascade("message_item_id", MESSAGES_TABLE)],
+        ),
+        GroupSpec {
+            storage: GroupStorage::Owned {
+                columns: &[],
+                tables: &[ATTACHMENT_REFERENCES],
+            },
+            ..group(
+                timeline_group::ATTACHMENTS,
+                "attachments",
+                MergeKind::Immutable,
+                &[],
+            )
+        },
+    ],
     triggers: &[applier_visible(
         "chat_communication_message_revision_immutable_update",
     )],
@@ -1379,6 +1441,22 @@ pub const DOMAIN: DomainManifest = DomainManifest {
             "chat_attachment_references",
             &[gated("chat_attachment_messages_expose_resource")],
         ),
+        DeviceTable {
+            name: "chat_attachments",
+            triggers: &[
+                gated("chat_attachments_create_resource"),
+                applier_visible("chat_attachments_managed_relative_path_shape_insert"),
+                applier_visible("chat_attachments_managed_relative_path_shape_update"),
+                gated("chat_attachments_update_resource_integrity"),
+            ],
+            assets: &[LocalAssetColumn {
+                column: "sha256",
+                json_path: None,
+                digest: LocalDigest::Sha256 {
+                    class: ATTACHMENTS_CLASS.name,
+                },
+            }],
+        },
         device("chat_browser_artifacts", &[]),
         device("chat_checkpoint_failures", &[]),
         device("chat_cleanup_jobs", &[]),
@@ -1415,6 +1493,13 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("chat_queued_attachment_references", &[]),
         device("chat_queued_followups", &[]),
         device("chat_resource_thread_references", &[]),
+        device(
+            "chat_resources",
+            &[
+                applier_visible("chat_resources_managed_relative_path_shape_insert"),
+                applier_visible("chat_resources_managed_relative_path_shape_update"),
+            ],
+        ),
         device("chat_messages", &[]),
         device("chat_restore_operations", &[]),
         device("chat_restore_previews", &[]),
@@ -1486,5 +1571,5 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     ],
     engine: &[],
     replica_writable: false,
-    assets: &[],
+    assets: &[ATTACHMENTS_CLASS],
 };

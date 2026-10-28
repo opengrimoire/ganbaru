@@ -14,22 +14,26 @@
 //! concurrent unarchive, and a message deletion outranks a concurrent restore.
 //!
 //! Timeline values mirror their table checks too, including the byte bounds that keep one
-//! message revision within an operation.
+//! message revision within an operation. A revision's attachments carry their working folder,
+//! kind, display name, content type, size, and digest by value, and each non-empty one
+//! references its `chat/attachments` file.
 
 use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
 use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::assets::AssetRef;
+use crate::codec;
 use crate::manifest::vault::chat::{
-    ADAPTER, CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE,
-    CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
-    FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE,
-    PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE,
-    PROFILE_REVISIONS_TABLE, PROFILES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE,
-    REPLY_THREADS_TABLE, REVISIONS_TABLE, TEAMMATES_TABLE, channel_group, channel_membership_group,
-    conversation_group, folder_grant_group, item_group, membership_group, message_group,
-    participant_group, policy_revision_group, profile_group, profile_revision_group,
-    read_cursor_group, reply_thread_group, teammate_group, timeline_group,
+    ADAPTER, ATTACHMENT_REFERENCES, ATTACHMENTS_CLASS, CHANNEL_MEMBERSHIPS_TABLE,
+    CHANNEL_TARGETS_TABLE, CHANNELS_TABLE, CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE,
+    ENVIRONMENT_TARGETS_TABLE, FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, ITEMS_TABLE,
+    MEMBERSHIPS_TABLE, MESSAGES_TABLE, PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE,
+    PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
+    REFERENCES_TABLE, REPLY_CURSORS_TABLE, REPLY_THREADS_TABLE, REVISIONS_TABLE, TEAMMATES_TABLE,
+    channel_group, channel_membership_group, conversation_group, folder_grant_group, item_group,
+    membership_group, message_group, participant_group, policy_revision_group, profile_group,
+    profile_revision_group, read_cursor_group, reply_thread_group, teammate_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -98,6 +102,27 @@ pub const MAX_RELATIVE_PATH_CHARS: usize = 4096;
 pub const MAX_MESSAGE_MARKDOWN_BYTES: usize = 128 * 1024;
 /// Bytes of a message revision's rich content, which also bounds its characters.
 pub const MAX_RICH_CONTENT_BYTES: usize = 192 * 1024;
+/// Largest attachment in bytes.
+pub const MAX_ATTACHMENT_BYTES: u32 = 50 * 1024 * 1024;
+/// Most attachments on one message revision.
+pub const MAX_MESSAGE_ATTACHMENTS: usize = 20;
+/// Characters of an attachment id and its working folder id in an attachment reference, kept
+/// small so a revision with every attachment still fits one operation.
+pub const MAX_ATTACHMENT_ID_CHARS: usize = 128;
+/// Characters of an attachment display name.
+pub const MAX_ATTACHMENT_NAME_CHARS: usize = 1000;
+/// Characters of an attachment content type.
+pub const MAX_ATTACHMENT_MIME_CHARS: usize = 64;
+/// Characters of a lowercase hex SHA-256 digest.
+pub const SHA256_HEX_CHARS: usize = 64;
+/// Attachment content types with the attachment kind each one has.
+pub const ATTACHMENT_TYPES: [(&str, &str); 5] = [
+    ("image/png", "image"),
+    ("image/jpeg", "image"),
+    ("image/gif", "image"),
+    ("image/webp", "image"),
+    ("text/plain", "text_snippet"),
+];
 /// Item kinds of the conversation timeline.
 pub const ITEM_KINDS: [&str; 5] = [
     "message",
@@ -584,8 +609,103 @@ fn validate_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterErro
                 .map_err(|_| AdapterError("chat message rich content"))?;
             timestamp(created_at)
         }
+        (timeline_group::ATTACHMENTS, [_]) => attachments(fields).map(|_| ()),
         _ => Err(AdapterError("chat message revision value")),
     }
+}
+
+/// One attachment a message revision carries by value.
+struct Attachment {
+    sha256: String,
+    mime_type: String,
+    byte_size: u32,
+}
+
+/// The attachments of a revision's attachments group value, each checked as the table checks
+/// it: a lowercase hex digest, a known content type matching the kind, and a size within the
+/// asset class bound. Only a text snippet may be empty.
+fn attachments(fields: &[Field]) -> Result<Vec<Attachment>, AdapterError> {
+    let [Field::Blob(bytes)] = fields else {
+        return Err(AdapterError("chat attachments value"));
+    };
+    let rows = codec::decode(&ATTACHMENT_REFERENCES, bytes)
+        .map_err(|_| AdapterError("chat attachments encoding"))?;
+    rows.into_iter()
+        .map(|row| attachment(&row.fields))
+        .collect()
+}
+
+fn attachment(fields: &[Field]) -> Result<Attachment, AdapterError> {
+    let [id, folder, kind, name, mime, size, sha256] = fields else {
+        return Err(AdapterError("chat attachment value"));
+    };
+    bounded(id, 1, MAX_ATTACHMENT_ID_CHARS, "chat attachment id")?;
+    bounded(folder, 1, MAX_ATTACHMENT_ID_CHARS, "chat attachment folder")?;
+    trimmed(name, MAX_ATTACHMENT_NAME_CHARS, "chat attachment name")?;
+    let mime = text(mime)?;
+    let expected_kind = ATTACHMENT_TYPES
+        .iter()
+        .find(|(known, _)| *known == mime)
+        .map(|(_, kind)| *kind)
+        .ok_or(AdapterError("chat attachment content type"))?;
+    if text(kind)? != expected_kind {
+        return Err(AdapterError("chat attachment kind"));
+    }
+    let sha256 = text(sha256)?;
+    if sha256.len() != SHA256_HEX_CHARS
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(AdapterError("chat attachment digest"));
+    }
+    let byte_size = u32::try_from(integer(size)?)
+        .ok()
+        .filter(|size| *size <= MAX_ATTACHMENT_BYTES)
+        .ok_or(AdapterError("chat attachment size"))?;
+    if byte_size == 0 && expected_kind != "text_snippet" {
+        return Err(AdapterError("chat attachment size"));
+    }
+    Ok(Attachment {
+        sha256: sha256.to_owned(),
+        mime_type: mime.to_owned(),
+        byte_size,
+    })
+}
+
+/// Attachment reference lists at the codec's bounds: none, one empty text snippet, and the
+/// most attachments with the longest values and the largest size.
+fn attachment_samples() -> Vec<Vec<Vec<Field>>> {
+    let reference = |ordinal: usize, kind: &str, mime: &str, size: u32, name: String| {
+        let id = format!("{ordinal:0>width$}", width = MAX_ATTACHMENT_ID_CHARS);
+        vec![
+            Field::Text(id.clone()),
+            Field::Text(id),
+            Field::Text(kind.to_owned()),
+            Field::Text(name),
+            Field::Text(mime.to_owned()),
+            Field::Integer(i64::from(size)),
+            Field::Text(format!("{ordinal:f>width$}", width = SHA256_HEX_CHARS)),
+        ]
+    };
+    let full = (0..MAX_MESSAGE_ATTACHMENTS)
+        .map(|ordinal| {
+            let (mime, kind) = ATTACHMENT_TYPES[ordinal % ATTACHMENT_TYPES.len()];
+            let name = "é".repeat(MAX_ATTACHMENT_NAME_CHARS);
+            reference(ordinal, kind, mime, MAX_ATTACHMENT_BYTES, name)
+        })
+        .collect();
+    vec![
+        Vec::new(),
+        vec![reference(
+            0,
+            "text_snippet",
+            "text/plain",
+            0,
+            "a".to_owned(),
+        )],
+        full,
+    ]
 }
 
 fn validate_reference(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
@@ -798,6 +918,49 @@ impl DomainAdapter for ChatAdapter {
         ADAPTER
     }
 
+    /// Attachment references keep the engine's row encoding and refuse rows the table's checks
+    /// would refuse, so every accepted list stores unchanged.
+    fn encode_owned(
+        &self,
+        table: TableId,
+        owned: &str,
+        rows: Vec<Vec<Field>>,
+    ) -> Result<Vec<u8>, AdapterError> {
+        if table != REVISIONS_TABLE || owned != ATTACHMENT_REFERENCES.table {
+            return Err(AdapterError("owned table"));
+        }
+        for row in &rows {
+            attachment(row)?;
+        }
+        let rows: Vec<_> = rows.into_iter().map(codec::OwnedRow::flat).collect();
+        codec::encode(&ATTACHMENT_REFERENCES, &rows)
+            .map_err(|_| AdapterError("chat attachments encoding"))
+    }
+
+    fn decode_owned(
+        &self,
+        table: TableId,
+        owned: &str,
+        bytes: &[u8],
+    ) -> Result<Vec<Vec<Field>>, AdapterError> {
+        if table != REVISIONS_TABLE || owned != ATTACHMENT_REFERENCES.table {
+            return Err(AdapterError("owned table"));
+        }
+        codec::decode(&ATTACHMENT_REFERENCES, bytes)
+            .map_err(|_| AdapterError("chat attachments encoding"))?
+            .into_iter()
+            .map(|row| attachment(&row.fields).map(|_| row.fields))
+            .collect()
+    }
+
+    fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {
+        if table == REVISIONS_TABLE && owned == ATTACHMENT_REFERENCES.table {
+            attachment_samples()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn derived(
         &self,
         _table: TableId,
@@ -877,6 +1040,40 @@ impl DomainAdapter for ChatAdapter {
         }
     }
 
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        if table == REVISIONS_TABLE {
+            &[timeline_group::ATTACHMENTS]
+        } else {
+            &[]
+        }
+    }
+
+    /// Each non-empty attachment of a revision references its digest named file. An empty
+    /// text snippet has no file.
+    fn asset_refs(
+        &self,
+        table: TableId,
+        group: GroupId,
+        value: &Value,
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        if table != REVISIONS_TABLE || group != timeline_group::ATTACHMENTS {
+            return Ok(Vec::new());
+        }
+        attachments(value.fields())?
+            .into_iter()
+            .filter(|attachment| attachment.byte_size > 0)
+            .map(|attachment| {
+                AssetRef::new(
+                    &ATTACHMENTS_CLASS,
+                    attachment.sha256,
+                    attachment.mime_type,
+                    attachment.byte_size,
+                )
+                .map_err(|_| AdapterError("chat attachment reference"))
+            })
+            .collect()
+    }
+
     /// Chat is owner-only until its presentation lands, so rows present nothing.
     fn presentation(&self, _table: TableId, _values: &[(GroupId, Value)]) -> Presentation {
         Presentation::default()
@@ -886,6 +1083,7 @@ impl DomainAdapter for ChatAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::OwnedRow;
 
     const AT: &str = "2026-10-24T10:51:41.000Z";
 
@@ -1452,5 +1650,100 @@ mod tests {
             ]),
         );
         assert!(empty.is_ok());
+    }
+
+    fn attachment_row(kind: &str, mime: &str, size: i64) -> OwnedRow {
+        OwnedRow::flat(vec![
+            t("attachment-1"),
+            t("working-folder:project-1"),
+            t(kind),
+            t("screen.png"),
+            t(mime),
+            Field::Integer(size),
+            t(&"a".repeat(64)),
+        ])
+    }
+
+    fn attachments_value(rows: &[OwnedRow]) -> Value {
+        value(vec![Field::Blob(
+            codec::encode(&ATTACHMENT_REFERENCES, rows).unwrap(),
+        )])
+    }
+
+    #[test]
+    fn chat_attachments_round_trip_and_mirror_the_reference_checks() {
+        let adapter = ChatAdapter;
+        let rows = vec![
+            attachment_row("image", "image/png", 8),
+            attachment_row("text_snippet", "text/plain", 0),
+        ];
+        let encoded = codec::encode(&ATTACHMENT_REFERENCES, &rows).unwrap();
+        assert_eq!(
+            codec::decode(&ATTACHMENT_REFERENCES, &encoded).unwrap(),
+            rows
+        );
+
+        let check = |rows: &[OwnedRow]| {
+            adapter.validate(
+                REVISIONS_TABLE,
+                timeline_group::ATTACHMENTS,
+                &attachments_value(rows),
+            )
+        };
+        assert_eq!(check(&rows), Ok(()));
+        assert_eq!(check(&[]), Ok(()));
+        let limit = i64::from(MAX_ATTACHMENT_BYTES);
+        assert_eq!(
+            check(&[attachment_row("image", "image/gif", limit)]),
+            Ok(())
+        );
+        let oversized = attachment_row("image", "image/png", limit + 1);
+        assert!(codec::encode(&ATTACHMENT_REFERENCES, &[oversized]).is_err());
+        assert!(check(&[attachment_row("image", "image/png", 0)]).is_err());
+        assert!(check(&[attachment_row("text_snippet", "image/png", 8)]).is_err());
+        assert!(check(&[attachment_row("image", "application/pdf", 8)]).is_err());
+
+        let mut upper_digest = attachment_row("image", "image/png", 8);
+        upper_digest.fields[6] = t(&"A".repeat(64));
+        assert!(check(&[upper_digest]).is_err());
+        let mut long_id = attachment_row("image", "image/png", 8);
+        long_id.fields[0] = t(&"x".repeat(MAX_ATTACHMENT_ID_CHARS + 1));
+        assert!(codec::encode(&ATTACHMENT_REFERENCES, &[long_id]).is_err());
+        let too_many = vec![attachment_row("image", "image/png", 8); MAX_MESSAGE_ATTACHMENTS + 1];
+        assert!(codec::encode(&ATTACHMENT_REFERENCES, &too_many).is_err());
+    }
+
+    #[test]
+    fn chat_attachment_asset_refs_skip_empty_snippets() {
+        let adapter = ChatAdapter;
+        assert_eq!(
+            adapter.asset_groups(REVISIONS_TABLE),
+            &[timeline_group::ATTACHMENTS]
+        );
+        let refs = adapter
+            .asset_refs(
+                REVISIONS_TABLE,
+                timeline_group::ATTACHMENTS,
+                &attachments_value(&[
+                    attachment_row("image", "image/png", 8),
+                    attachment_row("text_snippet", "text/plain", 0),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(refs.len(), 1, "an empty text snippet has no file");
+        assert_eq!(refs[0].class().name, "chat/attachments");
+        assert_eq!(refs[0].content_type(), "image/png");
+        assert_eq!(refs[0].byte_size(), 8);
+        assert_eq!(refs[0].file_name(), format!("{}.png", "a".repeat(64)));
+        assert!(
+            adapter
+                .asset_refs(
+                    REVISIONS_TABLE,
+                    timeline_group::CREATED,
+                    &value(vec![t("body")])
+                )
+                .unwrap()
+                .is_empty()
+        );
     }
 }

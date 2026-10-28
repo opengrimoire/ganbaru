@@ -297,6 +297,83 @@ fn attachment_cleanup_retries_and_never_removes_referenced_files() {
     });
 }
 
+#[test]
+fn attachment_cleanup_releases_deleted_rows_and_leaves_the_shared_file_to_the_sweep() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let vault_root = std::env::temp_dir().join(format!(
+            "ganbaru-chat-cleanup-shared-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&vault_root).unwrap();
+        let source = vault_root.join("source.txt");
+        fs::write(&source, b"shared context").unwrap();
+        let now = UtcTimestamp::new(NOW).unwrap();
+        let working_folder_id = ProjectWorkingFolderId::new("workspace-1").unwrap();
+        let mut imported = Vec::new();
+        for id in ["attachment-released", "attachment-kept"] {
+            imported.push(
+                import_attachment(
+                    &pool,
+                    &vault_root,
+                    &working_folder_id,
+                    ChatAttachmentId::new(id).unwrap(),
+                    &source,
+                    ChatAttachmentKind::TextSnippet,
+                    &now,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        assert_eq!(
+            imported[0].managed_relative_path, imported[1].managed_relative_path,
+            "equal bytes share one digest-named file"
+        );
+        sqlx::query(
+            "UPDATE chat_attachments SET deletion_state = 'pending_delete'
+             WHERE id = 'attachment-released'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_cleanup_jobs
+                (id, cleanup_kind, exact_target, state, available_at, created_at, updated_at,
+                 working_folder_id)
+             VALUES ('cleanup-shared', 'attachment_file', ?, 'pending', ?, ?, ?, 'workspace-1')",
+        )
+        .bind(&imported[0].managed_relative_path)
+        .bind(NOW)
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            run_due_attachment_cleanup(&pool, &vault_root, &now)
+                .await
+                .unwrap(),
+            1
+        );
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM chat_attachments ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec!["attachment-kept".to_string()]);
+        assert_eq!(
+            fs::read(vault_root.join(&imported[1].managed_relative_path)).unwrap(),
+            b"shared context"
+        );
+        fs::remove_dir_all(vault_root).unwrap();
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn picked_attachments_show_control_characters_as_replacement_characters() {
@@ -449,19 +526,19 @@ fn managed_attachment_writes_and_cleanup_never_follow_a_symlinked_directory() {
             run_due_attachment_cleanup(&pool, &vault_root, &now)
                 .await
                 .unwrap(),
-            0
+            1
         );
         assert_eq!(
             fs::read(outside.join(&file_name)).unwrap(),
             b"outside file",
-            "cleanup must not delete through a symlinked directory"
+            "attachment cleanup never deletes files, so it cannot delete through a symlinked directory"
         );
         let state: String =
             sqlx::query_scalar("SELECT state FROM chat_cleanup_jobs WHERE id = 'cleanup-linked'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(state, "failed");
+        assert_eq!(state, "completed");
 
         let other = vault_root.join("other.txt");
         fs::write(&other, b"other context").unwrap();

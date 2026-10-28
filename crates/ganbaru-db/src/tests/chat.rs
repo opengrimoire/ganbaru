@@ -267,6 +267,11 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_scheduled_messages_due",
             "idx_chat_scheduled_messages_destination",
             "idx_chat_scheduled_message_attachment_references_attachment",
+            "idx_chat_scheduled_message_attachment_references_digest",
+            "idx_chat_communication_attachment_references_attachment",
+            "idx_chat_communication_attachment_references_digest",
+            "idx_chat_attachments_path",
+            "idx_chat_resources_path",
             "idx_chat_scheduled_message_references_target",
         ] {
             let exists: Option<i64> =
@@ -971,7 +976,7 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
 }
 
 #[test]
-fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() {
+fn scheduled_message_attachments_are_held_by_value_until_the_schedule_is_removed() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         insert_default_channel(&pool).await;
@@ -1014,28 +1019,57 @@ fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() 
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_scheduled_message_attachment_references
-                (scheduled_message_id, attachment_id, ordinal, created_at)
-             VALUES ('scheduled-message-1', 'scheduled-attachment', 0, ?)",
+                (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                 original_display_name, mime_type, byte_size, sha256)
+             SELECT 'scheduled-message-1', 0, id, working_folder_id, kind,
+                    original_display_name, mime_type, byte_size, sha256
+             FROM chat_attachments WHERE id = 'scheduled-attachment'",
         )
-        .bind(NOW)
         .execute(&pool)
         .await
         .unwrap();
 
+        sqlx::query("DELETE FROM chat_attachments WHERE id = 'scheduled-attachment'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let kept: (String, String, i64) = sqlx::query_as(
+            "SELECT original_display_name, mime_type, byte_size
+             FROM chat_scheduled_message_attachment_references
+             WHERE scheduled_message_id = 'scheduled-message-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            kept,
+            ("scheduled.png".to_string(), "image/png".to_string(), 8),
+            "the reference keeps the attachment by value without its row"
+        );
         assert!(
-            sqlx::query("DELETE FROM chat_attachments WHERE id = 'scheduled-attachment'")
-                .execute(&pool)
-                .await
-                .is_err()
+            sqlx::query(
+                "INSERT INTO chat_scheduled_message_attachment_references
+                    (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                     original_display_name, mime_type, byte_size, sha256)
+                 VALUES ('scheduled-message-1', 20, 'too-many', 'folder', 'image', 'x.png',
+                         'image/png', 1, ?)",
+            )
+            .bind("b".repeat(64))
+            .execute(&pool)
+            .await
+            .is_err(),
+            "a scheduled message names at most 20 attachments"
         );
         sqlx::query("DELETE FROM chat_scheduled_messages WHERE id = 'scheduled-message-1'")
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM chat_attachments WHERE id = 'scheduled-attachment'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chat_scheduled_message_attachment_references")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0, "removing the schedule removes its references");
     });
 }
 

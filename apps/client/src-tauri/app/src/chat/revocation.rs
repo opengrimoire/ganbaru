@@ -1278,6 +1278,43 @@ pub(crate) mod tests {
         assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
     }
 
+    #[tokio::test]
+    async fn an_applied_assignment_delete_stops_the_provider_process_it_was_running() {
+        let pool = pool_with_folder_runs().await;
+        let host = FakeRunHost::with_working_run();
+        sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM chat_work_assignments WHERE id = 'assignment:folders'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let effects = ganbaru_chat::sync_effects::after_materialize(
+            &mut connection,
+            ganbaru_chat::sync_effects::ASSIGNMENTS_TABLE,
+            &["assignment:folders".to_string()],
+        )
+        .await
+        .unwrap();
+        drop(connection);
+
+        assert_eq!(
+            effects.removed_assignments,
+            BTreeSet::from(["assignment:folders".to_string()])
+        );
+        assert_eq!(
+            missing_authorizations(&pool, &["authorization:working"])
+                .await
+                .unwrap(),
+            BTreeSet::from(["authorization:working".to_string()])
+        );
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
+        assert_eq!(host.scope_count(), 0);
+    }
+
     #[test]
     fn revocation_recovery_batches_and_caps_retry_backoff() {
         assert_eq!(REVOCATION_DRAIN_BATCH_SIZE, 32);

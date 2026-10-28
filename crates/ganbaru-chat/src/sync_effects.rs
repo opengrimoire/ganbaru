@@ -79,11 +79,14 @@ pub struct ChatSyncEffects {
     pub reclaimed_attachments: BTreeSet<String>,
     /// Queued assignments that arrived or changed, which their executing device starts.
     pub queued_assignments: BTreeSet<String>,
-    /// Settled assignments whose local dispatch jobs ended and whose active authorizations were
+    /// Settled assignments whose local dispatch jobs ended or whose active authorizations were
     /// revoked, so the runs they granted stop.
     pub settled_assignments: BTreeSet<String>,
     /// Assignments with an arrived input still pending delivery to their running work.
     pub routed_inputs: BTreeSet<String>,
+    /// Assignments the apply deleted. The delete cascades away their runs and authorizations,
+    /// so the caller stops running work whose authorization no longer exists.
+    pub removed_assignments: BTreeSet<String>,
 }
 
 impl ChatSyncEffects {
@@ -100,6 +103,7 @@ impl ChatSyncEffects {
             && self.queued_assignments.is_empty()
             && self.settled_assignments.is_empty()
             && self.routed_inputs.is_empty()
+            && self.removed_assignments.is_empty()
     }
 }
 
@@ -380,6 +384,11 @@ async fn record_applied_attachments(
 /// conversation took the last one away. A draft, queued, message, scheduled message, terminal
 /// context, or resource thread reference keeps the row. Removing the row cascades to its
 /// resource. The file stays: the sync asset sweep removes it once nothing names its digest.
+///
+/// Assignment context packages list message sources only, never attachments. A provider turn
+/// names its attachments through the message references it persists with the turn, which keep
+/// the row; a launch that read an attachment just before its row was reclaimed fails on that
+/// reference's foreign key instead of naming a missing row.
 async fn reclaim_applied_attachments(
     connection: &mut SqliteConnection,
     effects: &mut ChatSyncEffects,
@@ -553,8 +562,9 @@ async fn sweep_uncovered_authorizations(
 /// A queued assignment is reported so its executing device starts it. A settled assignment
 /// ends the device's queued or claimed dispatch job and revokes its active authorizations with
 /// their revocation jobs, so a run this device executes stops when another device settled the
-/// work. Other states and deleted assignments, whose cascade removed their local rows, change
-/// nothing. Repeating it for a settled assignment revokes nothing more.
+/// work. A deleted assignment, whose cascade removed its local runs and authorizations, is
+/// reported so the caller stops the work those runs still execute. Other states change nothing.
+/// Repeating it for a settled assignment revokes nothing more.
 async fn follow_assignment_state(
     connection: &mut SqliteConnection,
     assignment_id: &str,
@@ -567,6 +577,12 @@ async fn follow_assignment_state(
             .await
             .map_err(persistence_error)?;
     let Some((state, teammate_id)) = row else {
+        // The delete cascaded away the assignment's runs and authorizations, so no revocation
+        // job can name them; the report wakes the sweep that stops running work whose
+        // authorization no longer exists.
+        effects
+            .removed_assignments
+            .insert(assignment_id.to_string());
         return Ok(());
     };
     match state.as_str() {
@@ -575,7 +591,7 @@ async fn follow_assignment_state(
         }
         "completed" | "failed" | "cancelled" => {
             let now = now();
-            sqlx::query(
+            let ended_jobs = sqlx::query(
                 "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
                  WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
             )
@@ -588,7 +604,8 @@ async fn follow_assignment_state(
             .bind(assignment_id)
             .execute(&mut *connection)
             .await
-            .map_err(persistence_error)?;
+            .map_err(persistence_error)?
+            .rows_affected();
             let revoked = revoke_assignment_authorizations(
                 connection,
                 assignment_id,
@@ -596,7 +613,10 @@ async fn follow_assignment_state(
                 ASSIGNMENT_SETTLED_REASON,
             )
             .await?;
-            if revoked > 0 {
+            // A claim that has not authorized yet has nothing to revoke; ending its job stops
+            // the launch, which refuses a settled assignment, and the report wakes the drain
+            // for a run that started meanwhile.
+            if ended_jobs > 0 || revoked > 0 {
                 effects.revoked_teammates.insert(teammate_id);
                 effects
                     .settled_assignments

@@ -1213,6 +1213,49 @@ async fn a_remotely_settled_assignment_ends_its_dispatch_and_revokes_its_runs_on
 }
 
 #[tokio::test]
+async fn a_remote_settle_stops_a_claim_that_has_not_authorized_yet() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    // An earlier run's authorization is already revoked, so the claimed launch has nothing
+    // active to revoke.
+    sqlx::query(
+        "UPDATE chat_assignment_authorization_revisions
+         SET decision_state = 'revoked', reason = 'Earlier run ended', revoked_at = ?",
+    )
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_assignment_dispatch_jobs
+            (id, assignment_id, state, claim_token, available_at, created_at, updated_at)
+         VALUES ('dispatch:sync-effects', 'assignment:sync-effects', 'claimed', 'claim:first',
+                 ?, ?, ?)",
+    )
+    .bind(NOW)
+    .bind(NOW)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    set_assignment_state(&pool, "cancelled").await;
+
+    let settled = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+
+    assert_eq!(dispatch_job_state(&pool).await, "cancelled");
+    assert_eq!(
+        settled.settled_assignments,
+        BTreeSet::from(["assignment:sync-effects".to_string()])
+    );
+    assert_eq!(
+        settled.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    let replayed = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+    assert!(replayed.is_empty());
+}
+
+#[tokio::test]
 async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_device() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;

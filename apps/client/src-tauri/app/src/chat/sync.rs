@@ -41,6 +41,9 @@ pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 /// Change notice topic of a conversation an apply deleted; the key is the conversation id.
 pub(crate) const CHAT_CONVERSATION_REMOVED_TOPIC: &str = "chat-conversation-removed";
 
+/// Change notice topic of a work assignment an apply deleted; the key is the assignment id.
+pub(crate) const CHAT_ASSIGNMENT_REMOVED_TOPIC: &str = "chat-assignment-removed";
+
 /// Change notice topic of a queued work assignment that arrived or changed; the key is the
 /// assignment id.
 pub(crate) const CHAT_ASSIGNMENT_QUEUED_TOPIC: &str = "chat-assignment-queued";
@@ -90,6 +93,9 @@ fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     for conversation_id in effects.removed_conversations {
         changes.report(CHAT_CONVERSATION_REMOVED_TOPIC, conversation_id);
     }
+    for assignment_id in effects.removed_assignments {
+        changes.report(CHAT_ASSIGNMENT_REMOVED_TOPIC, assignment_id);
+    }
     for assignment_id in effects.queued_assignments {
         changes.report(CHAT_ASSIGNMENT_QUEUED_TOPIC, assignment_id);
     }
@@ -130,7 +136,7 @@ pub(crate) use waker::{AssignmentWaker, RevocationWaker, SyncedAssignmentWork, o
 mod waker {
     use super::{
         CHAT_ACCESS_REVOKED_TOPIC, CHAT_ASSIGNMENT_INPUT_TOPIC, CHAT_ASSIGNMENT_QUEUED_TOPIC,
-        CHAT_CONVERSATION_REMOVED_TOPIC,
+        CHAT_ASSIGNMENT_REMOVED_TOPIC, CHAT_CONVERSATION_REMOVED_TOPIC,
     };
     use ganbaru_sync::ChangeNotice;
     use std::collections::BTreeSet;
@@ -173,12 +179,13 @@ mod waker {
         }
     }
 
-    /// Whether sync change `notices` report revoked Chat authorizations or deleted
-    /// conversations, whose cascade removed the authorizations that targeted them.
+    /// Whether sync change `notices` report revoked Chat authorizations, or deleted conversations
+    /// or assignments, whose cascade removed the authorizations that targeted them.
     pub(super) fn access_revoked(notices: &[ChangeNotice]) -> bool {
         notices.iter().any(|notice| {
             notice.topic == CHAT_ACCESS_REVOKED_TOPIC
                 || notice.topic == CHAT_CONVERSATION_REMOVED_TOPIC
+                || notice.topic == CHAT_ASSIGNMENT_REMOVED_TOPIC
         })
     }
 

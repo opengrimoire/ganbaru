@@ -115,6 +115,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             queued_assignments: BTreeSet::from(["assignment:queued".to_string()]),
             settled_assignments: BTreeSet::from(["assignment:settled".to_string()]),
             routed_inputs: BTreeSet::from(["assignment:routed".to_string()]),
+            removed_assignments: BTreeSet::from(["assignment:removed".to_string()]),
         },
         &mut sink,
     );
@@ -129,6 +130,7 @@ fn only_revocations_removals_and_assignment_work_are_reported() {
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:a"),
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:b"),
             (CHAT_CONVERSATION_REMOVED_TOPIC, "conversation:removed"),
+            (CHAT_ASSIGNMENT_REMOVED_TOPIC, "assignment:removed"),
             (CHAT_ASSIGNMENT_QUEUED_TOPIC, "assignment:queued"),
             (CHAT_ASSIGNMENT_INPUT_TOPIC, "assignment:routed"),
         ]
@@ -152,6 +154,14 @@ fn revocation_notices_wake_the_drain_and_other_notices_do_not() {
     };
     assert!(waker::access_revoked(&[unrelated.clone(), revoked]));
     assert!(waker::access_revoked(&[unrelated.clone(), removed]));
+    let removed_assignment = ChangeNotice {
+        topic: CHAT_ASSIGNMENT_REMOVED_TOPIC,
+        key: "assignment:removed".to_string(),
+    };
+    assert!(waker::access_revoked(&[
+        unrelated.clone(),
+        removed_assignment
+    ]));
     assert!(!waker::access_revoked(&[unrelated]));
     assert!(!waker::access_revoked(&[]));
 }

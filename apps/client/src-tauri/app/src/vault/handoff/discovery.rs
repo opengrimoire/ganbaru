@@ -42,8 +42,6 @@ static CLIENT_DISCOVERY: tokio::sync::Mutex<ClientDiscovery> =
 
 struct Responder {
     daemon: ServiceDaemon,
-    /// Random host name of every advertisement in this app run.
-    host_name: String,
     /// Counts the local address changes the responder reported.
     address_changes: watch::Sender<u64>,
     /// Held for the length of one browse, since stopping a browse stops every browse of the
@@ -57,9 +55,8 @@ impl Responder {
             ServiceDaemon::new().map_err(|error| format!("start the mDNS responder: {error}"))?;
         let started = Self::configure(&daemon);
         match started {
-            Ok((host_name, address_changes)) => Ok(Self {
+            Ok(address_changes) => Ok(Self {
                 daemon,
-                host_name,
                 address_changes,
                 browsing: Mutex::new(()),
             }),
@@ -72,11 +69,10 @@ impl Responder {
         }
     }
 
-    fn configure(daemon: &ServiceDaemon) -> Result<(String, watch::Sender<u64>), String> {
+    fn configure(daemon: &ServiceDaemon) -> Result<watch::Sender<u64>, String> {
         daemon
             .disable_interface(vec![IfKind::LoopbackV4, IfKind::LoopbackV6])
             .map_err(|error| format!("exclude loopback from the mDNS responder: {error}"))?;
-        let host_name = discovery::random_host_name()?;
         let events = daemon
             .monitor()
             .map_err(|error| format!("monitor the mDNS responder: {error}"))?;
@@ -86,7 +82,7 @@ impl Responder {
             .name("ganbaru-mdns-events".to_string())
             .spawn(move || forward_responder_events(events, forwarded))
             .map_err(|error| format!("start the mDNS event thread: {error}"))?;
-        Ok((host_name, address_changes))
+        Ok(address_changes)
     }
 
     fn register(&self, advertisement: &Advertisement) -> Result<(), String> {
@@ -332,14 +328,8 @@ fn refresh_advertisement<R: Runtime>(
                 None
             } else {
                 let responder = responder()?;
-                let advertisement = discovery::advertisement(
-                    &key,
-                    &fingerprint,
-                    &responder.host_name,
-                    port,
-                    &addresses,
-                    unix_seconds,
-                );
+                let advertisement =
+                    discovery::advertisement(&key, &fingerprint, port, &addresses, unix_seconds);
                 (!advertisement.addresses.is_empty()).then_some((responder, advertisement))
             }
         }
@@ -678,7 +668,6 @@ mod tests {
         discovery::advertisement(
             &DiscoveryKey::from_bytes([7; 32]),
             &[0xab; FINGERPRINT_BYTES],
-            "0011223344556677.local.",
             43_821,
             addresses,
             now.as_secs(),

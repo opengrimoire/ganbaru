@@ -1776,7 +1776,7 @@ fn handoff_staging_is_private_even_when_it_already_exists() {
 }
 
 #[test]
-fn device_certificate_subject_names_the_device() {
+fn device_certificate_subject_names_no_device() {
     let root = TestDirectory::new("certificate-subject");
     let manager = PairingManager::default();
     manager
@@ -1790,10 +1790,16 @@ fn device_certificate_subject_names_the_device() {
 
     assert_eq!(device_id, "device-subject-check");
     assert!(
-        certificate
+        !certificate
             .windows(device_id.len())
             .any(|window| window == device_id.as_bytes()),
-        "certificate subject should carry the device ID"
+        "certificate should not carry the device ID"
+    );
+    assert!(
+        certificate
+            .windows(DEVICE_CERTIFICATE_NAME.len())
+            .any(|window| window == DEVICE_CERTIFICATE_NAME.as_bytes()),
+        "certificate subject should carry the shared device name"
     );
     assert!(
         !certificate
@@ -1948,4 +1954,17 @@ fn only_linked_desktops_keep_the_admin_key_they_send_across_restarts() {
             ("device-phone".to_string(), None),
         ]
     );
+}
+
+#[test]
+fn device_certificates_name_no_device() {
+    let device_id = "device-phone-identifying";
+    let identity = create_identity(device_id.to_string()).expect("phone identity");
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(&identity.certificate)
+        .expect("certificate encoding");
+    let contains = |needle: &[u8]| der.windows(needle.len()).any(|window| window == needle);
+    assert!(!contains(device_id.as_bytes()));
+    assert!(contains(DEVICE_CERTIFICATE_NAME.as_bytes()));
+    assert_eq!(identity.device_id, device_id);
 }

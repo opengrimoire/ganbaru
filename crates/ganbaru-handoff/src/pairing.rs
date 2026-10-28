@@ -38,6 +38,9 @@ const STAGING_DIRECTORY: &str = "vault-handoff-staging";
 #[cfg(desktop)]
 const INVITATION_LIFETIME_MS: i64 = 3 * 60 * 1_000;
 const MAX_CERTIFICATE_BYTES: usize = 16 * 1024;
+/// Common name of every device certificate. Any LAN host that connects to a listener receives
+/// its certificate, so the certificate names no device, vault, or person.
+const DEVICE_CERTIFICATE_NAME: &str = "Ganbaru device";
 const MAX_LINKED_PEERS: usize = 32;
 const MAX_REVOKED_PEERS: usize = 64;
 /// Most device certificates the coordinator pins at once, linked and revoked together. Every
@@ -1145,7 +1148,7 @@ fn create_identity(device_id: String) -> Result<StoredIdentity, String> {
         .map_err(|error| format!("configure device certificate: {error}"))?;
     params
         .distinguished_name
-        .push(DnType::CommonName, device_id.as_str());
+        .push(DnType::CommonName, DEVICE_CERTIFICATE_NAME);
     let certificate = params
         .self_signed(&signing_key)
         .map_err(|error| format!("generate device certificate: {error}"))?;

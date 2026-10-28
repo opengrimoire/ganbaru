@@ -917,7 +917,6 @@ mod tests {
         let advertised = discovery::advertisement(
             &DiscoveryKey::from_bytes([7; 32]),
             &fingerprint,
-            "0011223344556677.local.",
             43_821,
             &[],
             hour_start,

@@ -4,7 +4,7 @@
 //! member tag: an HMAC of its certificate fingerprint and the current hour under the vault's
 //! discovery key. Linked devices know the key and the fingerprint, so they compute the names to
 //! look for; any other device sees only that a coordinator exists, a name that changes every
-//! hour, a random host name, and the advertised LAN addresses. This module holds the record
+//! hour, a host name that changes with it, and the advertised LAN addresses. This module holds the record
 //! format and the checks shared by every browser and advertiser, independent of the mDNS
 //! implementation that carries them.
 
@@ -35,8 +35,8 @@ const MEMBER_TAG_DOMAIN: &[u8] = b"ganbaru-sync/discovery/v1";
 const MEMBER_TAG_BYTES: usize = 16;
 /// Length of one member tag bucket.
 const TAG_HOUR_SECONDS: u64 = 3600;
-/// Random bytes in an advertised host name.
-const HOST_NAME_BYTES: usize = 8;
+/// Hex digits of the member tag an advertised host name repeats.
+const HOST_NAME_DIGITS: usize = 16;
 /// Bytes of a certificate fingerprint.
 pub const FINGERPRINT_BYTES: usize = 32;
 
@@ -137,8 +137,8 @@ pub fn expected_instance_names(
 pub struct Advertisement {
     /// The member tag of the current hour.
     pub instance_name: String,
-    /// Random host name of the form `<16 hex>.local.`, so the operating system host name never
-    /// appears on the network.
+    /// Host name `<16 hex>.local.` taken from the member tag, so the operating system host name
+    /// never appears on the network and the host name changes with the tag every hour.
     pub host_name: String,
     pub port: u16,
     /// Reportable addresses only, at most [`MAX_ADVERTISED_ADDRESSES`].
@@ -154,7 +154,6 @@ pub struct Advertisement {
 pub fn advertisement(
     key: &DiscoveryKey,
     fingerprint: &[u8; FINGERPRINT_BYTES],
-    host_name: &str,
     port: u16,
     addresses: &[IpAddr],
     unix_seconds: u64,
@@ -168,22 +167,15 @@ pub fn advertisement(
             reportable.push(address);
         }
     }
+    let instance_name = member_tag(key, fingerprint, tag_hour(unix_seconds));
+    let host_name = format!("{}.local.", &instance_name[..HOST_NAME_DIGITS]);
     Advertisement {
-        instance_name: member_tag(key, fingerprint, tag_hour(unix_seconds)),
-        host_name: host_name.to_string(),
+        instance_name,
+        host_name,
         port,
         addresses: reportable,
         txt: vec![(TXT_VERSION_KEY.to_string(), TXT_VERSION.to_string())],
     }
-}
-
-/// A random host name `<16 hex>.local.`, chosen once per responder start.
-pub fn random_host_name() -> Result<String, String> {
-    let mut bytes = [0_u8; HOST_NAME_BYTES];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| "generate a discovery host name".to_string())?;
-    Ok(format!("{}.local.", lower_hex(&bytes)))
 }
 
 /// One resolved DNS-SD service, as any browser reports it.
@@ -353,15 +345,7 @@ mod tests {
     fn browsers_accept_one_hour_of_skew_either_way_and_refuse_two() {
         let key = sequential_key();
         let advertised_at = |hour: u64| {
-            advertisement(
-                &key,
-                &fingerprint(),
-                "h.local.",
-                43_821,
-                &[],
-                hour * 3600 + 17,
-            )
-            .instance_name
+            advertisement(&key, &fingerprint(), 43_821, &[], hour * 3600 + 17).instance_name
         };
         let expected = expected_instance_names(
             std::slice::from_ref(&key),
@@ -490,19 +474,12 @@ mod tests {
         .iter()
         .map(|address| address.parse().expect("address"))
         .collect();
-        let advertisement = advertisement(
-            &key,
-            &fingerprint(),
-            "0011223344556677.local.",
-            43_821,
-            &addresses,
-            HOUR_START + 5,
-        );
+        let advertisement = advertisement(&key, &fingerprint(), 43_821, &addresses, HOUR_START + 5);
         assert_eq!(
             advertisement,
             Advertisement {
                 instance_name: "1fbac9365d94a9541d55a6b31eb89632".to_string(),
-                host_name: "0011223344556677.local.".to_string(),
+                host_name: "1fbac9365d94a954.local.".to_string(),
                 port: 43_821,
                 addresses: vec![
                     IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
@@ -515,22 +492,25 @@ mod tests {
         let many: Vec<IpAddr> = (1..=20)
             .map(|host| IpAddr::V4(Ipv4Addr::new(10, 0, 0, host)))
             .collect();
-        let capped = super::advertisement(&key, &fingerprint(), "h.local.", 1, &many, 0);
+        let capped = super::advertisement(&key, &fingerprint(), 1, &many, 0);
         assert_eq!(capped.addresses, many[..MAX_ADVERTISED_ADDRESSES].to_vec());
     }
 
     #[test]
-    fn random_host_names_are_sixteen_hex_digits_under_local() {
-        let first = random_host_name().expect("host name");
-        let second = random_host_name().expect("host name");
-        assert_ne!(first, second);
-        let label = first.strip_suffix(".local.").expect("local domain");
-        assert_eq!(label.len(), 16);
-        assert!(
-            label
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        );
+    fn host_names_change_with_the_member_tag_every_hour() {
+        let key = sequential_key();
+        let at = |hour: u64| advertisement(&key, &fingerprint(), 1, &[], hour * 3600);
+        let (first, next) = (at(478_000), at(478_001));
+        assert_eq!(first.host_name, at(478_000).host_name);
+        assert_ne!(first.host_name, next.host_name);
+        for advertised in [first, next] {
+            let label = advertised
+                .host_name
+                .strip_suffix(".local.")
+                .expect("local domain");
+            assert_eq!(label.len(), 16);
+            assert!(advertised.instance_name.starts_with(label));
+        }
     }
 
     #[test]

@@ -104,6 +104,8 @@ fn mobile_runtime_registers_portable_core_commands() {
         "vault::database_rollback::vault_restore_database_rollback",
         "vault::database_rollback::vault_dismiss_database_rollback",
         "chat::channels::chat_list_navigation_channels",
+        "chat::conflicts::chat_conflicts",
+        "chat::conflicts::chat_resolve_conflict",
         "chat::organization::chat_post_message",
         "chat::organization::chat_read_channel_page",
         "chat::organization::chat_read_reply_thread_page",

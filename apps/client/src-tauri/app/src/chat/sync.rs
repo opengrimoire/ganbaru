@@ -15,7 +15,10 @@
 //! whose authorization is gone stop. A work assignment that settled on another device ends its
 //! local dispatch job and revokes its authorizations the same way, so the executing device stops
 //! its run. Queued assignments and pending inputs are reported too, and desktop dispatch starts
-//! the ones whose executing device is this one. Android
+//! the ones whose executing device is this one. Started assignments are reported so a device
+//! whose concurrent start merged onto another executing device stops its own run. The hook also
+//! settles concurrent folder grant edits: when one inherits the channel override and that
+//! override is stricter than the explicit override the merge kept, the grant takes it. Android
 //! never holds an active authorization, since runs execute only on desktop, so it has no drain to
 //! wake. Dispatch and the readers of teammates and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
@@ -24,7 +27,11 @@ use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::chat;
-use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
+use ganbaru_sync::manifest::vault::chat::folder_grant_group;
+use ganbaru_sync::{
+    ChangeSink, ConcurrentVersion, HookError, HookFuture, Hooks, MaterializeHook, SettleFuture,
+};
+use ganbaru_sync_contracts::{Field, GroupId, Value};
 use sqlx::SqliteConnection;
 use std::path::Path;
 
@@ -51,6 +58,10 @@ pub(crate) const CHAT_ASSIGNMENT_QUEUED_TOPIC: &str = "chat-assignment-queued";
 /// Change notice topic of a work assignment with an arrived input pending delivery; the key is
 /// the assignment id.
 pub(crate) const CHAT_ASSIGNMENT_INPUT_TOPIC: &str = "chat-assignment-input";
+
+/// Change notice topic of a started, unsettled work assignment that arrived or changed; the key
+/// is the assignment id.
+pub(crate) const CHAT_ASSIGNMENT_STARTED_TOPIC: &str = "chat-assignment-started";
 
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
@@ -99,6 +110,9 @@ fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     for assignment_id in effects.queued_assignments {
         changes.report(CHAT_ASSIGNMENT_QUEUED_TOPIC, assignment_id);
     }
+    for assignment_id in effects.started_assignments {
+        changes.report(CHAT_ASSIGNMENT_STARTED_TOPIC, assignment_id);
+    }
     for assignment_id in effects.routed_inputs {
         changes.report(CHAT_ASSIGNMENT_INPUT_TOPIC, assignment_id);
     }
@@ -120,6 +134,84 @@ impl MaterializeHook for ChatApplyHook {
             Ok(())
         })
     }
+
+    fn settled_groups(&self, table: &'static TableSpec) -> &'static [GroupId] {
+        if table.id == chat::FOLDER_GRANTS.id {
+            &SETTLED_GRANT_GROUPS
+        } else {
+            &[]
+        }
+    }
+
+    fn settle<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        key: &'a str,
+        group: GroupId,
+        versions: &'a [ConcurrentVersion],
+    ) -> SettleFuture<'a> {
+        Box::pin(async move {
+            if table.id != chat::FOLDER_GRANTS.id || group != folder_grant_group::GRANT {
+                return Ok(None);
+            }
+            settle_folder_grant(conn, key, versions)
+                .await
+                .map_err(hook_error)
+        })
+    }
+}
+
+/// Folder grant groups whose concurrent versions [`ChatApplyHook`] settles.
+const SETTLED_GRANT_GROUPS: [GroupId; 1] = [folder_grant_group::GRANT];
+
+/// Position of the runtime approval override in a folder grant's grant group value.
+const GRANT_APPROVAL_FIELD: usize = 3;
+
+/// Position of the revocation time in a folder grant's grant group value.
+const GRANT_REVOKED_FIELD: usize = 4;
+
+/// The approval override a grant group version holds, `None` when it inherits.
+fn grant_approval(value: &Value) -> Option<&str> {
+    match value.fields().get(GRANT_APPROVAL_FIELD) {
+        Some(Field::Text(policy)) => Some(policy),
+        _ => None,
+    }
+}
+
+/// Settles the concurrent grant group `versions` of the folder grant `key`: a revocation
+/// stands, and otherwise the winner takes the stricter channel override an inheriting version
+/// follows, see [`sync_effects::settled_grant_approval`].
+async fn settle_folder_grant(
+    conn: &mut SqliteConnection,
+    key: &str,
+    versions: &[ConcurrentVersion],
+) -> ganbaru_chat_contracts::models::ChatResult<Option<Value>> {
+    let Some(winner) = versions.iter().find(|version| version.won) else {
+        return Ok(None);
+    };
+    if !matches!(
+        winner.value.fields().get(GRANT_REVOKED_FIELD),
+        None | Some(Field::Null)
+    ) {
+        return Ok(None);
+    }
+    let approvals: Vec<Option<&str>> = versions
+        .iter()
+        .map(|version| grant_approval(&version.value))
+        .collect();
+    let Some(policy) =
+        sync_effects::settled_grant_approval(conn, key, grant_approval(&winner.value), &approvals)
+            .await?
+    else {
+        return Ok(None);
+    };
+    let mut fields = winner.value.fields().to_vec();
+    let Some(approval) = fields.get_mut(GRANT_APPROVAL_FIELD) else {
+        return Ok(None);
+    };
+    *approval = Field::Text(policy);
+    Ok(Value::new(fields).ok())
 }
 
 /// `hooks` with the Chat post-apply hooks added.
@@ -136,7 +228,8 @@ pub(crate) use waker::{AssignmentWaker, RevocationWaker, SyncedAssignmentWork, o
 mod waker {
     use super::{
         CHAT_ACCESS_REVOKED_TOPIC, CHAT_ASSIGNMENT_INPUT_TOPIC, CHAT_ASSIGNMENT_QUEUED_TOPIC,
-        CHAT_ASSIGNMENT_REMOVED_TOPIC, CHAT_CONVERSATION_REMOVED_TOPIC,
+        CHAT_ASSIGNMENT_REMOVED_TOPIC, CHAT_ASSIGNMENT_STARTED_TOPIC,
+        CHAT_CONVERSATION_REMOVED_TOPIC,
     };
     use ganbaru_sync::ChangeNotice;
     use std::collections::BTreeSet;
@@ -147,6 +240,9 @@ mod waker {
     pub(crate) struct SyncedAssignmentWork {
         /// Queued assignments to start when this device executes them.
         pub(crate) queued: BTreeSet<String>,
+        /// Started assignments, which this device stops when it runs them without being their
+        /// executing device.
+        pub(crate) started: BTreeSet<String>,
         /// Assignments with inputs pending delivery to the work this device runs.
         pub(crate) routed: BTreeSet<String>,
     }
@@ -157,6 +253,8 @@ mod waker {
         for notice in notices {
             if notice.topic == CHAT_ASSIGNMENT_QUEUED_TOPIC {
                 work.queued.insert(notice.key.clone());
+            } else if notice.topic == CHAT_ASSIGNMENT_STARTED_TOPIC {
+                work.started.insert(notice.key.clone());
             } else if notice.topic == CHAT_ASSIGNMENT_INPUT_TOPIC {
                 work.routed.insert(notice.key.clone());
             }
@@ -213,7 +311,7 @@ mod waker {
             super::RevocationWake::wake_revocation_drain(app);
         }
         let work = assignment_work(notices);
-        if work.queued.is_empty() && work.routed.is_empty() {
+        if work.queued.is_empty() && work.started.is_empty() && work.routed.is_empty() {
             return;
         }
         if let Some(waker) = app.try_state::<AssignmentWaker>() {

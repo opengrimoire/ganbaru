@@ -2376,6 +2376,102 @@ fn takeover_ends_the_local_dispatch_jobs_of_the_work_it_settles() {
     });
 }
 
+/// Stores a sync writer of device `device_id` in `state`, numbered `index` for its unique keys,
+/// with a removal cutoff when `removed`.
+async fn insert_sync_writer(
+    pool: &SqlitePool,
+    index: u8,
+    device_id: &str,
+    state: &str,
+    removed: bool,
+) {
+    sqlx::query(
+        "INSERT OR IGNORE INTO sync_spaces (space_id, vault_id, created_at_ms)
+         VALUES (zeroblob(16), 'vault', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_writers
+            (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
+             applied_seq, head_hash, head_clock, created_at_ms, removal_cutoff_seq)
+         VALUES (zeroblob(16), ?1, ?2, ?3, x'00', ?4, 1, 0, zeroblob(32), 0, 0, ?5)",
+    )
+    .bind(vec![index; 16])
+    .bind(vec![index; 32])
+    .bind(device_id)
+    .bind(state)
+    .bind(removed.then_some(0_i64))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn chat_writers_list_linked_devices_with_an_active_writer_that_was_not_removed() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        insert_sync_writer(&pool, 1, "device:replica", "active", false).await;
+        insert_sync_writer(&pool, 2, "device:replica", "retired", false).await;
+        insert_sync_writer(&pool, 3, "device:unlinked", "revoked", false).await;
+        insert_sync_writer(&pool, 4, "device:removed", "active", true).await;
+        insert_sync_writer(&pool, 5, "device:forked", "forked", false).await;
+        assert_eq!(
+            super::common::active_writer_devices(&pool).await.unwrap(),
+            vec!["device:replica".to_string()]
+        );
+    });
+}
+
+#[test]
+fn a_device_whose_start_merged_onto_another_executor_ends_only_its_own_dispatch() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "working").await;
+        sqlx::query(
+            "INSERT INTO chat_assignment_dispatch_jobs
+                (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:old', 'assignment:old', 'claimed', ?1, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let job_state = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT state FROM chat_assignment_dispatch_jobs WHERE id = 'dispatch:old'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+
+        let executor = assignments::release_moved_assignment(&pool, &assignment_id, "device:old")
+            .await
+            .unwrap();
+        assert!(!executor, "the executing device keeps its run");
+        assert_eq!(job_state().await, "claimed");
+
+        let released = assignments::release_moved_assignment(&pool, &assignment_id, NEW_OWNER)
+            .await
+            .unwrap();
+        assert!(released);
+        assert_eq!(job_state().await, "cancelled");
+        let (state, ..) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(
+            state, "working",
+            "the replicated assignment is left to its executor"
+        );
+        let repeated = assignments::release_moved_assignment(&pool, &assignment_id, NEW_OWNER)
+            .await
+            .unwrap();
+        assert!(!repeated);
+    });
+}
+
 #[test]
 fn takeover_visits_every_stranded_assignment_past_one_batch() {
     tauri::async_runtime::block_on(async {
@@ -2445,7 +2541,8 @@ fn after_a_whole_vault_handoff_the_new_owner_takes_over_through_its_ownership_st
         seed_assignment_on_old_owner(&pool, "queued").await;
         let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
 
-        let before = super::common::chat_writers_from_status(&new_owner.status("vault").unwrap());
+        let before =
+            super::common::chat_writers_from_status(&new_owner.status("vault").unwrap(), []);
         assert_eq!(
             assignments::take_over_stranded_assignments(
                 &pool,
@@ -2473,7 +2570,8 @@ fn after_a_whole_vault_handoff_the_new_owner_takes_over_through_its_ownership_st
         new_owner
             .finalize_incoming("vault", "transfer", generation)
             .unwrap();
-        let after = super::common::chat_writers_from_status(&new_owner.status("vault").unwrap());
+        let after =
+            super::common::chat_writers_from_status(&new_owner.status("vault").unwrap(), []);
         assert!(after.includes(NEW_OWNER));
         assert!(!after.includes("device:old"));
         let taken = assignments::take_over_stranded_assignments(
@@ -2491,7 +2589,7 @@ fn after_a_whole_vault_handoff_the_new_owner_takes_over_through_its_ownership_st
         assert_eq!(executor.as_deref(), Some(NEW_OWNER));
 
         let old_writers =
-            super::common::chat_writers_from_status(&old_owner.status("vault").unwrap());
+            super::common::chat_writers_from_status(&old_owner.status("vault").unwrap(), []);
         assert!(!old_writers.includes("device:old"));
         let _ = std::fs::remove_dir_all(directory);
     });

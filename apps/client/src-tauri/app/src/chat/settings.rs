@@ -36,7 +36,9 @@ pub(crate) use runtime_approval::{
     approved_runtime, ask_runtime_approval, ingress_review_items, pending_portable_items,
     require_runtime_approved_on_device, validate_runtime_prompt,
 };
-pub(crate) use store::{mutate_chat_config, provider_mut, read_settings};
+pub(crate) use store::{
+    mutate_chat_config, mutate_chat_configuration, provider_mut, read_settings,
+};
 
 pub(crate) fn provider_not_found_error() -> ChatError {
     ChatError::new(

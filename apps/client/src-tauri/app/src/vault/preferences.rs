@@ -30,7 +30,7 @@ use ganbaru_sync::manifest::vault::preferences::DOMAIN_NAME as PREFERENCES_DOMAI
 use registry::{PATH_SEPARATOR, PreferenceSpec, Scope, Shape, Target};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Manager, Runtime};
@@ -483,8 +483,18 @@ pub(crate) fn update_native_device_entry<R: Runtime, T, E>(
     storage_error: impl Fn(String) -> E,
 ) -> Result<T, E> {
     let path = native_device_path(app, name).map_err(&storage_error)?;
+    update_native_entry_at(&path, name, replace, storage_error)
+}
+
+/// [`update_native_device_entry`] on the device preference file at `path`.
+fn update_native_entry_at<T, E>(
+    path: &Path,
+    name: &'static str,
+    replace: impl FnOnce(Option<&Value>) -> Result<(Value, T), E>,
+    storage_error: impl Fn(String) -> E,
+) -> Result<T, E> {
     let mut outcome = None;
-    device::update_device_file(&path, |entries| {
+    device::update_device_file(path, |entries| {
         let (changed, result) = replace_native_entry(entries, name, replace);
         outcome = Some(result);
         changed
@@ -847,5 +857,53 @@ pub(crate) mod tests {
         assert!(!changed);
         assert_eq!(result, Err("refused".to_owned()));
         assert_eq!(entries["chat"], json!({ "a": 1 }));
+    }
+
+    /// The native Chat entry and generic device patches share one file, so each write keeps
+    /// what the other stored.
+    #[test]
+    fn preferences_native_entry_and_generic_patches_keep_each_other_in_the_device_file() {
+        let directory = super::super::tests::unique_path("native-device-entry");
+        let path = device::device_file_path(&directory, "vault-1").unwrap();
+        let chat = json!({ "panels": { "sessionList": { "collapsed": true } } });
+        let replace_with = |value: Value| {
+            move |current: Option<&Value>| Ok::<_, String>((value, current.cloned()))
+        };
+
+        let previous = update_native_entry_at(
+            &path,
+            CHAT_DEVICE_ENTRY,
+            replace_with(chat.clone()),
+            |error| error,
+        );
+        assert_eq!(previous, Ok(None));
+        let plan = plan_patches(vec![patch("theme.activeId", json!("dark"))]).unwrap();
+        assert!(
+            device::update_device_file(&path, |entries| apply_device_ops(entries, plan.device))
+                .unwrap()
+        );
+        let stored = device::read_device_file(&path).unwrap();
+        assert_eq!(stored[CHAT_DEVICE_ENTRY], chat);
+        assert_eq!(stored["theme.activeId"], "dark");
+
+        let collapsed = json!({ "panels": { "sessionList": { "collapsed": false } } });
+        let previous = update_native_entry_at(
+            &path,
+            CHAT_DEVICE_ENTRY,
+            replace_with(collapsed.clone()),
+            |error| error,
+        );
+        assert_eq!(previous, Ok(Some(chat)));
+        let refused = update_native_entry_at(
+            &path,
+            CHAT_DEVICE_ENTRY,
+            |_| Err::<(Value, ()), _>("refused".to_owned()),
+            |error| error,
+        );
+        assert_eq!(refused, Err("refused".to_owned()));
+        let stored = device::read_device_file(&path).unwrap();
+        assert_eq!(stored[CHAT_DEVICE_ENTRY], collapsed);
+        assert_eq!(stored["theme.activeId"], "dark");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

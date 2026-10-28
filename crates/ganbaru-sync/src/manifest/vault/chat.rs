@@ -33,7 +33,7 @@
 //!
 //! Execution, drafts, review history, provider state, receipts, dispatch claims, cleanup jobs,
 //! and the access and audience counters stay on the device as `Local` tables, and message search
-//! is `Derived`. Chat is owner-only: replicas refuse Chat writes until its presentation lands.
+//! is `Derived`. Replicas write Chat like the owner; device-local state never leaves the device.
 //! Ids 357 to 359, 365 to 369, 382 to 389, 391 to 394, 398, and 399 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
@@ -1656,7 +1656,7 @@ const fn device(name: &'static str, triggers: &'static [DomainTrigger]) -> Devic
     }
 }
 
-/// Chat domain. Chat writes stay owner-only until replicas can present its conflicts.
+/// Chat domain. Replicas write it; a concurrent removal or revocation wins over a widening.
 pub const DOMAIN: DomainManifest = DomainManifest {
     name: DOMAIN_NAME,
     table_ids: TableIdRange {
@@ -1856,7 +1856,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ),
     ],
     engine: &[],
-    replica_writable: false,
+    replica_writable: true,
     unconverted: &[],
     assets: &[ATTACHMENTS_CLASS],
 };

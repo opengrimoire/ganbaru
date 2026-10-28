@@ -14,6 +14,8 @@ A run links one organizational request to one provider session and its canonical
 
 Cancellation targets the active run and its owned process tree. It never deletes prior events or cancels unrelated parallel work.
 
+A run executes on one device, and its process, approvals, questions, terminal, and execution state stay there. Other linked devices see its messages and can complete or cancel its assignment, which stops the run on the executing device.
+
 ## Interactive requests and approvals
 
 Questions, permission requests, plan confirmations, and provider-native choices appear as validated interactive requests with a stable identity and exactly one terminal resolution. The UI states the requested operation and effective authority: approval panels show the concrete subject (the exact command, path, URL, pattern, query, or tool) outside the collapsed details, and "Allow for session" lists every permission it grants. Answering a provider request never bypasses Ganbaru's own access checks, and stale or duplicate responses are rejected. Execution and its interactive requests stay on the device that executes the assignment: other devices see its progress but cannot answer its approvals or questions.

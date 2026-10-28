@@ -3,7 +3,9 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::{calendar, distractions, music, projects, quick_notes, themes};
+use ganbaru_sync::manifest::vault::{
+    calendar, chat, distractions, music, projects, quick_notes, themes,
+};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -35,6 +37,11 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
             restore_distraction_category,
         )
         .with(&distractions::USAGE_LIMITS, restore_usage_limit)
+        .with(&chat::PARTICIPANTS, refuse_chat_row)
+        .with(&chat::TEAMMATES, refuse_chat_row)
+        .with(&chat::CONVERSATIONS, refuse_chat_row)
+        .with(&chat::CHANNELS, refuse_chat_row)
+        .with(&chat::MESSAGES, refuse_chat_row)
 });
 
 /// The recovery restorers of the vault domains.
@@ -138,6 +145,16 @@ fn refuse_calendar_source(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreF
 /// Refuses to restore the distraction settings row, which is seeded and never deleted.
 fn refuse_distraction_settings(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
     Box::pin(async { Err("distraction settings are never deleted".to_string()) })
+}
+
+/// Refuses to restore a deleted Chat row. Chat archives participants, teammates, channels, and
+/// messages instead of deleting them, so a row is deleted only with its project; restoring the
+/// project brings its default channel back, and the offer of the Chat row can only be
+/// discarded.
+fn refuse_chat_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("a deleted Chat row comes back with its project, not on its own".to_string())
+    })
 }
 
 /// Restores a deleted custom distraction category as a new category with its deleted hosts.

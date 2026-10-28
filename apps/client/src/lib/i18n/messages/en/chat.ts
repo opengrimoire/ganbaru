@@ -36,6 +36,39 @@ export const chat = {
   deletePermanently: "Delete permanently",
   cancel: "Cancel",
   save: "Save",
+  sync: {
+    participantConflicts: (count: number) =>
+      `${count} ${count === 1 ? "name was" : "names were"} edited on two devices. Open the Chat settings to choose what to keep.`,
+    teammateConflicts: (count: number) =>
+      `${count} ${count === 1 ? "teammate was" : "teammates were"} edited on two devices. Open the Chat settings to choose what to keep.`,
+    channelConflicts: (count: number) =>
+      `${count} ${count === 1 ? "channel was" : "channels were"} renamed or edited on two devices. Open the Chat settings to choose what to keep.`,
+    messageConflicts: (count: number) =>
+      `${count} ${count === 1 ? "message was" : "messages were"} edited on two devices. Open the Chat settings to choose what to keep.`,
+    participantUntitled: "Unnamed participant",
+    teammateUntitled: "Unnamed teammate",
+    channelUntitled: "Unnamed channel",
+    messageUntitled: "Message",
+    recoveryNote: "This was deleted with its project. Restoring the project brings its default channel back, so this can only be discarded.",
+  },
+  conflict: {
+    participantTitle: "This name was edited on two devices",
+    teammateTitle: "This teammate was edited on two devices",
+    channelTitle: "This channel was edited on two devices",
+    messageTitle: "This message was edited on two devices",
+    messageIn: (channel: string) => `In #${channel}`,
+    hint: "Choose the version to keep.",
+    empty: "Empty",
+    shown: "Shown now",
+    keepThis: "Keep this",
+    useOther: "Use this",
+    versionFrom: (device: string, time: string) => `${device}, ${time}`,
+    thisDevice: "This device",
+    otherDevice: "Another device",
+    resolved: "This conflict was already resolved",
+    failed: "The conflict could not be resolved",
+    loadFailed: "Chat conflicts could not be loaded",
+  },
   deleteTitle: "Delete chat permanently?",
   deleteMessage: (title: string) => `Delete “${title}” and its normalized history, draft, attachments, continuation metadata, and internal checkpoints? Repository files and provider-wide history are not deleted.`,
   status: {

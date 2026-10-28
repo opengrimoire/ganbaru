@@ -41,7 +41,7 @@ pub async fn projects_update_group<R: Runtime>(
     structure_commands::update_group(&pool, &vault_root, group).await
 }
 
-/// Deletes a group with its projects. The deletion cascades into Chat and Notes rows that only the
+/// Deletes a group with its projects. The deletion cascades into Notes rows that only the
 /// owner writes, so other devices are refused before anything changes.
 #[tauri::command]
 pub async fn projects_delete_group<R: Runtime>(

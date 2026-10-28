@@ -418,6 +418,27 @@ async fn a_scheduled_attachment_keeps_its_file_after_its_attachment_row_is_gone(
         kept.contains(&kept_file),
         "a scheduled reference keeps its file without an attachment row"
     );
+    assert!(
+        !engine
+            .manifest()
+            .local
+            .contains(&"chat_scheduled_message_attachment_references"),
+        "scheduled references travel with their unconverted scheduled message"
+    );
+
+    // A whole-vault archive keeps scheduled references, since their scheduled message travels
+    // with it.
+    ganbaru_sync::local::prepare_snapshot_copy(&mut connection, engine.manifest())
+        .await
+        .unwrap();
+    let carried: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_scheduled_message_attachment_references")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(carried, 1, "a snapshot copy keeps scheduled references");
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(kept.contains(&kept_file));
 
     sqlx::query("DELETE FROM chat_scheduled_message_attachment_references")
         .execute(&mut *connection)

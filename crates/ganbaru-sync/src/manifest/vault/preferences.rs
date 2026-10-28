@@ -118,5 +118,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     local: &[],
     engine: &[],
     replica_writable: true,
+    unconverted: &[],
     assets: &[PROFILE_CLASS],
 };

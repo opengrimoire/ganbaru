@@ -120,6 +120,29 @@ fn malformed_local_asset_columns_are_refused() {
     assert!(local_asset_problems(&FIXTURE_DOMAIN).is_empty());
 }
 
+#[test]
+fn an_unconverted_table_declares_only_asset_columns_and_no_other_class() {
+    let pins = [DeviceTable {
+        name: "fixture_asset_pins",
+        triggers: &[],
+        assets: &[],
+    }];
+    let pins: &'static [DeviceTable] = Box::leak(Box::new(pins));
+    let classified = DomainManifest {
+        local: pins,
+        unconverted: pins,
+        ..FIXTURE_DOMAIN
+    };
+
+    assert_eq!(
+        local_asset_problems(&classified),
+        vec![
+            "fixture_asset_pins: an unconverted table is declared only for its asset columns",
+            "fixture_asset_pins: an unconverted table is not also classified",
+        ]
+    );
+}
+
 /// A second class the fixture domain could declare, which its asset id columns do not list.
 const OTHER_CLASS: AssetClass = AssetClass {
     name: "fixture/others",

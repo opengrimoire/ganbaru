@@ -1696,6 +1696,7 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
         local: &[],
         engine: &[],
         replica_writable: false,
+        unconverted: &[],
         assets: &[],
     };
     const MISPLACED: DomainManifest = DomainManifest {

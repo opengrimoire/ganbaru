@@ -1510,19 +1510,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
                 applier_visible("chat_review_comments_relative_path_shape_update"),
             ],
         ),
-        // Scheduled attachments carry their files by digest and may outlive the attachment row
-        // of a deleted working folder, so they keep their files until their send.
-        DeviceTable {
-            name: "chat_scheduled_message_attachment_references",
-            triggers: &[],
-            assets: &[LocalAssetColumn {
-                column: "sha256",
-                json_path: None,
-                digest: LocalDigest::Sha256 {
-                    class: ATTACHMENTS_CLASS.name,
-                },
-            }],
-        },
         device("chat_scheduled_message_dispatch", &[]),
         device("chat_scratch_cleanup_jobs", &[]),
         device(
@@ -1584,5 +1571,19 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     ],
     engine: &[],
     replica_writable: false,
+    // Scheduled messages travel with the vault unconverted until they replicate. Their
+    // attachments carry their files by digest and may outlive the attachment row of a deleted
+    // working folder, so they keep their files until their send.
+    unconverted: &[DeviceTable {
+        name: "chat_scheduled_message_attachment_references",
+        triggers: &[],
+        assets: &[LocalAssetColumn {
+            column: "sha256",
+            json_path: None,
+            digest: LocalDigest::Sha256 {
+                class: ATTACHMENTS_CLASS.name,
+            },
+        }],
+    }],
     assets: &[ATTACHMENTS_CLASS],
 };

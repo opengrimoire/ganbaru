@@ -9,6 +9,9 @@ packageExtensions:
         optional: true
       react-dom:
         optional: true
+auditConfig:
+  ignoreGhsas:
+    - GHSA-gcqx-w48m-w2h4
 overrides:
   devalue: 5.9.3
   picomatch: 4.0.5

@@ -852,9 +852,9 @@ impl<'a> Walk<'a> {
             own.append(&mut continuation);
             evidence[index] = own;
         }
-        for index in 1..count {
+        for (index, vetoed) in vetoed.iter().enumerate().skip(1) {
             let parent = self.visits[index].parent.unwrap_or(0);
-            self.visits[index].alive = !vetoed[index] && self.visits[parent].alive;
+            self.visits[index].alive = !vetoed && self.visits[parent].alive;
         }
     }
 

@@ -32,7 +32,7 @@ Production wiring and chunk placement belong to type checks and bundle contracts
 
 Use library tests unless behavior belongs specifically to a binary. Add `--lib` to focused Cargo commands so unrelated targets are not built.
 
-Persistence tests use isolated temporary databases with the current schema. In-memory database tests copy a template migrated once per test process through the `test-support` feature of `ganbaru-db`, while migration and schema invariant tests and file-backed databases run the real migration chain. Migration tests exercise actual migration files and SQLx checksums.
+Persistence tests use isolated temporary databases with the current schema. The full migration chain costs over ten seconds in a debug build, so tests that only need a migrated database copy a template migrated once per test process through the `test-support` feature of `ganbaru-db`: in memory, or written to a new vault file with `write_migrated_database`. Upgrade tests start from a template migrated through an earlier version and then run the real later migrations. Tests of database creation, migration on open, and the schema invariants run the real chain, so each test process still runs it at least once. Migration tests exercise actual migration files and SQLx checksums.
 
 Fixture optimizations must preserve isolation, foreign keys, migration order, transaction semantics, and cleanup on supported platforms. Do not rewrite an applied migration to simplify a test.
 

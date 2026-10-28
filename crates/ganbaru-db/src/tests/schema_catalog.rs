@@ -19,13 +19,13 @@ async fn raw_pool(path: &Path) -> SqlitePool {
         .unwrap()
 }
 
-/// Creates a migrated vault database and returns its directory and path.
+/// Writes the shared migrated template as a vault database and returns its directory and path.
 async fn migrated_vault(name: &str) -> (PathBuf, PathBuf) {
     let directory = registry_test_directory(name);
     let path = directory.join("ganbaru.sqlite");
-    let registry = crate::DatabasePoolRegistry::default();
-    registry.connect_path(&path).await.unwrap();
-    registry.close_all().await.unwrap();
+    crate::test_support::write_migrated_database(&path)
+        .await
+        .unwrap();
     (directory, path)
 }
 
@@ -158,9 +158,12 @@ fn faithfully_forged_history_matches_the_reference_catalog() {
 #[test]
 fn fresh_vault_passes_and_reopens_read_write() {
     block_on(async {
-        let (directory, path) = migrated_vault("fresh-catalog").await;
-        current_schema_check(&path).await.unwrap();
+        let directory = registry_test_directory("fresh-catalog");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
+        registry.connect_path(&path).await.unwrap();
+        registry.close_all().await.unwrap();
+        current_schema_check(&path).await.unwrap();
         registry.connect_path(&path).await.unwrap();
         registry.close_all().await.unwrap();
         std::fs::remove_dir_all(directory).unwrap();

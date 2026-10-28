@@ -308,3 +308,117 @@ fn timeline_migration_rolls_back_when_a_foreign_key_is_violated() {
         assert_eq!(leftovers, 0);
     });
 }
+
+#[test]
+fn history_granted_in_an_empty_channel_admits_the_first_post_after_the_migration() {
+    super::block_on(async {
+        let pool = ordinal_timeline_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-quiet', 'project-chat', 'channel', '2026-10-23T00:00:00.000Z',
+                     '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+             INSERT INTO chat_channels
+                (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+             VALUES ('channel-quiet', 'project-chat', 'conversation-quiet', 'quiet', 0,
+                     '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+             INSERT INTO chat_conversation_memberships
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES ('conversation-quiet', 'participant-teammate', 'membership-quiet-teammate',
+                     'member', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+             INSERT INTO chat_teammate_channel_memberships
+                (conversation_id, teammate_id, sync_key, access_profile_id, history_boundary,
+                 history_from_ordinal, created_at, updated_at)
+             VALUES ('conversation-quiet', 'participant-teammate', 'channel-membership-quiet',
+                     'access-profile:edit-files', 'from_grant', 1, '2026-10-23T00:00:00.000Z',
+                     '2026-10-23T00:00:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let history_from: String = sqlx::query_scalar(
+            "SELECT history_from_order_key FROM chat_teammate_channel_memberships
+             WHERE conversation_id = 'conversation-quiet'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // 'a0' is the key the first post of an empty scope takes.
+        let first_post = "a0";
+        assert!(
+            first_post >= history_from.as_str(),
+            "the first post ({first_post}) is visible from the boundary {history_from}"
+        );
+    });
+}
+
+#[test]
+fn oversized_revisions_are_cut_to_the_byte_bounds_and_marked_truncated() {
+    super::block_on(async {
+        let pool = ordinal_timeline_pool().await;
+        // 50,000 three-byte characters fit the old character bound but not the byte bound, and a
+        // 200,000-byte payload exceeds the rich content bound.
+        sqlx::raw_sql(
+            "INSERT INTO chat_communication_message_revisions
+                (id, message_item_id, revision, normalized_markdown, created_at)
+             VALUES ('revision-wide', 'item-root', 2,
+                     replace(hex(zeroblob(50000)), '00', '€'), '2026-10-23T00:00:06.000Z');
+             INSERT INTO chat_communication_message_revisions
+                (id, message_item_id, revision, normalized_markdown, rich_content_data,
+                 created_at)
+             VALUES ('revision-rich', 'item-root', 3, 'short',
+                     json_object('type', 'doc', 'content', json_array(),
+                                 'payload', replace(hex(zeroblob(100000)), '00', 'ab')),
+                     '2026-10-23T00:00:07.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let wide: (String, i64, Option<i64>) = sqlx::query_as(
+            "SELECT normalized_markdown, length(CAST(normalized_markdown AS BLOB)),
+                    json_extract(rich_content_data, '$.truncated')
+             FROM chat_communication_message_revisions WHERE id = 'revision-wide'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            wide.0.chars().count(),
+            131_072 / 3,
+            "the longest whole-character prefix within the bound is kept"
+        );
+        assert!(wide.0.chars().all(|character| character == '€'));
+        assert_eq!(wide.1, 131_070);
+        assert_eq!(wide.2, Some(1));
+
+        let rich: (String, i64, Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT normalized_markdown, length(CAST(rich_content_data AS BLOB)),
+                    json_extract(rich_content_data, '$.payload'),
+                    json_extract(rich_content_data, '$.truncated')
+             FROM chat_communication_message_revisions WHERE id = 'revision-rich'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rich.0, "short", "a rich cut keeps the Markdown");
+        assert!(rich.1 <= 196_608);
+        assert_eq!(rich.2, None, "the oversized payload is dropped");
+        assert_eq!(rich.3, Some(1));
+
+        let untouched: (String, Option<i64>) = sqlx::query_as(
+            "SELECT normalized_markdown, json_extract(rich_content_data, '$.truncated')
+             FROM chat_communication_message_revisions WHERE id = 'message-revision-root'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(untouched, ("Look at the folder".into(), None));
+    });
+}

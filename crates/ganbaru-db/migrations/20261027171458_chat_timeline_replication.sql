@@ -75,7 +75,8 @@ CREATE INDEX chat_timeline_item_keys_scope
 ON chat_timeline_item_keys(conversation_id, reply_thread_id, ordinal);
 
 -- The key before which a root ordinal starts, so `order_key >= key` admits exactly the root
--- items at or after that ordinal.
+-- items at or after that ordinal and every root item posted later. A conversation without root
+-- items takes 'a0', the first key a writer gives an empty scope, because rank keys sort after it.
 CREATE TEMP TABLE chat_timeline_root_boundaries (
     conversation_id TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
@@ -83,7 +84,16 @@ CREATE TEMP TABLE chat_timeline_root_boundaries (
     PRIMARY KEY (conversation_id, ordinal)
 );
 INSERT OR IGNORE INTO chat_timeline_root_boundaries (conversation_id, ordinal, order_key)
-SELECT bound.conversation_id, bound.ordinal, rank_key.order_key
+SELECT
+    bound.conversation_id,
+    bound.ordinal,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM chat_timeline_item_keys item
+            WHERE item.conversation_id = bound.conversation_id AND item.reply_thread_id IS NULL
+        ) THEN rank_key.order_key
+        ELSE 'a0'
+    END
 FROM (
     SELECT conversation_id, history_from_ordinal AS ordinal
     FROM chat_teammate_channel_memberships WHERE history_from_ordinal IS NOT NULL
@@ -250,8 +260,54 @@ BEGIN
 END;
 
 -- Revisions are immutable and bounded so one always fits a sync operation: the Markdown to
--- 131,072 bytes and the rich content to 196,608 bytes.
+-- 131,072 bytes and the rich content to 196,608 bytes. Older rows were bounded to 131,072
+-- characters with unbounded rich content, so they are cut the way projected revisions are: the
+-- Markdown to its longest character prefix within the bound, then the rich content without its
+-- payload, then an empty document, and every cut marks the rich content truncated. Each step
+-- drops at least the excess over four bytes per character, so it never cuts past the prefix.
 DROP TABLE chat_communication_message_revision_ordinals;
+
+CREATE TEMP TABLE chat_timeline_markdown_cuts AS
+WITH RECURSIVE cut(id, char_count) AS (
+    SELECT id, length(normalized_markdown) FROM chat_communication_message_revisions
+    WHERE length(CAST(normalized_markdown AS BLOB)) > 131072
+    UNION ALL
+    SELECT
+        cut.id,
+        cut.char_count
+            - (length(CAST(substr(revision.normalized_markdown, 1, cut.char_count) AS BLOB))
+                - 131072 + 3) / 4
+    FROM cut
+    JOIN chat_communication_message_revisions revision ON revision.id = cut.id
+    WHERE length(CAST(substr(revision.normalized_markdown, 1, cut.char_count) AS BLOB)) > 131072
+)
+SELECT id, min(char_count) AS char_count FROM cut GROUP BY id;
+
+CREATE TEMP TABLE chat_timeline_bounded_revisions AS
+SELECT
+    revision.id,
+    CASE
+        WHEN cut.id IS NULL THEN revision.normalized_markdown
+        ELSE substr(revision.normalized_markdown, 1, cut.char_count)
+    END AS normalized_markdown,
+    CASE
+        WHEN cut.id IS NULL THEN revision.rich_content_data
+        ELSE json_set(revision.rich_content_data, '$.truncated', json('true'))
+    END AS rich_content_data
+FROM chat_communication_message_revisions revision
+LEFT JOIN chat_timeline_markdown_cuts cut ON cut.id = revision.id;
+DROP TABLE chat_timeline_markdown_cuts;
+
+UPDATE chat_timeline_bounded_revisions
+SET rich_content_data = CASE
+    WHEN length(CAST(
+        json_set(rich_content_data, '$.payload', json('null'), '$.truncated', json('true'))
+        AS BLOB
+    )) <= 196608
+        THEN json_set(rich_content_data, '$.payload', json('null'), '$.truncated', json('true'))
+    ELSE json_object('type', 'doc', 'content', json_array(), 'truncated', json('true'))
+END
+WHERE length(CAST(rich_content_data AS BLOB)) > 196608;
 
 CREATE TABLE chat_communication_message_revisions_next (
     id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
@@ -273,10 +329,12 @@ INSERT INTO chat_communication_message_revisions_next (
     id, message_item_id, normalized_markdown, rich_content_schema_version, rich_content_data,
     created_at
 )
-SELECT id, message_item_id, normalized_markdown, rich_content_schema_version, rich_content_data,
-    created_at
-FROM chat_communication_message_revisions;
+SELECT revision.id, revision.message_item_id, bounded.normalized_markdown,
+    revision.rich_content_schema_version, bounded.rich_content_data, revision.created_at
+FROM chat_communication_message_revisions revision
+JOIN chat_timeline_bounded_revisions bounded ON bounded.id = revision.id;
 
+DROP TABLE chat_timeline_bounded_revisions;
 DROP TABLE chat_communication_message_revisions;
 ALTER TABLE chat_communication_message_revisions_next RENAME TO chat_communication_message_revisions;
 

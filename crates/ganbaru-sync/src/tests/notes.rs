@@ -26,7 +26,7 @@ pub(super) const CREATED: &str = "2027-01-01T00:00:00.000Z";
 pub(super) const EDITED: &str = "2027-01-02T00:00:00.000Z";
 pub(super) const PAGE: &str = "page-shared";
 pub(super) const BLOCK_A: &str = "block-a";
-const BLOCK_B: &str = "block-b";
+pub(super) const BLOCK_B: &str = "block-b";
 
 /// Runs the Notes crate's post-apply refresh, as the app's Notes hook does.
 struct NotesTestHook;

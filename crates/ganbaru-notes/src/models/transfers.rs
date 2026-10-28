@@ -479,6 +479,11 @@ pub struct NoteHtmlExportAssetDto {
     pub sha256: String,
     pub storage_state: String,
     pub exported: bool,
+    /// Other paths of the same bytes that exported content references, read in order when
+    /// `source_path` holds no file, as when the same bytes were added under another content
+    /// type on another device.
+    #[serde(skip)]
+    pub fallback_source_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

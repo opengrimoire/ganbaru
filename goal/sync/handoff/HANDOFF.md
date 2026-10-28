@@ -44,11 +44,11 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 
 ## State on feat/sync
 
-Updated by the orchestrator session on the mini PC (2026-10-27). Milestone 11 step 7 (merge c35c5dc0), milestone 8 step 5 (merge 26180e64), and milestone 9 step 5 (merge b1e35a51) have landed. Landed topic branches were deleted on origin.
+Updated by the orchestrator session on the mini PC (2026-10-27). Milestone 11 step 7 (merge c35c5dc0), milestone 8 step 5 (merge 26180e64), milestone 9 step 5 (merge b1e35a51), and milestone 8 step 6 (merge a0301701) have landed. Landed topic branches were deleted on origin.
 
-- `VAULT_MANIFEST_VERSION` is 18, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261027171458_chat_timeline_replication.sql`.
-- Done in source: milestones 2 to 7, milestone 8 steps 1 to 5, milestone 9 steps 1 to 5, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8, engine follow-ups 1 to 5.
-- Remaining: milestone 8 steps 6 to 8, milestone 9 steps 6 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 9 and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
+- `VAULT_MANIFEST_VERSION` is 19, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261028030227_notes_page_history_asset_ids.sql`.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 6, milestone 9 steps 1 to 5, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8, engine follow-ups 1 to 5.
+- Remaining: milestone 8 steps 7 and 8, milestone 9 steps 6 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 9 and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
 ## In-flight branches
 
@@ -56,7 +56,7 @@ Progress snapshots are in `progress/`; their live copies were in the session scr
 
 1. `feat/sync-chat-attachments`: milestone 9 step 6 (brief `briefs/m9-step-6-brief.md`; step 7 follow-ups in `briefs/m9-step-7-followups.md`), implementer running.
 2. `feat/sync-peer-exchange`: milestone 11 step 9. Part A committed (28bb1032, reviewed); part B (brief `briefs/m11-step-9b-brief.md`) did the review fixes (7651271d); part C (brief `briefs/m11-step-9c-brief.md`) implementer running on the remaining items; the whole-package internal security review follows on the same branch.
-3. `feat/sync-notes-assets`: milestone 8 step 6 (Notes assets, brief `briefs/m8-step-6-brief.md` with `briefs/m8-step-6-followups.md`), implementer running.
+3. `feat/sync-notes-editor`: milestone 8 step 7 (Notes editor rebase and conflict UI, brief `briefs/m8-step-7-brief.md`), implementer running.
 
 WIP patches: none. Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.
 
@@ -69,7 +69,7 @@ Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-work
 
 1. Finish, review, and land the in-flight branches above (at most three implementers at once).
 2. Milestone 9 steps 5 to 9 and the docs part of 10, one at a time on the `chat` track.
-3. Milestone 8 steps 6 to 8 on the `domain` track, after step 5 lands.
+3. Milestone 8 steps 7 and 8 on the `domain` track.
 4. On the `engine` track, serially: milestone 11 steps 9 and 10 (step 9 uses the internal Opus security review, a user decision), then milestone 10 steps 5 to 7.
 5. Milestone 12 steps 1 to 11.
 6. Close each milestone (validate, review, advisor), then a final clean `pnpm -w run validate` on feat/sync.

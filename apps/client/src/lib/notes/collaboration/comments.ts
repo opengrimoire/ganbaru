@@ -10,6 +10,18 @@ import { richTextPlainText, richTextRangeSlice } from "$lib/notes/rich-text/core
 
 const COMMENT_ANCHOR_CONTEXT_LENGTH = 48;
 
+/** Stable prefix the backend puts on a refusal of a comment body above the sync size limit. */
+export const NOTES_COMMENT_TOO_LARGE_CODE = "notes-comment-too-large";
+
+/**
+ * Whether a backend message is the oversized comment body refusal.
+ *
+ * @param message - Error text from the backend.
+ */
+export function isNotesCommentTooLargeMessage(message: string): boolean {
+  return message.startsWith(`${NOTES_COMMENT_TOO_LARGE_CODE}:`);
+}
+
 /**
  * Trim whitespace at the edges of a comment body while keeping mentions and formatting.
  * A body with no visible text becomes empty, which the backend accepts only alongside attachments.

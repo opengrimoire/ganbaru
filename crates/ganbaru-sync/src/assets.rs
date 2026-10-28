@@ -49,7 +49,26 @@ pub const CONTENT_TYPE_EXTENSIONS: &[(&str, &str)] = &[
     ("image/jpeg", "jpg"),
     ("image/webp", "webp"),
     ("image/gif", "gif"),
+    ("application/pdf", "pdf"),
+    ("audio/mpeg", "mp3"),
+    ("audio/wav", "wav"),
+    ("audio/ogg", "ogg"),
+    ("audio/mp4", "m4a"),
+    ("video/mp4", "mp4"),
+    ("video/quicktime", "mov"),
+    ("video/x-msvideo", "avi"),
+    ("video/x-amv", "amv"),
+    ("video/x-matroska", "mkv"),
+    ("video/x-ms-wmv", "wmv"),
+    ("video/x-ms-asf", "asf"),
+    ("video/x-flv", "flv"),
+    ("video/mpeg", "mpg"),
+    ("video/mp2t", "ts"),
+    ("application/json", "json"),
+    ("text/markdown", "md"),
     ("text/plain", "txt"),
+    ("text/csv", "csv"),
+    ("text/html", "html"),
 ];
 
 /// A kind of managed file a domain stores, such as Quick note images.
@@ -556,6 +575,10 @@ mod tests {
         );
         assert_eq!(
             file_name(DIGEST, "application/pdf").unwrap(),
+            format!("{DIGEST}.pdf")
+        );
+        assert_eq!(
+            file_name(DIGEST, "application/x-unknown").unwrap(),
             format!("{DIGEST}.bin")
         );
     }

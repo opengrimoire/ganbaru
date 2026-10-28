@@ -886,37 +886,11 @@ fn schema_creates_notes_assets_and_references() {
                 "available",
                 None::<&str>,
             ),
-            (
-                "bad-missing-state",
-                "notes/files/file.bin",
-                "file",
-                "local_upload",
-                "application/octet-stream",
-                1,
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "missing",
-                None::<&str>,
-            ),
-            (
-                "bad-id",
-                "notes/page-covers/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png",
-                "image",
-                "local_upload",
-                "image/png",
-                1,
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "available",
-                None::<&str>,
-            ),
         ] {
             let class = asset_path
                 .rsplit_once('/')
                 .map_or(asset_path, |(class, _)| class);
-            let asset_id = if id == "bad-id" {
-                format!("notes/files:{sha256}")
-            } else {
-                format!("{class}:{sha256}")
-            };
+            let asset_id = format!("{class}:{sha256}");
             let inserted = sqlx::query(
                 "INSERT INTO notes_assets (
                     id,

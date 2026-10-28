@@ -147,11 +147,20 @@ async fn build_archive(
     };
     let asset_paths = collect_asset_paths(&pages, &blocks_by_page, &comments);
     let mut diagnostics = Vec::new();
-    let assets = load_assets(pool, &asset_paths, include_assets, &mut diagnostics).await?;
-    let asset_archive_paths = assets
+    let (assets, stored_paths) =
+        load_assets(pool, &asset_paths, include_assets, &mut diagnostics).await?;
+    let exported_archive_paths = assets
         .iter()
         .filter(|asset| asset.exported)
-        .map(|asset| (asset.source_path.clone(), asset.archive_path.clone()))
+        .map(|asset| (asset.source_path.as_str(), asset.archive_path.as_str()))
+        .collect::<HashMap<_, _>>();
+    let asset_archive_paths = stored_paths
+        .iter()
+        .filter_map(|(referenced, stored)| {
+            exported_archive_paths
+                .get(stored.as_str())
+                .map(|archive| (referenced.clone(), (*archive).to_string()))
+        })
         .collect::<HashMap<_, _>>();
     let databases = if include_database_views {
         export_databases(pool, blocks_by_page.values().flatten()).await?
@@ -584,17 +593,43 @@ fn collect_asset_paths_from_value(value: &Value, paths: &mut HashSet<String>) {
     }
 }
 
+/// The asset rows the referenced `asset_paths` resolve to, and the stored path of the row each
+/// referenced path resolves to. A reference may name its bytes under another extension than the
+/// row that holds them, so rows are resolved by class and digest as well as by path.
 async fn load_assets(
     pool: &SqlitePool,
     asset_paths: &HashSet<String>,
     include_assets: bool,
     diagnostics: &mut Vec<NoteHtmlExportDiagnosticDto>,
-) -> Result<Vec<NoteHtmlExportAssetDto>, String> {
+) -> Result<(Vec<NoteHtmlExportAssetDto>, HashMap<String, String>), String> {
     if asset_paths.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), HashMap::new()));
     }
-    let mut sorted_paths = asset_paths.iter().cloned().collect::<Vec<_>>();
+    let mut referenced_paths = asset_paths.iter().cloned().collect::<Vec<_>>();
+    referenced_paths.sort();
+    let mut stored_paths = HashMap::new();
+    for path in &referenced_paths {
+        match crate::assets::resolve_asset_row(pool, path).await? {
+            Some(asset) => {
+                stored_paths.insert(path.clone(), asset.asset_path);
+            }
+            None => diagnostics.push(NoteHtmlExportDiagnosticDto::new(
+                "html_export_asset_metadata_missing",
+                "warning",
+                None::<String>,
+                None::<String>,
+                None::<String>,
+                None::<String>,
+                format!("Managed asset metadata was missing for {path}"),
+            )),
+        }
+    }
+    let mut sorted_paths = stored_paths.values().cloned().collect::<Vec<_>>();
+    if sorted_paths.is_empty() {
+        return Ok((Vec::new(), stored_paths));
+    }
     sorted_paths.sort();
+    sorted_paths.dedup();
     let sql = format!(
         "SELECT id,
                 asset_path AS source_path,
@@ -615,22 +650,16 @@ async fn load_assets(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes assets for HTML export: {e}"))?;
-    let found = rows
-        .iter()
-        .map(|row| row.source_path.clone())
-        .collect::<HashSet<_>>();
-    for path in sorted_paths.iter().filter(|path| !found.contains(*path)) {
-        diagnostics.push(NoteHtmlExportDiagnosticDto::new(
-            "html_export_asset_metadata_missing",
-            "warning",
-            None::<String>,
-            None::<String>,
-            None::<String>,
-            None::<String>,
-            format!("Managed asset metadata was missing for {path}"),
-        ));
+    let mut fallback_paths: HashMap<&str, Vec<String>> = HashMap::new();
+    for path in &referenced_paths {
+        if let Some(stored) = stored_paths.get(path).filter(|stored| *stored != path) {
+            fallback_paths
+                .entry(stored.as_str())
+                .or_default()
+                .push(path.clone());
+        }
     }
-    Ok(rows
+    let assets = rows
         .into_iter()
         .map(|row| {
             let exported = include_assets && row.storage_state == "available";
@@ -645,6 +674,10 @@ async fn load_assets(
                     "Managed asset is not available on disk and was not exported",
                 ));
             }
+            let fallback_source_paths = fallback_paths
+                .get(row.source_path.as_str())
+                .cloned()
+                .unwrap_or_default();
             NoteHtmlExportAssetDto {
                 id: row.id,
                 archive_path: asset_archive_path(&row.source_path),
@@ -654,9 +687,11 @@ async fn load_assets(
                 sha256: row.sha256,
                 storage_state: row.storage_state,
                 exported,
+                fallback_source_paths,
             }
         })
-        .collect())
+        .collect();
+    Ok((assets, stored_paths))
 }
 
 async fn export_databases<'a, I>(

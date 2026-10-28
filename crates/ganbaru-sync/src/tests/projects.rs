@@ -19,7 +19,7 @@ use crate::{ChangeNotice, ConflictRow};
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
 const GROUP: &str = "group-shared";
-const PROJECT: &str = "project-shared";
+pub(super) const PROJECT: &str = "project-shared";
 const SECTION_A: &str = "section-a";
 const SECTION_B: &str = "section-b";
 const OPEN: &str = "status-open";

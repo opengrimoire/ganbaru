@@ -1,6 +1,62 @@
 use super::helpers::*;
 
 #[test]
+fn a_comment_too_large_to_replicate_is_refused_on_create_and_edit() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let oversized = "a".repeat(ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES / 2);
+        let create = |id: &str, text: &str| NoteCommentCreate {
+            id: id.to_string(),
+            parent: Some(page_parent(PAGE_A)),
+            discussion_id: None,
+            anchor: None,
+            rich_text: vec![rich_text(text)],
+            attachments: None,
+        };
+
+        let refusal = comments::create_comment(&pool, create(COMMENT_A, &oversized))
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            refusal.starts_with("notes-comment-too-large: "),
+            "{refusal}"
+        );
+        let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM notes_comments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, 0);
+
+        comments::create_comment(&pool, create(COMMENT_A, "Short"))
+            .await
+            .unwrap();
+        let refusal = comments::update_comment(
+            &pool,
+            COMMENT_A,
+            NoteCommentUpdate {
+                rich_text: vec![rich_text(&oversized)],
+                attachments: None,
+            },
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            refusal.starts_with("notes-comment-too-large: "),
+            "{refusal}"
+        );
+        let text: String = sqlx::query_scalar("SELECT plain_text FROM notes_comments WHERE id = ?")
+            .bind(COMMENT_A)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(text, "Short");
+    });
+}
+
+#[test]
 fn comments_create_reply_resolve_reopen_and_delete() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

@@ -627,6 +627,10 @@ table 307 notes_suggestions replicated key id
   group 2 max last_edited_time:timestamp
   check range_start,range_end within 0
   check status,accepted_at,accepted_by,rejected_at,rejected_by within 1
+table 308 notes_assets replicated key id
+  group 0 immutable asset_path:text(..=200) kind:text(..=200) content_type:text(..=64) byte_size:integer(1..=52428800) sha256:text(..=200)
+  group 1 register source_type:text(..=200) original_name:optional_text(..=262144) created_at:timestamp
+  check kind,content_type within 0
 table 352 chat_participants replicated key id
   group 0 immutable participant_kind:text(..=32) created_at:timestamp
   group 1 register surfaced recoverable display_name:trimmed_text(1..=160) avatar_schema_version:integer(1..=9223372036854775807) avatar_data:text(..=16384)
@@ -698,8 +702,6 @@ table 372 chat_communication_messages replicated key item_id
   group 3 coupled deleted_at:optional_timestamp
 table 373 chat_communication_message_revisions replicated key id
   group 0 immutable message_item_id:optional_row_key->372:cascade normalized_markdown:text(..=131072) rich_content_schema_version:integer(1..=9223372036854775807) rich_content_data:text(..=196608) created_at:timestamp
-  group 1 immutable
-    owned chat_communication_attachment_references parent message_revision_id ordinal ordinal rows 20 codec custom attachment_id:text(..=128) working_folder_id:text(..=128) kind:text(..=32) original_display_name:trimmed_text(1..=1000) mime_type:text(..=64) byte_size:integer(0..=52428800) sha256:text(..=64)
 table 374 chat_message_references replicated key id
   group 0 immutable message_revision_id:optional_row_key->373:cascade reference_kind:text(..=32) label_snapshot:text(..=4096) plain_text_projection:text(..=4096) start_offset:integer(0..=9223372036854775807) end_offset:integer(1..=9223372036854775807) ordinal:integer(0..=9223372036854775807) created_at:timestamp
   check start_offset,end_offset within 0

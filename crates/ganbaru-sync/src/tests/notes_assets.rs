@@ -341,9 +341,25 @@ fn the_same_bytes_added_under_two_content_types_resolve_to_one_row_on_every_repl
             .exec(&typed_file_sql(BLOCK_B, 'c', "csv", "text/csv"))
             .await;
         converge(&mut replicas).await;
-        // Raw SQL records no local references, so each replica checks the block it received.
-        // The replica whose row lost the content merge also rescans its own block by digest.
-        for (replica, received) in replicas.iter_mut().zip([BLOCK_B, BLOCK_A]) {
+        // Raw SQL records no local references, so a replica references the block it received,
+        // and the replica whose row lost the content merge also rescans its own block by digest.
+        let mut losers = 0;
+        for (replica, (own, received, own_path)) in replicas.iter_mut().zip([
+            (BLOCK_A, BLOCK_B, format!("{FILES}/{}.txt", digest('c'))),
+            (BLOCK_B, BLOCK_A, format!("{FILES}/{}.csv", digest('c'))),
+        ]) {
+            let lost = texts(replica, "SELECT asset_path FROM notes_assets").await != [own_path];
+            losers += usize::from(lost);
+            let mut expected = vec![format!("{} block_file {received}", asset_id('c'))];
+            if lost {
+                expected.push(format!("{} block_file {own}", asset_id('c')));
+                expected.sort();
+            }
+            assert_eq!(
+                references(replica).await,
+                expected,
+                "every block resolves the one row whatever its path"
+            );
             assert_eq!(
                 replica.count("SELECT count(*) FROM notes_assets").await,
                 1,
@@ -362,12 +378,8 @@ fn the_same_bytes_added_under_two_content_types_resolve_to_one_row_on_every_repl
                 ],
                 "each block keeps the path it named"
             );
-            let references = references(replica).await;
-            assert!(
-                references.contains(&format!("{} block_file {received}", asset_id('c'))),
-                "the received block references the one row whatever its path: {references:?}"
-            );
         }
+        assert_eq!(losers, 1, "one row wins the content merge everywhere");
         assert_converged(&mut replicas).await;
     });
 }

@@ -295,6 +295,14 @@ BEGIN
     ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
 END;
 
+-- Revisions written before the attachments group existed capture it once, so their
+-- attachments replicate.
+INSERT INTO sync_capture (table_id, row_key, mask, created, deleted, captured_at_ms)
+SELECT DISTINCT 373, message_revision_id, 2, 0, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER)
+FROM chat_communication_attachment_references
+WHERE (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask;
+
 COMMIT;
 
 PRAGMA legacy_alter_table = OFF;

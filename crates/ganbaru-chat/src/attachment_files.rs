@@ -279,7 +279,21 @@ fn move_file(vault_root: &Path, attachment: &Unconverted, target: &str) -> io::R
         io::Error::new(io::ErrorKind::InvalidInput, "Chat attachment has no folder")
     })?;
     create_directories_within(vault_root, parent)?;
-    fs::rename(&old, &target)
+    rename_to_digest(&old, &target, attachment)
+}
+
+/// Renames `old` to `target`. A missing `old` succeeds when `target` already holds the digest,
+/// since a concurrent conversion moved the same file first.
+fn rename_to_digest(old: &Path, target: &Path, attachment: &Unconverted) -> io::Result<()> {
+    match fs::rename(old, target) {
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && file_matches(target, &attachment.sha256, attachment.byte_size) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 /// Checks that every attachment row names its digest path.

@@ -270,7 +270,10 @@ pub async fn run_due_attachment_cleanup(
             continue;
         }
         if relative_path.starts_with(&format!("{CHAT_ATTACHMENT_DIRECTORY}/")) {
-            release_unreferenced_attachments(pool, &relative_path, &cleanup_id, now).await?;
+            let attachment_id =
+                cleanup_id.strip_prefix(super::lifecycle::ATTACHMENT_CLEANUP_ID_PREFIX);
+            release_unreferenced_attachments(pool, &relative_path, attachment_id, &cleanup_id, now)
+                .await?;
             completed += 1;
             continue;
         }
@@ -352,17 +355,19 @@ pub async fn run_due_attachment_cleanup(
 /// asset sweep removes it once nothing names its digest. The cleanup only removes the
 /// attachment rows at the path that are being deleted and that no local reference, message or
 /// scheduled message reference, or resource thread reference still names, together with their
-/// resources.
+/// resources. The attachment named by the job ID is released as well, since a job queued
+/// before files were stored by digest names the attachment's earlier path.
 async fn release_unreferenced_attachments(
     pool: &SqlitePool,
     relative_path: &str,
+    attachment_id: Option<&str>,
     cleanup_id: &str,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     sqlx::query(
         "DELETE FROM chat_attachments
-         WHERE managed_relative_path = ?
+         WHERE (managed_relative_path = ? OR id = ?)
            AND deletion_state != 'active'
            AND NOT EXISTS (SELECT 1 FROM chat_attachment_references r WHERE r.attachment_id = chat_attachments.id)
            AND NOT EXISTS (SELECT 1 FROM chat_queued_attachment_references q WHERE q.attachment_id = chat_attachments.id)
@@ -381,6 +386,7 @@ async fn release_unreferenced_attachments(
            )",
     )
     .bind(relative_path)
+    .bind(attachment_id)
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;

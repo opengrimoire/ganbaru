@@ -374,6 +374,70 @@ fn attachment_cleanup_releases_deleted_rows_and_leaves_the_shared_file_to_the_sw
     });
 }
 
+#[test]
+fn attachment_cleanup_queued_at_an_earlier_path_releases_its_attachment_by_id() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let vault_root = std::env::temp_dir().join(format!(
+            "ganbaru-chat-cleanup-earlier-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&vault_root).unwrap();
+        let source = vault_root.join("source.txt");
+        fs::write(&source, b"earlier context").unwrap();
+        let now = UtcTimestamp::new(NOW).unwrap();
+        import_attachment(
+            &pool,
+            &vault_root,
+            &ProjectWorkingFolderId::new("workspace-1").unwrap(),
+            ChatAttachmentId::new("attachment-earlier").unwrap(),
+            &source,
+            ChatAttachmentKind::TextSnippet,
+            &now,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE chat_attachments SET deletion_state = 'pending_delete'
+             WHERE id = 'attachment-earlier'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_cleanup_jobs
+                (id, cleanup_kind, exact_target, state, available_at, created_at, updated_at,
+                 working_folder_id)
+             VALUES ('cleanup:attachment:attachment-earlier', 'attachment_file',
+                     'assets/chat/attachments/ea/attachment-earlier.txt', 'pending', ?, ?, ?,
+                     'workspace-1')",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            run_due_attachment_cleanup(&pool, &vault_root, &now)
+                .await
+                .unwrap(),
+            1
+        );
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_attachments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "the job releases the attachment it names");
+        fs::remove_dir_all(vault_root).unwrap();
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn picked_attachments_show_control_characters_as_replacement_characters() {

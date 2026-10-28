@@ -172,6 +172,32 @@ fn store_replaces_a_damaged_file_and_refuses_a_wrong_digest() {
 }
 
 #[test]
+fn a_rename_that_lost_a_race_succeeds_only_when_the_target_holds_the_digest() {
+    let vault = TestVault::new();
+    let sha = digest(PNG);
+    let attachment = Unconverted {
+        id: "attachment-raced".into(),
+        sha256: sha.clone(),
+        mime_type: "image/png".into(),
+        byte_size: PNG.len() as u64,
+        managed_relative_path: "assets/chat/attachments/old/attachment-raced.png".into(),
+    };
+    let old = vault.0.join(&attachment.managed_relative_path);
+    let target = vault.0.join(relative_path(&sha, "image/png"));
+
+    let error = rename_to_digest(&old, &target, &attachment).unwrap_err();
+    assert_eq!(
+        error.kind(),
+        io::ErrorKind::NotFound,
+        "nothing moved the file"
+    );
+
+    store(&vault.0, &sha, "image/png", PNG).unwrap();
+    rename_to_digest(&old, &target, &attachment).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), PNG);
+}
+
+#[test]
 fn store_writes_nothing_for_empty_bytes() {
     let vault = TestVault::new();
     let sha = digest(b"");

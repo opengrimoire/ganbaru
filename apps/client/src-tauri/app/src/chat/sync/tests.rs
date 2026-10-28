@@ -392,3 +392,37 @@ async fn applied_attachment_references_create_local_rows_and_keep_their_files() 
     let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
     assert!(!kept.contains(&kept_file));
 }
+
+#[tokio::test]
+async fn a_scheduled_attachment_keeps_its_file_after_its_attachment_row_is_gone() {
+    let pool = migrated_pool().await;
+    let engine = ganbaru_sync::Engine::vault();
+    let kept_file = (chat::ATTACHMENTS_CLASS.name, ATTACHMENT_DIGEST.to_string());
+    let mut connection = pool.acquire().await.unwrap();
+    // A working folder delete cascades the attachment row away while the scheduled message
+    // still names its digest; only the reference is seeded, without its scheduled message.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO chat_scheduled_message_attachment_references
+             (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+              original_display_name, mime_type, byte_size, sha256)
+         VALUES ('scheduled:sync', 0, 'attachment:gone', 'folder:gone', 'image', 'photo.png',
+                 'image/png', 4096, '{ATTACHMENT_DIGEST}');
+         PRAGMA foreign_keys = ON;"
+    )))
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(
+        kept.contains(&kept_file),
+        "a scheduled reference keeps its file without an attachment row"
+    );
+
+    sqlx::query("DELETE FROM chat_scheduled_message_attachment_references")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(!kept.contains(&kept_file));
+}

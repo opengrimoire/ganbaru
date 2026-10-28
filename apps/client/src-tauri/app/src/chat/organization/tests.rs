@@ -648,6 +648,18 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
         )
         .unwrap();
         assert_eq!(posted.item_id, expected.item_id);
+        // The receipt is keyed by the replicated command id and names the derived post, so
+        // every device that sends or reads it agrees on the post.
+        let (receipt_state, receipt_data): (String, String) = sqlx::query_as(
+            "SELECT state, result_data FROM chat_organizational_command_receipts
+             WHERE client_command_id = ?",
+        )
+        .bind(request.client_command_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(receipt_state, "completed");
+        assert!(receipt_data.contains(expected.item_id.as_str()));
         let reference: (String, String, String, String, i64, String) = sqlx::query_as(
             "SELECT message_revision_id, attachment_id, working_folder_id, original_display_name,
                     byte_size, sha256

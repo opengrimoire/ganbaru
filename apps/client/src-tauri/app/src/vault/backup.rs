@@ -1354,7 +1354,7 @@ mod tests {
         let marker = parent.join("git-hook-ran");
         let hook = parent.join("hook.sh");
         fs::create_dir_all(&source).unwrap();
-        let source_info = super::super::initialize_vault(&source).unwrap();
+        let source_info = initialize_migrated_vault(&source).await;
         fs::write(
             &hook,
             format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
@@ -1500,7 +1500,7 @@ mod tests {
         let snapshot = parent.join("snapshot.sqlite");
         let archive_path = parent.join("handoff.ganbaru-backup");
         fs::create_dir_all(&source).unwrap();
-        let source_info = super::super::initialize_vault(&source).unwrap();
+        let source_info = initialize_migrated_vault(&source).await;
 
         let source_registry = ganbaru_db::DatabasePoolRegistry::default();
         let source_pool = source_registry
@@ -1634,7 +1634,7 @@ mod tests {
     async fn restored_vault_with_an_extra_trigger_is_rejected() {
         let staging = unique_test_path("restore-extra-trigger");
         fs::create_dir_all(&staging).unwrap();
-        super::super::initialize_vault(&staging).unwrap();
+        initialize_migrated_vault(&staging).await;
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry
             .connect_path(database_path(&staging))
@@ -1670,7 +1670,7 @@ mod tests {
         let refresh_snapshot = parent.join("refresh-snapshot.sqlite");
         let refresh_archive = parent.join("refresh.zip");
         fs::create_dir_all(&source).unwrap();
-        let source_info = super::super::initialize_vault(&source).unwrap();
+        let source_info = initialize_migrated_vault(&source).await;
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(&source)).await.unwrap();
         sqlx::query("INSERT INTO notes_link_facts_state (key, value) VALUES ('handoff_h04_probe', 'desktop')")
@@ -1842,7 +1842,7 @@ mod tests {
         let refresh_staging = parent.join("refresh-staging");
         let return_staging = parent.join("return-staging");
         fs::create_dir_all(&source).unwrap();
-        let info = super::super::initialize_vault(&source).unwrap();
+        let info = initialize_migrated_vault(&source).await;
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(&source)).await.unwrap();
         sqlx::query("INSERT INTO notes_link_facts_state (key, value) VALUES ('handoff_h05_probe', 'android edit')")
@@ -1945,6 +1945,16 @@ mod tests {
         restored.close_all().await.unwrap();
         fs::remove_dir_all(parent).unwrap();
     }
+
+    /// Initializes a vault at `path` whose database holds the shared migrated template, so
+    /// opening it skips the migration chain.
+    async fn initialize_migrated_vault(path: &Path) -> VaultInfo {
+        let info = super::super::initialize_vault(path).unwrap();
+        ganbaru_db::test_support::write_migrated_database(database_path(path))
+            .await
+            .unwrap();
+        info
+    }
 }
 
 #[cfg(test)]
@@ -1964,11 +1974,15 @@ mod retention_tests {
         parent
     }
 
+    /// Writes a migrated database marked with `marker` into a vault that has none yet.
     async fn write_marker(vault: &Path, marker: i64) {
         let pragma = match marker {
             PREVIOUS_MARKER => "PRAGMA application_id = 1",
             _ => "PRAGMA application_id = 2",
         };
+        ganbaru_db::test_support::write_migrated_database(database_path(vault))
+            .await
+            .unwrap();
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(vault)).await.unwrap();
         sqlx::query(pragma).execute(&pool).await.unwrap();

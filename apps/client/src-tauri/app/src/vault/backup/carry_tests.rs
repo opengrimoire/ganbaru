@@ -196,6 +196,9 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
     let staging = parent.join("staging");
     fs::create_dir_all(&source).unwrap();
     let vault_id = crate::vault::initialize_vault(&source).unwrap().vault_id;
+    ganbaru_db::test_support::write_migrated_database(database_path(&source))
+        .await
+        .unwrap();
     let engine = Engine::vault();
     let keys = MemoryKeys::default();
     let owner_files = SyncFiles::new(parent.join("owner-sync"), &vault_id).unwrap();
@@ -357,6 +360,9 @@ async fn replacement_carries_the_anchors_unsent_authorization_entries() {
     let staging = parent.join("staging");
     fs::create_dir_all(&source).unwrap();
     let vault_id = crate::vault::initialize_vault(&source).unwrap().vault_id;
+    ganbaru_db::test_support::write_migrated_database(database_path(&source))
+        .await
+        .unwrap();
     let engine = Engine::vault();
     let keys = MemoryKeys::default();
     let owner_files = SyncFiles::new(parent.join("owner-sync"), &vault_id).unwrap();

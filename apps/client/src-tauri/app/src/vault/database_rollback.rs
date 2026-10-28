@@ -543,6 +543,9 @@ mod tests {
     const AFTER_RESET: &str = "PRAGMA application_id = 2";
 
     async fn create_database(vault: &Path, marker_pragma: &'static str) {
+        ganbaru_db::test_support::write_migrated_database(database_file(vault, ""))
+            .await
+            .unwrap();
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry
             .connect_path(database_file(vault, ""))

@@ -15,6 +15,7 @@ use super::calendar::{calendar_sql, event_sql};
 use super::distractions::block_sql;
 use super::focus::{close_run_sql, open_run_sql};
 use super::groups::flagged_ops;
+use super::notes::{PAGE, page_sql, rich_text, root_block_sql};
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, enroll_entry, person, quoted, rank};
 use crate::exclusion::MAX_EXCLUDED_PER_WRITER;
@@ -690,6 +691,90 @@ fn apply_of_a_continuing_group_is_recorded() {
             &format!("apply of a {MAX_OPERATIONS_PER_GROUP}-operation continuing group"),
             apply,
             APPLY_BUDGET,
+        );
+    });
+}
+
+/// Paragraphs of the Notes page whose apply is timed.
+const NOTES_PAGE_BLOCKS: u32 = 1000;
+/// Characters of the Notes paragraph whose save is timed.
+const NOTES_BLOCK_CHARS: usize = 2048;
+/// The desktop budget of the Notes page apply, post-apply hook included.
+const NOTES_PAGE_APPLY_BUDGET: Duration = Duration::from_secs(2);
+/// The desktop budget of one Notes block save, from the domain write to its sealed operation.
+const NOTES_BLOCK_SAVE_BUDGET: Duration = Duration::from_millis(50);
+
+/// Seals `NOTES_PAGE_BLOCKS` new paragraphs of a shared page on one replica and times their
+/// apply on another, the Notes post-apply hook included. Then times one `NOTES_BLOCK_CHARS`
+/// paragraph save from its domain write to its sealed operation. Returns both durations.
+async fn notes_page_round() -> (Duration, Duration) {
+    let mut author = Replica::new(0, 21).await;
+    let mut reader = Replica::new(1, 21).await;
+    author.exec(&page_sql()).await;
+    author.seal().await.unwrap();
+    // The genesis and the page prepare the reader's statements.
+    assert!(deliver(&mut author, &mut reader).await.0 >= 2);
+    let blocks: String = (0..NOTES_PAGE_BLOCKS)
+        .map(|block| {
+            root_block_sql(
+                &format!("block-{block}"),
+                PAGE,
+                &format!("paragraph {block}"),
+                block + 3,
+            )
+        })
+        .collect();
+    author.exec(&blocks).await;
+    loop {
+        let report = author.seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        if !report.more {
+            break;
+        }
+    }
+    let (applied, applying) = deliver(&mut author, &mut reader).await;
+    assert!(applied >= 1);
+    let received = format!(
+        "SELECT count(*) FROM notes_blocks WHERE page_id = {} AND plain_text LIKE 'paragraph %'",
+        quoted(PAGE)
+    );
+    assert_eq!(reader.count(&received).await, i64::from(NOTES_PAGE_BLOCKS));
+
+    let text = rich_text(&"a".repeat(NOTES_BLOCK_CHARS));
+    let started = Instant::now();
+    author
+        .exec(&format!(
+            "UPDATE notes_blocks SET text = {} WHERE id = 'block-0';",
+            quoted(&text)
+        ))
+        .await;
+    let report = author.seal().await.unwrap();
+    let saving = started.elapsed();
+    assert_eq!(report.sealed_ops, 1);
+    (applying, saving)
+}
+
+/// The Notes budgets are recorded, not enforced: the 1,000-block page apply and the 2 KiB
+/// block save are measured against their desktop budgets.
+#[test]
+#[ignore = "timing budgets are meaningful only in the release profile"]
+fn notes_page_budgets_are_recorded() {
+    block_on(async {
+        let (mut apply, mut save) = (Vec::new(), Vec::new());
+        for _ in 0..RUNS {
+            let (applying, saving) = notes_page_round().await;
+            apply.push(applying);
+            save.push(saving);
+        }
+        record(
+            &format!("apply of a {NOTES_PAGE_BLOCKS}-block Notes page with its hook"),
+            apply,
+            NOTES_PAGE_APPLY_BUDGET,
+        );
+        record(
+            &format!("save of a {NOTES_BLOCK_CHARS}-character Notes block to its operation"),
+            save,
+            NOTES_BLOCK_SAVE_BUDGET,
         );
     });
 }

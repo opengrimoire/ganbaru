@@ -17,7 +17,7 @@ You implement one plan step of the concurrent sync goal in the Ganbaru repositor
 ## Resource rule (mandatory; several agents share one machine)
 
 - Hold the shared lock for EVERY cargo, vitest, pnpm check, or other build/test command: start the command line with `exec 9>$HOME/.cache/ganbaru-checks.lock; flock 9; ` (the plain `flock <file> cmd` form is refused by the harness), for example `exec 9>$HOME/.cache/ganbaru-checks.lock; flock 9; CARGO_TARGET_DIR=$HOME/.cache/ganbaru-targets/engine cargo test -p ganbaru-sync --lib -j 4 conformance -- --test-threads=4`. Never run two of them at once.
-- Commands may wait on the lock; use the Bash `timeout` of 600000 ms, or `run_in_background` for longer runs and wait for the completion notification.
+- Commands may wait on the lock; use the Bash `timeout` of 600000 ms, or `run_in_background` for longer runs and wait for the completion notification. Do not write polling loops that wait for a process to disappear with `pgrep -f` or `pkill -f`: the loop's own command line contains the pattern, so it matches itself and never ends. After merging feat/sync, rerun only the crates whose source the merge changed plus the integration checks (ganbaru-tauri-app tests, clippy, fmt, the desktop bin check, the Android check, and frontend checks when frontend or bindings changed); skip unchanged crates that already passed on the pre-merge head, and record which were skipped.
 - Do not start rust-analyzer, dev servers, Tauri, or the app.
 - Do not run the full `pnpm -w run validate` unless your step is the milestone's validation step; the orchestrator runs it.
 

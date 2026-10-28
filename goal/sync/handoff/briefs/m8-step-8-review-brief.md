@@ -1,0 +1,11 @@
+You review branch `docs/sync-milestone-8` (worktree /home/victor/ganbaru/.claude/worktrees/agent-a0809d50158ebeb14, HEAD c56361c1) before it merges into feat/sync. It is milestone 8 step 8 of Ganbaru's sync work (Notes: docs, automated acceptance, budgets, validate) and this review also closes milestone 8 (Notes sync, steps 1 to 7 already on feat/sync). Read-only: do not edit, commit, or switch branches; use `git -C <worktree>` with absolute paths. Do not run Cargo or Node (validate already passed on c56361c1); read source instead. Helper scripts in the shared scratchpad must be named notes-milestone-review-*.sh.
+
+Inputs: the plan /home/victor/ganbaru/goal/sync/milestone_8.md (Outcome, Scope, Design, Documentation, Manual acceptance, Testing, Progress for steps 1 to 7), the step brief /home/victor/.cache/ganbaru-goal-scratch/m8-step-8-brief.md, the progress entry /home/victor/.cache/ganbaru-goal-scratch/milestone-8-step-8-progress.md, and `git -C <worktree> diff 49e307c1...HEAD`.
+
+Check, ranked by severity with file:line and a concrete failure scenario:
+1. Docs truth: every claim the diff adds or keeps in docs/ and AGENTS.md about Notes sync matches source on the branch (what replicates, what stays device-local, owner-only writes while `replica_writable` is false, conflict and held-edit behavior, recovery discard-only, asset classes, history per device). Flag overclaims (anything a user would read as working on replicas or as restorable when it is not) and stale text elsewhere in docs that contradicts it. No links from product docs to `goal/`; style rules from AGENTS.md (sentence case, no em dashes or double hyphens, no hard wraps).
+2. Acceptance mapping honesty: each mapped test actually exercises the row it is mapped to; gaps are not hidden.
+3. The two new tests and the budget test: real paths, deterministic, correct assertions, ignored and release-only where intended.
+4. Milestone close: does the milestone 8 Outcome hold in source for owner-written Notes (convergence, no silent loss, bounded apply), and which Outcome items remain blocked on milestone 10 step 6 (replica writes) or recovery restore? List anything that should become a recorded pre-release item.
+
+Final report under 400 words: verdict (merge, merge with follow-ups, or fix first) and findings.

@@ -17,3 +17,7 @@ pub mod schema;
 pub mod templates;
 pub mod views;
 pub mod window;
+
+pub use property_conversion::{
+    MismatchedValuePreview, preview_mismatched_value, settle_mismatched_value,
+};

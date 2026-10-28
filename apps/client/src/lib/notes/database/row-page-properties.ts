@@ -1,7 +1,7 @@
 import type { NotesPage } from "$lib/notes/types";
 import type { NotesDataSourceSchemaPropertyDraft } from "./data-source-schema";
 import { NOTES_DATABASE_ROW_MAX_DEPTH, type NotesDatabaseRowHierarchyMetadata } from "./row-hierarchy";
-import { notesDatabaseTableCellText, type NotesDatabaseTableColumn } from "./table";
+import { notesDatabasePropertyCell, notesDatabaseTableCellText, type NotesDatabaseTableColumn } from "./table";
 import { moveNotesDatabaseView, stepNotesDatabaseView, type NotesDatabaseViewDropPlacement } from "./view-order";
 
 /** The schema fields that place one property on row pages. */
@@ -52,12 +52,14 @@ export function notesDatabaseRowPageEntries<Property extends NotesDatabaseRowPag
 /**
  * Whether a row has no value for one property, for "Hide when empty". Unchecked checkboxes, blank text, no options,
  * no relations, no date, and computed values with no result count as empty. Buttons and timestamps always have
- * something to show, so they never count as empty.
+ * something to show, so they never count as empty. Neither does a value stored under another type than the
+ * property's, which waits for the user to convert or discard it.
  *
  * @param page Row page with hydrated property values.
  * @param column Property as a table column.
  */
 export function notesDatabaseRowPageValueIsEmpty(page: NotesPage, column: NotesDatabaseTableColumn): boolean {
+  if (notesDatabasePropertyCell(page, column).kind === "mismatch") return false;
   switch (column.type) {
     case "button":
     case "created_time":

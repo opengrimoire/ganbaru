@@ -459,11 +459,27 @@ pub async fn update_page(
         .begin()
         .await
         .map_err(|e| format!("begin notes page update: {e}"))?;
-    page_history::record_page_snapshot_tx(&mut tx, page_id, "update_page").await?;
+    update_page_tx(&mut tx, page_id, update).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes page update: {e}"))?;
+    reads::get_page(pool, page_id, false).await
+}
+
+/// Applies a validated page update inside the caller's transaction, recording page history.
+///
+/// The caller validates the update and ensures the project history baseline before it opens
+/// the transaction, as [`update_page`] does.
+pub(crate) async fn update_page_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    page_id: &str,
+    update: NotePageUpdate,
+) -> Result<(), String> {
+    page_history::record_page_snapshot_tx(tx, page_id, "update_page").await?;
     let page_properties_changed = update.properties.is_some();
     let page_title_changed = update.title.is_some();
     if let Some(parent) = &update.parent {
-        validate_page_parent_exists(&mut tx, parent).await?;
+        validate_page_parent_exists(tx, parent).await?;
         let (parent_type, parent_page_id, parent_block_id, parent_data_source_id) =
             page_parent_columns(parent);
         sqlx::query(
@@ -483,10 +499,10 @@ pub async fn update_page(
         .bind(parent_data_source_id)
         .bind(crate::structure::nested_page_block_id(parent_type, page_id))
         .bind(page_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes page parent: {e}"))?;
-        crate::structure::detach_row_hierarchy_tx(&mut tx, page_id).await?;
+        crate::structure::detach_row_hierarchy_tx(tx, page_id).await?;
     }
     if let Some(title) = update.title {
         let title = title.trim().to_string();
@@ -498,7 +514,7 @@ pub async fn update_page(
         )
         .bind(&title)
         .bind(page_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes page title: {e}"))?;
         let child_payload = child_page_payload(&title);
@@ -510,7 +526,7 @@ pub async fn update_page(
         )
         .bind(plain_text_from_payload("child_page", &child_payload))
         .bind(page_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes child page block title: {e}"))?;
     }
@@ -521,12 +537,11 @@ pub async fn update_page(
              WHERE id = ? AND in_trash = 0 AND archived = 0",
         )
         .bind(page_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes page properties: {e}"))?;
         if touched.rows_affected() > 0 {
-            crate::page_property_storage::write_page_properties(&mut tx, page_id, properties)
-                .await?;
+            crate::page_property_storage::write_page_properties(tx, page_id, properties).await?;
         }
     }
     if update.icon.is_set() || update.cover.is_set() {
@@ -546,11 +561,11 @@ pub async fn update_page(
         .bind(cover_is_set)
         .bind(cover)
         .bind(page_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| format!("update notes page media: {e}"))?;
         assets::sync_page_asset_references_tx(
-            &mut tx,
+            tx,
             page_id,
             icon_is_set != 0,
             icon_reference_value.as_ref(),
@@ -560,24 +575,18 @@ pub async fn update_page(
         .await?;
     }
     if page_properties_changed || page_title_changed {
-        mention_notifications::sync_page_properties_tx(&mut tx, page_id).await?;
+        mention_notifications::sync_page_properties_tx(tx, page_id).await?;
     }
     if page_properties_changed {
-        let updated_page = load_page_row(&mut tx, page_id).await?;
+        let updated_page = load_page_row(tx, page_id).await?;
         if updated_page.parent_type == "data_source_id" {
             if let Some(data_source_id) = updated_page.parent_data_source_id.as_deref() {
-                assets::sync_current_data_source_property_asset_references_tx(
-                    &mut tx,
-                    data_source_id,
-                )
-                .await?;
+                assets::sync_current_data_source_property_asset_references_tx(tx, data_source_id)
+                    .await?;
             }
         }
     }
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit notes page update: {e}"))?;
-    reads::get_page(pool, page_id, false).await
+    Ok(())
 }
 
 pub(super) fn json_field_update(value: &OptionalJsonValue) -> (i64, Option<String>) {

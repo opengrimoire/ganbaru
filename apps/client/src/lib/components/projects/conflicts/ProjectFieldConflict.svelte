@@ -7,6 +7,7 @@
     type ProjectFieldChoice,
   } from "$lib/api/project-conflicts";
   import SyncConflictCard from "$lib/components/sync/SyncConflictCard.svelte";
+  import SyncConflictChoice from "$lib/components/sync/SyncConflictChoice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { findFieldConflict, previewVersionText } from "$lib/projects/conflicts";
   import { projectConflicts } from "$lib/stores/project-conflicts.svelte";
@@ -39,7 +40,9 @@
     if (target === "checklist_item") return t("projects.conflict.checklistTitle");
     return field === "description" ? t("projects.conflict.descriptionTitle") : t("projects.conflict.titleTitle");
   });
-  let busy = $state(false);
+  /** The version whose choice is running, or `null` when none is. */
+  let pendingVersion = $state<string | null>(null);
+  const busy = $derived(pendingVersion !== null);
   let message = $state("");
   let messageKind = $state<"resolved" | "error">("error");
 
@@ -56,9 +59,10 @@
     );
   }
 
-  async function resolve(choice: ProjectFieldChoice, text: string): Promise<void> {
+  async function resolve(choice: ProjectFieldChoice, version: ProjectConflictVersion): Promise<void> {
     if (busy) return;
-    busy = true;
+    pendingVersion = version.version;
+    const text = version.text;
     message = "";
     try {
       await projects.resolveConflict({ kind: "field", target, id, field, choice });
@@ -73,7 +77,7 @@
         messageKind = "error";
       }
     } finally {
-      busy = false;
+      pendingVersion = null;
       projectConflicts.invalidate();
     }
   }
@@ -96,19 +100,17 @@
         </div>
         <div class="flex flex-wrap items-center gap-1">
           {#if version.displayed}
-            <button
-              class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-              type="button"
+            <SyncConflictChoice
               disabled={busy}
-              onclick={() => void resolve({ kind: "displayed" }, version.text)}
-            >{t("projects.conflict.keepThis")}</button>
+              pending={pendingVersion === version.version}
+              onclick={() => void resolve({ kind: "displayed" }, version)}
+            >{t("projects.conflict.keepThis")}</SyncConflictChoice>
           {:else}
-            <button
-              class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-              type="button"
+            <SyncConflictChoice
               disabled={busy}
-              onclick={() => void resolve({ kind: "version", version: version.version }, version.text)}
-            >{t("projects.conflict.useOther")}</button>
+              pending={pendingVersion === version.version}
+              onclick={() => void resolve({ kind: "version", version: version.version }, version)}
+            >{t("projects.conflict.useOther")}</SyncConflictChoice>
           {/if}
         </div>
       </div>

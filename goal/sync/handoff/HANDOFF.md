@@ -56,6 +56,7 @@ Progress snapshots are in `progress/`; their live copies were in the session scr
 
 1. `feat/sync-chat-assignments`: milestone 9 step 7 (brief `briefs/m9-step-7-brief.md`). Implemented at 61c4dec5; the review (`briefs/m9-step-7-review-brief.md`) returned fix first, and the fix round (`briefs/m9-step-7-fix-message.md`) is running. A delta review follows, then landing with manifest 21 or the next free number.
 2. `feat/sync-peer-exchange`: milestone 11 step 9. Parts A to C are committed. The four-part internal security review (`briefs/m11-security-review-brief.md`, findings in `briefs/m11-security-findings.md`) returned fix first. The fix round (`briefs/m11-step-9-security-fix-brief.md`) is running, with the decided handover rule (`briefs/m11-step-9-handover-rule-message.md`) and the simulation seed 3 re-seal rule queued after it. A delta security review follows, then landing with protocol 15 or the next free number.
+3. `docs/sync-milestone-8`: milestone 8 step 8 (brief `briefs/m8-step-8-brief.md`), implementer running.
 
 WIP patches: none. Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.
 

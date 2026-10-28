@@ -34,6 +34,7 @@
     canManageSyncRecoveryKit,
     canResetSyncState,
     canResolveSyncLateChanges,
+    canSuggestSyncHandover,
     syncAnchorUnreachableLine,
     syncQuarantinableAnchor,
     syncRecoveryKitUse,
@@ -75,7 +76,6 @@
   let resetConfirming = $state(false);
   let resetting = $state(false);
   let resetMessage = $state("");
-  const unconfirmed = $derived(syncUnconfirmedNotice(t, localization.locale, status, now));
   const anchorUnreachable = $derived(syncAnchorUnreachableLine(t, localization.locale, status, now));
   const authorityContext = $derived<SyncAuthorityContext | null>(
     authorityState.authority
@@ -86,6 +86,9 @@
         anchorUnreachableSinceMs: status.anchorUnreachableSinceMs,
       }
       : null,
+  );
+  const unconfirmed = $derived(
+    syncUnconfirmedNotice(t, localization.locale, status, now, canSuggestSyncHandover(authorityContext)),
   );
   const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
   const kitUse = $derived(authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state));
@@ -282,6 +285,7 @@
         <SyncLateChanges
           buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass}
           changes={authorityState.lateChanges}
+          total={authorityState.lateTotal}
           canResolve={canResolveSyncLateChanges(authorityContext)}
           {now}
         />

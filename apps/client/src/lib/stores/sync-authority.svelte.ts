@@ -33,6 +33,7 @@ const KIT_CAPABLE = BUILD_PLATFORM_PROFILE.shell === "desktop";
 let authority = $state<SyncAuthorityView | null>(null);
 let outbox = $state<SyncOutboxEntry[]>([]);
 let lateChanges = $state<SyncLateChange[]>([]);
+let lateTotal = $state(0);
 let pendingKit = $state<SyncPendingRecoveryKit | null>(null);
 let loadFailed = $state(false);
 let generation = 0;
@@ -45,6 +46,7 @@ onActiveVaultIdentityChange(() => {
   authority = null;
   outbox = [];
   lateChanges = [];
+  lateTotal = 0;
   pendingKit = null;
   loadFailed = false;
   lastStatusKey = null;
@@ -67,7 +69,8 @@ async function refresh(): Promise<void> {
     if (expected !== generation) return;
     authority = nextAuthority;
     outbox = nextOutbox;
-    lateChanges = nextLate;
+    lateChanges = nextLate.changes;
+    lateTotal = nextLate.total;
     pendingKit = nextKit;
     loadFailed = false;
   } catch (cause: unknown) {
@@ -146,6 +149,8 @@ export function getSyncAuthorityState() {
     get authority(): SyncAuthorityView | null { return authority; },
     get outbox(): SyncOutboxEntry[] { return outbox; },
     get lateChanges(): SyncLateChange[] { return lateChanges; },
+    /** Every late change waiting for a decision, including those past the listed bound. */
+    get lateTotal(): number { return lateTotal; },
     get pendingKit(): SyncPendingRecoveryKit | null { return pendingKit; },
     get loadFailed(): boolean { return loadFailed; },
     subscribe,

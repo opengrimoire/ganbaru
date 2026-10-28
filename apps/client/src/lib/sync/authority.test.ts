@@ -11,6 +11,7 @@ import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translato
 import {
   canResetSyncState,
   canResolveSyncLateChanges,
+  canSuggestSyncHandover,
   canTakeSyncAnchor,
   canForceSyncAnchor,
   SYNC_HANDOVER_SUGGESTION_MS,
@@ -254,27 +255,59 @@ describe("sync late change presentation", () => {
 });
 
 describe("sync unconfirmed changes", () => {
-  it("stays silent without unconfirmed changes", () => {
-    expect(syncUnconfirmedNotice(t, "en", status({}), NOW)).toBeNull();
+  it("stays silent without unconfirmed changes or kept versions", () => {
+    expect(syncUnconfirmedNotice(t, "en", status({}), NOW, true)).toBeNull();
   });
 
-  it("counts changes and suggests a handover once the oldest is old enough", () => {
-    const recent = syncUnconfirmedNotice(t, "en", status({ unconfirmed: 2, oldestUnconfirmedAtMs: NOW - 10 * 60_000 }), NOW);
+  it("counts changes and kept versions and suggests a handover once the oldest is old enough", () => {
+    const recent = syncUnconfirmedNotice(
+      t,
+      "en",
+      status({ unconfirmed: 2, oldestUnconfirmedAtMs: NOW - 10 * 60_000, displacedVersions: 3 }),
+      NOW,
+      true,
+    );
     expect(recent?.suggestHandover).toBe(false);
     expect(recent?.lines).toEqual([
       "The anchor has not confirmed storing 2 changes from this device yet.",
       "The oldest one was made 10 min ago.",
+      "3 older versions are kept until the anchor confirms the changes that replaced them.",
     ]);
     const old = syncUnconfirmedNotice(
       t,
       "en",
       status({ unconfirmed: 1, oldestUnconfirmedAtMs: NOW - SYNC_HANDOVER_SUGGESTION_MS }),
       NOW,
+      true,
     );
     expect(old?.suggestHandover).toBe(true);
-    expect(old?.lines).toHaveLength(3);
-    expect(syncUnconfirmedNotice(t, "en", status({ unconfirmed: 1, oldestUnconfirmedAtMs: NOW - 2_000 }), NOW, 1_000)?.suggestHandover)
+    expect(old?.lines.at(-1)).toBe(
+      "Changes from this device have waited more than 30 days for the anchor. If the anchor is lost for good, take over the anchor from Devices.",
+    );
+    expect(syncUnconfirmedNotice(t, "en", status({ unconfirmed: 1, oldestUnconfirmedAtMs: NOW - 2_000 }), NOW, true, 1_000)?.suggestHandover)
       .toBe(true);
+  });
+
+  it("reports kept versions alone without suggesting a handover", () => {
+    const kept = syncUnconfirmedNotice(t, "en", status({ displacedVersions: 1 }), NOW, true);
+    expect(kept).toEqual({
+      lines: ["1 older version is kept until the anchor confirms the changes that replaced them."],
+      suggestHandover: false,
+    });
+  });
+
+  it("suggests a handover only where this device can take the anchor", () => {
+    const old = status({ unconfirmed: 1, oldestUnconfirmedAtMs: NOW - SYNC_HANDOVER_SUGGESTION_MS });
+    const suggests = (ctx: SyncAuthorityContext | null) =>
+      syncUnconfirmedNotice(t, "en", old, NOW, canSuggestSyncHandover(ctx))?.suggestHandover;
+    expect(suggests(context())).toBe(true);
+    expect(suggests(context({}, { frozen: true }))).toBe(true);
+    expect(suggests(null)).toBe(false);
+    expect(suggests(context({}, { ownIsAdmin: false }))).toBe(false);
+    expect(suggests(context({ mobileLayout: true }))).toBe(false);
+    expect(suggests(context({ statusRole: "hub" }))).toBe(false);
+    expect(suggests(context({}, { devices: [{ ...own, anchor: true }] }))).toBe(false);
+    expect(syncUnconfirmedNotice(t, "en", old, NOW, false)?.lines).toHaveLength(2);
   });
 
   it("says since when the anchor stopped answering only on a linked device", () => {

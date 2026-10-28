@@ -236,19 +236,23 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     );
     sequenced.held = Some(2);
 
-    let views = late_views(
+    let changes = vec![
+        late("note-decided", LateKind::Tombstone, None),
+        late(
+            "note-open",
+            LateKind::Values,
+            Some(Hlc::new(AT_MS + 60_000, 3)),
+        ),
+    ];
+    let listed = late_views(
         &engine,
-        vec![
-            late("note-decided", LateKind::Tombstone, None),
-            late(
-                "note-open",
-                LateKind::Values,
-                Some(Hlc::new(AT_MS + 60_000, 3)),
-            ),
-        ],
-        &[decided, sequenced],
+        changes.clone(),
+        &[decided.clone(), sequenced.clone()],
         &names(),
+        MAX_LISTED_LATE_CHANGES,
     );
+    assert_eq!(listed.total, 2);
+    let views = listed.changes;
     assert_eq!(views.len(), 2);
     assert!(views[0].decision_pending);
     assert_eq!(views[0].kind, LateKindView::Tombstone);
@@ -264,4 +268,14 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     assert_eq!(wire["kind"], "values");
     assert_eq!(wire["removalRevision"], 5);
     assert_eq!(wire["device"]["deviceId"], "device-c");
+
+    let bounded = late_views(&engine, changes, &[decided, sequenced], &names(), 1);
+    assert_eq!(
+        bounded.total, 2,
+        "the total counts the changes past the bound"
+    );
+    assert_eq!(bounded.changes.len(), 1);
+    assert_eq!(bounded.changes[0].row_key, "note-decided");
+    let wire = serde_json::to_value(&bounded).expect("serialize late changes");
+    assert_eq!(wire["total"], 2);
 }

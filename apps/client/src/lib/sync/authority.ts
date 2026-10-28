@@ -15,8 +15,10 @@ import { formatDateTime } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { formatSyncTime, syncDeviceName } from "./status";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /** How long changes may wait for the anchor before the interface suggests taking it over. */
-export const SYNC_HANDOVER_SUGGESTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const SYNC_HANDOVER_SUGGESTION_MS = 30 * DAY_MS;
 
 /** Kit code groups shown on one line of the code display and the saved file. */
 export const SYNC_KIT_GROUPS_PER_LINE = 4;
@@ -322,6 +324,14 @@ export function syncAnchorUnreachableLine(
   return t("sync.authority.anchorUnreachable", formatSyncTime(t, locale, status.anchorUnreachableSinceMs, nowMs));
 }
 
+/**
+ * Whether this device may be told to take over the anchor after a long wait: a linked admin
+ * desktop beside the anchor, the only kind of device that can act on it.
+ */
+export function canSuggestSyncHandover(context: SyncAuthorityContext | null): boolean {
+  return context !== null && adminHere(context) && linkedDesktopBesideAnchor(context);
+}
+
 /** What the interface says about changes the anchor has not confirmed storing. */
 export interface SyncUnconfirmedNotice {
   lines: string[];
@@ -330,8 +340,10 @@ export interface SyncUnconfirmedNotice {
 }
 
 /**
- * Describes unconfirmed changes, or returns null when there are none.
+ * Describes unconfirmed changes and the superseded versions kept for them, or returns null when
+ * there are neither. The handover suggestion measures the age of the oldest unconfirmed change.
  *
+ * @param canSuggest Whether this device may take over the anchor, from `canSuggestSyncHandover`.
  * @param thresholdMs Age of the oldest unconfirmed change after which a handover is suggested.
  */
 export function syncUnconfirmedNotice(
@@ -339,13 +351,18 @@ export function syncUnconfirmedNotice(
   locale: AppLocale,
   status: SyncStatusView,
   nowMs: number,
+  canSuggest: boolean,
   thresholdMs = SYNC_HANDOVER_SUGGESTION_MS,
 ): SyncUnconfirmedNotice | null {
-  if (status.unconfirmed === 0) return null;
-  const lines = [t("sync.unconfirmed", status.unconfirmed)];
+  if (status.unconfirmed === 0 && status.displacedVersions === 0) return null;
+  const lines: string[] = [];
   const oldest = status.oldestUnconfirmedAtMs;
-  if (oldest !== null) lines.push(t("sync.unconfirmedSince", formatSyncTime(t, locale, oldest, nowMs)));
-  const suggestHandover = oldest !== null && nowMs - oldest >= thresholdMs;
-  if (suggestHandover) lines.push(t("sync.unconfirmedHandover"));
+  if (status.unconfirmed > 0) {
+    lines.push(t("sync.unconfirmed", status.unconfirmed));
+    if (oldest !== null) lines.push(t("sync.unconfirmedSince", formatSyncTime(t, locale, oldest, nowMs)));
+  }
+  if (status.displacedVersions > 0) lines.push(t("sync.displaced", status.displacedVersions));
+  const suggestHandover = canSuggest && status.unconfirmed > 0 && oldest !== null && nowMs - oldest >= thresholdMs;
+  if (suggestHandover) lines.push(t("sync.unconfirmedHandover", Math.floor(thresholdMs / DAY_MS)));
   return { lines, suggestHandover };
 }

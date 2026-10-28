@@ -88,7 +88,12 @@ export const sync = {
       ? "El ancla aún no confirmó que guardó 1 cambio de este dispositivo."
       : `El ancla aún no confirmó que guardó ${count} cambios de este dispositivo.`,
   unconfirmedSince: (time: string) => `El más antiguo se hizo ${time}.`,
-  unconfirmedHandover: "El ancla lleva mucho tiempo sin responder. Si ya no volverá, haz que otra computadora administradora sea el ancla.",
+  unconfirmedHandover: (days: number) =>
+    `Los cambios de este dispositivo llevan más de ${days} días esperando al ancla. Si el ancla se perdió para siempre, toma el ancla desde Dispositivos.`,
+  displaced: (count: number) =>
+    count === 1
+      ? "Se conserva 1 versión anterior hasta que el ancla confirme el cambio que la reemplazó."
+      : `Se conservan ${count} versiones anteriores hasta que el ancla confirme los cambios que las reemplazaron.`,
   authority: {
     heading: "Dispositivos",
     description: "Dispositivos inscritos en esta bóveda. El ancla mantiene en orden la lista de dispositivos y roles.",
@@ -224,6 +229,10 @@ export const sync = {
     discarded: "Se descartó el cambio. El ancla registra la decisión.",
     restoreFailed: "No se pudo conservar el cambio",
     discardFailed: "No se pudo descartar el cambio",
+    more: (count: number) =>
+      count === 1
+        ? "Queda 1 cambio más. Decide los de arriba para ver el resto."
+        : `Quedan ${count} cambios más. Decide los de arriba para ver el resto.`,
     decisionPending: "Decisión en espera del ancla",
   },
   reset: {

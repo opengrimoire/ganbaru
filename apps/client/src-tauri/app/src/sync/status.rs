@@ -198,6 +198,9 @@ pub(crate) struct SyncStatusView {
     pub unconfirmed: usize,
     /// When the oldest unconfirmed change was stored, in Unix milliseconds.
     pub oldest_unconfirmed_at_ms: Option<u64>,
+    /// Superseded versions this device keeps until the anchor confirms the changes that
+    /// superseded them.
+    pub displaced_versions: usize,
     /// On a linked device, since when no pass in this app run reached the anchor, directly or
     /// as the coordinator, in Unix milliseconds. `None` while the anchor answers, on the
     /// coordinator, and before the first pass.
@@ -229,6 +232,7 @@ impl SyncStatusView {
         self.recovery = TableCount::list(&status.recovery);
         self.unconfirmed = status.unconfirmed;
         self.oldest_unconfirmed_at_ms = status.oldest_unconfirmed_ms;
+        self.displaced_versions = status.displaced;
     }
 
     /// Names the linked devices the coordinator does not count, with why, in device id order.
@@ -546,12 +550,14 @@ mod tests {
         let status = SyncStatus {
             unconfirmed: 4,
             oldest_unconfirmed_ms: Some(1_800_000_000_000),
+            displaced: 3,
             ..SyncStatus::default()
         };
         let mut view = SyncStatusView::default();
         view.set_counts(&status);
         let wire = serde_json::to_value(&view).expect("serialize status");
         assert_eq!(wire["unconfirmed"], serde_json::json!(4));
+        assert_eq!(wire["displacedVersions"], serde_json::json!(3));
         assert_eq!(
             wire["oldestUnconfirmedAtMs"],
             serde_json::json!(1_800_000_000_000_u64)

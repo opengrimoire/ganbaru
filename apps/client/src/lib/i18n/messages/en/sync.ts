@@ -78,7 +78,10 @@ export const sync = {
   unconfirmed: (count: number) =>
     `The anchor has not confirmed storing ${count} ${count === 1 ? "change" : "changes"} from this device yet.`,
   unconfirmedSince: (time: string) => `The oldest one was made ${time}.`,
-  unconfirmedHandover: "The anchor has been unreachable for a long time. If it is gone for good, make another admin computer the anchor.",
+  unconfirmedHandover: (days: number) =>
+    `Changes from this device have waited more than ${days} days for the anchor. If the anchor is lost for good, take over the anchor from Devices.`,
+  displaced: (count: number) =>
+    `${count} older ${count === 1 ? "version is" : "versions are"} kept until the anchor confirms the changes that replaced them.`,
   authority: {
     heading: "Devices",
     description: "Devices enrolled in this vault. The anchor keeps the list of devices and roles in order.",
@@ -214,6 +217,8 @@ export const sync = {
     discarded: "Change discarded. The anchor records the decision.",
     restoreFailed: "The change could not be kept",
     discardFailed: "The change could not be discarded",
+    more: (count: number) =>
+      `${count} more ${count === 1 ? "change waits" : "changes wait"}. Decide the ones above to see the rest.`,
     decisionPending: "Decision waiting for the anchor",
   },
   reset: {

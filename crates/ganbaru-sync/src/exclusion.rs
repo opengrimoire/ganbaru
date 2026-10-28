@@ -1442,7 +1442,9 @@ async fn restoring_change(
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
     let restated = crate::fork::restated(conn, record.table, &record.key).await?;
-    // A version restating an older value the anchor sealed again is no newer edit.
+    // A version restating an older value the anchor sealed again is no newer edit. Only the
+    // anchor records restatements, so on another admin a restatement still counts as newer and
+    // the group keeps the anchor's value.
     let newer = |group: GroupId, late: &LateValue| {
         versions.iter().any(|version| {
             version.group == group

@@ -96,6 +96,8 @@ export interface SyncStatusView {
   unconfirmed: number;
   /** When the oldest unconfirmed change was made, in Unix milliseconds. */
   oldestUnconfirmedAtMs: number | null;
+  /** Superseded versions kept until the anchor confirms storing the changes that superseded them. */
+  displacedVersions: number;
   /**
    * On a linked device, since when no pass in this app run reached the anchor, in Unix
    * milliseconds. Null while the anchor answers, on the coordinator, and before the first pass.
@@ -146,6 +148,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   degraded: [],
   unconfirmed: 0,
   oldestUnconfirmedAtMs: null,
+  displacedVersions: 0,
   anchorUnreachableSinceMs: null,
 };
 
@@ -246,6 +249,13 @@ export interface SyncLateChange {
   decisionPending: boolean;
 }
 
+/** The first late changes the native side lists, with how many wait in all. */
+export interface SyncLateChanges {
+  changes: SyncLateChange[];
+  /** Every late change waiting for a decision, including those past the listed bound. */
+  total: number;
+}
+
 export interface SyncLateChangeTarget {
   removalRevision: number;
   table: string;
@@ -326,6 +336,7 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
       "sync status.oldestUnconfirmedAtMs",
       readNonNegativeSafeInteger,
     ),
+    displacedVersions: readNonNegativeSafeInteger(row.displacedVersions, "sync status.displacedVersions"),
     anchorUnreachableSinceMs: readNullable(
       row.anchorUnreachableSinceMs,
       "sync status.anchorUnreachableSinceMs",
@@ -496,9 +507,18 @@ export async function listSyncOutbox(): Promise<SyncOutboxEntry[]> {
   return readArray(await invoke<unknown>("sync_outbox_list"), "sync outbox", mapSyncOutboxEntry);
 }
 
-/** Rows removed devices changed after their removal that no admin decided yet. */
-export async function listSyncLateChanges(): Promise<SyncLateChange[]> {
-  return readArray(await invoke<unknown>("sync_late_changes"), "sync late changes", mapSyncLateChange);
+/** Validates the bounded late change list from the native side. */
+export function mapSyncLateChanges(value: unknown): SyncLateChanges {
+  const row = readRecord(value, "sync late changes");
+  const changes = readArray(row.changes, "sync late changes.changes", mapSyncLateChange);
+  const total = readNonNegativeSafeInteger(row.total, "sync late changes.total");
+  if (total < changes.length) throw new Error("sync late changes.total is smaller than the listed changes");
+  return { changes, total };
+}
+
+/** The first rows removed devices changed after their removal that no admin decided yet, with their total. */
+export async function listSyncLateChanges(): Promise<SyncLateChanges> {
+  return mapSyncLateChanges(await invoke<unknown>("sync_late_changes"));
 }
 
 /** On an admin desktop, keeps a late change and proposes the decision to the anchor. */

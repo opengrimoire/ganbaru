@@ -11,6 +11,7 @@ import {
   listSyncRecovery,
   mapSyncAuthority,
   mapSyncLateChange,
+  mapSyncLateChanges,
   mapSyncNotice,
   mapSyncOutboxEntry,
   mapSyncPendingRecoveryKit,
@@ -55,6 +56,7 @@ function validStatus(): Record<string, unknown> {
     degraded: ["localNetworkDenied"],
     unconfirmed: 3,
     oldestUnconfirmedAtMs: 500,
+    displacedVersions: 4,
     anchorUnreachableSinceMs: 700,
   };
 }
@@ -79,6 +81,7 @@ describe("sync API boundary", () => {
       degraded: ["localNetworkDenied"],
       unconfirmed: 3,
       oldestUnconfirmedAtMs: 500,
+      displacedVersions: 4,
       anchorUnreachableSinceMs: 700,
     });
   });
@@ -241,6 +244,7 @@ describe("sync API boundary", () => {
     expect(() => mapSyncStatus({ ...validStatus(), unconfirmed: -1 })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), unconfirmed: undefined })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), oldestUnconfirmedAtMs: "yesterday" })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), displacedVersions: undefined })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), anchorUnreachableSinceMs: -1 })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), anchorUnreachableSinceMs: undefined })).toThrow();
   });
@@ -349,10 +353,17 @@ describe("sync authority API boundary", () => {
   });
 
   it("maps late changes, including a deletion without a time", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce([validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, decisionPending: true })]);
-    const changes = await listSyncLateChanges();
+    vi.mocked(invoke).mockResolvedValueOnce({
+      changes: [validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, decisionPending: true })],
+      total: 5,
+    });
+    const { changes, total } = await listSyncLateChanges();
+    expect(total).toBe(5);
     expect(changes[0]).toEqual({ ...validLateChange() });
     expect(changes[1]).toMatchObject({ kind: "tombstone", changedAtMs: null, decisionPending: true });
+    expect(() => mapSyncLateChanges({ changes: [validLateChange()], total: 0 })).toThrow();
+    expect(() => mapSyncLateChanges({ changes: [validLateChange()] })).toThrow();
+    expect(() => mapSyncLateChanges([validLateChange()])).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ kind: "moved" }), "late")).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ removalRevision: undefined }), "late")).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ decisionPending: 1 }), "late")).toThrow();

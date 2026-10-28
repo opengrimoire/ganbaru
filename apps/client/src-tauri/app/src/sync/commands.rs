@@ -1,7 +1,7 @@
 //! Tauri commands for the sync status, controls, recovery offers, quarantine, the authority
 //! read models, and the authority actions of an admin desktop.
 
-use super::authority::{self, AuthorityView, LateChangeView, OutboxEntryView};
+use super::authority::{self, AuthorityView, LateChangesView, OutboxEntryView};
 use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
 #[cfg(desktop)]
@@ -330,11 +330,10 @@ pub async fn sync_outbox_list<R: Runtime>(
     authority::outbox(&app).await
 }
 
-/// Rows removed devices changed after their removal cutoff that no admin decided yet.
+/// The first rows removed devices changed after their removal cutoff that no admin decided yet,
+/// with their total.
 #[tauri::command]
-pub async fn sync_late_changes<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<Vec<LateChangeView>, String> {
+pub async fn sync_late_changes<R: Runtime>(app: AppHandle<R>) -> Result<LateChangesView, String> {
     authority::late_changes(&app).await
 }
 

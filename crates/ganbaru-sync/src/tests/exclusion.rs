@@ -38,10 +38,18 @@ pub(super) async fn deliver(to: &mut Replica, from: &mut Replica) {
     to.pull(from).await;
 }
 
+/// Counts the kept displaced versions, checking that the status reports the same count.
 pub(super) async fn displaced(replica: &mut Replica) -> i64 {
-    replica
+    let rows = replica
         .count("SELECT count(*) FROM sync_displaced_versions")
+        .await;
+    let status = replica
+        .engine
+        .status(&mut replica.conn, &replica.ctx)
         .await
+        .unwrap();
+    assert_eq!(i64::try_from(status.displaced).unwrap(), rows);
+    rows
 }
 
 pub(super) async fn late_changes(replica: &mut Replica) -> Vec<LateChange> {

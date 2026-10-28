@@ -36,7 +36,9 @@ pub(super) struct AssignmentWrite {
     pub(super) assignment_id: Option<ChatWorkAssignmentId>,
     /// Whether the post became an input of an active assignment.
     pub(super) input_queued: bool,
-    /// Whether this device executes the assignment, so it dispatches or delivers now.
+    /// Whether this device executes the assignment, so it dispatches or delivers now. Only
+    /// desktop executes assignments.
+    #[cfg_attr(mobile, allow(dead_code))]
     pub(super) executes_here: bool,
 }
 

@@ -9,9 +9,9 @@ use super::channels::{
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::{Row, SqlitePool};
 #[cfg(desktop)]
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, Transaction};
 
 const LOCAL_PARTICIPANT_ID: &str = "participant:local-owner";
 #[cfg(desktop)]
@@ -323,7 +323,8 @@ pub(super) async fn post_message(
     Ok(posted.result)
 }
 
-/// A post written to the vault.
+/// A post written to the vault. Only desktop dispatches the work it routed.
+#[cfg_attr(mobile, allow(dead_code))]
 struct PersistedPost {
     result: PostChatMessageResult,
     item_id: ChatConversationItemId,
@@ -363,7 +364,7 @@ async fn persist_post(
             assignment_write: AssignmentWrite::NONE,
         });
     }
-    let channel = super::channels::read_channel(&pool, &request.channel_id).await?;
+    let channel = super::channels::read_channel(pool, &request.channel_id).await?;
     if channel.archived_at.is_some() {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -372,10 +373,10 @@ async fn persist_post(
         ));
     }
     if let Some(reply_thread_id) = request.reply_thread_id.as_ref() {
-        require_reply_thread(&pool, reply_thread_id, &channel.conversation_id).await?;
+        require_reply_thread(pool, reply_thread_id, &channel.conversation_id).await?;
     }
     let resolved_invocation = resolve_invoked_teammate(
-        &pool,
+        pool,
         &channel.conversation_id,
         request.reply_thread_id.as_ref(),
         &request.references,
@@ -564,12 +565,12 @@ async fn persist_post(
     .await
     .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)?;
-    let message = read_message(&pool, &item_id).await?;
+    let message = read_message(pool, &item_id).await?;
     let assignment = match assignment_write.assignment_id.as_ref() {
-        Some(assignment_id) => Some(read_assignment(&pool, assignment_id).await?),
+        Some(assignment_id) => Some(read_assignment(pool, assignment_id).await?),
         None => match target_reply_thread_id.as_ref() {
             Some(reply_thread_id) => {
-                read_active_or_latest_assignment(&pool, reply_thread_id).await?
+                read_active_or_latest_assignment(pool, reply_thread_id).await?
             }
             None => None,
         },

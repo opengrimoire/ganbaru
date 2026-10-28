@@ -1336,9 +1336,31 @@ impl DomainAdapter for ChatAdapter {
             .collect()
     }
 
-    /// Chat is owner-only until its presentation lands, so rows present nothing.
-    fn presentation(&self, _table: TableId, _values: &[(GroupId, Value)]) -> Presentation {
-        Presentation::default()
+    /// A participant presents its display name, a teammate its role, and a channel its name with
+    /// its topic as the preview. Other rows present nothing: a message's text lives in its
+    /// revisions, outside the row's values.
+    fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
+        let profile_group = match table {
+            PARTICIPANTS_TABLE => participant_group::PROFILE,
+            TEAMMATES_TABLE => teammate_group::PROFILE,
+            CHANNELS_TABLE => channel_group::DETAILS,
+            _ => return Presentation::default(),
+        };
+        let Some((_, value)) = values.iter().find(|(group, _)| *group == profile_group) else {
+            return Presentation::default();
+        };
+        let text = |index: usize| match value.fields().get(index) {
+            Some(Field::Text(text)) => text.split_whitespace().collect::<Vec<_>>().join(" "),
+            _ => String::new(),
+        };
+        Presentation {
+            title: text(0),
+            preview: if table == CHANNELS_TABLE {
+                text(1)
+            } else {
+                String::new()
+            },
+        }
     }
 }
 
@@ -2006,6 +2028,52 @@ mod tests {
                 )
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn recovered_chat_rows_present_their_names() {
+        let adapter = ChatAdapter;
+        let channel = adapter.presentation(
+            CHANNELS_TABLE,
+            &[(
+                channel_group::DETAILS,
+                value(vec![t("design"), t("Mockups\n and  reviews")]),
+            )],
+        );
+        assert_eq!(channel.title, "design");
+        assert_eq!(channel.preview, "Mockups and reviews");
+        let teammate = adapter.presentation(
+            TEAMMATES_TABLE,
+            &[(
+                teammate_group::PROFILE,
+                value(vec![t("Reviewer"), t("Check every diff")]),
+            )],
+        );
+        assert_eq!(
+            teammate,
+            Presentation {
+                title: "Reviewer".to_string(),
+                preview: String::new(),
+            }
+        );
+        let participant = adapter.presentation(
+            PARTICIPANTS_TABLE,
+            &[(
+                participant_group::PROFILE,
+                value(vec![t("Ana"), Field::Integer(1), t("{}")]),
+            )],
+        );
+        assert_eq!(participant.title, "Ana");
+        assert_eq!(
+            adapter.presentation(
+                MESSAGES_TABLE,
+                &[(
+                    message_group::CONTENT,
+                    value(vec![t("revision-1"), Field::Null])
+                )],
+            ),
+            Presentation::default()
         );
     }
 }

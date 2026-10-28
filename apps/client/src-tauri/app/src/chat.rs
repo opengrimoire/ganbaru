@@ -11,6 +11,7 @@ pub(crate) mod cleanup_service;
 #[cfg(desktop)]
 pub(crate) mod command_support;
 pub(crate) mod configuration;
+pub mod conflicts;
 #[cfg(desktop)]
 pub mod credentials;
 pub mod device_state;

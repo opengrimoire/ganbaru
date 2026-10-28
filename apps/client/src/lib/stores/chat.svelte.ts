@@ -43,6 +43,9 @@ import type {
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
+import { onChatSyncChanged } from "$lib/chat/sync-events";
+import { CHAT_SYNC_TABLES } from "$lib/chat/sync-presentation";
+import { listenSyncApplied } from "$lib/api/sync";
 import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
@@ -56,6 +59,7 @@ import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-displ
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { getVaultOwnership } from "$lib/vault/ownership.svelte";
+import { CHAT_SYNC_DOMAIN, canWriteSyncDomain } from "$lib/vault/state";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
@@ -139,6 +143,7 @@ export class ChatStore {
   );
   private vaultGeneration = 0;
   private otherWindowListening = false;
+  private syncListening = false;
   /** Whether this is the primary pane's store, which loads shared state and persists its selection. */
   private readonly owner: boolean;
   /** The Projects store of this pane's scope, whose selection the pane follows. */
@@ -203,7 +208,7 @@ export class ChatStore {
     });
     if (this.owner && localExecutionAvailable) {
       getVaultOwnership().onOwnerChange((status) => {
-        if (status.canWrite) this.recoverAssignments();
+        if (canWriteSyncDomain(status, CHAT_SYNC_DOMAIN)) this.recoverAssignments();
       });
     }
     paneStores.add(this);
@@ -484,6 +489,7 @@ export class ChatStore {
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
       this.listenForOtherWindows();
+      this.listenForSync();
       if (!this.owner) return;
       void this.prefetchRememberedProjectChannels(projectId, vaultGeneration);
       void this.configurationController.refreshWorkingFolders().catch((error: unknown) => {
@@ -1129,6 +1135,42 @@ export class ChatStore {
       this.otherWindowListening = false;
       console.error("Chat could not listen for other windows", error);
     });
+  }
+
+  /** Starts rereading Chat rows that linked devices changed through sync, once per store. */
+  private listenForSync(): void {
+    if (this.syncListening) return;
+    this.syncListening = true;
+    const refresh = () => {
+      void this.refreshFromSync().catch((error: unknown) => {
+        console.error("Chat refresh after sync failed", error);
+      });
+    };
+    onChatSyncChanged(refresh);
+    void listenSyncApplied((tables) => {
+      if (tables.some((table) => CHAT_SYNC_TABLES.includes(table))) refresh();
+    }).catch((error: unknown) => {
+      console.error("Chat could not listen for sync", error);
+    });
+  }
+
+  /**
+   * Rereads channels, teammates, and the open conversation after sync changed Chat rows. Sync names tables, not
+   * rows, so this rereads what the pane shows. Receiving never publishes, so windows do not echo each other.
+   */
+  private async refreshFromSync(): Promise<void> {
+    if (!this.loaded) return;
+    const vaultGeneration = this.vaultGeneration;
+    const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    const channels = await chatApi.listChatNavigationChannels();
+    if (!isCurrentVault()) return;
+    for (const channel of channels) this.channelNavigationController.upsert(channel);
+    if (this.owner) await this.refreshTeammates();
+    const channelId = this.selectedChannelId;
+    if (!isCurrentVault() || !channelId) return;
+    this.organizationalController.scheduledMessagesVersion += 1;
+    await this.loadChannelMessages(channelId, true);
+    if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
   /** Rereads what another window changed. Receiving never publishes, so windows do not echo each other. */

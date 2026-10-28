@@ -607,6 +607,66 @@ fn the_named_admin_desktop_seals_a_handover_from_the_head_it_continues() {
 }
 
 #[test]
+fn an_anchors_two_handovers_from_one_head_freeze_it_until_an_admin_forces_a_handover() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 44).await;
+        for index in [20, 21, 22] {
+            hub.sequence(admin_entry(index)).await.unwrap().unwrap();
+        }
+        let mut first = Replica::new(20, 44).await;
+        let mut second = Replica::new(21, 44).await;
+        let mut third = Replica::new(22, 44).await;
+        for replica in [&mut first, &mut second, &mut third] {
+            replica.pull(&mut hub).await;
+        }
+        let (_, point, _) = head(&mut hub).await;
+        let anchor = anchor_admin(&person());
+
+        // The anchor key signs a handover to each of two devices, which seal them unaware of
+        // each other.
+        let to_first = first.handover_proposal(&anchor).await;
+        first.seal_handover(&to_first, None).await.unwrap().unwrap();
+        let to_second = second.handover_proposal(&anchor).await;
+        second
+            .seal_handover(&to_second, None)
+            .await
+            .unwrap()
+            .unwrap();
+        hub.pull(&mut first).await;
+        hub.pull(&mut second).await;
+        let frozen = view(&mut hub).await;
+        assert_eq!((frozen.revision, frozen.frozen_at), (point, Some(point)));
+        assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert_eq!(
+            hub.sequence(enroll_entry(&person(), 23, DeviceRole::Member))
+                .await
+                .unwrap(),
+            Err(ProposalRejection::EpochFrozen)
+        );
+
+        // A device that knows one handover from the point refuses another the same key signed.
+        third.pull(&mut hub).await;
+        assert_eq!(view(&mut third).await, frozen);
+        let to_third = third.handover_proposal(&anchor).await;
+        assert_eq!(
+            third.seal_handover(&to_third, None).await.unwrap(),
+            Err(ProposalRejection::HandoverConflict)
+        );
+
+        // An admin's forced handover at the point recovers the space.
+        let forced = third.handover_proposal(&device_admin(22)).await;
+        third.seal_handover(&forced, None).await.unwrap().unwrap();
+        let recovered = view(&mut third).await;
+        assert_eq!(
+            (recovered.anchor_device_id.as_str(), recovered.frozen_at),
+            (device_id(22).as_str(), None)
+        );
+        hub.pull(&mut third).await;
+        assert_eq!(view(&mut hub).await, recovered);
+    });
+}
+
+#[test]
 fn only_the_recovery_key_forces_a_handover_to_a_member_desktop() {
     block_on(async {
         let mut hub = Replica::anchor(0, 47).await;

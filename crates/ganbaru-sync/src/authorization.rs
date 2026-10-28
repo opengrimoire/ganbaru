@@ -161,6 +161,19 @@ enum Revocation {
     KitRotation(AdminPublicKey),
 }
 
+/// A revocation with the entry that carries it, which decides the handovers it counts against.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Evidence {
+    revocation: Revocation,
+    /// Admin key that signed the entry's proposal.
+    author: AdminPublicKey,
+    /// Device that sequenced the entry: the anchor of its epoch.
+    carrier: String,
+    /// Whether the entry continues an epoch past the point its anchor handed over from, see
+    /// [`Walk`].
+    orphan: bool,
+}
+
 /// Who signed a handover, judged at its fork point, in the order the veto test settles them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HandoverSigner {
@@ -178,23 +191,47 @@ struct HandoverFacts {
     signer: HandoverSigner,
     author: AdminPublicKey,
     target: String,
+    /// Anchor of the fork point's epoch.
+    anchor: String,
     /// Live devices that hold the author key as their admin role.
     holders: Vec<String>,
 }
 
 impl HandoverFacts {
-    /// Whether the revocations `evidence` of the continuation of the fork point veto the
-    /// handover.
-    fn vetoed_by(&self, evidence: &BTreeSet<Revocation>) -> bool {
-        if self.signer == HandoverSigner::Kit {
-            return evidence.contains(&Revocation::KitRotation(self.author));
+    /// Whether `item` counts against the handover. Every entry counts against a kit handover,
+    /// whose only veto is a rotation its own key signed. Orphaned entries count against no
+    /// other handover, and nothing the anchor signed or sequenced counts against its own.
+    fn counts(&self, item: &Evidence) -> bool {
+        match self.signer {
+            HandoverSigner::Kit => true,
+            HandoverSigner::Admin => !item.orphan,
+            HandoverSigner::Anchor => {
+                !item.orphan && item.author != self.author && item.carrier != self.anchor
+            }
         }
-        evidence.contains(&Revocation::Key(self.author))
-            || evidence.contains(&Revocation::Device(self.target.clone()))
+    }
+
+    /// Whether `evidence` from the continuation of the fork point vetoes the handover.
+    fn vetoed_by(&self, evidence: &BTreeSet<Evidence>) -> bool {
+        let revoked: BTreeSet<&Revocation> = evidence
+            .iter()
+            .filter(|item| self.counts(item))
+            .map(|item| &item.revocation)
+            .collect();
+        if self.signer == HandoverSigner::Kit {
+            return revoked.contains(&Revocation::KitRotation(self.author));
+        }
+        revoked.contains(&Revocation::Key(self.author))
+            || revoked.contains(&Revocation::Device(self.target.clone()))
             || self
                 .holders
                 .iter()
-                .any(|holder| evidence.contains(&Revocation::Device(holder.clone())))
+                .any(|holder| revoked.contains(&Revocation::Device(holder.clone())))
+    }
+
+    /// Whether the handover gives the anchor to the device that signed it.
+    fn to_self(&self) -> bool {
+        self.target == self.anchor
     }
 }
 
@@ -492,6 +529,7 @@ impl AuthState {
             signer,
             author,
             target: handover.new_anchor_device_id.clone(),
+            anchor: self.anchor_device_id.clone(),
             holders: self
                 .devices
                 .iter()
@@ -733,28 +771,52 @@ struct Visit {
     revocations: Vec<Revocation>,
     /// Rank of the state after the entry.
     rank: Rank,
+    /// Revision of the entry, 0 for the charter.
+    revision: u64,
+    /// Index of the visit that opened the entry's epoch: the charter or a handover.
+    epoch_root: usize,
     /// Kit-lineage recovery key of the state after the entry, if any.
     kit_key: Option<AdminPublicKey>,
     /// Whether no vetoed handover lies on the path from the charter through the entry.
     alive: bool,
+    /// Whether the entry continues its epoch past the point the epoch's anchor handed over
+    /// from, so it is never a head and casts no veto but against kit handovers.
+    orphan: bool,
+    /// Whether the epoch freezes at the entry because its anchor signed handovers out of it
+    /// that no rule can choose between.
+    freeze: bool,
 }
 
 /// The tree of check-valid stored entries from the charter, with vetoed handovers marked.
 ///
 /// Trust at a fork point P, the entry competing branches continue from, runs from a handover a
 /// kit-lineage recovery key signed, through the anchor's continuation of its own epoch, to a
-/// handover a device admin key signed. The continuation of P is the entries after P that are
-/// not handovers, the handovers the kit-lineage key or the admin key of the anchor of P's epoch
-/// signed, and what follows them. A handover H that an admin key `a` which is not of kit lineage
-/// signed for target T is vetoed when the continuation, H's own subtree excluded, revokes `a`, or
-/// removes or demotes T or the device holding `a`. A handover a kit-lineage key `k` signed is
-/// vetoed only by a rotation away from `k` that `k` signed, anywhere after P. Kit handovers are
-/// settled first, then the anchor's, which read only kit handovers left standing, then device
-/// admin handovers, which read only continuation handovers left standing. Device admin handovers
-/// are otherwise never evidence, so two admins forcing handovers after an anchor loss rank rather
-/// than veto each other. Vetoed subtrees are skipped, and the live entry of highest rank is
-/// selected, so a chain through more kit handovers wins. The result depends only on the stored
-/// entries, not on the order they arrived in.
+/// handover a device admin key signed.
+///
+/// Once the anchor of an epoch signs a handover out of it, nothing the anchor signs or
+/// sequences afterwards selects another branch, whatever writer carries it. The epoch's entries
+/// off the path from its start to that handover's fork point are orphaned: never a head, and no
+/// evidence against any handover but a kit handover. A device admin handover continuing from an
+/// orphaned entry is vetoed. Several handovers the anchor signed out of one epoch have no honest
+/// explanation, and their hashes and depths are the anchor's to choose, so rank never decides
+/// between them. The one that gives the anchor to another device stands, since its target sealed
+/// it; when several do, the one whose target alone sealed entries after it stands. Self
+/// handovers alone, which leave the anchor where it was, stand by rank. Otherwise every one of
+/// them is vetoed and the epoch freezes at their common fork point, so the old anchor sequences
+/// nothing more there; a kit or device admin handover recovers it.
+///
+/// The continuation of P is the entries after P that are not handovers, the handovers the
+/// kit-lineage key or the admin key of the anchor of P's epoch signed, and what follows them. A
+/// handover H that an admin key `a` which is not of kit lineage signed for target T is vetoed
+/// when the continuation, H's own subtree excluded, revokes `a`, or removes or demotes T or the
+/// device holding `a`. A handover a kit-lineage key `k` signed is vetoed only by a rotation away
+/// from `k` that `k` signed, anywhere after P. Kit handovers are settled first, then the
+/// anchor's, which read only kit handovers left standing, then device admin handovers, which
+/// read only continuation handovers left standing. Device admin handovers are otherwise never
+/// evidence, so two admins forcing handovers after an anchor loss rank rather than veto each
+/// other. Vetoed subtrees are skipped, and the live entry of highest rank that is not orphaned
+/// is selected, so a chain through more kit handovers wins. The result depends only on the
+/// stored entries, not on the order they arrived in or the writers that carried them.
 struct Walk<'a> {
     stored: &'a Stored,
     visits: Vec<Visit>,
@@ -782,8 +844,12 @@ impl<'a> Walk<'a> {
                 handover: None,
                 revocations: Vec::new(),
                 rank: root.rank(),
+                revision: 0,
+                epoch_root: 0,
                 kit_key: root.kit_key(),
                 alive: true,
+                orphan: false,
+                freeze: false,
             }],
             reachable: 0,
             enrolled: BTreeSet::new(),
@@ -835,16 +901,168 @@ impl<'a> Walk<'a> {
         let handover = state.handover_facts(&node.record);
         let revocations = state.revocations(&node.record);
         state.advance(&node.record, node.hash);
+        let epoch_root = if handover.is_some() {
+            self.visits.len()
+        } else {
+            self.visits[parent].epoch_root
+        };
         self.visits.push(Visit {
             node: Some(index),
             parent: Some(parent),
             handover,
             revocations,
             rank: state.rank(),
+            revision: state.revision,
+            epoch_root,
             kit_key: state.kit_key(),
             alive: true,
+            orphan: false,
+            freeze: false,
         });
         (state, self.visits.len() - 1)
+    }
+
+    fn signer(&self, visit: usize) -> Option<HandoverSigner> {
+        self.visits[visit]
+            .handover
+            .as_ref()
+            .map(|facts| facts.signer)
+    }
+
+    fn parent(&self, visit: usize) -> usize {
+        self.visits[visit].parent.unwrap_or(0)
+    }
+
+    /// The anchor's own handovers out of each epoch, by the visit that opened the epoch.
+    fn anchor_handovers(&self) -> BTreeMap<usize, Vec<usize>> {
+        let mut by_epoch: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for index in 0..self.visits.len() {
+            if self.signer(index) == Some(HandoverSigner::Anchor) {
+                let epoch = self.visits[self.parent(index)].epoch_root;
+                by_epoch.entry(epoch).or_default().push(index);
+            }
+        }
+        by_epoch
+    }
+
+    /// Which of the anchor's `handovers` out of one epoch stands, or `None` when none can, see
+    /// [`Walk`]. Neither rank nor arrival order decides between handovers to other devices.
+    fn standing(&self, handovers: &[usize], children: &[Vec<usize>]) -> Option<usize> {
+        let to_self = |visit: &usize| {
+            self.visits[*visit]
+                .handover
+                .as_ref()
+                .is_some_and(HandoverFacts::to_self)
+        };
+        let others: Vec<usize> = handovers.iter().copied().filter(|h| !to_self(h)).collect();
+        match others.as_slice() {
+            [] => handovers
+                .iter()
+                .copied()
+                .max_by(|a, b| self.visits[*a].rank.cmp(&self.visits[*b].rank)),
+            [only] => Some(*only),
+            _ => {
+                // Entries after a handover in its epoch are sealed by its target, and a
+                // handover the target signs as the new anchor carries its own key.
+                let active: Vec<usize> = others
+                    .into_iter()
+                    .filter(|handover| {
+                        children[*handover].iter().any(|child| {
+                            matches!(self.signer(*child), None | Some(HandoverSigner::Anchor))
+                        })
+                    })
+                    .collect();
+                match active.as_slice() {
+                    [only] => Some(*only),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// The deepest visit that is an ancestor of, or equal to, the parent of every one of
+    /// `handovers`.
+    fn common_point(&self, handovers: &[usize]) -> usize {
+        let mut points = handovers.iter().map(|handover| self.parent(*handover));
+        let mut point = points.next().unwrap_or(0);
+        for mut other in points {
+            while point != other {
+                let (here, there) = (self.visits[point].revision, self.visits[other].revision);
+                if here >= there {
+                    point = self.parent(point);
+                }
+                if there >= here {
+                    other = self.parent(other);
+                }
+            }
+        }
+        point
+    }
+
+    /// Settles the anchor's own handovers of each epoch before the veto test: marks the ones
+    /// that do not stand, the epoch's orphaned entries, and freeze points. Returns the visits
+    /// vetoed so far.
+    fn settle_anchor_handovers(&mut self, children: &[Vec<usize>]) -> Vec<bool> {
+        let count = self.visits.len();
+        let mut vetoed = vec![false; count];
+        let mut epochs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (index, visit) in self.visits.iter().enumerate() {
+            epochs.entry(visit.epoch_root).or_default().push(index);
+        }
+        for (epoch, handovers) in self.anchor_handovers() {
+            let standing = self.standing(&handovers, children);
+            let point = match standing {
+                Some(handover) => self.parent(handover),
+                None => {
+                    let point = self.common_point(&handovers);
+                    self.visits[point].freeze = true;
+                    point
+                }
+            };
+            for handover in handovers {
+                vetoed[handover] = Some(handover) != standing;
+            }
+            let mut path = BTreeSet::new();
+            let mut at = point;
+            loop {
+                path.insert(at);
+                if at == epoch || self.visits[at].parent.is_none() {
+                    break;
+                }
+                at = self.parent(at);
+            }
+            for visit in epochs.get(&epoch).into_iter().flatten() {
+                if !path.contains(visit) {
+                    self.visits[*visit].orphan = true;
+                }
+            }
+        }
+        for (index, vetoed) in vetoed.iter_mut().enumerate().skip(1) {
+            if self.signer(index) == Some(HandoverSigner::Admin)
+                && self.visits[self.parent(index)].orphan
+            {
+                *vetoed = true;
+            }
+        }
+        vetoed
+    }
+
+    /// The evidence entry `visit` carries.
+    fn own_evidence(&self, visit: usize) -> BTreeSet<Evidence> {
+        let Some(node) = self.visits[visit].node else {
+            return BTreeSet::new();
+        };
+        let record = &self.stored.nodes[node].record;
+        self.visits[visit]
+            .revocations
+            .iter()
+            .map(|revocation| Evidence {
+                revocation: revocation.clone(),
+                author: record.proposal.proposal.author,
+                carrier: record.anchor_device_id.clone(),
+                orphan: self.visits[visit].orphan,
+            })
+            .collect()
     }
 
     /// Marks vetoed handovers and the subtrees below them.
@@ -856,20 +1074,15 @@ impl<'a> Walk<'a> {
                 children[parent].push(index);
             }
         }
-        let mut vetoed = vec![false; count];
-        let mut evidence: Vec<BTreeSet<Revocation>> = vec![BTreeSet::new(); count];
+        let settled = self.settle_anchor_handovers(&children);
+        let mut vetoed = settled.clone();
+        let mut evidence: Vec<BTreeSet<Evidence>> = vec![BTreeSet::new(); count];
         // A visit comes after its parent, so the reverse order is a post-order.
         for index in (0..count).rev() {
-            let signer = |child: &usize| {
-                self.visits[*child]
-                    .handover
-                    .as_ref()
-                    .map(|facts| facts.signer)
-            };
             let mut continuation = BTreeSet::new();
             for child in children[index]
                 .iter()
-                .filter(|child| signer(child).is_none())
+                .filter(|child| self.signer(**child).is_none())
             {
                 continuation.append(&mut evidence[*child]);
             }
@@ -882,17 +1095,17 @@ impl<'a> Walk<'a> {
             ] {
                 for child in children[index]
                     .iter()
-                    .filter(|child| signer(child) == Some(stage))
+                    .filter(|child| self.signer(**child) == Some(stage))
                 {
                     let mut against = continuation.clone();
                     for sibling in &children[index] {
                         // Only the kit key signs a rotation away from itself, so every sibling
-                        // subtree is evidence against a kit handover.
-                        let counts = match signer(sibling) {
+                        // subtree is evidence against a kit handover. The anchor's handovers
+                        // that do not stand are settled before this test.
+                        let counts = match self.signer(*sibling) {
                             None => false,
                             Some(_) if stage == HandoverSigner::Kit => true,
                             Some(HandoverSigner::Admin) => false,
-                            Some(HandoverSigner::Anchor) if stage != HandoverSigner::Admin => true,
                             Some(_) => !vetoed[*sibling],
                         };
                         if counts && sibling != child {
@@ -900,32 +1113,32 @@ impl<'a> Walk<'a> {
                         }
                     }
                     let facts = self.visits[*child].handover.as_ref();
-                    vetoed[*child] = facts.is_some_and(|facts| facts.vetoed_by(&against));
+                    vetoed[*child] =
+                        settled[*child] || facts.is_some_and(|facts| facts.vetoed_by(&against));
                 }
             }
-            let mut own: BTreeSet<Revocation> =
-                self.visits[index].revocations.iter().cloned().collect();
+            let mut own = self.own_evidence(index);
             own.append(&mut continuation);
             for child in &children[index] {
-                if signer(child).is_some() && !vetoed[*child] {
+                if self.signer(*child).is_some() && !vetoed[*child] {
                     own.append(&mut evidence[*child]);
                 }
             }
             evidence[index] = own;
         }
         for (index, vetoed) in vetoed.iter().enumerate().skip(1) {
-            let parent = self.visits[index].parent.unwrap_or(0);
+            let parent = self.parent(index);
             self.visits[index].alive = !vetoed && self.visits[parent].alive;
         }
     }
 
-    /// The live visit of highest rank. Along a chain the rank only grows, so it is a head once
-    /// vetoed subtrees are skipped.
+    /// The live visit of highest rank that is not orphaned. Along a chain the rank only grows,
+    /// so it is a head once vetoed subtrees and orphaned entries are skipped.
     fn best(&self) -> usize {
         self.visits
             .iter()
             .enumerate()
-            .filter(|(_, visit)| visit.alive)
+            .filter(|(_, visit)| visit.alive && !visit.orphan)
             .max_by(|(_, a), (_, b)| a.rank.cmp(&b.rank))
             .map_or(0, |(index, _)| index)
     }
@@ -948,6 +1161,12 @@ impl<'a> Walk<'a> {
         };
         for node in path.into_iter().rev() {
             selection = selection.extended(&self.stored.nodes[node]);
+        }
+        // Only a handover continues an epoch frozen at its anchor's competing handovers.
+        if self.visits[visit].freeze {
+            let revision = self.visits[visit].revision;
+            let frozen = &mut selection.state.frozen_at;
+            *frozen = Some(frozen.map_or(revision, |earlier| earlier.min(revision)));
         }
         Selection {
             reachable: self.reachable,
@@ -1087,6 +1306,35 @@ async fn kit_point(
         .filter(|state| state.revision == revision))
 }
 
+/// Whether the stored tree holds a handover other than the one hashed `handover` that the anchor
+/// of the epoch holding the entry hashed `point` signed out of that epoch, vetoed or not.
+async fn anchor_handed_over(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    point: &Digest32,
+    handover: &Digest32,
+) -> SyncResult<bool> {
+    let Some(stored) = Stored::load(conn, space).await? else {
+        return Ok(false);
+    };
+    let walk = Walk::new(&stored);
+    let hash_of = |visit: usize| {
+        walk.visits[visit]
+            .node
+            .map_or_else(|| stored.charter.hash(), |node| stored.nodes[node].hash)
+    };
+    let Some(at) = (0..walk.visits.len()).find(|visit| hash_of(*visit) == *point) else {
+        return Ok(false);
+    };
+    let epoch = walk.visits[at].epoch_root;
+    Ok(walk
+        .anchor_handovers()
+        .get(&epoch)
+        .into_iter()
+        .flatten()
+        .any(|visit| hash_of(*visit) != *handover))
+}
+
 /// Where a handover that `signer` signs for the desktop `target` continues from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandoverPoint {
@@ -1143,21 +1391,35 @@ async fn handover_point(
     Ok(Some(HandoverPoint::of(&selected, false)))
 }
 
-/// The selected head and revision of the chain the stored `records` derive from `charter`, for
-/// tests of the selection rule.
+/// What the selection rule derives from stored entries, for its tests.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SelectedHead {
+    /// Hash of the selected head.
+    pub(crate) head: Digest32,
+    /// Highest revision any stored chain reaches.
+    pub(crate) reachable: u64,
+    /// Revision past which the selected epoch is frozen.
+    pub(crate) frozen_at: Option<u64>,
+    /// Anchor of the selected epoch.
+    pub(crate) anchor: String,
+}
+
+/// What the stored `records` derive from `charter`, each carried by its writer, for tests of
+/// the selection rule.
 #[cfg(test)]
 pub(crate) fn select_records(
     charter: &SignedCharter,
     freezes: BTreeMap<String, Vec<u64>>,
-    records: &[AuthorizationRecord],
-) -> (Digest32, u64) {
+    records: &[(WriterId, AuthorizationRecord)],
+) -> SelectedHead {
     let mut seen = BTreeSet::new();
     let nodes = records
         .iter()
-        .filter(|record| seen.insert(record.hash()))
+        .filter(|(_, record)| seen.insert(record.hash()))
         .enumerate()
-        .map(|(index, record)| Node {
-            writer: WriterId::from_bytes(Default::default()),
+        .map(|(index, (writer, record))| Node {
+            writer: *writer,
             seq: u64::try_from(index).unwrap_or(u64::MAX),
             hash: record.hash(),
             record: record.clone(),
@@ -1170,7 +1432,12 @@ pub(crate) fn select_records(
     };
     let walk = Walk::new(&stored);
     let selection = walk.selection(walk.best());
-    (selection.state.entry_hash, walk.reachable)
+    SelectedHead {
+        head: selection.state.entry_hash,
+        reachable: walk.reachable,
+        frozen_at: selection.state.frozen_at,
+        anchor: selection.state.anchor_device_id,
+    }
 }
 
 /// Revision an operation's authorization revision must not exceed to be applied: the highest
@@ -1754,6 +2021,15 @@ impl Engine {
         };
         if record.validate().is_err() {
             return Ok(Err(ProposalRejection::Malformed));
+        }
+        // A target refuses a second handover the anchor signed out of one epoch, which no
+        // honest anchor makes.
+        if state
+            .handover_facts(&record)
+            .is_some_and(|facts| facts.signer == HandoverSigner::Anchor)
+            && anchor_handed_over(&mut tx, ctx.space, &state.entry_hash, &record.hash()).await?
+        {
+            return Ok(Err(ProposalRejection::HandoverConflict));
         }
         if let Err(rejection) = state.check(&record) {
             return Ok(Err(rejection));

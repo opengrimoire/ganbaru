@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, DeviceRole, Digest32, Entry, Handover, Remove, Sequencing,
-    SetRole, SignedCharter, SpaceId,
+    SetRole, SignedCharter, SpaceId, WriterId,
 };
 
 use super::authorization::admin_entry;
@@ -15,7 +15,7 @@ use super::replica::{
     ANCHOR_DEVICE_ID, START_MS, anchor_admin, device_admin, device_id, enroll_entry, person,
     proposal, recovery_admin, test_charter,
 };
-use crate::authorization::select_records;
+use crate::authorization::{SelectedHead, select_records};
 
 /// A position in a test log: the head an entry continues from.
 #[derive(Clone)]
@@ -31,6 +31,10 @@ struct Log {
     space: SpaceId,
     charter: SignedCharter,
     records: Vec<AuthorizationRecord>,
+    /// The writer that carries each record.
+    writers: Vec<WriterId>,
+    /// The writer that carries the next records.
+    writer: WriterId,
     /// Revisions at which forks freeze epochs, by anchor device.
     freezes: BTreeMap<String, Vec<u64>>,
     clock: u64,
@@ -57,6 +61,8 @@ impl Log {
             space,
             charter,
             records: Vec::new(),
+            writers: Vec::new(),
+            writer: writer(0),
             freezes: BTreeMap::new(),
             clock: START_MS,
         };
@@ -105,7 +111,14 @@ impl Log {
             anchor,
         };
         self.records.push(record);
+        self.writers.push(self.writer);
         next
+    }
+
+    /// Drops the last record.
+    fn pop(&mut self) {
+        self.records.pop();
+        self.writers.pop();
     }
 
     /// An entry `author` signed that the anchor of `at` sequences after it.
@@ -125,18 +138,18 @@ impl Log {
         self.record(at, author, entry, epoch, target.to_owned())
     }
 
-    /// Selected head hash and reachable revision of the records in `order`.
-    fn select(&self, order: &[usize]) -> (Digest32, u64) {
-        let records: Vec<AuthorizationRecord> = order
+    /// What the records in `order` select.
+    fn select(&self, order: &[usize]) -> SelectedHead {
+        let records: Vec<(WriterId, AuthorizationRecord)> = order
             .iter()
-            .map(|index| self.records[*index].clone())
+            .map(|index| (self.writers[*index], self.records[*index].clone()))
             .collect();
         select_records(&self.charter, self.freezes.clone(), &records)
     }
 
-    /// Asserts that every arrival order selects `expected`: the stored order, its reverse, and
-    /// seeded random orders. Returns the reachable revision.
-    fn assert_selects(&self, expected: &At) -> u64 {
+    /// Asserts that every arrival order selects `expected` and derives the same state: the
+    /// stored order, its reverse, and seeded random orders. Returns what they select.
+    fn assert_selected(&self, expected: &At) -> SelectedHead {
         let count = self.records.len();
         let forward: Vec<usize> = (0..count).collect();
         let mut orders = vec![forward.clone(), forward.iter().rev().copied().collect()];
@@ -152,14 +165,28 @@ impl Log {
             }
             orders.push(order);
         }
-        let mut reachable = None;
+        let mut selected: Option<SelectedHead> = None;
         for order in orders {
-            let (head, reached) = self.select(&order);
-            assert_eq!(head, expected.hash, "arrival order {order:?}");
-            assert_eq!(*reachable.get_or_insert(reached), reached);
+            let head = self.select(&order);
+            assert_eq!(head.head, expected.hash, "arrival order {order:?}");
+            assert_eq!(*selected.get_or_insert_with(|| head.clone()), head);
         }
-        reachable.unwrap()
+        selected.unwrap()
     }
+
+    /// [`Self::assert_selected`] for a head its epoch is not frozen at. Returns the reachable
+    /// revision.
+    fn assert_selects(&self, expected: &At) -> u64 {
+        let selected = self.assert_selected(expected);
+        assert_eq!(selected.anchor, expected.anchor);
+        assert_eq!(selected.frozen_at, None);
+        selected.reachable
+    }
+}
+
+/// A writer id derived from `seed`.
+fn writer(seed: u8) -> WriterId {
+    WriterId::from_bytes([seed; 16])
 }
 
 fn remove(device: &str) -> Entry {
@@ -457,4 +484,188 @@ fn a_leaked_old_kit_is_vetoed_by_its_rotation_inside_a_forced_handover_beside_it
     let kit = log.handover(&base, &leaked, &device_id(MEMBER));
     log.append(&kit, &leaked, remove(&device_id(SECOND)));
     log.assert_selects(&rotated);
+}
+
+/// A planned handover and the head its target reaches.
+struct Handed {
+    log: Log,
+    /// The enrollment the handover continues from.
+    next: At,
+    planned: At,
+    reached: At,
+}
+
+/// The anchor's planned handover to [`SECOND`] and, with `active`, the removal of the old
+/// anchor that [`SECOND`] seals under it. With `fresh` the old anchor's later records come from a
+/// writer of its device it never used; otherwise its fork at the enrollment freezes its epoch
+/// there.
+fn handed(fresh: bool, active: bool) -> Handed {
+    let (mut log, base) = Log::new();
+    let (next, planned) = planned_handover(&mut log, &base);
+    let reached = if active {
+        log.append(&planned, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID))
+    } else {
+        planned.clone()
+    };
+    if fresh {
+        log.writer = writer(9);
+    } else {
+        log.freezes
+            .insert(ANCHOR_DEVICE_ID.to_owned(), vec![next.revision]);
+    }
+    Handed {
+        log,
+        next,
+        planned,
+        reached,
+    }
+}
+
+#[test]
+fn an_anchors_revocation_at_its_own_handover_point_is_no_evidence_against_it() {
+    for fresh in [false, true] {
+        for active in [true, false] {
+            let Handed {
+                mut log,
+                next,
+                reached,
+                ..
+            } = handed(fresh, active);
+            let anchor = anchor_admin(&person());
+            log.append(&next, &anchor, remove(&device_id(SECOND)));
+            log.append(&next, &anchor, demote(&device_id(SECOND)));
+            log.assert_selects(&reached);
+        }
+    }
+}
+
+#[test]
+fn an_anchors_harmless_entry_at_its_handover_point_carries_no_later_revocation() {
+    for fresh in [false, true] {
+        for active in [true, false] {
+            let Handed {
+                mut log,
+                next,
+                reached,
+                ..
+            } = handed(fresh, active);
+            let anchor = anchor_admin(&person());
+            let harmless = log.append(
+                &next,
+                &anchor,
+                enroll_entry(&person(), 5, DeviceRole::Member),
+            );
+            log.append(&harmless, &anchor, remove(&device_id(SECOND)));
+            log.assert_selects(&reached);
+        }
+    }
+}
+
+#[test]
+fn an_admin_the_anchor_mints_after_its_handover_point_vetoes_nothing() {
+    for fresh in [false, true] {
+        let Handed {
+            mut log,
+            next,
+            reached,
+            ..
+        } = handed(fresh, true);
+        let minted = log.append(&next, &anchor_admin(&person()), admin_entry(5));
+        log.append(&minted, &device_admin(5), remove(&device_id(SECOND)));
+        log.handover(&minted, &device_admin(5), &device_id(5));
+        log.assert_selects(&reached);
+    }
+}
+
+#[test]
+fn an_anchors_self_handovers_at_its_handover_point_lose_whatever_their_rank() {
+    for fresh in [false, true] {
+        for below_plain in [false, true] {
+            let Handed {
+                mut log,
+                next,
+                reached,
+                ..
+            } = handed(fresh, true);
+            let anchor = anchor_admin(&person());
+            let from = if below_plain {
+                log.append(
+                    &next,
+                    &anchor,
+                    enroll_entry(&person(), 5, DeviceRole::Member),
+                )
+            } else {
+                next.clone()
+            };
+            let taken = self_handovers(&mut log, &from, &anchor, ANCHOR_DEVICE_ID, 3);
+            assert!(taken.epoch > reached.epoch);
+            log.append(&taken, &anchor, remove(&device_id(SECOND)));
+            log.assert_selects(&reached);
+        }
+    }
+}
+
+/// A second planned handover from `next` to [`FIRST`] whose hash ranks it above `planned`.
+fn better_ranked_handover(log: &mut Log, next: &At, planned: &At) -> At {
+    loop {
+        let other = log.handover(next, &anchor_admin(&person()), &device_id(FIRST));
+        if other.hash < planned.hash {
+            return other;
+        }
+        log.pop();
+    }
+}
+
+#[test]
+fn an_anchors_better_ranked_second_handover_yields_to_the_target_that_acted() {
+    for fresh in [false, true] {
+        let Handed {
+            mut log,
+            next,
+            planned,
+            reached,
+        } = handed(fresh, true);
+        better_ranked_handover(&mut log, &next, &planned);
+        log.assert_selects(&reached);
+
+        // A better ranked handover whose target acted wins over an idle one as well.
+        let Handed {
+            mut log,
+            next,
+            planned,
+            ..
+        } = handed(fresh, false);
+        let other = better_ranked_handover(&mut log, &next, &planned);
+        let acted = log.append(&other, &device_admin(FIRST), remove(ANCHOR_DEVICE_ID));
+        log.assert_selects(&acted);
+    }
+}
+
+#[test]
+fn an_anchors_equivocation_without_a_lone_active_target_freezes_its_point() {
+    for fresh in [false, true] {
+        for active in [false, true] {
+            let Handed {
+                mut log,
+                next,
+                planned,
+                ..
+            } = handed(fresh, active);
+            let other = better_ranked_handover(&mut log, &next, &planned);
+            if active {
+                log.append(
+                    &other,
+                    &device_admin(FIRST),
+                    enroll_entry(&person(), 6, DeviceRole::Member),
+                );
+            }
+            // Neither handover opens an epoch, and the old anchor holds the point frozen.
+            let frozen = log.assert_selected(&next);
+            assert_eq!(frozen.anchor, ANCHOR_DEVICE_ID);
+            assert_eq!(frozen.frozen_at, Some(next.revision));
+            // An admin's forced handover at the point recovers the space.
+            let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
+            log.assert_selects(&forced);
+        }
+    }
 }

@@ -521,6 +521,19 @@ pub(crate) fn member_admission_source<R: Runtime>(
     })
 }
 
+/// Admission of the coordinator listener, read from the selected log for every connection. The
+/// coordinator applies the quarantine on its own, see [`quarantined_devices`].
+#[cfg(desktop)]
+pub(crate) fn log_admission_source<R: Runtime>(
+    app: &AppHandle<R>,
+) -> crate::vault::handoff::transport::MemberAdmissionSource {
+    let app = app.clone();
+    Arc::new(move || {
+        let app = app.clone();
+        Box::pin(async move { super::peers::log_admission(&app).await })
+    })
+}
+
 /// The devices this installation quarantined in the active vault, which the coordinator
 /// listener refuses.
 #[cfg(desktop)]

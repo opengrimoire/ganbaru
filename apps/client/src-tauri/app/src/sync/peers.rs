@@ -162,6 +162,23 @@ pub(crate) async fn member_admission<H: SyncHost>(
     ))
 }
 
+#[cfg(desktop)]
+/// Admission from the selected log alone, for the coordinator listener, which applies the
+/// quarantine through its own list with a last-known fallback. `None` while sync does not run
+/// there.
+pub(crate) async fn log_admission<H: SyncHost>(
+    host: &H,
+) -> Result<Option<MemberAdmission>, String> {
+    let Some((vault_id, view)) = selected_authorization(host).await? else {
+        return Ok(None);
+    };
+    let own_device_id = host.pairing().device_id()?;
+    Ok(Some(
+        MemberAdmission::new(&vault_id, &view, &std::collections::BTreeSet::new())
+            .served_by(&own_device_id),
+    ))
+}
+
 /// Applies `change` to the peer book at `path` and writes it when it changed.
 pub(super) fn update_peer_book(
     path: &Path,

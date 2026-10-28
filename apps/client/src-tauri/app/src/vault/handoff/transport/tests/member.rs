@@ -300,3 +300,54 @@ async fn the_coordinator_serves_nothing_to_a_device_the_log_removed() {
         "a removed device downloads no bundle"
     );
 }
+
+#[tokio::test]
+async fn the_coordinator_serves_nothing_while_its_log_admission_cannot_be_read() {
+    let open: OpenHubVault = std::sync::Arc::new(|| Box::pin(async { Ok(None) }));
+    let hub = SyncHub::new(open, tokio::sync::watch::Sender::new(0));
+    let unreadable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let source = unreadable.clone();
+    let pair = LocalPair::start_with_sealer(
+        Some(hub),
+        server::limits::ConnectionLimits::default(),
+        EnrollmentApprovals::default(),
+        LanAdmission::default(),
+        test_enrollment_sealer(),
+        None,
+        Some(std::sync::Arc::new(move || {
+            let failing = source.load(std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if failing {
+                    Err("the selected log is damaged".to_string())
+                } else {
+                    Ok(None)
+                }
+            })
+        })),
+    )
+    .await;
+    pair.enroll().await;
+    unreadable.store(true, std::sync::atomic::Ordering::SeqCst);
+    let unavailable = |response: &ControlMessage| {
+        matches!(
+            response,
+            ControlMessage::Error { code, retryable: true, .. } if code == "admission_unavailable"
+        )
+    };
+    let pulled = sync_request(
+        &pair.phone,
+        ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT.to_string(),
+            device_id: PHONE.to_string(),
+            known: Vec::new(),
+        },
+    )
+    .await
+    .expect("sync exchange");
+    assert!(unavailable(&pulled), "{pulled:?}");
+    let key = request_person_key(&pair.phone)
+        .await
+        .expect("person key exchange");
+    assert!(unavailable(&key), "{key:?}");
+}

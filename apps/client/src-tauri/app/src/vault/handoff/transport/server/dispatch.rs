@@ -27,6 +27,7 @@ use crate::vault::handoff::protocol::{
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use ganbaru_handoff::dial::LoopbackPolicy;
+use ganbaru_sync_replica::peers::admission::MemberRefusal;
 use rustls::pki_types::CertificateDer;
 use std::collections::BTreeSet;
 use std::fs;
@@ -267,7 +268,8 @@ async fn handle_connection(
     if let (Some(source), Some(certificate)) = (log_admission.as_ref(), peer_certificate.as_ref())
         && let Some(refusal) = log_refusal(source().await, certificate, &request)
     {
-        return send_error(&mut stream, refusal.code(), refusal.describe(), false).await;
+        let retryable = refusal == MemberRefusal::Unavailable;
+        return send_error(&mut stream, refusal.code(), refusal.describe(), retryable).await;
     }
 
     if let Some((vault_id, device_id)) = request.sync_peer() {
@@ -1013,19 +1015,19 @@ fn server_config(
 /// `certificate`: a device the log removed reaches no coordinator service, pairing still linking
 /// it or not, and a sync request needs a device the log enrolled. A request from a certificate
 /// the log does not know, such as a device linked before its enrollment was sequenced, keeps
-/// every other service. Without a log, or when it cannot be read, pairing alone decides.
+/// every other service. Without a log pairing alone decides, and a log that cannot be read
+/// refuses every request until it can be, since it may hold the removal.
 pub(crate) fn log_refusal(
     admission: Result<Option<ganbaru_sync_replica::peers::admission::MemberAdmission>, String>,
     certificate: &CertificateDer<'_>,
     request: &ControlMessage,
-) -> Option<ganbaru_sync_replica::peers::admission::MemberRefusal> {
-    use ganbaru_sync_replica::peers::admission::MemberRefusal;
+) -> Option<MemberRefusal> {
     let admission = match admission {
         Ok(Some(admission)) => admission,
         Ok(None) => return None,
         Err(error) => {
             eprintln!("sync: read the log admission: {error}");
-            return None;
+            return Some(MemberRefusal::Unavailable);
         }
     };
     let fingerprint = crate::vault::handoff::pairing::certificate_fingerprint(certificate.as_ref());

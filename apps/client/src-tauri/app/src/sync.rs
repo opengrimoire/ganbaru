@@ -38,7 +38,8 @@ pub(crate) use service::{
 };
 #[cfg(desktop)]
 pub(crate) use service::{
-    enrollment_sealer, ensure_admin_key, quarantined_devices, stored_admin_key, sync_hub,
+    enrollment_sealer, ensure_admin_key, log_admission_source, quarantined_devices,
+    stored_admin_key, sync_hub,
 };
 pub(crate) use status::SyncSubscribers;
 #[cfg(desktop)]

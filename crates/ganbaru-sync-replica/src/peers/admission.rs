@@ -30,6 +30,9 @@ pub enum MemberRefusal {
     Proposal,
     /// The request asks for proposals held for the anchor, which only the coordinator holds.
     Forward,
+    /// The listener cannot read the selected log or quarantine now, so it admits no one until
+    /// it can.
+    Unavailable,
 }
 
 impl MemberRefusal {
@@ -44,6 +47,7 @@ impl MemberRefusal {
             Self::NotSync => "sync_only",
             Self::Proposal => "proposals_to_anchor",
             Self::Forward => "forwards_to_coordinator",
+            Self::Unavailable => "admission_unavailable",
         }
     }
 
@@ -58,6 +62,7 @@ impl MemberRefusal {
             Self::NotSync => "this listener serves only sync requests",
             Self::Proposal => "authorization proposals go to the anchor",
             Self::Forward => "held proposals are collected from the coordinator",
+            Self::Unavailable => "this listener cannot read its admission now",
         }
     }
 }

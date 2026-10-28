@@ -146,7 +146,7 @@ impl CoordinatorLifecycle {
                 .clone(),
             admission: lan_admission(&app, port)?,
             quarantined: Some(crate::sync::quarantined_devices(&app)),
-            log_admission: Some(crate::sync::member_admission_source(&app)),
+            log_admission: Some(crate::sync::log_admission_source(&app)),
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         let advertiser_app = app.clone();

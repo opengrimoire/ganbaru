@@ -417,40 +417,7 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
-        sqlx::query(
-            "INSERT INTO project_groups (id, name, order_key) VALUES ('group:test', 'Test', 'a1')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO projects (id, group_id, name, order_key)
-             VALUES ('project:test', 'group:test', 'Test', 'a1')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_conversations
-                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
-             VALUES ('conversation:test', 'project:test', 'channel', ?, ?, ?)",
-        )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO chat_channels
-                (id, project_id, conversation_id, name, created_at, updated_at)
-             VALUES ('channel:test', 'project:test', 'conversation:test', 'general', ?, ?)",
-        )
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+        seed_test_channel(&pool, &now).await;
         let request_data = serde_json::to_string(&message("Send this now")).unwrap();
         sqlx::query(
             "INSERT INTO chat_scheduled_messages
@@ -496,6 +463,178 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
         .unwrap_err();
         assert_eq!(duplicate.code, ChatErrorCode::Busy);
     });
+}
+
+#[test]
+fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let mut request = message("Send the screenshot");
+        request.attachment_ids = vec![ChatAttachmentId::new("attachment:gone").unwrap()];
+        let request_data = serde_json::to_string(&request).unwrap();
+        sqlx::query(
+            "INSERT INTO chat_scheduled_messages
+                (id, client_command_id, channel_id, request_data, scheduled_for,
+                 available_at, created_at, updated_at)
+             VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
+        )
+        .bind(&request_data)
+        .bind("2026-08-04T00:00:00.000Z")
+        .bind("2026-08-04T00:00:00.000Z")
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        // The device row of the attachment is absent, as after its working folder was deleted
+        // or on a device that received the scheduled message through sync.
+        let digest = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO chat_scheduled_message_attachment_references
+                (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                 original_display_name, mime_type, byte_size, sha256)
+             VALUES ('scheduled:test', 0, 'attachment:gone', 'working-folder:gone', 'image',
+                     'screen.png', 'image/png', 42, ?)",
+        )
+        .bind(&digest)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(&pool, &scheduled_message_id, &now, "claim:a")
+            .await
+            .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+        };
+
+        let posted = persist_post(&pool, &request, Some(send)).await.unwrap();
+
+        let expected = super::common::scheduled_post_ids(
+            "scheduled:test",
+            super::common::ScheduledPostTarget::Message,
+        )
+        .unwrap();
+        assert_eq!(posted.item_id, expected.item_id);
+        let reference: (String, String, String, String, i64, String) = sqlx::query_as(
+            "SELECT message_revision_id, attachment_id, working_folder_id, original_display_name,
+                    byte_size, sha256
+             FROM chat_communication_attachment_references",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            reference,
+            (
+                expected.revision_id.as_str().to_owned(),
+                "attachment:gone".to_owned(),
+                "working-folder:gone".to_owned(),
+                "screen.png".to_owned(),
+                42,
+                digest,
+            )
+        );
+        let scheduled_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(scheduled_rows, 0);
+
+        let repeated = persist_post(&pool, &request, Some(send)).await.unwrap();
+        assert_eq!(repeated.item_id, expected.item_id);
+        let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(items, 1);
+    });
+}
+
+#[test]
+fn scheduled_send_rejects_a_claim_that_changed() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request = message("Send this once");
+        let request_data = serde_json::to_string(&request).unwrap();
+        sqlx::query(
+            "INSERT INTO chat_scheduled_messages
+                (id, client_command_id, channel_id, request_data, scheduled_for,
+                 available_at, created_at, updated_at)
+             VALUES ('scheduled:test', 'command:test', 'channel:test', ?, ?, ?, ?, ?)",
+        )
+        .bind(&request_data)
+        .bind("2026-08-04T00:00:00.000Z")
+        .bind("2026-08-04T00:00:00.000Z")
+        .bind(now.as_str())
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(&pool, &scheduled_message_id, &now, "claim:a")
+            .await
+            .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:stale",
+        };
+
+        let Err(error) = persist_post(&pool, &request, Some(send)).await else {
+            panic!("a stale claim posted");
+        };
+
+        assert_eq!(error.code, ChatErrorCode::Conflict);
+        let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(items, 0);
+    });
+}
+
+async fn seed_test_channel(pool: &SqlitePool, now: &UtcTimestamp) {
+    sqlx::query(
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group:test', 'Test', 'a1')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:test', 'group:test', 'Test', 'a1')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation:test', 'project:test', 'channel', ?, ?, ?)",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_channels
+                (id, project_id, conversation_id, name, created_at, updated_at)
+             VALUES ('channel:test', 'project:test', 'conversation:test', 'general', ?, ?)",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 #[test]
@@ -1457,6 +1596,7 @@ fn channel_reference_ranges_break_equal_order_keys_at_both_ends() {
                 reply_thread_id: request.reply_thread_id.as_ref(),
                 order_key: "a3",
                 request: &request,
+                attachments: super::common::AttachmentSource::Device(&request.attachment_ids),
                 invoked_teammate_id: Some(&teammate_id),
                 now: &UtcTimestamp::new("2026-08-04T17:07:00.000Z").unwrap(),
             },

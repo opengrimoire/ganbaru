@@ -5,8 +5,9 @@ use super::common::{
     validate_message_request, wire_participant_kind,
 };
 use super::{
-    chat_pool, chat_post_message, i64_value, identifier_error, now_timestamp, persistence_error,
-    require_continuation_scope_is_unchanged, require_reply_thread, resolve_invoked_teammate,
+    ScheduledSend, chat_pool, i64_value, identifier_error, now_timestamp, persistence_error,
+    post_message, require_continuation_scope_is_unchanged, require_reply_thread,
+    resolve_invoked_teammate,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use ganbaru_chat::coordination::contracts::*;
@@ -389,20 +390,16 @@ pub(super) async fn send_scheduled_message_now(
         &claim_token,
     )
     .await?;
+    let send = ScheduledSend {
+        scheduled_message_id: &scheduled_message_id,
+        claim_token: &claim_token,
+    };
     let result = match serde_json::from_str::<PostChatMessageCommand>(&request_data) {
-        Ok(request) => chat_post_message(app, db_url, request).await,
+        Ok(request) => post_message(app, db_url, &request, Some(send)).await,
         Err(error) => Err(serialization_error(error)),
     };
     match result {
-        Ok(result) => {
-            sqlx::query("DELETE FROM chat_scheduled_messages WHERE id = ? AND claim_token = ?")
-                .bind(scheduled_message_id.as_str())
-                .bind(&claim_token)
-                .execute(&pool)
-                .await
-                .map_err(persistence_error)?;
-            Ok(result)
-        }
+        Ok(result) => Ok(result),
         Err(error) => {
             let last_error = error.message.chars().take(4000).collect::<String>();
             sqlx::query(
@@ -489,21 +486,18 @@ pub(super) async fn dispatch_due_scheduled_messages(
             .map_err(serialization_error);
         let result = match message {
             Ok(message) => {
-                let channel_id = message.channel_id.clone();
-                chat_post_message(app.clone(), db_url.clone(), message)
+                let send = ScheduledSend {
+                    scheduled_message_id: &scheduled_message_id,
+                    claim_token: &claim_token,
+                };
+                post_message(app.clone(), db_url.clone(), &message, Some(send))
                     .await
-                    .map(|_| channel_id)
+                    .map(|_| message.channel_id.clone())
             }
             Err(error) => Err(error),
         };
         match result {
             Ok(channel_id) => {
-                sqlx::query("DELETE FROM chat_scheduled_messages WHERE id = ? AND claim_token = ?")
-                    .bind(scheduled_message_id.as_str())
-                    .bind(&claim_token)
-                    .execute(&pool)
-                    .await
-                    .map_err(persistence_error)?;
                 dispatched_count = dispatched_count.saturating_add(1);
                 if !dispatched_channel_ids.contains(&channel_id) {
                     dispatched_channel_ids.push(channel_id);

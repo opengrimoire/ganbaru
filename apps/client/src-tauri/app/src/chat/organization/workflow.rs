@@ -1,8 +1,8 @@
 //! Assignment routing, frozen context, and durable organizational messages.
 
 use super::common::{
-    AttachmentReferenceOwner, conversation_item_id, has_thread_eligible_mention,
-    insert_attachment_references, json_object, message_revision_id, new_id, parse_participant_kind,
+    AttachmentSource, ScheduledPostIds, conversation_item_id, has_thread_eligible_mention,
+    insert_revision_attachments, json_object, message_revision_id, new_id, parse_participant_kind,
     reply_thread_id, serialization_error, wire_participant_kind,
 };
 #[cfg(desktop)]
@@ -301,6 +301,7 @@ pub(super) struct CommunicationMessageWrite<'a> {
     pub(super) reply_thread_id: Option<&'a ChatReplyThreadId>,
     pub(super) order_key: &'a str,
     pub(super) request: &'a PostChatMessageCommand,
+    pub(super) attachments: AttachmentSource<'a>,
     pub(super) invoked_teammate_id: Option<&'a ChatParticipantId>,
     pub(super) now: &'a UtcTimestamp,
 }
@@ -361,13 +362,7 @@ pub(super) async fn insert_communication_message(
         )
         .await?;
     }
-    insert_attachment_references(
-        transaction,
-        AttachmentReferenceOwner::Revision,
-        write.revision_id.as_str(),
-        &write.request.attachment_ids,
-    )
-    .await?;
+    insert_revision_attachments(transaction, write.revision_id.as_str(), write.attachments).await?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
         .bind(write.revision_id.as_str())
         .bind(write.item_id.as_str())
@@ -825,15 +820,26 @@ async fn require_destination_project_folder(
     Ok(())
 }
 
+/// Identity and attachment source of the channel copy of a reply.
+pub(super) struct ChannelCopy<'a> {
+    /// Derived ids for a scheduled send, or `None` for random ids.
+    pub(super) ids: Option<ScheduledPostIds>,
+    /// Where the copy's attachment references come from.
+    pub(super) attachments: AttachmentSource<'a>,
+}
+
 pub(super) async fn insert_channel_copy(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     request: &PostChatMessageCommand,
+    copy: ChannelCopy<'_>,
     invoked_teammate_id: Option<&ChatParticipantId>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let item_id = conversation_item_id()?;
-    let revision_id = message_revision_id()?;
+    let (item_id, revision_id) = match copy.ids {
+        Some(ids) => (ids.item_id, ids.revision_id),
+        None => (conversation_item_id()?, message_revision_id()?),
+    };
     let order_key = next_item_order_key(transaction, conversation_id, None).await?;
     let mut copied_request = request.clone();
     for reference in &mut copied_request.references {
@@ -849,6 +855,7 @@ pub(super) async fn insert_channel_copy(
             reply_thread_id: None,
             order_key: &order_key,
             request: &copied_request,
+            attachments: copy.attachments,
             invoked_teammate_id,
             now,
         },

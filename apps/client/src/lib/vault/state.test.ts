@@ -106,7 +106,6 @@ describe("vault state api", () => {
   it("accepts complete vault info responses", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
@@ -117,14 +116,12 @@ describe("vault state api", () => {
 
     await expect(getActiveVaultInfo()).resolves.toEqual({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
     });
     expect(getCachedActiveVaultInfo()).toEqual({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
@@ -134,7 +131,6 @@ describe("vault state api", () => {
   it("rejects incomplete vault info responses", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
     });

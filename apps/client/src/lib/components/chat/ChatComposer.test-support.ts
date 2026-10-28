@@ -232,7 +232,6 @@ export function imageAttachment(): ChatAttachmentRead {
 export function modelSettings(): ChatSettingsRead {
   return {
     configuration: {
-      schemaVersion: 1,
       providers: [],
       automaticProviderSetupDisabled: [],
       rememberedSelections: [],

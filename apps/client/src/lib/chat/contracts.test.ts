@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultChatVaultConfig,
-  parseChatConfigRoot,
+  defaultChatConfiguration,
   parseChatChannel,
   parseChatChannelPage,
   parsePostChatMessageResult,
@@ -9,7 +8,7 @@ import {
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
   parseChatTeammateAccess,
-  parseChatVaultConfig,
+  parseChatConfiguration,
   parseCanonicalRuntimeEvent,
   parseCanonicalStoredEvent,
   parseChatError,
@@ -532,17 +531,25 @@ describe("Chat provider contracts", () => {
   });
 });
 
-describe("Chat vault configuration", () => {
-  it("uses explicit safe defaults when the Chat branch is absent", () => {
-    const defaults = defaultChatVaultConfig();
-    expect(parseChatConfigRoot({ language: "en" })).toEqual(defaults);
-    expect(() => parseChatConfigRoot({ chat: {} })).toThrow("chat.schemaVersion");
+describe("Chat configuration", () => {
+  it("uses explicit safe defaults that parse as a complete read", () => {
+    const defaults = defaultChatConfiguration();
     expect(defaults.panels).toEqual({ inspectorWidthPx: 520 });
+    expect(defaults.behavior.sendKey).toBe("enter");
+    expect(parseChatConfiguration(defaults)).toEqual(defaults);
   });
 
-  it("preserves portable unknown fields while validating known fields", () => {
-    const fixture = {
+  it("drops retired and unknown top-level fields from a read", () => {
+    const parsed = parseChatConfiguration({
+      ...defaultChatConfiguration(),
       schemaVersion: 1,
+      futureRootOption: "dropped",
+    });
+    expect(parsed).toEqual(defaultChatConfiguration());
+  });
+
+  it("preserves provider unknown fields while validating known fields", () => {
+    const fixture = {
       providers: [{
         schemaVersion: 1,
         instanceId: "codex-personal",
@@ -578,15 +585,13 @@ describe("Chat vault configuration", () => {
         idleSessionTimeoutSeconds: 900,
         confirmMultilineTerminalPaste: true,
       },
-      futureRootOption: "preserved",
     };
 
-    expect(parseChatVaultConfig(fixture)).toEqual(fixture);
+    expect(parseChatConfiguration(fixture)).toEqual(fixture);
   });
 
   it("requires every current field inside an existing Chat branch", () => {
     const rootFields = [
-      "schemaVersion",
       "providers",
       "automaticProviderSetupDisabled",
       "rememberedSelections",
@@ -595,9 +600,9 @@ describe("Chat vault configuration", () => {
       "behavior",
     ] as const;
     for (const field of rootFields) {
-      const incomplete: Record<string, unknown> = { ...defaultChatVaultConfig() };
+      const incomplete: Record<string, unknown> = { ...defaultChatConfiguration() };
       delete incomplete[field];
-      expect(() => parseChatVaultConfig(incomplete), field).toThrow();
+      expect(() => parseChatConfiguration(incomplete), field).toThrow();
     }
 
     const provider: Record<string, unknown> = {
@@ -623,8 +628,8 @@ describe("Chat vault configuration", () => {
     ] as const) {
       const incomplete = { ...provider };
       delete incomplete[field];
-      expect(() => parseChatVaultConfig({
-        ...defaultChatVaultConfig(),
+      expect(() => parseChatConfiguration({
+        ...defaultChatConfiguration(),
         providers: [incomplete],
       }), `provider.${field}`).toThrow();
     }
@@ -641,30 +646,30 @@ describe("Chat vault configuration", () => {
     for (const field of ["providerManagedModel", "modelOptions"] as const) {
       const incomplete = { ...selection };
       delete incomplete[field];
-      expect(() => parseChatVaultConfig({
-        ...defaultChatVaultConfig(),
+      expect(() => parseChatConfiguration({
+        ...defaultChatConfiguration(),
         rememberedSelections: [incomplete],
       }), `selection.${field}`).toThrow();
     }
 
-    expect(() => parseChatVaultConfig({
-      ...defaultChatVaultConfig(),
+    expect(() => parseChatConfiguration({
+      ...defaultChatConfiguration(),
       panels: {},
     })).toThrow("inspectorWidthPx");
 
-    for (const field of Object.keys(defaultChatVaultConfig().behavior)) {
-      const behavior: Record<string, unknown> = { ...defaultChatVaultConfig().behavior };
+    for (const field of Object.keys(defaultChatConfiguration().behavior)) {
+      const behavior: Record<string, unknown> = { ...defaultChatConfiguration().behavior };
       delete behavior[field];
-      expect(() => parseChatVaultConfig({
-        ...defaultChatVaultConfig(),
+      expect(() => parseChatConfiguration({
+        ...defaultChatConfiguration(),
         behavior,
       }), `behavior.${field}`).toThrow();
     }
   });
 
   it("rejects machine-specific paths and implicit model selection", () => {
-    expect(() => parseChatVaultConfig({
-      ...defaultChatVaultConfig(),
+    expect(() => parseChatConfiguration({
+      ...defaultChatConfiguration(),
       providers: [{
         schemaVersion: 1,
         instanceId: "codex-personal",
@@ -681,8 +686,8 @@ describe("Chat vault configuration", () => {
       }],
     })).toThrow("contains machine-specific field executable");
 
-    expect(() => parseChatVaultConfig({
-      ...defaultChatVaultConfig(),
+    expect(() => parseChatConfiguration({
+      ...defaultChatConfiguration(),
       rememberedSelections: [{
         workingFolderId: "workspace-1",
         providerInstanceId: "codex-personal",

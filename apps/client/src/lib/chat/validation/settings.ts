@@ -10,7 +10,7 @@ import {
   type ProviderSetupTestRead,
   type RemoveProviderResult,
 } from "../contracts";
-import { parseChatVaultConfig } from "./config";
+import { parseChatConfiguration } from "./config";
 import {
   parseProviderFamilyMetadata,
   parseProviderInstanceConfig,
@@ -55,7 +55,7 @@ function parseProviderRuntimeReviewItem(value: unknown, label: string): Provider
 export function parseChatSettingsRead(value: unknown): ChatSettingsRead {
   const record = readRecord(value, "Chat settings");
   return {
-    configuration: parseChatVaultConfig(record.configuration, "Chat settings.configuration"),
+    configuration: parseChatConfiguration(record.configuration, "Chat settings.configuration"),
     providerFamilies: readArray(record.providerFamilies, "Chat settings.providerFamilies", parseProviderFamilyMetadata),
     providerInstances: readArray(record.providerInstances, "Chat settings.providerInstances", parseProviderInstanceRead),
     credentialStoreAvailability: readEnum(

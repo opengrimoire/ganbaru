@@ -4,6 +4,10 @@
 //! Value domains mirror the frontend option sets that write them (`preference-options.ts`,
 //! `sidebar-order.ts`, `calendar/types.ts`, and the feature stores).
 
+use ganbaru_chat_contracts::config::{
+    CHAT_SEND_KEY_VALUES, MAX_IDLE_SESSION_TIMEOUT_SECONDS, MAX_TERMINAL_SCROLLBACK_LINES,
+    MIN_IDLE_SESSION_TIMEOUT_SECONDS, MIN_TERMINAL_SCROLLBACK_LINES,
+};
 use ganbaru_sync::domains::preferences::ProfileImage;
 use serde_json::Value;
 
@@ -32,8 +36,6 @@ pub(crate) enum Scope {
     Portable,
     /// The device file in the app config directory, never shared.
     Device,
-    /// The vault's `config.json`, which native features own.
-    VaultConfig,
 }
 
 /// How a patch at or below a preference path maps to stored entries.
@@ -210,10 +212,17 @@ const CONTACT_TRUST: ValueRule = ValueRule::Choice(&[
 const FOCUS_BREAK_SOUND_INTERVAL: ValueRule = ValueRule::IntegerChoice(&[0, 10, 15, 30, 60]);
 const FOCUS_ESC_PRESSES: ValueRule = ValueRule::IntegerChoice(&[1, 3, 10, 20, 50]);
 const FOCUS_EXTENSION_LIMIT: ValueRule = ValueRule::IntegerChoice(&[1, 3, 5, 10, 15]);
+const CHAT_TERMINAL_SCROLLBACK_LINES: ValueRule = ValueRule::Integer {
+    min: MIN_TERMINAL_SCROLLBACK_LINES as i64,
+    max: MAX_TERMINAL_SCROLLBACK_LINES as i64,
+};
+const CHAT_IDLE_SESSION_TIMEOUT_SECONDS: ValueRule = ValueRule::Integer {
+    min: MIN_IDLE_SESSION_TIMEOUT_SECONDS as i64,
+    max: MAX_IDLE_SESSION_TIMEOUT_SECONDS as i64,
+};
 
 /// Every preference path the app reads or writes. Paths never nest inside one another.
 pub(crate) const REGISTRY: &[PreferenceSpec] = &[
-    spec("chat", Scope::VaultConfig, LARGE_JSON),
     portable("profile.displayName", LABEL),
     portable("profile.fullName", ValueRule::Text { max_bytes: 512 }),
     portable("profile.image", ValueRule::ProfileImage),
@@ -320,6 +329,22 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
     per_project("chatSidebar.orderByProject", SIDEBAR_ORDER),
     per_project("chatSidebar.customOrderByProject", IDS),
     device("chatSidebar.showArchivedInPickers", BOOL),
+    portable(
+        "chat.behavior.sendKey",
+        ValueRule::Choice(CHAT_SEND_KEY_VALUES),
+    ),
+    portable("chat.behavior.restoreLastSelectedThread", BOOL),
+    portable("chat.behavior.showReasoningSummaries", BOOL),
+    portable("chat.behavior.automaticallyFoldSettledWork", BOOL),
+    portable(
+        "chat.behavior.terminalScrollbackLines",
+        CHAT_TERMINAL_SCROLLBACK_LINES,
+    ),
+    portable(
+        "chat.behavior.idleSessionTimeoutSeconds",
+        CHAT_IDLE_SESSION_TIMEOUT_SECONDS,
+    ),
+    portable("chat.behavior.confirmMultilineTerminalPaste", BOOL),
     portable("music.review.autoplay", BOOL),
     portable("music.sources.localName", LABEL),
     portable("music.sources.youtubeName", LABEL),
@@ -334,8 +359,7 @@ pub(crate) enum Target<'a> {
     Child(&'static PreferenceSpec, &'a str),
 }
 
-/// Finds the registered entry a patch at `path` writes, or explains why there is none. A
-/// vault config path may reach any depth, since native features own the shape below it.
+/// Finds the registered entry a patch at `path` writes, or explains why there is none.
 pub(crate) fn route(path: &[String]) -> Result<Target<'_>, String> {
     let joined = path.join(PATH_SEPARATOR);
     let unregistered = || format!("preference path {joined} is not registered");
@@ -353,7 +377,7 @@ pub(crate) fn route(path: &[String]) -> Result<Target<'_>, String> {
     let depth = spec.segments().count();
     let rest = &path[depth..];
     match (spec.scope, spec.shape, rest) {
-        (Scope::VaultConfig, _, _) | (_, _, []) => Ok(Target::Whole(spec)),
+        (_, _, []) => Ok(Target::Whole(spec)),
         (_, Shape::PerChild { .. }, [child]) => {
             validate_child_key(spec, child)?;
             Ok(Target::Child(spec, child.as_str()))
@@ -399,6 +423,7 @@ pub(crate) fn device_spec(key: &str) -> Option<&'static PreferenceSpec> {
 }
 
 /// The specs of one scope.
+#[cfg(test)]
 pub(crate) fn specs(scope: Scope) -> impl Iterator<Item = &'static PreferenceSpec> {
     REGISTRY.iter().filter(move |spec| spec.scope == scope)
 }
@@ -438,10 +463,6 @@ mod tests {
                 assert_eq!(spec.shape, Shape::Exact, "{}", spec.path);
             }
         }
-        let vault_config = specs(Scope::VaultConfig)
-            .map(|spec| spec.path)
-            .collect::<Vec<_>>();
-        assert_eq!(vault_config, ["chat"]);
     }
 
     #[test]
@@ -470,12 +491,12 @@ mod tests {
         for key in device {
             assert!(device_spec(key).is_some(), "{key}");
         }
-        assert_eq!(specs(Scope::Portable).count(), 49);
+        assert_eq!(specs(Scope::Portable).count(), 56);
         assert_eq!(specs(Scope::Device).count(), 21);
     }
 
     #[test]
-    fn preferences_route_exact_per_child_and_vault_config_paths() {
+    fn preferences_route_exact_and_per_child_paths() {
         let theme = path("theme.activeId");
         assert!(matches!(route(&theme), Ok(Target::Whole(spec)) if spec.path == "theme.activeId"));
         let orders = path("notes.customOrderByProject");
@@ -486,8 +507,10 @@ mod tests {
         assert!(
             matches!(route(&child), Ok(Target::Child(spec, "project-1")) if spec.path == "notes.customOrderByProject")
         );
-        let chat = path("chat.providers.0.instanceId");
-        assert!(matches!(route(&chat), Ok(Target::Whole(spec)) if spec.path == "chat"));
+        let send_key = path("chat.behavior.sendKey");
+        assert!(
+            matches!(route(&send_key), Ok(Target::Whole(spec)) if spec.path == "chat.behavior.sendKey")
+        );
 
         for refused in [
             "theme",
@@ -497,6 +520,12 @@ mod tests {
             "preferences.unknownKey",
             "unknown",
             "distractions.enabled",
+            "chat",
+            "chat.behavior",
+            "chat.behavior.sendKey.nested",
+            "chat.providers.0.instanceId",
+            "chat.panels",
+            "chat.rememberedSelections",
         ] {
             let error = route(&path(refused)).unwrap_err();
             assert!(error.contains(refused), "{refused}: {error}");
@@ -578,5 +607,74 @@ mod tests {
         assert!(!picture.accepts(&json!({"path": path, "byteSize": 0})));
         assert!(!picture.accepts(&json!(path)));
         assert!(!picture.accepts(&json!(null)));
+    }
+
+    fn chat_behavior_spec(field: &str) -> &'static PreferenceSpec {
+        let key = format!("chat.behavior.{field}");
+        let (spec, child) = portable_row(&key).expect(field);
+        assert_eq!(child, None);
+        spec
+    }
+
+    #[test]
+    fn preferences_chat_behavior_keys_match_the_contract_fields() {
+        use ganbaru_chat_contracts::config::{ChatBehaviorPreferences, ChatSendKey};
+        let defaults = serde_json::to_value(ChatBehaviorPreferences::default()).unwrap();
+        let fields = defaults.as_object().unwrap();
+        for (field, value) in fields {
+            assert!(chat_behavior_spec(field).rule.accepts(value), "{field}");
+        }
+        let registered = specs(Scope::Portable)
+            .filter_map(|spec| spec.path.strip_prefix("chat.behavior."))
+            .collect::<Vec<_>>();
+        assert_eq!(registered.len(), fields.len());
+        assert!(registered.iter().all(|field| fields.contains_key(*field)));
+
+        let send_key = chat_behavior_spec("sendKey");
+        for key in [ChatSendKey::Enter, ChatSendKey::ModEnter] {
+            assert!(send_key.rule.accepts(&serde_json::to_value(key).unwrap()));
+        }
+        for refused in [json!("modEnter"), json!(""), json!(1), json!(null)] {
+            assert!(!send_key.rule.accepts(&refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn preferences_chat_behavior_bounds_refuse_one_past_each_edge() {
+        for (field, min, max) in [
+            (
+                "terminalScrollbackLines",
+                MIN_TERMINAL_SCROLLBACK_LINES,
+                MAX_TERMINAL_SCROLLBACK_LINES,
+            ),
+            (
+                "idleSessionTimeoutSeconds",
+                MIN_IDLE_SESSION_TIMEOUT_SECONDS,
+                MAX_IDLE_SESSION_TIMEOUT_SECONDS,
+            ),
+        ] {
+            let rule = chat_behavior_spec(field).rule;
+            assert!(
+                rule.accepts(&json!(min)) && rule.accepts(&json!(max)),
+                "{field}"
+            );
+            assert!(!rule.accepts(&json!(min - 1)), "{field}");
+            assert!(!rule.accepts(&json!(max + 1)), "{field}");
+            assert!(!rule.accepts(&json!(f64::from(min) + 0.5)), "{field}");
+            assert!(!rule.accepts(&json!(min.to_string())), "{field}");
+        }
+        for field in [
+            "restoreLastSelectedThread",
+            "showReasoningSummaries",
+            "automaticallyFoldSettledWork",
+            "confirmMultilineTerminalPaste",
+        ] {
+            let rule = chat_behavior_spec(field).rule;
+            assert!(
+                rule.accepts(&json!(true)) && !rule.accepts(&json!("true")),
+                "{field}"
+            );
+        }
+        assert_eq!(portable_row("chat.behavior.unknownKey"), None);
     }
 }

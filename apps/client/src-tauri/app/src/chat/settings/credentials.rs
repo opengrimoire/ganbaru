@@ -1,4 +1,4 @@
-use super::{device_state_error, store::read_chat_config};
+use super::{device_state_error, read_chat_config};
 use crate::chat::device_state::update_active_device_scope;
 use ganbaru_chat_contracts::models::{ChatResult, CredentialReferenceId};
 use std::collections::BTreeSet;

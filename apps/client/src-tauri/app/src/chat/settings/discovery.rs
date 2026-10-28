@@ -1,15 +1,13 @@
 //! Pure provider discovery configuration and executable resolution.
 
 use super::{
-    config_io_error, device_state_error, discovery_state_error,
-    mapping::portable_configuration,
-    providers::operation_context,
-    store::{mutate_chat_config, read_chat_config},
+    config_io_error, device_state_error, discovery_state_error, mapping::portable_configuration,
+    providers::operation_context, read_chat_config, store::mutate_chat_config,
 };
 use crate::chat::device_state::{ChatProviderDeviceState, update_active_device_scope};
 use crate::chat::settings_commands::ChatSettingsState;
 use crate::vault;
-use ganbaru_chat_contracts::config::ChatVaultConfig;
+use ganbaru_chat_contracts::config::ChatDeviceConfig;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProbeState, ProviderFamilyId, ProviderFamilyMetadataRead,
     ProviderImplementationStatus, ProviderInstanceConfig, ProviderInstanceId, ProviderModelCatalog,
@@ -33,7 +31,7 @@ pub(crate) fn provider_family_is_discoverable(metadata: &ProviderFamilyMetadataR
 }
 
 pub(crate) fn should_discover_default_provider(
-    config: &ChatVaultConfig,
+    config: &ChatDeviceConfig,
     family_id: &ProviderFamilyId,
 ) -> bool {
     !config.automatic_provider_setup_disabled.contains(family_id)
@@ -44,7 +42,7 @@ pub(crate) fn should_discover_default_provider(
 }
 
 pub(crate) fn automatic_provider_instance_id(
-    config: &ChatVaultConfig,
+    config: &ChatDeviceConfig,
     family_id: &ProviderFamilyId,
 ) -> ChatResult<ProviderInstanceId> {
     let base = family_id.as_str();
@@ -306,7 +304,7 @@ pub(crate) async fn discover_default_providers(
 
 pub(crate) async fn probe_installed_provider(
     metadata: &ProviderFamilyMetadataRead,
-    config: &ChatVaultConfig,
+    config: &ChatDeviceConfig,
     search_directories: &[PathBuf],
 ) -> ChatResult<
     Option<(

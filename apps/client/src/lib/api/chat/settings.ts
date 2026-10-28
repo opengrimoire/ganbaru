@@ -30,7 +30,7 @@ import {
   parseChatStopAllResult,
   parseChatRebuildResult,
   parseChatSettingsRead,
-  parseChatVaultConfig,
+  parseChatConfiguration,
   parseProviderInstanceRead,
   parseProviderModelCatalog,
   parseProviderProbeResult,
@@ -171,22 +171,22 @@ export async function updateChatProviderModels(
 }
 
 export async function updateChatBehavior(behavior: ChatBehaviorPreferences): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_update_behavior", { behavior }));
+  return parseChatConfiguration(await invoke<unknown>("chat_update_behavior", { behavior }));
 }
 
 export async function updateChatPanels(panels: ChatPanelPreferences): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_update_panels", { panels }));
+  return parseChatConfiguration(await invoke<unknown>("chat_update_panels", { panels }));
 }
 
 export async function setChatWorkingFolderProviderPreference(
   workingFolderId: ProjectWorkingFolderId,
   instanceId: ProviderInstanceId | null,
 ): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_set_working_folder_provider_preference", { workingFolderId, instanceId }));
+  return parseChatConfiguration(await invoke<unknown>("chat_set_working_folder_provider_preference", { workingFolderId, instanceId }));
 }
 
 export async function rememberChatComposerSelection(selection: RememberedComposerSelection): Promise<ChatSettingsRead["configuration"]> {
-  return parseChatVaultConfig(await invoke<unknown>("chat_remember_composer_selection", { selection }));
+  return parseChatConfiguration(await invoke<unknown>("chat_remember_composer_selection", { selection }));
 }
 
 /** Store a provider secret; Rust derives and returns the reference bound to this instance and variable. */

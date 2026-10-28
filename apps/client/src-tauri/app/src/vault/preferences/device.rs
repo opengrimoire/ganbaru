@@ -2,7 +2,9 @@
 //! keyed by registry path. It lives outside the vault, so vault replacement, rollback restores,
 //! backups, and sync never carry it.
 
-use super::super::{CONFIG_LOCK, FileAccess, MAX_VAULT_CONFIG_BYTES, write_text_file_atomically};
+use super::super::{
+    CONFIG_LOCK, FileAccess, MAX_DEVICE_PREFERENCES_BYTES, write_text_file_atomically,
+};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -41,9 +43,9 @@ pub(crate) fn update_device_file(
     }
     let serialized = serde_json::to_string_pretty(&Value::Object(entries))
         .map_err(|error| format!("encode device preferences: {error}"))?;
-    if serialized.len() as u64 > MAX_VAULT_CONFIG_BYTES {
+    if serialized.len() as u64 > MAX_DEVICE_PREFERENCES_BYTES {
         return Err(format!(
-            "device preferences would exceed {MAX_VAULT_CONFIG_BYTES} bytes"
+            "device preferences would exceed {MAX_DEVICE_PREFERENCES_BYTES} bytes"
         ));
     }
     if let Some(directory) = path.parent() {
@@ -58,14 +60,14 @@ pub(crate) fn update_device_file(
 fn read_unlocked(path: &Path) -> Result<Map<String, Value>, String> {
     let bytes = match ganbaru_atomic_files::read_regular_file_capped(
         path,
-        MAX_VAULT_CONFIG_BYTES,
+        MAX_DEVICE_PREFERENCES_BYTES,
         ganbaru_atomic_files::FinalSymlink::Refuse,
     ) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
             return Err(format!(
-                "device preferences exceed {MAX_VAULT_CONFIG_BYTES} bytes"
+                "device preferences exceed {MAX_DEVICE_PREFERENCES_BYTES} bytes"
             ));
         }
         Err(error) => return Err(format!("read device preferences: {error}")),

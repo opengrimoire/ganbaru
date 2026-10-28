@@ -259,3 +259,9 @@
 - The user approved running test binaries outside the build lock after a measurement. Peak RSS and wall time at `--test-threads=4` on the mini PC: ganbaru-sync 1.49 GB in 14 min, ganbaru-tauri-app 0.49 GB in 10 min, ganbaru-db 0.19 GB in 28 min, ganbaru-sync-replica 0.30 GB in 1.4 min, ganbaru-chat 0.15 GB in 20 s.
 - The ganbaru-sync run bottomed at 728 MB available while another agent compiled and tested, so ganbaru-sync tests stay under the build lock. Every other crate compiles with `cargo test --no-run` under the build lock and runs its binary under a separate test lock (`~/.cache/ganbaru-tests.lock`), at most one at a time. Worst case out of lock is about 0.5 GB next to one compile. The root scripts stay under the build lock.
 - Pre-release item: ganbaru-db tests take 28 minutes for 158 tests with almost no memory, which points at per-test disk sync cost; worth profiling before release.
+
+## Milestone 11 step 9 second delta security review (2026-10-28)
+
+- Fix round 2 (head 974cff5c) closed items 2 to 6. Item 1 still had a hole: a former anchor with its old key could veto its own planned handover with a later plain entry at the same point (using a fresh writer to dodge the writer-fork freeze), or roll back with a competing self-handover. Fix round 3 implements the invariant that an anchor cannot veto its own handover and that equivocating handovers by one anchor key never re-admit that key as anchor.
+- Pre-release items (Medium): unselected-chain writers allow about 128 GiB of storage per space and need a byte budget per space; surplus unnamed writers can grow to 64 per removed device with 1024 entries each under descending arrival.
+- Process: the advisor reviewed the round 3 rule before it was sent, as recorded after round 1.

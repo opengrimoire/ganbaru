@@ -2,9 +2,8 @@
  * Frontend bridge to the active vault's configuration.
  *
  * Rust composes one nested view from the portable preferences in the vault
- * database, this device's preference file, and the `chat` branch of
- * `config.json`. This module reads that view once at boot, keeps
- * an in-memory cache, and flushes bounded key-level patches through a
+ * database and this device's preference file. This module reads that view
+ * once at boot, keeps an in-memory cache, and flushes bounded key-level patches through a
  * debounced write so a burst of edits (dragging a color picker, typing in a
  * name field) coalesces into one IO. Rust routes each patch to the store that
  * owns its key and refuses keys outside the preference registry. A failed
@@ -94,7 +93,7 @@ function deletePath(root: JsonObject, parts: readonly string[]): void {
   delete current[parts[parts.length - 1]];
 }
 
-/** Parse the config file, or return null when it is not a JSON object. */
+/** Parse the configuration view, or return null when it is not a JSON object. */
 function parseConfig(raw: string): JsonObject | null {
   try {
     const parsed: unknown = JSON.parse(raw);

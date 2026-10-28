@@ -65,7 +65,7 @@ The vault and SQLite database are not application-encrypted. Ganbaru relies on o
 
 Why: this keeps user files accessible to ordinary backup and editing tools and avoids a second fragile key-recovery system. The cost is that malware running as the same user can read the vault, and documentation must state that limitation honestly.
 
-Secrets are different. Provider credentials live behind operating-system credential references and are materialized only at the native operation that needs them. They never belong in `config.json`, the vault database, provider DTOs, diagnostics, or exports.
+Secrets are different. Provider credentials live behind operating-system credential references and are materialized only at the native operation that needs them. They never belong in preference files, the vault database, provider DTOs, diagnostics, or exports.
 
 Sync writer keys are per installation and per vault. Desktop stores them in the operating-system keyring; Android stores them in app-private files sealed under a non-exportable Android Keystore key, like the person key (see [Synchronization](../sync.md)). Neither location is inside the vault, so writer keys never enter snapshots, backups, or device transfers. A restored or copied database is detected and gets a new writer instead of reusing an old key's sequence.
 

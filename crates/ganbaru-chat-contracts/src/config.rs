@@ -1,4 +1,10 @@
-//! Validated nonsecret Chat preferences stored in the active vault config.
+//! Validated nonsecret Chat preferences.
+//!
+//! Chat behavior is portable: each field is one `chat.behavior.*` vault preference that every
+//! device of the vault shares. Everything else, provider instances with their launch arguments,
+//! environment, and credential references, remembered composer selections, working folder
+//! provider preferences, and panel sizes, is [device-local](ChatDeviceConfig) and never
+//! replicates.
 
 use crate::models::{
     ChatError, ChatResult, CredentialReferenceId, InteractionMode, ModelId, ModelOptionSelection,
@@ -8,7 +14,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const CHAT_VAULT_CONFIG_SCHEMA_VERSION: u32 = 1;
 const MAX_PROVIDERS: usize = 64;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ENVIRONMENT_ROWS: usize = 64;
@@ -19,10 +24,16 @@ const MAX_ARGUMENT_BYTES: usize = 4_096;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 16_384;
 const MIN_INSPECTOR_WIDTH_PX: u32 = 240;
 const MAX_INSPECTOR_WIDTH_PX: u32 = 960;
-const MIN_TERMINAL_SCROLLBACK_LINES: u32 = 1_000;
-const MAX_TERMINAL_SCROLLBACK_LINES: u32 = 100_000;
-const MIN_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 60;
-const MAX_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 7_200;
+/// Smallest terminal scrollback the Chat behavior accepts.
+pub const MIN_TERMINAL_SCROLLBACK_LINES: u32 = 1_000;
+/// Largest terminal scrollback the Chat behavior accepts.
+pub const MAX_TERMINAL_SCROLLBACK_LINES: u32 = 100_000;
+/// Shortest idle session timeout the Chat behavior accepts.
+pub const MIN_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 60;
+/// Longest idle session timeout the Chat behavior accepts.
+pub const MAX_IDLE_SESSION_TIMEOUT_SECONDS: u32 = 7_200;
+/// Every serialized [`ChatSendKey`] value.
+pub const CHAT_SEND_KEY_VALUES: &[&str] = &["enter", "mod_enter"];
 
 fn default_inspector_width_px() -> u32 {
     520
@@ -97,8 +108,10 @@ impl Default for ChatPanelPreferences {
     }
 }
 
+/// The portable Chat behavior. Each field is stored as its own vault preference, so a field
+/// missing from storage reads as its default.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ChatBehaviorPreferences {
     pub send_key: ChatSendKey,
     pub restore_last_selected_thread: bool,
@@ -123,43 +136,38 @@ impl Default for ChatBehaviorPreferences {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+impl ChatBehaviorPreferences {
+    pub fn validate(&self) -> ChatResult<()> {
+        validate_range(
+            self.terminal_scrollback_lines,
+            MIN_TERMINAL_SCROLLBACK_LINES,
+            MAX_TERMINAL_SCROLLBACK_LINES,
+            "chat.behavior.terminalScrollbackLines",
+        )?;
+        validate_range(
+            self.idle_session_timeout_seconds,
+            MIN_IDLE_SESSION_TIMEOUT_SECONDS,
+            MAX_IDLE_SESSION_TIMEOUT_SECONDS,
+            "chat.behavior.idleSessionTimeoutSeconds",
+        )
+    }
+}
+
+/// The device-local Chat settings of one vault, kept in this device's preference file. Provider
+/// launch arguments, environment, and credential references live here, so they never leave the
+/// device.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatVaultConfig {
-    pub schema_version: u32,
+pub struct ChatDeviceConfig {
     pub providers: Vec<ChatPortableProviderConfig>,
     pub automatic_provider_setup_disabled: BTreeSet<ProviderFamilyId>,
     pub remembered_selections: Vec<RememberedComposerSelection>,
     pub working_folder_provider_preferences: BTreeMap<ProjectWorkingFolderId, ProviderInstanceId>,
     pub panels: ChatPanelPreferences,
-    pub behavior: ChatBehaviorPreferences,
-    #[serde(flatten)]
-    pub unknown_fields: BTreeMap<String, Value>,
 }
 
-impl Default for ChatVaultConfig {
-    fn default() -> Self {
-        Self {
-            schema_version: CHAT_VAULT_CONFIG_SCHEMA_VERSION,
-            providers: Vec::new(),
-            automatic_provider_setup_disabled: BTreeSet::new(),
-            remembered_selections: Vec::new(),
-            working_folder_provider_preferences: BTreeMap::new(),
-            panels: ChatPanelPreferences::default(),
-            behavior: ChatBehaviorPreferences::default(),
-            unknown_fields: BTreeMap::new(),
-        }
-    }
-}
-
-impl ChatVaultConfig {
+impl ChatDeviceConfig {
     pub fn validate(&self) -> ChatResult<()> {
-        if self.schema_version != CHAT_VAULT_CONFIG_SCHEMA_VERSION {
-            return Err(ChatError::validation(
-                "chat.schemaVersion",
-                "Chat config schema is unsupported",
-            ));
-        }
         if self.providers.len() > MAX_PROVIDERS {
             return Err(ChatError::validation(
                 "chat.providers",
@@ -211,51 +219,40 @@ impl ChatVaultConfig {
             MIN_INSPECTOR_WIDTH_PX,
             MAX_INSPECTOR_WIDTH_PX,
             "chat.panels.inspectorWidthPx",
-        )?;
-        validate_range(
-            self.behavior.terminal_scrollback_lines,
-            MIN_TERMINAL_SCROLLBACK_LINES,
-            MAX_TERMINAL_SCROLLBACK_LINES,
-            "chat.behavior.terminalScrollbackLines",
-        )?;
-        validate_range(
-            self.behavior.idle_session_timeout_seconds,
-            MIN_IDLE_SESSION_TIMEOUT_SECONDS,
-            MAX_IDLE_SESSION_TIMEOUT_SECONDS,
-            "chat.behavior.idleSessionTimeoutSeconds",
         )
     }
-}
 
-pub fn parse_chat_config_branch(root: &Value) -> ChatResult<ChatVaultConfig> {
-    let root = root
-        .as_object()
-        .ok_or_else(|| ChatError::validation("config", "vault config must be an object"))?;
-    let Some(chat) = root.get("chat") else {
-        return Ok(ChatVaultConfig::default());
-    };
-    let config: ChatVaultConfig = serde_json::from_value(chat.clone())
-        .map_err(|_| ChatError::validation("chat", "Chat config has an invalid shape"))?;
-    config.validate()?;
-    Ok(config)
-}
+    /// Parses and validates a stored device entry. A missing entry reads as the defaults.
+    pub fn from_stored(value: Option<&Value>) -> ChatResult<Self> {
+        let Some(value) = value else {
+            return Ok(Self::default());
+        };
+        let config: Self = serde_json::from_value(value.clone())
+            .map_err(|_| ChatError::validation("chat", "Chat config has an invalid shape"))?;
+        config.validate()?;
+        Ok(config)
+    }
 
-pub fn replace_chat_config_branch(root: &mut Value, config: ChatVaultConfig) -> ChatResult<()> {
-    config.validate()?;
-    let root = root
-        .as_object_mut()
-        .ok_or_else(|| ChatError::validation("config", "vault config must be an object"))?;
-    root.insert(
-        "chat".to_string(),
-        serde_json::to_value(config).map_err(|_| {
+    /// The validated JSON value stored for this configuration.
+    pub fn to_stored(&self) -> ChatResult<Value> {
+        self.validate()?;
+        serde_json::to_value(self).map_err(|_| {
             ChatError::new(
                 crate::models::ChatErrorCode::Internal,
                 "serialize Chat config",
                 false,
             )
-        })?,
-    );
-    Ok(())
+        })
+    }
+}
+
+/// The Chat settings a read returns: this device's configuration with the portable behavior.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatConfiguration {
+    #[serde(flatten)]
+    pub device: ChatDeviceConfig,
+    pub behavior: ChatBehaviorPreferences,
 }
 
 fn validate_provider(provider: &ChatPortableProviderConfig, index: usize) -> ChatResult<()> {

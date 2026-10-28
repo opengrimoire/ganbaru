@@ -400,6 +400,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_search_messages,
             chat::organization::chat_cancel_assignment,
             chat::organization::chat_retry_assignment,
+            chat::organization::chat_start_mentioned_assignment,
             chat::organization::chat_recover_assignment_dispatch_jobs,
             chat::threads::chat_list_thread_window,
             chat::threads::chat_read_thread_shell,
@@ -983,6 +984,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             clear_distractions_enforcement_state_best_effort(app.handle(), "during startup");
             schedule_main_window_reveal_fallback(app.handle());
             app.manage(chat::sync::RevocationWaker::new(app.handle().clone()));
+            app.manage(chat::sync::AssignmentWaker::new(app.handle().clone()));
             chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
             music::setup_youtube_host(app.handle())?;

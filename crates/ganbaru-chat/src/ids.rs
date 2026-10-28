@@ -16,6 +16,9 @@ const RANDOM_ID_BYTES: usize = 16;
 pub const REPLY_THREAD_ID_PREFIX: &str = "reply-thread";
 /// Derived id prefix of a work assignment input, keyed by its message item id.
 pub const ASSIGNMENT_INPUT_ID_PREFIX: &str = "assignment-input";
+/// Derived id prefix of a work assignment, keyed by its triggering message, its teammate, and
+/// the assignment it follows when it has one.
+pub const WORK_ASSIGNMENT_ID_PREFIX: &str = "work-assignment";
 
 /// Returns `{prefix}:{32 lowercase hex}` built from 16 bytes of the operating system's secure
 /// random generator.

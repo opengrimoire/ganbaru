@@ -42,6 +42,7 @@ export const SYNC_DEGRADED_REASONS = [
   "standbyRestricted",
   "localNetworkDenied",
   "firewallAuthorizationRequired",
+  "firewallPeerListenerBlocked",
 ] as const;
 export type SyncDegradedReason = (typeof SYNC_DEGRADED_REASONS)[number];
 

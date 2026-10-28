@@ -61,6 +61,8 @@ export const sync = {
     firewallClient: "No se encontró tu dispositivo principal en la red. Puede que un cortafuegos de este dispositivo lo esté bloqueando.",
     openBatterySettings: "Abrir ajustes de batería",
     allowNetworkAccess: "Permitir acceso a la red",
+    firewallPeers: "El cortafuegos impide que tus otros dispositivos se conecten directamente a este, así que la sincronización espera a tu dispositivo principal.",
+    allowPeerConnections: "Permitir conexiones de otros dispositivos",
   },
   recovery: {
     heading: "Eliminado recientemente con ediciones sin guardar",

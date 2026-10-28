@@ -10,6 +10,7 @@
     syncClockAheadLines,
     syncConflictLines,
     syncConnectionLabel,
+    syncDegradedActionLabel,
     syncDegradedRows,
     type SyncDegradedAction,
     syncDescription,
@@ -45,7 +46,7 @@
   }: {
     buttonClass: string;
     mobileLayout?: boolean;
-    /** Starts allowing the coordinator listener through the firewall, when this device can. */
+    /** Starts allowing this desktop's sync listener through the firewall, when this device can. */
     onAllowNetworkAccess?: () => void;
   } = $props();
 
@@ -105,7 +106,7 @@
   }
 
   async function runDegradedAction(action: SyncDegradedAction): Promise<void> {
-    if (action === "allowNetworkAccess") {
+    if (action === "allowNetworkAccess" || action === "allowPeerConnections") {
       onAllowNetworkAccess?.();
       return;
     }
@@ -193,7 +194,7 @@
           <Notice tone="warning" role="status" copy={false} message={row.label}>
             {#snippet actions()}
               <button type="button" class="notice-action-text" onclick={() => void runDegradedAction(action)}>
-                {t(action === "openBatterySettings" ? "sync.degraded.openBatterySettings" : "sync.degraded.allowNetworkAccess")}
+                {syncDegradedActionLabel(t, action)}
               </button>
             {/snippet}
           </Notice>

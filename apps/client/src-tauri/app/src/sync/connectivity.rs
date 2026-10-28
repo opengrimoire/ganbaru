@@ -51,6 +51,8 @@ pub(crate) mod firewall {
 
     /// The latest probe of the coordinator listener's firewall state.
     static LISTENER: Mutex<Option<Probe<NetworkAccessState>>> = Mutex::new(None);
+    /// The latest probe of the member listener's firewall state.
+    static MEMBER_LISTENER: Mutex<Option<Probe<NetworkAccessState>>> = Mutex::new(None);
     /// The latest probe of whether a firewall is active.
     static ACTIVE: Mutex<Option<Probe<bool>>> = Mutex::new(None);
 
@@ -80,8 +82,9 @@ pub(crate) mod firewall {
     /// status shows the new state.
     pub(crate) fn changed<R: Runtime>(app: &AppHandle<R>) {
         let listener = LISTENER.lock().map(|mut slot| *slot = None);
+        let member = MEMBER_LISTENER.lock().map(|mut slot| *slot = None);
         let active = ACTIVE.lock().map(|mut slot| *slot = None);
-        if listener.is_err() || active.is_err() {
+        if listener.is_err() || member.is_err() || active.is_err() {
             eprintln!("forget the firewall probes: a probe lock is unavailable");
         }
         if let Some(runtime) = app.try_state::<crate::sync::SyncRuntime>() {
@@ -126,6 +129,7 @@ pub(crate) mod firewall {
                 state.is_ok_and(listener_blocked)
             }
             SyncRole::Client => {
+                note_member_listener(app, reasons).await;
                 if !dial.is_some_and(|report| report.discovery_found_nothing) {
                     return;
                 }
@@ -137,6 +141,27 @@ pub(crate) mod firewall {
             }
         };
         reasons.note(SyncDegradedReason::FirewallAuthorizationRequired, blocked);
+    }
+
+    /// Adds the member listener reason while the firewall keeps other members from reaching
+    /// this member desktop's listener.
+    async fn note_member_listener<R: Runtime>(app: &AppHandle<R>, reasons: &mut DegradedReasons) {
+        let app = app.clone();
+        let state = tauri::async_runtime::spawn_blocking(move || {
+            cached(&MEMBER_LISTENER, || {
+                crate::vault::handoff::member_network_access_state(&app)
+                    .unwrap_or_else(|error| {
+                        eprintln!("read the member listener firewall state: {error}");
+                        None
+                    })
+                    .unwrap_or(NetworkAccessState::NotRequired)
+            })
+        })
+        .await;
+        reasons.note(
+            SyncDegradedReason::FirewallPeerListenerBlocked,
+            state.is_ok_and(listener_blocked),
+        );
     }
 }
 

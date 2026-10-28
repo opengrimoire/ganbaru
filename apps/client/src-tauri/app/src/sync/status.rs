@@ -153,6 +153,10 @@ pub(crate) enum SyncDegradedReason {
     /// A firewall blocks peers or discovery until the user allows the local network.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     FirewallAuthorizationRequired,
+    /// A firewall blocks other members from reaching this member desktop's listener until the
+    /// user allows peers to connect.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    FirewallPeerListenerBlocked,
 }
 
 /// The degraded reasons of one pass, without repeats and in a fixed order.
@@ -469,6 +473,7 @@ mod tests {
     #[test]
     fn connection_and_degraded_reasons_reach_the_frontend_in_its_wire_names() {
         let mut reasons = DegradedReasons::default();
+        reasons.note(SyncDegradedReason::FirewallPeerListenerBlocked, true);
         reasons.note(SyncDegradedReason::FirewallAuthorizationRequired, true);
         reasons.note(SyncDegradedReason::StandbyRestricted, false);
         reasons.note(SyncDegradedReason::LocalNetworkDenied, true);
@@ -489,7 +494,8 @@ mod tests {
             serde_json::json!([
                 "backgroundRestricted",
                 "localNetworkDenied",
-                "firewallAuthorizationRequired"
+                "firewallAuthorizationRequired",
+                "firewallPeerListenerBlocked"
             ])
         );
         let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");

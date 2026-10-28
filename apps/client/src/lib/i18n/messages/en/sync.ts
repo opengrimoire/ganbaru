@@ -55,6 +55,8 @@ export const sync = {
     firewallClient: "Your main device was not found on the network. A firewall on this device may be blocking it.",
     openBatterySettings: "Open battery settings",
     allowNetworkAccess: "Allow network access",
+    firewallPeers: "The firewall keeps your other devices from connecting to this device directly, so sync waits for your main device.",
+    allowPeerConnections: "Allow peers to connect",
   },
   recovery: {
     heading: "Recently deleted with unsaved edits",

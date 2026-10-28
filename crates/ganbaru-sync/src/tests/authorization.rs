@@ -10,11 +10,16 @@ use ganbaru_sync_contracts::{
 };
 
 use super::block_on;
+use super::exclusion::{edit, note};
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, device_key,
     enroll_entry, person, proposal, recovery_admin, tls_fingerprint,
 };
-use crate::{AuthorizationView, HoldReason, LateChange, StoreOutcome, StoreRefusal};
+use crate::store::MAX_UNSELECTED_WRITERS_PER_SPACE;
+use crate::{
+    AuthorizationView, HoldReason, LateChange, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
+};
+use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -1523,5 +1528,125 @@ fn a_removal_rotates_the_discovery_key_and_keeps_the_one_it_replaced() {
         let removed = view(&mut anchor).await;
         assert_eq!(removed.discovery_key, rotated);
         assert_eq!(removed.previous_discovery_key, Some(founded.discovery_key));
+    });
+}
+
+/// Identity of writer `writer` of replica device `index`, sealed by whoever holds it.
+fn phantom_identity(holder: &Replica, writer: usize, index: usize) -> Identity {
+    let mut seed = [0u8; 32];
+    seed[..8].copy_from_slice(&u64::try_from(writer).unwrap().to_le_bytes());
+    seed[31] = 3;
+    Identity::new(
+        seed,
+        &device_key(&holder.person, index),
+        &device_id(index),
+        None,
+    )
+}
+
+#[test]
+fn a_vetoed_branch_enrolls_writers_only_within_the_unselected_bounds() {
+    block_on(async {
+        let salt = 331;
+        let mut hub = Replica::anchor(0, salt).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut stale = Replica::new(20, salt).await;
+        stale.pull(&mut hub).await;
+        tag(&mut stale, "tag-20").await;
+        let mut member = Replica::new(1, salt).await;
+        member.pull(&mut hub).await;
+
+        // The anchor removes the admin, which takes over from before its removal and enrolls
+        // phantom devices on its vetoed branch.
+        hub.remove(&device_id(20)).await.unwrap();
+        let (_, handover) = forge_handover(&mut stale, 20).await;
+        assert_eq!(stale.receive(&[handover]).await, vec![STORED]);
+        stale.apply_all().await.unwrap();
+        assert_eq!(view(&mut stale).await.anchor_device_id, device_id(20));
+        let phantoms = MAX_UNSELECTED_WRITERS_PER_SPACE / MAX_WRITERS_PER_DEVICE + 1;
+        let device = |writer: usize| 30 + writer / MAX_WRITERS_PER_DEVICE;
+        for index in 30..30 + phantoms {
+            let signed = proposal(
+                stale.ctx.space,
+                &device_admin(20),
+                stale.now_ms,
+                enroll_entry(&person(), index, DeviceRole::Member),
+            );
+            stale.sequence_signed(&signed).await.unwrap().unwrap();
+        }
+        let branch = stale.own_ops().await;
+        let enrolled = stale.stored_vector().await;
+        stale.identity = phantom_identity(&stale, 0, device(0));
+        edit(&mut stale, &note("note-phantom", "Phantom", 0)).await;
+        for index in 1..MAX_EXCLUDED_PER_WRITER {
+            edit(
+                &mut stale,
+                &format!(
+                    "UPDATE quick_notes SET title = 'Phantom {index}' WHERE id = 'note-phantom'"
+                ),
+            )
+            .await;
+        }
+        let first = stale.ops_since(&enrolled).await;
+        assert_eq!(first.len() as u64, MAX_EXCLUDED_PER_WRITER + 1);
+        let sealed = stale.stored_vector().await;
+        for writer in 1..=MAX_UNSELECTED_WRITERS_PER_SPACE {
+            stale.identity = phantom_identity(&stale, writer, device(writer));
+            stale.seal().await.unwrap();
+        }
+        let geneses = stale.ops_since(&sealed).await;
+        assert_eq!(geneses.len(), MAX_UNSELECTED_WRITERS_PER_SPACE);
+
+        let mut observer = Replica::new(2, salt).await;
+        observer.pull(&mut hub).await;
+        observer.receive(&branch).await;
+        observer.apply_all().await.unwrap();
+        assert_eq!(view(&mut observer).await.anchor_device_id, ANCHOR_DEVICE_ID);
+
+        // The phantom writer keeps the excluded bound, and phantom writers fill only the
+        // unselected writers of the space.
+        let outcomes = observer.receive(&first).await;
+        assert!(
+            outcomes[..first.len() - 1]
+                .iter()
+                .all(|outcome| matches!(outcome, StoreOutcome::Stored { .. }))
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::Revoked))
+        );
+        let outcomes = observer.receive(&geneses).await;
+        assert!(
+            outcomes[..geneses.len() - 1]
+                .iter()
+                .all(|outcome| matches!(outcome, StoreOutcome::Stored { .. }))
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::WriterLimit))
+        );
+        let unselected: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sync_writers w WHERE NOT EXISTS (
+                SELECT 1 FROM sync_devices d WHERE d.device_id = w.device_id
+             )",
+        )
+        .fetch_one(&mut observer.conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            usize::try_from(unselected).unwrap(),
+            MAX_UNSELECTED_WRITERS_PER_SPACE
+        );
+
+        // A writer of a device the selected chain enrolls is still admitted.
+        tag(&mut member, "tag-1").await;
+        let honest = member.own_ops().await;
+        assert!(matches!(
+            observer.receive(&honest).await.first(),
+            Some(StoreOutcome::Stored { .. })
+        ));
+        observer.apply_all().await.unwrap();
+        assert!(tags(&mut observer).await.contains(&"tag-1".to_owned()));
+        observer.check_invariants().await;
     });
 }

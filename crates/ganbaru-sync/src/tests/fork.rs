@@ -1013,12 +1013,13 @@ fn an_authorization_entry_past_the_removal_bound_is_stored_where_a_domain_operat
 }
 
 #[test]
-fn a_removed_device_stores_only_a_few_writers_its_removal_does_not_name() {
+fn a_removed_device_keeps_the_lowest_writers_its_removal_does_not_name_in_any_order() {
     block_on(async {
         let mut anchor = Replica::anchor(0, 313).await;
         let mut removed = Replica::new(1, 313).await;
         let mut a = Replica::new(3, 313).await;
-        let mut b = Replica::new(4, 313).await;
+        let mut ascending = Replica::new(4, 313).await;
+        let mut descending = Replica::new(5, 313).await;
         // The anchor never stores the device's writers, so its removal names none of them.
         let mut writers = Vec::new();
         for (position, id) in ["note-first", "note-second", "note-third"]
@@ -1029,33 +1030,68 @@ fn a_removed_device_stores_only_a_few_writers_its_removal_does_not_name() {
                 removed.rotate();
             }
             edit(&mut removed, &note(id, "Late", 0)).await;
-            writers.push((removed.writer(), removed.own_ops().await));
+            edit(
+                &mut removed,
+                &format!("UPDATE quick_notes SET title = 'Later' WHERE id = '{id}'"),
+            )
+            .await;
+            writers.push((removed.writer(), removed.own_ops().await, id));
         }
-        let distinct: BTreeSet<_> = writers.iter().map(|(writer, _)| *writer).collect();
+        writers.sort_by_key(|(writer, _, _)| *writer);
+        let distinct: BTreeSet<_> = writers.iter().map(|(writer, _, _)| *writer).collect();
         assert_eq!(distinct.len(), writers.len());
         anchor.remove(&removed.device_id).await.unwrap();
 
-        // A stored every writer before the removal; B learned of the removal first.
-        for (_, ops) in &writers {
+        // A stored every writer before the removal; the others learned of the removal first
+        // and receive the writers in ascending and in descending id order.
+        for (_, ops, _) in &writers {
             take(&mut a, ops).await;
         }
         deliver(&mut a, &mut anchor).await;
-        deliver(&mut b, &mut anchor).await;
-        let (named, rest) = writers.split_at(2);
-        for (writer, ops) in named {
-            take(&mut b, ops).await;
-            assert_eq!(
-                b.stored_vector().await.get(writer),
-                a.stored_vector().await.get(writer),
-                "an unnamed writer within the bound keeps its excluded operations"
-            );
+        deliver(&mut ascending, &mut anchor).await;
+        deliver(&mut descending, &mut anchor).await;
+        let (kept, rest) = writers.split_at(2);
+        let (surplus, surplus_ops, _) = &rest[0];
+        for (_, ops, _) in &writers {
+            take(&mut ascending, ops).await;
         }
-        let (writer, ops) = &rest[0];
-        assert_eq!(take(&mut b, ops).await.first(), Some(&REVOKED));
-        assert_eq!(b.stored_vector().await.get(writer), 0);
+        for (_, ops, _) in writers.iter().rev() {
+            take(&mut descending, ops).await;
+        }
+        assert_eq!(ascending.stored_vector().await.get(surplus), 0);
+        assert_eq!(
+            take(&mut ascending, &surplus_ops[..1]).await,
+            vec![REVOKED],
+            "a genesis above the lowest unnamed writers is refused"
+        );
+        assert_eq!(
+            take(&mut descending, &surplus_ops[1..]).await.first(),
+            Some(&REVOKED),
+            "a displaced writer keeps only its genesis"
+        );
+        for replica in [&mut a, &mut descending] {
+            assert_eq!(replica.stored_vector().await.get(surplus), 1);
+        }
+        for (writer, ops, _) in kept {
+            for replica in [&mut a, &mut ascending, &mut descending] {
+                assert_eq!(
+                    replica.stored_vector().await.get(writer),
+                    ops.len() as u64,
+                    "an unnamed writer among the lowest keeps its excluded operations"
+                );
+            }
+        }
 
+        let expected_late = late_changes(&mut a).await;
+        let rows: BTreeSet<_> = expected_late
+            .iter()
+            .map(|late| late.row_key.as_str())
+            .collect();
+        let kept_rows: BTreeSet<_> = kept.iter().map(|(_, _, id)| *id).collect();
+        assert_eq!(rows, kept_rows);
         let expected = anchor.domain_dump().await;
-        for replica in [&mut a, &mut b] {
+        for replica in [&mut a, &mut ascending, &mut descending] {
+            assert_eq!(late_changes(replica).await, expected_late);
             assert_eq!(replica.domain_dump().await, expected);
             for id in ["note-first", "note-second", "note-third"] {
                 assert_eq!(title(replica, id).await, None);

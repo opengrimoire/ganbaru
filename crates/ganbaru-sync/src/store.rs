@@ -93,9 +93,10 @@ pub enum StoreRefusal {
     /// [`MAX_EXCLUDED_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_PER_WRITER) past the removal's
     /// cutoff (an authorization entry, up to
     /// [`MAX_EXCLUDED_ENTRIES_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_ENTRIES_PER_WRITER)
-    /// further, contiguous from it), or the genesis names a removed device that already stored
+    /// further, contiguous from it), or the writer is one the removal does not name outside the
     /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](crate::exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
-    /// writers its removal does not name.
+    /// lowest writer ids of its device: its genesis while that many lower ones are stored, and
+    /// its later operations other than contiguous entries once lower ones displaced it.
     Revoked,
     /// The genesis would exceed the writers its device or the space may have.
     WriterLimit,
@@ -343,15 +344,12 @@ async fn store_genesis(
     // A writer of a removed device that this replica never stored takes the cutoff the removal
     // lists for it, 0 when the removal does not name it. Its excluded operations are stored up
     // to the bound, so the late changes other replicas applied before the removal are derived
-    // here too, but only a few unnamed writers per removed device are stored at all.
-    let removal = match authorization::enrollment(
-        conn,
-        ctx.space,
-        &cert.device_id,
-        &cert.device_key,
-    )
-    .await?
-    {
+    // here too, but only the few unnamed writers per removed device with the lowest ids keep
+    // operations past their genesis.
+    let enrollment =
+        authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await?;
+    let selected = !matches!(enrollment, Enrollment::Absent);
+    let removal = match enrollment {
         Enrollment::Enrolled => None,
         Enrollment::WrongKey => return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted)),
         Enrollment::Removed => Some((
@@ -361,7 +359,8 @@ async fn store_genesis(
         )),
         // A chain this replica did not select may enroll the device, and its entries can be the
         // evidence that vetoes the selected one. The writer's operations still apply only once
-        // the selected chain enrolls the device.
+        // the selected chain enrolls the device, and until then they are bounded as excluded
+        // ones are and the writer counts toward the unselected writers of the space.
         Enrollment::Absent
             if authorization::enrolled_on_any_chain(
                 conn,
@@ -376,8 +375,9 @@ async fn store_genesis(
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
     };
     if matches!(removal, Some((_, 0)))
-        && unnamed_writers(conn, ctx, &cert.device_id).await?
-            >= exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE
+        && highest_kept_unnamed(conn, ctx, &cert.device_id)
+            .await?
+            .is_some_and(|highest| envelope.writer.as_bytes().as_slice() > highest.as_slice())
     {
         return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
     }
@@ -385,7 +385,7 @@ async fn store_genesis(
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
-    if !within_writer_limits(conn, ctx, &cert.device_id).await? {
+    if !within_writer_limits(conn, ctx, &cert.device_id, selected).await? {
         return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
     }
     sqlx::query(
@@ -491,10 +491,27 @@ async fn store_next(
     // still stored, up to a bound, so their late changes can be derived and forwarded. Its
     // authorization entries have a bound of their own past that one: on a chain this replica
     // did not select the device may be an anchor whose entries veto the selected chain.
-    let beyond_removal = writer.removal_cutoff.is_some_and(|cutoff| {
-        envelope.seq > exclusion::excluded_limit(cutoff)
-            && (envelope.kind != OperationKind::Authorization.as_u8()
-                || envelope.seq > exclusion::entry_limit(cutoff))
+    // A surplus unnamed writer keeps only its genesis and the entries contiguous from it.
+    let bounds = match writer.removal_cutoff {
+        Some(0) if exclusion::is_surplus_unnamed(conn, ctx.space, writer.id).await? => {
+            Some((exclusion::SURPLUS_LIMIT, exclusion::SURPLUS_ENTRY_LIMIT))
+        }
+        Some(cutoff) => Some((
+            exclusion::excluded_limit(cutoff),
+            exclusion::entry_limit(cutoff),
+        )),
+        // A writer of a device the selected chain does not name, which a chain it did not
+        // select enrolls, is bounded as an unnamed writer of a removed device is.
+        None if envelope.seq > exclusion::excluded_limit(0)
+            && !names_device(conn, ctx, &writer.device_id).await? =>
+        {
+            Some((exclusion::excluded_limit(0), exclusion::entry_limit(0)))
+        }
+        None => None,
+    };
+    let beyond_removal = bounds.is_some_and(|(limit, entry_limit)| {
+        envelope.seq > limit
+            && (envelope.kind != OperationKind::Authorization.as_u8() || envelope.seq > entry_limit)
     });
     let beyond_cutoff = writer.state != WriterState::Revoked
         && writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff);
@@ -681,36 +698,77 @@ impl Engine {
     }
 }
 
-/// How many stored writers of the removed device `device_id` its removal does not name.
-async fn unnamed_writers(
+/// The highest writer id among the stored writers of the removed device `device_id` its removal
+/// does not name that keep excluded operations, once there are
+/// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+/// of them, `None` while there are fewer.
+async fn highest_kept_unnamed(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     device_id: &str,
-) -> SyncResult<i64> {
+) -> SyncResult<Option<Vec<u8>>> {
     Ok(sqlx::query_scalar(
-        "SELECT count(*) FROM sync_writers
-         WHERE space_id = ? AND device_id = ? AND removal_cutoff_seq = 0",
+        "SELECT writer_id FROM sync_writers
+         WHERE space_id = ? AND device_id = ? AND removal_cutoff_seq = 0
+         ORDER BY writer_id LIMIT 1 OFFSET ?",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(device_id)
-    .fetch_one(&mut *conn)
+    .bind(exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE - 1)
+    .fetch_optional(&mut *conn)
     .await?)
 }
 
+/// Most stored writers of devices the selected chain does not enroll, which another stored chain
+/// enrolls. They never count toward the writers of devices the selected chain names, which may
+/// fill [`MAX_WRITERS_PER_SPACE`] less this many, so the space never stores more than it.
+pub(crate) const MAX_UNSELECTED_WRITERS_PER_SPACE: usize = 2 * MAX_WRITERS_PER_DEVICE;
+
 /// Whether the space can admit one more writer of `device_id` within
-/// [`MAX_WRITERS_PER_DEVICE`] and [`MAX_WRITERS_PER_SPACE`].
+/// [`MAX_WRITERS_PER_DEVICE`], and within [`MAX_UNSELECTED_WRITERS_PER_SPACE`] when `selected` is
+/// false, or the rest of [`MAX_WRITERS_PER_SPACE`] when it is true: whether the selected chain
+/// names the device.
 async fn within_writer_limits(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     device_id: &str,
+    selected: bool,
 ) -> SyncResult<bool> {
-    let (device, space): (i64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(device_id = ?), 0), COUNT(*) FROM sync_writers WHERE space_id = ?",
+    let (device, total, named): (i64, i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(w.device_id = ?1), 0), COUNT(*), COALESCE(SUM(EXISTS (
+            SELECT 1 FROM sync_devices d
+            WHERE d.space_id = w.space_id AND d.device_id = w.device_id
+         )), 0)
+         FROM sync_writers w WHERE w.space_id = ?2",
     )
     .bind(device_id)
     .bind(ctx.space.as_bytes().as_slice())
     .fetch_one(&mut *conn)
     .await?;
     let below = |count: i64, limit: usize| usize::try_from(count).is_ok_and(|count| count < limit);
-    Ok(below(device, MAX_WRITERS_PER_DEVICE) && below(space, MAX_WRITERS_PER_SPACE))
+    let space = if selected {
+        below(
+            named,
+            MAX_WRITERS_PER_SPACE - MAX_UNSELECTED_WRITERS_PER_SPACE,
+        )
+    } else {
+        below(total - named, MAX_UNSELECTED_WRITERS_PER_SPACE)
+    };
+    Ok(below(device, MAX_WRITERS_PER_DEVICE) && space)
+}
+
+/// Whether the selected chain names `device_id`, enrolled or removed.
+async fn names_device(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    device_id: &str,
+) -> SyncResult<bool> {
+    let named: i64 = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sync_devices WHERE space_id = ? AND device_id = ?)",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(device_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(named != 0)
 }

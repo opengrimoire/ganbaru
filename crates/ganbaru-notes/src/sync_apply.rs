@@ -6,7 +6,9 @@
 //! hook-derived columns (a page's `parent_type`, `parent_page_id`, and `parent_block_id`, a
 //! block's `page_id` and `plain_text`, a database's parent columns, and the `page_id` of comment
 //! threads, anchors, and suggestions), refreshes the reminder candidates of changed blocks,
-//! property values, and comments, forgets cached rollups that read changed
+//! property values, and comments, refreshes the asset references of changed pages, blocks,
+//! comments, and data sources and of the rows naming arriving asset rows, forgets cached
+//! rollups that read changed
 //! data sources, properties, options, values, or relation edges, invalidates the fingerprints
 //! of the search and link indexes so the next read rebuilds them, queues history snapshots of
 //! the touched pages in `notes_page_history_pending`, queues the
@@ -18,9 +20,9 @@ use crate::block_storage::compose_block_content;
 use crate::validation::plain_text_from_payload;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::notes::{
-    ANCHORS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN,
-    OPTIONS_TABLE, PAGES_TABLE, PROPERTIES_TABLE, REACTIONS_TABLE, RELATION_EDGES_TABLE,
-    SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, reaction_group, value_group,
+    ANCHORS_TABLE, ASSETS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE,
+    DOMAIN, OPTIONS_TABLE, PAGES_TABLE, PROPERTIES_TABLE, REACTIONS_TABLE, RELATION_EDGES_TABLE,
+    SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, property_group, reaction_group, value_group,
 };
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use serde_json::Value;
@@ -84,12 +86,22 @@ pub async fn refresh_after_apply(
     }
     if table == PAGES_TABLE {
         refresh_pages(conn, keys).await?;
+        let owners = AssetOwners {
+            pages: keys.to_vec(),
+            ..AssetOwners::default()
+        };
+        refresh_asset_references(conn, &owners).await?;
         queue_repair(conn, "page", keys).await?;
     } else if table == BLOCKS_TABLE {
         refresh_blocks(conn, keys).await?;
         refresh_database_parents(conn, keys).await?;
         let blocks = blocks_with_descendants(conn, keys).await?;
         let pages = refresh_comment_pages(conn, CommentScope::Blocks(&blocks)).await?;
+        let owners = AssetOwners {
+            blocks,
+            ..AssetOwners::default()
+        };
+        refresh_asset_references(conn, &owners).await?;
         queue_page_history(conn, &pages).await?;
         queue_repair(conn, "block", keys).await?;
     } else if table == DATABASES_TABLE {
@@ -102,9 +114,20 @@ pub async fn refresh_after_apply(
         } else {
             "notes_data_source_property_options"
         };
-        let (sources, removed) = present(conn, table_name, "data_source_id", keys).await?;
+        let (mut sources, removed) = present(conn, table_name, "data_source_id", keys).await?;
         invalidate_rollups(conn, &sources, removed).await?;
         refresh_property_reminders(conn, &[], true).await?;
+        if table == PROPERTIES_TABLE {
+            if removed {
+                let identity = (PROPERTIES_TABLE, property_group::IDENTITY);
+                sources.extend(recorded_references(conn, identity, keys).await?);
+            }
+            let owners = AssetOwners {
+                data_sources: sources,
+                ..AssetOwners::default()
+            };
+            refresh_asset_references(conn, &owners).await?;
+        }
     } else if table == VALUES_TABLE {
         let (mut pages, removed) =
             present(conn, "notes_page_property_values", "page_id", keys).await?;
@@ -115,6 +138,11 @@ pub async fn refresh_after_apply(
             let identity = (VALUES_TABLE, value_group::IDENTITY);
             pages.extend(recorded_references(conn, identity, keys).await?);
         }
+        let owners = AssetOwners {
+            data_sources: data_sources_of(conn, &pages).await?,
+            ..AssetOwners::default()
+        };
+        refresh_asset_references(conn, &owners).await?;
         queue_page_history(conn, &pages).await?;
     } else if table == RELATION_EDGES_TABLE {
         let (sources_pages, removed) =
@@ -143,6 +171,9 @@ pub async fn refresh_after_apply(
         }
         let pages = comment_pages(conn, &comments).await?;
         queue_page_history(conn, &pages).await?;
+    } else if table == ASSETS_TABLE {
+        stamp_assets(conn, keys).await?;
+        refresh_asset_owners(conn, keys).await?;
     }
     invalidate_indexes(conn).await
 }
@@ -280,20 +311,21 @@ struct ChangedComment {
     id: String,
     rich_text: String,
     plain_text: String,
+    attachments: String,
     deleted: bool,
     page_id: String,
     parent_block_id: Option<String>,
 }
 
-/// Refreshes the mention candidates of the comments among `comment_ids` and queues history
-/// snapshots of their pages. A removed or deleted comment loses its pending candidates and its
-/// attachment references; Notes assets do not replicate, so a remote comment records none.
+/// Refreshes the mention candidates and attachment references of the comments among
+/// `comment_ids` and queues history snapshots of their pages. A removed or deleted comment loses
+/// its pending candidates and its attachment references.
 async fn refresh_comments(
     conn: &mut SqliteConnection,
     comment_ids: &[String],
 ) -> Result<(), String> {
     let comments: Vec<ChangedComment> = sqlx::query_as(
-        "SELECT comment.id, comment.rich_text, comment.plain_text,
+        "SELECT comment.id, comment.rich_text, comment.plain_text, comment.attachments,
                 comment.deleted_at IS NOT NULL AS deleted, thread.page_id,
                 thread.parent_block_id
          FROM notes_comments AS comment
@@ -330,6 +362,15 @@ async fn refresh_comments(
         }
         let rich_text: Vec<Value> = serde_json::from_str(&comment.rich_text)
             .map_err(|error| format!("parse synced Notes comment text: {error}"))?;
+        let attachments: Vec<Value> = serde_json::from_str(&comment.attachments)
+            .map_err(|error| format!("parse synced Notes comment attachments: {error}"))?;
+        crate::assets::refresh_synced_comment_asset_references_tx(
+            &mut tx,
+            &comment.page_id,
+            &comment.id,
+            &attachments,
+        )
+        .await?;
         crate::mention_notifications::sync_comment_tx(
             &mut tx,
             &comment.id,
@@ -542,6 +583,190 @@ async fn queue_repair(
     .await
     .map_err(|error| format!("queue Notes structure repair: {error}"))?;
     Ok(())
+}
+
+/// Rows whose asset references an apply may have changed.
+#[derive(Default)]
+struct AssetOwners {
+    pages: Vec<String>,
+    blocks: Vec<String>,
+    comments: Vec<String>,
+    data_sources: Vec<String>,
+}
+
+/// One block's stored content, for its asset reference.
+#[derive(sqlx::FromRow)]
+struct AssetBlock {
+    id: String,
+    page_id: String,
+    #[sqlx(rename = "type")]
+    block_type: String,
+    attrs: String,
+    text: String,
+}
+
+/// Replaces the asset references of `owners` from their stored JSON. A reference counts only
+/// when its asset row exists here; an asset row that arrives later refreshes the rows naming it.
+/// A row no longer present lost its references through the foreign key cascade.
+async fn refresh_asset_references(
+    conn: &mut SqliteConnection,
+    owners: &AssetOwners,
+) -> Result<(), String> {
+    let pages: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, icon, cover FROM notes_pages WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(&owners.pages)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load synced Notes page appearance: {error}"))?;
+    let blocks: Vec<AssetBlock> = sqlx::query_as(
+        "SELECT id, page_id, type, attrs, text FROM notes_blocks
+         WHERE id IN (SELECT value FROM json_each(?1)) AND page_id <> ''",
+    )
+    .bind(keys_json(&owners.blocks)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load synced Notes block content: {error}"))?;
+    let comments: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT comment.id, thread.page_id, comment.attachments
+         FROM notes_comments AS comment
+         JOIN notes_comment_threads AS thread ON thread.id = comment.thread_id
+         WHERE comment.id IN (SELECT value FROM json_each(?1))
+           AND comment.deleted_at IS NULL AND thread.page_id <> ''",
+    )
+    .bind(keys_json(&owners.comments)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load synced Notes comment attachments: {error}"))?;
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin synced Notes asset reference refresh: {error}"))?;
+    for (page_id, icon, cover) in &pages {
+        let icon = icon
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
+        let cover = cover
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
+        crate::assets::refresh_synced_page_asset_references_tx(
+            &mut tx,
+            page_id,
+            icon.as_ref(),
+            cover.as_ref(),
+        )
+        .await?;
+    }
+    for block in &blocks {
+        let Ok(payload) = compose_block_content(&block.block_type, &block.attrs, &block.text)
+        else {
+            continue;
+        };
+        crate::assets::refresh_synced_block_asset_reference_tx(
+            &mut tx,
+            &block.id,
+            &block.page_id,
+            &block.block_type,
+            &payload,
+        )
+        .await?;
+    }
+    for (comment_id, page_id, attachments) in &comments {
+        let attachments: Vec<Value> = serde_json::from_str(attachments).unwrap_or_default();
+        crate::assets::refresh_synced_comment_asset_references_tx(
+            &mut tx,
+            page_id,
+            comment_id,
+            &attachments,
+        )
+        .await?;
+    }
+    for data_source_id in &owners.data_sources {
+        crate::assets::refresh_synced_data_source_property_asset_references_tx(
+            &mut tx,
+            data_source_id,
+        )
+        .await?;
+    }
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit synced Notes asset reference refresh: {error}"))
+}
+
+/// Stamps the device-local `updated_at` of the asset rows `asset_ids` an apply changed, which
+/// materialize writes as a placeholder.
+async fn stamp_assets(conn: &mut SqliteConnection, asset_ids: &[String]) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE notes_assets SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(asset_ids)?)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("stamp synced Notes assets: {error}"))?;
+    Ok(())
+}
+
+/// Refreshes the asset references of the pages, blocks, comments, and data sources whose JSON
+/// names the content of the asset rows `asset_ids`, since an asset row may materialize after the
+/// rows that reference it. Owners are found by the asset digest in their stored JSON.
+async fn refresh_asset_owners(
+    conn: &mut SqliteConnection,
+    asset_ids: &[String],
+) -> Result<(), String> {
+    let digests: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT sha256 FROM notes_assets WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(asset_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load synced Notes asset digests: {error}"))?;
+    if digests.is_empty() {
+        return Ok(());
+    }
+    let digests = keys_json(&digests)?;
+    let mut owners = AssetOwners::default();
+    for (target, sql) in [
+        (
+            &mut owners.pages,
+            "SELECT id FROM notes_pages WHERE EXISTS (
+                 SELECT 1 FROM json_each(?1) AS digest
+                 WHERE instr(coalesce(icon, ''), digest.value) > 0
+                    OR instr(coalesce(cover, ''), digest.value) > 0
+             )",
+        ),
+        (
+            &mut owners.blocks,
+            "SELECT id FROM notes_blocks WHERE EXISTS (
+                 SELECT 1 FROM json_each(?1) AS digest
+                 WHERE instr(attrs, digest.value) > 0 OR instr(text, digest.value) > 0
+             )",
+        ),
+        (
+            &mut owners.comments,
+            "SELECT id FROM notes_comments WHERE EXISTS (
+                 SELECT 1 FROM json_each(?1) AS digest
+                 WHERE instr(attachments, digest.value) > 0
+             )",
+        ),
+        (
+            &mut owners.data_sources,
+            "SELECT DISTINCT page.parent_data_source_id
+             FROM notes_page_property_values AS property_value
+             JOIN notes_pages AS page ON page.id = property_value.page_id
+             WHERE page.parent_data_source_id IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM json_each(?1) AS digest
+                 WHERE instr(property_value.value, digest.value) > 0
+             )",
+        ),
+    ] {
+        *target = sqlx::query_scalar(sql)
+            .bind(&digests)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|error| format!("find rows naming synced Notes assets: {error}"))?;
+    }
+    refresh_asset_references(conn, &owners).await
 }
 
 fn keys_json(keys: &[String]) -> Result<String, String> {

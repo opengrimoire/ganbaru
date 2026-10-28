@@ -6,8 +6,9 @@
 //! revocation wins over a concurrent widening, and a later re-add that saw the removal wins over
 //! it. The timeline follows: messages, revisions, reply threads, and read cursors arrive whole,
 //! concurrent posts that take one order key read in one order everywhere, read cursors only move
-//! forward, and the Chat hook is handed applied messages and revisions to refresh search. Device
-//! local Chat rows stay on their device.
+//! forward, and the Chat hook is handed applied messages and revisions to refresh search.
+//! Attachment references arrive by value with their revision and name only non-empty files.
+//! Device local Chat rows stay on their device.
 
 use std::sync::{Arc, Mutex};
 
@@ -1591,5 +1592,120 @@ fn chat_hook_sees_applied_messages_and_revisions_for_search() {
                 .await,
             0
         );
+    });
+}
+
+const IMAGE_DIGEST: &str = "5f2b0c4e8d6a1b3f7e9c2d4a6b8f0e1c3d5a7b9f1e2c4d6a8b0f2e4c6d8a0b1c";
+const EMPTY_DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+/// SQL attaching an image and an empty text snippet by value to the first revision of
+/// [`ROOT`].
+fn attachments_sql() -> String {
+    format!(
+        "INSERT INTO chat_communication_attachment_references
+            (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+             original_display_name, mime_type, byte_size, sha256)
+         VALUES
+            ('item:root:0', 0, 'attachment:image', {folder}, 'image', 'diagram.png',
+             'image/png', 4096, {image}),
+            ('item:root:0', 1, 'attachment:empty', {folder}, 'text_snippet', 'empty.txt',
+             'text/plain', 0, {empty});",
+        folder = quoted(FOLDER),
+        image = quoted(IMAGE_DIGEST),
+        empty = quoted(EMPTY_DIGEST),
+    )
+}
+
+/// Every attachment reference a replica holds, as `ordinal id kind name type size digest`.
+async fn attachment_references(replica: &mut Replica) -> Option<String> {
+    replica
+        .scalar_text(
+            "SELECT group_concat(value, ' | ') FROM (
+                SELECT ordinal || ' ' || attachment_id || ' ' || working_folder_id || ' ' || kind
+                       || ' ' || original_display_name || ' ' || mime_type || ' ' || byte_size
+                       || ' ' || sha256 AS value
+                FROM chat_communication_attachment_references ORDER BY message_revision_id, ordinal)",
+        )
+        .await
+}
+
+/// Attachments travel by value with the revision that names them, so the receiver can show
+/// them without the sender's attachment rows, and only the non-empty one names a file.
+#[test]
+fn chat_attachment_references_arrive_by_value_and_name_their_files() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                message_sql(ROOT, None, "c001", "See attached"),
+                attachments_sql()
+            ))
+            .await;
+        let sent = attachment_references(&mut replicas[0]).await;
+        assert!(sent.is_some());
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let reader = &mut replicas[1];
+        assert_eq!(attachment_references(reader).await, sent);
+        let assets = reader
+            .engine
+            .referenced_assets(&mut reader.conn)
+            .await
+            .unwrap();
+        let assets: Vec<(&str, &str, &str, u32)> = assets
+            .iter()
+            .map(|asset| {
+                (
+                    asset.class().name,
+                    asset.sha256(),
+                    asset.content_type(),
+                    asset.byte_size(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            assets,
+            vec![("chat/attachments", IMAGE_DIGEST, "image/png", 4096)]
+        );
+    });
+}
+
+#[test]
+fn chat_a_crash_while_sealing_or_applying_attachment_references_leaves_nothing_partial() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                message_sql(ROOT, None, "c001", "See attached"),
+                attachments_sql()
+            ))
+            .await;
+        let report = after_rollback(
+            &mut replicas[0],
+            "seal.before_commit",
+            async |r: &mut Replica| r.seal().await,
+        )
+        .await;
+        assert_eq!(report.sealed_ops, 1, "the rows seal together");
+
+        let (author, rest) = replicas.split_at_mut(1);
+        let reader = &mut rest[0];
+        let known = reader.stored_vector().await;
+        let ops = author[0].ops_since(&known).await;
+        reader.receive(&ops).await;
+        after_rollback(reader, "apply.before_commit", async |r: &mut Replica| {
+            r.apply_all().await
+        })
+        .await;
+        assert_eq!(
+            reader
+                .count("SELECT count(*) FROM chat_communication_attachment_references")
+                .await,
+            2
+        );
+        assert_converged(&mut replicas).await;
     });
 }

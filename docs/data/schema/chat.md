@@ -63,13 +63,13 @@ Resource IDs and references are not grants. Every privileged service resolves cu
 
 ## Drafts, attachments, and context
 
-Drafts belong to an exact organizational scope and may reference managed attachments. Attachment metadata is portable; imported bytes live below assets/chat/attachments in the active vault. Source absolute paths are not persisted.
+Drafts belong to an exact organizational scope and may reference managed attachments. Imported bytes live in the `chat/attachments` asset class of the active vault, named `{sha256}.{ext}`, so attachments with equal bytes share one file; source absolute paths are not persisted. A message revision holds at most 20 attachments as rows owned by the revision, each carrying the attachment by value (id, working folder, kind, display name, content type, size, and digest), so the attachment travels with the revision and its file moves as a managed asset; an empty text attachment names no asset. `chat_attachments` rows are device-local: the materialize hook creates one for each attachment an applied revision names whose working folder this device holds, and opening a vault renames older files to their digest names.
 
 A draft save names the stored version it was based on, and Rust refuses it when another window has saved since. The composer then shows the stored version and says that it replaced recent local edits. A send stores its snapshot unconditionally because the send already acted on it. Each save tells the other windows of the vault, and a composer showing that draft reloads it while it has no unsaved edits.
 
 Thread and channel mutations carry revision checks. After one succeeds, the window tells the other windows of the vault which threads and channels changed, and they reread those records and the open channel and reply thread. Receiving windows never announce the reread, so windows do not echo each other.
 
-Message and draft reference rows control attachment retention. Deferred cleanup rechecks current references before deletion, treats an already missing managed file as a recoverable cleanup result, and records bounded retry state.
+Message, scheduled message, draft, and queued reference rows control attachment retention. Chat never deletes attachment files: deferred cleanup removes a `chat_attachments` row only when no reference names its digest, and the sync asset sweep removes a file once no replicated reference and no device-local attachment row names it. Browser artifact cleanup still removes its files, rechecking current references first, treating an already missing file as a recoverable result, and recording bounded retry state.
 
 Context packages, mentions, workspace file references, channel references, and selected Notes or tasks store identity and provenance. Resolving them repeats current authorization. Materialized provider context records enough scope and revision to support revocation and continuation disposal.
 
@@ -103,7 +103,7 @@ Provider sessions, attachments, scratch generations, checkpoints, browser artifa
 
 Deletion of a provider continuation does not cascade into the channel. Archiving a channel does not by itself delete provider-native state.
 
-Chat foreign keys into Projects (projects and project working folders) cascade on delete, so deleting a project removes the same Chat rows on every replica instead of being refused by whichever row a device happens to hold. Removing an external working folder is still refused while Chat references it, through an explicit in-use query. Audit rows (authorization revisions and their sources, scratch generation sources, and scratch promotions) stay immutable while their parents exist and are removed only by that cascade. The command that deletes projects collects their managed attachment and resource paths before the transaction and removes those files after it commits, keeping any path a remaining row still names.
+Chat foreign keys into Projects (projects and project working folders) cascade on delete, so deleting a project removes the same Chat rows on every replica instead of being refused by whichever row a device happens to hold. Removing an external working folder is still refused while Chat references it, through an explicit in-use query. Audit rows (authorization revisions and their sources, scratch generation sources, and scratch promotions) stay immutable while their parents exist and are removed only by that cascade. The command that deletes projects collects their browser artifact paths before the transaction and removes those files after it commits, keeping any path a remaining row still names; their attachment files are left to the asset sweep.
 
 Revocation cleanup has priority over convenience retention. A continuation that materialized restricted context is stopped and discarded or quarantined before reuse, as specified in [Chat access control](../access-control.md).
 

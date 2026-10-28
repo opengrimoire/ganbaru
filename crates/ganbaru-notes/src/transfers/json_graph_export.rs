@@ -372,6 +372,7 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_page_history_snapshots", "icon")
             | ("notes_page_history_snapshots", "cover")
             | ("notes_page_history_snapshots", "blocks")
+            | ("notes_page_history_snapshots", "asset_ids")
             | ("notes_page_templates", "properties")
             | ("notes_page_templates", "icon")
             | ("notes_page_templates", "cover")

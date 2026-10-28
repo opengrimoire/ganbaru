@@ -156,6 +156,7 @@ fn guards_hold_when_the_apply_state_row_is_missing() {
 fn replicated_tables_of_domains_that_replicas_cannot_write_are_guarded() {
     const READ_ONLY: DomainManifest = DomainManifest {
         replica_writable: false,
+        unconverted: &[],
         ..quick_notes::DOMAIN
     };
     static DOMAINS: &[&DomainManifest] = &[&READ_ONLY];

@@ -638,6 +638,17 @@ pub async fn chat_search_messages(
 ) -> ChatResult<Vec<ChatMessageSearchResultRead>> {
     let fts_query = normalized_fts_query(&query)?;
     let pool = chat_pool(app, db_url).await?;
+    search_messages(&pool, fts_query, project_id.as_deref(), limit).await
+}
+
+/// Searches organizational messages, keeping results whose author participant is gone under the
+/// message's author label snapshot.
+async fn search_messages(
+    pool: &sqlx::SqlitePool,
+    fts_query: String,
+    project_id: Option<&str>,
+    limit: Option<u32>,
+) -> ChatResult<Vec<ChatMessageSearchResultRead>> {
     let rows = sqlx::query(
         "SELECT
             channel.project_id,
@@ -649,13 +660,15 @@ pub async fn chat_search_messages(
             item.order_key,
             participant.id AS author_participant_id,
             participant.participant_kind AS author_participant_kind,
-            participant.display_name AS author_display_name,
+            coalesce(participant.display_name, message.author_label_snapshot)
+                AS author_display_name,
             snippet(chat_communication_search_fts, 4, '<mark>', '</mark>', '…', 24) AS excerpt,
             item.created_at
          FROM chat_communication_search_fts search
          JOIN chat_conversation_items item ON item.id = search.message_item_id
          JOIN chat_communication_messages message ON message.item_id = item.id
-         JOIN chat_participants participant ON participant.id = message.author_participant_id
+         LEFT JOIN chat_participants participant
+           ON participant.id = message.author_participant_id
          JOIN chat_channels channel ON channel.conversation_id = search.conversation_id
          WHERE chat_communication_search_fts MATCH ?
            AND (? IS NULL OR channel.project_id = ?)
@@ -663,10 +676,10 @@ pub async fn chat_search_messages(
          LIMIT ?",
     )
     .bind(fts_query)
-    .bind(project_id.as_deref())
-    .bind(project_id.as_deref())
+    .bind(project_id)
+    .bind(project_id)
     .bind(i64::from(limit.unwrap_or(50).clamp(1, MAX_SEARCH_RESULTS)))
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
     rows.into_iter()
@@ -701,15 +714,18 @@ pub async fn chat_search_messages(
                     &row.try_get::<String, _>("message_item_id")
                         .map_err(persistence_error)?,
                 ),
-                author_participant_id: ChatParticipantId::new(
-                    row.try_get::<String, _>("author_participant_id")
-                        .map_err(persistence_error)?,
-                )
-                .map_err(identifier_error)?,
-                author_kind: parse_participant_kind(
-                    &row.try_get::<String, _>("author_participant_kind")
-                        .map_err(persistence_error)?,
-                )?,
+                author_participant_id: row
+                    .try_get::<Option<String>, _>("author_participant_id")
+                    .map_err(persistence_error)?
+                    .map(ChatParticipantId::new)
+                    .transpose()
+                    .map_err(identifier_error)?,
+                author_kind: row
+                    .try_get::<Option<String>, _>("author_participant_kind")
+                    .map_err(persistence_error)?
+                    .as_deref()
+                    .map(parse_participant_kind)
+                    .transpose()?,
                 author_display_name: row
                     .try_get("author_display_name")
                     .map_err(persistence_error)?,

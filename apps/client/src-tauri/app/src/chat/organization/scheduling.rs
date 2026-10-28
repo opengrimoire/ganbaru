@@ -1,6 +1,9 @@
 //! Durable scheduled organizational message delivery.
 
-use super::common::{new_id, serialization_error, validate_message_request, wire_participant_kind};
+use super::common::{
+    AttachmentReferenceOwner, insert_attachment_references, new_id, serialization_error,
+    validate_message_request, wire_participant_kind,
+};
 use super::{
     chat_pool, chat_post_message, i64_value, identifier_error, now_timestamp, persistence_error,
     require_continuation_scope_is_unchanged, require_reply_thread, resolve_invoked_teammate,
@@ -99,20 +102,13 @@ pub(super) async fn schedule_message(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    for (index, attachment_id) in request.message.attachment_ids.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO chat_scheduled_message_attachment_references
-                (scheduled_message_id, attachment_id, ordinal, created_at)
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(request.scheduled_message_id.as_str())
-        .bind(attachment_id.as_str())
-        .bind(i64::try_from(index).unwrap_or(i64::MAX))
-        .bind(now.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-    }
+    insert_attachment_references(
+        &mut transaction,
+        AttachmentReferenceOwner::ScheduledMessage,
+        request.scheduled_message_id.as_str(),
+        &request.message.attachment_ids,
+    )
+    .await?;
     for (index, reference) in request.message.references.iter().enumerate() {
         insert_scheduled_reference(
             &mut transaction,

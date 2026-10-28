@@ -5,6 +5,7 @@
 
 #[cfg(feature = "native-runtime")]
 pub mod agent_runs;
+pub mod attachment_files;
 #[cfg(feature = "native-runtime")]
 pub mod checkpoints;
 #[cfg(feature = "native-runtime")]

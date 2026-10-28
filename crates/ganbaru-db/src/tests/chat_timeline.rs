@@ -422,3 +422,36 @@ fn oversized_revisions_are_cut_to_the_byte_bounds_and_marked_truncated() {
         assert_eq!(untouched, ("Look at the folder".into(), None));
     });
 }
+
+#[test]
+fn attachment_replication_queues_a_capture_for_revisions_that_already_hold_attachments() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(CHAT_TIMELINE_REPLICATION).await;
+        load_project_chat_graph(&pool).await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_communication_attachment_references
+                (message_revision_id, attachment_id, ordinal, created_at)
+             VALUES ('message-revision-root', 'attachment-managed', 0,
+                     '2026-10-23T00:00:00.000Z');
+             DELETE FROM sync_capture;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let captures: Vec<(String, i64)> =
+            sqlx::query_as("SELECT row_key, mask FROM sync_capture WHERE table_id = 373")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(captures.len(), 1, "one capture per revision: {captures:?}");
+        assert_eq!(captures[0].0, "message-revision-root");
+        assert_ne!(
+            captures[0].1 & 2,
+            0,
+            "the capture names the attachments group"
+        );
+    });
+}

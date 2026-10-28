@@ -240,6 +240,16 @@ describe("Chat provider contracts", () => {
     };
 
     expect(parseChatMessageSearchResults([result])).toEqual([result]);
+
+    const unattributed = {
+      ...result,
+      authorParticipantId: null,
+      authorKind: null,
+      authorDisplayName: "Former member",
+    };
+    expect(parseChatMessageSearchResults([unattributed])).toEqual([unattributed]);
+    expect(() => parseChatMessageSearchResults([{ ...result, authorKind: null }])).toThrow("authorKind");
+    expect(() => parseChatMessageSearchResults([{ ...result, authorParticipantId: null }])).toThrow("authorKind");
   });
 
   it("validates scheduled messages and dispatch refresh metadata", () => {

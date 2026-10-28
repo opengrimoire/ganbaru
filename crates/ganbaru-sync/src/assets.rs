@@ -6,8 +6,9 @@
 //! function owns asset paths. A domain adapter reports the references a group value holds
 //! ([`crate::DomainAdapter::asset_refs`]), and [`crate::Engine::referenced_assets`] lists every
 //! reference of live rows, open conflicts, and recovery offers, which sync moves between devices.
-//! A `Local` table may also declare [`LocalAssetColumn`]s, whose files the sweep keeps without
-//! moving them, and [`crate::Engine::kept_asset_digests`] lists both kinds.
+//! A `Local` table, or an unconverted table a domain declares for its asset columns, may also
+//! declare [`LocalAssetColumn`]s, whose files the sweep keeps without moving them, and
+//! [`crate::Engine::kept_asset_digests`] lists both kinds.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -49,6 +50,26 @@ pub const CONTENT_TYPE_EXTENSIONS: &[(&str, &str)] = &[
     ("image/jpeg", "jpg"),
     ("image/webp", "webp"),
     ("image/gif", "gif"),
+    ("application/pdf", "pdf"),
+    ("audio/mpeg", "mp3"),
+    ("audio/wav", "wav"),
+    ("audio/ogg", "ogg"),
+    ("audio/mp4", "m4a"),
+    ("video/mp4", "mp4"),
+    ("video/quicktime", "mov"),
+    ("video/x-msvideo", "avi"),
+    ("video/x-amv", "amv"),
+    ("video/x-matroska", "mkv"),
+    ("video/x-ms-wmv", "wmv"),
+    ("video/x-ms-asf", "asf"),
+    ("video/x-flv", "flv"),
+    ("video/mpeg", "mpg"),
+    ("video/mp2t", "ts"),
+    ("application/json", "json"),
+    ("text/markdown", "md"),
+    ("text/plain", "txt"),
+    ("text/csv", "csv"),
+    ("text/html", "html"),
 ];
 
 /// A kind of managed file a domain stores, such as Quick note images.
@@ -159,7 +180,34 @@ impl LocalDigest {
 /// or the domain declares no class at all.
 pub(crate) fn local_asset_problems(domain: &DomainManifest) -> Vec<String> {
     let mut problems = Vec::new();
-    for table in domain.local {
+    for table in domain.unconverted {
+        if !table.triggers.is_empty() {
+            problems.push(format!(
+                "{}: an unconverted table declares no triggers",
+                table.name
+            ));
+        }
+        if table.assets.is_empty() {
+            problems.push(format!(
+                "{}: an unconverted table is declared only for its asset columns",
+                table.name
+            ));
+        }
+        let classified = domain.tables.iter().any(|known| known.name == table.name)
+            || domain.derived.contains(&table.name)
+            || domain
+                .local
+                .iter()
+                .chain(domain.engine)
+                .any(|known| known.name == table.name);
+        if classified {
+            problems.push(format!(
+                "{}: an unconverted table is not also classified",
+                table.name
+            ));
+        }
+    }
+    for table in domain.local.iter().chain(domain.unconverted) {
         for column in table.assets {
             let name = format!("{}.{}", table.name, column.column);
             let classes = column.digest.classes();
@@ -376,16 +424,16 @@ impl Engine {
         tables
     }
 
-    /// `Local` tables whose declared asset columns may name files of `class`, so a sweep knows
-    /// the class has references even when no replicated table holds one. Empty for an
-    /// unregistered class.
+    /// `Local` and declared unconverted tables whose asset columns may name files of `class`, so
+    /// a sweep knows the class has references even when no replicated table holds one. Empty for
+    /// an unregistered class.
     pub fn local_asset_tables(&self, class: &AssetClass) -> Vec<&'static str> {
         let mut tables = Vec::new();
         for domain in self.manifest().domains {
             if !domain.assets.contains(class) {
                 continue;
             }
-            for table in domain.local {
+            for table in domain.local.iter().chain(domain.unconverted) {
                 if table.assets.iter().any(|column| column.digest.names(class)) {
                     tables.push(table.name);
                 }
@@ -395,8 +443,8 @@ impl Engine {
     }
 
     /// The class name and digest of every file the asset sweep keeps: each
-    /// [`Engine::referenced_assets`] reference, and each file a row of a `Local` table names
-    /// through a declared [`LocalAssetColumn`].
+    /// [`Engine::referenced_assets`] reference, and each file a row of a `Local` or declared
+    /// unconverted table names through a declared [`LocalAssetColumn`].
     ///
     /// Every read runs in one transaction, so the set describes one database state even while
     /// a pass applies or seals on another connection.
@@ -421,7 +469,7 @@ impl Engine {
             .map(|asset| (asset.class.name, asset.sha256))
             .collect::<BTreeSet<_>>();
         for domain in self.manifest().domains {
-            for table in domain.local {
+            for table in domain.local.iter().chain(domain.unconverted) {
                 for column in table.assets {
                     for value in local_asset_values(conn, table.name, column).await? {
                         if let Some((class, digest)) = column.digest.resolve(domain, &value) {
@@ -555,6 +603,10 @@ mod tests {
         );
         assert_eq!(
             file_name(DIGEST, "application/pdf").unwrap(),
+            format!("{DIGEST}.pdf")
+        );
+        assert_eq!(
+            file_name(DIGEST, "application/x-unknown").unwrap(),
             format!("{DIGEST}.bin")
         );
     }

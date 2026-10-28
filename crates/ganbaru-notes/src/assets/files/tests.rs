@@ -360,3 +360,112 @@ fn managed_previews_refuse_a_symlink_planted_in_the_vault() {
     );
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn the_same_bytes_get_the_same_name_and_id_in_two_vaults() {
+    let first = temporary_import_base("same-bytes-first");
+    let second = temporary_import_base("same-bytes-second");
+    let pdf = b"%PDF-1.7 shared";
+    let stored = [
+        store_notes_file_bytes(
+            &first.join("vault"),
+            NotesFileAssetKind::Pdf,
+            Path::new("report.pdf"),
+            pdf,
+        )
+        .unwrap(),
+        store_notes_file_bytes(
+            &second.join("vault"),
+            NotesFileAssetKind::File,
+            Path::new("Copy of report.pdf"),
+            pdf,
+        )
+        .unwrap(),
+    ];
+    let identity = |file: &StoredNotesFile| {
+        (
+            file.relative_path.clone(),
+            file.content_type,
+            file.byte_size,
+            assets::managed_asset_id(&file.relative_path, &file.sha256).unwrap(),
+        )
+    };
+    assert_eq!(identity(&stored[0]), identity(&stored[1]));
+    assert_eq!(
+        stored[0].relative_path,
+        format!("notes/files/{}.pdf", hex_hash(pdf))
+    );
+    // Opaque files take the extension of their content type, not of their source name.
+    let opaque = [("data.dat", &first), ("data.raw", &second)].map(|(name, base)| {
+        store_notes_file_bytes(
+            &base.join("vault"),
+            NotesFileAssetKind::File,
+            Path::new(name),
+            b"opaque",
+        )
+        .unwrap()
+        .relative_path
+    });
+    assert_eq!(opaque[0], opaque[1]);
+    assert_eq!(
+        opaque[0],
+        format!("notes/files/{}.bin", hex_hash(b"opaque"))
+    );
+    let _ = fs::remove_dir_all(&first);
+    let _ = fs::remove_dir_all(&second);
+}
+
+#[test]
+fn synced_files_must_carry_the_signature_of_a_previewable_content_type() {
+    let base = temporary_import_base("synced-check");
+    let check = |name: &str, bytes: &[u8], content_type: &str| {
+        let path = base.join(name);
+        fs::write(&path, bytes).unwrap();
+        let asset = ganbaru_sync::assets::AssetRef::new(
+            &ganbaru_sync::manifest::vault::notes::FILES_CLASS,
+            hex_hash(bytes),
+            content_type.to_string(),
+            u32::try_from(bytes.len()).unwrap(),
+        )
+        .unwrap();
+        check_synced_notes_file(&asset, &path)
+    };
+    let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    check("pdf", b"%PDF-1.7", "application/pdf").unwrap();
+    check("png", &png, "image/png").unwrap();
+    check("m4a", ISO_MEDIA, "audio/mp4").unwrap();
+    check("mov", ISO_MEDIA, "video/quicktime").unwrap();
+    check("mp3", ID3_MP3, "audio/mpeg").unwrap();
+    check("opaque", b"anything", "application/octet-stream").unwrap();
+    check("text", b"%PDF-1.7", "text/plain").unwrap();
+    for (name, bytes, content_type) in [
+        ("fake-pdf", b"not a pdf".as_slice(), "application/pdf"),
+        ("fake-jpeg", png.as_slice(), "image/jpeg"),
+        ("fake-audio", b"%PDF-1.7".as_slice(), "audio/mpeg"),
+        ("fake-video", ID3_MP3, "video/mp4"),
+    ] {
+        assert!(
+            check(name, bytes, content_type).is_err(),
+            "{name} as {content_type}"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let link = base.join("link");
+        std::os::unix::fs::symlink(base.join("pdf"), &link).unwrap();
+        assert!(
+            check_synced_notes_file(
+                &ganbaru_sync::assets::AssetRef::new(
+                    &ganbaru_sync::manifest::vault::notes::FILES_CLASS,
+                    hex_hash(b"%PDF-1.7"),
+                    "application/pdf".to_string(),
+                    8,
+                )
+                .unwrap(),
+                &link
+            )
+            .is_err()
+        );
+    }
+    let _ = fs::remove_dir_all(&base);
+}

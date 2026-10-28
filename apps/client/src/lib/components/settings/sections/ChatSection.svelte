@@ -11,6 +11,7 @@
   import ChatTeammatesSettings from "$lib/components/settings/chat/ChatTeammatesSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ChatSyncConflicts from "$lib/components/settings/chat/ChatSyncConflicts.svelte";
 
   let {
     initialSubsection,
@@ -89,26 +90,29 @@
       : "flex flex-col gap-6 pb-4",
   )}
 >
-  <div
-    class="grid grid-cols-2 gap-1 rounded-md border border-border bg-card p-1 min-[560px]:grid-cols-4 dark:bg-transparent"
-    role="tablist"
-    aria-label={t("settings.chat.tabLabel")}
-  >
-    {#each tabs as tab (tab.id)}
-      {@const active = activeTab === tab.id}
-      <button
-        type="button"
-        role="tab"
-        aria-selected={active}
-        class={cn(
-          "flex min-h-8 items-center justify-center rounded-sm px-2 text-center text-[0.8rem] font-medium text-muted-foreground",
-          active && "bg-background text-foreground dark:bg-foreground/5",
-        )}
-        onclick={() => selectTab(tab.id)}
-      >
-        <span>{tab.label()}</span>
-      </button>
-    {/each}
+  <div class="flex min-w-0 flex-col gap-3">
+    <div
+      class="grid grid-cols-2 gap-1 rounded-md border border-border bg-card p-1 min-[560px]:grid-cols-4 dark:bg-transparent"
+      role="tablist"
+      aria-label={t("settings.chat.tabLabel")}
+    >
+      {#each tabs as tab (tab.id)}
+        {@const active = activeTab === tab.id}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active}
+          class={cn(
+            "flex min-h-8 items-center justify-center rounded-sm px-2 text-center text-[0.8rem] font-medium text-muted-foreground",
+            active && "bg-background text-foreground dark:bg-foreground/5",
+          )}
+          onclick={() => selectTab(tab.id)}
+        >
+          <span>{tab.label()}</span>
+        </button>
+      {/each}
+    </div>
+    {#if !initializing && !loadError}<ChatSyncConflicts />{/if}
   </div>
 
   {#if initializing}

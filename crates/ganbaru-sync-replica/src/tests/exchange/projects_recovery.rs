@@ -305,6 +305,45 @@ fn a_restored_project_returns_to_its_live_group() {
     });
 }
 
+/// A project's Chat channel is deleted with it, so the offer carries Chat descendants. They do
+/// not stop the restore, and the restored project starts without them.
+#[test]
+fn a_restored_project_leaves_its_deleted_chat_channel_behind() {
+    block_on(async {
+        let mut pair = Pair::new("projects-recovery-project-chat").await;
+        pair.hub_edit(
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-1', 'project-1', 'channel', '2026-10-24T09:00:00.000Z',
+                     '2026-10-24T09:00:00.000Z', '2026-10-24T09:00:00.000Z');
+             INSERT INTO chat_channels
+                (id, project_id, conversation_id, name, created_at, updated_at)
+             VALUES ('channel-1', 'project-1', 'conversation-1', 'design',
+                     '2026-10-24T09:00:00.000Z', '2026-10-24T09:00:00.000Z');",
+        )
+        .await;
+        pair.converge().await;
+        pair.hub_edit("DELETE FROM projects WHERE id = 'project-1'")
+            .await;
+        pair.phone_edit(RENAME_TASK_ON_PHONE).await;
+        pair.converge().await;
+        assert_eq!(pair.offers().await, ["project-1"]);
+
+        let project = pair.restore(&PROJECTS, "project-1").await;
+        assert_eq!(
+            pair.texts(format!("SELECT name FROM projects WHERE id = '{project}'"))
+                .await,
+            ["Alpha"]
+        );
+        assert!(
+            pair.texts("SELECT id FROM chat_channels".to_string())
+                .await
+                .is_empty()
+        );
+        pair.finish().await;
+    });
+}
+
 #[test]
 fn a_restored_project_whose_group_is_gone_moves_to_the_first_group() {
     block_on(async {

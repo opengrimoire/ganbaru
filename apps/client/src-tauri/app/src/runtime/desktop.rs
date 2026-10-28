@@ -358,6 +358,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::provider_files::chat_read_provider_files,
             chat::provider_files::chat_save_provider_file,
             chat::channels::chat_list_channels,
+            chat::conflicts::chat_conflicts,
+            chat::conflicts::chat_resolve_conflict,
             chat::channels::chat_list_navigation_channels,
             chat::channels::chat_read_channel,
             chat::channels::chat_create_channel,

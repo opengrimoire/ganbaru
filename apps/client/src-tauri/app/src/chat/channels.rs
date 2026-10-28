@@ -663,7 +663,7 @@ pub(crate) enum ChatDefaultsScope<'a> {
 }
 
 /// Creates missing default channels and current-folder execution environments for `scope` when
-/// this device writes the vault. A device that cannot write reads only what is stored.
+/// this device writes Chat. A device that cannot write reads only what is stored.
 pub(crate) async fn ensure_chat_defaults(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -676,7 +676,7 @@ pub(crate) async fn ensure_chat_defaults(
             true,
         )
     })?;
-    if !status.can_write {
+    if !status.can_write_domain(ganbaru_sync::manifest::vault::chat::DOMAIN_NAME) {
         return Ok(());
     }
     let now = now_timestamp()?;

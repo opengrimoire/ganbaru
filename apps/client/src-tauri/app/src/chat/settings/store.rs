@@ -1,11 +1,16 @@
 use super::{device_state_error, mapping::provider_instance_read, provider_not_found_error};
-use crate::chat::configuration::{read_chat_configuration, update_chat_device_config};
+use crate::chat::configuration::{
+    on_blocking_pool, read_chat_configuration, update_chat_device_config, with_behavior,
+};
 use crate::chat::credentials::{CredentialStore, PlatformCredentialStore};
 use crate::chat::device_state::read_active_device_scope;
 use crate::chat::settings_commands::{ChatSettingsRead, ChatSettingsState};
-use ganbaru_chat_contracts::config::{ChatDeviceConfig, ChatPortableProviderConfig};
+use ganbaru_chat_contracts::config::{
+    ChatConfiguration, ChatDeviceConfig, ChatPortableProviderConfig,
+};
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult, ProviderInstanceId};
 use ganbaru_chat_providers::ProviderDriverRegistry;
+use tauri::Manager;
 
 pub(crate) async fn read_settings(app: &tauri::AppHandle) -> ChatResult<ChatSettingsRead> {
     let configuration = read_chat_configuration(app).await?;
@@ -40,6 +45,22 @@ pub(crate) fn mutate_chat_config<R: tauri::Runtime>(
         )
     })?;
     update_chat_device_config(app, mutate)
+}
+
+/// Applies `mutate` like [`mutate_chat_config`] on the blocking pool, so an async command never
+/// holds the async runtime during the lock and file I/O, and returns the device settings with
+/// the portable behavior preferences.
+pub(crate) async fn mutate_chat_configuration(
+    app: &tauri::AppHandle,
+    mutate: impl FnOnce(&mut ChatDeviceConfig) -> ChatResult<()> + Send + 'static,
+) -> ChatResult<ChatConfiguration> {
+    let handle = app.clone();
+    let device = on_blocking_pool(move || {
+        let state = handle.state::<ChatSettingsState>();
+        mutate_chat_config(&handle, &state, mutate)
+    })
+    .await?;
+    with_behavior(app, device).await
 }
 
 pub(crate) fn provider_mut<'a>(

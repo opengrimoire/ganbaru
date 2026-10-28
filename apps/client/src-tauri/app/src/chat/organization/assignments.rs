@@ -18,9 +18,9 @@ pub(super) async fn recover_assignment_dispatch_jobs(
     db_url: String,
 ) -> ChatResult<u32> {
     let device_id = this_device_id(&app)?;
-    let writers = chat_writers(&app)?;
-    let device = PostingDevice::this_device(&device_id, &writers);
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let writers = chat_writers(&app, &pool).await?;
+    let device = PostingDevice::this_device(&device_id, &writers);
     let now = now_timestamp()?;
     take_over_stranded_assignments(&pool, device, &now).await?;
     recover_stranded_follow_up_assignments(&pool, device, &now).await?;
@@ -486,8 +486,8 @@ pub(super) async fn retry_assignment(
     let dispatch_app = app.clone();
     let dispatch_db_url = db_url.clone();
     let device_id = this_device_id(&app)?;
-    let writers = chat_writers(&app)?;
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let writers = chat_writers(&app, &pool).await?;
     let now = now_timestamp()?;
     let retried_id = persist_retry(
         &pool,
@@ -716,6 +716,58 @@ pub(crate) fn start_synced_assignment_work(app: &tauri::AppHandle, work: SyncedA
     });
 }
 
+/// Reason recorded on this device's authorizations of an assignment whose concurrent starts
+/// merged onto another executing device.
+pub(super) const MOVED_EXECUTOR_REASON: &str = "The work assignment runs on another device";
+
+/// Stops this device's work on `assignment_id` when sync merged it onto another executing
+/// device, as when two devices started the same mention concurrently: it ends the device-local
+/// dispatch job and revokes the device-local authorizations with their revocation jobs, so the
+/// drain stops the run this device started. Both are device-local, so the executing device keeps
+/// its run. Returns whether anything ended.
+pub(super) async fn release_moved_assignment(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device_id: &str,
+) -> ChatResult<bool> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let moved: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_work_assignments
+           WHERE id = ? AND executing_device_id IS NOT NULL AND executing_device_id <> ?
+         )",
+    )
+    .bind(assignment_id.as_str())
+    .bind(device_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    if !moved {
+        transaction.rollback().await.map_err(persistence_error)?;
+        return Ok(false);
+    }
+    let ended_jobs = sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs SET state = 'cancelled', updated_at = ?
+         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+    )
+    .bind(now.as_str())
+    .bind(assignment_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected();
+    let revoked = ganbaru_chat::coordination::revocation::revoke_assignment_authorizations(
+        &mut transaction,
+        assignment_id.as_str(),
+        now.as_str(),
+        MOVED_EXECUTOR_REASON,
+    )
+    .await?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(ended_jobs > 0 || revoked > 0)
+}
+
 async fn run_synced_assignment_work(
     app: tauri::AppHandle,
     work: SyncedAssignmentWork,
@@ -723,6 +775,15 @@ async fn run_synced_assignment_work(
     let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let mut released = false;
+    for assignment_id in work.queued.iter().chain(&work.started) {
+        let assignment_id =
+            ChatWorkAssignmentId::new(assignment_id.clone()).map_err(identifier_error)?;
+        released |= release_moved_assignment(&pool, &assignment_id, &device_id).await?;
+    }
+    if released {
+        crate::chat::sync::RevocationWake::wake_revocation_drain(&app);
+    }
     for assignment_id in work.queued {
         let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
         if adopt_synced_assignment(&pool, &assignment_id, &device_id).await? {
@@ -756,8 +817,8 @@ pub(super) async fn start_mentioned_assignment(
     let dispatch_app = app.clone();
     let dispatch_db_url = db_url.clone();
     let device_id = this_device_id(&app)?;
-    let writers = chat_writers(&app)?;
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let writers = chat_writers(&app, &pool).await?;
     let now = now_timestamp()?;
     let assignment_id = persist_started_assignment(
         &pool,

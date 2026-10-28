@@ -20,18 +20,18 @@ use super::settings::{
     apply_provider_probe, config_io_error, credential_error, device_configuration,
     device_state_error, discover_default_providers, discover_default_providers_once,
     executable_search_directories, invalidate_provider_state_for_credential,
-    mark_discovery_finished, mutate_chat_config, operation_context, pick_local_path,
-    portable_configuration, provider_instance_read, provider_mut, provider_not_found_error,
-    provider_runtime_changed, read_chat_config, read_settings, remember_composer_selection,
-    replacement_provider_configurations, set_working_folder_provider_preference, unique_model_ids,
-    validate_picker_title,
+    mark_discovery_finished, mutate_chat_config, mutate_chat_configuration, operation_context,
+    pick_local_path, portable_configuration, provider_instance_read, provider_mut,
+    provider_not_found_error, provider_runtime_changed, read_chat_config, read_settings,
+    remember_composer_selection, replacement_provider_configurations,
+    set_working_folder_provider_preference, unique_model_ids, validate_picker_title,
 };
 #[cfg(test)]
 use super::settings::{
     default_provider_configuration, provider_family_is_discoverable,
     should_discover_default_provider,
 };
-use crate::chat::configuration::{read_chat_configuration, with_behavior, write_chat_behavior};
+use crate::chat::configuration::{read_chat_configuration, write_chat_behavior};
 use crate::vault;
 use ganbaru_chat_contracts::config::{
     ChatBehaviorPreferences, ChatConfiguration, ChatPanelPreferences, RememberedComposerSelection,
@@ -543,39 +543,36 @@ pub async fn chat_update_behavior(
 #[tauri::command]
 pub async fn chat_update_panels(
     app: tauri::AppHandle,
-    state: tauri::State<'_, ChatSettingsState>,
     panels: ChatPanelPreferences,
 ) -> ChatResult<ChatConfiguration> {
-    let device = mutate_chat_config(&app, &state, |config| {
+    mutate_chat_configuration(&app, |config| {
         config.panels = panels;
         Ok(())
-    })?;
-    with_behavior(&app, device).await
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn chat_set_working_folder_provider_preference(
     app: tauri::AppHandle,
-    state: tauri::State<'_, ChatSettingsState>,
     working_folder_id: ProjectWorkingFolderId,
     instance_id: Option<ProviderInstanceId>,
 ) -> ChatResult<ChatConfiguration> {
-    let device = mutate_chat_config(&app, &state, |config| {
+    mutate_chat_configuration(&app, |config| {
         set_working_folder_provider_preference(config, working_folder_id, instance_id)
-    })?;
-    with_behavior(&app, device).await
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn chat_remember_composer_selection(
     app: tauri::AppHandle,
-    state: tauri::State<'_, ChatSettingsState>,
     selection: RememberedComposerSelection,
 ) -> ChatResult<ChatConfiguration> {
-    let device = mutate_chat_config(&app, &state, |config| {
+    mutate_chat_configuration(&app, |config| {
         remember_composer_selection(config, selection)
-    })?;
-    with_behavior(&app, device).await
+    })
+    .await
 }
 
 /// Store a provider secret under the reference Rust derives for this instance and variable.

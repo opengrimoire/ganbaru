@@ -151,6 +151,8 @@ Restore is a scoped Git or filesystem operation, not a database rollback. It can
 
 When membership, history, profile, target, runtime, scratch, or audience authority is reduced, new native actions fail immediately. A continuation that already materialized restricted context is interrupted and discarded or quarantined before reuse.
 
+Sync keeps revocation ahead of widening. When concurrent edits from linked devices change one membership or grant, a removal or revocation wins over any widening, as owned by [Chat schema](../schema/chat.md#access-profiles-and-authorization-revisions). Native work runs only on the device that executes it, which keeps its approvals and execution state; after sync applies authority rows there, that device revokes the active authorizations the merged rows no longer cover and stops a run whose assignment settled on another device.
+
 Archiving the project or a run's folder, unbinding that folder, or rebinding it to another directory revokes the active runs that execute in or were granted the folder and stops their providers. Provider events are checked against the same live authority; the first event that fails it, rather than a database error, revokes the run and stops the provider instead of only rejecting the event.
 
 Provider stop, tool shutdown, terminal, preview, and scratch cleanup have bounded deadlines. Incomplete cleanup persists as a retryable record without weakening the revocation or exposing native paths. Scratch removal walks relative to open directory handles and removes links without following them, so a provider process still running in the scratch cannot redirect deletion outside it.

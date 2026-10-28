@@ -603,7 +603,7 @@ async fn fail_assignment_dispatch(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
+    let failed = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = 'failed', state_reason = ?, settled_at = ?,
              revision = revision + 1, updated_at = ?
@@ -615,15 +615,21 @@ async fn fail_assignment_dispatch(
     .bind(assignment_id.as_str())
     .execute(&mut *transaction)
     .await
-    .map_err(persistence_error)?;
-    insert_dispatch_failure_message(
-        &mut transaction,
-        assignment_id,
-        claim_token,
-        &error.message,
-        &now,
-    )
-    .await?;
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    // An assignment that already left the queue, for example through a cancel applied from
+    // another device, keeps its state and gets no failure message.
+    if failed {
+        insert_dispatch_failure_message(
+            &mut transaction,
+            assignment_id,
+            claim_token,
+            &error.message,
+            &now,
+        )
+        .await?;
+    }
     transaction.commit().await.map_err(persistence_error)
 }
 

@@ -41,7 +41,7 @@ mod workflow;
 #[cfg(desktop)]
 pub(crate) use assignments::start_synced_assignment_work;
 use common::{
-    AttachmentSource, PageCursor, ScheduledPostTarget, conversation_item_id,
+    AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
     has_thread_eligible_mention, map_command_receipt_error, message_revision_id,
     normalized_fts_query, parse_cursor, parse_participant_kind, reply_thread_id,
     scheduled_post_ids, serialization_error, this_device_id, validate_message_request,
@@ -288,12 +288,13 @@ pub(super) async fn post_message(
     #[cfg(desktop)]
     let dispatch_db_url = db_url.clone();
     let device_id = this_device_id(&app)?;
+    let writers = chat_writers(&app)?;
     let pool = chat_pool(app, db_url).await?;
     let posted = persist_post(
         &pool,
         request,
         scheduled,
-        PostingDevice::this_device(&device_id),
+        PostingDevice::this_device(&device_id, &writers),
     )
     .await?;
     #[cfg(desktop)]

@@ -145,6 +145,34 @@ pub(super) async fn resolve_invoked_teammate(
     }))
 }
 
+/// The devices that can write Chat. An assignment writes its states, messages, and runs into
+/// Chat, so only these devices execute assignments. While Chat is owner-only that is the vault
+/// owner, which a whole-vault handoff moves.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct ChatWriters {
+    devices: std::collections::BTreeSet<String>,
+}
+
+impl ChatWriters {
+    /// The writers `devices`.
+    pub(super) fn new(devices: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            devices: devices.into_iter().collect(),
+        }
+    }
+
+    /// Whether the device `device_id` can write Chat.
+    pub(super) fn includes(&self, device_id: &str) -> bool {
+        self.devices.contains(device_id)
+    }
+
+    /// The writer ids as a JSON array, for queries that read them with `json_each`.
+    #[cfg(desktop)]
+    pub(super) fn json(&self) -> ChatResult<String> {
+        serde_json::to_string(&self.devices).map_err(serialization_error)
+    }
+}
+
 /// The device writing a post, which decides where the work a mention starts runs.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PostingDevice<'a> {
@@ -152,14 +180,17 @@ pub(super) struct PostingDevice<'a> {
     pub(super) id: &'a str,
     /// Whether this device executes assignments; Android never does.
     pub(super) can_execute: bool,
+    /// Devices that can write Chat, the only ones an assignment may run on.
+    pub(super) chat_writers: &'a ChatWriters,
 }
 
 impl<'a> PostingDevice<'a> {
-    /// This device under its stable id `id`.
-    pub(super) fn this_device(id: &'a str) -> Self {
+    /// This device under its stable id `id`, with the Chat writers `chat_writers`.
+    pub(super) fn this_device(id: &'a str, chat_writers: &'a ChatWriters) -> Self {
         Self {
             id,
             can_execute: cfg!(desktop),
+            chat_writers,
         }
     }
 
@@ -167,11 +198,18 @@ impl<'a> PostingDevice<'a> {
     pub(super) fn executes(&self, executing_device_id: Option<&str>) -> bool {
         self.can_execute && executing_device_id == Some(self.id)
     }
+
+    /// Whether this device can run new work: it executes assignments and writes Chat.
+    pub(super) fn runs_new_work(&self) -> bool {
+        self.can_execute && self.chat_writers.includes(self.id)
+    }
 }
 
 /// The device an assignment of `teammate_id` runs on when `device` creates it: the teammate's
-/// home device, else the posting device when it executes assignments, else none, so the post
-/// records the mention only and a desktop starts the work later.
+/// home device when it can write Chat, else the posting device when it can run the work, else
+/// none, so the post records the mention only and a desktop starts the work later. A home
+/// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
+/// assignment it executes would stay queued forever.
 async fn new_assignment_executing_device(
     transaction: &mut Transaction<'_, Sqlite>,
     teammate_id: &ChatParticipantId,
@@ -185,7 +223,8 @@ async fn new_assignment_executing_device(
             .map_err(persistence_error)?;
     Ok(home_device_id
         .flatten()
-        .or_else(|| device.can_execute.then(|| device.id.to_owned())))
+        .filter(|home| device.chat_writers.includes(home))
+        .or_else(|| device.runs_new_work().then(|| device.id.to_owned())))
 }
 
 /// The executing device of assignment `assignment_id`, if it names one.
@@ -306,8 +345,12 @@ pub(super) async fn create_assignment(
     device: PostingDevice<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<ChatWorkAssignmentId> {
-    let assignment_id = work_assignment_id()?;
     let previous_id = assignment.latest_assignment.map(|latest| &latest.id);
+    let assignment_id = work_assignment_id(
+        assignment.message_item_id,
+        assignment.teammate_id,
+        previous_id,
+    )?;
     if let Some(previous) = assignment
         .latest_assignment
         .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)

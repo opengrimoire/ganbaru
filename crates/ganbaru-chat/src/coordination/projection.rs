@@ -419,10 +419,13 @@ async fn update_assignment_and_run_state(
     occurred_at: &str,
 ) -> ChatResult<()> {
     let terminal = matches!(assignment_state, "completed" | "failed" | "cancelled");
+    // A settled assignment never leaves its state, so provider events that arrive after a
+    // cancel applied from another device cannot reopen it.
     sqlx::query(
         "UPDATE chat_work_assignments
          SET state = ?, state_reason = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END,
-             revision = revision + 1, updated_at = ? WHERE id = ?",
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
     )
     .bind(assignment_state)
     .bind(reason)

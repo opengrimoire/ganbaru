@@ -415,6 +415,11 @@ fn scheduled_delivery_requires_a_near_future_time_within_one_year() {
 /// Device that scheduled the test messages.
 const SCHEDULING_DEVICE: &str = "device:scheduling";
 
+/// The Chat writers `device_ids`.
+fn chat_writers_of(device_ids: &[&str]) -> super::workflow::ChatWriters {
+    super::workflow::ChatWriters::new(device_ids.iter().map(|id| (*id).to_owned()))
+}
+
 /// Stores `request_data` as the scheduled message `scheduled:test` executed by `executing`,
 /// with the local dispatch row the scheduling device keeps when `dispatches_here`.
 async fn insert_test_scheduled_message(
@@ -636,7 +641,8 @@ fn scheduled_send_posts_stored_attachment_values_under_derived_ids() {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
         };
-        let device = PostingDevice::this_device(SCHEDULING_DEVICE);
+        let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
+        let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
 
         let posted = persist_post(&pool, &request, Some(send), device)
             .await
@@ -728,7 +734,7 @@ fn scheduled_send_rejects_a_claim_that_changed() {
             &pool,
             &request,
             Some(send),
-            PostingDevice::this_device(SCHEDULING_DEVICE),
+            PostingDevice::this_device(SCHEDULING_DEVICE, &chat_writers_of(&[SCHEDULING_DEVICE])),
         )
         .await
         else {
@@ -830,15 +836,22 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
             input_ids.push(id);
         }
 
-        let elsewhere =
-            assignments::recover_stranded_follow_up_assignments(&pool, "device:phone", &now)
-                .await
-                .unwrap();
+        let desk_writers = chat_writers_of(&["device:desk"]);
+        let elsewhere = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:phone", &desk_writers),
+            &now,
+        )
+        .await
+        .unwrap();
         assert_eq!(elsewhere, 0, "only the executing device rehomes replies");
-        let recovered =
-            assignments::recover_stranded_follow_up_assignments(&pool, "device:desk", &now)
-                .await
-                .unwrap();
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &desk_writers),
+            &now,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(recovered, 1);
         let all_inputs: Vec<String> =
@@ -1985,13 +1998,16 @@ async fn review_thread_without_assignment() -> SqlitePool {
 #[test]
 fn a_new_assignment_runs_on_the_home_device_else_the_posting_desktop_else_nowhere() {
     tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:desk", "device:laptop"]);
         let phone = super::workflow::PostingDevice {
             id: "device:phone",
             can_execute: false,
+            chat_writers: &writers,
         };
         let desk = super::workflow::PostingDevice {
             id: "device:desk",
             can_execute: true,
+            chat_writers: &writers,
         };
 
         let pool = review_thread_without_assignment().await;
@@ -2035,6 +2051,246 @@ fn a_new_assignment_runs_on_the_home_device_else_the_posting_desktop_else_nowher
             routed_assignment(&pool).await,
             Some((Some("device:laptop".to_owned()), 0))
         );
+    });
+}
+
+/// The vault owner after a whole-vault handoff from `device:old`, as the only Chat writer.
+const NEW_OWNER: &str = "device:new";
+
+#[test]
+fn after_a_handoff_a_mention_runs_on_the_new_owner_instead_of_the_old_home_device() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:old")).await;
+
+        let write = route_review_reply(
+            &pool,
+            super::workflow::PostingDevice::this_device(NEW_OWNER, &writers),
+        )
+        .await;
+
+        assert!(write.executes_here);
+        assert_eq!(
+            routed_assignment(&pool).await,
+            Some((Some(NEW_OWNER.to_owned()), 1)),
+            "the old home device is a replica and would never run it"
+        );
+
+        let pool = review_thread_without_assignment().await;
+        set_review_agent_home_device(&pool, Some("device:old")).await;
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+        };
+        let write = route_review_reply(&pool, phone).await;
+        assert!(
+            write.assignment_id.is_none(),
+            "a device that cannot run it records the mention for Start"
+        );
+    });
+}
+
+/// Writes the assignment `assignment:old` of the review reply `item:review-reply-1` in
+/// `state`, executed by `device:old`, with a pending input for `item:review-reply-2`.
+async fn seed_assignment_on_old_owner(pool: &SqlitePool, state: &str) {
+    sqlx::query(
+        "INSERT INTO chat_work_assignments
+             (id, reply_thread_id, teammate_id, triggering_message_item_id,
+              executing_device_id, state, created_at, updated_at)
+         VALUES ('assignment:old', 'reply-thread:review', 'participant:review-agent',
+                 'item:review-reply-1', 'device:old', ?, '2026-08-04T17:01:00.000Z',
+                 '2026-08-04T17:01:00.000Z')",
+    )
+    .bind(state)
+    .execute(pool)
+    .await
+    .unwrap();
+    for (message, ordinal, kind) in [
+        ("item:review-reply-1", 1, "trigger"),
+        ("item:review-reply-2", 2, "queued_continuation"),
+    ] {
+        sqlx::query(
+            "INSERT INTO chat_work_assignment_inputs
+                 (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
+             VALUES (?, 'assignment:old', ?, ?, ?, '2026-08-04T17:01:00.000Z')",
+        )
+        .bind(super::common::assignment_input_id(message).unwrap())
+        .bind(message)
+        .bind(ordinal)
+        .bind(kind)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+/// State, reason, executing device, and successor of the assignment `assignment_id`.
+async fn assignment_takeover(
+    pool: &SqlitePool,
+    assignment_id: &str,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT assignment.state, assignment.state_reason, assignment.executing_device_id,
+                (SELECT successor.id FROM chat_work_assignments successor
+                 WHERE successor.previous_assignment_id = assignment.id) AS successor_id
+         FROM chat_work_assignments assignment WHERE assignment.id = ?",
+    )
+    .bind(assignment_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn the_new_owner_takes_over_unstarted_work_queued_on_the_old_owner() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+        };
+        assert_eq!(
+            assignments::take_over_stranded_assignments(&pool, phone, &now)
+                .await
+                .unwrap(),
+            0,
+            "only a device that runs work takes it over"
+        );
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+            .await
+            .unwrap();
+
+        assert_eq!(taken, 1);
+        let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "cancelled");
+        assert_eq!(reason.as_deref(), Some(assignments::REROUTED_REASON));
+        let successor = successor.expect("the work moved to a successor");
+        let (successor_state, _, executor, _) = assignment_takeover(&pool, &successor).await;
+        assert_eq!(successor_state, "queued");
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+        let inputs: Vec<(String, String, i64, String)> = sqlx::query_as(
+            "SELECT message_item_id, assignment_id, ordinal, routing_kind
+             FROM chat_work_assignment_inputs ORDER BY ordinal",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            inputs,
+            vec![
+                (
+                    "item:review-reply-1".to_owned(),
+                    successor.clone(),
+                    1,
+                    "follow_up".to_owned()
+                ),
+                (
+                    "item:review-reply-2".to_owned(),
+                    successor.clone(),
+                    2,
+                    "queued_continuation".to_owned()
+                ),
+            ]
+        );
+        let jobs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_assignment_dispatch_jobs
+             WHERE assignment_id = ? AND state = 'queued'",
+        )
+        .bind(&successor)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(jobs, 1, "the new owner dispatches the successor");
+        assert_eq!(
+            assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+                .await
+                .unwrap(),
+            0,
+            "a second recovery leaves the moved work alone"
+        );
+    });
+}
+
+#[test]
+fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&[NEW_OWNER]);
+        let new_owner = super::workflow::PostingDevice::this_device(NEW_OWNER, &writers);
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:05:00.000Z").unwrap();
+
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "working").await;
+        let taken = assignments::take_over_stranded_assignments(&pool, new_owner, &now)
+            .await
+            .unwrap();
+        assert_eq!(taken, 1);
+        let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "failed");
+        assert_eq!(reason.as_deref(), Some(assignments::STRANDED_REASON));
+        assert_eq!(successor, None, "started work waits for the user");
+        let failed = read_assignment(&pool, &ChatWorkAssignmentId::new("assignment:old").unwrap())
+            .await
+            .unwrap();
+        let retried =
+            assignments::persist_retry(&pool, &failed.id, failed.revision, new_owner, &now)
+                .await
+                .unwrap();
+        assert_ne!(retried, failed.id, "the executing device never changes");
+        let (state, _, executor, _) = assignment_takeover(&pool, retried.as_str()).await;
+        assert_eq!(state, "queued");
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+        let again = assignments::persist_retry(&pool, &failed.id, failed.revision, new_owner, &now)
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, ChatErrorCode::Conflict);
+
+        // Start takes over a routed mention while the old owner's work still looks active.
+        let pool = review_thread_with_unrouted_mention().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let elsewhere = chat_writers_of(&["device:old"]);
+        let refused = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            super::workflow::PostingDevice::this_device(NEW_OWNER, &elsewhere),
+            &now,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refused.code,
+            ChatErrorCode::Conflict,
+            "work on a device that can write Chat is not taken over"
+        );
+        let started =
+            assignments::persist_started_assignment(&pool, &mention, &teammate_id, new_owner, &now)
+                .await
+                .unwrap();
+        let (state, reason, _, successor) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "cancelled");
+        assert_eq!(reason.as_deref(), Some(assignments::REROUTED_REASON));
+        assert_eq!(successor.as_deref(), Some(started.as_str()));
+        let (state, _, executor, _) = assignment_takeover(&pool, started.as_str()).await;
+        assert_eq!(state, "queued");
+        assert_eq!(executor.as_deref(), Some(NEW_OWNER));
+        let trigger: String = sqlx::query_scalar(
+            "SELECT assignment_id FROM chat_work_assignment_inputs WHERE message_item_id = ?",
+        )
+        .bind(mention.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(trigger, started.as_str());
     });
 }
 
@@ -2106,30 +2362,76 @@ fn only_the_executing_device_claims_dispatch_and_writes_active_states() {
     });
 }
 
+/// A review thread whose second reply mentions the review agent without an assignment.
+async fn review_thread_with_unrouted_mention() -> SqlitePool {
+    let pool = review_thread_without_assignment().await;
+    sqlx::raw_sql(
+        "INSERT INTO chat_message_references
+             (id, message_revision_id, reference_kind, label_snapshot,
+              plain_text_projection, start_offset, end_offset, ordinal, created_at)
+         VALUES ('reference:review-agent', 'revision:review-reply-2', 'participant',
+                 'review-agent', '@review-agent', 0, 13, 0, '2026-08-04T17:02:00.000Z');
+         INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
+         VALUES ('reference:review-agent', 'participant:review-agent');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+#[test]
+fn concurrent_starts_of_one_mention_on_two_devices_write_one_assignment() {
+    tauri::async_runtime::block_on(async {
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let writers = chat_writers_of(&["device:desk", "device:laptop"]);
+        let mut started = Vec::new();
+        for (device, now) in [
+            ("device:desk", "2026-08-04T17:03:00.000Z"),
+            ("device:laptop", "2026-08-04T17:03:01.000Z"),
+        ] {
+            let pool = review_thread_with_unrouted_mention().await;
+            started.push(
+                assignments::persist_started_assignment(
+                    &pool,
+                    &mention,
+                    &teammate_id,
+                    super::workflow::PostingDevice::this_device(device, &writers),
+                    &UtcTimestamp::new(now).unwrap(),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+
+        assert_eq!(started[0], started[1], "sync merges the two Starts");
+        assert_eq!(
+            started[0],
+            super::common::work_assignment_id(&mention, &teammate_id, None).unwrap()
+        );
+        let follow_up =
+            super::common::work_assignment_id(&mention, &teammate_id, Some(&started[0])).unwrap();
+        assert_ne!(
+            follow_up, started[0],
+            "work that follows an assignment of the same mention gets its own id"
+        );
+    });
+}
+
 #[test]
 fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
     tauri::async_runtime::block_on(async {
-        let pool = review_thread_without_assignment().await;
-        sqlx::raw_sql(
-            "INSERT INTO chat_message_references
-                 (id, message_revision_id, reference_kind, label_snapshot,
-                  plain_text_projection, start_offset, end_offset, ordinal, created_at)
-             VALUES ('reference:review-agent', 'revision:review-reply-2', 'participant',
-                     'review-agent', '@review-agent', 0, 13, 0, '2026-08-04T17:02:00.000Z');
-             INSERT INTO chat_participant_reference_targets (reference_id, participant_id)
-             VALUES ('reference:review-agent', 'participant:review-agent');",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let pool = review_thread_with_unrouted_mention().await;
         let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
         let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let writers = chat_writers_of(&["device:desk", "device:laptop"]);
 
         let unmentioned = assignments::persist_started_assignment(
             &pool,
             &ChatConversationItemId::new("item:review-reply-1").unwrap(),
             &teammate_id,
-            "device:desk",
+            super::workflow::PostingDevice::this_device("device:desk", &writers),
             &now,
         )
         .await
@@ -2141,7 +2443,7 @@ fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
             &pool,
             &mention,
             &teammate_id,
-            "device:desk",
+            super::workflow::PostingDevice::this_device("device:desk", &writers),
             &now,
         )
         .await
@@ -2178,7 +2480,7 @@ fn start_creates_the_assignment_of_an_unrouted_mention_on_this_device() {
             &pool,
             &mention,
             &teammate_id,
-            "device:laptop",
+            super::workflow::PostingDevice::this_device("device:laptop", &writers),
             &now,
         )
         .await

@@ -298,13 +298,28 @@ pub(crate) async fn send_turn(
         }
     };
     if let Some(binding) = origin.run() {
-        ganbaru_chat::agent_runs::settle_launch(
+        let settlement = ganbaru_chat::agent_runs::settle_launch(
             &pool,
             binding,
             launch_error.as_ref(),
             &now_timestamp()?,
         )
         .await?;
+        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::Superseded {
+            mcp_registry.revoke_run_scope(&thread_id).await;
+            if let Err(error) = owner
+                .stop_session(
+                    false,
+                    operation_context("settled-assignment-launch", PROVIDER_START_TIMEOUT),
+                )
+                .await
+            {
+                eprintln!(
+                    "Chat thread {} could not stop the run of a settled assignment: {error}",
+                    thread_id.as_str()
+                );
+            }
+        }
     }
     let result = SendChatTurnResult {
         thread: reads::read_thread_shell(&pool, &thread_id).await?,

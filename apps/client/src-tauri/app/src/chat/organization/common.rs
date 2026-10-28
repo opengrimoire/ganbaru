@@ -563,8 +563,21 @@ pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
     )
 }
 
-pub(super) fn work_assignment_id() -> ChatResult<ChatWorkAssignmentId> {
-    ChatWorkAssignmentId::new(new_id("assignment")?).map_err(identifier_error)
+/// Returns the work assignment id derived from its triggering message, its teammate, and the
+/// assignment it follows, so concurrent Starts of one mention on two devices write one
+/// assignment that sync merges instead of two that both run.
+pub(super) fn work_assignment_id(
+    message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+    previous_assignment_id: Option<&ChatWorkAssignmentId>,
+) -> ChatResult<ChatWorkAssignmentId> {
+    let mut parts = vec![message_item_id.as_str(), teammate_id.as_str()];
+    parts.extend(previous_assignment_id.map(ChatWorkAssignmentId::as_str));
+    ChatWorkAssignmentId::new(derived_id(
+        ganbaru_chat::ids::WORK_ASSIGNMENT_ID_PREFIX,
+        &parts,
+    )?)
+    .map_err(identifier_error)
 }
 
 pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantKind> {
@@ -872,6 +885,26 @@ pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Ch
             true,
         )
     })
+}
+
+/// The devices that can write Chat in the active vault: its owner, and this device when it is a
+/// linked replica that Chat lets write. Other linked replicas are not listed, so while Chat is
+/// owner-only the owner is the only writer.
+pub(super) fn chat_writers<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> ChatResult<super::workflow::ChatWriters> {
+    let status = crate::vault::ownership::active_status(app).map_err(|error| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            format!("This vault's owner is unavailable: {error}"),
+            true,
+        )
+    })?;
+    let mut devices = vec![status.owner_device_id.clone()];
+    if status.can_write_domain(ganbaru_sync::manifest::vault::chat::DOMAIN_NAME) {
+        devices.push(status.device_id.clone());
+    }
+    Ok(super::workflow::ChatWriters::new(devices))
 }
 
 pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {

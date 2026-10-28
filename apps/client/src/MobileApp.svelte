@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onBackButtonPress } from "@tauri-apps/api/app";
   import { onMount, untrack } from "svelte";
+  import { notesHeldEditNotice, reportNotesHeldEditFailure } from "$lib/stores/notes/held-edit-notice.svelte";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
@@ -198,7 +199,7 @@
       quickNotes: flushQuickNoteEditors,
     },
     onError: (label, error) => {
-      console.error(`Failed to flush mobile ${label} persistence`, error);
+      if (!reportNotesHeldEditFailure(error)) console.error(`Failed to flush mobile ${label} persistence`, error);
     },
   });
 
@@ -252,6 +253,10 @@
       });
   }
 
+  /**
+   * Saves Notes edits when the app hides, once Notes has ever mounted, even while another tab is on screen. A held edit
+   * refuses the flush, and the lifecycle error handler shows the held notice.
+   */
   function flushMountedNotes(): Promise<void> {
     if (!notesSurfaceMounted || !notesStore) return Promise.resolve();
     return notesStore.flushPendingWrites();
@@ -1170,4 +1175,10 @@
     {@const FlaggedRollbackToast = module.default}
     <FlaggedRollbackToast />
   {/await}
+  {#if notesHeldEditNotice.current}
+    {#await import("$lib/components/notes/conflicts/NotesHeldEditToast.svelte") then module}
+      {@const NotesHeldEditToast = module.default}
+      <NotesHeldEditToast />
+    {/await}
+  {/if}
 </div>

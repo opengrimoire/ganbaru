@@ -33,6 +33,7 @@
   } from "$lib/notes/types";
   import { MAIN_WINDOW_LABEL, createWorkspaceTabWindows, parseTabWindowSearch } from "$lib/windows/tab-windows";
   import { flushBeforeWindowClose } from "$lib/windows/close-flush";
+  import { notesHeldEditNotice } from "$lib/stores/notes/held-edit-notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
   import { prepareDesktopWorkspace } from "$lib/windows/desktop-workspace-readiness";
   import "$lib/stores/app-session";
@@ -1051,6 +1052,12 @@
     {#await import("$lib/components/vault/FlaggedRollbackToast.svelte") then module}
       {@const FlaggedRollbackToast = module.default}
       <FlaggedRollbackToast />
+    {/await}
+  {/if}
+  {#if notesHeldEditNotice.current}
+    {#await import("$lib/components/notes/conflicts/NotesHeldEditToast.svelte") then module}
+      {@const NotesHeldEditToast = module.default}
+      <NotesHeldEditToast />
     {/await}
   {/if}
   <TooltipHost />

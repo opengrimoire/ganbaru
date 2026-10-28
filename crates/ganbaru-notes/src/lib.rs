@@ -4,6 +4,7 @@ pub mod assets;
 pub mod block_storage;
 pub mod blocking;
 pub mod comments;
+pub mod conflicts;
 pub mod data_sources;
 pub mod databases;
 pub mod folders;

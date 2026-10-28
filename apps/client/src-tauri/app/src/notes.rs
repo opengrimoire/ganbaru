@@ -1,6 +1,7 @@
 use crate::db::connect_sqlite;
 use tauri::{AppHandle, Runtime, State};
 
+pub(crate) mod conflicts;
 mod data_source_row_hierarchy;
 mod database_management;
 #[cfg(desktop)]

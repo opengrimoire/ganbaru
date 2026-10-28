@@ -36,6 +36,7 @@ ganbaru-calendar = { workspace = true }
 ganbaru-db = { workspace = true, features = ["test-support"] }
 ganbaru-handoff = { workspace = true, features = ["test-support"] }
 ganbaru-music-library = { workspace = true }
+ganbaru-notes = { workspace = true }
 ganbaru-projects = { workspace = true }
 ganbaru-quick-notes = { workspace = true }
 ganbaru-themes = { workspace = true }

@@ -23,21 +23,21 @@
         "src/lib/components/projects/ProjectsView.svelte",
         "src/lib/components/projects/list/ProjectListView.svelte"
       ],
-      "maxSourceModules": 321
+      "maxSourceModules": 324
     },
     {
       "name": "notes",
       "roots": [
         "src/lib/components/notes/NotesView.svelte"
       ],
-      "maxSourceModules": 429
+      "maxSourceModules": 440
     },
     {
       "name": "quick-notes",
       "roots": [
         "src/lib/components/quick-notes/QuickNotesPanel.svelte"
       ],
-      "maxSourceModules": 141
+      "maxSourceModules": 142
     },
     {
       "name": "music",
@@ -52,10 +52,10 @@
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 327
+      "maxSourceModules": 328
     }
   ],
-  "maxTotalSourceModules": 1329,
+  "maxTotalSourceModules": 1342,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

@@ -5,9 +5,9 @@
 
 use crate::data_sources;
 use crate::data_sources::layouts::table::{self, TableProperty};
-use crate::validation::rich_text_items_plain_text;
+use crate::validation::{require_uuid, rich_text_items_plain_text};
 use serde_json::{Map, Value, json};
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
 /// Types whose values come from a fixed option list.
@@ -120,6 +120,71 @@ pub(crate) fn stored_value<'a>(
         .get(key)
         .filter(matches_id)
         .or_else(|| row.properties.values().find(matches_id))
+}
+
+/// Settles one row value whose stored type differs from its property's current type, which happens when another
+/// device wrote the value while this one changed the type.
+///
+/// Converting reads the stored value as text items and writes them through the same rules as a type change, so a
+/// value the type cannot represent, such as an option name the property does not have, becomes that type's empty
+/// value. Discarding removes the value. A value that already matches the type, or no value, is left as it is.
+pub async fn settle_mismatched_value(
+    pool: &SqlitePool,
+    page_id: &str,
+    property_id: &str,
+    convert: bool,
+) -> Result<(), String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin notes mismatched value change: {e}"))?;
+    let data_source_id: String = sqlx::query_scalar(
+        "SELECT parent_data_source_id FROM notes_pages
+         WHERE id = ? AND parent_type = 'data_source_id' AND parent_data_source_id IS NOT NULL",
+    )
+    .bind(page_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("load notes row data source: {e}"))?
+    .ok_or_else(|| "the page is not a database row".to_string())?;
+    let schema = crate::property_storage::load_data_source_properties(&mut tx, &data_source_id)
+        .await?
+        .ok_or_else(|| "the database is gone".to_string())?;
+    let property = table::table_schema(&schema)?
+        .into_iter()
+        .find(|property| property.id == property_id)
+        .ok_or_else(|| "the property is gone".to_string())?;
+    let mut rows = load_rows_tx(&mut tx, &data_source_id).await?;
+    rows.retain(|row| row.id == page_id);
+    let Some(row) = rows.first_mut() else {
+        return Err("the row is gone".to_string());
+    };
+    let Some(stored) = stored_value(row, &property.key, property_id).cloned() else {
+        return Ok(());
+    };
+    let stored_type = stored
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if stored_type == property.property_type {
+        return Ok(());
+    }
+    let items = value_items(&stored_type, Some(&stored), row);
+    remove_value(row, &property.key, property_id);
+    if convert {
+        let items = target_items(&stored_type, &property.property_type, items);
+        if let Some(value) = converted_value(&property, &items) {
+            insert_value(row, &property.key, value);
+        }
+    }
+    save_rows_tx(&mut tx, &rows, property_id).await?;
+    crate::project_history::mark_page_dirty_tx(&mut tx, page_id, "update_page", false).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes mismatched value change: {e}"))
 }
 
 pub(crate) fn insert_value(row: &mut ConversionRow, key: &str, value: Value) {

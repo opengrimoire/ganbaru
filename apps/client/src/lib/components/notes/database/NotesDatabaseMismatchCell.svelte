@@ -28,22 +28,26 @@
   } = $props();
 
   const { t } = getLocalization();
-  let busy = $state(false);
+  /** Whether Convert or Discard is running, so only that choice shows the spinner. */
+  let pendingChoice = $state<"convert" | "discard" | null>(null);
+  const busy = $derived(pendingChoice !== null);
   let failed = $state(false);
   let hintOpen = $state(false);
   let confirmingDiscard = $state(false);
-  let conversionLosesData = $state(false);
+  /** Convert stays disabled until the loss preview is read, so the warning always shows before converting. */
+  let preview = $state<"loading" | "failed" | { conversionLosesData: boolean }>("loading");
 
   $effect(() => {
     const target = { pageId, propertyId, storedType };
     let current = true;
-    conversionLosesData = false;
+    preview = "loading";
     previewNotesMismatchedValue(target.pageId, target.propertyId)
-      .then((preview) => {
-        if (current) conversionLosesData = preview.conversionLosesData;
+      .then((result) => {
+        if (current) preview = { conversionLosesData: result.conversionLosesData };
       })
       .catch((cause: unknown) => {
         console.warn("Notes mismatched value preview could not be read", cause);
+        if (current) preview = "failed";
       });
     return () => {
       current = false;
@@ -52,7 +56,7 @@
 
   async function settle(convert: boolean): Promise<void> {
     if (busy) return;
-    busy = true;
+    pendingChoice = convert ? "convert" : "discard";
     failed = false;
     try {
       await settleNotesMismatchedValue(pageId, propertyId, convert);
@@ -61,7 +65,7 @@
       console.warn("Notes mismatched value could not be changed", cause);
       failed = true;
     } finally {
-      busy = false;
+      pendingChoice = null;
     }
   }
 </script>
@@ -74,14 +78,22 @@
       aria-expanded={hintOpen}
       onclick={() => { hintOpen = !hintOpen; }}
     >{t("notes.mismatch.label", notesStoredPropertyTypeLabel(storedType, t))}</button>
-    <SyncConflictChoice disabled={disabled || busy} onclick={() => void settle(true)}>
-      {t("notes.mismatch.convert")}
-    </SyncConflictChoice>
-    <SyncConflictChoice disabled={disabled || busy} onclick={() => { confirmingDiscard = true; }}>
-      {t("notes.mismatch.discard")}
-    </SyncConflictChoice>
+    <SyncConflictChoice
+      disabled={disabled || busy || typeof preview !== "object"}
+      pending={pendingChoice === "convert"}
+      onclick={() => void settle(true)}
+    >{t("notes.mismatch.convert")}</SyncConflictChoice>
+    <SyncConflictChoice
+      disabled={disabled || busy}
+      pending={pendingChoice === "discard"}
+      onclick={() => { confirmingDiscard = true; }}
+    >{t("notes.mismatch.discard")}</SyncConflictChoice>
   </div>
-  {#if conversionLosesData}<span class="text-muted-foreground">{t("notes.mismatch.lossy")}</span>{/if}
+  {#if typeof preview === "object" && preview.conversionLosesData}
+    <span class="text-muted-foreground">{t("notes.mismatch.lossy")}</span>
+  {:else if preview === "failed"}
+    <span class="text-muted-foreground">{t("notes.mismatch.previewFailed")}</span>
+  {/if}
   {#if hintOpen}<span class="text-muted-foreground">{t("notes.mismatch.hint")}</span>{/if}
   {#if failed}<Notice message={t("notes.mismatch.failed")} copy={false} />{/if}
 </div>

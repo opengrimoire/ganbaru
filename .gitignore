@@ -48,7 +48,6 @@ coverage/
 
 # Local goal plans
 goal/*
-!goal/sync/
 
 # Sample data
 sample/

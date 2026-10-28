@@ -32,7 +32,7 @@ pub(crate) const CHAT_CONVERSATION_REMOVED_TOPIC: &str = "chat-conversation-remo
 
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
-const HOOKED_TABLES: [&TableSpec; 8] = [
+const HOOKED_TABLES: [&TableSpec; 10] = [
     &chat::TEAMMATES,
     &chat::POLICY_REVISIONS,
     &chat::PROFILES,
@@ -41,6 +41,8 @@ const HOOKED_TABLES: [&TableSpec; 8] = [
     &chat::MEMBERSHIPS,
     &chat::CHANNEL_MEMBERSHIPS,
     &chat::FOLDER_GRANTS,
+    &chat::MESSAGES,
+    &chat::REVISIONS,
 ];
 
 /// Recomputes device-local Chat state after sync materializes Chat rows and reports revocations.

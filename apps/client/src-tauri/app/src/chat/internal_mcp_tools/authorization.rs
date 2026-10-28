@@ -144,8 +144,10 @@ pub(super) async fn verify_channel_source(
               AND source.source_handle = ?
               AND source.message_reference_id = ?
               AND source.conversation_id = ?
-              AND source.lower_ordinal = ?
-              AND source.high_ordinal = ?
+              AND source.lower_order_key = ?
+              AND source.lower_item_id = ?
+              AND source.high_order_key = ?
+              AND source.high_item_id = ?
               AND source.source_revision_cutoff_id = ?
               AND source.destination_audience_revision = ?
               AND destination_audience.revision >= source.destination_audience_revision
@@ -166,8 +168,8 @@ pub(super) async fn verify_channel_source(
                   ELSE 'entire'
                 END = 'entire'
                 OR (
-                  channel_access.history_from_ordinal IS NOT NULL
-                  AND channel_access.history_from_ordinal <= source.lower_ordinal
+                  channel_access.history_from_order_key IS NOT NULL
+                  AND channel_access.history_from_order_key <= source.lower_order_key
                 )
               )
               AND (
@@ -198,8 +200,8 @@ pub(super) async fn verify_channel_source(
                         ELSE 'entire'
                       END = 'entire'
                       OR (
-                        requester_source_access.history_from_ordinal IS NOT NULL
-                        AND requester_source_access.history_from_ordinal <= source.lower_ordinal
+                        requester_source_access.history_from_order_key IS NOT NULL
+                        AND requester_source_access.history_from_order_key <= source.lower_order_key
                       )
                     )
                 )
@@ -239,9 +241,9 @@ pub(super) async fn verify_channel_source(
                             ELSE 'entire'
                           END = 'entire'
                           OR (
-                            destination_ai_access.history_from_ordinal IS NOT NULL
-                            AND destination_ai_access.history_from_ordinal
-                              <= coalesce(reference_root.ordinal, reference_item.ordinal)
+                            destination_ai_access.history_from_order_key IS NOT NULL
+                            AND destination_ai_access.history_from_order_key
+                              <= coalesce(reference_root.order_key, reference_item.order_key)
                           )
                         )
                     )
@@ -281,8 +283,8 @@ pub(super) async fn verify_channel_source(
                               ELSE 'entire'
                             END = 'entire'
                             OR (
-                              source_ai_access.history_from_ordinal IS NOT NULL
-                              AND source_ai_access.history_from_ordinal <= source.lower_ordinal
+                              source_ai_access.history_from_order_key IS NOT NULL
+                              AND source_ai_access.history_from_order_key <= source.lower_order_key
                             )
                           )
                       )
@@ -295,8 +297,10 @@ pub(super) async fn verify_channel_source(
     .bind(&source.source_handle)
     .bind(&source.message_reference_id)
     .bind(&source.conversation_id)
-    .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?)
-    .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?)
+    .bind(&source.lower_order_key)
+    .bind(&source.lower_item_id)
+    .bind(&source.high_order_key)
+    .bind(&source.high_item_id)
     .bind(&source.source_revision_cutoff_id)
     .bind(i64::try_from(source.destination_audience_revision).map_err(|_| generic_denial_error())?)
     .fetch_one(pool)

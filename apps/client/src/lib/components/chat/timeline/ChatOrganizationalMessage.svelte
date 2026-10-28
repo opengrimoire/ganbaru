@@ -4,6 +4,7 @@
   import { organizationalMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { chatParticipantDisplayName } from "$lib/chat/teammates/participant-display";
   import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
+  import { isTruncatedChatMessage } from "$lib/chat/timeline/organizational-message-model";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -36,20 +37,21 @@
   const preferences = getPreferences();
   const touchActionsKey = $props.id();
   let actionToolbarVisible = $state(false);
-  const authorDisplayName = $derived(message.authorLabelSnapshot || chatParticipantDisplayName(
+  const authorDisplayName = $derived(message.authorLabelSnapshot || (message.author ? chatParticipantDisplayName(
     message.author,
     preferences.profileDisplayName,
     t("chat.timeline.you"),
-  ));
+  ) : ""));
   const actionTarget = $derived(organizationalMessageActionTarget(message));
   const messageSegments = $derived(chatReferenceTextSegments(message.normalizedMarkdown, message.references));
+  const truncated = $derived(isTruncatedChatMessage(message));
 
   function participantForReference(reference: Extract<ChatMessageReference, { kind: "participant" }>): ChatParticipantRead {
     const current = [
       ...(chat.selectedChannel?.memberships ?? []).map((membership) => membership.participant),
       ...chat.teammateIdentities.map((teammate) => teammate.participant),
       ...(message.replyThread?.participants ?? []),
-      message.author,
+      ...(message.author ? [message.author] : []),
     ].find((participant) => participant.id === reference.participantId);
     return current ?? {
       id: reference.participantId,
@@ -104,16 +106,17 @@
   }}
 >
   <div class="avatar-cell">
-    {#if !grouped}<ChatIdentityButton participant={message.author} presentation="avatar" size={34} {currentResponseSettings} />{/if}
+    {#if !grouped && message.author}<ChatIdentityButton participant={message.author} presentation="avatar" size={34} {currentResponseSettings} />{/if}
   </div>
   <div class="message-body">
     {#if !grouped}
       <header>
-        <strong><ChatIdentityButton participant={message.author} presentation="name" triggerLabel={authorDisplayName} {currentResponseSettings} /></strong>
+        <strong>{#if message.author}<ChatIdentityButton participant={message.author} presentation="name" triggerLabel={authorDisplayName} {currentResponseSettings} />{:else}{authorDisplayName}{/if}</strong>
         <time datetime={message.createdAt}>{formatDateTime(localization.locale, Date.parse(message.createdAt), { timeStyle: "short" })}</time>
       </header>
     {/if}
     <div class="message-copy" data-selectable-content>{#each messageSegments as segment, index (`${segment.kind}:${index}`)}{#if segment.kind === "reference"}{#if segment.reference.kind === "participant"}<ChatIdentityButton participant={participantForReference(segment.reference)} presentation="mention" triggerLabel={segment.text} {currentResponseSettings} />{:else}<button type="button" class="inline-reference" onclick={() => openReference(segment.reference)}>{segment.text}</button>{/if}{:else}{segment.text}{/if}{/each}</div>
+    {#if truncated}<p class="message-elision">{t("chat.organization.truncatedMessage")}</p>{/if}
     {#if message.attachmentIds.length > 0}
       <div class="message-context">
         {#if message.attachmentIds.length > 0}<span>{t("chat.organization.images", message.attachmentIds.length)}</span>{/if}
@@ -150,6 +153,7 @@
   .message-copy { white-space:pre-wrap; overflow-wrap:anywhere; color:var(--foreground); font-size:var(--chat-organizational-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-organizational-line-height,calc(1.3125rem * var(--type-scale))); }
   .inline-reference { display:inline; border-radius:0.25rem; background:color-mix(in srgb,var(--primary) 10%,transparent); padding-inline:0.1rem; color:color-mix(in srgb,var(--primary) 76%,var(--foreground)); font:inherit; }
   .inline-reference:hover,.inline-reference:focus-visible { text-decoration:underline; }
+  .message-elision { margin-top:0.2rem; color:var(--muted-foreground); font-size:var(--chat-organizational-time-font-size,calc(0.6875rem * var(--type-scale))); font-style:italic; }
   .message-context { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem; }
   .message-context span { border-radius:999px; background:var(--accent); padding:0.15rem 0.4rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .reply-strip { display:flex; width:100%; min-height:2rem; align-items:center; gap:0.4rem; margin-top:0.35rem; border-radius:0.4rem; color:color-mix(in srgb,var(--primary) 70%,var(--foreground)); font-size: calc(0.68rem * var(--type-scale)); text-align:left; }

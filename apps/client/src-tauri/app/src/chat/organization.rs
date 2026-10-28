@@ -39,7 +39,7 @@ mod teammate_lifecycle;
 mod workflow;
 
 use common::{
-    conversation_item_id, has_thread_eligible_mention, map_command_receipt_error,
+    PageCursor, conversation_item_id, has_thread_eligible_mention, map_command_receipt_error,
     message_revision_id, normalized_fts_query, parse_cursor, parse_participant_kind,
     reply_thread_id, serialization_error, validate_message_request,
 };
@@ -66,7 +66,7 @@ use teammate_lifecycle::set_teammate_archived;
 use workflow::insert_policy_revision;
 use workflow::{
     AssignmentWrite, CommunicationMessageWrite, insert_channel_copy, insert_communication_message,
-    next_item_ordinal, persist_assignment_routing, read_post_receipt,
+    next_item_order_key, persist_assignment_routing, read_post_receipt,
     require_continuation_scope_is_unchanged, require_reply_thread, resolve_invoked_teammate,
 };
 
@@ -312,7 +312,7 @@ pub async fn chat_post_message(
     .execute(&mut *transaction)
     .await
     .map_err(map_command_receipt_error)?;
-    let ordinal = next_item_ordinal(
+    let order_key = next_item_order_key(
         &mut transaction,
         &channel.conversation_id,
         request.reply_thread_id.as_ref(),
@@ -325,7 +325,7 @@ pub async fn chat_post_message(
             revision_id: &revision_id,
             conversation_id: &channel.conversation_id,
             reply_thread_id: request.reply_thread_id.as_ref(),
-            ordinal,
+            order_key: &order_key,
             request: &request,
             invoked_teammate_id: resolved_invocation
                 .as_ref()
@@ -361,7 +361,7 @@ pub async fn chat_post_message(
         })?;
         sqlx::query(
             "UPDATE chat_reply_threads
-             SET reply_count = reply_count + 1, last_activity_at = ?,
+             SET last_activity_at = ?,
                  revision = revision + 1, updated_at = ? WHERE id = ?",
         )
         .bind(now.as_str())
@@ -550,36 +550,57 @@ pub async fn chat_read_channel_page(
     limit: Option<u32>,
 ) -> ChatResult<ChatChannelPageRead> {
     let pool = chat_pool(app, db_url).await?;
-    let channel = super::channels::read_channel(&pool, &channel_id).await?;
-    let before = parse_cursor(cursor.as_deref())?;
+    read_channel_page(&pool, channel_id, cursor.as_deref(), limit).await
+}
+
+/// Reads one page of a channel's root messages ending at `cursor`, oldest first.
+///
+/// Root messages order by `(order_key, id)`, so messages that share an order key after a
+/// concurrent post page in a stable order without gaps or repeats.
+async fn read_channel_page(
+    pool: &sqlx::SqlitePool,
+    channel_id: ChatChannelId,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> ChatResult<ChatChannelPageRead> {
+    let channel = super::channels::read_channel(pool, &channel_id).await?;
+    let end = parse_cursor(cursor)?;
     let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
     let rows = sqlx::query(
-        "SELECT id, ordinal
+        "SELECT id, order_key
          FROM chat_conversation_items
          WHERE conversation_id = ? AND reply_thread_id IS NULL AND item_kind = 'message'
-           AND (? IS NULL OR ordinal < ?)
-         ORDER BY ordinal DESC LIMIT ?",
+           AND (? IS NULL OR (order_key, id) < (?, ?) OR (? AND order_key = ? AND id = ?))
+         ORDER BY order_key DESC, id DESC LIMIT ?",
     )
     .bind(channel.conversation_id.as_str())
-    .bind(before)
-    .bind(before)
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.item_id.as_str()))
+    .bind(end.as_ref().is_some_and(|end| end.inclusive))
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.item_id.as_str()))
     .bind(i64::from(limit))
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
     let previous_cursor = rows
         .last()
-        .map(|row| row.try_get::<i64, _>("ordinal"))
-        .transpose()
-        .map_err(persistence_error)?
         .filter(|_| rows.len() == limit as usize)
-        .map(|ordinal| ordinal.to_string());
+        .map(|row| {
+            Ok::<_, sqlx::Error>(PageCursor::before(
+                &row.try_get::<String, _>("order_key")?,
+                &row.try_get::<String, _>("id")?,
+            ))
+        })
+        .transpose()
+        .map_err(persistence_error)?;
     let mut messages = Vec::with_capacity(rows.len());
     for row in rows.into_iter().rev() {
         let item_id =
             ChatConversationItemId::new(row.try_get::<String, _>("id").map_err(persistence_error)?)
                 .map_err(identifier_error)?;
-        messages.push(read_message(&pool, &item_id).await?);
+        messages.push(read_message(pool, &item_id).await?);
     }
     Ok(ChatChannelPageRead {
         channel_id,
@@ -625,7 +646,7 @@ pub async fn chat_search_messages(
             search.conversation_id,
             search.reply_thread_id,
             search.message_item_id,
-            item.ordinal,
+            item.order_key,
             participant.id AS author_participant_id,
             participant.participant_kind AS author_participant_kind,
             participant.display_name AS author_display_name,
@@ -674,7 +695,12 @@ pub async fn chat_search_messages(
                         .map_err(persistence_error)?,
                 )
                 .map_err(identifier_error)?,
-                ordinal: u64_value(row.try_get("ordinal").map_err(persistence_error)?)?,
+                anchor_cursor: PageCursor::through(
+                    &row.try_get::<String, _>("order_key")
+                        .map_err(persistence_error)?,
+                    &row.try_get::<String, _>("message_item_id")
+                        .map_err(persistence_error)?,
+                ),
                 author_participant_id: ChatParticipantId::new(
                     row.try_get::<String, _>("author_participant_id")
                         .map_err(persistence_error)?,

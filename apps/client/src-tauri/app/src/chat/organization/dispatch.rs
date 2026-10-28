@@ -637,23 +637,21 @@ async fn insert_dispatch_failure_message(
     let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1 FROM chat_conversation_items
-         WHERE reply_thread_id = ?",
+    let order_key = ganbaru_chat::timeline::next_order_key(
+        transaction,
+        &conversation_id,
+        Some(&reply_thread_id),
     )
-    .bind(&reply_thread_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(&reply_thread_id)
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(now.as_str())
     .execute(&mut **transaction)
     .await
@@ -680,9 +678,9 @@ async fn insert_dispatch_failure_message(
     let rich_content_data = serde_json::to_string(&rich_content).map_err(serialization_error)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
@@ -711,8 +709,8 @@ async fn insert_dispatch_failure_message(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_reply_threads SET reply_count = reply_count + 1,
-             last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+        "UPDATE chat_reply_threads
+         SET last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(now.as_str())
     .bind(now.as_str())

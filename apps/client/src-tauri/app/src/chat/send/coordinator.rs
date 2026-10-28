@@ -707,8 +707,8 @@ pub(super) async fn load_internal_mcp_scope(
     .ok_or_else(|| provider_authority_error("Assignment authority is no longer active"))?;
     let channel_rows = sqlx::query(
         "SELECT source_handle, message_reference_id, conversation_id, label_snapshot,
-                lower_ordinal, high_ordinal, source_revision_cutoff_id,
-                destination_audience_revision
+                lower_order_key, lower_item_id, high_order_key, high_item_id,
+                source_revision_cutoff_id, destination_audience_revision
          FROM chat_assignment_authorized_channel_sources
          WHERE authorization_revision_id = ? ORDER BY conversation_id",
     )
@@ -787,8 +787,10 @@ pub(super) async fn load_internal_mcp_scope(
                         .map_err(scope_row_error)?,
                     conversation_id: row.try_get("conversation_id").map_err(scope_row_error)?,
                     label_snapshot: row.try_get("label_snapshot").map_err(scope_row_error)?,
-                    lower_ordinal: row_u64(&row, "lower_ordinal")?,
-                    high_ordinal: row_u64(&row, "high_ordinal")?,
+                    lower_order_key: row.try_get("lower_order_key").map_err(scope_row_error)?,
+                    lower_item_id: row.try_get("lower_item_id").map_err(scope_row_error)?,
+                    high_order_key: row.try_get("high_order_key").map_err(scope_row_error)?,
+                    high_item_id: row.try_get("high_item_id").map_err(scope_row_error)?,
                     source_revision_cutoff_id: row
                         .try_get("source_revision_cutoff_id")
                         .map_err(scope_row_error)?,

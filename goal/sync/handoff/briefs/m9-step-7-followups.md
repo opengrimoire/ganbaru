@@ -1,0 +1,2 @@
+Follow-ups for milestone 9 step 7 (before step 9 opens Chat writes):
+1. Step 4 follow-up 3: a concurrent switch of a membership's `access_profile_id` to a narrower profile loses to an "ask" edit because coupled priority sees only the group value. Rank it by copying the profile's restrictiveness onto the membership value (as policy revisions do), or record precisely why it must wait for step 9 and what step 9 must do.

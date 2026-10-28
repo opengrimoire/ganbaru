@@ -238,7 +238,7 @@ export const chatSettings = {
       cleanupFailedState: "Cleanup failed",
       sources: "Retained sources",
       noSources: "No channel sources were queried.",
-      sourceRange: (channel: string, low: number, high: number) => `#${channel}, messages ${low} to ${high}`,
+      sourceRange: (channel: string) => `#${channel}`,
       browse: "Browse files",
       browseLabel: "Scratch file browser",
       root: "Scratch root",

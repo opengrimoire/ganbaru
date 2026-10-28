@@ -71,7 +71,7 @@ export interface ChatChannelCapabilities {
 
 export type ChatHistoryBoundary =
   | { kind: "entire" }
-  | { kind: "fromGrant"; lowerOrdinal?: number };
+  | { kind: "fromGrant"; lowerOrderKey?: string };
 
 export const CHAT_ACCESS_PROFILE_BUILTIN_KEYS = [
   "conversationOnly",
@@ -317,8 +317,8 @@ export type ChatScratchDeviceAvailability =
 export interface ChatScratchSourceSummaryRead {
   channelId: ChatChannelId;
   channelName: string;
-  lowerOrdinal: number;
-  highOrdinal: number;
+  lowerOrderKey: string;
+  highOrderKey: string;
   audienceRevision: number;
 }
 
@@ -606,14 +606,16 @@ export interface ChatMessageRead {
   replyThreadId: ChatReplyThreadId | null;
   revisionId: ChatMessageRevisionId;
   revision: number;
-  author: ChatParticipantRead;
+  /** Author identity, null when the message carries only its author label snapshot. */
+  author: ChatParticipantRead | null;
   authorLabelSnapshot: string;
   normalizedMarkdown: string;
   richContent: VersionedJson;
   attachmentIds: ChatAttachmentId[];
   references: ChatMessageReference[];
   replyThread: ChatReplyThreadSummaryRead | null;
-  ordinal: number;
+  /** Position within its scope; messages order by `(orderKey, itemId)`. */
+  orderKey: string;
   editedAt: UtcTimestamp | null;
   createdAt: UtcTimestamp;
 }
@@ -673,7 +675,8 @@ export interface ChatMessageSearchResultRead {
   conversationId: ChatConversationId;
   replyThreadId: ChatReplyThreadId | null;
   messageItemId: ChatConversationItemId;
-  ordinal: number;
+  /** Channel page cursor that ends at the result, or at its reply thread root. */
+  anchorCursor: string;
   authorParticipantId: ChatParticipantId;
   authorKind: ChatParticipantKind;
   authorDisplayName: string;

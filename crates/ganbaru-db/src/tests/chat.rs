@@ -188,7 +188,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_conversation_items",
             "chat_communication_messages",
             "chat_communication_message_revisions",
-            "chat_communication_message_revision_ordinals",
+            "chat_communication_message_revisions_numbered",
             "chat_communication_attachment_references",
             "chat_conversation_read_cursors",
             "chat_reply_thread_read_cursors",
@@ -248,8 +248,20 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_scratch_promotions_destination",
             "idx_chat_scratch_cleanup_jobs_ready",
             "idx_chat_access_revocation_jobs_ready",
-            "idx_chat_conversation_items_root_ordinal",
-            "idx_chat_conversation_items_reply_ordinal",
+            "idx_chat_conversation_items_order",
+            "idx_chat_reply_threads_conversation",
+            "idx_chat_message_references_revision",
+            "idx_chat_work_assignments_teammate",
+            "chat_reply_threads_root_item_insert",
+            "chat_conversation_items_reply_thread_insert",
+            "chat_communication_message_current_revision_update",
+            "chat_communication_search_delete",
+            "chat_communication_search_insert",
+            "chat_communication_message_revision_immutable_update",
+            "chat_authorized_channel_source_immutable_delete",
+            "chat_authorized_channel_source_immutable_update",
+            "chat_scratch_generation_source_delete_denied",
+            "chat_scratch_generation_source_monotonic",
             "idx_chat_work_assignments_one_active",
             "idx_chat_assignment_dispatch_jobs_ready",
             "idx_chat_scheduled_messages_due",
@@ -376,6 +388,8 @@ fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys()
             "chat_conversation_memberships",
             "chat_teammate_channel_memberships",
             "chat_teammate_working_folder_grants",
+            "chat_conversation_read_cursors",
+            "chat_reply_thread_read_cursors",
         ] {
             let pending: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
                 "SELECT count(*) FROM {table} WHERE sync_key GLOB 'pending:*'"
@@ -894,10 +908,11 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         sqlx::query(
             "INSERT INTO chat_assignment_authorized_channel_sources
                 (authorization_revision_id, source_handle, message_reference_id,
-                 conversation_id, label_snapshot, lower_ordinal, high_ordinal,
-                 source_revision_cutoff_id, destination_audience_revision, created_at)
+                 conversation_id, label_snapshot, lower_order_key, lower_item_id,
+                 high_order_key, high_item_id, source_revision_cutoff_id,
+                 destination_audience_revision, created_at)
              VALUES ('authorization:test', ?, 'reference:test', 'conversation:test',
-                     'Source', 1, 1, 'revision:test', 1, ?)",
+                     'Source', 'c000', '', 'c000', 'item:test', 'revision:test', 1, ?)",
         )
         .bind("s".repeat(32))
         .bind(NOW)
@@ -916,8 +931,8 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_communication_message_revisions
-                (id, message_item_id, revision, normalized_markdown, created_at)
-             VALUES ('revision:test', 'item:test', 1, 'Source', ?)",
+                (id, message_item_id, normalized_markdown, created_at)
+             VALUES ('revision:test', 'item:test', 'Source', ?)",
         )
         .bind(NOW)
         .execute(&mut *connection)

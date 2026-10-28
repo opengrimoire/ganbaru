@@ -325,7 +325,6 @@ fn deleting_a_working_folder_removes_only_its_chat_rows() {
             ),
             ("chat_scheduled_message_references", "working_folder_id"),
             ("chat_teammate_working_folder_grants", "working_folder_id"),
-            ("chat_working_folder_reference_targets", "working_folder_id"),
         ] {
             assert_eq!(
                 count_where(&pool, table, &format!("{column} = 'folder-archived'")).await,
@@ -346,6 +345,16 @@ fn deleting_a_working_folder_removes_only_its_chat_rows() {
             )
             .await,
             1
+        );
+        assert_eq!(
+            count_where(
+                &pool,
+                "chat_working_folder_reference_targets",
+                "working_folder_id = 'folder-archived'"
+            )
+            .await,
+            1,
+            "a mention target keeps its unchecked folder id and renders the label snapshot"
         );
         assert_eq!(foreign_key_violations(&pool).await, 0);
     });

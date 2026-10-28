@@ -627,10 +627,6 @@ table 307 notes_suggestions replicated key id
   group 2 max last_edited_time:timestamp
   check range_start,range_end within 0
   check status,accepted_at,accepted_by,rejected_at,rejected_by within 1
-table 308 notes_assets replicated key id
-  group 0 immutable asset_path:text(..=200) kind:text(..=200) content_type:text(..=64) byte_size:integer(1..=52428800) sha256:text(..=200)
-  group 1 register source_type:text(..=200) original_name:optional_text(..=262144) created_at:timestamp
-  check kind,content_type within 0
 table 352 chat_participants replicated key id
   group 0 immutable participant_kind:text(..=32) created_at:timestamp
   group 1 register surfaced recoverable display_name:trimmed_text(1..=160) avatar_schema_version:integer(1..=9223372036854775807) avatar_data:text(..=16384)
@@ -670,11 +666,11 @@ table 361 chat_conversation_memberships replicated key sync_key
 table 362 chat_teammate_channel_memberships replicated key sync_key
   derived key exists 4 inputs conversation_id,teammate_id prefix ai-channel-membership
   group 0 immutable conversation_id:optional_row_key->360:cascade teammate_id:optional_row_key->353:cascade
-  group 1 coupled access_profile_id:optional_row_key->355:cascade read_history:flag read_history_inherits_profile:flag participate:flag participate_inherits_profile:flag history_boundary:text(..=32) history_boundary_inherits_profile:flag history_from_ordinal:optional_integer(1..=9223372036854775807) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
+  group 1 coupled access_profile_id:optional_row_key->355:cascade read_history:flag read_history_inherits_profile:flag participate:flag participate_inherits_profile:flag history_boundary:text(..=32) history_boundary_inherits_profile:flag history_from_order_key:optional_text(..=128) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
   group 2 register created_at:timestamp
   group 3 max updated_at:timestamp
   group 4 register
-  check history_boundary,history_from_ordinal within 1
+  check history_boundary,history_from_order_key within 1
 table 363 chat_teammate_working_folder_grants replicated key sync_key
   derived key exists 3 inputs conversation_id,teammate_id,working_folder_id prefix folder-grant
   group 0 immutable conversation_id:optional_row_key->360:cascade teammate_id:optional_row_key->353:cascade working_folder_id:optional_row_key->98:cascade
@@ -686,3 +682,45 @@ table 364 chat_channels replicated key id
   group 1 register surfaced recoverable name:text(..=80) topic:text(..=250)
   group 2 coupled archived_at:optional_timestamp
   group 3 max updated_at:timestamp
+table 370 chat_reply_threads replicated key id
+  derived key exists 4 inputs root_item_id prefix reply-thread
+  group 0 immutable root_item_id:optional_row_key
+  group 1 register conversation_id:optional_row_key->360:cascade created_at:timestamp
+  group 2 max last_activity_at:timestamp
+  group 3 max updated_at:timestamp
+  group 4 register
+table 371 chat_conversation_items replicated key id
+  group 0 immutable conversation_id:optional_row_key->360:cascade reply_thread_id:optional_row_key->370:cascade item_kind:text(..=32) order_key:order_key created_at:timestamp
+table 372 chat_communication_messages replicated key item_id
+  group 0 immutable author_label_snapshot:trimmed_text(1..=160) created_at:timestamp
+  group 1 register author_participant_id:optional_row_key->352:set_null
+  group 2 register surfaced recoverable current_revision_id:optional_row_key edited_at:optional_timestamp
+  group 3 coupled deleted_at:optional_timestamp
+table 373 chat_communication_message_revisions replicated key id
+  group 0 immutable message_item_id:optional_row_key->372:cascade normalized_markdown:text(..=131072) rich_content_schema_version:integer(1..=9223372036854775807) rich_content_data:text(..=196608) created_at:timestamp
+table 374 chat_message_references replicated key id
+  group 0 immutable message_revision_id:optional_row_key->373:cascade reference_kind:text(..=32) label_snapshot:text(..=4096) plain_text_projection:text(..=4096) start_offset:integer(0..=9223372036854775807) end_offset:integer(1..=9223372036854775807) ordinal:integer(0..=9223372036854775807) created_at:timestamp
+  check start_offset,end_offset within 0
+table 375 chat_channel_reference_targets replicated key reference_id
+  group 0 immutable channel_id:optional_row_key source_conversation_id:optional_row_key destination_conversation_id:optional_row_key source_lower_order_key:optional_text(..=128) source_lower_item_id:optional_text(..=1024) source_high_order_key:optional_text(..=128) source_high_item_id:optional_row_key source_revision_cutoff_id:optional_row_key
+  check source_lower_order_key,source_lower_item_id,source_high_order_key,source_high_item_id,source_revision_cutoff_id within 0
+table 376 chat_execution_environment_reference_targets replicated key reference_id
+  group 0 immutable execution_environment_id:text(..=2048)
+table 377 chat_participant_reference_targets replicated key reference_id
+  group 0 immutable participant_id:optional_row_key
+table 378 chat_working_folder_reference_targets replicated key reference_id
+  group 0 immutable working_folder_id:optional_row_key
+table 379 chat_workspace_path_reference_targets replicated key reference_id
+  group 0 immutable working_folder_id:optional_row_key path_kind:text(..=32) relative_path:text(..=4096)
+table 380 chat_conversation_read_cursors replicated key sync_key
+  derived key exists 3 inputs conversation_id,participant_id prefix conversation-read-cursor
+  group 0 immutable conversation_id:optional_row_key->360:cascade participant_id:optional_row_key->352:cascade
+  group 1 max last_read_order_key:text(..=128) last_read_item_id:text(..=1024)
+  group 2 max updated_at:timestamp
+  group 3 register
+table 381 chat_reply_thread_read_cursors replicated key sync_key
+  derived key exists 3 inputs reply_thread_id,participant_id prefix reply-thread-read-cursor
+  group 0 immutable reply_thread_id:optional_row_key->370:cascade participant_id:optional_row_key->352:cascade
+  group 1 max last_read_order_key:text(..=128) last_read_item_id:text(..=1024)
+  group 2 max updated_at:timestamp
+  group 3 register

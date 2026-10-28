@@ -11,8 +11,9 @@ use super::{
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, optional_timestamp, persistence_error, u64_value};
 use crate::chat::organization::common::{
-    ACTIVE_FOLDER_GRANTS_SQL, parse_approval_policy, parse_folder_capability,
-    parse_history_boundary, parse_runtime_approval_policy, teammate_runtime_approval,
+    ACTIVE_FOLDER_GRANTS_SQL, from_grant_lower_order_key, parse_approval_policy,
+    parse_folder_capability, parse_history_boundary, parse_runtime_approval_policy,
+    teammate_runtime_approval,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -46,7 +47,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                 ai.read_history, ai.read_history_inherits_profile,
                 ai.participate, ai.participate_inherits_profile,
                 ai.history_boundary, ai.history_boundary_inherits_profile,
-                ai.history_from_ordinal, ai.runtime_approval_policy,
+                ai.history_from_order_key, ai.runtime_approval_policy,
                 ai.scratch_runtime_approval_policy,
                 membership.revision AS membership_revision, membership.removed_at
          FROM chat_teammate_channel_memberships ai
@@ -130,7 +131,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
         let stored_history_boundary = parse_history_boundary(
             &row.try_get::<String, _>("history_boundary")
                 .map_err(persistence_error)?,
-            row.try_get("history_from_ordinal")
+            row.try_get("history_from_order_key")
                 .map_err(persistence_error)?,
         )?;
         let history_inherits_profile = row
@@ -141,25 +142,22 @@ pub(in crate::chat::organization) async fn read_teammate_access(
             match profile_history_boundary.clone() {
                 ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
                 ChatHistoryBoundary::FromGrant { .. } => ChatHistoryBoundary::FromGrant {
-                    lower_ordinal: match stored_history_boundary {
-                        ChatHistoryBoundary::FromGrant { lower_ordinal } => lower_ordinal,
+                    lower_order_key: match stored_history_boundary {
+                        ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key,
                         ChatHistoryBoundary::Entire => None,
                     },
                 },
             }
         } else if history_boundary_is_expansion(&profile_history_boundary, &stored_history_boundary)
         {
-            let lower_ordinal: i64 = sqlx::query_scalar(
-                "SELECT coalesce(max(ordinal), 0) + 1
-                 FROM chat_conversation_items
-                 WHERE conversation_id = ? AND reply_thread_id IS NULL",
-            )
-            .bind(conversation_id.as_str())
-            .fetch_one(pool)
-            .await
-            .map_err(persistence_error)?;
             ChatHistoryBoundary::FromGrant {
-                lower_ordinal: Some(u64_value(lower_ordinal)?),
+                lower_order_key: Some(
+                    from_grant_lower_order_key(
+                        &mut *pool.acquire().await.map_err(persistence_error)?,
+                        conversation_id.as_str(),
+                    )
+                    .await?,
+                ),
             }
         } else {
             stored_history_boundary
@@ -428,8 +426,8 @@ pub(super) async fn resolve_channel_access(
         let history_boundary = match input.history_boundary {
             ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
             ChatHistoryBoundary::FromGrant { .. } => {
-                let current_lower = sqlx::query_scalar::<_, Option<i64>>(
-                    "SELECT history_from_ordinal FROM chat_teammate_channel_memberships
+                let current_lower = sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT history_from_order_key FROM chat_teammate_channel_memberships
                      WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL
                        AND history_boundary = 'from_grant'",
                 )
@@ -440,22 +438,17 @@ pub(super) async fn resolve_channel_access(
                 .map_err(persistence_error)?
                 .flatten();
                 let lower = match current_lower {
-                    Some(value) => u64_value(value)?,
+                    Some(value) => value,
                     None => {
-                        let value: i64 = sqlx::query_scalar(
-                            "SELECT COALESCE(max(ordinal), 0) + 1
-                             FROM chat_conversation_items
-                             WHERE conversation_id = ? AND reply_thread_id IS NULL",
+                        from_grant_lower_order_key(
+                            &mut *pool.acquire().await.map_err(persistence_error)?,
+                            conversation_id.as_str(),
                         )
-                        .bind(conversation_id.as_str())
-                        .fetch_one(pool)
-                        .await
-                        .map_err(persistence_error)?;
-                        u64_value(value)?
+                        .await?
                     }
                 };
                 ChatHistoryBoundary::FromGrant {
-                    lower_ordinal: Some(lower),
+                    lower_order_key: Some(lower),
                 }
             }
         };

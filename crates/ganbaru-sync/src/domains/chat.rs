@@ -11,17 +11,25 @@
 //! Conversation memberships, AI channel memberships, and working folder grants keep the narrower
 //! access among concurrent edits: removal and revocation first, then the stricter approval
 //! override, folder capability, and channel capabilities. A channel archive outranks a
-//! concurrent unarchive.
+//! concurrent unarchive, and a message deletion outranks a concurrent restore.
+//!
+//! Timeline values mirror their table checks too, including the byte bounds that keep one
+//! message revision within an operation.
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::bounds::MAX_ORDER_KEY_BYTES;
+use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::manifest::vault::chat::{
-    ADAPTER, CHANNEL_MEMBERSHIPS_TABLE, CHANNELS_TABLE, CONVERSATIONS_TABLE, FOLDER_GRANTS_TABLE,
-    MEMBERSHIPS_TABLE, PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
-    PROFILES_TABLE, TEAMMATES_TABLE, channel_group, channel_membership_group, conversation_group,
-    folder_grant_group, membership_group, participant_group, policy_revision_group, profile_group,
-    profile_revision_group, teammate_group,
+    ADAPTER, CHANNEL_MEMBERSHIPS_TABLE, CHANNEL_TARGETS_TABLE, CHANNELS_TABLE,
+    CONVERSATION_CURSORS_TABLE, CONVERSATIONS_TABLE, ENVIRONMENT_TARGETS_TABLE,
+    FOLDER_GRANTS_TABLE, FOLDER_TARGETS_TABLE, ITEMS_TABLE, MEMBERSHIPS_TABLE, MESSAGES_TABLE,
+    PARTICIPANT_TARGETS_TABLE, PARTICIPANTS_TABLE, PATH_TARGETS_TABLE, POLICY_REVISIONS_TABLE,
+    PROFILE_REVISIONS_TABLE, PROFILES_TABLE, REFERENCES_TABLE, REPLY_CURSORS_TABLE,
+    REPLY_THREADS_TABLE, REVISIONS_TABLE, TEAMMATES_TABLE, channel_group, channel_membership_group,
+    conversation_group, folder_grant_group, item_group, membership_group, message_group,
+    participant_group, policy_revision_group, profile_group, profile_revision_group,
+    read_cursor_group, reply_thread_group, teammate_group, timeline_group,
 };
 
 /// Characters of a display name after trimming.
@@ -78,6 +86,36 @@ pub const MEMBERSHIP_ROLES: [&str; 2] = ["owner", "member"];
 /// Runtime approval overrides, least restrictive first. Provider custom defers to the
 /// provider's own configuration, mirroring the custom safety mode.
 pub const APPROVAL_POLICIES: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
+/// Characters of a Chat row id the timeline tables hold, as the tables check it.
+pub const MAX_ID_CHARS: usize = 1024;
+/// Characters of an execution environment id.
+pub const MAX_ENVIRONMENT_ID_CHARS: usize = 2048;
+/// Characters of a mention label or its plain text projection.
+pub const MAX_LABEL_CHARS: usize = 4096;
+/// Characters of a workspace path in a mention.
+pub const MAX_RELATIVE_PATH_CHARS: usize = 4096;
+/// Bytes of a message revision's normalized Markdown, which also bounds its characters.
+pub const MAX_MESSAGE_MARKDOWN_BYTES: usize = 128 * 1024;
+/// Bytes of a message revision's rich content, which also bounds its characters.
+pub const MAX_RICH_CONTENT_BYTES: usize = 192 * 1024;
+/// Item kinds of the conversation timeline.
+pub const ITEM_KINDS: [&str; 5] = [
+    "message",
+    "work_update",
+    "approval_request",
+    "question",
+    "review_packet",
+];
+/// Kinds of message references.
+pub const REFERENCE_KINDS: [&str; 5] = [
+    "participant",
+    "channel",
+    "working_folder",
+    "workspace_path",
+    "execution_environment",
+];
+/// Kinds of a workspace path in a mention.
+pub const PATH_KINDS: [&str; 2] = ["file", "folder"];
 /// Rank of no approval override, the least restrictive.
 const INHERITED_APPROVAL_RANK: u8 = 1;
 
@@ -350,14 +388,19 @@ fn validate_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterEr
     }
 }
 
-/// A history boundary and its ordinal: `entire` with none, or `from_grant` with one of at
-/// least 1.
-fn history_pair(boundary: &Field, ordinal: &Field) -> Result<(), AdapterError> {
+/// A history boundary and its order key: `entire` with none, or `from_grant` with a non-empty
+/// key.
+fn history_pair(boundary: &Field, order_key: &Field) -> Result<(), AdapterError> {
     one_of(boundary, &HISTORY_BOUNDARIES, "chat history boundary")?;
-    match (text(boundary)?, ordinal) {
+    match (text(boundary)?, order_key) {
         ("entire", Field::Null) => Ok(()),
-        ("from_grant", Field::Integer(ordinal)) if *ordinal >= 1 => Ok(()),
-        _ => Err(AdapterError("chat history boundary ordinal")),
+        ("from_grant", key @ Field::Text(_)) => bounded(
+            key,
+            1,
+            MAX_ORDER_KEY_BYTES,
+            "chat history boundary order key",
+        ),
+        _ => Err(AdapterError("chat history boundary order key")),
     }
 }
 
@@ -376,7 +419,7 @@ fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), A
                 participate_inherits,
                 boundary,
                 boundary_inherits,
-                ordinal,
+                history_from,
                 approval,
                 scratch_approval,
                 removed_at,
@@ -391,7 +434,7 @@ fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), A
             ] {
                 flag(value)?;
             }
-            history_pair(boundary, ordinal)?;
+            history_pair(boundary, history_from)?;
             optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
             optional_one_of(scratch_approval, &APPROVAL_POLICIES, "chat approval policy")?;
             optional_timestamp(removed_at)
@@ -435,6 +478,212 @@ fn validate_channel(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         (channel_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
         (channel_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat channel value")),
+    }
+}
+
+/// Text of at most `max` UTF-8 bytes.
+fn within_bytes(field: &Field, max: usize, what: &'static str) -> Result<(), AdapterError> {
+    if text(field)?.len() <= max {
+        Ok(())
+    } else {
+        Err(AdapterError(what))
+    }
+}
+
+/// An integer of at least `min`.
+fn at_least(field: &Field, min: i64, what: &'static str) -> Result<i64, AdapterError> {
+    let value = integer(field)?;
+    if value >= min {
+        Ok(value)
+    } else {
+        Err(AdapterError(what))
+    }
+}
+
+/// A timeline point: an order key and an item id, both `''` before the first item.
+fn read_point(order_key: &Field, item_id: &Field) -> Result<(), AdapterError> {
+    match (text(order_key)?, text(item_id)?) {
+        ("", "") => Ok(()),
+        ("", _) | (_, "") => Err(AdapterError("chat read cursor point")),
+        _ => {
+            bounded(
+                order_key,
+                1,
+                MAX_ORDER_KEY_BYTES,
+                "chat read cursor order key",
+            )?;
+            bounded(item_id, 1, MAX_ID_CHARS, "chat read cursor item id")
+        }
+    }
+}
+
+/// A workspace path relative to its folder, as the table checks it: no leading slash, no
+/// parent segment, and no backslash.
+fn relative_path(field: &Field) -> Result<(), AdapterError> {
+    let path = text(field)?;
+    bounded(field, 1, MAX_RELATIVE_PATH_CHARS, "chat workspace path")?;
+    let escapes = path.starts_with('/')
+        || path.starts_with("../")
+        || path.contains("/../")
+        || path.ends_with("/..")
+        || path.contains('\\');
+    if escapes {
+        Err(AdapterError("chat workspace path"))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_reply_thread(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (reply_thread_group::IDENTITY, [_]) | (reply_thread_group::EXISTS, []) => Ok(()),
+        (reply_thread_group::CREATED, [_conversation, created_at]) => timestamp(created_at),
+        (reply_thread_group::ACTIVITY | reply_thread_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat reply thread value")),
+    }
+}
+
+fn validate_item(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (item_group::CREATED, [_conversation, _thread, kind, _order_key, created_at]) => {
+            one_of(kind, &ITEM_KINDS, "chat item kind")?;
+            timestamp(created_at)
+        }
+        _ => Err(AdapterError("chat item value")),
+    }
+}
+
+fn validate_message(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (message_group::CREATED, [label, created_at]) => {
+            trimmed(label, MAX_DISPLAY_NAME_CHARS, "chat message author label")?;
+            timestamp(created_at)
+        }
+        (message_group::AUTHOR, [_author]) => Ok(()),
+        (message_group::CONTENT, [_revision, edited_at]) => optional_timestamp(edited_at),
+        (message_group::LIFECYCLE, [deleted_at]) => optional_timestamp(deleted_at),
+        _ => Err(AdapterError("chat message value")),
+    }
+}
+
+fn validate_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (timeline_group::CREATED, [_message, markdown, version, rich_content, created_at]) => {
+            within_bytes(
+                markdown,
+                MAX_MESSAGE_MARKDOWN_BYTES,
+                "chat message Markdown is too large",
+            )?;
+            schema_version(version)?;
+            within_bytes(
+                rich_content,
+                MAX_RICH_CONTENT_BYTES,
+                "chat message rich content is too large",
+            )?;
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text(rich_content)?)
+                .map_err(|_| AdapterError("chat message rich content"))?;
+            timestamp(created_at)
+        }
+        _ => Err(AdapterError("chat message revision value")),
+    }
+}
+
+fn validate_reference(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (
+            timeline_group::CREATED,
+            [
+                _revision,
+                kind,
+                label,
+                projection,
+                start,
+                end,
+                ordinal,
+                created_at,
+            ],
+        ) => {
+            one_of(kind, &REFERENCE_KINDS, "chat reference kind")?;
+            bounded(label, 1, MAX_LABEL_CHARS, "chat reference label")?;
+            bounded(projection, 1, MAX_LABEL_CHARS, "chat reference projection")?;
+            let start = at_least(start, 0, "chat reference span")?;
+            at_least(end, start.saturating_add(1), "chat reference span")?;
+            at_least(ordinal, 0, "chat reference ordinal")?;
+            timestamp(created_at)
+        }
+        _ => Err(AdapterError("chat message reference value")),
+    }
+}
+
+/// A channel reference range: every bound null for an empty range, or well-formed order keys with
+/// a lower point whose item may be `''` at or before a high point, and a revision cutoff.
+fn validate_channel_target(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (
+            timeline_group::CREATED,
+            [
+                _channel,
+                _source,
+                _destination,
+                lower_key,
+                lower_item,
+                high_key,
+                high_item,
+                cutoff,
+            ],
+        ) => {
+            let bounds = [lower_key, lower_item, high_key, high_item, cutoff];
+            if bounds.iter().all(|field| matches!(field, Field::Null)) {
+                return Ok(());
+            }
+            if bounds.iter().any(|field| matches!(field, Field::Null)) {
+                return Err(AdapterError("chat channel reference range"));
+            }
+            bounded(lower_key, 1, MAX_ORDER_KEY_BYTES, "chat channel range key")?;
+            bounded(lower_item, 0, MAX_ID_CHARS, "chat channel range item")?;
+            bounded(high_key, 1, MAX_ORDER_KEY_BYTES, "chat channel range key")?;
+            let lower = (text(lower_key)?, text(lower_item)?);
+            let high = (text(high_key)?, text(high_item)?);
+            for key in [lower.0, high.0] {
+                OrderKey::parse(key).map_err(|_| AdapterError("chat channel range key"))?;
+            }
+            if lower <= high {
+                Ok(())
+            } else {
+                Err(AdapterError("chat channel reference range order"))
+            }
+        }
+        _ => Err(AdapterError("chat channel reference target value")),
+    }
+}
+
+fn validate_target(table: TableId, group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (timeline_group::CREATED, [environment]) if table == ENVIRONMENT_TARGETS_TABLE => bounded(
+            environment,
+            1,
+            MAX_ENVIRONMENT_ID_CHARS,
+            "chat environment reference",
+        ),
+        (timeline_group::CREATED, [_target])
+            if table == PARTICIPANT_TARGETS_TABLE || table == FOLDER_TARGETS_TABLE =>
+        {
+            Ok(())
+        }
+        (timeline_group::CREATED, [_folder, kind, path]) if table == PATH_TARGETS_TABLE => {
+            one_of(kind, &PATH_KINDS, "chat workspace path kind")?;
+            relative_path(path)
+        }
+        _ => Err(AdapterError("chat reference target value")),
+    }
+}
+
+fn validate_read_cursor(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (read_cursor_group::IDENTITY, [_, _]) | (read_cursor_group::EXISTS, []) => Ok(()),
+        (read_cursor_group::READ, [order_key, item_id]) => read_point(order_key, item_id),
+        (read_cursor_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat read cursor value")),
     }
 }
 
@@ -573,6 +822,7 @@ impl DomainAdapter for ChatAdapter {
             folder_grant_priority(value.fields())
         } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
             || (table == CONVERSATIONS_TABLE && group == conversation_group::LIFECYCLE)
+            || (table == MESSAGES_TABLE && group == message_group::LIFECYCLE)
         {
             lifecycle_priority(value.fields())
         } else {
@@ -602,6 +852,26 @@ impl DomainAdapter for ChatAdapter {
             validate_folder_grant(group, fields)
         } else if table == CHANNELS_TABLE {
             validate_channel(group, fields)
+        } else if table == REPLY_THREADS_TABLE {
+            validate_reply_thread(group, fields)
+        } else if table == ITEMS_TABLE {
+            validate_item(group, fields)
+        } else if table == MESSAGES_TABLE {
+            validate_message(group, fields)
+        } else if table == REVISIONS_TABLE {
+            validate_revision(group, fields)
+        } else if table == REFERENCES_TABLE {
+            validate_reference(group, fields)
+        } else if table == CHANNEL_TARGETS_TABLE {
+            validate_channel_target(group, fields)
+        } else if table == ENVIRONMENT_TARGETS_TABLE
+            || table == PARTICIPANT_TARGETS_TABLE
+            || table == FOLDER_TARGETS_TABLE
+            || table == PATH_TARGETS_TABLE
+        {
+            validate_target(table, group, fields)
+        } else if table == CONVERSATION_CURSORS_TABLE || table == REPLY_CURSORS_TABLE {
+            validate_read_cursor(group, fields)
         } else {
             Ok(())
         }
@@ -854,11 +1124,7 @@ mod tests {
             Field::Integer(0),
             t(if from_grant { "from_grant" } else { "entire" }),
             Field::Integer(0),
-            if from_grant {
-                Field::Integer(3)
-            } else {
-                Field::Null
-            },
+            if from_grant { t("c001") } else { Field::Null },
             optional(approval),
             optional(scratch_approval),
             optional(removed.then_some(AT)),
@@ -1091,12 +1357,12 @@ mod tests {
                 .is_err()
         );
 
-        let access = |boundary: &str, ordinal: Field, approval: &str| {
+        let access = |boundary: &str, history_from: Field, approval: &str| {
             let mut fields = channel_access(true, true, false, None, None, false)
                 .fields()
                 .to_vec();
             fields[5] = t(boundary);
-            fields[7] = ordinal;
+            fields[7] = history_from;
             fields[8] = t(approval);
             check(
                 CHANNEL_MEMBERSHIPS_TABLE,
@@ -1105,10 +1371,11 @@ mod tests {
             )
         };
         assert!(access("entire", Field::Null, "ask").is_ok());
-        assert!(access("from_grant", Field::Integer(1), "unattended").is_ok());
+        assert!(access("from_grant", t("c001"), "unattended").is_ok());
         assert!(access("from_grant", Field::Null, "ask").is_err());
-        assert!(access("from_grant", Field::Integer(0), "ask").is_err());
-        assert!(access("entire", Field::Integer(2), "ask").is_err());
+        assert!(access("from_grant", t(""), "ask").is_err());
+        assert!(access("from_grant", Field::Integer(1), "ask").is_err());
+        assert!(access("entire", t("c001"), "ask").is_err());
         assert!(access("entire", Field::Null, "always").is_err());
 
         assert!(
@@ -1141,5 +1408,49 @@ mod tests {
         assert!(details("", "").is_err());
         assert!(details(&"n".repeat(MAX_CHANNEL_NAME_CHARS + 1), "").is_err());
         assert!(details("general", &"t".repeat(MAX_CHANNEL_TOPIC_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn chat_channel_reference_ranges_need_ordered_well_formed_keys() {
+        let adapter = ChatAdapter;
+        let range = |lower: (&str, &str), high: (&str, &str)| {
+            adapter.validate(
+                CHANNEL_TARGETS_TABLE,
+                timeline_group::CREATED,
+                &value(vec![
+                    t("reference-1"),
+                    t("channel-1"),
+                    t("channel-2"),
+                    t(lower.0),
+                    t(lower.1),
+                    t(high.0),
+                    t(high.1),
+                    t("revision-1"),
+                ]),
+            )
+        };
+        assert!(range(("a0", ""), ("a0", "item-1")).is_ok());
+        assert!(range(("a0", "item-1"), ("a0", "item-1")).is_ok());
+        assert!(range(("a0", "item-1"), ("a1", "")).is_ok());
+        assert!(range(("a1", ""), ("a0", "item-1")).is_err());
+        assert!(range(("a0", "item-2"), ("a0", "item-1")).is_err());
+        assert!(range(("!", ""), ("a0", "item-1")).is_err());
+        assert!(range(("a0", ""), ("a", "item-1")).is_err());
+
+        let empty = adapter.validate(
+            CHANNEL_TARGETS_TABLE,
+            timeline_group::CREATED,
+            &value(vec![
+                t("reference-1"),
+                t("channel-1"),
+                t("channel-2"),
+                Field::Null,
+                Field::Null,
+                Field::Null,
+                Field::Null,
+                Field::Null,
+            ]),
+        );
+        assert!(empty.is_ok());
     }
 }

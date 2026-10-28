@@ -65,8 +65,10 @@ pub struct InternalMcpChannelSource {
     pub message_reference_id: String,
     pub conversation_id: String,
     pub label_snapshot: String,
-    pub lower_ordinal: u64,
-    pub high_ordinal: u64,
+    pub lower_order_key: String,
+    pub lower_item_id: String,
+    pub high_order_key: String,
+    pub high_item_id: String,
     pub source_revision_cutoff_id: String,
     pub destination_audience_revision: u64,
 }

@@ -7,6 +7,7 @@ import type {
 import {
   applyReplyThreadSummary,
   isChatMessageReactionValue,
+  isTruncatedChatMessage,
   toggleChatMessageReactionParticipant,
   unreadMessageStartIndex,
 } from "./organizational-message-model";
@@ -32,7 +33,7 @@ function message(itemId: string, kind: ChatParticipantKind): ChatMessageRead {
     attachmentIds: [],
     references: [],
     replyThread: null,
-    ordinal: 1,
+    orderKey: "c001",
     editedAt: null,
     createdAt: "2026-08-04T12:00:00.000Z",
   };
@@ -70,6 +71,22 @@ describe("organizational unread messages", () => {
 
     expect(updated[0]?.replyThread).toEqual(readSummary);
     expect(updated[1]?.replyThread).toBeNull();
+  });
+});
+
+describe("shortened projected messages", () => {
+  it("reads the truncation marker only from an object payload set to true", () => {
+    const base = message("projected", "ai_teammate");
+    const withValue = (value: ChatMessageRead["richContent"]["value"]) => ({
+      ...base,
+      richContent: { schemaVersion: 1, value },
+    });
+
+    expect(isTruncatedChatMessage(withValue({ type: "agent_update", truncated: true }))).toBe(true);
+    expect(isTruncatedChatMessage(withValue({ type: "agent_update", truncated: "true" }))).toBe(false);
+    expect(isTruncatedChatMessage(withValue({ type: "agent_update" }))).toBe(false);
+    expect(isTruncatedChatMessage(withValue([true]))).toBe(false);
+    expect(isTruncatedChatMessage(withValue(null))).toBe(false);
   });
 });
 

@@ -15,8 +15,8 @@ use crate::chat::channels::{
     timestamp, u64_value,
 };
 use crate::chat::organization::common::{
-    new_id, parse_access_profile_builtin_key, parse_folder_capability, parse_history_boundary,
-    wire_folder_capability, wire_history_boundary,
+    from_grant_lower_order_key, new_id, parse_access_profile_builtin_key, parse_folder_capability,
+    parse_history_boundary, wire_folder_capability, wire_history_boundary,
 };
 use ganbaru_chat::coordination::access_profiles::profile_revision_is_expansion;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -323,28 +323,12 @@ async fn apply_profile_reduction(
     revision: &ChatAccessProfileRevisionInput,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let history_boundary = wire_history_boundary(&revision.default_history_boundary);
-    sqlx::query(
-        "UPDATE chat_teammate_channel_memberships
-         SET history_from_ordinal = (
-               SELECT coalesce(max(item.ordinal), 0) + 1
-               FROM chat_conversation_items item
-               WHERE item.conversation_id = chat_teammate_channel_memberships.conversation_id
-                 AND item.reply_thread_id IS NULL
-             ),
-             history_boundary = 'from_grant',
-             updated_at = ?
-         WHERE access_profile_id = ? AND removed_at IS NULL
-           AND history_boundary_inherits_profile = 1
-           AND ? = 'from_grant'
-           AND (history_boundary != 'from_grant' OR history_from_ordinal IS NULL)",
-    )
-    .bind(now.as_str())
-    .bind(access_profile_id.as_str())
-    .bind(history_boundary)
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    if matches!(
+        revision.default_history_boundary,
+        ChatHistoryBoundary::FromGrant { .. }
+    ) {
+        stamp_inherited_from_grant_boundaries(transaction, access_profile_id, now).await?;
+    }
     sqlx::query(
         "UPDATE chat_teammate_access_state
          SET access_revision = access_revision + 1, updated_at = ?
@@ -573,16 +557,51 @@ async fn revoke_profile_authorizations(
     Ok(())
 }
 
+/// Stamps a `from_grant` boundary at the current end of each channel on every active membership
+/// that inherits the profile boundary and has no stamped lower order key yet.
+async fn stamp_inherited_from_grant_boundaries(
+    transaction: &mut Transaction<'_, Sqlite>,
+    access_profile_id: &ChatAccessProfileId,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let memberships = sqlx::query_as::<_, (String, String)>(
+        "SELECT conversation_id, teammate_id FROM chat_teammate_channel_memberships
+         WHERE access_profile_id = ? AND removed_at IS NULL
+           AND history_boundary_inherits_profile = 1
+           AND (history_boundary != 'from_grant' OR history_from_order_key IS NULL)",
+    )
+    .bind(access_profile_id.as_str())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    for (conversation_id, teammate_id) in memberships {
+        let lower_order_key = from_grant_lower_order_key(transaction, &conversation_id).await?;
+        sqlx::query(
+            "UPDATE chat_teammate_channel_memberships
+             SET history_from_order_key = ?, history_boundary = 'from_grant', updated_at = ?
+             WHERE conversation_id = ? AND teammate_id = ?",
+        )
+        .bind(lower_order_key)
+        .bind(now.as_str())
+        .bind(&conversation_id)
+        .bind(&teammate_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    Ok(())
+}
+
 fn validate_profile_revision_input(input: &ChatAccessProfileRevisionInput) -> ChatResult<()> {
     if matches!(
         input.default_history_boundary,
         ChatHistoryBoundary::FromGrant {
-            lower_ordinal: Some(_)
+            lower_order_key: Some(_)
         }
     ) {
         return Err(ChatError::validation(
-            "revision.defaultHistoryBoundary.lowerOrdinal",
-            "History lower ordinals are captured per channel",
+            "revision.defaultHistoryBoundary.lowerOrderKey",
+            "History lower order keys are captured per channel",
         ));
     }
     Ok(())

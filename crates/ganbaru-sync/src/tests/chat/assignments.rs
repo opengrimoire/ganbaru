@@ -1,8 +1,8 @@
 //! Chat coordination across replicas: work assignments, their inputs and semantic updates, and
 //! scheduled messages with their owned references arrive whole, a crash while sealing or
 //! applying them leaves nothing partial, rerouting an input updates its row in place, a no-op
-//! write captures nothing, and a settle on any device outranks progress the executing device
-//! reports concurrently.
+//! write captures nothing, concurrent creates of one derived assignment merge, and a settle on
+//! any device outranks progress the executing device reports concurrently.
 
 use super::*;
 use crate::manifest::vault::chat::{
@@ -36,8 +36,14 @@ fn input_id(message: &str) -> String {
 }
 
 /// SQL creating the assignment `id` of [`TEAMMATE`] triggered by [`MENTION`] in the reply
-/// thread under [`ROOT`], executed by [`EXECUTOR`], with its trigger input.
+/// thread under [`ROOT`], executed by [`EXECUTOR`].
 fn assignment_sql(id: &str, previous: Option<&str>) -> String {
+    assignment_on_sql(id, previous, EXECUTOR)
+}
+
+/// SQL creating the assignment `id` of [`TEAMMATE`] triggered by [`MENTION`] in the reply
+/// thread under [`ROOT`], executed by `executor`.
+fn assignment_on_sql(id: &str, previous: Option<&str>, executor: &str) -> String {
     format!(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, teammate_id, triggering_message_item_id, executing_device_id,
@@ -48,7 +54,7 @@ fn assignment_sql(id: &str, previous: Option<&str>) -> String {
         thread = quoted(&thread()),
         teammate = quoted(TEAMMATE),
         mention = quoted(MENTION),
-        executor = quoted(EXECUTOR),
+        executor = quoted(executor),
         previous = optional(previous),
         created = quoted(CREATED),
     )
@@ -354,6 +360,71 @@ fn chat_a_concurrent_settle_outranks_progress_and_a_review_request_outranks_work
         for replica in &mut replicas {
             assert_eq!(assignment_state(replica).await, "cancelled 1");
         }
+    });
+}
+
+/// Two devices Start the same mention concurrently, each creating the assignment its derived id
+/// names with itself as the executing device: the creates merge into one row with one input,
+/// and every device agrees on which device executes it.
+#[test]
+fn chat_concurrent_starts_of_one_mention_merge_into_one_assignment() {
+    block_on(async {
+        let mut replicas = conversation_replicas(3).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                message_sql(ROOT, None, "c001", "Root"),
+                thread_sql(),
+                message_sql(MENTION, Some(&thread()), "c001", "@Reviewer please check"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        for (index, executor) in [(0, "device-0"), (1, "device-1")] {
+            replicas[index]
+                .exec(&format!(
+                    "{}{}",
+                    assignment_on_sql(ASSIGNMENT, None, executor),
+                    input_sql(MENTION, ASSIGNMENT, 1, "trigger"),
+                ))
+                .await;
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let mut executors = Vec::new();
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .count(
+                        "SELECT (SELECT count(*) FROM chat_work_assignments)
+                              + (SELECT count(*) FROM chat_work_assignment_inputs)",
+                    )
+                    .await,
+                2,
+                "replica {} holds one assignment and one input",
+                replica.index
+            );
+            executors.push(
+                replica
+                    .scalar_text(
+                        "SELECT executing_device_id || ' ' || input.assignment_id
+                         FROM chat_work_assignments assignment
+                         JOIN chat_work_assignment_inputs input
+                           ON input.assignment_id = assignment.id",
+                    )
+                    .await
+                    .expect("the assignment arrived"),
+            );
+        }
+        assert!(
+            executors[0] == format!("device-0 {ASSIGNMENT}")
+                || executors[0] == format!("device-1 {ASSIGNMENT}")
+        );
+        assert!(
+            executors.iter().all(|executor| *executor == executors[0]),
+            "every device agrees on the executing device: {executors:?}"
+        );
     });
 }
 

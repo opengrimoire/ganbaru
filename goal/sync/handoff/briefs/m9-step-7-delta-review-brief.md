@@ -1,0 +1,12 @@
+You do a delta review of branch `feat/sync-chat-assignments` (worktree /home/victor/ganbaru/.claude/worktrees/agent-a446d8a1addee598c, HEAD 9250f4c9) before it merges into feat/sync. It is milestone 9 step 7 of Ganbaru's sync work (Chat assignments, executing device gates, mention routing, scheduled receipts; plan `/home/victor/ganbaru/goal/sync/milestone_9.md` step 7 row and Design). The first review (verdict fix first) asked for the items in /home/victor/.cache/ganbaru-goal-scratch/m9-step-7-fix-message.md. The fixes are `git -C <worktree> diff 61c4dec5..9250f4c9` (commits 50c0855a, ef5eb9fd, 9250f4c9); the implementer's reasoning is in the "Review fixes" bullet of /home/victor/.cache/ganbaru-goal-scratch/milestone-9-step-7-progress.md.
+
+Read-only: do not edit, commit, or switch branches; use `git -C <worktree>` with absolute paths. Prefer reading over building; if you run Cargo, use `exec 9>$HOME/.cache/ganbaru-checks.lock; flock 9; CARGO_TARGET_DIR=$HOME/.cache/ganbaru-targets/review cargo ...` with `-j 4` and `--test-threads=4`, focused tests only. Helper scripts in the shared scratchpad must be named chat-assignments-delta-review-*.sh.
+
+Check:
+1. High 1: routing only to a device that can write Chat; stranded assignments (executing device removed, unlinked, or unable to write Chat) are surfaced and taken over by Start or reroute without double execution: can the old device, if it comes back or regains write, still run the settled original? Is the successor id derivation stable across devices, so two takeovers merge?
+2. High 2: every assignment state write path is guarded so a settled state never leaves on any replica in any arrival order; launch aborts on a settled assignment; `follow_assignment_state` stops a pending claim; no orphan process, session, or lock remains.
+3. Medium 3 and 4: derived assignment ids merge concurrent Starts (and do not collide for distinct teammates or a later re-mention); a remote delete stops live runs before or despite the cascade, and nothing dangles.
+4. Low 5 to 7: the migration edit (unlanded, edited in place) is idempotent and picks the right executor; the reclaim reasoning in the doc comment is true against source.
+5. New bugs the fixes introduced, and whether tests exercise real paths.
+
+Final report under 350 words: verdict (merge, merge with follow-ups, or fix first) and findings by severity with file:line, a failure scenario, and a suggested fix.

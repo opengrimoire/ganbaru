@@ -1,6 +1,7 @@
 //! Notes structure across replicas: concurrent edits to different block groups merge, received
 //! rows get their hook-derived parents, pages, and plain text from the real Notes hook, a block
-//! cycle from concurrent moves is repaired by the Notes repair pass and the repair replicates,
+//! cycle and a page nesting cycle from concurrent moves are repaired by the Notes repair pass and
+//! the repairs replicate,
 //! a remote delete of a parent block removes the page nested under it everywhere, a parked
 //! `child_page` block survives the delete of its former parent and nests again, a trashed page
 //! keeps a concurrent title edit and restores, and duplicate page aliases settle on one row.
@@ -65,7 +66,7 @@ async fn replicas(count: usize) -> Vec<Replica> {
 }
 
 /// Rich text JSON holding `content`.
-fn rich_text(content: &str) -> String {
+pub(super) fn rich_text(content: &str) -> String {
     serde_json::json!({
         "rich_text": [{
             "type": "text",
@@ -77,7 +78,7 @@ fn rich_text(content: &str) -> String {
 }
 
 /// SQL adding a root paragraph of `page` at `position`.
-fn root_block_sql(id: &str, page: &str, content: &str, position: u32) -> String {
+pub(super) fn root_block_sql(id: &str, page: &str, content: &str, position: u32) -> String {
     format!(
         "INSERT INTO notes_blocks
              (id, page_id, parent_type, parent_page_id, type, text, plain_text, order_key,
@@ -94,7 +95,7 @@ fn root_block_sql(id: &str, page: &str, content: &str, position: u32) -> String 
 }
 
 /// A workspace page holding two root paragraphs.
-fn page_sql() -> String {
+pub(super) fn page_sql() -> String {
     format!(
         "INSERT INTO notes_pages (id, parent_type, title, created_time, last_edited_time)
          VALUES ({page}, 'workspace', 'Shared', {created}, {created});
@@ -469,6 +470,84 @@ fn nest_page_sql(id: &str, parent: &str, position: u32) -> String {
         parent = quoted(parent),
         order = quoted(&rank(position)),
     )
+}
+
+#[test]
+fn a_page_nesting_cycle_from_concurrent_moves_is_repaired_and_the_repair_replicates() {
+    block_on(async {
+        let mut setup = String::new();
+        for (page, position) in [("page-x", 1), ("page-y", 2)] {
+            setup.push_str(&format!(
+                "BEGIN;
+                 INSERT INTO notes_pages
+                     (id, parent_type, parent_page_id, child_block_id, title, created_time,
+                      last_edited_time)
+                 VALUES ({page}, 'page_id', {parent}, {page}, {page}, {created}, {created});
+                 INSERT INTO notes_blocks
+                     (id, page_id, parent_type, parent_page_id, type, plain_text, order_key,
+                      created_time, last_edited_time)
+                 VALUES ({page}, {parent}, 'page_id', {parent}, 'child_page', {page}, {order},
+                         {created}, {created});
+                 COMMIT;",
+                page = quoted(page),
+                parent = quoted(PAGE),
+                created = quoted(CREATED),
+                order = quoted(&rank(position + 2)),
+            ));
+        }
+        let mut replicas = shared(2, &setup).await;
+        replicas[0]
+            .exec(&nest_page_sql("page-x", "page-y", 1))
+            .await;
+        replicas[1]
+            .exec(&nest_page_sql("page-y", "page-x", 1))
+            .await;
+        converge(&mut replicas).await;
+        let nesting = "SELECT id || '>' || parent_type || ':' || ifnull(parent_page_id, '')
+                       FROM notes_pages WHERE id IN ('page-x', 'page-y') ORDER BY id";
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(replica, nesting).await,
+                vec![
+                    "page-x>page_id:page-y".to_string(),
+                    "page-y>page_id:page-x".to_string()
+                ],
+                "replica {} should hold the merged cycle",
+                replica.index
+            );
+        }
+
+        let pages = vec!["page-x".to_string(), "page-y".to_string()];
+        let report =
+            ganbaru_notes::sync_repair::repair_structure_on(&mut replicas[1].conn, &pages, &[])
+                .await
+                .unwrap();
+        assert_eq!(report.detached_pages, vec!["page-x".to_string()]);
+        converge(&mut replicas).await;
+
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(replica, nesting).await,
+                vec![
+                    "page-x>workspace:".to_string(),
+                    "page-y>page_id:page-x".to_string()
+                ],
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT CAST(in_trash AS TEXT) FROM notes_blocks WHERE id = 'page-x'"
+                )
+                .await,
+                vec!["1".to_string()],
+                "replica {}",
+                replica.index
+            );
+        }
+        assert_converged(&mut replicas).await;
+    });
 }
 
 #[test]

@@ -13,6 +13,7 @@ import { workingMarkdown } from "./working-markdown";
 import { propertyDisplay } from "./property-display";
 import { rowHierarchy } from "./row-hierarchy";
 import { rowPage } from "./row-page";
+import { syncMessages } from "./sync";
 
 export const notes = {
   ...navigationAndSearch,
@@ -28,4 +29,5 @@ export const notes = {
   ...propertyDisplay,
   ...rowHierarchy,
   ...rowPage,
+  ...syncMessages,
 } as const satisfies MessageShape<typeof enNotes>;

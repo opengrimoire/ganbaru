@@ -5,9 +5,10 @@
 
 use crate::data_sources;
 use crate::data_sources::layouts::table::{self, TableProperty};
-use crate::validation::rich_text_items_plain_text;
+use crate::validation::{require_uuid, rich_text_items_plain_text};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
 /// Types whose values come from a fixed option list.
@@ -120,6 +121,164 @@ pub(crate) fn stored_value<'a>(
         .get(key)
         .filter(matches_id)
         .or_else(|| row.properties.values().find(matches_id))
+}
+
+/// A row value stored under another type than its property, read for settling.
+struct MismatchedValue {
+    /// The data source's rows, narrowed to the one row that holds the value.
+    rows: Vec<ConversionRow>,
+    property: TableProperty,
+    stored_type: String,
+    /// The stored value read as text items.
+    items: Vec<String>,
+}
+
+impl MismatchedValue {
+    /// The value converting writes, or `None` when the type stores nothing on rows.
+    fn converted(&self) -> Option<Value> {
+        let items = target_items(
+            &self.stored_type,
+            &self.property.property_type,
+            self.items.clone(),
+        );
+        converted_value(&self.property, &items)
+    }
+
+    /// Whether converting drops part of the stored value: the type keeps only one of several option names, or it
+    /// cannot represent the value and writes its empty value instead.
+    fn conversion_loses_data(&self) -> bool {
+        if self.items.iter().all(|item| item.trim().is_empty()) {
+            return false;
+        }
+        let property_type = self.property.property_type.as_str();
+        if OPTION_TYPES.contains(&property_type) && property_type != "multi_select" {
+            let names = target_items(&self.stored_type, "multi_select", self.items.clone());
+            if names.len() > 1 {
+                return true;
+            }
+        }
+        self.converted()
+            .is_none_or(|value| value == table::default_property_value(&self.property, ""))
+    }
+}
+
+/// What settling a mismatched row value would do, read before the user chooses.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MismatchedValuePreview {
+    /// Whether converting drops part or all of the stored value.
+    pub conversion_loses_data: bool,
+}
+
+/// Reads the row value of `property_id` on `page_id` when its stored type differs from the property's type.
+async fn load_mismatched_value(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+    property_id: &str,
+) -> Result<Option<MismatchedValue>, String> {
+    let data_source_id: String = sqlx::query_scalar(
+        "SELECT parent_data_source_id FROM notes_pages
+         WHERE id = ? AND parent_type = 'data_source_id' AND parent_data_source_id IS NOT NULL",
+    )
+    .bind(page_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load notes row data source: {e}"))?
+    .ok_or_else(|| "the page is not a database row".to_string())?;
+    let schema = crate::property_storage::load_data_source_properties(tx, &data_source_id)
+        .await?
+        .ok_or_else(|| "the database is gone".to_string())?;
+    let property = table::table_schema(&schema)?
+        .into_iter()
+        .find(|property| property.id == property_id)
+        .ok_or_else(|| "the property is gone".to_string())?;
+    let mut rows = load_rows_tx(tx, &data_source_id).await?;
+    rows.retain(|row| row.id == page_id);
+    let Some(row) = rows.first() else {
+        return Err("the row is gone".to_string());
+    };
+    let Some(stored) = stored_value(row, &property.key, property_id) else {
+        return Ok(None);
+    };
+    let stored_type = stored
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if stored_type == property.property_type {
+        return Ok(None);
+    }
+    let items = value_items(&stored_type, Some(stored), row);
+    Ok(Some(MismatchedValue {
+        rows,
+        property,
+        stored_type,
+        items,
+    }))
+}
+
+/// Reads what settling a mismatched row value would do, so the user sees what converting drops before choosing.
+/// A value that matches its property's type, or no value, reads as converting without loss.
+pub async fn preview_mismatched_value(
+    pool: &SqlitePool,
+    page_id: &str,
+    property_id: &str,
+) -> Result<MismatchedValuePreview, String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin notes mismatched value preview: {e}"))?;
+    let mismatched = load_mismatched_value(&mut tx, page_id, property_id).await?;
+    tx.rollback()
+        .await
+        .map_err(|e| format!("end notes mismatched value preview: {e}"))?;
+    Ok(MismatchedValuePreview {
+        conversion_loses_data: mismatched
+            .as_ref()
+            .is_some_and(MismatchedValue::conversion_loses_data),
+    })
+}
+
+/// Settles one row value whose stored type differs from its property's current type, which happens when another
+/// device wrote the value while this one changed the type.
+///
+/// Converting reads the stored value as text items and writes them through the same rules as a type change, so a
+/// value the type cannot represent, such as an option name the property does not have, becomes that type's empty
+/// value; [`preview_mismatched_value`] tells beforehand. Discarding removes the value. A value that already matches
+/// the type, or no value, is left as it is.
+pub async fn settle_mismatched_value(
+    pool: &SqlitePool,
+    page_id: &str,
+    property_id: &str,
+    convert: bool,
+) -> Result<(), String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin notes mismatched value change: {e}"))?;
+    let Some(mismatched) = load_mismatched_value(&mut tx, page_id, property_id).await? else {
+        return Ok(());
+    };
+    let converted = convert.then(|| mismatched.converted()).flatten();
+    let MismatchedValue {
+        mut rows, property, ..
+    } = mismatched;
+    let Some(row) = rows.first_mut() else {
+        return Err("the row is gone".to_string());
+    };
+    remove_value(row, &property.key, property_id);
+    if let Some(value) = converted {
+        insert_value(row, &property.key, value);
+    }
+    save_rows_tx(&mut tx, &rows, property_id).await?;
+    crate::project_history::mark_page_dirty_tx(&mut tx, page_id, "update_page", false).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes mismatched value change: {e}"))
 }
 
 pub(crate) fn insert_value(row: &mut ConversionRow, key: &str, value: Value) {

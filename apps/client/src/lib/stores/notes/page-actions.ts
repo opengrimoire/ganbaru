@@ -14,6 +14,7 @@ import { invalidateNotesPageCoverAssetUrl } from "$lib/api/notes/page-covers";
 import { invalidateNotesPageIconAssetUrl } from "$lib/api/notes/page-icons";
 import { blockPlainText, createBlockUpdate } from "$lib/notes/blocks/factory";
 import { planNotesInsertedBlockFocus, planNotesPageLoadFocus } from "$lib/notes/editor/focus";
+import { NotesHeldEditError } from "./held-edit-notice.svelte";
 import { nextSelectedNotesPageIdInProject } from "$lib/notes/pages/selection";
 import { notesPageCoverAssetPath } from "$lib/notes/pages/cover";
 import { notesPageIconAssetPath } from "$lib/notes/pages/icon";
@@ -347,7 +348,10 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
         await context.selectPageAfterRemoval(next);
       }
     } catch (error) {
-      if (!removalConfirmed) context.setTrashActionError(error instanceof Error ? error.message : String(error));
+      // A held edit refuses the trash; the page's conflict strip already asks the user to choose first.
+      if (!removalConfirmed && !(error instanceof NotesHeldEditError)) {
+        context.setTrashActionError(error instanceof Error ? error.message : String(error));
+      }
       throw error;
     } finally {
       context.endPageRemoval(pageId);

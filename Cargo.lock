@@ -2116,6 +2116,7 @@ dependencies = [
  "ganbaru-db",
  "ganbaru-handoff",
  "ganbaru-music-library",
+ "ganbaru-notes",
  "ganbaru-projects",
  "ganbaru-quick-notes",
  "ganbaru-sync",

@@ -52,7 +52,7 @@ export function shouldGroupReplyMessages(
   previous: ChatMessageRead | null,
   current: ChatMessageRead,
 ): boolean {
-  if (!previous || previous.author.id !== current.author.id) return false;
+  if (!previous?.author || previous.author.id !== current.author?.id) return false;
   if (projectedAgentRunId(previous) !== null || projectedAgentRunId(current) !== null) return false;
   const elapsedMs = Date.parse(current.createdAt) - Date.parse(previous.createdAt);
   return elapsedMs >= 0 && elapsedMs <= 5 * 60 * 1_000;

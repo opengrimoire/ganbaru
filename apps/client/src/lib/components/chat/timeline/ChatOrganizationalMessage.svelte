@@ -37,11 +37,11 @@
   const preferences = getPreferences();
   const touchActionsKey = $props.id();
   let actionToolbarVisible = $state(false);
-  const authorDisplayName = $derived(message.authorLabelSnapshot || chatParticipantDisplayName(
+  const authorDisplayName = $derived(message.authorLabelSnapshot || (message.author ? chatParticipantDisplayName(
     message.author,
     preferences.profileDisplayName,
     t("chat.timeline.you"),
-  ));
+  ) : ""));
   const actionTarget = $derived(organizationalMessageActionTarget(message));
   const messageSegments = $derived(chatReferenceTextSegments(message.normalizedMarkdown, message.references));
   const truncated = $derived(isTruncatedChatMessage(message));
@@ -51,7 +51,7 @@
       ...(chat.selectedChannel?.memberships ?? []).map((membership) => membership.participant),
       ...chat.teammateIdentities.map((teammate) => teammate.participant),
       ...(message.replyThread?.participants ?? []),
-      message.author,
+      ...(message.author ? [message.author] : []),
     ].find((participant) => participant.id === reference.participantId);
     return current ?? {
       id: reference.participantId,
@@ -106,12 +106,12 @@
   }}
 >
   <div class="avatar-cell">
-    {#if !grouped}<ChatIdentityButton participant={message.author} presentation="avatar" size={34} {currentResponseSettings} />{/if}
+    {#if !grouped && message.author}<ChatIdentityButton participant={message.author} presentation="avatar" size={34} {currentResponseSettings} />{/if}
   </div>
   <div class="message-body">
     {#if !grouped}
       <header>
-        <strong><ChatIdentityButton participant={message.author} presentation="name" triggerLabel={authorDisplayName} {currentResponseSettings} /></strong>
+        <strong>{#if message.author}<ChatIdentityButton participant={message.author} presentation="name" triggerLabel={authorDisplayName} {currentResponseSettings} />{:else}{authorDisplayName}{/if}</strong>
         <time datetime={message.createdAt}>{formatDateTime(localization.locale, Date.parse(message.createdAt), { timeStyle: "short" })}</time>
       </header>
     {/if}

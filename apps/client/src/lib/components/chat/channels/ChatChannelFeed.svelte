@@ -32,7 +32,7 @@
     const current = chat.channelMessages[index];
     const previous = chat.channelMessages[index - 1];
     if (!current || !previous) return false;
-    return current.author.id === previous.author.id
+    return current.author !== null && current.author.id === previous.author?.id
       && isSameDay(current.createdAt, previous.createdAt)
       && Date.parse(current.createdAt) - Date.parse(previous.createdAt) < 5 * 60_000;
   }

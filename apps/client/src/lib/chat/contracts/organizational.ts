@@ -606,7 +606,8 @@ export interface ChatMessageRead {
   replyThreadId: ChatReplyThreadId | null;
   revisionId: ChatMessageRevisionId;
   revision: number;
-  author: ChatParticipantRead;
+  /** Author identity, null when the message carries only its author label snapshot. */
+  author: ChatParticipantRead | null;
   authorLabelSnapshot: string;
   normalizedMarkdown: string;
   richContent: VersionedJson;

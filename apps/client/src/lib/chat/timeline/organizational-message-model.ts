@@ -18,7 +18,7 @@ export function unreadMessageStartIndex(
   let remaining = Math.max(0, Math.floor(unreadCount));
   if (remaining === 0) return messages.length;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.author.kind === "local_user") continue;
+    if (messages[index]?.author?.kind === "local_user") continue;
     remaining -= 1;
     if (remaining === 0) return index;
   }

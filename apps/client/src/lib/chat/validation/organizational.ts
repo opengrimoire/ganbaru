@@ -877,7 +877,7 @@ export function parseChatMessage(value: unknown, label = "Chat message"): ChatMe
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     revisionId: readIdentifier(record.revisionId, `${label}.revisionId`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    author: parseChatParticipant(record.author, `${label}.author`),
+    author: readNullable(record.author, `${label}.author`, parseChatParticipant),
     authorLabelSnapshot: readString(record.authorLabelSnapshot, `${label}.authorLabelSnapshot`),
     normalizedMarkdown,
     richContent: readVersionedJson(record.richContent, `${label}.richContent`),

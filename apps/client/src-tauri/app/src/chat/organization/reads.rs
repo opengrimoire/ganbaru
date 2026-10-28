@@ -445,11 +445,16 @@ pub(super) async fn read_message(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let participant_id = ChatParticipantId::new(
-        row.try_get::<String, _>("author_participant_id")
-            .map_err(persistence_error)?,
-    )
-    .map_err(identifier_error)?;
+    let author_id = row
+        .try_get::<Option<String>, _>("author_participant_id")
+        .map_err(persistence_error)?
+        .map(ChatParticipantId::new)
+        .transpose()
+        .map_err(identifier_error)?;
+    let author = match author_id {
+        Some(participant_id) => Some(read_participant(pool, &participant_id).await?),
+        None => None,
+    };
     let references = read_message_references(pool, &revision_id).await?;
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment_id FROM chat_communication_attachment_references
@@ -491,7 +496,7 @@ pub(super) async fn read_message(
         reply_thread_id,
         revision_id,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
-        author: read_participant(pool, &participant_id).await?,
+        author,
         author_label_snapshot: row
             .try_get("author_label_snapshot")
             .map_err(persistence_error)?,

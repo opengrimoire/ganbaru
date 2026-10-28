@@ -178,6 +178,15 @@ describe("Chat provider contracts", () => {
         messages: [{ ...page.messages[0]!, orderKey }],
       })).toThrow("orderKey must");
     }
+    const unattributed = parseChatChannelPage({
+      ...page,
+      messages: [{ ...page.messages[0]!, author: null, authorLabelSnapshot: "Former member" }],
+    });
+    expect(unattributed.messages[0]?.author).toBeNull();
+    expect(() => parseChatChannelPage({
+      ...page,
+      messages: [{ ...page.messages[0]!, author: "participant:local-owner" }],
+    })).toThrow("author");
 
     const referenced = parseChatChannelPage({
       ...page,

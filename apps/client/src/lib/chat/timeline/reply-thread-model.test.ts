@@ -186,4 +186,15 @@ describe("reply thread message grouping", () => {
       message("later", "teammate-1", "2026-08-02T08:06:00Z"),
     )).toBe(false);
   });
+
+  it("does not group messages that carry only an author label", () => {
+    const unattributed = { ...message("first", "teammate-1", "2026-08-02T08:00:00Z"), author: null };
+    const next = { ...message("second", "teammate-1", "2026-08-02T08:01:00Z"), author: null };
+
+    expect(shouldGroupReplyMessages(unattributed, next)).toBe(false);
+    expect(shouldGroupReplyMessages(
+      unattributed,
+      message("attributed", "teammate-1", "2026-08-02T08:01:00Z"),
+    )).toBe(false);
+  });
 });

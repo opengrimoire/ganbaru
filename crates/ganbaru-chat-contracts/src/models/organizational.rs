@@ -783,7 +783,8 @@ pub struct ChatMessageRead {
     pub reply_thread_id: Option<ChatReplyThreadId>,
     pub revision_id: ChatMessageRevisionId,
     pub revision: u64,
-    pub author: ChatParticipantRead,
+    /// Author identity, absent when the message carries only its author label snapshot.
+    pub author: Option<ChatParticipantRead>,
     pub author_label_snapshot: String,
     pub normalized_markdown: String,
     pub rich_content: VersionedJson,

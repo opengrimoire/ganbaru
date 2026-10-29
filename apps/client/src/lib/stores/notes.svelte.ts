@@ -14,6 +14,7 @@ import type { NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
 import { listenForNotesPageChanges } from "$lib/notes/pages/window-sync";
 import { listenSyncApplied } from "$lib/api/sync";
 import { isNotesSyncTable } from "$lib/notes/sync-presentation";
+import { listenForNotesSyncChanges, onNotesSyncChanged } from "$lib/notes/sync-events";
 import { notesConflicts } from "$lib/stores/notes-conflicts.svelte";
 import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
@@ -231,19 +232,34 @@ function createNotesWorkspace({ scope, remembersSelection }: NotesWorkspaceOptio
 
   let pageChangeListener: Promise<() => void> | null = null;
   let syncListener: Promise<() => void> | null = null;
+  let recoveryListener: Promise<() => void> | null = null;
+  let stopLocalRecoveryListener: (() => void) | null = null;
 
-  /** Refresh every pane after sync applied Notes rows from another device; started once the workspace loads. */
+  /** Refresh every pane and the sidebar after sync changed Notes rows outside this workspace. */
+  function refreshAfterSync(): void {
+    notesConflicts.invalidate();
+    for (const pane of panes) {
+      void pane.store.refreshAfterSync()
+        .catch((error: unknown) => console.warn("Notes refresh after sync failed", error));
+    }
+  }
+
+  /**
+   * Refresh every pane after sync applied Notes rows from another device, or after a recovery offer restored Notes
+   * rows in this or another window; started once the workspace loads.
+   */
   function listenForOtherDevices(): void {
     syncListener ??= listenSyncApplied((tables) => {
-      if (!tables.some(isNotesSyncTable)) return;
-      notesConflicts.invalidate();
-      for (const pane of panes) {
-        void pane.store.refreshAfterSync()
-          .catch((error: unknown) => console.warn("Notes refresh after sync failed", error));
-      }
+      if (tables.some(isNotesSyncTable)) refreshAfterSync();
     }).catch((error: unknown) => {
       syncListener = null;
       console.warn("Notes sync listener failed", error);
+      return () => undefined;
+    });
+    stopLocalRecoveryListener ??= onNotesSyncChanged(refreshAfterSync);
+    recoveryListener ??= listenForNotesSyncChanges(refreshAfterSync).catch((error: unknown) => {
+      recoveryListener = null;
+      console.warn("Notes recovery listener failed", error);
       return () => undefined;
     });
   }

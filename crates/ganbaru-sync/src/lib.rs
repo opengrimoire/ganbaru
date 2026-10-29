@@ -46,6 +46,7 @@ mod log;
 mod materialize;
 mod merge;
 mod publication;
+mod records;
 mod recovery;
 mod repair;
 mod reseal;
@@ -62,7 +63,13 @@ mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
-pub use authorization::{AuthorizationView, EnrolledDevice};
+pub use authorization::{
+    AuthorizationStorage, AuthorizationView, CandidateKind, ContestAction, ContestCandidate,
+    ContestCause, ContestEntry, ContestInstance, ContestObjection, ContestRejection, ContestRole,
+    ContestView, ContestYield, ContestsView, EnrolledDevice, ForkedWriter, HandoverPoint, KitPoint,
+    KitPointPlace, LosingRemoval, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
+    RecordEnvelope, RecordPage, RecordRole, RecordWants,
+};
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
 };
@@ -71,10 +78,13 @@ pub use conflicts::{
 };
 pub use devices::{DeviceNames, DeviceRef};
 pub use error::{SyncError, SyncResult};
-pub use exclusion::{LateChange, LateKind, MAX_EXCLUDED_PER_WRITER};
+pub use exclusion::{
+    LateChange, LateKind, MAX_EXCLUDED_ENTRIES_PER_WRITER, MAX_EXCLUDED_PER_WRITER,
+};
 pub use fork::{EvidenceOutcome, EvidenceRefusal, ForkEvidence};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
+pub use records::WriterRetirement;
 pub use recovery::{MAX_UNSEEN_PRESENTATIONS, RecoveryDescendant, RecoveryEntry};
 pub use reseal::ResealReport;
 pub use seal::{
@@ -146,6 +156,9 @@ pub struct Engine {
     manifest: &'static Manifest,
     adapters: Adapters,
     hooks: Hooks,
+    /// Enrollments of every stored chain, for the last stored entry set a genesis was checked
+    /// against.
+    enrolled: authorization::EnrolledCache,
 }
 
 impl Engine {
@@ -220,6 +233,7 @@ impl Engine {
             manifest,
             adapters,
             hooks,
+            enrolled: authorization::EnrolledCache::default(),
         })
     }
 

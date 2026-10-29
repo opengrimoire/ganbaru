@@ -1,0 +1,735 @@
+//! Member listener admission, the peer book, and the pass planner.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use ganbaru_handoff::protocol::{ControlMessage, MemberEndpoint, PROTOCOL_VERSION};
+use ganbaru_sync::{AuthorizationView, EnrolledDevice};
+use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind, DevicePublicKey, DeviceRole};
+
+use super::TestDirectory;
+use crate::peers::admission::{MemberAdmission, MemberRefusal, fingerprint_hex};
+use crate::peers::anchor_pin::{AnchorPin, MAX_ANCHOR_PIN_BYTES};
+use crate::peers::book::{
+    MAX_ENDPOINTS_PER_PEER, MAX_PEER_BOOK_BYTES, MAX_PEER_ENDPOINTS, OBSERVATION_STEP_MS, PeerBook,
+    PeerEndpoints,
+};
+use crate::peers::discovery_keys::{
+    DiscoveryKeys, MAX_DISCOVERY_KEYS_BYTES, PREVIOUS_KEY_BROWSE_MS,
+};
+use crate::peers::plan::{
+    DESKTOP_MAX_EXCHANGES, MOBILE_MAX_EXCHANGES, PeerSource, PlanInput, plan_pass,
+};
+
+const VAULT: &str = "vault-peers";
+
+fn device(index: u8, removed: bool) -> EnrolledDevice {
+    EnrolledDevice {
+        device_id: format!("device-{index}"),
+        device_key: DevicePublicKey::from_bytes([index; 32]),
+        tls_fingerprint: [index; 32],
+        label: None,
+        kind: DeviceKind::Desktop,
+        role: DeviceRole::Member,
+        enrolled_revision: u64::from(index),
+        removed_revision: removed.then_some(u64::from(index) + 10),
+    }
+}
+
+fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
+    AuthorizationView {
+        epoch: 1,
+        revision: 4,
+        entry_hash: [7; 32],
+        anchor_device_id: "device-1".to_string(),
+        frozen_at: None,
+        catch_up: None,
+        charter: [8; 32],
+        recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
+        kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+        devices,
+        discovery_key: [5; 32],
+        previous_discovery_key: None,
+    }
+}
+
+fn sync_hello(vault_id: &str, device_id: &str) -> ControlMessage {
+    ControlMessage::SyncHello {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_string(),
+        device_id: device_id.to_string(),
+        manifest_version: 1,
+        stored: Vec::new(),
+        probe: None,
+        listening: Vec::new(),
+    }
+}
+
+#[test]
+fn member_admission_accepts_enrolled_unquarantined_certificates_and_removed_ones_for_records() {
+    let quarantined = BTreeSet::from(["device-3".to_string()]);
+    let admission = MemberAdmission::new(
+        VAULT,
+        &view(vec![
+            device(1, false),
+            device(2, true),
+            device(3, false),
+            device(4, false),
+        ]),
+        &quarantined,
+    );
+
+    assert_eq!(
+        admission.certificate(&fingerprint_hex(&[1; 32])),
+        Ok("device-1")
+    );
+    assert_eq!(
+        admission.certificate(&fingerprint_hex(&[2; 32])),
+        Err(MemberRefusal::Removed)
+    );
+    assert_eq!(
+        admission.certificate(&fingerprint_hex(&[3; 32])),
+        Err(MemberRefusal::Quarantined)
+    );
+    assert_eq!(
+        admission.certificate(&fingerprint_hex(&[5; 32])),
+        Err(MemberRefusal::Unknown)
+    );
+    assert_eq!(
+        admission.admitted_fingerprints(),
+        BTreeSet::from([
+            fingerprint_hex(&[1; 32]),
+            fingerprint_hex(&[2; 32]),
+            fingerprint_hex(&[4; 32])
+        ])
+    );
+}
+
+fn record_get(vault_id: &str, device_id: &str) -> ControlMessage {
+    ControlMessage::SyncRecordGet {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_string(),
+        device_id: device_id.to_string(),
+        hashes: Vec::new(),
+        writers: Vec::new(),
+    }
+}
+
+#[test]
+fn member_admission_serves_a_removed_device_record_exchange_only() {
+    let quarantined = BTreeSet::from(["device-3".to_string()]);
+    let admission = MemberAdmission::new(
+        VAULT,
+        &view(vec![device(1, false), device(2, true), device(3, true)]),
+        &quarantined,
+    );
+    let removed = fingerprint_hex(&[2; 32]);
+
+    assert_eq!(
+        admission.request(&removed, &record_get(VAULT, "device-2")),
+        Ok(())
+    );
+    assert_eq!(
+        admission.request(&removed, &sync_hello(VAULT, "device-2")),
+        Err(MemberRefusal::Removed)
+    );
+    assert_eq!(
+        admission.request(&removed, &record_get(VAULT, "device-1")),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+    assert_eq!(
+        admission.request(&fingerprint_hex(&[3; 32]), &record_get(VAULT, "device-3")),
+        Err(MemberRefusal::Quarantined)
+    );
+    assert!(
+        !admission
+            .admitted_fingerprints()
+            .contains(&fingerprint_hex(&[3; 32]))
+    );
+}
+
+#[test]
+fn member_admission_refuses_requests_that_are_not_sync_or_name_another_device() {
+    let admission = MemberAdmission::new(VAULT, &view(vec![device(1, false)]), &BTreeSet::new());
+    let fingerprint = fingerprint_hex(&[1; 32]);
+
+    assert_eq!(
+        admission.request(&fingerprint, &sync_hello(VAULT, "device-1")),
+        Ok(())
+    );
+    assert_eq!(
+        admission.request(&fingerprint, &sync_hello(VAULT, "device-4")),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+    assert_eq!(
+        admission.request(&fingerprint, &sync_hello("vault-other", "device-1")),
+        Err(MemberRefusal::VaultMismatch)
+    );
+    assert_eq!(
+        admission.request(&fingerprint_hex(&[6; 32]), &sync_hello(VAULT, "device-1")),
+        Err(MemberRefusal::Unknown)
+    );
+    for request in [
+        ControlMessage::PersonKeyRequest {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT.to_string(),
+            device_id: "device-1".to_string(),
+        },
+        ControlMessage::ContactRequestStatus {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "request-1".to_string(),
+            requester_public_key: "key".to_string(),
+            issued_at_ms: 1,
+            signature: "signature".to_string(),
+        },
+        ControlMessage::CancelTransfer {
+            transfer_id: "transfer-1".to_string(),
+        },
+    ] {
+        assert_eq!(
+            admission.request(&fingerprint, &request),
+            Err(MemberRefusal::NotSync)
+        );
+    }
+}
+
+#[test]
+fn only_the_anchor_listener_takes_proposals_and_no_member_listener_forwards() {
+    let propose = ControlMessage::SyncPropose {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: "device-2".to_string(),
+        proposal: "proposal".to_string(),
+    };
+    let forward = ControlMessage::SyncForward {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: "device-2".to_string(),
+        settled: Vec::new(),
+    };
+    let devices = || vec![device(1, false), device(2, false), device(3, false)];
+    let fingerprint = fingerprint_hex(&[2; 32]);
+
+    // The log names device-1 as the anchor.
+    let unnamed = MemberAdmission::new(VAULT, &view(devices()), &BTreeSet::new());
+    let member = unnamed.clone().served_by("device-3");
+    let anchor = unnamed.clone().served_by("device-1");
+    assert!(!unnamed.takes_proposals());
+    assert!(!member.takes_proposals());
+    assert!(anchor.takes_proposals());
+
+    for admission in [&unnamed, &member] {
+        assert_eq!(
+            admission.request(&fingerprint, &propose),
+            Err(MemberRefusal::Proposal)
+        );
+    }
+    assert_eq!(anchor.request(&fingerprint, &propose), Ok(()));
+    for admission in [&unnamed, &member, &anchor] {
+        assert_eq!(
+            admission.request(&fingerprint, &forward),
+            Err(MemberRefusal::Forward)
+        );
+    }
+    // A proposal still names the device its certificate enrolled.
+    assert_eq!(
+        anchor.request(&fingerprint_hex(&[3; 32]), &propose),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+    // After a handover to device-3, its listener takes proposals and device-1's does not.
+    let mut handed_over = view(devices());
+    handed_over.anchor_device_id = "device-3".to_string();
+    let after = MemberAdmission::new(VAULT, &handed_over, &BTreeSet::new());
+    assert!(after.clone().served_by("device-3").takes_proposals());
+    assert!(!after.served_by("device-1").takes_proposals());
+}
+
+fn endpoint(last: u8) -> String {
+    format!("192.168.1.{last}:43821")
+}
+
+#[test]
+fn peer_book_round_trips_and_keeps_the_newest_observation() {
+    let directory = TestDirectory::new("peer-book");
+    let path = directory.files().peers_path();
+    let mut book = PeerBook::load(&path).expect("missing file is empty");
+    assert!(book.endpoints().is_empty());
+
+    let minute = OBSERVATION_STEP_MS;
+    let mut endpoints = book.endpoints().clone();
+    assert!(endpoints.observe("device-2", &[endpoint(20), endpoint(21)], 2 * minute));
+    assert!(!endpoints.observe("device-2", &[endpoint(20)], minute));
+    // A newer hello within the step changes nothing, so repeated hellos write no file.
+    assert!(!endpoints.observe("device-2", &[endpoint(21)], 2 * minute + 1));
+    assert!(endpoints.observe("device-2", &[endpoint(21)], 3 * minute));
+    assert!(!endpoints.observe("device 2", &[endpoint(22)], 4 * minute));
+    assert!(!endpoints.observe("device-3", &["8.8.8.8:43821".to_string()], 4 * minute));
+    assert!(endpoints.observe_reported(
+        &[MemberEndpoint {
+            device_id: "device-3".to_string(),
+            endpoint: endpoint(30),
+            observed_ms: 2 * minute + 500,
+        }],
+        &BTreeSet::from(["device-3".to_string()]),
+        5 * minute
+    ));
+    book.store(endpoints.clone()).expect("store");
+
+    let reloaded = PeerBook::load(&path).expect("reload");
+    assert_eq!(reloaded.endpoints(), &endpoints);
+    assert_eq!(
+        reloaded.endpoints().endpoints("device-2"),
+        vec![endpoint(21), endpoint(20)]
+    );
+    let reported: Vec<(String, u64)> = reloaded
+        .endpoints()
+        .report()
+        .into_iter()
+        .map(|member| (member.endpoint, member.observed_ms))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![
+            (endpoint(21), 3 * minute),
+            (endpoint(30), 2 * minute + 500),
+            (endpoint(20), 2 * minute)
+        ]
+    );
+
+    let mut retained = reloaded.endpoints().clone();
+    assert!(retained.retain_members(&BTreeSet::from(["device-3".to_string()])));
+    assert_eq!(retained.devices(), BTreeSet::from(["device-3".to_string()]));
+}
+
+#[test]
+fn peer_book_clamps_reported_times_and_keeps_first_hand_endpoints() {
+    let received = 10 * OBSERVATION_STEP_MS;
+    let mut endpoints = PeerEndpoints::default();
+    for index in 0..4u8 {
+        let addresses: Vec<String> = (1..=8u8)
+            .map(|last| format!("10.0.{index}.{last}:43821"))
+            .collect();
+        endpoints.observe(&format!("member-{index}"), &addresses, received);
+    }
+    assert_eq!(endpoints.report().len(), MAX_PEER_ENDPOINTS);
+
+    // A member reports far future times for another device's endpoints: they are dated at
+    // receipt and cannot evict endpoints members announced themselves.
+    let flood: Vec<MemberEndpoint> = (1..=8u8)
+        .map(|last| MemberEndpoint {
+            device_id: "member-flood".to_string(),
+            endpoint: format!("10.9.0.{last}:43821"),
+            observed_ms: u64::MAX,
+        })
+        .collect();
+    let flood_members = BTreeSet::from(["member-flood".to_string()]);
+    assert!(!endpoints.observe_reported(&flood, &flood_members, received));
+    assert!(endpoints.endpoints("member-flood").is_empty());
+    for index in 0..4u8 {
+        assert_eq!(
+            endpoints.endpoints(&format!("member-{index}")).len(),
+            MAX_ENDPOINTS_PER_PEER
+        );
+    }
+
+    // With room, a reported endpoint is kept at its receipt time.
+    let mut roomy = PeerEndpoints::default();
+    assert!(roomy.observe_reported(&flood[..1], &flood_members, received));
+    assert_eq!(roomy.report()[0].observed_ms, received);
+    // A report never replaces an endpoint the member announced itself.
+    roomy.observe(
+        "member-flood",
+        &["10.9.0.2:43821".to_string()],
+        received - 1,
+    );
+    assert!(!roomy.observe_reported(&flood[1..2], &flood_members, received + OBSERVATION_STEP_MS,));
+    let times: BTreeMap<String, u64> = roomy
+        .report()
+        .into_iter()
+        .map(|member| (member.endpoint, member.observed_ms))
+        .collect();
+    assert_eq!(times["10.9.0.2:43821"], received - 1);
+    // The member's own hello replaces a reported endpoint.
+    assert!(roomy.observe("member-flood", &["10.9.0.1:43821".to_string()], received));
+}
+
+#[test]
+fn reported_endpoints_of_unknown_devices_never_evict_and_dial_after_first_hand_ones() {
+    let received = 10 * OBSERVATION_STEP_MS;
+    let live = BTreeSet::from(["member-a".to_string(), "member-b".to_string()]);
+    let mut endpoints = PeerEndpoints::default();
+    let real = MemberEndpoint {
+        device_id: "member-b".to_string(),
+        endpoint: "10.1.0.1:43821".to_string(),
+        observed_ms: received,
+    };
+    assert!(endpoints.observe_reported(std::slice::from_ref(&real), &live, received));
+
+    // A member invents device ids to fill the bounds: none of them are kept, so the real
+    // second-hand endpoint stays.
+    let invented: Vec<MemberEndpoint> = (0..MAX_PEER_ENDPOINTS * 2)
+        .map(|index| MemberEndpoint {
+            device_id: format!("invented-{index}"),
+            endpoint: format!("10.2.{}.{}:43821", index / 200, index % 200 + 1),
+            observed_ms: received,
+        })
+        .collect();
+    assert!(!endpoints.observe_reported(&invented, &live, received + 1));
+    assert_eq!(
+        endpoints.devices(),
+        BTreeSet::from(["member-b".to_string()])
+    );
+    assert_eq!(endpoints.endpoints("member-b"), vec![real.endpoint.clone()]);
+
+    // Newer reported endpoints for a real member dial after the one it announced itself.
+    endpoints.observe("member-a", &["10.3.0.1:43821".to_string()], received);
+    let false_endpoints: Vec<MemberEndpoint> = (1..=3u8)
+        .map(|last| MemberEndpoint {
+            device_id: "member-a".to_string(),
+            endpoint: format!("10.4.0.{last}:43821"),
+            observed_ms: received + 5,
+        })
+        .collect();
+    assert!(endpoints.observe_reported(&false_endpoints, &live, received + 10));
+    let dial_order = endpoints.endpoints("member-a");
+    assert_eq!(
+        dial_order.first().map(String::as_str),
+        Some("10.3.0.1:43821")
+    );
+    assert_eq!(dial_order.len(), 4);
+}
+
+#[test]
+fn peer_book_bounds_endpoints_per_member_and_in_total() {
+    let mut endpoints = PeerEndpoints::default();
+    let many: Vec<String> = (1..=20).map(endpoint).collect();
+    endpoints.observe("device-2", &many, 10);
+    assert_eq!(
+        endpoints.endpoints("device-2").len(),
+        MAX_ENDPOINTS_PER_PEER
+    );
+    for index in 0..10u8 {
+        let addresses: Vec<String> = (0..8u8)
+            .map(|last| format!("10.0.{index}.{}:43821", last + 1))
+            .collect();
+        endpoints.observe(
+            &format!("member-{index}"),
+            &addresses,
+            100 + u64::from(index),
+        );
+    }
+    let reported = endpoints.report();
+    assert_eq!(reported.len(), MAX_PEER_ENDPOINTS);
+    assert!(reported.iter().all(|member| member.observed_ms >= 106));
+}
+
+#[test]
+fn peer_book_refuses_corrupt_oversized_or_unbounded_files() {
+    let directory = TestDirectory::new("peer-book-corrupt");
+    let path = directory.files().peers_path();
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create directory");
+
+    std::fs::write(&path, b"{not json").expect("write corrupt");
+    assert!(PeerBook::load(&path).is_err());
+    std::fs::write(&path, br#"{"schemaVersion":3,"endpoints":[]}"#).expect("write newer");
+    assert!(PeerBook::load(&path).is_err());
+    std::fs::write(&path, br#"{"schemaVersion":2,"endpoints":[],"extra":true}"#)
+        .expect("write unknown field");
+    assert!(PeerBook::load(&path).is_err());
+    std::fs::write(
+        &path,
+        br#"{"schemaVersion":2,"endpoints":[{"deviceId":"device-2","endpoint":"8.8.8.8:43821","observedMs":1,"firstHand":true}]}"#,
+    )
+    .expect("write public endpoint");
+    assert!(PeerBook::load(&path).is_err());
+    let repeated = format!(
+        r#"{{"schemaVersion":2,"endpoints":[{entry},{entry}]}}"#,
+        entry = r#"{"deviceId":"device-2","endpoint":"192.168.1.20:43821","observedMs":1,"firstHand":true}"#
+    );
+    std::fs::write(&path, repeated).expect("write repeated");
+    assert!(PeerBook::load(&path).is_err());
+    let crowded: Vec<String> = (1..=9u8)
+        .map(|last| {
+            format!(
+                r#"{{"deviceId":"device-2","endpoint":"192.168.1.{last}:43821","observedMs":1,"firstHand":true}}"#
+            )
+        })
+        .collect();
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"schemaVersion":2,"endpoints":[{}]}}"#,
+            crowded.join(",")
+        ),
+    )
+    .expect("write crowded");
+    assert!(PeerBook::load(&path).is_err());
+    std::fs::write(&path, vec![b' '; MAX_PEER_BOOK_BYTES + 1]).expect("write oversized");
+    assert!(PeerBook::load(&path).is_err());
+}
+
+fn members(ids: &[&str]) -> BTreeSet<String> {
+    ids.iter().map(|id| (*id).to_string()).collect()
+}
+
+#[test]
+fn pass_plan_prefers_the_anchor_then_discovered_then_known_members_within_the_limit() {
+    let members = members(&["anchor", "self", "lan-1", "lan-2", "known-1", "known-2"]);
+    let anchor_endpoints = vec![endpoint(1)];
+    let discovered = BTreeMap::from([
+        ("lan-1".to_string(), vec![endpoint(11)]),
+        ("lan-2".to_string(), vec![endpoint(12)]),
+        ("stranger".to_string(), vec![endpoint(13)]),
+    ]);
+    let mut known = PeerEndpoints::default();
+    known.observe("known-1", &[endpoint(21)], 50);
+    known.observe("known-2", &[endpoint(22)], 60);
+    known.observe("lan-1", &[endpoint(31)], 70);
+    let input = PlanInput {
+        kind: DeviceKind::Desktop,
+        own_device_id: "self",
+        members: &members,
+        anchor: Some(("anchor", &anchor_endpoints)),
+        anchor_reachable: true,
+        discovered: &discovered,
+        known: &known,
+    };
+
+    let plan = plan_pass(&input);
+    let chosen: Vec<(&str, PeerSource)> = plan
+        .peers
+        .iter()
+        .map(|peer| (peer.device_id.as_str(), peer.source))
+        .collect();
+    assert_eq!(plan.peers.len(), DESKTOP_MAX_EXCHANGES);
+    assert_eq!(
+        chosen,
+        vec![
+            ("anchor", PeerSource::Anchor),
+            ("lan-1", PeerSource::Discovered),
+            ("lan-2", PeerSource::Discovered),
+        ]
+    );
+    assert_eq!(plan.long_poll.as_deref(), Some("anchor"));
+    assert_eq!(
+        plan.peers[1].endpoints,
+        vec![endpoint(11), endpoint(31)],
+        "a discovery answer goes first and never hides the endpoints the book knows"
+    );
+
+    let phone = plan_pass(&PlanInput {
+        kind: DeviceKind::Mobile,
+        discovered: &BTreeMap::new(),
+        ..input.clone()
+    });
+    let chosen: Vec<&str> = phone
+        .peers
+        .iter()
+        .map(|peer| peer.device_id.as_str())
+        .collect();
+    assert_eq!(phone.peers.len(), MOBILE_MAX_EXCHANGES);
+    assert_eq!(chosen, vec!["anchor", "lan-1"]);
+    assert_eq!(phone.peers[1].source, PeerSource::Known);
+}
+
+#[test]
+fn pass_plan_keeps_a_slot_for_an_unreachable_anchor_and_long_polls_a_member() {
+    let members = members(&["anchor", "self", "known-1", "known-2", "known-3"]);
+    let anchor_endpoints = vec![endpoint(1)];
+    let mut known = PeerEndpoints::default();
+    known.observe("known-1", &[endpoint(21)], 50);
+    known.observe("known-2", &[endpoint(22)], 60);
+    known.observe("known-3", &[endpoint(23)], 70);
+    known.observe("removed", &[endpoint(24)], 80);
+    known.observe("self", &[endpoint(25)], 90);
+    let plan = plan_pass(&PlanInput {
+        kind: DeviceKind::Desktop,
+        own_device_id: "self",
+        members: &members,
+        anchor: Some(("anchor", &anchor_endpoints)),
+        anchor_reachable: false,
+        discovered: &BTreeMap::new(),
+        known: &known,
+    });
+    let chosen: Vec<&str> = plan
+        .peers
+        .iter()
+        .map(|peer| peer.device_id.as_str())
+        .collect();
+    assert_eq!(chosen, vec!["known-3", "known-2", "anchor"]);
+    assert_eq!(plan.long_poll.as_deref(), Some("known-3"));
+
+    let alone = plan_pass(&PlanInput {
+        kind: DeviceKind::Desktop,
+        own_device_id: "self",
+        members: &members,
+        anchor: None,
+        anchor_reachable: false,
+        discovered: &BTreeMap::new(),
+        known: &PeerEndpoints::default(),
+    });
+    assert!(alone.peers.is_empty());
+    assert_eq!(alone.long_poll, None);
+}
+
+#[test]
+fn anchor_pin_follows_a_handover_and_round_trips() {
+    let directory = TestDirectory::new("anchor-pin");
+    let path = directory.path().join("vault").join("anchor.json");
+    let mut log = view(vec![device(1, false), device(2, false)]);
+    let first = AnchorPin::follow(&path, VAULT, Some(&log))
+        .expect("follow the founding anchor")
+        .expect("the anchor is enrolled");
+    assert_eq!(first.device_id, "device-1");
+    assert_eq!(first.certificate_fingerprint, fingerprint_hex(&[1; 32]));
+    assert_eq!(AnchorPin::load(&path, VAULT).expect("load"), Some(first));
+
+    // A handover in a later epoch moves the pin to the new anchor's enrollment.
+    log.epoch = 2;
+    log.anchor_device_id = "device-2".to_string();
+    let moved = AnchorPin::follow(&path, VAULT, Some(&log))
+        .expect("follow the handover")
+        .expect("the new anchor is enrolled");
+    assert_eq!((moved.device_id.as_str(), moved.epoch), ("device-2", 2));
+    assert_eq!(moved.certificate_fingerprint, fingerprint_hex(&[2; 32]));
+    // Without a readable log, the stored pin stands in.
+    assert_eq!(
+        AnchorPin::follow(&path, VAULT, None).expect("read the stored pin"),
+        Some(moved)
+    );
+}
+
+#[test]
+fn anchor_pin_the_log_contradicts_is_replaced_or_dropped() {
+    let directory = TestDirectory::new("anchor-pin-stale");
+    let path = directory.path().join("anchor.json");
+    let stale = AnchorPin {
+        vault_id: VAULT.to_string(),
+        device_id: "device-1".to_string(),
+        certificate_fingerprint: "f".repeat(64),
+        epoch: 1,
+    };
+    stale.store(&path).expect("store a stale pin");
+    // The log's enrollment fingerprint wins over the stored one.
+    let log = view(vec![device(1, false)]);
+    let followed = AnchorPin::follow(&path, VAULT, Some(&log))
+        .expect("follow")
+        .expect("enrolled anchor");
+    assert_eq!(followed.certificate_fingerprint, fingerprint_hex(&[1; 32]));
+    assert_eq!(AnchorPin::load(&path, VAULT).expect("load"), Some(followed));
+
+    // A log that enrolls no anchor leaves nothing to pin.
+    let unenrolled = view(vec![device(2, false)]);
+    assert_eq!(
+        AnchorPin::follow(&path, VAULT, Some(&unenrolled)).expect("follow"),
+        None
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn anchor_pin_refuses_damaged_files_and_follow_starts_over() {
+    let directory = TestDirectory::new("anchor-pin-corrupt");
+    let path = directory.path().join("anchor.json");
+    let valid = |device_id: &str, fingerprint: &str, vault_id: &str| {
+        format!(
+            "{{\"schemaVersion\":1,\"vaultId\":\"{vault_id}\",\"deviceId\":\"{device_id}\",\
+             \"certificateFingerprint\":\"{fingerprint}\",\"epoch\":1}}"
+        )
+    };
+    let fingerprint = "a".repeat(64);
+    for damaged in [
+        "not json".to_string(),
+        valid("device-1", &fingerprint, "another-vault"),
+        valid("device 1", &fingerprint, VAULT),
+        valid("device-1", &"A".repeat(64), VAULT),
+        valid("device-1", &"a".repeat(63), VAULT),
+        valid("device-1", &fingerprint, VAULT)
+            .replace("\"schemaVersion\":1", "\"schemaVersion\":9"),
+        valid("device-1", &fingerprint, VAULT).replace('}', ",\"extra\":1}"),
+        "x".repeat(MAX_ANCHOR_PIN_BYTES + 1),
+    ] {
+        std::fs::write(&path, &damaged).expect("write damaged pin");
+        assert!(AnchorPin::load(&path, VAULT).is_err(), "{damaged}");
+        assert_eq!(AnchorPin::follow(&path, VAULT, None).expect("follow"), None);
+        assert!(!path.exists());
+    }
+    std::fs::write(&path, valid("device-1", &fingerprint, VAULT)).expect("write valid pin");
+    assert_eq!(
+        AnchorPin::load(&path, VAULT)
+            .expect("load")
+            .map(|pin| pin.certificate_fingerprint),
+        Some(fingerprint)
+    );
+}
+
+#[test]
+fn discovery_keys_follow_a_rotation_and_browse_the_previous_key_for_a_day() {
+    let directory = TestDirectory::new("discovery-keys");
+    let path = directory.path().join("vault").join("discovery.json");
+    let mut log = view(vec![device(1, false)]);
+    let founded = DiscoveryKeys::follow(&path, VAULT, Some(&log), 1_000)
+        .expect("follow the charter key")
+        .expect("the log names a key");
+    assert_eq!(founded.current, [5; 32]);
+    assert_eq!(founded.browsed(1_000).len(), 1);
+    // Following the same key keeps the time this device first saw it.
+    let again = DiscoveryKeys::follow(&path, VAULT, Some(&log), 9_000)
+        .expect("follow again")
+        .expect("keys");
+    assert_eq!(again.seen_at_ms, 1_000);
+
+    // A removal rotates the key: only the new key is advertised, and the previous one is
+    // browsed for a day after this device first saw the rotation.
+    log.previous_discovery_key = Some(log.discovery_key);
+    log.discovery_key = [6; 32];
+    let rotated = DiscoveryKeys::follow(&path, VAULT, Some(&log), 50_000)
+        .expect("follow the rotation")
+        .expect("keys");
+    assert_eq!(rotated.advertised().as_bytes(), &[6; 32]);
+    let browsed = |at: u64| -> Vec<[u8; 32]> {
+        rotated
+            .browsed(at)
+            .iter()
+            .map(|key| *key.as_bytes())
+            .collect()
+    };
+    assert_eq!(browsed(50_000), vec![[6; 32], [5; 32]]);
+    assert_eq!(
+        browsed(50_000 + PREVIOUS_KEY_BROWSE_MS - 1),
+        vec![[6; 32], [5; 32]]
+    );
+    assert_eq!(browsed(50_000 + PREVIOUS_KEY_BROWSE_MS), vec![[6; 32]]);
+    // The time survives a restart, and without a readable log the stored keys stand in.
+    assert_eq!(
+        DiscoveryKeys::follow(&path, VAULT, None, 60_000).expect("read the stored keys"),
+        Some(rotated)
+    );
+}
+
+#[test]
+fn discovery_keys_refuse_damaged_files_and_follow_starts_over() {
+    let directory = TestDirectory::new("discovery-keys-corrupt");
+    let path = directory.path().join("discovery.json");
+    let log = view(vec![device(1, false)]);
+    let stored = DiscoveryKeys::follow(&path, VAULT, Some(&log), 1_000)
+        .expect("follow")
+        .expect("keys");
+    assert!(
+        DiscoveryKeys::load(&path, "vault-other").is_err(),
+        "keys of another vault are refused"
+    );
+    std::fs::write(&path, b"{\"schemaVersion\":1}").expect("damage the file");
+    assert!(DiscoveryKeys::load(&path, VAULT).is_err());
+    assert_eq!(
+        DiscoveryKeys::follow(&path, VAULT, None, 2_000).expect("drop the damaged file"),
+        None
+    );
+    assert!(!path.exists());
+    std::fs::write(&path, vec![b' '; MAX_DISCOVERY_KEYS_BYTES + 1]).expect("oversized file");
+    assert!(DiscoveryKeys::load(&path, VAULT).is_err());
+    let rebuilt = DiscoveryKeys::follow(&path, VAULT, Some(&log), 3_000)
+        .expect("follow again")
+        .expect("keys");
+    assert_eq!(rebuilt.current, stored.current);
+    assert_eq!(rebuilt.seen_at_ms, 3_000);
+}

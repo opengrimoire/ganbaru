@@ -15,10 +15,11 @@ pub use sync::{
     SyncSettledProposal, decode_sync_admin_key, decode_sync_charter, decode_sync_device_key,
     decode_sync_proposal, encode_sync_admin_key, encode_sync_charter, encode_sync_device_key,
     encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
-    validate_discovery_key,
+    validate_member_endpoints,
 };
+pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -344,7 +345,8 @@ pub enum ControlMessage {
         public_key: String,
         private_key_pkcs8: String,
     },
-    /// Authenticated: a linked device compares its stored operations with the hub's.
+    /// Authenticated: a linked device compares its stored operations with the hub's, and
+    /// reports the endpoints its own sync listener serves on, empty when it does not listen.
     SyncHello {
         protocol_version: u16,
         vault_id: String,
@@ -352,19 +354,19 @@ pub enum ControlMessage {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe: Option<SyncProbe>,
+        listening: Vec<String>,
     },
     /// The hub's stored operations and its hash at the probed sequence, when it holds it, plus
-    /// the listener endpoints the coordinator reports now and the vault's discovery key, so a
-    /// linked device follows address changes without relinking. `stable` lists the operations
-    /// every counted device holds, and `bootstrap_required` tells the device that the hub no
-    /// longer holds operations it lacks. `forked` lists the writers the hub holds fork evidence
-    /// for, each with the sequence where its copies differ.
+    /// the member listener endpoints the hub knows, its own first, so a linked device follows
+    /// address changes without relinking. `stable` lists the
+    /// operations every counted device holds, and `bootstrap_required` tells the device that
+    /// the hub no longer holds operations it lacks. `forked` lists the writers the hub holds
+    /// fork evidence for, each with the sequence where its copies differ.
     SyncState {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe_hash: Option<String>,
-        coordinator_endpoints: Vec<String>,
-        discovery_key: String,
+        members: Vec<MemberEndpoint>,
         stable: Vec<SyncSeq>,
         bootstrap_required: bool,
         forked: Vec<SyncSeq>,
@@ -490,6 +492,47 @@ pub enum ControlMessage {
     SyncForwarded {
         proposals: Vec<String>,
     },
+    /// Authenticated: a page of the hub's authorization record store past `cursor`, the
+    /// stored order the requester reached in each envelope class. Served to removed and held
+    /// devices too.
+    SyncRecords {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        cursor: Vec<u64>,
+        max_bytes: u32,
+    },
+    SyncRecordPage {
+        records: Vec<String>,
+        cursor: Vec<u64>,
+        more: bool,
+    },
+    /// Authenticated: stored envelopes whose envelope or entry hash is among `hashes`, and the
+    /// certificates of `writers`.
+    SyncRecordGet {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        hashes: Vec<String>,
+        writers: Vec<String>,
+    },
+    SyncRecordFound {
+        records: Vec<String>,
+    },
+    /// Authenticated: authorization records, certificates, and fork evidence the hub may lack.
+    SyncRecordPush {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        records: Vec<String>,
+    },
+    /// How many pushed envelopes the hub did not hold, and what it still lacks that they
+    /// reference.
+    SyncRecordPushResult {
+        admitted: u32,
+        missing_hashes: Vec<String>,
+        missing_writers: Vec<String>,
+    },
     Error {
         code: String,
         message: String,
@@ -498,8 +541,16 @@ pub enum ControlMessage {
 }
 
 impl ControlMessage {
+    /// Whether this is a record exchange request, which every paired peer is served whatever
+    /// the authorization log says of its device.
+    pub fn is_record_exchange(&self) -> bool {
+        matches!(
+            self,
+            Self::SyncRecords { .. } | Self::SyncRecordGet { .. } | Self::SyncRecordPush { .. }
+        )
+    }
+
     /// The vault and device a sync request names, or `None` for any other message.
-    #[cfg(desktop)]
     pub fn sync_peer(&self) -> Option<(&str, &str)> {
         match self {
             Self::SyncHello {
@@ -553,6 +604,21 @@ impl ControlMessage {
                 ..
             }
             | Self::SyncForward {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecords {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecordGet {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecordPush {
                 vault_id,
                 device_id,
                 ..
@@ -808,19 +874,20 @@ impl ControlMessage {
                 manifest_version: _,
                 stored,
                 probe,
+                listening,
             } => {
                 validate_sync_peer(*protocol_version, vault_id, device_id)?;
                 sync::validate_vector(stored)?;
                 if let Some(probe) = probe {
                     sync::validate_probe(probe)?;
                 }
+                sync::validate_coordinator_endpoints(listening)?;
             }
             Self::SyncState {
                 manifest_version: _,
                 stored,
                 probe_hash,
-                coordinator_endpoints,
-                discovery_key,
+                members,
                 stable,
                 bootstrap_required: _,
                 forked,
@@ -831,8 +898,7 @@ impl ControlMessage {
                 if let Some(hash) = probe_hash {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
-                sync::validate_coordinator_endpoints(coordinator_endpoints)?;
-                sync::validate_discovery_key(discovery_key)?;
+                sync::validate_member_endpoints(members)?;
             }
             Self::SyncPush {
                 protocol_version,
@@ -952,6 +1018,55 @@ impl ControlMessage {
                 sync::validate_settled(settled)?;
             }
             Self::SyncForwarded { proposals } => sync::validate_forwarded(proposals)?,
+            Self::SyncRecords {
+                protocol_version,
+                vault_id,
+                device_id,
+                cursor,
+                max_bytes,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_record_cursor(cursor)?;
+                sync::validate_page_bytes(*max_bytes)?;
+            }
+            Self::SyncRecordPage {
+                records,
+                cursor,
+                more: _,
+            } => {
+                sync::validate_records(records)?;
+                sync::validate_record_cursor(cursor)?;
+            }
+            Self::SyncRecordGet {
+                protocol_version,
+                vault_id,
+                device_id,
+                hashes,
+                writers,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_record_wants(hashes, writers)?;
+            }
+            Self::SyncRecordFound { records } => sync::validate_records(records)?,
+            Self::SyncRecordPush {
+                protocol_version,
+                vault_id,
+                device_id,
+                records,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_records(records)?;
+            }
+            Self::SyncRecordPushResult {
+                admitted,
+                missing_hashes,
+                missing_writers,
+            } => {
+                sync::validate_record_wants(missing_hashes, missing_writers)?;
+                if *admitted as usize > sync::MAX_SYNC_RECORDS {
+                    return Err("sync record admission count is invalid".to_string());
+                }
+            }
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -1917,14 +2032,24 @@ mod tests {
         }
     }
 
-    fn discovery_key_of(bytes: usize) -> String {
-        base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            vec![7_u8; bytes],
-        )
+    /// Member endpoints of distinct devices, one per endpoint.
+    fn members(endpoints: &[&str]) -> Vec<MemberEndpoint> {
+        endpoints
+            .iter()
+            .zip(0u64..)
+            .map(|(endpoint, index)| MemberEndpoint {
+                device_id: format!("device-{index}"),
+                endpoint: (*endpoint).to_string(),
+                observed_ms: 1_700_000_000_000 + index,
+            })
+            .collect()
     }
 
-    fn sync_state(endpoints: &[&str], discovery_key: String) -> ControlMessage {
+    fn sync_state(endpoints: &[&str]) -> ControlMessage {
+        sync_state_with(members(endpoints))
+    }
+
+    fn sync_state_with(members: Vec<MemberEndpoint>) -> ControlMessage {
         ControlMessage::SyncState {
             manifest_version: 1,
             stored: vec![SyncSeq {
@@ -1932,8 +2057,7 @@ mod tests {
                 seq: 3,
             }],
             probe_hash: Some("c".repeat(64)),
-            coordinator_endpoints: endpoints.iter().map(ToString::to_string).collect(),
-            discovery_key,
+            members,
             stable: vec![SyncSeq {
                 writer: "a".repeat(32),
                 seq: 2,
@@ -1958,31 +2082,85 @@ mod tests {
     }
 
     #[test]
-    fn sync_state_round_trips_reported_endpoints_and_discovery_key() {
-        let state = sync_state(
-            &[
-                "192.168.1.20:43821",
-                "[fd00::5]:43821",
-                "[2a01:4f8:10:20::5]:43821",
-                "100.64.3.4:43821",
-            ],
-            discovery_key_of(DISCOVERY_KEY_BYTES),
-        );
+    fn sync_state_round_trips_reported_endpoints() {
+        let state = sync_state(&[
+            "192.168.1.20:43821",
+            "[fd00::5]:43821",
+            "[2a01:4f8:10:20::5]:43821",
+            "100.64.3.4:43821",
+        ]);
         assert_eq!(frame_round_trip(&state), Ok(state));
-        let empty = sync_state(&[], discovery_key_of(DISCOVERY_KEY_BYTES));
+        let empty = sync_state(&[]);
         assert_eq!(frame_round_trip(&empty), Ok(empty));
-        let full = vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS];
-        assert_eq!(
-            sync_state(&full, discovery_key_of(DISCOVERY_KEY_BYTES)).validate(),
-            Ok(())
-        );
+        let full = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS];
+        assert_eq!(sync_state(&full).validate(), Ok(()));
     }
 
     #[test]
-    fn sync_state_refuses_unreportable_endpoints_and_malformed_keys() {
-        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
-        let nine = vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS + 1];
-        assert!(sync_state(&nine, key.clone()).validate().is_err());
+    fn member_endpoints_keep_their_wire_shape() {
+        let member = MemberEndpoint {
+            device_id: "device-laptop".to_string(),
+            endpoint: "192.168.1.20:43821".to_string(),
+            observed_ms: 1_700_000_000_123,
+        };
+        assert_eq!(
+            serde_json::to_value(&member).expect("serialize member endpoint"),
+            serde_json::json!({
+                "deviceId": "device-laptop",
+                "endpoint": "192.168.1.20:43821",
+                "observedMs": 1_700_000_000_123u64,
+            })
+        );
+        let hello = ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: vec!["192.168.1.20:43821".to_string()],
+        };
+        let wire = serde_json::to_value(&hello).expect("serialize sync hello");
+        assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
+        assert_eq!(wire["protocol_version"], serde_json::json!(15));
+        assert_eq!(frame_round_trip(&hello), Ok(hello));
+    }
+
+    #[test]
+    fn sync_hello_refuses_too_many_or_unreportable_listening_endpoints() {
+        let hello = |listening: Vec<&str>| ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: listening.into_iter().map(ToString::to_string).collect(),
+        };
+        assert_eq!(hello(Vec::new()).validate(), Ok(()));
+        assert_eq!(
+            hello(vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS]).validate(),
+            Ok(())
+        );
+        assert!(
+            hello(vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS + 1])
+                .validate()
+                .is_err()
+        );
+        assert!(hello(vec!["203.0.113.5:43821"]).validate().is_err());
+    }
+
+    #[test]
+    fn sync_state_refuses_unreportable_endpoints() {
+        let over = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS + 1];
+        assert!(sync_state(&over).validate().is_err());
+        let mut repeated = members(&["192.168.1.20:43821", "192.168.1.21:43821"]);
+        repeated[1].device_id = repeated[0].device_id.clone();
+        repeated[1].endpoint = repeated[0].endpoint.clone();
+        assert!(sync_state_with(repeated).validate().is_err());
+        let mut unnamed = members(&["192.168.1.20:43821"]);
+        unnamed[0].device_id = "device one".to_string();
+        assert!(sync_state_with(unnamed).validate().is_err());
         for endpoint in [
             "203.0.113.5:43821",
             "127.0.0.1:43821",
@@ -1992,28 +2170,15 @@ mod tests {
             "192.168.1.20",
             "",
         ] {
-            let state = sync_state(&["10.0.0.4:43821", endpoint], key.clone());
+            let state = sync_state(&["10.0.0.4:43821", endpoint]);
             assert!(state.validate().is_err(), "{endpoint:?}");
             assert!(frame_round_trip(&state).is_err(), "{endpoint:?}");
-        }
-        for malformed in [
-            discovery_key_of(DISCOVERY_KEY_BYTES - 1),
-            discovery_key_of(DISCOVERY_KEY_BYTES + 1),
-            format!("{key}="),
-            "!".repeat(key.len()),
-            String::new(),
-        ] {
-            assert!(
-                sync_state(&[], malformed.clone()).validate().is_err(),
-                "{malformed:?}"
-            );
         }
     }
 
     #[test]
     fn sync_state_round_trips_stability_and_refuses_malformed_stable_vectors() {
-        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
-        let mut state = sync_state(&[], key.clone());
+        let mut state = sync_state(&[]);
         if let ControlMessage::SyncState {
             bootstrap_required, ..
         } = &mut state
@@ -2031,7 +2196,7 @@ mod tests {
                 seq: 0,
             }],
         ] {
-            let mut state = sync_state(&[], key.clone());
+            let mut state = sync_state(&[]);
             if let ControlMessage::SyncState { stable: field, .. } = &mut state {
                 *field = stable.clone();
             }
@@ -2048,9 +2213,8 @@ mod tests {
 
     #[test]
     fn sync_state_bounds_its_forked_writers() {
-        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
         let with_forked = |forked: Vec<SyncSeq>| {
-            let mut state = sync_state(&[], key.clone());
+            let mut state = sync_state(&[]);
             if let ControlMessage::SyncState { forked: field, .. } = &mut state {
                 *field = forked;
             }
@@ -2283,11 +2447,115 @@ mod tests {
             manifest_version: 1,
             stored: Vec::new(),
             probe: None,
+            listening: Vec::new(),
         };
         assert_eq!(hello(PROTOCOL_VERSION).validate(), Ok(()));
         assert_eq!(
             hello(PROTOCOL_VERSION - 1).validate(),
             Err("handoff protocol version is unsupported".to_string())
         );
+    }
+
+    #[test]
+    fn record_exchange_messages_round_trip_within_their_bounds() {
+        let peer = || {
+            (
+                "vault-abcdefghijklmnopqrstuv".to_string(),
+                "device-phone".to_string(),
+            )
+        };
+        let records = |count: usize| vec!["AAEC".to_string(); count];
+        let (vault_id, device_id) = peer();
+        let request = ControlMessage::SyncRecords {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            cursor: vec![0, 3, 0, 9, 12],
+            max_bytes: 64 * 1024,
+        };
+        assert!(request.is_record_exchange());
+        assert_eq!(frame_round_trip(&request), Ok(request));
+        let (vault_id, device_id) = peer();
+        let get = ControlMessage::SyncRecordGet {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            hashes: vec!["a".repeat(64); MAX_SYNC_RECORDS],
+            writers: vec!["b".repeat(32); MAX_SYNC_RECORDS],
+        };
+        assert!(get.is_record_exchange());
+        assert_eq!(frame_round_trip(&get), Ok(get));
+        let (vault_id, device_id) = peer();
+        let push = ControlMessage::SyncRecordPush {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            records: records(MAX_SYNC_RECORDS),
+        };
+        assert!(push.is_record_exchange());
+        assert_eq!(frame_round_trip(&push), Ok(push));
+        let page = ControlMessage::SyncRecordPage {
+            records: records(MAX_SYNC_RECORDS),
+            cursor: vec![1; SYNC_RECORD_CLASSES],
+            more: true,
+        };
+        assert!(!page.is_record_exchange());
+        assert_eq!(frame_round_trip(&page), Ok(page));
+        let result = ControlMessage::SyncRecordPushResult {
+            admitted: MAX_SYNC_RECORDS as u32,
+            missing_hashes: vec!["c".repeat(64)],
+            missing_writers: vec!["d".repeat(32)],
+        };
+        assert_eq!(frame_round_trip(&result), Ok(result));
+    }
+
+    #[test]
+    fn record_exchange_messages_refuse_oversized_or_malformed_fields() {
+        let records = |count: usize| vec!["AAEC".to_string(); count];
+        let malformed = [
+            ControlMessage::SyncRecords {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                cursor: vec![0; SYNC_RECORD_CLASSES - 1],
+                max_bytes: 64 * 1024,
+            },
+            ControlMessage::SyncRecordPage {
+                records: records(MAX_SYNC_RECORDS + 1),
+                cursor: vec![0; SYNC_RECORD_CLASSES],
+                more: false,
+            },
+            ControlMessage::SyncRecordGet {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                hashes: vec!["a".repeat(64); MAX_SYNC_RECORDS + 1],
+                writers: Vec::new(),
+            },
+            ControlMessage::SyncRecordGet {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                hashes: Vec::new(),
+                writers: vec!["B".repeat(32)],
+            },
+            ControlMessage::SyncRecordFound {
+                records: vec![String::new()],
+            },
+            ControlMessage::SyncRecordPush {
+                protocol_version: PROTOCOL_VERSION - 1,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                records: records(1),
+            },
+            ControlMessage::SyncRecordPushResult {
+                admitted: MAX_SYNC_RECORDS as u32 + 1,
+                missing_hashes: Vec::new(),
+                missing_writers: Vec::new(),
+            },
+        ];
+        for message in malformed {
+            assert!(message.validate().is_err(), "{message:?}");
+        }
     }
 }

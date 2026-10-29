@@ -545,6 +545,25 @@ fn foreign_keys_follow_references_and_ownership() {
     });
 }
 
+/// Adapter-derived columns are written beside settled values, where foreign keys are deferred
+/// to the commit of the whole apply, so none of them may hold one.
+#[test]
+fn derived_columns_hold_no_foreign_keys() {
+    block_on(async {
+        for (manifest, pool) in cases().await {
+            for table in manifest.tables {
+                for (column, target, _, _) in foreign_keys(&pool, table.name).await {
+                    assert!(
+                        !table.derived_columns.contains(&column.as_str()),
+                        "{}.{column} is derived and references {target}",
+                        table.name
+                    );
+                }
+            }
+        }
+    });
+}
+
 /// A `published_with` column is nullable exactly when null publishes, and its foreign key
 /// cascades: a nullable column that never publishes when null would keep such rows local
 /// forever, and a key that clears would publish a parent's pending children at its delete.

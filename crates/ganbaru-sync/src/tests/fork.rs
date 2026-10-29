@@ -4,13 +4,17 @@
 //! bound of stored excluded operations are covered here too, since the same readiness rule and
 //! branch drop serve both causes.
 
-use ganbaru_sync_contracts::{DeviceRole, Envelope, ProposalRejection};
+use std::collections::BTreeSet;
+
+use ganbaru_sync_contracts::op::OPERATION_MAGIC;
+use ganbaru_sync_contracts::{Content, DeviceRole, Envelope, ProposalRejection, WriterKeyPair};
 
 use super::authorization::{admin_entry, forge_handover, remove_entry, superseded, view};
 use super::block_on;
-use super::exclusion::{deliver, displaced, edit, late_changes, note, title};
+use super::exclusion::{deliver, displaced, edit, late_changes, note, own_head, title};
 use super::replica::{
-    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_id, enroll_entry, pair, person,
+    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_admin, device_id, enroll_entry, pair,
+    person, proposal,
 };
 use crate::{
     EvidenceOutcome, EvidenceRefusal, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
@@ -486,6 +490,74 @@ fn a_fork_learned_after_the_anchor_confirmed_a_branch_converges_on_the_anchor_wi
 }
 
 #[test]
+fn the_current_and_a_former_anchor_resealing_one_forked_group_converge() {
+    block_on(async {
+        let mut charter = Replica::anchor(0, 308).await;
+        charter.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut successor = Replica::new(20, 308).await;
+        let (mut original, mut clone) = installation(308).await;
+        let mut honest = Replica::new(2, 308).await;
+        deliver(&mut charter, &mut original).await;
+        deliver(&mut successor, &mut charter).await;
+        deliver(&mut honest, &mut charter).await;
+        let before_fork = charter.stored_vector().await;
+        diverge(&mut original, &mut clone).await;
+
+        // The charter anchor applies the original's branch and keeps nothing it displaced. A
+        // handover that never saw the branch installs the successor, which applies the clone's.
+        deliver(&mut charter, &mut original).await;
+        let signed = successor.handover_proposal(&device_admin(20)).await;
+        successor
+            .seal_handover(&signed, Some(before_fork))
+            .await
+            .unwrap()
+            .unwrap();
+        deliver(&mut charter, &mut successor).await;
+        deliver(&mut successor, &mut clone).await;
+        assert_eq!(
+            title(&mut charter, "note-1").await.as_deref(),
+            Some("Original")
+        );
+        assert_eq!(
+            title(&mut successor, "note-1").await.as_deref(),
+            Some("Clone")
+        );
+
+        // Evidence reaches both. The successor re-seals as the anchor of a handed over epoch and
+        // the charter as the former anchor that released what the branch displaced.
+        let heads = [own_head(&mut charter).await, own_head(&mut successor).await];
+        cross(&mut successor, &mut original).await;
+        cross(&mut charter, &mut clone).await;
+        for (replica, before) in [&mut charter, &mut successor].into_iter().zip(heads) {
+            assert_eq!(replica.evidence().await.len(), 1);
+            replica.seal().await.unwrap();
+            assert!(
+                own_head(replica).await > before,
+                "{} re-seals",
+                replica.device_id
+            );
+        }
+        drop(original);
+        drop(clone);
+        let mut replicas = vec![charter, successor, honest];
+        converge(&mut replicas).await;
+        let settled = replicas[0].domain_dump().await;
+        let kept = title(&mut replicas[0], "note-1").await;
+        assert!(kept.is_some());
+        for replica in &mut replicas {
+            assert_eq!(
+                replica.domain_dump().await,
+                settled,
+                "{}",
+                replica.device_id
+            );
+            assert_eq!(title(replica, "note-1").await, kept);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
 fn a_branch_the_anchor_stored_without_applying_is_published_again_from_the_anchor() {
     block_on(async {
         let mut anchor = Replica::anchor(0, 307).await;
@@ -888,6 +960,149 @@ fn a_removal_beyond_the_bound_ends_the_same_whether_the_operation_applied_was_re
 }
 
 #[test]
+fn an_authorization_entry_past_the_removal_bound_is_stored_where_a_domain_operation_is_not() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 314).await;
+        let mut removed = Replica::new(1, 314).await;
+        edit(&mut removed, &note("note-early", "Early", 0)).await;
+        deliver(&mut anchor, &mut removed).await;
+        let writer = removed.writer();
+        let cutoff = anchor.stored_vector().await.get(&writer);
+        anchor.remove(&removed.device_id).await.unwrap();
+        edit(&mut removed, &note("note-bound", "Bound", 5)).await;
+        for index in 1..MAX_EXCLUDED_PER_WRITER {
+            edit(
+                &mut removed,
+                &format!("UPDATE quick_notes SET title = 'Bound {index}' WHERE id = 'note-bound'"),
+            )
+            .await;
+        }
+        let excluded = removed.own_ops().await[usize::try_from(cutoff).unwrap()..].to_vec();
+        assert_eq!(excluded.len() as u64, MAX_EXCLUDED_PER_WRITER);
+
+        // The same next sequence carries a domain operation on one copy of the device and an
+        // authorization entry on the other.
+        let mut copy = removed.clone_device().await;
+        edit(&mut removed, &note("note-late", "Late", 6)).await;
+        let domain = removed.own_ops().await.pop().unwrap();
+        let (_, entry) = forge_handover(&mut copy, 1).await;
+
+        let mut refusing = Replica::new(3, 314).await;
+        let mut keeping = Replica::new(4, 314).await;
+        for replica in [&mut refusing, &mut keeping] {
+            deliver(replica, &mut anchor).await;
+            take(replica, &excluded).await;
+        }
+        assert_eq!(take(&mut refusing, &[domain]).await, vec![REVOKED]);
+        assert!(matches!(
+            take(&mut keeping, &[entry]).await[..],
+            [StoreOutcome::Stored { .. }]
+        ));
+        assert_eq!(
+            refusing.stored_vector().await.get(&writer),
+            cutoff + MAX_EXCLUDED_PER_WRITER
+        );
+        assert_eq!(
+            keeping.stored_vector().await.get(&writer),
+            cutoff + MAX_EXCLUDED_PER_WRITER + 1
+        );
+        for replica in [&mut refusing, &mut keeping] {
+            assert_eq!(title(replica, "note-late").await, None);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
+fn a_removed_device_keeps_the_lowest_writers_its_removal_does_not_name_in_any_order() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 313).await;
+        let mut removed = Replica::new(1, 313).await;
+        let mut a = Replica::new(3, 313).await;
+        let mut ascending = Replica::new(4, 313).await;
+        let mut descending = Replica::new(5, 313).await;
+        // The anchor never stores the device's writers, so its removal names none of them.
+        let mut writers = Vec::new();
+        for (position, id) in ["note-first", "note-second", "note-third"]
+            .into_iter()
+            .enumerate()
+        {
+            if position > 0 {
+                removed.rotate();
+            }
+            edit(&mut removed, &note(id, "Late", 0)).await;
+            edit(
+                &mut removed,
+                &format!("UPDATE quick_notes SET title = 'Later' WHERE id = '{id}'"),
+            )
+            .await;
+            writers.push((removed.writer(), removed.own_ops().await, id));
+        }
+        writers.sort_by_key(|(writer, _, _)| *writer);
+        let distinct: BTreeSet<_> = writers.iter().map(|(writer, _, _)| *writer).collect();
+        assert_eq!(distinct.len(), writers.len());
+        anchor.remove(&removed.device_id).await.unwrap();
+
+        // A stored every writer before the removal; the others learned of the removal first
+        // and receive the writers in ascending and in descending id order.
+        for (_, ops, _) in &writers {
+            take(&mut a, ops).await;
+        }
+        deliver(&mut a, &mut anchor).await;
+        deliver(&mut ascending, &mut anchor).await;
+        deliver(&mut descending, &mut anchor).await;
+        let (kept, rest) = writers.split_at(2);
+        let (surplus, surplus_ops, _) = &rest[0];
+        for (_, ops, _) in &writers {
+            take(&mut ascending, ops).await;
+        }
+        for (_, ops, _) in writers.iter().rev() {
+            take(&mut descending, ops).await;
+        }
+        assert_eq!(ascending.stored_vector().await.get(surplus), 0);
+        assert_eq!(
+            take(&mut ascending, &surplus_ops[..1]).await,
+            vec![REVOKED],
+            "a genesis above the lowest unnamed writers is refused"
+        );
+        assert_eq!(
+            take(&mut descending, &surplus_ops[1..]).await.first(),
+            Some(&REVOKED),
+            "a displaced writer keeps only its genesis"
+        );
+        for replica in [&mut a, &mut descending] {
+            assert_eq!(replica.stored_vector().await.get(surplus), 1);
+        }
+        for (writer, ops, _) in kept {
+            for replica in [&mut a, &mut ascending, &mut descending] {
+                assert_eq!(
+                    replica.stored_vector().await.get(writer),
+                    ops.len() as u64,
+                    "an unnamed writer among the lowest keeps its excluded operations"
+                );
+            }
+        }
+
+        let expected_late = late_changes(&mut a).await;
+        let rows: BTreeSet<_> = expected_late
+            .iter()
+            .map(|late| late.row_key.as_str())
+            .collect();
+        let kept_rows: BTreeSet<_> = kept.iter().map(|(_, _, id)| *id).collect();
+        assert_eq!(rows, kept_rows);
+        let expected = anchor.domain_dump().await;
+        for replica in [&mut a, &mut ascending, &mut descending] {
+            assert_eq!(late_changes(replica).await, expected_late);
+            assert_eq!(replica.domain_dump().await, expected);
+            for id in ["note-first", "note-second", "note-third"] {
+                assert_eq!(title(replica, id).await, None);
+            }
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
 fn a_creation_beyond_the_bound_is_offered_again_after_a_reselection_reverts_the_removal() {
     block_on(async {
         let mut space = superseded(312).await;
@@ -974,5 +1189,168 @@ fn a_forked_anchor_continues_its_log_through_a_handover_to_itself() {
             .unwrap();
         deliver(&mut member, &mut anchor).await;
         assert_eq!(view(&mut member).await, view(&mut anchor).await);
+    });
+}
+
+/// A second operation of the writer `key` signs at the sequence of `bytes`: an acknowledgement
+/// that claims `revision` and continues from the same previous operation.
+fn twin(bytes: &[u8], key: &WriterKeyPair, revision: u64) -> Vec<u8> {
+    let mut operation = Envelope::decode(bytes).unwrap().operation().unwrap();
+    operation.content = Content::Acknowledgement;
+    operation.header.authorization_revision = revision;
+    operation.header.group_continues = false;
+    operation.seal(key).unwrap().into_bytes()
+}
+
+/// `bytes` with a format version newer than this build, signed again by `key`: the envelope
+/// decodes and verifies, but its operation does not.
+fn unreadable(bytes: &[u8], key: &WriterKeyPair) -> Vec<u8> {
+    let envelope = Envelope::decode(bytes).unwrap();
+    let signed = envelope.signed.len();
+    let mut forged = bytes.to_vec();
+    forged[OPERATION_MAGIC.len()] = u8::MAX;
+    let signature = key.sign_operation(&forged[..signed]);
+    let start = forged.len() - signature.len();
+    forged[start..].copy_from_slice(&signature);
+    forged
+}
+
+/// An anchor that enrolled admin 20 and sealed two notes after it, so its last two operations
+/// claim the revision that enrolled 20, and admin 20's replica holding all of it. Returns both
+/// and the anchor's operations.
+async fn sealed_past_enrollment(salt: u64) -> (Replica, Replica, Vec<Vec<u8>>) {
+    let mut anchor = Replica::anchor(0, salt).await;
+    anchor.sequence(admin_entry(20)).await.unwrap().unwrap();
+    anchor
+        .sequence(enroll_entry(&person(), 21, DeviceRole::Member))
+        .await
+        .unwrap()
+        .unwrap();
+    edit(&mut anchor, &note("note-1", "First", 0)).await;
+    edit(&mut anchor, &note("note-2", "Second", 1)).await;
+    let mut admin = Replica::new(20, salt).await;
+    deliver(&mut admin, &mut anchor).await;
+    let ops = anchor.own_ops().await;
+    (anchor, admin, ops)
+}
+
+/// Asserts that `bad`, a second copy of the anchor's last operation, is refused as fork evidence
+/// whichever copy is offered first and whichever copy a replica stored first, and that no
+/// replica freezes or loses an entry over it.
+async fn assert_refused_as_evidence(salt: u64, bad: impl Fn(&[u8], &WriterKeyPair) -> Vec<u8>) {
+    for stored_first in [true, false] {
+        let (anchor, mut admin, ops) = sealed_past_enrollment(salt).await;
+        let honest = ops.last().unwrap().clone();
+        let bad = bad(&honest, &anchor.identity.key);
+        let before = view(&mut admin).await;
+        assert_eq!(before.frozen_at, None);
+        for (first, second) in [(&honest, &bad), (&bad, &honest)] {
+            assert!(matches!(
+                offer(&mut admin, first, second).await,
+                EvidenceOutcome::Refused(_)
+            ));
+        }
+        let mut member = Replica::new(21, salt).await;
+        let (earlier, later) = if stored_first {
+            (&honest, &bad)
+        } else {
+            (&bad, &honest)
+        };
+        let mut prefix = ops[..ops.len() - 1].to_vec();
+        prefix.push(earlier.clone());
+        member.receive(&prefix).await;
+        member.receive(std::slice::from_ref(later)).await;
+        member.apply_all().await.unwrap();
+        for replica in [&mut admin, &mut member] {
+            replica.apply_all().await.unwrap();
+            assert!(replica.evidence().await.is_empty());
+            let after = view(replica).await;
+            assert_eq!(after.frozen_at, None);
+            assert_eq!(after.revision, before.revision);
+            assert_eq!(after.devices, before.devices);
+        }
+    }
+}
+
+#[test]
+fn an_undecodable_second_operation_is_no_fork_evidence() {
+    block_on(assert_refused_as_evidence(313, unreadable));
+}
+
+#[test]
+fn a_second_operation_with_a_bad_signature_is_no_fork_evidence() {
+    block_on(assert_refused_as_evidence(315, |honest, key| {
+        let mut forged = twin(honest, key, 2);
+        *forged.last_mut().unwrap() ^= 1;
+        forged
+    }));
+}
+
+#[test]
+fn a_second_operation_claiming_a_revision_below_the_shared_prefix_is_no_fork_evidence() {
+    block_on(assert_refused_as_evidence(317, |honest, key| {
+        twin(honest, key, 0)
+    }));
+}
+
+#[test]
+fn a_second_operation_claiming_the_shared_prefix_revision_freezes_there() {
+    block_on(async {
+        let (anchor, mut admin, ops) = sealed_past_enrollment(319).await;
+        let prefix = Envelope::decode(&ops[ops.len() - 2])
+            .unwrap()
+            .operation()
+            .unwrap()
+            .header
+            .authorization_revision;
+        let honest = ops.last().unwrap();
+        let forked = twin(honest, &anchor.identity.key, prefix);
+        assert_eq!(
+            admin.receive(std::slice::from_ref(&forked)).await,
+            vec![StoreOutcome::Refused(StoreRefusal::Fork {
+                seq: u64::try_from(ops.len()).unwrap()
+            })]
+        );
+        admin.apply_all().await.unwrap();
+        assert_eq!(admin.evidence().await.len(), 1);
+        assert_eq!(view(&mut admin).await.frozen_at, Some(prefix));
+    });
+}
+
+#[test]
+fn a_removed_old_anchors_fork_does_not_freeze_its_epoch_below_the_handover_out_of_it() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 321).await;
+        anchor.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut successor = Replica::new(20, 321).await;
+        deliver(&mut successor, &mut anchor).await;
+        let signed = successor.handover_proposal(&device_admin(20)).await;
+        successor
+            .seal_handover(&signed, None)
+            .await
+            .unwrap()
+            .unwrap();
+        for entry in [
+            remove_entry(ANCHOR_DEVICE_ID),
+            enroll_entry(&person(), 21, DeviceRole::Member),
+        ] {
+            let signed = proposal(
+                successor.ctx.space,
+                &device_admin(20),
+                successor.now_ms,
+                entry,
+            );
+            successor.sequence_signed(&signed).await.unwrap().unwrap();
+        }
+        let before = view(&mut successor).await;
+        assert_eq!(before.anchor_device_id, device_id(20));
+
+        // The removed old anchor's key signs a second operation at its sequence 2, claiming the
+        // revision its genesis claims, as a restored copy of it could.
+        let ops = anchor.own_ops().await;
+        let forked = twin(&ops[1], &anchor.identity.key, 0);
+        successor.receive(&[forked]).await;
+        successor.apply_all().await.unwrap();
+        assert_eq!(view(&mut successor).await, before);
     });
 }

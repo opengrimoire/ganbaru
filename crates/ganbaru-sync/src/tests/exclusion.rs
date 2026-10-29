@@ -7,7 +7,7 @@ use ganbaru_sync_contracts::{Entry, LateResolution, LateRow, ResolveLate, RowKey
 
 use super::authorization::admin_entry;
 use super::block_on;
-use super::replica::{Replica, device_admin, quoted, rank};
+use super::replica::{Replica, converge, device_admin, quoted, rank};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
@@ -38,10 +38,18 @@ pub(super) async fn deliver(to: &mut Replica, from: &mut Replica) {
     to.pull(from).await;
 }
 
+/// Counts the kept displaced versions, checking that the status reports the same count.
 pub(super) async fn displaced(replica: &mut Replica) -> i64 {
-    replica
+    let rows = replica
         .count("SELECT count(*) FROM sync_displaced_versions")
+        .await;
+    let status = replica
+        .engine
+        .status(&mut replica.conn, &replica.ctx)
         .await
+        .unwrap();
+    assert_eq!(i64::try_from(status.displaced).unwrap(), rows);
+    rows
 }
 
 pub(super) async fn late_changes(replica: &mut Replica) -> Vec<LateChange> {
@@ -535,6 +543,121 @@ fn an_anchor_a_handover_installed_still_restores_late_values_of_a_removal() {
             assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Late"));
             assert!(late_changes(replica).await.is_empty());
         }
+    });
+}
+
+/// The charter anchor applies a late edit of the removed device, releasing the value it
+/// displaced; a handover then installs a successor that never stored the edit, and the successor
+/// removes the device below it. Returns the charter, the successor, the honest member, and the
+/// removed device.
+async fn former_anchor_released_late_edit(salt: u64) -> [Replica; 4] {
+    let (mut charter, mut removed, mut honest) = trio(salt).await;
+    charter.sequence(admin_entry(20)).await.unwrap().unwrap();
+    let mut successor = Replica::new(20, salt).await;
+    edit(&mut honest, &note("note-kept", "Draft", 0)).await;
+    spread(&mut charter, &mut honest).await;
+    deliver(&mut successor, &mut charter).await;
+    deliver(&mut removed, &mut charter).await;
+    let before_late = charter.stored_vector().await;
+    edit(
+        &mut removed,
+        "UPDATE quick_notes SET title = 'Late' WHERE id = 'note-kept';",
+    )
+    .await;
+    deliver(&mut charter, &mut removed).await;
+    assert_eq!(
+        title(&mut charter, "note-kept").await.as_deref(),
+        Some("Late")
+    );
+    assert_eq!(
+        displaced(&mut charter).await,
+        0,
+        "the anchor released the value"
+    );
+    assert_eq!(
+        charter
+            .count("SELECT count(*) FROM sync_released_marks")
+            .await,
+        2,
+        "the anchor records what the honest and removed writers applied"
+    );
+    let signed = successor.handover_proposal(&device_admin(20)).await;
+    successor
+        .seal_handover(&signed, Some(before_late))
+        .await
+        .unwrap()
+        .unwrap();
+    successor.remove(&removed.device_id.clone()).await.unwrap();
+    [charter, successor, honest, removed]
+}
+
+/// Converges the replicas still in the space and checks that each keeps the row with the same
+/// title and the same domain rows.
+async fn assert_row_survives(replicas: &mut [Replica]) {
+    converge(replicas).await;
+    let first = replicas[0].domain_dump().await;
+    let kept = title(&mut replicas[0], "note-kept").await;
+    assert!(kept.is_some(), "the row survives");
+    for replica in replicas.iter_mut() {
+        assert_eq!(
+            title(replica, "note-kept").await,
+            kept,
+            "{}",
+            replica.device_id
+        );
+        assert_eq!(replica.domain_dump().await, first, "{}", replica.device_id);
+        replica.check_invariants().await;
+    }
+}
+
+/// The highest stored sequence of `replica`'s own writer.
+pub(super) async fn own_head(replica: &mut Replica) -> u64 {
+    let writer = replica.writer();
+    replica.stored_vector().await.get(&writer)
+}
+
+/// Whether sealing publishes a new operation of `replica`'s own writer, such as a re-seal.
+async fn seals_own(replica: &mut Replica) -> bool {
+    let before = own_head(replica).await;
+    replica.seal().await.unwrap();
+    own_head(replica).await > before
+}
+
+#[test]
+fn a_former_anchor_reseals_the_groups_it_released_when_a_later_removal_excludes_them() {
+    block_on(async {
+        let [mut charter, mut successor, honest, _removed] =
+            former_anchor_released_late_edit(206).await;
+        // Only the former anchor stored the late edit, and it kept nothing the edit displaced.
+        assert!(!seals_own(&mut successor).await);
+        let before = own_head(&mut charter).await;
+        deliver(&mut charter, &mut successor).await;
+        assert!(
+            charter
+                .count("SELECT count(*) FROM sync_ops WHERE excluded_revision IS NOT NULL")
+                .await
+                > 0
+        );
+        // The former anchor seals the groups again before the exclusion materializes.
+        assert!(
+            own_head(&mut charter).await > before,
+            "the former anchor re-seals"
+        );
+        assert_eq!(
+            title(&mut charter, "note-kept").await.as_deref(),
+            Some("Late"),
+            "the current value is kept"
+        );
+        assert!(
+            charter
+                .count("SELECT count(*) FROM sync_restated_groups")
+                .await
+                > 0,
+            "the re-seal is recorded as a restatement"
+        );
+        // The successor, as anchor of a handed over epoch, re-seals its own value once it stores
+        // the late edit, so the replicas settle on one of the two re-seals.
+        assert_row_survives(&mut [charter, successor, honest]).await;
     });
 }
 

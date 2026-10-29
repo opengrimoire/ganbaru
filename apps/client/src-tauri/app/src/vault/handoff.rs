@@ -5,12 +5,11 @@ pub(crate) mod contact_requests;
 #[cfg(desktop)]
 pub(crate) mod coordinator;
 #[cfg(desktop)]
-mod discovery;
+pub(crate) mod discovery;
 #[cfg(desktop)]
 pub(crate) mod enrollment_approval;
 #[cfg(desktop)]
 mod key_store;
-#[cfg(desktop)]
 mod local_addresses;
 pub(crate) mod receiver;
 pub(crate) mod source;
@@ -21,9 +20,10 @@ use ganbaru_handoff::network_access;
 pub(crate) use ganbaru_handoff::{pairing, protocol};
 
 use pairing::PairingManager;
-#[cfg(desktop)]
-use protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT, QrMatrix, invitation_qr_matrix};
+use protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT};
 use protocol::{HandoffCompatibility, decode_invitation, encode_invitation};
+#[cfg(desktop)]
+use protocol::{QrMatrix, invitation_qr_matrix};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 #[cfg(desktop)]
@@ -116,6 +116,13 @@ impl CoordinatorLifecycle {
         if let Some(port) = self.port()? {
             return Ok(port);
         }
+        // The member listener holds the same port while this desktop was a linked member. Its
+        // lock stays held until the coordinator records its port, so a pass cannot start the
+        // member listener again in between.
+        let member_app = app.clone();
+        let member = member_app.state::<MemberListenerLifecycle>();
+        let mut member_runtime = member.runtime.lock().await;
+        member.stop_locked(&mut member_runtime).await;
         let listener = transport::CoordinatorListener::bind(port)
             .map_err(|error| format!("bind vault handoff coordinator: {error}"))?;
         let port = listener
@@ -128,7 +135,9 @@ impl CoordinatorLifecycle {
             coordinator: Some(requests.clone()),
             contacts: Some(contacts),
             hub: Some(
-                crate::sync::sync_hub(&app).with_contact(hub_contact_source(manager.clone(), port)),
+                crate::sync::sync_hub(&app)
+                    .with_contact(hub_contact_source(app.clone(), manager.clone(), port))
+                    .with_peer_hints(crate::sync::peer_hints(app.clone())),
             ),
             enrollment_sealer: Some(crate::sync::enrollment_sealer(&app)),
             approvals: app
@@ -137,6 +146,7 @@ impl CoordinatorLifecycle {
                 .clone(),
             admission: lan_admission(&app, port)?,
             quarantined: Some(crate::sync::quarantined_devices(&app)),
+            log_admission: Some(crate::sync::log_admission_source(&app)),
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         let advertiser_app = app.clone();
@@ -157,8 +167,15 @@ impl CoordinatorLifecycle {
             port,
             shutdown,
             requests,
-            _advertiser: discovery::Advertiser::spawn(advertiser_app, advertiser_manager, port),
+            _advertiser: discovery::Advertiser::spawn(
+                advertiser_app,
+                advertiser_manager,
+                port,
+                discovery::AdvertiserRole::Coordinator,
+            ),
         });
+        drop(runtime);
+        drop(member_runtime);
         Ok(port)
     }
 
@@ -380,6 +397,133 @@ pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
         .map(Some)
 }
 
+/// The sync listener of a member: a linked device that does not coordinate the vault serves
+/// sync requests from the other members on the coordinator port, which it never binds for
+/// anything else. A phone runs it only while the app is in the foreground.
+#[derive(Default)]
+pub(crate) struct MemberListenerLifecycle {
+    runtime: tokio::sync::Mutex<Option<MemberListenerRuntime>>,
+    /// The port the listener holds, or 0 while it is stopped, readable without waiting for a
+    /// start or stop in progress.
+    port: std::sync::atomic::AtomicU16,
+}
+
+struct MemberListenerRuntime {
+    vault_id: String,
+    port: u16,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    served: tauri::async_runtime::JoinHandle<()>,
+    /// Advertises the listener over DNS-SD until the runtime is dropped. Phones never advertise.
+    #[cfg(desktop)]
+    _advertiser: discovery::Advertiser,
+}
+
+impl MemberListenerLifecycle {
+    /// Stops the listener and waits until it released its port.
+    pub(crate) async fn stop(&self) {
+        self.stop_locked(&mut *self.runtime.lock().await).await;
+    }
+
+    /// Stops the listener `runtime` holds and waits until it released its port.
+    async fn stop_locked(&self, runtime: &mut Option<MemberListenerRuntime>) {
+        self.port.store(0, std::sync::atomic::Ordering::Relaxed);
+        if let Some(runtime) = runtime.take() {
+            let _ = runtime.shutdown.send(());
+            if let Err(error) = runtime.served.await {
+                eprintln!("sync member listener: stop: {error}");
+            }
+        }
+    }
+
+    /// Asks the listener to stop without waiting, for app exit.
+    #[cfg(desktop)]
+    pub(crate) fn stop_now(&self) {
+        if let Ok(mut runtime) = self.runtime.try_lock()
+            && let Some(runtime) = runtime.take()
+        {
+            let _ = runtime.shutdown.send(());
+        }
+        self.port.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The port the listener holds, when it runs.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn port(&self) -> Option<u16> {
+        match self.port.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            port => Some(port),
+        }
+    }
+}
+
+/// Keeps the member listener of the pinned vault running while this device is a linked member,
+/// and returns the endpoints it is reachable at. A device without a coordinator pin stops it,
+/// since it either coordinates the vault itself or is not linked.
+pub(crate) async fn ensure_member_listener<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Vec<String>, String> {
+    let lifecycle = app.state::<MemberListenerLifecycle>();
+    let manager = app.state::<PairingManager>().inner().clone();
+    // The coordinator takes the same lock while it binds the port, so this check holds until
+    // the listener below is recorded.
+    let mut runtime = lifecycle.runtime.lock().await;
+    let Some(pin) = manager.coordinator_pin()? else {
+        lifecycle.stop_locked(&mut runtime).await;
+        return Ok(Vec::new());
+    };
+    #[cfg(desktop)]
+    if app.state::<CoordinatorLifecycle>().port()?.is_some() {
+        lifecycle.stop_locked(&mut runtime).await;
+        return Ok(Vec::new());
+    }
+    if let Some(running) = runtime.as_ref()
+        && running.vault_id == pin.vault_id
+        && !running.served.inner().is_finished()
+    {
+        return Ok(local_addresses::reported_endpoints(running.port));
+    }
+    if let Some(stale) = runtime.take() {
+        let _ = stale.shutdown.send(());
+        let _ = stale.served.await;
+    }
+    let port = coordinator_port(&app.config().identifier);
+    let listener = transport::CoordinatorListener::bind(port)
+        .map_err(|error| format!("bind member sync listener: {error}"))?;
+    let port = listener
+        .port()
+        .map_err(|error| format!("read member sync listener port: {error}"))?;
+    let services = transport::MemberServices {
+        hub: crate::sync::member_hub(app)
+            .with_contact(hub_contact_source(app.clone(), manager.clone(), port))
+            .with_peer_hints(crate::sync::peer_hints(app.clone())),
+        admission: crate::sync::member_admission_source(app),
+        lan: lan_admission(app, port)?,
+    };
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    #[cfg(desktop)]
+    let advertiser = discovery::Advertiser::spawn(
+        app.clone(),
+        manager.clone(),
+        port,
+        discovery::AdvertiserRole::Member,
+    );
+    let served = tauri::async_runtime::spawn(transport::serve_member_listener(
+        listener, manager, services, receiver,
+    ));
+    *runtime = Some(MemberListenerRuntime {
+        vault_id: pin.vault_id,
+        port,
+        shutdown,
+        served,
+        #[cfg(desktop)]
+        _advertiser: advertiser,
+    });
+    lifecycle
+        .port
+        .store(port, std::sync::atomic::Ordering::Relaxed);
+    Ok(local_addresses::reported_endpoints(port))
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
@@ -426,24 +570,39 @@ fn lan_admission<R: Runtime>(
     Ok(transport::LanAdmission::linux_firewall(config_dir, port))
 }
 
-/// What the sync hub of a coordinator listening on `port` reports to linked devices: its current
-/// listener endpoints, refreshed at most every few seconds, and the vault's discovery key.
-#[cfg(desktop)]
-fn hub_contact_source(manager: PairingManager, port: u16) -> crate::sync::hub::HubContactSource {
+/// What the sync hub of a desktop listening on `port` reports to linked devices: its current
+/// listener endpoints under its own device id, refreshed at most every few seconds, then the
+/// peer book's other members.
+fn hub_contact_source<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    manager: PairingManager,
+    port: u16,
+) -> crate::sync::hub::HubContactSource {
     let endpoints = std::sync::Arc::new(local_addresses::ReportedEndpointCache::default());
     std::sync::Arc::new(move |vault_id: &str| {
-        Ok(crate::sync::hub::HubContact {
-            endpoints: endpoints.get_or_refresh(std::time::Instant::now(), || {
+        let device_id = manager.device_id()?;
+        let observed_ms = u64::try_from(protocol::unix_time_ms()).unwrap_or_default();
+        let own = endpoints
+            .get_or_refresh(std::time::Instant::now(), || {
                 local_addresses::reported_endpoints(port)
-            }),
-            discovery_key: manager.discovery_key(vault_id)?,
+            })
+            .into_iter()
+            .map(|endpoint| protocol::MemberEndpoint {
+                device_id: device_id.clone(),
+                endpoint,
+                observed_ms,
+            })
+            .collect();
+        let book = crate::sync::read_peer_book(&app, vault_id);
+        Ok(crate::sync::hub::HubContact {
+            members: crate::sync::reported_members(&device_id, own, &book),
         })
     })
 }
 
 /// Admission for a coordinator listening on `port`. Only Linux keeps per-network firewall rules,
 /// so other desktops serve every LAN peer.
-#[cfg(all(desktop, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 fn lan_admission<R: Runtime>(
     _app: &tauri::AppHandle<R>,
     _port: u16,
@@ -456,10 +615,8 @@ fn lan_admission<R: Runtime>(
 pub(crate) async fn handoff_grant_network_access<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
-    let port = app
-        .state::<CoordinatorLifecycle>()
-        .port()?
-        .ok_or_else(|| "vault handoff coordinator is not running".to_string())?;
+    let port = listening_port(&app)?
+        .ok_or_else(|| "neither the coordinator nor the member listener is running".to_string())?;
     let config_dir = app
         .path()
         .app_config_dir()
@@ -726,10 +883,35 @@ fn status_vault_id(
 pub(crate) fn desktop_network_access_status<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
-    match app.state::<CoordinatorLifecycle>().port()? {
+    match listening_port(app)? {
         Some(port) => network_access_status_for_port(app, port),
         None => Ok(network_access::not_required()),
     }
+}
+
+/// The port this desktop's sync listener holds: the coordinator's, otherwise the member
+/// listener's. Both get the same scoped rules on the same port.
+#[cfg(target_os = "linux")]
+fn listening_port<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Option<u16>, String> {
+    Ok(app
+        .state::<CoordinatorLifecycle>()
+        .port()?
+        .or_else(|| app.state::<MemberListenerLifecycle>().port()))
+}
+
+/// Firewall state of the member listener, `None` while this desktop coordinates or the member
+/// listener is not running.
+#[cfg(target_os = "linux")]
+pub(crate) fn member_network_access_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<network_access::NetworkAccessState>, String> {
+    if app.state::<CoordinatorLifecycle>().port()?.is_some() {
+        return Ok(None);
+    }
+    app.state::<MemberListenerLifecycle>()
+        .port()
+        .map(|port| network_access_status_for_port(app, port).map(|status| status.state()))
+        .transpose()
 }
 
 /// Firewall status for peers dialing any endpoint this coordinator reports on `port`, over IPv4
@@ -750,7 +932,6 @@ fn network_access_status_for_port<R: Runtime>(
     ))
 }
 
-#[cfg(desktop)]
 fn coordinator_port(identifier: &str) -> u16 {
     if identifier.ends_with(".dev") {
         DEVELOPMENT_COORDINATOR_PORT
@@ -854,7 +1035,6 @@ mod tests {
             certificate_fingerprint: "fingerprint".to_string(),
             last_endpoint: None,
             reported_endpoints: Vec::new(),
-            discovery_key: None,
             charter: None,
         };
         assert_eq!(

@@ -8,7 +8,7 @@ use ganbaru_sync::{
     AuthorizationView, DeviceNames, DeviceRef, Engine, LateChange, LateKind, local,
 };
 use ganbaru_sync_contracts::{DeviceKind, DeviceRole, Entry, LateRow, SetRole};
-use ganbaru_sync_replica::outbox::{Outbox, OutboxEntry};
+use ganbaru_sync_replica::outbox::{MAX_OUTBOX_PROPOSALS, Outbox, OutboxEntry};
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
@@ -124,6 +124,20 @@ pub(crate) struct LateChangeView {
     pub decision_pending: bool,
 }
 
+/// Late changes one listing carries at most, the same bound as the proposal outbox, so a
+/// removed device that changed many rows cannot make Settings render an unbounded list.
+pub(crate) const MAX_LISTED_LATE_CHANGES: usize = MAX_OUTBOX_PROPOSALS;
+
+/// The first late changes no admin decided yet, with how many there are in all.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LateChangesView {
+    /// At most [`MAX_LISTED_LATE_CHANGES`], in removal, table, and key order.
+    pub changes: Vec<LateChangeView>,
+    /// Every undecided late change, listed or not.
+    pub total: usize,
+}
+
 /// What a removed device's late operations did to a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,12 +173,13 @@ pub(crate) async fn outbox<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<OutboxE
     Ok(outbox_views(entries.entries(), &names))
 }
 
-/// The late changes no admin decided yet, in removal, table, and key order.
+/// The first late changes no admin decided yet, in removal, table, and key order, with their
+/// total.
 pub(crate) async fn late_changes<R: Runtime>(
     app: &AppHandle<R>,
-) -> Result<Vec<LateChangeView>, String> {
+) -> Result<LateChangesView, String> {
     let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
-        return Ok(Vec::new());
+        return Ok(LateChangesView::default());
     };
     let vault_id = app.active_vault_id()?;
     let engine = Engine::vault();
@@ -176,7 +191,7 @@ pub(crate) async fn late_changes<R: Runtime>(
         .await
         .map_err(|error| format!("read sync space: {error}"))?
     else {
-        return Ok(Vec::new());
+        return Ok(LateChangesView::default());
     };
     let changes = engine
         .late_changes(&mut conn, &ctx)
@@ -185,7 +200,13 @@ pub(crate) async fn late_changes<R: Runtime>(
     drop(conn);
     let outbox = load_outbox(app).await?;
     let names = super::devices::read(app)?;
-    Ok(late_views(&engine, changes, outbox.entries(), &names))
+    Ok(late_views(
+        &engine,
+        changes,
+        outbox.entries(),
+        &names,
+        MAX_LISTED_LATE_CHANGES,
+    ))
 }
 
 async fn authorization<R: Runtime>(
@@ -234,7 +255,9 @@ async fn own_is_admin<R: Runtime>(
     if !enrolled_admin {
         return Ok(false);
     }
-    let key = super::ensure_admin_key(app, vault_id).await?;
+    let Some(key) = super::stored_admin_key(app, vault_id).await? else {
+        return Ok(false);
+    };
     Ok(ganbaru_sync_replica::authority::is_admin(view, own, &key))
 }
 
@@ -315,7 +338,7 @@ fn outbox_views(entries: &[OutboxEntry], names: &DeviceNames) -> Vec<OutboxEntry
                     ProposalChangeView::Handover,
                     Some(&handover.new_anchor_device_id),
                 ),
-                Entry::Unknown { .. } => (ProposalChangeView::Unknown, None),
+                Entry::Yield(_) | Entry::Unknown { .. } => (ProposalChangeView::Unknown, None),
             };
             let state = if entry.rejection.is_some() {
                 OutboxStateView::Rejected
@@ -337,14 +360,15 @@ fn outbox_views(entries: &[OutboxEntry], names: &DeviceNames) -> Vec<OutboxEntry
     views
 }
 
-/// Late changes as Settings shows them, marking those a pending proposal of this device
-/// already decides.
+/// The first `limit` late changes as Settings shows them, marking those a pending proposal of
+/// this device already decides, with the total of all of them.
 fn late_views(
     engine: &Engine,
     changes: Vec<LateChange>,
     outbox: &[OutboxEntry],
     names: &DeviceNames,
-) -> Vec<LateChangeView> {
+    limit: usize,
+) -> LateChangesView {
     let pending: Vec<(u64, &LateRow)> = outbox
         .iter()
         .filter(|entry| entry.pending())
@@ -359,19 +383,24 @@ fn late_views(
                 .map(move |row| (resolve.removal_revision, row))
         })
         .collect();
-    changes
+    let known: Vec<(&'static str, LateChange)> = changes
         .into_iter()
-        .filter_map(|late| {
-            let table = engine.manifest().table(late.table)?;
+        .filter_map(|late| Some((engine.manifest().table(late.table)?.name, late)))
+        .collect();
+    let total = known.len();
+    let changes = known
+        .into_iter()
+        .take(limit)
+        .map(|(table, late)| {
             let decision_pending = pending.iter().any(|(revision, row)| {
                 *revision == late.removal_revision
                     && row.table == late.table
                     && row.row.as_str() == late.row_key
             });
-            Some(LateChangeView {
+            LateChangeView {
                 removal_revision: late.removal_revision,
                 device: names.describe(&late.device_id),
-                table: table.name.to_string(),
+                table: table.to_string(),
                 row_key: late.row_key,
                 kind: match late.kind {
                     LateKind::Values => LateKindView::Values,
@@ -382,9 +411,10 @@ fn late_views(
                 preview: late.presentation.preview,
                 changed_at_ms: late.clock.map(|clock| clock.physical_ms()),
                 decision_pending,
-            })
+            }
         })
-        .collect()
+        .collect();
+    LateChangesView { changes, total }
 }
 
 #[cfg(test)]

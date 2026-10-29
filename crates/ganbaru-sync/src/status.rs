@@ -94,6 +94,9 @@ pub struct SyncStatus {
     pub unconfirmed: usize,
     /// When the oldest unconfirmed change operation was stored, in Unix milliseconds.
     pub oldest_unconfirmed_ms: Option<u64>,
+    /// Superseded versions kept until the anchor confirms storing the operations that
+    /// superseded them, so that excluding those operations can restore them.
+    pub displaced: usize,
 }
 
 fn count(value: i64) -> SyncResult<usize> {
@@ -210,6 +213,11 @@ impl Engine {
         status.oldest_unconfirmed_ms = oldest
             .map(|stored| stored_u64(stored, "unconfirmed stored time"))
             .transpose()?;
+        status.displaced = count(
+            sqlx::query_scalar("SELECT count(*) FROM sync_displaced_versions")
+                .fetch_one(&mut *conn)
+                .await?,
+        )?;
         Ok(status)
     }
 

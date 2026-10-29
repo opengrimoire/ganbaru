@@ -483,11 +483,10 @@ fn linked_phone(label: &str) -> (TestDirectory, PairingManager, PairingInvitatio
     (phone_root, phone, invitation, certificate)
 }
 
-fn reported_contact(endpoints: &[&str], discovery_key: &str) -> CoordinatorContact {
+fn reported_contact(endpoints: &[&str]) -> CoordinatorContact {
     CoordinatorContact {
         last_endpoint: None,
         reported_endpoints: Some(endpoints.iter().map(ToString::to_string).collect()),
-        discovery_key: Some(discovery_key.to_string()),
     }
 }
 
@@ -508,13 +507,9 @@ fn a_pin_without_contact_fields_loads_as_a_pin_before_its_first_exchange() {
     let coordinator = stored["coordinator"]
         .as_object_mut()
         .expect("stored coordinator");
-    for field in ["lastEndpoint", "reportedEndpoints", "discoveryKey"] {
+    for field in ["lastEndpoint", "reportedEndpoints"] {
         assert!(coordinator.remove(field).is_some(), "{field}");
     }
-    stored
-        .as_object_mut()
-        .expect("stored state")
-        .remove("discoveryKeys");
     fs::write(
         &state_path,
         serde_json::to_vec(&stored).expect("encode state"),
@@ -528,7 +523,6 @@ fn a_pin_without_contact_fields_loads_as_a_pin_before_its_first_exchange() {
     let pin = pin_of(&restarted);
     assert_eq!(pin.last_endpoint, None);
     assert!(pin.reported_endpoints.is_empty());
-    assert_eq!(pin.discovery_key, None);
     assert_eq!(pin.current_endpoint(), invitation.endpoint);
 }
 
@@ -542,24 +536,15 @@ fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
         Some(invitation.endpoint.as_str()),
         "enrollment reached the invitation endpoint"
     );
-    let key = random_discovery_key().expect("discovery key");
     let reported = ["192.168.1.30:43821", "[fd00::30]:43821"];
 
     assert_eq!(
-        phone.record_coordinator_contact(
-            "vault-1",
-            &fingerprint,
-            reported_contact(&reported, &key)
-        ),
+        phone.record_coordinator_contact("vault-1", &fingerprint, reported_contact(&reported)),
         Ok(true)
     );
     fs::remove_file(&state_path).expect("remove state to detect writes");
     assert_eq!(
-        phone.record_coordinator_contact(
-            "vault-1",
-            &fingerprint,
-            reported_contact(&reported, &key)
-        ),
+        phone.record_coordinator_contact("vault-1", &fingerprint, reported_contact(&reported)),
         Ok(false)
     );
     assert_eq!(
@@ -581,7 +566,7 @@ fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
             phone.record_coordinator_contact(
                 vault_id,
                 &other_fingerprint,
-                reported_contact(&["10.0.0.9:43821"], &key)
+                reported_contact(&["10.0.0.9:43821"])
             ),
             Ok(false)
         );
@@ -593,7 +578,7 @@ fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
             .record_coordinator_contact(
                 "vault-1",
                 &fingerprint,
-                reported_contact(&["203.0.113.5:43821"], &key)
+                reported_contact(&["203.0.113.5:43821"])
             )
             .is_err(),
         "a public reported endpoint is refused"
@@ -630,16 +615,11 @@ fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
     let pin = pin_of(&restarted);
     assert_eq!(pin.current_endpoint(), "192.168.1.30:43821");
     assert_eq!(pin.reported_endpoints, reported);
-    assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
     assert_eq!(pin.endpoint, invitation.endpoint);
 
     restarted.unlink().expect("unlink");
     assert_eq!(
-        restarted.record_coordinator_contact(
-            "vault-1",
-            &fingerprint,
-            reported_contact(&reported, &key)
-        ),
+        restarted.record_coordinator_contact("vault-1", &fingerprint, reported_contact(&reported)),
         Ok(false),
         "an exchange finishing after unlink never resurrects the pin"
     );
@@ -649,12 +629,11 @@ fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
 #[test]
 fn relinking_to_the_same_coordinator_keeps_its_reported_contact() {
     let (_phone_root, phone, invitation, certificate) = linked_phone("relink-contact");
-    let key = random_discovery_key().expect("discovery key");
     phone
         .record_coordinator_contact(
             "vault-1",
             &invitation.coordinator_fingerprint,
-            reported_contact(&["192.168.1.30:43821"], &key),
+            reported_contact(&["192.168.1.30:43821"]),
         )
         .expect("record contact");
     let mut refreshed = invitation.clone();
@@ -668,69 +647,16 @@ fn relinking_to_the_same_coordinator_keeps_its_reported_contact() {
     assert_eq!(pin.current_endpoint(), refreshed.endpoint);
     assert_eq!(pin.generation, refreshed.generation);
     assert_eq!(pin.reported_endpoints, ["192.168.1.30:43821"]);
-    assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
-}
-
-#[test]
-fn coordinator_discovery_keys_are_created_once_per_vault_and_dropped_with_the_last_peer() {
-    let temporary = TestDirectory::new("discovery-keys");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-    assert!(
-        manager.discovery_key("vault-1").is_err(),
-        "a vault without linked devices has no key"
-    );
-    let phone = create_identity("device-phone".to_string()).expect("phone identity");
-    let laptop = create_identity("device-laptop".to_string()).expect("laptop identity");
-    let tablet = create_identity("device-tablet".to_string()).expect("tablet identity");
-    enroll_identity(&manager, "vault-1", &phone, "Phone", 100).expect("enroll phone");
-    enroll_identity(&manager, "vault-1", &laptop, "Laptop", 200).expect("enroll laptop");
-    enroll_identity(&manager, "vault-2", &tablet, "Tablet", 300).expect("enroll tablet");
-
-    let first = manager.discovery_key("vault-1").expect("first vault key");
-    crate::protocol::validate_discovery_key(&first).expect("key format");
-    assert_eq!(manager.discovery_key("vault-1"), Ok(first.clone()));
-    let second = manager.discovery_key("vault-2").expect("second vault key");
-    assert_ne!(first, second);
-
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart");
-    assert_eq!(restarted.discovery_key("vault-1"), Ok(first.clone()));
-
-    restarted
-        .unlink_device("device-phone")
-        .expect("unlink phone");
-    assert_eq!(restarted.discovery_key("vault-1"), Ok(first.clone()));
-    enroll_identity(&restarted, "vault-2", &laptop, "Laptop", 400).expect("move laptop");
-    assert!(
-        !state_text(temporary.path()).contains(&first),
-        "moving the last device away drops the vault key"
-    );
-    assert!(restarted.discovery_key("vault-1").is_err());
-    assert_eq!(restarted.discovery_key("vault-2"), Ok(second.clone()));
-
-    restarted
-        .unlink_device("device-tablet")
-        .expect("unlink tablet");
-    assert_eq!(restarted.discovery_key("vault-2"), Ok(second.clone()));
-    restarted.unlink().expect("unlink all");
-    assert!(!state_text(temporary.path()).contains(&second));
-    assert!(restarted.discovery_key("vault-2").is_err());
 }
 
 #[test]
 fn stored_contact_fields_are_validated_on_load() {
     let (phone_root, phone, invitation, _) = linked_phone("stored-contact");
-    let key = random_discovery_key().expect("discovery key");
     phone
         .record_coordinator_contact(
             "vault-1",
             &invitation.coordinator_fingerprint,
-            reported_contact(&["192.168.1.30:43821"], &key),
+            reported_contact(&["192.168.1.30:43821"]),
         )
         .expect("record contact");
     drop(phone);
@@ -754,11 +680,6 @@ fn stored_contact_fields_are_validated_on_load() {
             "lastEndpoint",
             serde_json::json!("8.8.8.8:43821"),
             "last coordinator endpoint is refused",
-        ),
-        (
-            "discoveryKey",
-            serde_json::json!(&key[1..]),
-            "discovery key is invalid",
         ),
     ] {
         let mut stored: serde_json::Value =
@@ -1855,7 +1776,7 @@ fn handoff_staging_is_private_even_when_it_already_exists() {
 }
 
 #[test]
-fn device_certificate_subject_names_the_device() {
+fn device_certificate_subject_names_no_device() {
     let root = TestDirectory::new("certificate-subject");
     let manager = PairingManager::default();
     manager
@@ -1869,10 +1790,16 @@ fn device_certificate_subject_names_the_device() {
 
     assert_eq!(device_id, "device-subject-check");
     assert!(
-        certificate
+        !certificate
             .windows(device_id.len())
             .any(|window| window == device_id.as_bytes()),
-        "certificate subject should carry the device ID"
+        "certificate should not carry the device ID"
+    );
+    assert!(
+        certificate
+            .windows(DEVICE_CERTIFICATE_NAME.len())
+            .any(|window| window == DEVICE_CERTIFICATE_NAME.as_bytes()),
+        "certificate subject should carry the shared device name"
     );
     assert!(
         !certificate
@@ -2027,4 +1954,17 @@ fn only_linked_desktops_keep_the_admin_key_they_send_across_restarts() {
             ("device-phone".to_string(), None),
         ]
     );
+}
+
+#[test]
+fn device_certificates_name_no_device() {
+    let device_id = "device-phone-identifying";
+    let identity = create_identity(device_id.to_string()).expect("phone identity");
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(&identity.certificate)
+        .expect("certificate encoding");
+    let contains = |needle: &[u8]| der.windows(needle.len()).any(|window| window == needle);
+    assert!(!contains(device_id.as_bytes()));
+    assert!(contains(DEVICE_CERTIFICATE_NAME.as_bytes()));
+    assert_eq!(identity.device_id, device_id);
 }

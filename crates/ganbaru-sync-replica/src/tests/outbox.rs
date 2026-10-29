@@ -244,6 +244,7 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
             &ctx,
             &mut writer.local(),
             &mut outbox,
+            &Default::default(),
             NOW_MS,
         )
         .await
@@ -732,4 +733,49 @@ fn reconciliation_proposes_each_membership_change_once() {
             .find(|entry| *entry == remove_entry("device-tablet"))
             .is_some_and(|entry| entry.pending())
     );
+}
+
+#[test]
+fn a_writer_record_is_read_only_from_a_bounded_regular_file() {
+    let directory = TestDirectory::new("writer-record");
+    let missing = directory.path().join("missing.json");
+    assert_eq!(read_record(&missing).expect("missing record"), None);
+
+    let large = directory.path().join("large.json");
+    std::fs::write(&large, vec![b' '; 1024 * 1024 + 1]).expect("write large record");
+    assert!(
+        read_record(&large).is_err(),
+        "an oversized record is refused"
+    );
+
+    #[cfg(unix)]
+    {
+        let target = directory.path().join("target.json");
+        std::fs::write(&target, b"{}").expect("write link target");
+        let link = directory.path().join("link.json");
+        std::os::unix::fs::symlink(&target, &link).expect("link record");
+        let error = read_record(&link).expect_err("a linked record is refused");
+        assert!(!error.contains("parse"), "refused before parsing: {error}");
+    }
+}
+
+#[test]
+fn reading_the_admin_key_never_creates_one() {
+    let keys = MemoryKeyStore::default();
+    assert!(
+        authority::read_admin_key(&keys, VAULT_ID)
+            .expect("read")
+            .is_none()
+    );
+    assert!(
+        authority::read_admin_key(&keys, VAULT_ID)
+            .expect("read again")
+            .is_none(),
+        "a read leaves no key behind"
+    );
+    let created = authority::ensure_admin_key(&keys, VAULT_ID).expect("create");
+    let read = authority::read_admin_key(&keys, VAULT_ID)
+        .expect("read created")
+        .expect("created key");
+    assert_eq!(read.public_key(), created.public_key());
 }

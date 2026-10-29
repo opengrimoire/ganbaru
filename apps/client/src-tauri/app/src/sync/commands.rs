@@ -1,15 +1,24 @@
 //! Tauri commands for the sync status, controls, recovery offers, quarantine, the authority
 //! read models, and the authority actions of an admin desktop.
 
-use super::authority::{self, AuthorityView, LateChangeView, OutboxEntryView};
+use super::authority::{self, AuthorityView, LateChangesView, OutboxEntryView};
+use super::contests::{self, ContestsDto};
 use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
 #[cfg(desktop)]
-use super::service::{AuthorityAction, AuthorityAnswer, LateDecision, PendingRecoveryKit};
+use super::service::{
+    AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, PendingRecoveryKit,
+};
 use super::service::{SyncRuntime, blocking};
 use super::status::{SyncNotice, SyncStatusView, SyncSubscribers};
 #[cfg(desktop)]
-use ganbaru_sync_contracts::LateResolution;
+use ganbaru_sync::ContestEntry;
+#[cfg(desktop)]
+use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_WRITERS_PER_SPACE};
+#[cfg(desktop)]
+use ganbaru_sync_contracts::ids::parse_hex;
+#[cfg(desktop)]
+use ganbaru_sync_contracts::{Digest32, LateResolution};
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
 use std::time::Duration;
@@ -28,6 +37,10 @@ const AUTHORITY_TIMEOUT: Duration = Duration::from_secs(60);
 static QUARANTINE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Longest subscription id, which fits a UUID.
 const MAX_SUBSCRIPTION_ID_BYTES: usize = 64;
+/// Most devices a recovery kit's device review may mark. Every enrolled device certifies at
+/// least one writer, so a space never enrolls more devices than it holds writers.
+#[cfg(desktop)]
+const MAX_REVIEW_REMOVALS: usize = MAX_WRITERS_PER_SPACE;
 
 /// The latest sync status of the active vault.
 #[tauri::command]
@@ -75,6 +88,26 @@ fn validate_subscription_id(id: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn sync_now(runtime: State<'_, SyncRuntime>) {
     runtime.sync_now();
+}
+
+/// Reports whether the phone app is in the foreground. Going to the background stops the
+/// member listener before the command returns, so the phone listens only while it is visible;
+/// coming to the foreground runs a pass, which starts the listener when this phone is a linked
+/// member.
+#[cfg(any(mobile, test))]
+#[tauri::command]
+pub async fn sync_set_foreground<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+    visible: bool,
+) -> Result<(), String> {
+    runtime.set_foreground(visible);
+    if visible {
+        runtime.sync_now();
+    } else {
+        app.stop_serving_members().await;
+    }
+    Ok(())
 }
 
 /// Pauses or resumes exchanges on this device. Local changes keep sealing while paused.
@@ -257,6 +290,98 @@ pub async fn sync_use_recovery_kit(
         .map(|_| ())
 }
 
+/// An authorization entry the frontend names, by hexadecimal hash and revision.
+#[cfg(desktop)]
+#[derive(Debug, Deserialize)]
+pub struct EntryTarget {
+    hash: String,
+    revision: u64,
+}
+
+/// Forces the anchor to this linked desktop after the anchor is lost: an admin desktop signs
+/// the handover with its admin key, any other enrolled desktop with the recovery admin key
+/// `kit_code` derives, which then also promotes it to admin. A kit handover continues from
+/// `point`, a kit point the contest view offers, or by default from the point the engine
+/// chooses, and then removes the old anchor and every device in `remove_devices`. With
+/// `quarantine_anchor`, it then quarantines the lost anchor and proposes its removal, which it
+/// sequences itself. Returns the authorization revision of the last entry it sealed.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_force_anchor<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+    kit_code: Option<String>,
+    point: Option<EntryTarget>,
+    remove_devices: Vec<String>,
+    quarantine_anchor: bool,
+) -> Result<u64, String> {
+    let request = force_request(kit_code, point, remove_devices)?;
+    let (revision, old_anchor) =
+        match run_authority(&runtime, AuthorityAction::ForceAnchor(request)).await? {
+            AuthorityAnswer::ForcedAnchor {
+                revision,
+                old_anchor,
+            } => (revision, old_anchor),
+            _ => return Err("sync answered forcing the anchor with something else".to_string()),
+        };
+    if quarantine_anchor && old_anchor != app.device_id()? {
+        let path = quarantine_path(&app)?;
+        {
+            let _guard = QUARANTINE_LOCK.lock().await;
+            let target = old_anchor.clone();
+            blocking(move || Quarantine::load(&path)?.add(&target)).await?;
+        }
+        runtime.request_authority_detached(AuthorityAction::ProposeRemoval(old_anchor))?;
+    }
+    runtime.sync_now();
+    Ok(revision)
+}
+
+/// The anchor handover contests of the active vault's sync space, with the actions this
+/// device may take in each, the removals the recovery kit's device review lists, and the record
+/// storage backstop and growth alerts. `None` before the vault joined a sync space.
+#[tauri::command]
+pub async fn sync_contests<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+) -> Result<Option<ContestsDto>, String> {
+    contests::read(&app, runtime.records()).await
+}
+
+/// As a contestant, or as the anchor withdrawing its objection, yields to the candidate
+/// handover `handover` names by hexadecimal hash. Returns the authorization revision of the
+/// yield.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_contest_yield(
+    runtime: State<'_, SyncRuntime>,
+    handover: String,
+) -> Result<u64, String> {
+    let handover = parse_digest(&handover, "handover")?;
+    contest_step(&runtime, AuthorityAction::Yield(handover)).await
+}
+
+/// As the anchor of the contested instance, blocks the candidate handover `handover` names by
+/// removing its target, which keeps the vault frozen until the recovery kit is used. Returns
+/// the authorization revision of the objection.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_contest_object(
+    runtime: State<'_, SyncRuntime>,
+    handover: String,
+) -> Result<u64, String> {
+    let handover = parse_digest(&handover, "handover")?;
+    contest_step(&runtime, AuthorityAction::Object(handover)).await
+}
+
+/// Resumes full record exchange after the storage backstop stopped it, once the person freed
+/// space or chose to continue.
+#[tauri::command]
+pub fn sync_records_resume(runtime: State<'_, SyncRuntime>) {
+    runtime.records().resume();
+    runtime.sync_now();
+}
+
 /// The selected authorization state of the active vault's sync space: the anchor, every
 /// enrolled device with its role, and whether this installation is an admin. `None` before the
 /// vault joined a sync space.
@@ -276,11 +401,10 @@ pub async fn sync_outbox_list<R: Runtime>(
     authority::outbox(&app).await
 }
 
-/// Rows removed devices changed after their removal cutoff that no admin decided yet.
+/// The first rows removed devices changed after their removal cutoff that no admin decided yet,
+/// with their total.
 #[tauri::command]
-pub async fn sync_late_changes<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<Vec<LateChangeView>, String> {
+pub async fn sync_late_changes<R: Runtime>(app: AppHandle<R>) -> Result<LateChangesView, String> {
     authority::late_changes(&app).await
 }
 
@@ -360,6 +484,56 @@ fn late_decision(
         row_key: target.row_key,
         resolution,
     })
+}
+
+#[cfg(desktop)]
+async fn contest_step(runtime: &SyncRuntime, action: AuthorityAction) -> Result<u64, String> {
+    let revision = match run_authority(runtime, action).await? {
+        AuthorityAnswer::Contested(revision) => revision,
+        _ => return Err("sync answered a contest action with something else".to_string()),
+    };
+    runtime.sync_now();
+    Ok(revision)
+}
+
+/// The forced handover the frontend asks for, with a bounded device review.
+#[cfg(desktop)]
+fn force_request(
+    kit: Option<String>,
+    point: Option<EntryTarget>,
+    remove_devices: Vec<String>,
+) -> Result<ForceRequest, String> {
+    if kit.is_none() && (point.is_some() || !remove_devices.is_empty()) {
+        return Err("only a recovery kit chooses a kit point or removes devices".to_string());
+    }
+    if remove_devices.len() > MAX_REVIEW_REMOVALS {
+        return Err("the device review marks too many devices".to_string());
+    }
+    if remove_devices
+        .iter()
+        .any(|device_id| device_id.is_empty() || device_id.len() > MAX_DEVICE_ID_BYTES)
+    {
+        return Err("the device review names an invalid device".to_string());
+    }
+    let point = point
+        .map(|point| {
+            Ok::<_, String>(ContestEntry {
+                hash: parse_digest(&point.hash, "kit point")?,
+                revision: point.revision,
+            })
+        })
+        .transpose()?;
+    Ok(ForceRequest {
+        kit,
+        point,
+        removals: remove_devices,
+    })
+}
+
+/// A 32-byte hash in lowercase hexadecimal.
+#[cfg(desktop)]
+fn parse_digest(text: &str, what: &str) -> Result<Digest32, String> {
+    parse_hex::<32>(text).ok_or_else(|| format!("the {what} hash is not valid"))
 }
 
 #[cfg(desktop)]

@@ -38,7 +38,7 @@ Run with a Linux coordinator behind UFW or firewalld, a linked Windows desktop, 
 - Devices on different networks that share a Tailscale network sync over `100.x` addresses, and status says overlay network.
 - A fresh firewall grant asks for the administrator password once and covers TCP and UDP on IPv4 and IPv6; the phone connects over unique local IPv6 where the network offers it.
 - Another device takes the coordinator's old address: the stale endpoint fails the pinned handshake, the dial moves on, and no error is shown.
-- A non-member device browsing `_ganbaru._tcp` over two hours sees two unrelated instance names and a random host name.
+- A non-member device browsing `_ganbaru._tcp` over two hours sees two unrelated instance names and two unrelated host names.
 - Windows Defender's program rule admits both listener sockets and DNS-SD, and the responder shares UDP 5353 with Avahi and the Windows mDNS service.
 - Removing the installed package removes every TCP and UDP rule the app added, on IPv4 and IPv6.
 

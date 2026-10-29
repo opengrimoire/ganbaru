@@ -54,7 +54,10 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_tombstones",
     "sync_seeded_tables",
     "sync_stable",
-    "sync_auth_entries",
+    "sync_auth_envelopes",
+    "sync_auth_wanted",
+    "sync_auth_refetch",
+    "sync_auth_selected",
     "sync_devices",
     "sync_displaced_versions",
     "sync_late_changes",
@@ -65,7 +68,11 @@ pub const SYNC_TABLES: &[&str] = &[
 
 /// Engine tables of device-bound state that every manifest classifies as `Local`, so snapshot
 /// copies empty them.
-pub const SYNC_LOCAL_TABLES: &[&str] = &["sync_anchor_marks", "sync_restated_groups"];
+pub const SYNC_LOCAL_TABLES: &[&str] = &[
+    "sync_anchor_marks",
+    "sync_restated_groups",
+    "sync_released_marks",
+];
 
 /// What a domain trigger may do, so applying remote changes cannot be broken by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -679,7 +686,9 @@ pub struct TableSpec {
     pub groups: &'static [GroupSpec],
     /// Columns kept per replica and never replicated.
     pub local_columns: &'static [LocalColumn],
-    /// Columns derived from group values by the domain adapter.
+    /// Columns derived from group values by the domain adapter. They never hold foreign keys:
+    /// the engine writes them beside a settled value, where a foreign key would only fail at
+    /// the commit of the whole apply. The schema conformance tests enforce it.
     pub derived_columns: &'static [&'static str],
     /// Columns a [`crate::hooks::MaterializeHook`] and domain code maintain from other rows,
     /// outside every group. They are never captured, have defaults and no foreign keys, and are

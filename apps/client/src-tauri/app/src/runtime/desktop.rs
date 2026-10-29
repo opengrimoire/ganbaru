@@ -230,6 +230,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(vault::preferences::PreferencesState::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::CoordinatorLifecycle::default())
+        .manage(vault::handoff::MemberListenerLifecycle::default())
         .manage(vault::handoff::enrollment_approval::EnrollmentApprovals::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
         .manage(vault::handoff::source::SourceLifecycle::default())
@@ -915,6 +916,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_recovery_kit_pending,
             crate::sync::commands::sync_recovery_kit_saved,
             crate::sync::commands::sync_use_recovery_kit,
+            crate::sync::commands::sync_force_anchor,
+            crate::sync::commands::sync_contest_yield,
+            crate::sync::commands::sync_contest_object,
+            crate::sync::commands::sync_contests,
+            crate::sync::commands::sync_records_resume,
             crate::sync::commands::sync_authority,
             crate::sync::commands::sync_outbox_list,
             crate::sync::commands::sync_late_changes,
@@ -1064,6 +1070,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app_handle
                 .state::<vault::handoff::CoordinatorLifecycle>()
                 .stop();
+            app_handle
+                .state::<vault::handoff::MemberListenerLifecycle>()
+                .stop_now();
             clear_distractions_enforcement_state_best_effort(app_handle, "before app exit");
             if let Err(error) = tauri::async_runtime::block_on(
                 distractions::runtime::stop_for_vault_handoff(app_handle),

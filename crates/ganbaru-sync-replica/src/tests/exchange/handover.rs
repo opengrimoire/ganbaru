@@ -22,9 +22,9 @@ use ganbaru_sync_contracts::{
 use std::sync::Arc;
 use tokio::sync::watch;
 
-const LAPTOP_DEVICE: &str = "device-laptop";
+pub(super) const LAPTOP_DEVICE: &str = "device-laptop";
 
-fn laptop_ids() -> PeerIds {
+pub(super) fn laptop_ids() -> PeerIds {
     PeerIds {
         vault_id: VAULT_ID.to_string(),
         device_id: LAPTOP_DEVICE.to_string(),
@@ -60,7 +60,7 @@ fn forwarding_hub(replica: &Replica) -> DirectTransport {
 
 /// Sequences a proposal through the writer of `replica`, which must anchor, and records the
 /// commit.
-async fn sequence_here(replica: &mut Replica, proposal: &SignedProposal) -> u64 {
+pub(super) async fn sequence_here(replica: &mut Replica, proposal: &SignedProposal) -> u64 {
     let mut conn = acquire(&replica.pool).await;
     let revision = authority::sequence(
         &replica.engine,
@@ -84,7 +84,12 @@ async fn commit_sequenced(replica: &mut Replica) {
     replica.writer.committed(seq).expect("record commit");
 }
 
-fn enroll_mobile(space: SpaceId, charter: Digest32, device_id: &str, seed: u8) -> SignedProposal {
+pub(super) fn enroll_mobile(
+    space: SpaceId,
+    charter: Digest32,
+    device_id: &str,
+    seed: u8,
+) -> SignedProposal {
     authority::propose(
         space,
         charter,
@@ -248,6 +253,7 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             &laptop.ctx,
             &mut laptop.writer.local(),
             &forwarded,
+            &Default::default(),
             NOW_MS,
         )
         .await
@@ -281,13 +287,50 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             hold(&hub_replica, &duplicate).await,
             Err(ProposalRejection::AlreadyEnrolled)
         );
+
+        // A member that learned the handover exchanges with the new anchor's member listener
+        // directly, and what that listener reports storing counts as anchor marks, while the
+        // same report attributed to the old anchor counts for nothing.
+        let mut phone = Replica::new("phone-handover", PHONE_DEVICE).await;
+        phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("pull the handover");
+        phone.apply().await;
+        let direct = super::member_hub(&laptop);
+        let exchanged = match phone
+            .exchange(&direct, &phone_ids())
+            .await
+            .expect("exchange with the new anchor")
+        {
+            client::Exchange::Done(done) => done,
+            client::Exchange::Fork(fork) => panic!("unexpected fork: {fork:?}"),
+        };
+        phone.apply().await;
+        let mut conn = acquire(&phone.pool).await;
+        assert!(
+            !phone
+                .engine
+                .record_anchor_marks(&mut conn, &phone.ctx, HUB_DEVICE, &exchanged.hub)
+                .await
+                .expect("marks of the old anchor")
+        );
+        assert!(
+            phone
+                .engine
+                .record_anchor_marks(&mut conn, &phone.ctx, LAPTOP_DEVICE, &exchanged.hub)
+                .await
+                .expect("marks of the new anchor")
+        );
+        drop(conn);
+        phone.close().await;
         hub_replica.close().await;
         laptop.close().await;
     });
 }
 
 #[test]
-fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
+fn a_regenerated_recovery_key_recovers_beside_the_printed_kit() {
     block_on(async {
         let mut hub_replica = Replica::new("hub-recovery-kit", HUB_DEVICE).await;
         let charter = hub_replica.charter().await;
@@ -352,6 +395,7 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
                 &hub_replica.ctx,
                 &mut hub_replica.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 NOW_MS,
             )
             .await
@@ -359,8 +403,8 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
         }
         commit_sequenced(&mut hub_replica).await;
 
-        // Only the regenerated kit signs for the space now.
-        let enroll = |admin: &AdminKeyPair, device_id: &str| {
+        // The installed recovery key signs for the space, and the printed kit still does.
+        let enroll = |admin: &AdminKeyPair, device_id: &str, fingerprint: u8| {
             authority::propose(
                 space,
                 charter,
@@ -368,7 +412,7 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
                 authority::enroll_entry(Enrollment {
                     device_id: device_id.to_string(),
                     device_key: device_key(device_id).public_key(),
-                    tls_fingerprint: [42; 32],
+                    tls_fingerprint: [fingerprint; 32],
                     label: device_id.to_string(),
                     device_kind: DeviceKind::Mobile,
                 }),
@@ -381,22 +425,19 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
             .recovery_admin_key()
             .expect("old recovery key");
         let new_kit = seed.recovery_admin_key().expect("new recovery key");
-        let mut conn = acquire(&hub_replica.pool).await;
+        sequence_here(&mut hub_replica, &enroll(&new_kit, "device-new-kit", 42)).await;
+        let view = view_of(&hub_replica).await;
         assert_eq!(
-            authority::sequence(
-                &hub_replica.engine,
-                &mut conn,
-                &hub_replica.ctx,
-                &mut hub_replica.writer.local(),
-                &enroll(&old_kit, "device-old-kit"),
-                NOW_MS,
-            )
-            .await
-            .expect("sequence"),
-            Err(ProposalRejection::NotAdmin)
+            view.recovery_admin_key,
+            new_kit.public_key(),
+            "the installed key recovers"
         );
-        drop(conn);
-        sequence_here(&mut hub_replica, &enroll(&new_kit, "device-new-kit")).await;
+        assert_eq!(
+            view.kit_admin_key,
+            old_kit.public_key(),
+            "a recovery key never replaces the printed kit"
+        );
+        sequence_here(&mut hub_replica, &enroll(&old_kit, "device-old-kit", 43)).await;
         let view = view_of(&hub_replica).await;
         authority::forget_recovery_seed(&keys, VAULT_ID, &view).expect("save the active kit");
         assert_eq!(
@@ -571,6 +612,116 @@ fn a_recovery_kit_promotes_a_member_desktop_that_then_takes_the_anchor() {
         .expect("the desktop the kit promoted takes the anchor");
         drop(conn);
         hub_replica.close().await;
+        laptop.close().await;
+    });
+}
+
+#[test]
+fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-kit-force", HUB_DEVICE).await;
+        let mut laptop = Replica::new("laptop-kit-force", LAPTOP_DEVICE).await;
+        let laptop_admin = AdminKeyPair::from_seed(&[32; 32]).expect("admin seed");
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        let enroll = authority::propose(
+            space,
+            charter,
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: LAPTOP_DEVICE.to_string(),
+                device_key: device_key(LAPTOP_DEVICE).public_key(),
+                tls_fingerprint: [33; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+        sequence_here(&mut hub_replica, &enroll).await;
+        sequence_here(
+            &mut hub_replica,
+            &enroll_mobile(space, charter, "device-watch", 50),
+        )
+        .await;
+        laptop
+            .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
+            .await
+            .expect("pull the log");
+        laptop.apply().await;
+        // The anchor is lost from here on.
+        hub_replica.close().await;
+
+        let mut conn = acquire(&laptop.pool).await;
+        let view = laptop
+            .engine
+            .authorization(&mut conn, &laptop.ctx)
+            .await
+            .expect("read authorization")
+            .expect("charter");
+        let recovery =
+            authority::recovery_admin(&view, &hub_keys().recovery.kit_code()).expect("kit");
+        // The device review marks the watch and, redundantly, the lost anchor and this desktop.
+        let forced = authority::ForcedHandover {
+            signer: &recovery,
+            promote: Some(laptop_admin.public_key()),
+            point: None,
+            removals: vec![
+                "device-watch".to_string(),
+                HUB_DEVICE.to_string(),
+                LAPTOP_DEVICE.to_string(),
+            ],
+        };
+        let revision = authority::force_handover_here(
+            &laptop.engine,
+            &mut conn,
+            &laptop.ctx,
+            &forced,
+            &mut laptop.writer.local(),
+            NOW_MS,
+        )
+        .await
+        .expect("force handover")
+        .expect("the recovery key hands the anchor to a member desktop");
+        let view = laptop
+            .engine
+            .authorization(&mut conn, &laptop.ctx)
+            .await
+            .expect("read authorization")
+            .expect("charter");
+        assert_eq!(
+            (view.revision, view.anchor_device_id.as_str()),
+            (revision, LAPTOP_DEVICE)
+        );
+        assert!(authority::is_admin(
+            &view,
+            LAPTOP_DEVICE,
+            &laptop_admin.public_key()
+        ));
+        // A kit forced handover also removes the lost anchor, so a stolen one cannot return.
+        assert!(
+            view.devices
+                .iter()
+                .any(|device| device.device_id == HUB_DEVICE && device.removed_revision.is_some()),
+            "the lost anchor is removed"
+        );
+        let removed: Vec<&str> = view
+            .devices
+            .iter()
+            .filter(|device| device.removed_revision.is_some())
+            .map(|device| device.device_id.as_str())
+            .collect();
+        assert_eq!(
+            removed.len(),
+            2,
+            "the reviewed device is removed under the kit, each device once and never this desktop"
+        );
+        assert!(removed.contains(&"device-watch"));
+        assert!(
+            authority::recovery_admin(&view, &RecoverySeed::from_bytes([78; 32]).kit_code())
+                .is_err()
+        );
+        drop(conn);
         laptop.close().await;
     });
 }
@@ -813,6 +964,7 @@ fn a_proposal_the_old_anchor_sequenced_after_the_handover_point_is_sequenced_aga
                 &hub_replica.ctx,
                 &mut hub_replica.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 NOW_MS,
             )
             .await
@@ -866,6 +1018,7 @@ fn a_proposal_the_old_anchor_sequenced_after_the_handover_point_is_sequenced_aga
             &laptop.ctx,
             &mut laptop.writer.local(),
             &forwarded,
+            &Default::default(),
             NOW_MS,
         )
         .await
@@ -970,6 +1123,7 @@ fn a_members_proposal_the_handover_superseded_reaches_the_new_anchor() {
             &forwarding_hub(&hub_replica),
             &phone_ids(),
             &mut outbox,
+            HUB_DEVICE,
         )
         .await
         .expect("prune");
@@ -1015,6 +1169,7 @@ fn a_members_proposal_the_handover_superseded_reaches_the_new_anchor() {
             &transport,
             &phone_ids(),
             &mut outbox,
+            HUB_DEVICE,
         )
         .await
         .expect("replay");
@@ -1029,6 +1184,7 @@ fn a_members_proposal_the_handover_superseded_reaches_the_new_anchor() {
             &laptop.ctx,
             &mut laptop.writer.local(),
             &forwarded,
+            &Default::default(),
             NOW_MS,
         )
         .await
@@ -1125,6 +1281,61 @@ fn a_new_anchor_catches_up_with_the_hubs_writers_but_not_quarantined_ones() {
         hub_replica.close().await;
         laptop.close().await;
         desk.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn only_the_anchor_finalizes_a_rejection() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-final-rejection", HUB_DEVICE).await;
+        let (laptop, _) = promoted_desktop(&mut hub_replica, LAPTOP_DEVICE, 47).await;
+        let mut phone = Replica::new("phone-final-rejection", PHONE_DEVICE).await;
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        phone
+            .exchange(&forwarding_hub(&hub_replica), &phone_ids())
+            .await
+            .expect("pull the log");
+        phone.apply().await;
+
+        // The anchor would reject this enrollment as a duplicate, but a member hub that does
+        // not anchor answers only that it cannot sequence, so the proposal keeps waiting.
+        let duplicate = enroll_mobile(space, charter, PHONE_DEVICE, 48);
+        let mut outbox =
+            Outbox::load(&phone.directory.files().outbox_path()).expect("phone outbox");
+        outbox.add(duplicate.clone()).expect("queue");
+        let member = super::member_hub(&laptop);
+        let sequenced = client::replay_outbox(&member, &phone_ids(), &mut outbox, false)
+            .await
+            .expect("replay to a member hub");
+        assert_eq!(sequenced, 0);
+        let entry = outbox.get(&duplicate.hash()).expect("still in the outbox");
+        assert!(entry.pending(), "{entry:?}");
+
+        // A hub holding the proposal for the anchor answers no final rejection either, and a
+        // device the log does not name as anchor cannot settle one through a forward.
+        let tablet_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: TABLET_DEVICE.to_string(),
+        };
+        assert_eq!(
+            hold(&hub_replica, &duplicate).await,
+            Err(ProposalRejection::NotAnchor)
+        );
+        client::forward(
+            &forwarding_hub(&hub_replica),
+            &tablet_ids,
+            &[(duplicate.hash(), ProposalRejection::AlreadyEnrolled)],
+        )
+        .await
+        .expect("forward");
+        assert_eq!(
+            hold(&hub_replica, &duplicate).await,
+            Err(ProposalRejection::NotAnchor)
+        );
+        hub_replica.close().await;
+        laptop.close().await;
         phone.close().await;
     });
 }

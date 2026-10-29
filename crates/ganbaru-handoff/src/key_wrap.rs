@@ -65,15 +65,16 @@ pub trait KeyWrapper: Send + Sync {
     /// Deletes the key named `alias`, so nothing it sealed opens again. A missing key is not an
     /// error.
     fn forget(&self, alias: &str) -> Result<(), WrapError>;
-    /// Told by [`open`] when something sealed with `alias` was found that can never be opened.
-    /// It is the only signal of a lost key: error text can carry remote messages, so callers
-    /// never infer loss from it. The default ignores it.
-    fn note_lost(&self, _alias: &str) {}
-    /// Told by [`seal`] and [`open`] when `alias` sealed or opened a key, and by a key store
-    /// that removed the only file `alias` sealed: an earlier [`Self::note_lost`] for `alias`
-    /// no longer stands, because its key works again or nothing lost under it remains. The
-    /// default ignores it.
-    fn note_recovered(&self, _alias: &str) {}
+    /// Told by [`open`] when the key stored under `reference`, sealed with `alias`, was found
+    /// and can never be opened. It is the only signal of a lost key: error text can carry
+    /// remote messages, so callers never infer loss from it. The default ignores it.
+    fn note_lost(&self, _alias: &str, _reference: &str) {}
+    /// Told by [`seal`] and [`open`] when `alias` sealed or opened the key stored under
+    /// `reference`, and by a key store that removed that key's file: an earlier
+    /// [`Self::note_lost`] for the same `alias` and `reference` no longer stands. A loss noted
+    /// for another reference under `alias` stands, since one damaged file says nothing about
+    /// another. The default ignores it.
+    fn note_recovered(&self, _alias: &str, _reference: &str) {}
 }
 
 /// Name of the platform key that seals the sync and person keys of `vault_id`.
@@ -142,7 +143,7 @@ pub fn seal(
     envelope.extend_from_slice(&MAGIC);
     envelope.push(VERSION);
     envelope.extend_from_slice(&sealed);
-    wrapper.note_recovered(alias);
+    wrapper.note_recovered(alias, reference);
     Ok(envelope)
 }
 
@@ -155,7 +156,7 @@ pub fn open(
     envelope: &[u8],
 ) -> Result<Vec<u8>, String> {
     let lost_here = |detail: &str| {
-        wrapper.note_lost(alias);
+        wrapper.note_lost(alias, reference);
         lost(detail)
     };
     if !is_envelope(envelope) {
@@ -172,7 +173,7 @@ pub fn open(
         .unwrap(alias, &associated_data(reference), sealed)
         .map_err(|error| {
             if matches!(error, WrapError::Invalidated(_)) {
-                wrapper.note_lost(alias);
+                wrapper.note_lost(alias, reference);
             }
             wrap_error(error)
         })?;
@@ -183,7 +184,7 @@ pub fn open(
             "the key store returned a key of the wrong length",
         ));
     }
-    wrapper.note_recovered(alias);
+    wrapper.note_recovered(alias, reference);
     Ok(plaintext)
 }
 
@@ -199,7 +200,7 @@ pub fn read_protected_file(
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-                wrapper.note_lost(alias);
+                wrapper.note_lost(alias, reference);
                 return Err(lost("the key file has an invalid length"));
             }
             Err(error) => return Err(format!("read protected key: {error}")),
@@ -370,11 +371,13 @@ impl crate::pairing::IdentityKeyStore for ProtectedIdentityKeyStore {
         )
     }
 
-    /// Removes the protected file of `device_id`, the only file its linking alias seals, so a
-    /// loss noted for that alias no longer stands.
+    /// Removes the protected file of `device_id`, so a loss noted for it no longer stands.
     fn remove(&self, device_id: &str) -> Result<(), String> {
         remove_key_file(&self.path(device_id))?;
-        self.wrapper.note_recovered(&linking_key_alias(device_id));
+        self.wrapper.note_recovered(
+            &linking_key_alias(device_id),
+            &identity_reference(device_id),
+        );
         Ok(())
     }
 }
@@ -518,13 +521,13 @@ impl KeyWrapper for TestKeyWrapper {
         Ok(())
     }
 
-    fn note_lost(&self, alias: &str) {
+    fn note_lost(&self, alias: &str, _reference: &str) {
         if let Ok(mut noted) = self.noted_lost.lock() {
             noted.push(alias.to_string());
         }
     }
 
-    fn note_recovered(&self, alias: &str) {
+    fn note_recovered(&self, alias: &str, _reference: &str) {
         if let Ok(mut noted) = self.noted_recovered.lock() {
             noted.push(alias.to_string());
         }

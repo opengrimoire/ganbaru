@@ -10,11 +10,14 @@
   let {
     buttonClass,
     changes,
+    total,
     canResolve,
     now,
   }: {
     buttonClass: string;
     changes: SyncLateChange[];
+    /** Every late change waiting, including those past the listed bound. */
+    total: number;
     /** Whether this admin desktop may keep or discard the changes. */
     canResolve: boolean;
     now: number;
@@ -81,6 +84,9 @@
       {/if}
     </div>
   {/each}
+  {#if total > changes.length}
+    <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.late.more", total - changes.length)}</p>
+  {/if}
   {#if !canResolve}
     <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.late.adminOnly")}</p>
   {/if}

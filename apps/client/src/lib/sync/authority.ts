@@ -15,8 +15,10 @@ import { formatDateTime } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { formatSyncTime, syncDeviceName } from "./status";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /** How long changes may wait for the anchor before the interface suggests taking it over. */
-export const SYNC_HANDOVER_SUGGESTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const SYNC_HANDOVER_SUGGESTION_MS = 30 * DAY_MS;
 
 /** Kit code groups shown on one line of the code display and the saved file. */
 export const SYNC_KIT_GROUPS_PER_LINE = 4;
@@ -37,7 +39,18 @@ export interface SyncAuthorityContext {
   statusRole: SyncRole | null;
   /** Whether this is the Android layout, where admin actions are never offered. */
   mobileLayout: boolean;
+  /**
+   * Since when no pass in this app run reached the anchor, in Unix milliseconds, or null while
+   * it answers. From the sync status.
+   */
+  anchorUnreachableSinceMs: number | null;
 }
+
+/**
+ * How this desktop may use a recovery kit: `propose` sends the promotion to a reachable anchor,
+ * and `force` makes this desktop an admin and the anchor without the lost one.
+ */
+export type SyncKitUse = "propose" | "force";
 
 /** The actions offered for one enrolled device. */
 export interface SyncDeviceActions {
@@ -106,15 +119,50 @@ export function syncDeviceActions(context: SyncAuthorityContext, device: SyncAut
   };
 }
 
-/** Whether this linked admin desktop may take the anchor in a planned handover. */
-export function canTakeSyncAnchor(context: SyncAuthorityContext): boolean {
+/** Whether this is a linked desktop, enrolled and live, that does not hold the anchor. */
+function linkedDesktopBesideAnchor(context: SyncAuthorityContext): boolean {
   const own = syncOwnDevice(context.authority);
-  return adminHere(context)
-    && !context.authority.frozen
+  return !context.mobileLayout
     && context.statusRole === "client"
     && own !== null
+    && own.kind === "desktop"
     && own.removedRevision === null
     && !own.anchor;
+}
+
+/** Whether this is a linked desktop, enrolled even if since removed, that does not hold the anchor. */
+function linkedDesktopInContest(context: SyncAuthorityContext): boolean {
+  const own = syncOwnDevice(context.authority);
+  return !context.mobileLayout
+    && context.statusRole === "client"
+    && own !== null
+    && own.kind === "desktop"
+    && !own.anchor;
+}
+
+/** Whether this linked admin desktop may take the anchor in a planned handover. */
+export function canTakeSyncAnchor(context: SyncAuthorityContext): boolean {
+  return adminHere(context)
+    && !context.authority.frozen
+    && linkedDesktopBesideAnchor(context);
+}
+
+/**
+ * Whether this linked admin desktop may sign a forced handover to itself because the anchor
+ * stopped answering. A pause for an earlier handover does not block it, since a lost anchor
+ * may be what left the space paused.
+ */
+export function canForceSyncAnchor(context: SyncAuthorityContext): boolean {
+  return adminHere(context)
+    && context.anchorUnreachableSinceMs !== null
+    && linkedDesktopBesideAnchor(context);
+}
+
+/** The anchor's enrolled entry, when it is another live device this installation could quarantine. */
+export function syncQuarantinableAnchor(authority: SyncAuthorityView): SyncAuthorityDevice | null {
+  const anchor = authority.devices.find((entry) => entry.anchor) ?? null;
+  if (!anchor || anchor.device.ownDevice || anchor.removedRevision !== null || anchor.quarantined) return null;
+  return anchor;
 }
 
 /** Whether this device may keep or discard late changes. */
@@ -128,18 +176,39 @@ export function canManageSyncRecoveryKit(context: SyncAuthorityContext): boolean
 }
 
 /**
- * Whether this desktop may use a recovery kit: an enrolled desktop that is not an admin yet,
- * whose last exchange reached the anchor. Using a kit without a live anchor is not offered.
+ * Whether this admin desktop may install a new recovery key. Only the anchor's own admin key
+ * installs one, and it never replaces the printed kit, which alone rotates the kit.
  */
-export function canUseSyncRecoveryKit(context: SyncAuthorityContext, state: SyncState): boolean {
+export function canInstallSyncRecoveryKey(context: SyncAuthorityContext): boolean {
   const own = syncOwnDevice(context.authority);
-  return !context.mobileLayout
-    && !context.authority.ownIsAdmin
+  return adminHere(context) && own !== null && own.anchor && own.removedRevision === null;
+}
+
+/**
+ * How this desktop may use a recovery kit, or null when it may not. An enrolled desktop that is
+ * not an admin yet proposes its promotion while its last exchange reached the anchor; a linked
+ * one forces the handover to itself once the anchor stopped answering. A desktop that is not
+ * enrolled cannot use a kit, since the forced anchor must already be an enrolled device. When a
+ * contest offers the kit, any linked enrolled desktop that is not the anchor, admin or not,
+ * forces the handover with it, even one a losing branch removed, since the kit may continue from
+ * before that removal.
+ */
+export function syncRecoveryKitUse(
+  context: SyncAuthorityContext,
+  state: SyncState,
+  kitContested = false,
+): SyncKitUse | null {
+  if (kitContested && linkedDesktopInContest(context)) return "force";
+  if (context.authority.ownIsAdmin) return null;
+  if (context.anchorUnreachableSinceMs !== null) return linkedDesktopBesideAnchor(context) ? "force" : null;
+  const own = syncOwnDevice(context.authority);
+  const proposing = !context.mobileLayout
     && !context.authority.frozen
     && own !== null
     && own.kind === "desktop"
     && own.removedRevision === null
     && ANCHOR_REACHABLE_STATES.includes(state);
+  return proposing ? "propose" : null;
 }
 
 /** Whether this device may reset sync state: only the coordinating desktop can. */
@@ -268,6 +337,28 @@ export function syncLateChangeKey(change: SyncLateChange): string {
   return `${change.removalRevision}:${change.table}:${change.rowKey}`;
 }
 
+/**
+ * Says since when no pass reached the anchor, on a linked device, or returns null while it
+ * answers or on the coordinator.
+ */
+export function syncAnchorUnreachableLine(
+  t: Translate,
+  locale: AppLocale,
+  status: SyncStatusView,
+  nowMs: number,
+): string | null {
+  if (status.role !== "client" || status.anchorUnreachableSinceMs === null) return null;
+  return t("sync.authority.anchorUnreachable", formatSyncTime(t, locale, status.anchorUnreachableSinceMs, nowMs));
+}
+
+/**
+ * Whether this device may be told to take over the anchor after a long wait: a linked admin
+ * desktop beside the anchor, the only kind of device that can act on it.
+ */
+export function canSuggestSyncHandover(context: SyncAuthorityContext | null): boolean {
+  return context !== null && adminHere(context) && linkedDesktopBesideAnchor(context);
+}
+
 /** What the interface says about changes the anchor has not confirmed storing. */
 export interface SyncUnconfirmedNotice {
   lines: string[];
@@ -276,8 +367,10 @@ export interface SyncUnconfirmedNotice {
 }
 
 /**
- * Describes unconfirmed changes, or returns null when there are none.
+ * Describes unconfirmed changes and the superseded versions kept for them, or returns null when
+ * there are neither. The handover suggestion measures the age of the oldest unconfirmed change.
  *
+ * @param canSuggest Whether this device may take over the anchor, from `canSuggestSyncHandover`.
  * @param thresholdMs Age of the oldest unconfirmed change after which a handover is suggested.
  */
 export function syncUnconfirmedNotice(
@@ -285,13 +378,18 @@ export function syncUnconfirmedNotice(
   locale: AppLocale,
   status: SyncStatusView,
   nowMs: number,
+  canSuggest: boolean,
   thresholdMs = SYNC_HANDOVER_SUGGESTION_MS,
 ): SyncUnconfirmedNotice | null {
-  if (status.unconfirmed === 0) return null;
-  const lines = [t("sync.unconfirmed", status.unconfirmed)];
+  if (status.unconfirmed === 0 && status.displacedVersions === 0) return null;
+  const lines: string[] = [];
   const oldest = status.oldestUnconfirmedAtMs;
-  if (oldest !== null) lines.push(t("sync.unconfirmedSince", formatSyncTime(t, locale, oldest, nowMs)));
-  const suggestHandover = oldest !== null && nowMs - oldest >= thresholdMs;
-  if (suggestHandover) lines.push(t("sync.unconfirmedHandover"));
+  if (status.unconfirmed > 0) {
+    lines.push(t("sync.unconfirmed", status.unconfirmed));
+    if (oldest !== null) lines.push(t("sync.unconfirmedSince", formatSyncTime(t, locale, oldest, nowMs)));
+  }
+  if (status.displacedVersions > 0) lines.push(t("sync.displaced", status.displacedVersions));
+  const suggestHandover = canSuggest && status.unconfirmed > 0 && oldest !== null && nowMs - oldest >= thresholdMs;
+  if (suggestHandover) lines.push(t("sync.unconfirmedHandover", Math.floor(thresholdMs / DAY_MS)));
   return { lines, suggestHandover };
 }

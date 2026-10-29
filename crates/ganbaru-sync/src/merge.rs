@@ -89,6 +89,10 @@ pub(crate) struct Batch {
     /// Groups the anchor seals again with their current values once the call materialized,
     /// because a fork or removal excluded stored operations that wrote them.
     pub(crate) republish: BTreeMap<(TableId, String), GroupMask>,
+    /// Groups a former or current anchor seals again because an exclusion removes operations
+    /// it applied as anchor, which released what they displaced. They are captured before the
+    /// call materializes, while the domain rows still hold the values those operations wrote.
+    pub(crate) released: BTreeMap<(TableId, String), GroupMask>,
 }
 
 impl Batch {
@@ -100,6 +104,7 @@ impl Batch {
             dirty: BTreeSet::new(),
             orphaned: BTreeSet::new(),
             republish: BTreeMap::new(),
+            released: BTreeMap::new(),
         })
     }
 }

@@ -104,6 +104,7 @@ impl LocalPair {
                 Box::pin(async move { Ok(Some(charter)) })
             }),
             None,
+            None,
         )
         .await
     }
@@ -117,6 +118,7 @@ impl LocalPair {
             LanAdmission::default(),
             test_enrollment_sealer(),
             Some(quarantined),
+            None,
         )
         .await
     }
@@ -147,6 +149,7 @@ impl LocalPair {
             admission,
             test_enrollment_sealer(),
             None,
+            None,
         )
         .await
     }
@@ -158,6 +161,7 @@ impl LocalPair {
         admission: LanAdmission,
         sealer: EnrollmentSealer,
         quarantined: Option<QuarantinedDevices>,
+        log_admission: Option<MemberAdmissionSource>,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -197,6 +201,7 @@ impl LocalPair {
                 approvals: approvals.clone(),
                 admission,
                 quarantined,
+                log_admission,
                 ..CoordinatorServices::default()
             },
             receiver,
@@ -473,7 +478,7 @@ async fn peers_outside_the_address_policy_are_closed_before_the_tls_handshake() 
     let endpoint = listener.local_addr().expect("coordinator endpoint");
     // One pending slot: a refused peer that took it would keep the next connection waiting for
     // its TLS handshake instead of closing.
-    let limits = server::limits::ConnectionLimits::new(1, 1, 64);
+    let limits = server::limits::ConnectionLimits::new(1, 1, 64, 16);
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     tokio::spawn(server::serve_with_limits(
         listener.into(),
@@ -1660,6 +1665,7 @@ async fn sync_requests_reach_the_hub_only_from_enrolled_devices() {
         manifest_version: 1,
         stored: Vec::new(),
         probe: None,
+        listening: Vec::new(),
     };
     let unauthenticated = unauthenticated_exchange(
         &pair.invitation.endpoint,
@@ -1743,7 +1749,7 @@ async fn closed_by_coordinator(stream: &mut TcpStream, wait: Duration) -> bool {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn connection_flood_is_closed_while_linked_devices_still_connect() {
-    let limits = server::limits::ConnectionLimits::new(6, 3, 64);
+    let limits = server::limits::ConnectionLimits::new(6, 3, 64, 16);
     let pair = LocalPair::start_with_limits(None, limits).await;
     pair.enroll().await;
     let endpoint: SocketAddr = pair.invitation.endpoint.parse().expect("endpoint");
@@ -1829,7 +1835,6 @@ fn pin_with(
             .iter()
             .map(|endpoint| endpoint.to_string())
             .collect(),
-        discovery_key: None,
         charter: None,
     }
 }
@@ -2109,18 +2114,29 @@ async fn discovery_reaches_a_coordinator_that_moved_after_every_known_endpoint_f
 async fn sync_states_refresh_the_remembered_coordinator_contact() {
     let pair = LocalPair::start().await;
     pair.enroll().await;
-    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode([7_u8; crate::vault::handoff::protocol::DISCOVERY_KEY_BYTES]);
     let endpoints = vec![
         "192.168.1.20:43821".to_string(),
         "[fd00::20]:43821".to_string(),
     ];
-    record_reported_contact(&pair.phone, &endpoints, &key);
+    let coordinator = linked_pin(&pair.phone).device_id;
+    let member = |device_id: &str, endpoint: &str| super::super::protocol::MemberEndpoint {
+        device_id: device_id.to_string(),
+        endpoint: endpoint.to_string(),
+        observed_ms: 1_700_000_000_000,
+    };
+    let mut members: Vec<_> = endpoints
+        .iter()
+        .map(|endpoint| member(&coordinator, endpoint))
+        .collect();
+    members.push(member("device-other-member", "192.168.1.30:43821"));
+    record_reported_contact(&pair.phone, &members);
     let pin = linked_pin(&pair.phone);
-    assert_eq!(pin.reported_endpoints, endpoints);
-    assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
+    assert_eq!(
+        pin.reported_endpoints, endpoints,
+        "only the coordinator's own endpoints refresh its pin"
+    );
 
-    record_reported_contact(&pair.phone, &["8.8.8.8:43821".to_string()], &key);
+    record_reported_contact(&pair.phone, &[member(&coordinator, "8.8.8.8:43821")]);
     assert_eq!(
         linked_pin(&pair.phone).reported_endpoints,
         endpoints,
@@ -2173,3 +2189,6 @@ async fn the_listener_refuses_a_quarantined_device_and_survives_an_unreadable_li
         "an unreadable list turns no linked device away"
     );
 }
+
+#[cfg(desktop)]
+mod member;

@@ -361,10 +361,36 @@ impl SyncFiles {
     pub fn quarantine_path(&self) -> PathBuf {
         self.vault_directory().join("quarantine.json")
     }
+
+    /// Where the other members of the vault last listened.
+    pub fn peers_path(&self) -> PathBuf {
+        self.vault_directory().join("peers.json")
+    }
+
+    /// Which device anchors the vault and the certificate its enrollment recorded.
+    pub fn anchor_path(&self) -> PathBuf {
+        self.vault_directory().join("anchor.json")
+    }
+
+    /// The discovery keys the log names and when this device first saw the current one.
+    pub fn discovery_keys_path(&self) -> PathBuf {
+        self.vault_directory().join("discovery.json")
+    }
 }
 
+/// Largest writer record read. A record holds one certificate, a few counters, and the ids of
+/// retired writers whose keys wait to be removed, far below this.
+const MAX_WRITER_RECORD_BYTES: u64 = 1024 * 1024;
+
+/// Reads the writer record at `path`, `None` when the file does not exist. Refuses a symbolic
+/// link, a file over [`MAX_WRITER_RECORD_BYTES`], and a record that does not parse, has another
+/// schema version, or names a malformed writer id.
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match ganbaru_atomic_files::read_regular_file_capped(
+        path,
+        MAX_WRITER_RECORD_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    ) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read sync writer record: {error}")),
@@ -676,6 +702,16 @@ pub async fn check_writer(
         )
     {
         return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
+    }
+    // A forked writer, or one of a device the selected chain removed, seals no more: the
+    // device key certifies a successor that names it as predecessor.
+    if engine
+        .writer_retirement(conn, ctx, certificate.certificate.writer_id())
+        .await
+        .map_err(|error| format!("check sync writer retirement: {error}"))?
+        .is_some()
+    {
+        return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
     }
     Ok(WriterCheck::Ready(Box::new(ActiveWriter {
         key,

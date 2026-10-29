@@ -7,6 +7,7 @@ mod chains;
 mod chat;
 mod compaction;
 mod conformance;
+mod contest;
 mod distractions;
 mod elision;
 mod engine;
@@ -17,6 +18,7 @@ mod fork;
 mod group_members;
 mod groups;
 mod guards;
+mod handover;
 mod holds;
 mod local;
 mod local_assets;
@@ -28,6 +30,7 @@ mod owned;
 mod preferences;
 mod projects;
 mod publication;
+mod record_exchange;
 mod replica;
 mod settle;
 mod sim;
@@ -43,6 +46,26 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
         .build()
         .expect("sync test runtime should initialize")
         .block_on(future)
+}
+
+/// Arrival orders of `count` items that order-independence tests run: the stored order, its
+/// reverse, and 16 seeded random orders, the same for every run of one count.
+fn arrival_orders(count: usize) -> Vec<Vec<usize>> {
+    let forward: Vec<usize> = (0..count).collect();
+    let mut orders = vec![forward.clone(), forward.iter().rev().copied().collect()];
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ u64::try_from(count).unwrap();
+    for _ in 0..16 {
+        let mut order = forward.clone();
+        for index in (1..count).rev() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let other = usize::try_from(state % (u64::try_from(index).unwrap() + 1)).unwrap();
+            order.swap(index, other);
+        }
+        orders.push(order);
+    }
+    orders
 }
 
 /// A freshly migrated vault database in memory, with one connection like vault pools.

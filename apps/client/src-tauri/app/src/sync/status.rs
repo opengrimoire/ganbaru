@@ -153,6 +153,10 @@ pub(crate) enum SyncDegradedReason {
     /// A firewall blocks peers or discovery until the user allows the local network.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     FirewallAuthorizationRequired,
+    /// A firewall blocks other members from reaching this member desktop's listener until the
+    /// user allows peers to connect.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    FirewallPeerListenerBlocked,
 }
 
 /// The degraded reasons of one pass, without repeats and in a fixed order.
@@ -194,6 +198,13 @@ pub(crate) struct SyncStatusView {
     pub unconfirmed: usize,
     /// When the oldest unconfirmed change was stored, in Unix milliseconds.
     pub oldest_unconfirmed_at_ms: Option<u64>,
+    /// Superseded versions this device keeps until the anchor confirms the changes that
+    /// superseded them.
+    pub displaced_versions: usize,
+    /// On a linked device, since when no pass in this app run reached the anchor, directly or
+    /// as the coordinator, in Unix milliseconds. `None` while the anchor answers, on the
+    /// coordinator, and before the first pass.
+    pub anchor_unreachable_since_ms: Option<u64>,
     /// Devices whose merged edits carry clocks far ahead of this device, so they win
     /// concurrent edits until the clocks agree.
     pub clock_ahead_devices: Vec<DeviceRef>,
@@ -221,6 +232,7 @@ impl SyncStatusView {
         self.recovery = TableCount::list(&status.recovery);
         self.unconfirmed = status.unconfirmed;
         self.oldest_unconfirmed_at_ms = status.oldest_unconfirmed_ms;
+        self.displaced_versions = status.displaced;
     }
 
     /// Names the linked devices the coordinator does not count, with why, in device id order.
@@ -469,6 +481,7 @@ mod tests {
     #[test]
     fn connection_and_degraded_reasons_reach_the_frontend_in_its_wire_names() {
         let mut reasons = DegradedReasons::default();
+        reasons.note(SyncDegradedReason::FirewallPeerListenerBlocked, true);
         reasons.note(SyncDegradedReason::FirewallAuthorizationRequired, true);
         reasons.note(SyncDegradedReason::StandbyRestricted, false);
         reasons.note(SyncDegradedReason::LocalNetworkDenied, true);
@@ -489,12 +502,19 @@ mod tests {
             serde_json::json!([
                 "backgroundRestricted",
                 "localNetworkDenied",
-                "firewallAuthorizationRequired"
+                "firewallAuthorizationRequired",
+                "firewallPeerListenerBlocked"
             ])
         );
         let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
         assert_eq!(empty["connection"], serde_json::Value::Null);
         assert_eq!(empty["degraded"], serde_json::json!([]));
+        assert_eq!(empty["anchorUnreachableSinceMs"], serde_json::Value::Null);
+        assert!(
+            empty
+                .as_object()
+                .is_some_and(|fields| fields.contains_key("anchorUnreachableSinceMs"))
+        );
     }
 
     #[test]
@@ -530,12 +550,14 @@ mod tests {
         let status = SyncStatus {
             unconfirmed: 4,
             oldest_unconfirmed_ms: Some(1_800_000_000_000),
+            displaced: 3,
             ..SyncStatus::default()
         };
         let mut view = SyncStatusView::default();
         view.set_counts(&status);
         let wire = serde_json::to_value(&view).expect("serialize status");
         assert_eq!(wire["unconfirmed"], serde_json::json!(4));
+        assert_eq!(wire["displacedVersions"], serde_json::json!(3));
         assert_eq!(
             wire["oldestUnconfirmedAtMs"],
             serde_json::json!(1_800_000_000_000_u64)

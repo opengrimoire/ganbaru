@@ -17,14 +17,18 @@
 | `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the encoded value and its hash. A winning value that the domain row holds is elided to null; readers take it from the domain row when it matches the hash, otherwise from the operation body, and materialization stores it again before the domain row changes or is deleted. |
 | `sync_version_refs` | The non-null reference values of each retained version, one row per reference column, indexed by referenced key so redirects and deletions find their referrers. |
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect or an optional cause (`cause_table`, `cause_row`) naming the deleted root a cascade repair followed. |
-| `sync_auth_entries` | One row per applied authorization log entry (kind `4`), with its revision, chain hash, and whether chain selection chose it. Unselected entries stay stored and forwarded. |
-| `sync_devices` | Devices the selected chain enrolls: device key, TLS fingerprint, kind, role and admin key, label, and the revisions that enrolled and removed the device. |
+| `sync_auth_envelopes` | The authorization record store: every authorization record, writer certificate (genesis), and fork evidence envelope that passes its intrinsic checks, by envelope hash and role. Rows never leave by selection, writer slot state, or arrival order; authority reads only this table. Envelopes of a writer without a stored certificate wait unverified. |
+| `sync_auth_wanted` | Entry hashes, envelope hashes, and writers the record store names but lacks, derived from it. |
+| `sync_auth_refetch` | Envelope hashes whose pending copy failed verification when the certificate arrived, requested again until a verified copy is stored. |
+| `sync_auth_selected` | The selected chain past the charter, one row per revision with its entry, proposal, and carrying envelope hash, derived on every selection. |
+| `sync_devices` | Devices the selected chain enrolls: device key, TLS fingerprint, kind, role and admin key, label, the revisions that enrolled and removed the device, and whether an unresolved handover contest holds its data. |
 | `sync_displaced_versions` | Versions an operation past the anchor mark superseded, kept until the anchor confirms it so excluding it can restore them. |
 | `sync_late_changes` | Rows a removed device changed past its cutoff, per removal, until an admin restores or discards them. |
-| `sync_fork_evidence` | Two signed operations of one writer at one sequence with different hashes. |
+| `sync_fork_evidence` | Two signed operations of one writer at one sequence with different hashes, which drive the exclusion of both branches of the data lane. |
 | `sync_row_creations` | The applied operations that created each published row, so excluding a forked branch can tell whether another operation still creates a row. `sync_rows.creation_pending` marks a row that holds honest changes but no creation and stays hidden until an operation creates it. |
 | `sync_stale_rows` | Rows whose domain state storing an excluded operation may have made stale, and rows an applied chain group left for repair. Engine writes take them back a bounded number at a time once no chain is between groups. |
 | `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
+| `sync_released_marks` | Per writer of another device, the highest sequence this replica applied while it was the anchor, so it seals the groups those operations wrote again if they are excluded later. Device-local; never replicates. |
 | `sync_restated_groups` | Per group, the value hash the anchor sealed again without a newer edit, so restoring a late change does not count that version as newer. Kept while the row has an undecided late change. Device-local; never replicates. |
 
 ## Invariants

@@ -80,6 +80,7 @@ ganbaru-mobile-distractions = { workspace = true }
 ganbaru-mobile-media = { workspace = true }
 ganbaru-mobile-notifications = { workspace = true }
 ganbaru-mobile-sync = { workspace = true }
+rustix = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]

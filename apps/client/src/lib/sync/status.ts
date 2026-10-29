@@ -148,7 +148,19 @@ export function syncConnectionLabel(t: Translate, status: SyncStatusView): strin
 }
 
 /** A recovery action a degraded reason offers. */
-export type SyncDegradedAction = "openBatterySettings" | "allowNetworkAccess";
+export type SyncDegradedAction = "openBatterySettings" | "allowNetworkAccess" | "allowPeerConnections";
+
+/** Labels the button that runs a degraded reason's recovery action. */
+export function syncDegradedActionLabel(t: Translate, action: SyncDegradedAction): string {
+  switch (action) {
+    case "openBatterySettings":
+      return t("sync.degraded.openBatterySettings");
+    case "allowNetworkAccess":
+      return t("sync.degraded.allowNetworkAccess");
+    case "allowPeerConnections":
+      return t("sync.degraded.allowPeerConnections");
+  }
+}
 
 /** One degraded reason with its explanation and recovery action. */
 export interface SyncDegradedRow {
@@ -159,7 +171,8 @@ export interface SyncDegradedRow {
 
 /**
  * Explains each degraded reason with its recovery action. The firewall reason has an action only
- * on the coordinator, where this device can allow its listener through the firewall.
+ * on the coordinator, where this device can allow its listener through the firewall; a member
+ * desktop whose own listener the firewall blocks gets its own reason with the same grant.
  */
 export function syncDegradedRows(t: Translate, status: SyncStatusView): SyncDegradedRow[] {
   return status.degraded.map((reason) => {
@@ -174,6 +187,8 @@ export function syncDegradedRows(t: Translate, status: SyncStatusView): SyncDegr
         return status.role === "hub"
           ? { reason, label: t("sync.degraded.firewallHub"), action: "allowNetworkAccess" }
           : { reason, label: t("sync.degraded.firewallClient"), action: null };
+      case "firewallPeerListenerBlocked":
+        return { reason, label: t("sync.degraded.firewallPeers"), action: "allowPeerConnections" };
     }
   });
 }

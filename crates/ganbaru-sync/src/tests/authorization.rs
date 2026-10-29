@@ -6,15 +6,20 @@ use std::collections::BTreeMap;
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKind, DeviceRole, Digest32, Enroll, Entry,
     Envelope, Handover, Header, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
-    SetRole, SignedProposal,
+    SetRole, SignedProposal, WriterKeyPair, Yield,
 };
 
 use super::block_on;
+use super::exclusion::{edit, note};
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, device_key,
-    enroll_entry, person, proposal,
+    enroll_entry, person, proposal, recovery_admin, tls_fingerprint,
 };
-use crate::{AuthorizationView, HoldReason, LateChange, StoreOutcome, StoreRefusal};
+use crate::store::MAX_UNSELECTED_WRITERS_PER_SPACE;
+use crate::{
+    AuthorizationView, HoldReason, LateChange, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
+};
+use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -32,13 +37,22 @@ pub(super) fn remove_entry(device: &str) -> Entry {
     })
 }
 
-async fn tag(replica: &mut Replica, id: &str) {
+pub(super) async fn tag(replica: &mut Replica, id: &str) {
     replica
         .exec(&format!(
             "INSERT INTO quick_note_tags (id, name, order_key) VALUES ('{id}', '{id}', 'a0')"
         ))
         .await;
     replica.seal().await.unwrap();
+}
+
+/// The revision that removed `device_id` on `replica`, `None` for a device it does not know.
+async fn removed_revision(replica: &mut Replica, device_id: &str) -> Option<Option<i64>> {
+    sqlx::query_scalar("SELECT removed_revision FROM sync_devices WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_optional(&mut replica.conn)
+        .await
+        .unwrap()
 }
 
 pub(super) async fn view(replica: &mut Replica) -> AuthorizationView {
@@ -54,8 +68,7 @@ pub(super) async fn view(replica: &mut Replica) -> AuthorizationView {
 pub(super) async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
     let view = view(replica).await;
     let hash: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT entry_hash FROM sync_auth_entries WHERE selected = 1
-         ORDER BY revision DESC LIMIT 1",
+        "SELECT entry_hash FROM sync_auth_selected ORDER BY revision DESC LIMIT 1",
     )
     .fetch_optional(&mut replica.conn)
     .await
@@ -81,7 +94,25 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
         .await
         .pop()
         .expect("the replica has sealed");
-    let envelope = Envelope::decode(&last).unwrap();
+    seal_after(
+        &last,
+        &replica.identity.key,
+        content,
+        authorization_revision,
+        replica.now_ms,
+    )
+}
+
+/// The operation `key` seals with `content` right after `previous`, under the same writer and
+/// space, outside the engine.
+pub(super) fn seal_after(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    content: Content,
+    authorization_revision: u64,
+    now_ms: u64,
+) -> Vec<u8> {
+    let envelope = Envelope::decode(previous).unwrap();
     let previous = envelope.operation().unwrap();
     Operation {
         space: previous.space,
@@ -89,7 +120,7 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
         seq: previous.seq + 1,
         previous_hash: envelope.hash(),
         header: Header {
-            clock: HlcClock::new(previous.header.clock).tick(replica.now_ms),
+            clock: HlcClock::new(previous.header.clock).tick(now_ms),
             manifest_version: previous.header.manifest_version,
             authorization_revision,
             key_epoch: 0,
@@ -98,14 +129,14 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
         },
         content,
     }
-    .seal(&replica.identity.key)
+    .seal(key)
     .unwrap()
     .into_bytes()
 }
 
 /// `genesis` sealed again as the genesis of `identity`, which the engine would refuse to seal
 /// for a device key the chain did not enroll.
-fn genesis_of(genesis: &[u8], identity: &Identity) -> Vec<u8> {
+pub(super) fn genesis_of(genesis: &[u8], identity: &Identity) -> Vec<u8> {
     let mut operation = Envelope::decode(genesis).unwrap().operation().unwrap();
     operation.writer = identity.id();
     operation.content = Content::Genesis(identity.certificate.clone());
@@ -194,9 +225,9 @@ async fn assert_devices_replay_the_selected_chain(replica: &mut Replica) {
         ),
     )]);
     let envelopes: Vec<(i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT e.revision, o.envelope FROM sync_auth_entries e JOIN sync_ops o
-            ON o.space_id = e.space_id AND o.writer_id = e.writer_id AND o.seq = e.seq
-         WHERE e.selected = 1 ORDER BY e.revision",
+        "SELECT s.revision, e.envelope FROM sync_auth_selected s JOIN sync_auth_envelopes e
+            ON e.space_id = s.space_id AND e.role = 'record' AND e.envelope_hash = s.envelope_hash
+         ORDER BY s.revision",
     )
     .fetch_all(&mut replica.conn)
     .await
@@ -237,6 +268,20 @@ async fn assert_devices_replay_the_selected_chain(replica: &mut Replica) {
                 let device = expected.get_mut(&device_id).unwrap();
                 device.1 = role;
                 device.2 = key;
+            }
+            // A handover its target's own admin key does not sign is a kit or recovery one,
+            // which leaves no admin but the target.
+            Entry::Handover(handover) => {
+                let author = record.proposal.proposal.author.as_bytes().to_vec();
+                let target = &handover.new_anchor_device_id;
+                if expected[target].2.as_ref() != Some(&author) {
+                    for (device_id, device) in &mut expected {
+                        if device_id != target && device.4.is_none() {
+                            device.1 = "member".to_owned();
+                            device.2 = None;
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -405,13 +450,13 @@ fn entries_are_taken_only_from_the_anchor_and_unknown_kinds_are_kept_but_ignored
         let ignored = view(&mut observer).await;
         assert_eq!(ignored.revision, unknown_revision);
         assert_eq!(ignored.devices, before.devices);
-        let kinds: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT revision, selected FROM sync_auth_entries WHERE entry_kind = 200",
-        )
-        .fetch_all(&mut observer.conn)
-        .await
-        .unwrap();
-        assert_eq!(kinds, [(i64::try_from(unknown_revision).unwrap(), 1)]);
+        let selected_unknown: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sync_auth_selected WHERE revision = ?")
+                .bind(i64::try_from(unknown_revision).unwrap())
+                .fetch_one(&mut observer.conn)
+                .await
+                .unwrap();
+        assert_eq!(selected_unknown, 1);
 
         let next = hub
             .sequence(enroll_entry(&person(), 20, DeviceRole::Member))
@@ -439,7 +484,7 @@ fn entries_are_taken_only_from_the_anchor_and_unknown_kinds_are_kept_but_ignored
 }
 
 #[test]
-fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_hash() {
+fn concurrent_takes_freeze_the_old_epoch_until_the_kit_supersedes_it() {
     block_on(async {
         let mut hub = Replica::anchor(0, 41).await;
         for index in [20, 21] {
@@ -467,12 +512,6 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
             ops.push(bytes);
             handovers.push((record, ops));
         }
-        let winner = handovers
-            .iter()
-            .min_by_key(|(record, _)| record.hash())
-            .map(|(record, _)| record.anchor_device_id.clone())
-            .unwrap();
-
         let mut observers = vec![Replica::new(2, 41).await, Replica::new(3, 41).await];
         for (position, observer) in observers.iter_mut().enumerate() {
             observer.pull(&mut hub).await;
@@ -487,37 +526,56 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
         }
         hub.apply_all().await.unwrap();
 
-        let selected = view(&mut hub).await;
-        assert_eq!(selected.epoch, 1);
-        assert_eq!(selected.revision, continued + 1);
-        assert_eq!(selected.anchor_device_id, winner);
+        // Two takes out of one epoch instance contest it: it freezes at their shared point and
+        // the old anchor's later entry is past the freeze.
+        let frozen = view(&mut hub).await;
+        assert_eq!(
+            (frozen.epoch, frozen.revision, frozen.frozen_at),
+            (0, continued, Some(continued))
+        );
+        assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
         assert!(
-            !selected
+            !frozen
                 .devices
                 .iter()
                 .any(|device| device.device_id == device_id(22)),
-            "the old epoch's entry at revision {superseded} is superseded"
+            "the old epoch's entry at revision {superseded} is past the freeze"
         );
         for observer in &mut observers {
+            assert_eq!(view(observer).await, frozen);
+        }
+
+        // The kit's handover from the freeze point pins it and demotes both takers.
+        let kit = hub.handover_proposal(&recovery_admin(&person())).await;
+        let revision = hub.seal_handover(&kit, None).await.unwrap().unwrap();
+        let selected = view(&mut hub).await;
+        assert_eq!(
+            (selected.epoch, selected.revision, selected.frozen_at),
+            (1, revision, None)
+        );
+        assert_eq!(selected.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert!(
+            selected
+                .devices
+                .iter()
+                .filter(|device| device.device_id != ANCHOR_DEVICE_ID)
+                .all(|device| device.role == DeviceRole::Member)
+        );
+        for observer in &mut observers {
+            observer.pull(&mut hub).await;
             assert_eq!(view(observer).await, selected);
             assert_devices_replay_the_selected_chain(observer).await;
         }
         assert_devices_replay_the_selected_chain(&mut hub).await;
-        let unselected: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM sync_auth_entries WHERE selected = 0")
-                .fetch_one(&mut hub.conn)
-                .await
-                .unwrap();
-        assert_eq!(
-            unselected, 2,
-            "the losing handover and the superseded enrollment"
-        );
-        assert_eq!(
-            hub.sequence(enroll_entry(&person(), 23, DeviceRole::Member))
-                .await
-                .unwrap(),
-            Err(ProposalRejection::NotAnchor)
-        );
+        let unselected: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT entry_hash) FROM sync_auth_envelopes
+                 WHERE role = 'record'
+                    AND entry_hash NOT IN (SELECT entry_hash FROM sync_auth_selected)",
+        )
+        .fetch_one(&mut hub.conn)
+        .await
+        .unwrap();
+        assert_eq!(unselected, 3, "both takes and the superseded enrollment");
     });
 }
 
@@ -602,6 +660,221 @@ fn the_named_admin_desktop_seals_a_handover_from_the_head_it_continues() {
 }
 
 #[test]
+fn two_takes_from_one_head_freeze_it_and_refuse_a_third_until_the_kit_recovers() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 44).await;
+        for index in [20, 21, 22] {
+            hub.sequence(admin_entry(index)).await.unwrap().unwrap();
+        }
+        let mut first = Replica::new(20, 44).await;
+        let mut second = Replica::new(21, 44).await;
+        let mut third = Replica::new(22, 44).await;
+        for replica in [&mut first, &mut second, &mut third] {
+            replica.pull(&mut hub).await;
+        }
+        let (_, point, _) = head(&mut hub).await;
+
+        // Two admins take the anchor from the same head, unaware of each other.
+        let to_first = first.handover_proposal(&device_admin(20)).await;
+        first.seal_handover(&to_first, None).await.unwrap().unwrap();
+        let to_second = second.handover_proposal(&device_admin(21)).await;
+        second
+            .seal_handover(&to_second, None)
+            .await
+            .unwrap()
+            .unwrap();
+        hub.pull(&mut first).await;
+        hub.pull(&mut second).await;
+        let frozen = view(&mut hub).await;
+        assert_eq!((frozen.revision, frozen.frozen_at), (point, Some(point)));
+        assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert_ne!(
+            hub.sequence(enroll_entry(&person(), 23, DeviceRole::Member))
+                .await
+                .unwrap(),
+            Ok(point + 1)
+        );
+
+        // A device that knows the contest refuses to add a third take to it.
+        third.pull(&mut hub).await;
+        assert_eq!(view(&mut third).await, frozen);
+        let to_third = third.handover_proposal(&device_admin(22)).await;
+        assert_eq!(
+            third.seal_handover(&to_third, None).await.unwrap(),
+            Err(ProposalRejection::HandoverConflict)
+        );
+
+        // The kit's handover at the point recovers the space.
+        let forced = third.handover_proposal(&recovery_admin(&person())).await;
+        third.seal_handover(&forced, None).await.unwrap().unwrap();
+        let recovered = view(&mut third).await;
+        assert_eq!(
+            (recovered.anchor_device_id.as_str(), recovered.frozen_at),
+            (device_id(22).as_str(), None)
+        );
+        hub.pull(&mut third).await;
+        assert_eq!(view(&mut hub).await, recovered);
+    });
+}
+
+#[test]
+fn a_removal_of_the_anchor_under_one_of_two_takes_stands_once_the_kit_continues_it() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 45).await;
+        for index in [20, 21, 22] {
+            hub.sequence(admin_entry(index)).await.unwrap().unwrap();
+        }
+        tag(&mut hub, "tag-before").await;
+        let mut first = Replica::new(20, 45).await;
+        let mut second = Replica::new(21, 45).await;
+        let mut third = Replica::new(22, 45).await;
+        for replica in [&mut first, &mut second, &mut third] {
+            replica.pull(&mut hub).await;
+        }
+        let (_, point, _) = head(&mut hub).await;
+
+        // Both takers act under their takes: the first removes the old anchor, the second
+        // enrolls a device.
+        let to_first = first.handover_proposal(&device_admin(20)).await;
+        first.seal_handover(&to_first, None).await.unwrap().unwrap();
+        let to_second = second.handover_proposal(&device_admin(21)).await;
+        second
+            .seal_handover(&to_second, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let removal = proposal(
+            first.ctx.space,
+            &device_admin(20),
+            first.now_ms,
+            remove_entry(ANCHOR_DEVICE_ID),
+        );
+        first.sequence_signed(&removal).await.unwrap().unwrap();
+        let enroll = proposal(
+            second.ctx.space,
+            &device_admin(21),
+            second.now_ms,
+            enroll_entry(&person(), 23, DeviceRole::Member),
+        );
+        second.sequence_signed(&enroll).await.unwrap().unwrap();
+        // The old anchor keeps writing past the cutoff the removal sealed.
+        tag(&mut hub, "tag-after").await;
+
+        for from in [&mut first, &mut second, &mut hub] {
+            third.pull(from).await;
+        }
+        let frozen = view(&mut third).await;
+        assert_eq!((frozen.revision, frozen.frozen_at), (point, Some(point)));
+        assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert_eq!(
+            removed_revision(&mut third, ANCHOR_DEVICE_ID).await,
+            Some(None),
+            "a removal on a contested branch is not effective"
+        );
+        assert_eq!(removed_revision(&mut third, &device_id(23)).await, None);
+        // It holds the old anchor for data instead: its later write is stored, not applied.
+        assert_eq!(tags(&mut third).await, vec!["tag-before".to_owned()]);
+
+        // The kit's handover continuing the first taker's branch keeps its removal.
+        let forced = first.handover_proposal(&recovery_admin(&person())).await;
+        first.seal_handover(&forced, None).await.unwrap().unwrap();
+        third.pull(&mut first).await;
+        let recovered = view(&mut third).await;
+        assert_eq!(
+            (recovered.anchor_device_id.as_str(), recovered.frozen_at),
+            (device_id(20).as_str(), None)
+        );
+        assert!(matches!(
+            removed_revision(&mut third, ANCHOR_DEVICE_ID).await,
+            Some(Some(_))
+        ));
+        assert_eq!(removed_revision(&mut third, &device_id(23)).await, None);
+        assert_eq!(tags(&mut third).await, vec!["tag-before".to_owned()]);
+    });
+}
+
+#[test]
+fn only_the_recovery_key_forces_a_handover_to_a_member_desktop() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 47).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        for index in [21, 23] {
+            hub.sequence(enroll_entry(&person(), index, DeviceRole::Member))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        hub.sequence(Entry::Enroll(Enroll {
+            device_id: device_id(22),
+            device_key: device_key(&person(), 22).public_key(),
+            tls_fingerprint: tls_fingerprint(22),
+            label: "Phone".to_owned(),
+            device_kind: DeviceKind::Mobile,
+            role: DeviceRole::Member,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+        hub.remove(&device_id(23)).await.unwrap();
+        let recovery = recovery_admin(&person());
+        let mut member = Replica::new(21, 47).await;
+        let mut phone = Replica::new(22, 47).await;
+        let mut removed = Replica::new(23, 47).await;
+        for replica in [&mut member, &mut phone, &mut removed] {
+            replica.pull(&mut hub).await;
+        }
+
+        // An admin key cannot hand the anchor to a desktop that is not an admin.
+        let by_admin = member.handover_proposal(&device_admin(20)).await;
+        assert_eq!(
+            member.seal_handover(&by_admin, None).await.unwrap(),
+            Err(ProposalRejection::NotAdmin)
+        );
+        // The recovery key can, but only to a live desktop.
+        let to_phone = phone.handover_proposal(&recovery).await;
+        assert_eq!(
+            phone.seal_handover(&to_phone, None).await.unwrap(),
+            Err(ProposalRejection::AdminNotDesktop)
+        );
+        let to_removed = removed.handover_proposal(&recovery).await;
+        assert_eq!(
+            removed.seal_handover(&to_removed, None).await.unwrap(),
+            Err(ProposalRejection::DeviceRemoved)
+        );
+        let forced = member.handover_proposal(&recovery).await;
+        let revision = member.seal_handover(&forced, None).await.unwrap().unwrap();
+
+        // The forced anchor sequences its own promotion signed by the recovery key.
+        let promote = proposal(
+            member.ctx.space,
+            &recovery,
+            member.now_ms,
+            Entry::SetRole(SetRole::Device {
+                device_id: device_id(21),
+                role: DeviceRole::Admin(device_admin(21).public_key()),
+            }),
+        );
+        assert_eq!(
+            member.sequence_signed(&promote).await.unwrap(),
+            Ok(revision + 1)
+        );
+        let opened = view(&mut member).await;
+        assert_eq!(
+            (opened.epoch, opened.anchor_device_id.as_str()),
+            (1, device_id(21).as_str())
+        );
+        hub.pull(&mut member).await;
+        assert_eq!(view(&mut hub).await, opened);
+        assert_eq!(
+            hub.sequence(enroll_entry(&person(), 24, DeviceRole::Member))
+                .await
+                .unwrap(),
+            Err(ProposalRejection::NotAnchor)
+        );
+    });
+}
+
+#[test]
 fn a_new_anchor_keeps_what_the_old_anchor_stored_final_and_waits_for_writers_it_lacks() {
     block_on(async {
         let mut hub = Replica::anchor(0, 44).await;
@@ -671,7 +944,9 @@ type Settled = (
 async fn settled(replica: &mut Replica) -> Settled {
     let head = head(replica).await;
     let entries = sqlx::query_as(
-        "SELECT writer_id, seq, selected FROM sync_auth_entries ORDER BY writer_id, seq",
+        "SELECT r.writer_id, r.seq,
+            EXISTS (SELECT 1 FROM sync_auth_selected s WHERE s.entry_hash = r.entry_hash)
+         FROM sync_auth_envelopes r WHERE r.role = 'record' ORDER BY r.writer_id, r.seq",
     )
     .fetch_all(&mut replica.conn)
     .await
@@ -701,7 +976,7 @@ async fn tags(replica: &mut Replica) -> Vec<String> {
 }
 
 #[test]
-fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_arrive_in() {
+fn two_admins_removing_each_other_freeze_until_one_yields_whatever_order_their_chains_arrive_in() {
     block_on(async {
         let mut hub = Replica::anchor(0, 71).await;
         for index in [20, 21] {
@@ -740,11 +1015,25 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
             chains.push((record, after[before.len()..].to_vec()));
             shared.extend(before);
         }
-        let (winner, loser) = if chains[0].0.hash() < chains[1].0.hash() {
-            (20, 21)
-        } else {
-            (21, 20)
-        };
+
+        // Admin 21 gives way to admin 20's take on its own branch.
+        let (winner, loser) = (20, 21);
+        let loser_replica = &mut contenders[1];
+        let before = loser_replica.own_ops().await;
+        let concession = proposal(
+            loser_replica.ctx.space,
+            &device_admin(loser),
+            loser_replica.now_ms,
+            Entry::Yield(Yield {
+                handover_hash: chains[0].0.hash(),
+            }),
+        );
+        loser_replica
+            .sequence_signed(&concession)
+            .await
+            .unwrap()
+            .unwrap();
+        let yielded = loser_replica.own_ops().await[before.len()..].to_vec();
 
         let mut observers = vec![Replica::new(2, 71).await, Replica::new(3, 71).await];
         for (position, observer) in observers.iter_mut().enumerate() {
@@ -756,12 +1045,28 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
                 observer.receive(ops).await;
                 observer.apply_all().await.unwrap();
             }
+            // Both takes continue the same head, so the old epoch freezes there and holds both
+            // admins, each of which a take removes.
+            let frozen = view(observer).await;
+            assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
+            assert!(frozen.frozen_at.is_some());
+            for index in [winner, loser] {
+                assert!(held(observer, index).await, "device {index} is held");
+            }
         }
 
+        for observer in &mut observers {
+            assert_eq!(
+                observer.receive(&yielded).await,
+                vec![STORED; yielded.len()]
+            );
+            observer.apply_all().await.unwrap();
+        }
         let expected = settled(&mut observers[0]).await;
         assert_eq!(settled(&mut observers[1]).await, expected);
         let selected = view(&mut observers[0]).await;
         assert_eq!(selected.anchor_device_id, device_id(winner));
+        assert_eq!(selected.frozen_at, None);
         let removed = |index: usize| {
             selected
                 .devices
@@ -773,10 +1078,16 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
         assert!(removed(loser).is_some());
         assert_eq!(removed(winner), None);
         let unselected = expected.1.iter().filter(|entry| entry.2 == 0).count();
-        assert_eq!(unselected, 2, "the losing handover and its removal");
+        assert_eq!(
+            unselected, 3,
+            "the yielded handover, its removal, and the yield"
+        );
         for observer in &mut observers {
             assert_eq!(view(observer).await, selected);
             assert_devices_replay_the_selected_chain(observer).await;
+            for index in [winner, loser] {
+                assert!(!held(observer, index).await, "device {index} is released");
+            }
             assert_eq!(
                 tags(observer).await,
                 vec![
@@ -792,6 +1103,14 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
             );
         }
     });
+}
+
+async fn held(replica: &mut Replica, index: usize) -> bool {
+    replica
+        .engine
+        .device_held(&mut replica.conn, &replica.ctx, &device_id(index))
+        .await
+        .unwrap()
 }
 
 /// Devices of a space whose epoch 0 goes on after admin 20 took the anchor over in epoch 1.
@@ -1151,7 +1470,7 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
             Entry::Enroll(Enroll {
                 device_id: device_id(22),
                 device_key: device_key(&person(), 22).public_key(),
-                tls_fingerprint: [3; 32],
+                tls_fingerprint: tls_fingerprint(22),
                 label: "Phone".to_owned(),
                 device_kind: DeviceKind::Mobile,
                 role,
@@ -1204,6 +1523,89 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
 }
 
 #[test]
+fn a_chain_never_orders_one_proposal_twice() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 64).await;
+        let mut observer = Replica::new(2, 64).await;
+        let space = hub.ctx.space;
+        let set_recovery = |seed: u8| {
+            Entry::SetRole(SetRole::Recovery {
+                recovery_admin_key: AdminKeyPair::from_seed(&[seed; 32]).unwrap().public_key(),
+            })
+        };
+        let leaked = proposal(
+            space,
+            &anchor_admin(&person()),
+            hub.now_ms,
+            set_recovery(90),
+        );
+        hub.sequence_signed(&leaked).await.unwrap().unwrap();
+        hub.sequence(set_recovery(91)).await.unwrap().unwrap();
+        let before = view(&mut hub).await;
+
+        // An anchor that carries the old proposal again cannot reinstate the replaced key.
+        let record = next_record(&mut hub, ANCHOR_DEVICE_ID, leaked, Sequencing::Empty).await;
+        let replayed = forge(
+            &mut hub,
+            Content::Authorization(Box::new(record)),
+            before.revision,
+        )
+        .await;
+        assert_eq!(hub.receive(&[replayed]).await, vec![STORED]);
+        hub.apply_all().await.unwrap();
+        observer.pull(&mut hub).await;
+        for replica in [&mut hub, &mut observer] {
+            let after = view(replica).await;
+            assert_eq!(after.revision, before.revision);
+            assert_eq!(
+                after.recovery_admin_key,
+                AdminKeyPair::from_seed(&[91; 32]).unwrap().public_key()
+            );
+        }
+    });
+}
+
+#[test]
+fn a_certificate_enrolls_one_device_for_the_life_of_the_log() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 65).await;
+        hub.sequence(enroll_entry(&person(), 20, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        hub.remove(&device_id(20)).await.unwrap();
+        let decoy = |index: usize, fingerprint: [u8; 32]| {
+            Entry::Enroll(Enroll {
+                device_id: device_id(index),
+                device_key: device_key(&person(), index).public_key(),
+                tls_fingerprint: fingerprint,
+                label: "Decoy".to_owned(),
+                device_kind: DeviceKind::Desktop,
+                role: DeviceRole::Member,
+            })
+        };
+        let anchor_fingerprint = hub
+            .engine
+            .charter(&mut hub.conn, &hub.ctx)
+            .await
+            .unwrap()
+            .unwrap()
+            .charter
+            .anchor_tls_fingerprint;
+        for fingerprint in [tls_fingerprint(20), anchor_fingerprint] {
+            assert_eq!(
+                hub.sequence(decoy(21, fingerprint)).await.unwrap(),
+                Err(ProposalRejection::AlreadyEnrolled)
+            );
+        }
+        hub.sequence(decoy(21, tls_fingerprint(21)))
+            .await
+            .unwrap()
+            .unwrap();
+    });
+}
+
+#[test]
 fn a_proposal_has_a_revision_once_the_selected_chain_holds_it() {
     block_on(async {
         let mut hub = Replica::anchor(0, 62).await;
@@ -1229,5 +1631,332 @@ fn a_proposal_has_a_revision_once_the_selected_chain_holds_it() {
         member.pull(&mut hub).await;
         member.apply_all().await.unwrap();
         assert_eq!(revision_of(&mut member).await, Some(revision));
+    });
+}
+
+#[test]
+fn a_removal_cutoff_covers_what_the_coordinator_reported_beyond_the_anchor() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 61).await;
+        let mut member = Replica::new(1, 61).await;
+        tag(&mut member, "tag-first").await;
+        tag(&mut member, "tag-second").await;
+        let ops = member.own_ops().await;
+        assert!(
+            ops.len() > 2,
+            "the member wrote past what the anchor stores"
+        );
+        // The anchor stores only part of the member's chain, while the coordinator reported
+        // storing all of it.
+        anchor.receive(&ops[..2]).await;
+        let reported = u64::try_from(ops.len()).unwrap();
+        let mut covered = ganbaru_sync_contracts::VersionVector::new();
+        covered.set(member.writer(), reported);
+        let signed = super::replica::person_proposal(
+            &anchor.person,
+            anchor.ctx.space,
+            &anchor_admin(&anchor.person),
+            anchor.now_ms,
+            remove_entry(&member.device_id),
+        );
+        anchor
+            .engine
+            .sequence_proposal_covering(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &signed,
+                [6; 32],
+                &covered,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let cutoff: Option<i64> =
+            sqlx::query_scalar("SELECT cutoff_seq FROM sync_writers WHERE device_id = ?")
+                .bind(&member.device_id)
+                .fetch_one(&mut anchor.conn)
+                .await
+                .unwrap();
+        assert_eq!(cutoff, Some(i64::try_from(reported).unwrap()));
+    });
+}
+
+#[test]
+fn a_reported_covered_vector_raises_a_cutoff_only_a_bounded_distance_past_the_anchor() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 63).await;
+        let mut member = Replica::new(1, 63).await;
+        tag(&mut member, "tag-first").await;
+        let ops = member.own_ops().await;
+        anchor.receive(&ops).await;
+        let stored = u64::try_from(ops.len()).unwrap();
+        let mut covered = ganbaru_sync_contracts::VersionVector::new();
+        covered.set(member.writer(), u64::MAX);
+        let signed = super::replica::person_proposal(
+            &anchor.person,
+            anchor.ctx.space,
+            &anchor_admin(&anchor.person),
+            anchor.now_ms,
+            remove_entry(&member.device_id),
+        );
+        anchor
+            .engine
+            .sequence_proposal_covering(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &signed,
+                [6; 32],
+                &covered,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let cutoff: Option<i64> =
+            sqlx::query_scalar("SELECT cutoff_seq FROM sync_writers WHERE device_id = ?")
+                .bind(&member.device_id)
+                .fetch_one(&mut anchor.conn)
+                .await
+                .unwrap();
+        assert_eq!(
+            cutoff,
+            Some(i64::try_from(stored + crate::authorization::MAX_COVERED_AHEAD).unwrap())
+        );
+    });
+}
+
+#[test]
+fn a_removal_rotates_the_discovery_key_and_keeps_the_one_it_replaced() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 62).await;
+        let member = Replica::new(1, 62).await;
+        let founded = view(&mut anchor).await;
+        assert_eq!(founded.previous_discovery_key, None);
+        let signed = super::replica::person_proposal(
+            &anchor.person,
+            anchor.ctx.space,
+            &anchor_admin(&anchor.person),
+            anchor.now_ms,
+            remove_entry(&member.device_id),
+        );
+        let rotated = [6; 32];
+        assert_ne!(founded.discovery_key, rotated);
+        anchor
+            .engine
+            .sequence_proposal_covering(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &signed,
+                rotated,
+                &ganbaru_sync_contracts::VersionVector::new(),
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let removed = view(&mut anchor).await;
+        assert_eq!(removed.discovery_key, rotated);
+        assert_eq!(removed.previous_discovery_key, Some(founded.discovery_key));
+    });
+}
+
+/// Identity of writer `writer` of replica device `index`, sealed by whoever holds it.
+fn phantom_identity(holder: &Replica, writer: usize, index: usize) -> Identity {
+    let mut seed = [0u8; 32];
+    seed[..8].copy_from_slice(&u64::try_from(writer).unwrap().to_le_bytes());
+    seed[31] = 3;
+    Identity::new(
+        seed,
+        &device_key(&holder.person, index),
+        &device_id(index),
+        None,
+    )
+}
+
+#[test]
+fn a_vetoed_branch_enrolls_writers_only_within_the_unselected_bounds() {
+    block_on(async {
+        let salt = 331;
+        let mut hub = Replica::anchor(0, salt).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut stale = Replica::new(20, salt).await;
+        stale.pull(&mut hub).await;
+        tag(&mut stale, "tag-20").await;
+        let mut member = Replica::new(1, salt).await;
+        member.pull(&mut hub).await;
+
+        // The anchor removes the admin, which takes over from before its removal and enrolls
+        // phantom devices on its vetoed branch.
+        hub.remove(&device_id(20)).await.unwrap();
+        let (_, handover) = forge_handover(&mut stale, 20).await;
+        assert_eq!(stale.receive(&[handover]).await, vec![STORED]);
+        stale.apply_all().await.unwrap();
+        assert_eq!(view(&mut stale).await.anchor_device_id, device_id(20));
+        let phantoms = MAX_UNSELECTED_WRITERS_PER_SPACE / MAX_WRITERS_PER_DEVICE + 1;
+        let device = |writer: usize| 30 + writer / MAX_WRITERS_PER_DEVICE;
+        for index in 30..30 + phantoms {
+            let signed = proposal(
+                stale.ctx.space,
+                &device_admin(20),
+                stale.now_ms,
+                enroll_entry(&person(), index, DeviceRole::Member),
+            );
+            stale.sequence_signed(&signed).await.unwrap().unwrap();
+        }
+        let branch = stale.own_ops().await;
+        let enrolled = stale.stored_vector().await;
+        stale.identity = phantom_identity(&stale, 0, device(0));
+        edit(&mut stale, &note("note-phantom", "Phantom", 0)).await;
+        for index in 1..MAX_EXCLUDED_PER_WRITER {
+            edit(
+                &mut stale,
+                &format!(
+                    "UPDATE quick_notes SET title = 'Phantom {index}' WHERE id = 'note-phantom'"
+                ),
+            )
+            .await;
+        }
+        let first = stale.ops_since(&enrolled).await;
+        assert_eq!(first.len() as u64, MAX_EXCLUDED_PER_WRITER + 1);
+        let sealed = stale.stored_vector().await;
+        for writer in 1..=MAX_UNSELECTED_WRITERS_PER_SPACE {
+            stale.identity = phantom_identity(&stale, writer, device(writer));
+            stale.seal().await.unwrap();
+        }
+        let geneses = stale.ops_since(&sealed).await;
+        assert_eq!(geneses.len(), MAX_UNSELECTED_WRITERS_PER_SPACE);
+
+        let mut observer = Replica::new(2, salt).await;
+        observer.pull(&mut hub).await;
+        observer.receive(&branch).await;
+        observer.apply_all().await.unwrap();
+        assert_eq!(view(&mut observer).await.anchor_device_id, ANCHOR_DEVICE_ID);
+
+        // The phantom writer keeps the excluded bound, and phantom writers fill only the
+        // unselected writers of the space.
+        let outcomes = observer.receive(&first).await;
+        assert!(
+            outcomes[..first.len() - 1]
+                .iter()
+                .all(|outcome| matches!(outcome, StoreOutcome::Stored { .. }))
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::Revoked))
+        );
+        let outcomes = observer.receive(&geneses).await;
+        assert!(
+            outcomes[..geneses.len() - 1]
+                .iter()
+                .all(|outcome| matches!(outcome, StoreOutcome::Stored { .. }))
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::WriterLimit))
+        );
+        let unselected: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sync_writers w WHERE NOT EXISTS (
+                SELECT 1 FROM sync_devices d WHERE d.device_id = w.device_id
+             )",
+        )
+        .fetch_one(&mut observer.conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            usize::try_from(unselected).unwrap(),
+            MAX_UNSELECTED_WRITERS_PER_SPACE
+        );
+
+        // A writer of a device the selected chain enrolls is still admitted.
+        tag(&mut member, "tag-1").await;
+        let honest = member.own_ops().await;
+        assert!(matches!(
+            observer.receive(&honest).await.first(),
+            Some(StoreOutcome::Stored { .. })
+        ));
+        observer.apply_all().await.unwrap();
+        assert!(tags(&mut observer).await.contains(&"tag-1".to_owned()));
+        observer.check_invariants().await;
+    });
+}
+
+#[test]
+fn a_writer_keeps_the_unselected_bound_when_the_selection_enrolls_its_device_under_another_key() {
+    block_on(async {
+        let salt = 332;
+        let mut hub = Replica::anchor(0, salt).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut stale = Replica::new(20, salt).await;
+        stale.pull(&mut hub).await;
+        tag(&mut stale, "tag-20").await;
+
+        // The removed admin enrolls device 30 on its vetoed branch, whose writer seals one
+        // operation past the bound.
+        hub.remove(&device_id(20)).await.unwrap();
+        let (_, handover) = forge_handover(&mut stale, 20).await;
+        assert_eq!(stale.receive(&[handover]).await, vec![STORED]);
+        stale.apply_all().await.unwrap();
+        let signed = proposal(
+            stale.ctx.space,
+            &device_admin(20),
+            stale.now_ms,
+            enroll_entry(&person(), 30, DeviceRole::Member),
+        );
+        stale.sequence_signed(&signed).await.unwrap().unwrap();
+        let branch = stale.own_ops().await;
+        let enrolled = stale.stored_vector().await;
+        stale.identity = phantom_identity(&stale, 0, 30);
+        edit(&mut stale, &note("note-phantom", "Phantom", 0)).await;
+        for index in 1..MAX_EXCLUDED_PER_WRITER {
+            edit(
+                &mut stale,
+                &format!(
+                    "UPDATE quick_notes SET title = 'Phantom {index}' WHERE id = 'note-phantom'"
+                ),
+            )
+            .await;
+        }
+        let first = stale.ops_since(&enrolled).await;
+        assert_eq!(first.len() as u64, MAX_EXCLUDED_PER_WRITER + 1);
+
+        let mut observer = Replica::new(2, salt).await;
+        observer.pull(&mut hub).await;
+        observer.receive(&branch).await;
+        observer.apply_all().await.unwrap();
+        assert!(matches!(
+            observer.receive(&first[..1]).await.first(),
+            Some(StoreOutcome::Stored { .. })
+        ));
+
+        // The anchor then enrolls the same device id with another key, which does not lift the
+        // bound of the writer the vetoed branch enrolled.
+        hub.sequence(Entry::Enroll(Enroll {
+            device_id: device_id(30),
+            device_key: device_key(&person(), 99).public_key(),
+            tls_fingerprint: tls_fingerprint(99),
+            label: "Device 30".to_owned(),
+            device_kind: DeviceKind::Desktop,
+            role: DeviceRole::Member,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+        observer.pull(&mut hub).await;
+        observer.apply_all().await.unwrap();
+        let outcomes = observer.receive(&first[1..]).await;
+        assert!(
+            outcomes[..outcomes.len() - 1]
+                .iter()
+                .all(|outcome| matches!(outcome, StoreOutcome::Stored { .. }))
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::Revoked))
+        );
+        observer.check_invariants().await;
     });
 }

@@ -7,10 +7,10 @@ use std::sync::{Mutex, OnceLock};
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Enroll,
-    Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove, SignedCertificate,
-    SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector, WriterCertificate,
-    WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
+    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
+    Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove,
+    SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector,
+    WriterCertificate, WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
@@ -18,8 +18,8 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
-    ApplyReport, CompactionReport, Engine, LocalWriter, SealReport, SequenceReservation,
-    SpaceContext, StoreOutcome, SyncResult,
+    ApplyReport, CompactionReport, ContestRejection, Engine, LocalWriter, SealReport,
+    SequenceReservation, SpaceContext, StoreOutcome, SyncResult,
 };
 use crate::{hydrate, log, publication};
 
@@ -117,7 +117,8 @@ pub(super) fn device_key(person: &PersonKeyPair, index: usize) -> DeviceKeyPair 
         .expect("test device seed should be valid")
 }
 
-fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
+/// The device key of the charter anchor device in `person`'s spaces.
+pub(super) fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
     DeviceKeyPair::from_seed(&key_seed(person, DEVICE_PURPOSE, ANCHOR_KEY_INDEX))
         .expect("test device seed should be valid")
 }
@@ -191,12 +192,20 @@ pub(super) fn person_proposal(
     .expect("test proposal should sign")
 }
 
+/// The TLS fingerprint of replica device `index`, distinct for every device and from the
+/// charter anchor's.
+pub(super) fn tls_fingerprint(index: usize) -> [u8; 32] {
+    let mut fingerprint = [3; 32];
+    fingerprint[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+    fingerprint
+}
+
 /// An enrollment of replica device `index` as a desktop with `role`.
 pub(super) fn enroll_entry(person: &PersonKeyPair, index: usize, role: DeviceRole) -> Entry {
     Entry::Enroll(Enroll {
         device_id: device_id(index),
         device_key: device_key(person, index).public_key(),
-        tls_fingerprint: [3; 32],
+        tls_fingerprint: tls_fingerprint(index),
         label: format!("Device {index}"),
         device_kind: DeviceKind::Desktop,
         role,
@@ -205,7 +214,7 @@ pub(super) fn enroll_entry(person: &PersonKeyPair, index: usize, role: DeviceRol
 
 /// A local writer: key, certificate, and reservation.
 pub(super) struct Identity {
-    seed: [u8; 32],
+    pub(super) seed: [u8; 32],
     pub(super) key: WriterKeyPair,
     pub(super) certificate: SignedCertificate,
     pub(super) reservation: Reservation,
@@ -526,6 +535,43 @@ impl Replica {
                 &self.ctx,
                 signed,
                 old_anchor_vector,
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
+    /// Seals a yield of `admin` to the stored handover `handover`.
+    pub(super) async fn seal_yield(
+        &mut self,
+        admin: &AdminKeyPair,
+        handover: &Digest32,
+    ) -> SyncResult<Result<u64, ContestRejection>> {
+        self.engine
+            .seal_yield(
+                &mut self.conn,
+                &self.ctx,
+                admin,
+                handover,
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
+    /// Seals an objection of `admin` to the stored handover `handover`.
+    pub(super) async fn seal_objection(
+        &mut self,
+        admin: &AdminKeyPair,
+        handover: &Digest32,
+    ) -> SyncResult<Result<u64, ContestRejection>> {
+        self.engine
+            .seal_objection(
+                &mut self.conn,
+                &self.ctx,
+                admin,
+                handover,
+                [6; 32],
                 &mut self.identity.local(),
                 self.now_ms,
             )
@@ -1246,7 +1292,7 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_register_versions", &["value"]),
     ("sync_version_refs", &[]),
     ("sync_tombstones", &[]),
-    ("sync_auth_entries", &[]),
+    ("sync_auth_selected", &[]),
     ("sync_devices", &[]),
     ("sync_late_changes", &[]),
     ("sync_row_creations", &[]),

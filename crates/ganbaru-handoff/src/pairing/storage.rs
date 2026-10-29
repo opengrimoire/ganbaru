@@ -189,16 +189,6 @@ pub(super) fn validate_state(
             validate_pinned_endpoint("last coordinator endpoint", endpoint)?;
         }
         protocol::validate_coordinator_endpoints(&coordinator.reported_endpoints)?;
-        if let Some(key) = coordinator.discovery_key.as_deref() {
-            protocol::validate_discovery_key(key)?;
-        }
-    }
-    if state.discovery_keys.len() > MAX_LINKED_PEERS {
-        return Err("too many discovery keys are stored".to_string());
-    }
-    for (vault_id, key) in &state.discovery_keys {
-        validate_identifier("discovery key vault id", vault_id)?;
-        protocol::validate_discovery_key(key)?;
     }
     if let Some(pending) = state.pending_acknowledgement.as_ref() {
         validate_pending_acknowledgement(pending, expected_device_id)?;

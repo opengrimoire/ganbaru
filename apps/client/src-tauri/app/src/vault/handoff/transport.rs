@@ -1,14 +1,15 @@
 //! Pinned client transport and shared resumable archive streaming.
 
 mod dial_report;
-#[cfg(desktop)]
 mod server;
 pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
 use dial_report::{DialOutcome, record_dial};
+pub(crate) use server::{
+    CoordinatorListener, LanAdmission, MemberAdmissionSource, MemberServices, serve_member_listener,
+};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission, QuarantinedDevices,
-    serve_with_coordinator,
+    CoordinatorServices, EnrollmentSealer, QuarantinedDevices, serve_with_coordinator,
 };
 
 use super::pairing::{
@@ -511,26 +512,73 @@ pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, Stri
 }
 
 /// Sends one sync message to the coordinator over the linked-device identity. A sync state
-/// response also refreshes the coordinator endpoints and discovery key this device remembers.
+/// response also refreshes the coordinator endpoints this device remembers.
 pub(crate) async fn sync_request(
     manager: &PairingManager,
     message: ControlMessage,
 ) -> Result<ControlMessage, String> {
     let response = authenticated_exchange(manager, message).await?;
-    if let ControlMessage::SyncState {
-        coordinator_endpoints,
-        discovery_key,
-        ..
-    } = &response
-    {
-        record_reported_contact(manager, coordinator_endpoints, discovery_key);
+    if let ControlMessage::SyncState { members, .. } = &response {
+        record_reported_contact(manager, members);
     }
     Ok(response)
 }
 
-/// Remembers the contact a coordinator reported in a sync state. A failure only delays address
-/// refresh until the next exchange, so it is logged instead of failing the sync.
-fn record_reported_contact(manager: &PairingManager, endpoints: &[String], discovery_key: &str) {
+/// Sends one sync message to the member listener whose certificate has `fingerprint`, the one
+/// its enrollment recorded in the selected log, trying `endpoints` in order until one answers.
+/// Each endpoint gets [`MEMBER_CONNECT_TIMEOUT`] to accept, so stale or false endpoints ahead of
+/// a live one cost little.
+pub(crate) async fn member_sync_request(
+    manager: &PairingManager,
+    endpoints: &[String],
+    fingerprint: &str,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    let (_, identity) = load_tls_identity(manager).await?;
+    let mut failures = Vec::new();
+    for endpoint in endpoints {
+        let address = match endpoint.parse::<SocketAddr>() {
+            Ok(address) => address,
+            Err(error) => {
+                failures.push(format!("{endpoint}: {error}"));
+                continue;
+            }
+        };
+        let mut stream = match connect_member(address, fingerprint, identity.clone()).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                failures.push(format!("{endpoint}: {error}"));
+                continue;
+            }
+        };
+        timeout_control(write_control(&mut stream, &message)).await?;
+        return timeout_control(read_control(&mut stream)).await;
+    }
+    Err(if failures.is_empty() {
+        "no endpoint is known for this member".to_string()
+    } else {
+        format!("reach member: {}", failures.join("; "))
+    })
+}
+
+/// The endpoints `members` reports for `device_id`, in reported order and within the bound a
+/// coordinator pin keeps.
+pub(crate) fn endpoints_of(
+    members: &[super::protocol::MemberEndpoint],
+    device_id: &str,
+) -> Vec<String> {
+    members
+        .iter()
+        .filter(|member| member.device_id == device_id)
+        .map(|member| member.endpoint.clone())
+        .take(super::protocol::MAX_COORDINATOR_ENDPOINTS)
+        .collect()
+}
+
+/// Remembers the contact a coordinator reported in a sync state: the endpoints it reported for
+/// itself. A failure only delays address refresh until the next exchange,
+/// so it is logged instead of failing the sync.
+fn record_reported_contact(manager: &PairingManager, members: &[super::protocol::MemberEndpoint]) {
     let recorded = manager.coordinator_pin().and_then(|coordinator| {
         let Some(coordinator) = coordinator else {
             return Ok(false);
@@ -540,8 +588,7 @@ fn record_reported_contact(manager: &PairingManager, endpoints: &[String], disco
             &coordinator.certificate_fingerprint,
             super::pairing::CoordinatorContact {
                 last_endpoint: None,
-                reported_endpoints: Some(endpoints.to_vec()),
-                discovery_key: Some(discovery_key.to_string()),
+                reported_endpoints: Some(endpoints_of(members, &coordinator.device_id)),
             },
         )
     });
@@ -755,6 +802,20 @@ async fn connect_pinned(
         .map_err(|failure| failure.error)
 }
 
+/// Connects to the member listener at `endpoint` whose certificate must match `fingerprint`,
+/// presenting this device's `identity`.
+async fn connect_member(
+    endpoint: SocketAddr,
+    fingerprint: &str,
+    identity: TlsIdentity,
+) -> Result<PinnedStream, String> {
+    authorize_endpoint(endpoint)?;
+    let config = pinned_client_config(fingerprint, Some(identity))?;
+    pinned_handshake(endpoint, config, MEMBER_CONNECT_TIMEOUT)
+        .await
+        .map_err(|failure| failure.error)
+}
+
 /// TLS 1.3 client configuration that accepts only the certificate with `fingerprint` and
 /// presents `identity` when one is given.
 fn pinned_client_config(
@@ -820,6 +881,8 @@ impl HandshakeFailure {
 
 /// How long one coordinator candidate gets to accept a TCP connection.
 const COORDINATOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long one member endpoint gets to accept a TCP connection.
+const MEMBER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long the resolver waits on pending candidates before it also dials the next one.
 const COORDINATOR_DIAL_STAGGER: Duration = Duration::from_millis(250);
 /// Most coordinator candidates one dial considers.

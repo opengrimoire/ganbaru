@@ -5,15 +5,15 @@ use super::assets::{
     ASSET_UNAVAILABLE, AssetStore, AssetStoreError, INVALID_ASSET, STALE_STAGING_AGE, StagedAsset,
     blocking, partition_held, write_staged,
 };
+use super::records::{self, RecordExchange};
 use super::wire::{
     asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, forked_to_wire, hash_from_wire,
     hash_to_wire, ops_from_wire, ops_to_wire, proposed_to_wire, vector_from_wire, vector_to_wire,
     writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
-    ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal, SyncRefusalCode,
-    decode_sync_proposal, encode_sync_proposal, validate_coordinator_endpoints,
-    validate_discovery_key,
+    ControlMessage, MemberEndpoint, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal,
+    SyncRefusalCode, decode_sync_proposal, encode_sync_proposal, validate_member_endpoints,
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
@@ -88,16 +88,19 @@ pub type HubForwards = Arc<
         + Sync,
 >;
 
-/// How linked devices reach the coordinator: the listener endpoints it reports now and the
-/// vault's discovery key.
+/// How linked devices reach the members of a vault: the listener endpoints the hub knows, its
+/// own first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubContact {
-    pub endpoints: Vec<String>,
-    pub discovery_key: String,
+    pub members: Vec<MemberEndpoint>,
 }
 
-/// Reports the coordinator's contact for the vault with the given ID.
+/// Reports the hub's contact for the vault with the given ID.
 pub type HubContactSource = Arc<dyn Fn(&str) -> Result<HubContact, String> + Send + Sync>;
+
+/// Receives the listener endpoints an authenticated member reported in its sync hello, with
+/// the vault and device ids it presented, so the hub's peer book learns where members listen.
+pub type HubPeerHints = Arc<dyn Fn(&str, &str, &[String]) + Send + Sync>;
 
 /// Stability the coordinator service last computed, published for the sync states the hub
 /// answers. A vault without a published value reports an empty stable vector, which every
@@ -175,6 +178,24 @@ impl HubError {
     }
 }
 
+/// Why the selected log refuses every sync request of `device_id`: the log does not enroll it,
+/// or removed it. A hub serves only the devices its log admits, whatever pairing still links.
+pub fn log_refusal(
+    view: &ganbaru_sync::AuthorizationView,
+    device_id: &str,
+) -> Option<super::peers::admission::MemberRefusal> {
+    use super::peers::admission::MemberRefusal;
+    match view
+        .devices
+        .iter()
+        .find(|device| device.device_id == device_id)
+    {
+        None => Some(MemberRefusal::Unknown),
+        Some(device) if device.removed_revision.is_some() => Some(MemberRefusal::Removed),
+        Some(_) => None,
+    }
+}
+
 /// The hub handle the coordinator listener routes sync requests to.
 #[derive(Clone)]
 pub struct SyncHub {
@@ -187,12 +208,20 @@ pub struct SyncHub {
     uploads: Arc<Mutex<HashMap<String, PendingUpload>>>,
     /// The contact every sync state carries; without it the hub answers no state.
     contact: Option<HubContactSource>,
+    /// Where member listener endpoints from sync hellos go; without it they are ignored.
+    peer_hints: Option<HubPeerHints>,
     /// The stable vector every sync state carries.
     stability: HubStability,
     /// Where proposals go; without it the hub answers that it is not the anchor.
     proposals: Option<HubProposals>,
     /// Where an anchor that is not the hub collects proposals; without it the hub holds none.
     forwards: Option<HubForwards>,
+    /// Whether a pushed genesis may name another device than the pusher. A member hub relays
+    /// geneses and leaves enrollment and device key checks to the engine; the coordinator
+    /// takes a genesis only from the device it certifies.
+    relay_geneses: bool,
+    /// Device-local record exchange state, shared with this device's sessions.
+    records: RecordExchange,
 }
 
 /// The received prefix of an upload, staged in a temporary file beside its final path.
@@ -211,10 +240,20 @@ impl SyncHub {
             waits: Arc::default(),
             uploads: Arc::default(),
             contact: None,
+            peer_hints: None,
             stability: HubStability::default(),
             proposals: None,
             forwards: None,
+            relay_geneses: false,
+            records: RecordExchange::default(),
         }
+    }
+
+    /// Sets the record exchange state this device's sessions share, for one set of windows and
+    /// one backstop.
+    pub fn with_records(mut self, records: RecordExchange) -> Self {
+        self.records = records;
+        self
     }
 
     /// Sets where the hub hands the proposals linked devices send.
@@ -229,9 +268,23 @@ impl SyncHub {
         self
     }
 
-    /// Sets where the hub reads the coordinator contact that each sync state reports.
+    /// Lets peers push geneses of other devices, for a member listener that relays writers
+    /// between members while the anchor is away. The engine still refuses a genesis of a device
+    /// the selected log has not enrolled, or whose certificate names another device key.
+    pub fn with_relayed_geneses(mut self) -> Self {
+        self.relay_geneses = true;
+        self
+    }
+
+    /// Sets where the hub reads the member contact that each sync state reports.
     pub fn with_contact(mut self, contact: HubContactSource) -> Self {
         self.contact = Some(contact);
+        self
+    }
+
+    /// Sets where the hub reports the listener endpoints members send in their sync hellos.
+    pub fn with_peer_hints(mut self, hints: HubPeerHints) -> Self {
+        self.peer_hints = Some(hints);
         self
     }
 
@@ -249,17 +302,16 @@ impl SyncHub {
         })
     }
 
-    /// The coordinator contact for `vault_id`, checked against the wire bounds so a bad source
+    /// The member contact for `vault_id`, checked against the wire bounds so a bad source
     /// fails this request instead of the frame.
     fn contact(&self, vault_id: &str) -> Result<HubContact, HubError> {
         let source = self
             .contact
             .as_ref()
-            .ok_or_else(|| HubError::unavailable("the coordinator cannot report its contact"))?;
+            .ok_or_else(|| HubError::unavailable("the hub cannot report its contact"))?;
         let contact = source(vault_id).map_err(HubError::unavailable)?;
-        validate_coordinator_endpoints(&contact.endpoints)
-            .and_then(|()| validate_discovery_key(&contact.discovery_key))
-            .map_err(|error| HubError::failed(format!("coordinator contact: {error}")))?;
+        validate_member_endpoints(&contact.members)
+            .map_err(|error| HubError::failed(format!("member contact: {error}")))?;
         Ok(contact)
     }
 
@@ -303,12 +355,64 @@ impl SyncHub {
                 "the hub vault has no person identity",
             ));
         };
+        // Record exchange reaches every paired device, removed, held, or not enrolled, so a
+        // branch this log does not select can still reach it, see the R7.3 A5 rule.
+        if request.is_record_exchange() {
+            let mut conn = acquire(&vault.pool).await?;
+            let engine = Engine::vault();
+            let answer =
+                records::respond(&self.records, &engine, &mut conn, &ctx, &device_id, request)
+                    .await;
+            return match answer {
+                Ok((response, stored)) => {
+                    if stored {
+                        self.changes.send_modify(|generation| *generation += 1);
+                    }
+                    Ok(response)
+                }
+                Err(records::RecordRefusal::Busy) => Err(HubError {
+                    code: records::RECORDS_BUSY,
+                    message: "the record window of this device is spent".to_string(),
+                    retryable: true,
+                }),
+                Err(records::RecordRefusal::Invalid(message)) => {
+                    Err(HubError::rejected("invalid_sync_request", message))
+                }
+                Err(records::RecordRefusal::Failed(message)) => Err(HubError::failed(message)),
+            };
+        }
+        let held = {
+            let mut conn = acquire(&vault.pool).await?;
+            let view = Engine::vault()
+                .authorization(&mut conn, &ctx)
+                .await
+                .map_err(|error| HubError::failed(format!("read sync authorization: {error}")))?;
+            if let Some(refusal) = view.as_ref().and_then(|view| log_refusal(view, &device_id)) {
+                return Err(HubError::rejected(refusal.code(), refusal.describe()));
+            }
+            Engine::vault()
+                .device_held(&mut conn, &ctx, &device_id)
+                .await
+                .map_err(|error| HubError::failed(format!("read sync authorization: {error}")))?
+        };
+        if held
+            && matches!(
+                request,
+                ControlMessage::SyncAssetGet { .. } | ControlMessage::SyncAssetPut { .. }
+            )
+        {
+            return Err(HubError::rejected(
+                "device_held",
+                "an anchor handover contest holds this device's data until it is resolved",
+            ));
+        }
         let assets = vault.assets;
         let hub = HubSession {
             engine: Engine::vault(),
             pool: vault.pool,
             ctx,
             quarantined: vault.quarantined,
+            held,
         };
         let manifest = hub.engine.manifest();
         match request {
@@ -329,7 +433,15 @@ impl SyncHub {
                 self.receive(&assets, &device_id, &asset, offset, data)
                     .await
             }
-            ControlMessage::SyncHello { probe, stored, .. } => {
+            ControlMessage::SyncHello {
+                probe,
+                stored,
+                listening,
+                ..
+            } => {
+                if let Some(hints) = self.peer_hints.as_ref() {
+                    hints(&vault_id, &device_id, &listening);
+                }
                 let probe = match probe {
                     Some(probe) => {
                         Some((writer_from_wire(&probe.writer).map_err(invalid)?, probe.seq))
@@ -342,7 +454,7 @@ impl SyncHub {
             }
             ControlMessage::SyncPush { ops, .. } => {
                 let ops = ops_from_wire(&ops).map_err(invalid)?;
-                let (response, stored_any) = hub.push(&device_id, &ops).await?;
+                let (response, stored_any) = hub.push(&device_id, &ops, self.relay_geneses).await?;
                 if stored_any {
                     self.changes.send_modify(|generation| *generation += 1);
                 }
@@ -448,7 +560,7 @@ impl SyncHub {
                 .map_err(|_| HubError::failed("sync wait lock is unavailable"))?
                 .get(device_id)
                 != Some(&token);
-            if superseded || !known.dominates(&stored) {
+            if superseded || hub.servable(known, &stored).await? {
                 break hub
                     .state_message(&stored, None, bootstrap_required, report)
                     .await;
@@ -656,9 +768,31 @@ struct HubSession {
     pool: SqlitePool,
     ctx: SpaceContext,
     quarantined: BTreeSet<String>,
+    /// Whether the selected chain holds the requesting peer for data: it is then served
+    /// authorization records only, and no assets.
+    held: bool,
 }
 
 impl HubSession {
+    /// Whether a pull from `known` would return any operation: anything the hub stored past it,
+    /// or for a held peer an operation before the first row change of some writer's chain.
+    async fn servable(
+        &self,
+        known: &VersionVector,
+        stored: &VersionVector,
+    ) -> Result<bool, HubError> {
+        if !self.held || known.dominates(stored) {
+            return Ok(!known.dominates(stored));
+        }
+        let mut conn = acquire(&self.pool).await?;
+        let page = self
+            .engine
+            .authorization_ops_after(&mut conn, &self.ctx, known, 1)
+            .await
+            .map_err(|error| HubError::failed(format!("read sync operations: {error}")))?;
+        Ok(!page.ops.is_empty())
+    }
+
     async fn stored(&self) -> Result<VersionVector, HubError> {
         let mut conn = acquire(&self.pool).await?;
         self.engine
@@ -701,8 +835,7 @@ impl HubSession {
             manifest_version: self.engine.manifest().version,
             stored: vector_to_wire(stored),
             probe_hash,
-            coordinator_endpoints: report.contact.endpoints,
-            discovery_key: report.contact.discovery_key,
+            members: report.contact.members,
             stable: vector_to_wire(&stable),
             bootstrap_required,
             forked: forked_to_wire(&forked),
@@ -792,15 +925,18 @@ impl HubSession {
             .await
     }
 
-    /// Stores pushed operations up to the first refusal. A genesis of a writer the hub does not
-    /// hold is accepted only when its certificate names the pushing device.
+    /// Stores pushed operations up to the first refusal. Unless `relay_geneses`, a genesis of a
+    /// writer the hub does not hold is accepted only when its certificate names the pushing
+    /// device.
     async fn push(
         &self,
         device_id: &str,
         ops: &[Vec<u8>],
+        relay_geneses: bool,
     ) -> Result<(ControlMessage, bool), HubError> {
         let known = self.stored().await?;
-        let (accepted, mut refusal) = admit_geneses(ops, &known, device_id);
+        let (accepted, mut refusal) =
+            admit_geneses(ops, &known, (!relay_geneses).then_some(device_id));
         let outcomes = if accepted == 0 {
             Vec::new()
         } else {
@@ -855,16 +991,21 @@ impl HubSession {
         max_bytes: usize,
     ) -> Result<ControlMessage, HubError> {
         let mut conn = acquire(&self.pool).await?;
-        let page = self
-            .engine
-            .ops_after(&mut conn, &self.ctx, known, max_bytes)
-            .await
-            .map_err(|error| match error {
-                SyncError::Compacted { .. } => {
-                    HubError::rejected(BOOTSTRAP_REQUIRED, error.to_string())
-                }
-                error => HubError::failed(format!("read sync operations: {error}")),
-            })?;
+        let page = if self.held {
+            self.engine
+                .authorization_ops_after(&mut conn, &self.ctx, known, max_bytes)
+                .await
+        } else {
+            self.engine
+                .ops_after(&mut conn, &self.ctx, known, max_bytes)
+                .await
+        };
+        let page = page.map_err(|error| match error {
+            SyncError::Compacted { .. } => {
+                HubError::rejected(BOOTSTRAP_REQUIRED, error.to_string())
+            }
+            error => HubError::failed(format!("read sync operations: {error}")),
+        })?;
         Ok(ControlMessage::SyncOps {
             ops: ops_to_wire(&page.ops),
             more: page.more,
@@ -896,16 +1037,19 @@ impl HubSession {
 }
 
 /// How many leading operations may be stored, and the refusal of the first that may not: an
-/// envelope that does not decode, or the genesis of an unknown writer certified for another
-/// device. Later checks are the engine's.
+/// envelope that does not decode, or, when `pusher` is set, the genesis of an unknown writer
+/// certified for another device. Later checks are the engine's.
 fn admit_geneses(
     ops: &[Vec<u8>],
     known: &VersionVector,
-    device_id: &str,
+    pusher: Option<&str>,
 ) -> (usize, Option<SyncRefusal>) {
     for (index, op) in ops.iter().enumerate() {
         let Ok(envelope) = Envelope::decode(op) else {
             return (index, Some(invalid_refusal()));
+        };
+        let Some(device_id) = pusher else {
+            continue;
         };
         if envelope.seq != 1 || known.get(&envelope.writer) > 0 {
             continue;

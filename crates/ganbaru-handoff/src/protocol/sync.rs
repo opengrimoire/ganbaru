@@ -25,6 +25,8 @@ const WRITER_TEXT_LENGTH: usize = 32;
 const HASH_TEXT_LENGTH: usize = 64;
 /// Listener endpoints a coordinator reports in one sync state, and a linked device keeps.
 pub const MAX_COORDINATOR_ENDPOINTS: usize = 8;
+/// Member listener endpoints one sync state reports, and a peer book keeps.
+pub const MAX_MEMBER_ENDPOINTS: usize = 32;
 /// Bytes of a vault discovery key.
 pub const DISCOVERY_KEY_BYTES: usize = 32;
 
@@ -139,6 +141,39 @@ pub(super) fn validate_refusal(refusal: &SyncRefusal) -> Result<(), String> {
     Ok(())
 }
 
+/// Envelopes in one record page, lookup, or push, and hashes or writers one record lookup or
+/// push result names.
+pub const MAX_SYNC_RECORDS: usize = 256;
+/// Classes of the record exchange cursor.
+pub const SYNC_RECORD_CLASSES: usize = 5;
+
+/// Checks a bounded list of authorization record store envelopes.
+pub(super) fn validate_records(records: &[String]) -> Result<(), String> {
+    if records.len() > MAX_SYNC_RECORDS {
+        return Err("sync record page holds too many envelopes".to_string());
+    }
+    validate_ops(records)
+}
+
+/// Checks a record exchange cursor: one stored order for each class.
+pub(super) fn validate_record_cursor(cursor: &[u64]) -> Result<(), String> {
+    if cursor.len() != SYNC_RECORD_CLASSES {
+        return Err("sync record cursor is invalid".to_string());
+    }
+    Ok(())
+}
+
+/// Checks the hashes and writers a record lookup names.
+pub(super) fn validate_record_wants(hashes: &[String], writers: &[String]) -> Result<(), String> {
+    if hashes.len() > MAX_SYNC_RECORDS || writers.len() > MAX_SYNC_RECORDS {
+        return Err("sync record lookup is too large".to_string());
+    }
+    hashes.iter().try_for_each(|hash| validate_hash(hash))?;
+    writers
+        .iter()
+        .try_for_each(|writer| validate_writer(writer))
+}
+
 pub(super) fn validate_page_bytes(max_bytes: u32) -> Result<(), String> {
     if max_bytes == 0 || max_bytes as usize > SYNC_PAGE_BYTES {
         return Err("sync page size is invalid".to_string());
@@ -176,10 +211,33 @@ pub fn validate_coordinator_endpoint(endpoint: &str) -> Result<SocketAddr, Strin
     Ok(address)
 }
 
-/// Checks that a discovery key is the unpadded base64url form of exactly
-/// [`DISCOVERY_KEY_BYTES`] bytes.
-pub fn validate_discovery_key(key: &str) -> Result<(), String> {
-    crate::discovery::DiscoveryKey::decode(key).map(|_| ())
+/// One listener endpoint of a vault member, as the reporting hub last observed it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberEndpoint {
+    /// Handoff device id of the member that listens there.
+    pub device_id: String,
+    /// Socket address of the member's listener.
+    pub endpoint: String,
+    /// When the reporting hub last saw the member report it, in Unix milliseconds.
+    pub observed_ms: u64,
+}
+
+/// Checks the member endpoints a sync state reports: at most [`MAX_MEMBER_ENDPOINTS`], each
+/// naming a valid device id and an endpoint that may be dialed on a LAN, with no repeated pair.
+pub fn validate_member_endpoints(members: &[MemberEndpoint]) -> Result<(), String> {
+    if members.len() > MAX_MEMBER_ENDPOINTS {
+        return Err("member endpoint list is too large".to_string());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for member in members {
+        super::validate_identifier("member device id", &member.device_id)?;
+        validate_coordinator_endpoint(&member.endpoint)?;
+        if !seen.insert((member.device_id.as_str(), member.endpoint.as_str())) {
+            return Err("member endpoint list repeats an endpoint".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// The unpadded base64url form of a sync device public key, as enrollment carries it.

@@ -42,6 +42,7 @@ export const SYNC_DEGRADED_REASONS = [
   "standbyRestricted",
   "localNetworkDenied",
   "firewallAuthorizationRequired",
+  "firewallPeerListenerBlocked",
 ] as const;
 export type SyncDegradedReason = (typeof SYNC_DEGRADED_REASONS)[number];
 
@@ -95,6 +96,13 @@ export interface SyncStatusView {
   unconfirmed: number;
   /** When the oldest unconfirmed change was made, in Unix milliseconds. */
   oldestUnconfirmedAtMs: number | null;
+  /** Superseded versions kept until the anchor confirms storing the changes that superseded them. */
+  displacedVersions: number;
+  /**
+   * On a linked device, since when no pass in this app run reached the anchor, in Unix
+   * milliseconds. Null while the anchor answers, on the coordinator, and before the first pass.
+   */
+  anchorUnreachableSinceMs: number | null;
 }
 
 export interface SyncDeviceRef {
@@ -153,6 +161,8 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   degraded: [],
   unconfirmed: 0,
   oldestUnconfirmedAtMs: null,
+  displacedVersions: 0,
+  anchorUnreachableSinceMs: null,
 };
 
 export const SYNC_DEVICE_KINDS = ["desktop", "mobile"] as const;
@@ -252,10 +262,144 @@ export interface SyncLateChange {
   decisionPending: boolean;
 }
 
+/** The first late changes the native side lists, with how many wait in all. */
+export interface SyncLateChanges {
+  changes: SyncLateChange[];
+  /** Every late change waiting for a decision, including those past the listed bound. */
+  total: number;
+}
+
 export interface SyncLateChangeTarget {
   removalRevision: number;
   table: string;
   rowKey: string;
+}
+
+/** An authorization entry by hexadecimal hash and revision. */
+export interface SyncContestEntry {
+  hash: string;
+  revision: number;
+}
+
+export const SYNC_CONTEST_CAUSES = ["contested", "writerFork", "taken"] as const;
+/**
+ * Why an instance is contested: two handovers leave it or an objection stands, a writer of its
+ * anchor forked, or a forced take won it alone and its anchor, this device, may still object.
+ */
+export type SyncContestCause = (typeof SYNC_CONTEST_CAUSES)[number];
+
+export const SYNC_CANDIDATE_KINDS = ["planned", "forced", "selfHandover", "kit", "installedKey"] as const;
+export type SyncCandidateKind = (typeof SYNC_CANDIDATE_KINDS)[number];
+
+/** A handover out of a contested instance. */
+export interface SyncContestCandidate {
+  hash: string;
+  parent: SyncContestEntry;
+  kind: SyncCandidateKind;
+  /** The device it makes the anchor. */
+  target: SyncDeviceRef;
+  /** The device whose admin key signed it, null for a recovery key. */
+  signer: SyncDeviceRef | null;
+  /** Revision that enrolled the target on the candidate's chain. */
+  targetEnrolledRevision: number | null;
+  /** The device that enrolled the target, when an admin device did. */
+  targetEnroller: SyncDeviceRef | null;
+  /** Hash of the candidate its signer yielded to. */
+  withdrawnInFavorOf: string | null;
+  /** Whether it makes this device the anchor. */
+  local: boolean;
+}
+
+/** An objection of the instance's anchor to a candidate. */
+export interface SyncContestObjection {
+  hash: string;
+  /** Hash of the candidate it objects to. */
+  against: string;
+  objector: SyncDeviceRef | null;
+  withdrawn: boolean;
+}
+
+/** A stored yield to a candidate. */
+export interface SyncContestYield {
+  hash: string;
+  author: SyncDeviceRef | null;
+  /** Hash of the candidate it names. */
+  to: string;
+}
+
+/** This device's part in a contest. */
+export type SyncContestRole =
+  | { kind: "contestant"; candidate: string }
+  | { kind: "anchor" }
+  | { kind: "bystander" };
+
+/** Where a kit point lies: the selected head, under a candidate, or past the freeze point. */
+export type SyncKitPlace =
+  | { kind: "head" }
+  | { kind: "candidate"; target: SyncDeviceRef }
+  | { kind: "continuation"; anchor: SyncDeviceRef };
+
+/** An entry a kit handover to this desktop may continue from. */
+export interface SyncKitPoint {
+  entry: SyncContestEntry;
+  epoch: number;
+  place: SyncKitPlace;
+}
+
+/** What this device may do in a contest. */
+export type SyncContestAction =
+  | { kind: "yieldTo"; candidate: string }
+  | { kind: "withdrawObjection"; candidate: string }
+  | { kind: "object"; candidate: string }
+  | { kind: "useKit"; points: SyncKitPoint[] };
+
+/** A contested instance of the authorization log. */
+export interface SyncContest {
+  /** Hash of the entry that opened the instance, which identifies it. */
+  rootHash: string;
+  epoch: number;
+  anchor: SyncDeviceRef;
+  /** Where the instance froze, null for a lone take this device may object to. */
+  frozenAt: SyncContestEntry | null;
+  cause: SyncContestCause;
+  candidates: SyncContestCandidate[];
+  objections: SyncContestObjection[];
+  yields: SyncContestYield[];
+  /** Devices whose operations the contest holds back. */
+  held: SyncDeviceRef[];
+  localRole: SyncContestRole;
+  actions: SyncContestAction[];
+}
+
+/** A device a stored entry that is not effective removes, listed in the kit's device review. */
+export interface SyncLosingRemoval {
+  device: SyncDeviceRef;
+  removedBy: SyncDeviceRef | null;
+  revision: number;
+}
+
+export const SYNC_BACKSTOP_STATES = ["reserve", "stopped"] as const;
+/** What the storage backstop still stores: only kit and contest records, or nothing. */
+export type SyncBackstopState = (typeof SYNC_BACKSTOP_STATES)[number];
+
+/** A growth alert of the authorization record store. */
+export type SyncStorageAlert =
+  | { kind: "device"; device: SyncDeviceRef; bytes: number }
+  | { kind: "total"; bytes: number }
+  | { kind: "forkedWriter"; writer: string; device: SyncDeviceRef | null };
+
+/** The record store's storage state. */
+export interface SyncRecordStorage {
+  /** Set once the storage backstop started; full sync resumes only when the user resumes it. */
+  backstop: SyncBackstopState | null;
+  alerts: SyncStorageAlert[];
+}
+
+/** The contests of the vault's sync space and its record storage state. */
+export interface SyncContests {
+  contests: SyncContest[];
+  losingRemovals: SyncLosingRemoval[];
+  storage: SyncRecordStorage;
 }
 
 /** A recovery kit this desktop holds until the user confirms saving it. */
@@ -330,6 +474,12 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     oldestUnconfirmedAtMs: readNullable(
       row.oldestUnconfirmedAtMs,
       "sync status.oldestUnconfirmedAtMs",
+      readNonNegativeSafeInteger,
+    ),
+    displacedVersions: readNonNegativeSafeInteger(row.displacedVersions, "sync status.displacedVersions"),
+    anchorUnreachableSinceMs: readNullable(
+      row.anchorUnreachableSinceMs,
+      "sync status.anchorUnreachableSinceMs",
       readNonNegativeSafeInteger,
     ),
   };
@@ -410,6 +560,177 @@ export function mapSyncPendingRecoveryKit(value: unknown, label: string): SyncPe
   return { code, active: readBoolean(row.active, `${label}.active`) };
 }
 
+/** A 32-byte hash in lowercase hexadecimal, as the native side writes entry hashes. */
+const SYNC_HASH_PATTERN = /^[0-9a-f]{64}$/;
+/** A 16-byte writer id in lowercase hexadecimal. */
+const SYNC_WRITER_PATTERN = /^[0-9a-f]{32}$/;
+
+function readPattern(value: unknown, label: string, pattern: RegExp): string {
+  const text = readString(value, label);
+  if (!pattern.test(text)) throw new Error(`${label} must be lowercase hexadecimal of the expected length`);
+  return text;
+}
+
+function readHash(value: unknown, label: string): string {
+  return readPattern(value, label, SYNC_HASH_PATTERN);
+}
+
+function readContestEntry(value: unknown, label: string): SyncContestEntry {
+  const row = readRecord(value, label);
+  return {
+    hash: readHash(row.hash, `${label}.hash`),
+    revision: readNonNegativeSafeInteger(row.revision, `${label}.revision`),
+  };
+}
+
+function readContestCandidate(value: unknown, label: string): SyncContestCandidate {
+  const row = readRecord(value, label);
+  return {
+    hash: readHash(row.hash, `${label}.hash`),
+    parent: readContestEntry(row.parent, `${label}.parent`),
+    kind: readEnum(row.kind, SYNC_CANDIDATE_KINDS, `${label}.kind`),
+    target: mapSyncDeviceRef(row.target, `${label}.target`),
+    signer: readNullable(row.signer, `${label}.signer`, mapSyncDeviceRef),
+    targetEnrolledRevision: readNullable(
+      row.targetEnrolledRevision,
+      `${label}.targetEnrolledRevision`,
+      readNonNegativeSafeInteger,
+    ),
+    targetEnroller: readNullable(row.targetEnroller, `${label}.targetEnroller`, mapSyncDeviceRef),
+    withdrawnInFavorOf: readNullable(row.withdrawnInFavorOf, `${label}.withdrawnInFavorOf`, readHash),
+    local: readBoolean(row.local, `${label}.local`),
+  };
+}
+
+function readContestObjection(value: unknown, label: string): SyncContestObjection {
+  const row = readRecord(value, label);
+  return {
+    hash: readHash(row.hash, `${label}.hash`),
+    against: readHash(row.against, `${label}.against`),
+    objector: readNullable(row.objector, `${label}.objector`, mapSyncDeviceRef),
+    withdrawn: readBoolean(row.withdrawn, `${label}.withdrawn`),
+  };
+}
+
+function readContestYield(value: unknown, label: string): SyncContestYield {
+  const row = readRecord(value, label);
+  return {
+    hash: readHash(row.hash, `${label}.hash`),
+    author: readNullable(row.author, `${label}.author`, mapSyncDeviceRef),
+    to: readHash(row.to, `${label}.to`),
+  };
+}
+
+function readContestRole(value: unknown, label: string): SyncContestRole {
+  const row = readRecord(value, label);
+  const kind = readEnum(row.kind, ["contestant", "anchor", "bystander"] as const, `${label}.kind`);
+  if (kind === "contestant") return { kind, candidate: readHash(row.candidate, `${label}.candidate`) };
+  return { kind };
+}
+
+function readKitPlace(value: unknown, label: string): SyncKitPlace {
+  const row = readRecord(value, label);
+  const kind = readEnum(row.kind, ["head", "candidate", "continuation"] as const, `${label}.kind`);
+  switch (kind) {
+    case "head": return { kind };
+    case "candidate": return { kind, target: mapSyncDeviceRef(row.target, `${label}.target`) };
+    case "continuation": return { kind, anchor: mapSyncDeviceRef(row.anchor, `${label}.anchor`) };
+  }
+}
+
+function readKitPoint(value: unknown, label: string): SyncKitPoint {
+  const row = readRecord(value, label);
+  return {
+    entry: readContestEntry(row.entry, `${label}.entry`),
+    epoch: readNonNegativeSafeInteger(row.epoch, `${label}.epoch`),
+    place: readKitPlace(row.place, `${label}.place`),
+  };
+}
+
+function readContestAction(value: unknown, label: string): SyncContestAction {
+  const row = readRecord(value, label);
+  const kind = readEnum(row.kind, ["yieldTo", "withdrawObjection", "object", "useKit"] as const, `${label}.kind`);
+  if (kind === "useKit") {
+    const points = readArray(row.points, `${label}.points`, readKitPoint);
+    if (points.length === 0) throw new Error(`${label}.points must name at least one point`);
+    return { kind, points };
+  }
+  return { kind, candidate: readHash(row.candidate, `${label}.candidate`) };
+}
+
+function readContest(value: unknown, label: string): SyncContest {
+  const row = readRecord(value, label);
+  const contest: SyncContest = {
+    rootHash: readHash(row.rootHash, `${label}.rootHash`),
+    epoch: readNonNegativeSafeInteger(row.epoch, `${label}.epoch`),
+    anchor: mapSyncDeviceRef(row.anchor, `${label}.anchor`),
+    frozenAt: readNullable(row.frozenAt, `${label}.frozenAt`, readContestEntry),
+    cause: readEnum(row.cause, SYNC_CONTEST_CAUSES, `${label}.cause`),
+    candidates: readArray(row.candidates, `${label}.candidates`, readContestCandidate),
+    objections: readArray(row.objections, `${label}.objections`, readContestObjection),
+    yields: readArray(row.yields, `${label}.yields`, readContestYield),
+    held: readArray(row.held, `${label}.held`, mapSyncDeviceRef),
+    localRole: readContestRole(row.localRole, `${label}.localRole`),
+    actions: readArray(row.actions, `${label}.actions`, readContestAction),
+  };
+  if ((contest.cause === "taken") !== (contest.frozenAt === null)) {
+    throw new Error(`${label}.frozenAt must be absent exactly for a lone take`);
+  }
+  const candidates = new Set(contest.candidates.map((candidate) => candidate.hash));
+  if (candidates.size !== contest.candidates.length) throw new Error(`${label}.candidates must not repeat`);
+  for (const action of contest.actions) {
+    if (action.kind !== "useKit" && !candidates.has(action.candidate)) {
+      throw new Error(`${label}.actions must name candidates of the contest`);
+    }
+  }
+  return contest;
+}
+
+function readLosingRemoval(value: unknown, label: string): SyncLosingRemoval {
+  const row = readRecord(value, label);
+  return {
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    removedBy: readNullable(row.removedBy, `${label}.removedBy`, mapSyncDeviceRef),
+    revision: readNonNegativeSafeInteger(row.revision, `${label}.revision`),
+  };
+}
+
+function readStorageAlert(value: unknown, label: string): SyncStorageAlert {
+  const row = readRecord(value, label);
+  const kind = readEnum(row.kind, ["device", "total", "forkedWriter"] as const, `${label}.kind`);
+  switch (kind) {
+    case "device":
+      return {
+        kind,
+        device: mapSyncDeviceRef(row.device, `${label}.device`),
+        bytes: readNonNegativeSafeInteger(row.bytes, `${label}.bytes`),
+      };
+    case "total": return { kind, bytes: readNonNegativeSafeInteger(row.bytes, `${label}.bytes`) };
+    case "forkedWriter":
+      return {
+        kind,
+        writer: readPattern(row.writer, `${label}.writer`, SYNC_WRITER_PATTERN),
+        device: readNullable(row.device, `${label}.device`, mapSyncDeviceRef),
+      };
+  }
+}
+
+/** Validates the contests and record storage state of the vault's sync space from the native side. */
+export function mapSyncContests(value: unknown): SyncContests {
+  const row = readRecord(value, "sync contests");
+  const storage = readRecord(row.storage, "sync contests.storage");
+  return {
+    contests: readArray(row.contests, "sync contests.contests", readContest),
+    losingRemovals: readArray(row.losingRemovals, "sync contests.losingRemovals", readLosingRemoval),
+    storage: {
+      backstop: readNullable(storage.backstop, "sync contests.storage.backstop", (state, label) =>
+        readEnum(state, SYNC_BACKSTOP_STATES, label),
+      ),
+      alerts: readArray(storage.alerts, "sync contests.storage.alerts", readStorageAlert),
+    },
+  };
+}
+
 function readKitCode(value: unknown, label: string): string {
   const code = readString(value, label);
   if (code.trim().length === 0) throw new Error(`${label} must not be empty`);
@@ -471,6 +792,15 @@ export async function syncNow(): Promise<void> {
   await invoke("sync_now");
 }
 
+/**
+ * Tells the phone's sync service whether the app is visible. A phone serves other linked
+ * members only while it is in the foreground; hiding the app stops that listener.
+ * @param visible Whether the app is in the foreground.
+ */
+export async function setSyncForeground(visible: boolean): Promise<void> {
+  await invoke("sync_set_foreground", { visible });
+}
+
 export async function setSyncPaused(paused: boolean): Promise<void> {
   await invoke("sync_set_paused", { paused });
 }
@@ -498,9 +828,18 @@ export async function listSyncOutbox(): Promise<SyncOutboxEntry[]> {
   return readArray(await invoke<unknown>("sync_outbox_list"), "sync outbox", mapSyncOutboxEntry);
 }
 
-/** Rows removed devices changed after their removal that no admin decided yet. */
-export async function listSyncLateChanges(): Promise<SyncLateChange[]> {
-  return readArray(await invoke<unknown>("sync_late_changes"), "sync late changes", mapSyncLateChange);
+/** Validates the bounded late change list from the native side. */
+export function mapSyncLateChanges(value: unknown): SyncLateChanges {
+  const row = readRecord(value, "sync late changes");
+  const changes = readArray(row.changes, "sync late changes.changes", mapSyncLateChange);
+  const total = readNonNegativeSafeInteger(row.total, "sync late changes.total");
+  if (total < changes.length) throw new Error("sync late changes.total is smaller than the listed changes");
+  return { changes, total };
+}
+
+/** The first rows removed devices changed after their removal that no admin decided yet, with their total. */
+export async function listSyncLateChanges(): Promise<SyncLateChanges> {
+  return mapSyncLateChanges(await invoke<unknown>("sync_late_changes"));
 }
 
 /** On an admin desktop, keeps a late change and proposes the decision to the anchor. */
@@ -555,6 +894,61 @@ export async function getPendingSyncRecoveryKit(): Promise<SyncPendingRecoveryKi
 /** Deletes the recovery seed from this desktop after the user saved the kit. */
 export async function confirmSyncRecoveryKitSaved(): Promise<void> {
   await invoke("sync_recovery_kit_saved");
+}
+
+/** What a forced anchor handover signs with and whether it also quarantines the lost anchor. */
+export interface SyncForceAnchorRequest {
+  /** A recovery kit code, needed only when this desktop is not an admin yet. */
+  kitCode: string | null;
+  /** With a kit code, the kit point to continue from; null for the default one. */
+  point: SyncContestEntry | null;
+  /** With a kit code, devices the device review marked, which the kit key removes after the handover. */
+  removeDevices: string[];
+  /** Whether to quarantine the old anchor here and propose removing it. */
+  quarantineAnchor: boolean;
+}
+
+/**
+ * On a linked desktop whose anchor stopped answering or whose vault is contested, makes this
+ * desktop the anchor without it, signed with its admin key or, with a kit code, with the
+ * recovery key, which also makes it an admin. Returns the revision of the last entry it sealed.
+ */
+export async function forceSyncAnchor(request: SyncForceAnchorRequest): Promise<number> {
+  return readNonNegativeSafeInteger(
+    await invoke<unknown>("sync_force_anchor", {
+      kitCode: request.kitCode,
+      point: request.point,
+      removeDevices: request.removeDevices,
+      quarantineAnchor: request.quarantineAnchor,
+    }),
+    "forced handover revision",
+  );
+}
+
+/** The contests and record storage state of the active vault's sync space, or null before it joined one. */
+export async function getSyncContests(): Promise<SyncContests | null> {
+  return readNullable(await invoke<unknown>("sync_contests"), "sync contests", (value) => mapSyncContests(value));
+}
+
+/** Yields to the candidate handover `handover`, or withdraws this anchor's objection to it. */
+export async function yieldSyncContest(handover: string): Promise<number> {
+  return readNonNegativeSafeInteger(
+    await invoke<unknown>("sync_contest_yield", { handover }),
+    "contest yield revision",
+  );
+}
+
+/** As the anchor of the contested instance, blocks the candidate handover `handover`. */
+export async function objectSyncContest(handover: string): Promise<number> {
+  return readNonNegativeSafeInteger(
+    await invoke<unknown>("sync_contest_object", { handover }),
+    "contest objection revision",
+  );
+}
+
+/** Resumes full record exchange after the storage backstop stopped it. */
+export async function resumeSyncRecords(): Promise<void> {
+  await invoke("sync_records_resume");
 }
 
 /** Proposes making this enrolled desktop an admin with a recovery kit code. */

@@ -5,6 +5,7 @@ import {
   canRequestSync,
   syncClockAheadLines,
   syncConnectionLabel,
+  syncDegradedActionLabel,
   syncDegradedRows,
   formatSyncTime,
   syncConflictLines,
@@ -183,5 +184,19 @@ describe("sync connectivity", () => {
         action: "allowNetworkAccess",
       }]);
     expect(syncDegradedRows(t, status({ state: "idle", role: "hub" }))).toEqual([]);
+  });
+
+  it("offers the peer firewall grant to a member desktop whose listener is blocked", () => {
+    const rows = syncDegradedRows(t, status({
+      state: "idle",
+      role: "client",
+      degraded: ["firewallAuthorizationRequired", "firewallPeerListenerBlocked"],
+    }));
+    expect(rows.map((row) => [row.reason, row.action])).toEqual([
+      ["firewallAuthorizationRequired", null],
+      ["firewallPeerListenerBlocked", "allowPeerConnections"],
+    ]);
+    expect(syncDegradedActionLabel(t, "allowPeerConnections")).toBe("Allow peers to connect");
+    expect(syncDegradedActionLabel(t, "allowNetworkAccess")).toBe("Allow network access");
   });
 });

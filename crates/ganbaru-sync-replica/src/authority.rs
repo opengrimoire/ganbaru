@@ -2,6 +2,8 @@
 //! the admin-signed proposals it places in its outbox, and the sequencing of proposals through
 //! the engine.
 
+use std::collections::BTreeSet;
+
 use super::outbox::{Outbox, is_final};
 use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
@@ -12,7 +14,9 @@ use ganbaru_handoff::discovery::DiscoveryKey;
 use ganbaru_handoff::protocol::{
     DeviceKind as HandoffDeviceKind, MAX_SYNC_FORWARDED_PROPOSALS, encode_sync_proposal,
 };
-use ganbaru_sync::{AuthorizationView, Engine, LocalWriter, SpaceContext};
+use ganbaru_sync::{
+    AuthorizationView, ContestEntry, ContestRejection, Engine, LocalWriter, SpaceContext,
+};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole,
@@ -55,9 +59,8 @@ pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<Anc
 /// sends its public half at pairing, so an admin can later promote it without another link.
 /// Key stores may block, so callers run this off the async runtime.
 pub fn ensure_admin_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AdminKeyPair, String> {
-    match keys.read(vault_id, SyncKey::Admin)? {
-        Some(pkcs8) => AdminKeyPair::from_pkcs8(&pkcs8)
-            .map_err(|error| format!("decode sync admin key: {error}")),
+    match read_admin_key(keys, vault_id)? {
+        Some(admin) => Ok(admin),
         None => {
             let (pkcs8, admin) = AdminKeyPair::generate()
                 .map_err(|error| format!("create sync admin key: {error}"))?;
@@ -65,6 +68,20 @@ pub fn ensure_admin_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<Admin
             Ok(admin)
         }
     }
+}
+
+/// Reads the admin key of a vault without creating one, `None` when this installation has none.
+/// Key stores may block, so callers run this off the async runtime.
+pub fn read_admin_key(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<Option<AdminKeyPair>, String> {
+    keys.read(vault_id, SyncKey::Admin)?
+        .map(|pkcs8| {
+            AdminKeyPair::from_pkcs8(&pkcs8)
+                .map_err(|error| format!("decode sync admin key: {error}"))
+        })
+        .transpose()
 }
 
 /// What the first anchor founds a space with besides its keys.
@@ -243,30 +260,57 @@ pub async fn sequence(
     proposal: &SignedProposal,
     now_ms: u64,
 ) -> Result<Result<u64, ProposalRejection>, String> {
+    sequence_covering(
+        engine,
+        conn,
+        ctx,
+        writer,
+        proposal,
+        &VersionVector::new(),
+        now_ms,
+    )
+    .await
+}
+
+/// [`sequence`] on a linked anchor: a removal's cutoffs cover at least `covered`, the stored
+/// vector the coordinator last reported, since the anchor may store less of a device it
+/// quarantined than the coordinator and members already applied.
+pub async fn sequence_covering(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    proposal: &SignedProposal,
+    covered: &VersionVector,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
     let discovery_key = match proposal.proposal.entry {
         Entry::Remove(_) => *DiscoveryKey::generate()?.as_bytes(),
         _ => current_discovery_key(engine, conn, ctx).await?,
     };
     engine
-        .sequence_proposal(conn, ctx, proposal, discovery_key, writer, now_ms)
+        .sequence_proposal_covering(conn, ctx, proposal, discovery_key, covered, writer, now_ms)
         .await
         .map_err(|error| format!("sequence sync proposal: {error}"))
 }
 
 /// Sequences every waiting proposal of the anchor's outbox in order, records final rejections,
-/// and drops the proposals the selected chain now holds. Returns how many proposals were
-/// sequenced or replayed.
+/// and drops the proposals the selected chain now holds. Removal cutoffs cover at least
+/// `covered`, as in [`sequence_covering`]. Returns how many proposals were sequenced or
+/// replayed.
 pub async fn sequence_outbox(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: &mut LocalWriter<'_>,
     outbox: &mut Outbox,
+    covered: &VersionVector,
     now_ms: u64,
 ) -> Result<usize, String> {
     let mut sequenced = 0;
     for proposal in outbox.pending() {
-        let outcome = sequence(engine, conn, ctx, writer, &proposal, now_ms).await?;
+        let outcome =
+            sequence_covering(engine, conn, ctx, writer, &proposal, covered, now_ms).await?;
         sequenced += usize::from(outcome.is_ok());
         outbox.settle(&proposal.hash(), outcome)?;
     }
@@ -349,17 +393,21 @@ pub async fn collect_forwards(
 /// Sequences the proposals a hub forwarded through the anchor's writer and returns the final
 /// rejections, which the next forward reports so the hub stops holding them. Accepted
 /// proposals need no report: the hub finds them in the chain once it applies the entries.
+/// Removal cutoffs cover at least `covered`, the hub's stored vector, as in
+/// [`sequence_covering`].
 pub async fn sequence_forwarded(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: &mut LocalWriter<'_>,
     proposals: &[SignedProposal],
+    covered: &VersionVector,
     now_ms: u64,
 ) -> Result<Vec<(Digest32, ProposalRejection)>, String> {
     let mut rejected = Vec::new();
     for proposal in proposals {
-        if let Err(rejection) = sequence(engine, conn, ctx, writer, proposal, now_ms).await?
+        if let Err(rejection) =
+            sequence_covering(engine, conn, ctx, writer, proposal, covered, now_ms).await?
             && is_final(rejection)
         {
             rejected.push((proposal.hash(), rejection));
@@ -479,6 +527,28 @@ pub fn forget_recovery_seed(
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 
+/// The recovery admin key `kit_code` derives, whether or not any log names it. Refuses a code
+/// that does not parse. A forced handover uses it unchecked, because a stolen anchor may have
+/// replaced the recovery key on the selected chain, and the engine admits the handover only
+/// where the key is of kit lineage. Callers keep the key only as long as they sign with it.
+pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code)
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    seed.recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))
+}
+
+/// The recovery admin key `kit_code` derives. Refuses a code that does not parse or a kit
+/// whose key the selected log does not name. Callers keep the key only as long as they sign
+/// with it.
+pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminKeyPair, String> {
+    let recovery = kit_admin(kit_code)?;
+    if recovery.public_key() != view.recovery_admin_key {
+        return Err("this recovery kit does not belong to the vault's current log".to_string());
+    }
+    Ok(recovery)
+}
+
 /// Signs, with the recovery admin key `kit_code` derives, the proposal that makes the enrolled
 /// desktop `device_id` an admin with `admin_key`, so it can take the anchor. The derived key
 /// lives only inside this call. Refuses a code that does not parse or a kit whose key the
@@ -491,14 +561,7 @@ pub fn recovery_promotion(
     admin_key: AdminPublicKey,
     now_ms: u64,
 ) -> Result<SignedProposal, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
-        .map_err(|error| format!("read the recovery kit: {error}"))?;
-    let recovery = seed
-        .recovery_admin_key()
-        .map_err(|error| format!("derive the recovery admin key: {error}"))?;
-    if recovery.public_key() != view.recovery_admin_key {
-        return Err("this recovery kit does not belong to the vault's current log".to_string());
-    }
+    let recovery = recovery_admin(view, kit_code)?;
     propose(
         space,
         view.charter,
@@ -524,6 +587,20 @@ pub fn unlinked_devices(
                 && device.device_id != own_device_id
                 && !linked(&device.device_id)
         })
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
+/// The devices the selected log removed that `linked` still reports as linked. The coordinator
+/// unlinks them, so pairing never serves a device the log removed, whichever admin proposed the
+/// removal.
+pub fn removed_linked_devices(
+    view: &AuthorizationView,
+    linked: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    view.devices
+        .iter()
+        .filter(|device| device.removed_revision.is_some() && linked(&device.device_id))
         .map(|device| device.device_id.clone())
         .collect()
 }
@@ -683,6 +760,111 @@ pub async fn seal_handover_here(
         .map_err(|error| format!("seal sync handover: {error}"))
 }
 
+/// What a forced handover to this desktop signs and seals after it.
+pub struct ForcedHandover<'a> {
+    /// The admin key or kit recovery key that signs the handover and the entries after it.
+    pub signer: &'a AdminKeyPair,
+    /// The admin key this desktop is promoted with, set when the recovery key signs for a
+    /// desktop that is not an admin yet.
+    pub promote: Option<AdminPublicKey>,
+    /// The kit point to continue from, one the contest view offers; `None` continues from the
+    /// default point.
+    pub point: Option<ContestEntry>,
+    /// Devices the user marked in the device review of a kit recovery, removed under the kit
+    /// key after the handover. Only a handover the kit key signs removes them.
+    pub removals: Vec<String>,
+}
+
+/// Forces the anchor to this desktop after the anchor is lost or stolen: signs with the
+/// request's signer and seals a handover without an old anchor vector, so operations only the
+/// lost anchor stored can become provisional again. A kit-lineage recovery key continues from
+/// the chosen kit point, or by default from the live entry of highest rank where this desktop
+/// is still live, which may lie below a stolen anchor's removal of it, and then removes the old
+/// anchor and every device marked in the device review; any other signer continues from the
+/// selected head. With a promotion, the new anchor then sequences the promotion of its own
+/// device to admin with that key, signed by the same signer. Returns the revision of the last
+/// entry, or why the engine rejected one.
+pub async fn force_handover_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    forced: &ForcedHandover<'_>,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let signer = forced.signer;
+    let device_id = writer.certificate.certificate.device_id.clone();
+    let point = match &forced.point {
+        Some(entry) => engine
+            .kit_handover_point(conn, ctx, &signer.public_key(), &device_id, entry)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "the chosen entry is not a recovery kit point".to_string())?,
+        None => engine
+            .handover_point(conn, ctx, &signer.public_key(), &device_id)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "the sync space has no charter".to_string())?,
+    };
+    if point.revision == 0 {
+        return Err(
+            "the log holds only its charter, so no epoch can continue it; link the devices again"
+                .to_string(),
+        );
+    }
+    let charter = engine
+        .charter(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync charter: {error}"))?
+        .ok_or_else(|| "the sync space has no charter".to_string())?
+        .hash();
+    let epoch = point
+        .epoch
+        .checked_add(1)
+        .ok_or_else(|| "the sync epoch is exhausted".to_string())?;
+    let handover = propose(
+        ctx.space,
+        charter,
+        signer,
+        Entry::Handover(Handover {
+            new_anchor_device_id: device_id.clone(),
+            epoch,
+            continues_from_revision: point.revision,
+            continues_from_hash: point.entry_hash,
+        }),
+        now_ms,
+    )?;
+    let mut revision = match engine
+        .seal_handover(conn, ctx, &handover, None, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync handover: {error}"))?
+    {
+        Ok(revision) => revision,
+        Err(rejection) => return Ok(Err(rejection)),
+    };
+    let mut follow_up = Vec::new();
+    if point.by_kit {
+        let mut removed = BTreeSet::from([device_id.clone()]);
+        let reviewed = forced.removals.iter().map(String::as_str);
+        for removal in std::iter::once(point.anchor_device_id.as_str()).chain(reviewed) {
+            if removed.insert(removal.to_owned()) {
+                follow_up.push(remove_entry(removal));
+            }
+        }
+    }
+    if let Some(admin_key) = forced.promote {
+        follow_up.push(promote_entry(&device_id, admin_key));
+    }
+    for entry in follow_up {
+        let proposal = propose(ctx.space, charter, signer, entry, now_ms)?;
+        match sequence(engine, conn, ctx, writer, &proposal, now_ms).await? {
+            Ok(sealed) => revision = revision.max(sealed),
+            Err(rejection) => return Ok(Err(rejection)),
+        }
+    }
+    Ok(Ok(revision))
+}
+
 fn millis(now_ms: u64) -> Result<i64, String> {
     i64::try_from(now_ms).map_err(|_| "clock is out of range".to_string())
 }
@@ -699,4 +881,42 @@ pub fn without_writers(vector: &VersionVector, excluded: &VersionVector) -> Vers
         }
     }
     kept
+}
+
+/// Signs with `admin` and seals a yield to the stored handover `handover`, as a contestant of
+/// its frozen instance or as the anchor of that instance with an objection to it. The yield
+/// enters the record store at once and travels with the writer's other operations. Returns the
+/// revision, or why the engine did not seal it.
+pub async fn yield_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    handover: &Digest32,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ContestRejection>, String> {
+    engine
+        .seal_yield(conn, ctx, admin, handover, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync yield: {error}"))
+}
+
+/// Signs with `admin` and seals, as the anchor of the instance the stored handover `handover`
+/// leaves, a removal of its target with a fresh discovery key, which objects to it. Returns the
+/// revision, or why the engine did not seal it.
+pub async fn object_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    handover: &Digest32,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ContestRejection>, String> {
+    let discovery_key = *DiscoveryKey::generate()?.as_bytes();
+    engine
+        .seal_objection(conn, ctx, admin, handover, discovery_key, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync objection: {error}"))
 }

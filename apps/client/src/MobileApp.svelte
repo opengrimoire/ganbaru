@@ -8,6 +8,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
+  import { setSyncForeground } from "$lib/api/sync";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     MobileBackListenerController,
@@ -829,7 +830,13 @@
         schedulerResume = null;
       });
     };
+    const reportSyncForeground = (): void => {
+      setSyncForeground(document.visibilityState === "visible").catch((error) => {
+        console.error("Failed to report the app visibility to sync", error);
+      });
+    };
     const handleVisibilityChange = (): void => {
+      reportSyncForeground();
       if (document.visibilityState === "hidden") {
         pomodoro.prepareForMobileBackground();
         return;
@@ -842,6 +849,7 @@
     window.addEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("focus", resumeLifecycleSchedulers);
+    reportSyncForeground();
 
     void initializeWorkspace();
 

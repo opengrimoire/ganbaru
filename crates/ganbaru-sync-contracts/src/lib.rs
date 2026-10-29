@@ -26,7 +26,7 @@ mod tests;
 pub use authorization::{
     AuthorizationError, AuthorizationRecord, DeviceKind, DeviceRole, Enroll, Entry, Handover,
     LateResolution, LateRow, Proposal, ProposalRejection, Remove, ResolveLate, Sequencing, SetRole,
-    SignedProposal, sign_proposal,
+    SignedProposal, Yield, sign_proposal,
 };
 pub use certificate::{
     CertificateError, SignedCertificate, WriterCertificate, sign_certificate, validate_device_id,

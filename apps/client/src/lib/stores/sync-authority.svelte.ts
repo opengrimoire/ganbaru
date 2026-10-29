@@ -1,22 +1,29 @@
 import {
   confirmSyncRecoveryKitSaved,
   discardSyncLateChange,
+  forceSyncAnchor,
   getPendingSyncRecoveryKit,
   getSyncAuthority,
+  getSyncContests,
   liftSyncQuarantine,
   listenSyncApplied,
   listenSyncStatus,
   listSyncLateChanges,
   listSyncOutbox,
+  objectSyncContest,
   promoteSyncDevice,
   quarantineSyncDevice,
   regenerateSyncRecoveryKit,
   removeSyncDevice,
   resetSyncState,
   restoreSyncLateChange,
+  resumeSyncRecords,
   takeSyncAnchor,
   useSyncRecoveryKit,
+  yieldSyncContest,
   type SyncAuthorityView,
+  type SyncContests,
+  type SyncForceAnchorRequest,
   type SyncLateChange,
   type SyncOutboxEntry,
   type SyncPendingRecoveryKit,
@@ -29,8 +36,10 @@ import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 const KIT_CAPABLE = BUILD_PLATFORM_PROFILE.shell === "desktop";
 
 let authority = $state<SyncAuthorityView | null>(null);
+let contests = $state<SyncContests | null>(null);
 let outbox = $state<SyncOutboxEntry[]>([]);
 let lateChanges = $state<SyncLateChange[]>([]);
+let lateTotal = $state(0);
 let pendingKit = $state<SyncPendingRecoveryKit | null>(null);
 let loadFailed = $state(false);
 let generation = 0;
@@ -41,8 +50,10 @@ let stopListening: (() => void) | null = null;
 onActiveVaultIdentityChange(() => {
   generation += 1;
   authority = null;
+  contests = null;
   outbox = [];
   lateChanges = [];
+  lateTotal = 0;
   pendingKit = null;
   loadFailed = false;
   lastStatusKey = null;
@@ -50,22 +61,25 @@ onActiveVaultIdentityChange(() => {
 });
 
 /**
- * Reloads the authorization state, the outbox, the late changes, and, on an admin desktop, the
+ * Reloads the authorization state, the contests, the outbox, the late changes, and, on an admin desktop, the
  * recovery kit that waits to be saved. A vault change during the load discards its results.
  */
 async function refresh(): Promise<void> {
   const expected = generation;
   try {
-    const [nextAuthority, nextOutbox, nextLate] = await Promise.all([
+    const [nextAuthority, nextContests, nextOutbox, nextLate] = await Promise.all([
       getSyncAuthority(),
+      getSyncContests(),
       listSyncOutbox(),
       listSyncLateChanges(),
     ]);
     const nextKit = KIT_CAPABLE && nextAuthority?.ownIsAdmin ? await getPendingSyncRecoveryKit() : null;
     if (expected !== generation) return;
     authority = nextAuthority;
+    contests = nextContests;
     outbox = nextOutbox;
-    lateChanges = nextLate;
+    lateChanges = nextLate.changes;
+    lateTotal = nextLate.total;
     pendingKit = nextKit;
     loadFailed = false;
   } catch (cause: unknown) {
@@ -142,8 +156,12 @@ function lateTarget(change: SyncLateChange) {
 export function getSyncAuthorityState() {
   return {
     get authority(): SyncAuthorityView | null { return authority; },
+    /** Open handover contests and the record store's storage state. */
+    get contests(): SyncContests | null { return contests; },
     get outbox(): SyncOutboxEntry[] { return outbox; },
     get lateChanges(): SyncLateChange[] { return lateChanges; },
+    /** Every late change waiting for a decision, including those past the listed bound. */
+    get lateTotal(): number { return lateTotal; },
     get pendingKit(): SyncPendingRecoveryKit | null { return pendingKit; },
     get loadFailed(): boolean { return loadFailed; },
     subscribe,
@@ -153,11 +171,17 @@ export function getSyncAuthorityState() {
     liftQuarantine: (deviceId: string) => thenRefresh(() => liftSyncQuarantine(deviceId)),
     promoteDevice: (deviceId: string) => thenRefresh(() => promoteSyncDevice(deviceId)),
     takeAnchor: () => thenRefresh(takeSyncAnchor),
+    forceAnchor: (request: SyncForceAnchorRequest) => thenRefresh(() => forceSyncAnchor(request)),
     restoreLateChange: (change: SyncLateChange) => thenRefresh(() => restoreSyncLateChange(lateTarget(change))),
     discardLateChange: (change: SyncLateChange) => thenRefresh(() => discardSyncLateChange(lateTarget(change))),
     regenerateKit: () => thenRefresh(regenerateSyncRecoveryKit),
     confirmKitSaved: () => thenRefresh(confirmSyncRecoveryKitSaved),
     useKit: (code: string) => thenRefresh(() => useSyncRecoveryKit(code)),
     resetSyncState: () => thenRefresh(resetSyncState),
+    /** Yields a contest to `handover`, or withdraws this device's objection against it. */
+    yieldContest: (handover: string) => thenRefresh(() => yieldSyncContest(handover)),
+    objectContest: (handover: string) => thenRefresh(() => objectSyncContest(handover)),
+    /** Resumes the record exchange after its storage backstop stopped it. */
+    resumeRecords: () => thenRefresh(resumeSyncRecords),
   };
 }

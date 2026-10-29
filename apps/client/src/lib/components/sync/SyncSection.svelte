@@ -10,6 +10,7 @@
     syncClockAheadLines,
     syncConflictLines,
     syncConnectionLabel,
+    syncDegradedActionLabel,
     syncDegradedRows,
     type SyncDegradedAction,
     syncDescription,
@@ -27,13 +28,19 @@
   import SyncLateChanges from "./SyncLateChanges.svelte";
   import SyncOutboxList from "./SyncOutboxList.svelte";
   import SyncRecoveryKit from "./SyncRecoveryKit.svelte";
+  import SyncContestCard from "./SyncContestCard.svelte";
+  import { syncKitContested, syncStorageAlertLines } from "$lib/sync/contests";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import {
+    canInstallSyncRecoveryKey,
     canManageSyncRecoveryKit,
     canResetSyncState,
     canResolveSyncLateChanges,
-    canUseSyncRecoveryKit,
+    canSuggestSyncHandover,
+    syncAnchorUnreachableLine,
+    syncQuarantinableAnchor,
+    syncRecoveryKitUse,
     type SyncAuthorityContext,
     syncUnconfirmedNotice,
   } from "$lib/sync/authority";
@@ -45,7 +52,7 @@
   }: {
     buttonClass: string;
     mobileLayout?: boolean;
-    /** Starts allowing the coordinator listener through the firewall, when this device can. */
+    /** Starts allowing this desktop's sync listener through the firewall, when this device can. */
     onAllowNetworkAccess?: () => void;
   } = $props();
 
@@ -72,14 +79,29 @@
   let resetConfirming = $state(false);
   let resetting = $state(false);
   let resetMessage = $state("");
-  const unconfirmed = $derived(syncUnconfirmedNotice(t, localization.locale, status, now));
+  const anchorUnreachable = $derived(syncAnchorUnreachableLine(t, localization.locale, status, now));
   const authorityContext = $derived<SyncAuthorityContext | null>(
     authorityState.authority
-      ? { authority: authorityState.authority, statusRole: status.role, mobileLayout }
+      ? {
+        authority: authorityState.authority,
+        statusRole: status.role,
+        mobileLayout,
+        anchorUnreachableSinceMs: status.anchorUnreachableSinceMs,
+      }
       : null,
   );
+  const unconfirmed = $derived(
+    syncUnconfirmedNotice(t, localization.locale, status, now, canSuggestSyncHandover(authorityContext)),
+  );
   const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
-  const canUseKit = $derived(authorityContext !== null && canUseSyncRecoveryKit(authorityContext, status.state));
+  const canInstallKey = $derived(authorityContext !== null && canInstallSyncRecoveryKey(authorityContext));
+  const contests = $derived(authorityState.contests);
+  const kitUse = $derived(
+    authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state, syncKitContested(contests)),
+  );
+  const storageBackstop = $derived(contests?.storage.backstop ?? null);
+  const storageAlerts = $derived(contests ? syncStorageAlertLines(t, localization.locale, contests.storage) : []);
+  let resuming = $state(false);
   const canReset = $derived(canResetSyncState(status.role, mobileLayout));
 
   async function resetSync(): Promise<void> {
@@ -105,7 +127,7 @@
   }
 
   async function runDegradedAction(action: SyncDegradedAction): Promise<void> {
-    if (action === "allowNetworkAccess") {
+    if (action === "allowNetworkAccess" || action === "allowPeerConnections") {
       onAllowNetworkAccess?.();
       return;
     }
@@ -113,6 +135,21 @@
       await openMobileBackgroundExecutionSettings("battery");
     } catch (cause: unknown) {
       console.warn("Android battery settings could not be opened", cause);
+    }
+  }
+
+  /** Resumes the record exchange the storage backstop stopped. */
+  async function resumeRecords(): Promise<void> {
+    if (resuming) return;
+    resuming = true;
+    actionError = "";
+    try {
+      await authorityState.resumeRecords();
+    } catch (cause: unknown) {
+      console.warn("sync record exchange could not be resumed", cause);
+      actionError = t("sync.storage.resumeFailed");
+    } finally {
+      resuming = false;
     }
   }
 
@@ -193,7 +230,7 @@
           <Notice tone="warning" role="status" copy={false} message={row.label}>
             {#snippet actions()}
               <button type="button" class="notice-action-text" onclick={() => void runDegradedAction(action)}>
-                {t(action === "openBatterySettings" ? "sync.degraded.openBatterySettings" : "sync.degraded.allowNetworkAccess")}
+                {syncDegradedActionLabel(t, action)}
               </button>
             {/snippet}
           </Notice>
@@ -214,6 +251,26 @@
           message={unconfirmed.lines.join(" ")}
         />
       {/if}
+      {#if anchorUnreachable}
+        <Notice tone="warning" role="status" copy={false} message={anchorUnreachable} />
+      {/if}
+      {#if storageBackstop}
+        <Notice
+          tone="warning"
+          role="status"
+          copy={false}
+          message={`${storageBackstop === "reserve" ? t("sync.storage.reserve") : t("sync.storage.stopped")} ${t("sync.storage.resumeHint")}`}
+        >
+          {#snippet actions()}
+            <button type="button" class="notice-action-text" disabled={resuming} onclick={() => void resumeRecords()}>
+              {t("sync.storage.resume")}
+            </button>
+          {/snippet}
+        </Notice>
+      {/if}
+      {#each storageAlerts as line (line)}
+        <Notice tone="warning" role="status" copy={false} message={line} />
+      {/each}
     </div>
 
     {#if held.length > 0}
@@ -262,6 +319,9 @@
       <Notice class="px-1 text-[0.8rem] leading-5" message={t("sync.authority.loadFailed")} copy={false} onRetry={authorityState.refresh} />
     {/if}
     {#if authorityContext}
+      {#each contests?.contests ?? [] as contest (contest.rootHash)}
+        <SyncContestCard buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass} {contest} />
+      {/each}
       <SyncDevicesList {buttonClass} {mobileLayout} context={authorityContext} />
       {#if authorityState.outbox.length > 0}
         <SyncOutboxList entries={authorityState.outbox} {now} />
@@ -270,12 +330,21 @@
         <SyncLateChanges
           buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass}
           changes={authorityState.lateChanges}
+          total={authorityState.lateTotal}
           canResolve={canResolveSyncLateChanges(authorityContext)}
           {now}
         />
       {/if}
-      {#if canManageKit || canUseKit}
-        <SyncRecoveryKit {buttonClass} canManage={canManageKit} canUse={canUseKit} pendingKit={authorityState.pendingKit} />
+      {#if canManageKit || kitUse}
+        <SyncRecoveryKit
+          {buttonClass}
+          canManage={canManageKit}
+          {canInstallKey}
+          use={kitUse}
+          anchor={syncQuarantinableAnchor(authorityContext.authority)}
+          pendingKit={authorityState.pendingKit}
+          {contests}
+        />
       {/if}
     {/if}
   {/if}

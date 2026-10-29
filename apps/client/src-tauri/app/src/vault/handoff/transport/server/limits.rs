@@ -4,13 +4,14 @@
 //! certificate. Pending connections (handshakes, enrollment, contact requests, revoked devices)
 //! have a small global budget and a smaller per-source budget, so one LAN host cannot exhaust
 //! file descriptors or crowd out linked devices. Authenticated connections draw from their own
-//! larger budget. Contact messages, which reach the vault database without authentication, also
+//! larger budget, again bounded per source. Contact messages, which reach the vault database without authentication, also
 //! spend a per-source token bucket. Every bound sits far above what a household of linked devices
 //! uses.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 /// Connections still in the handshake or without a linked certificate, across all sources.
@@ -19,13 +20,19 @@ pub(in super::super) const MAX_PENDING_CONNECTIONS: usize = 32;
 pub(in super::super) const MAX_PENDING_CONNECTIONS_PER_SOURCE: usize = 8;
 /// Concurrent connections from linked devices, which are capped at 32 per vault.
 pub(in super::super) const MAX_AUTHENTICATED_CONNECTIONS: usize = 64;
+/// Authenticated connections from one IPv4 address or one IPv6 /64 prefix, so one linked device
+/// cannot hold the whole authenticated budget. A device needs only a few at once.
+pub(in super::super) const MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE: usize = 16;
 /// Contact messages one source may send at once. A requester sends one request and then polls
 /// about once a minute, so even a household behind one address stays far below it.
+#[cfg(desktop)]
 pub(in super::super) const CONTACT_MESSAGE_BURST: u32 = 16;
 /// Time in which one source earns another contact message.
+#[cfg(desktop)]
 pub(in super::super) const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
 /// Sources whose contact budget is tracked at once. Sources with a full budget are forgotten
 /// first, so the map only fills when that many sources are sending at the same time.
+#[cfg(desktop)]
 const MAX_CONTACT_SOURCES: usize = 1_024;
 
 /// Groups addresses one host can cheaply rotate through: IPv6 hosts pick any address in their
@@ -53,12 +60,14 @@ impl SourceKey {
 }
 
 /// Token bucket for the contact messages of one source.
+#[cfg(desktop)]
 #[derive(Clone, Copy, Debug)]
 struct ContactBudget {
     tokens: u32,
     refilled_at: Instant,
 }
 
+#[cfg(desktop)]
 impl ContactBudget {
     fn full(now: Instant) -> Self {
         Self {
@@ -94,6 +103,8 @@ struct Counts {
     pending: usize,
     pending_by_source: HashMap<SourceKey, usize>,
     authenticated: usize,
+    authenticated_by_source: HashMap<SourceKey, usize>,
+    #[cfg(desktop)]
     contact_budgets: HashMap<SourceKey, ContactBudget>,
 }
 
@@ -104,6 +115,7 @@ pub(in super::super) struct ConnectionLimits {
     max_pending: usize,
     max_pending_per_source: usize,
     max_authenticated: usize,
+    max_authenticated_per_source: usize,
 }
 
 impl Default for ConnectionLimits {
@@ -112,6 +124,7 @@ impl Default for ConnectionLimits {
             MAX_PENDING_CONNECTIONS,
             MAX_PENDING_CONNECTIONS_PER_SOURCE,
             MAX_AUTHENTICATED_CONNECTIONS,
+            MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE,
         )
     }
 }
@@ -121,12 +134,14 @@ impl ConnectionLimits {
         max_pending: usize,
         max_pending_per_source: usize,
         max_authenticated: usize,
+        max_authenticated_per_source: usize,
     ) -> Self {
         Self {
             counts: Arc::default(),
             max_pending,
             max_pending_per_source,
             max_authenticated,
+            max_authenticated_per_source,
         }
     }
 
@@ -150,6 +165,7 @@ impl ConnectionLimits {
     /// Spends one contact message from the budget of `source`. Returns false when the source
     /// sent too many recently, or when too many sources are sending at once, and the requester
     /// should be told to retry later.
+    #[cfg(desktop)]
     pub(in super::super) fn take_contact_message(&self, source: IpAddr, now: Instant) -> bool {
         let source = SourceKey::from_address(source);
         let mut counts = self.lock();
@@ -190,19 +206,30 @@ pub(in super::super) struct PendingPermit {
 
 impl PendingPermit {
     /// Moves the connection to the authenticated budget and releases its pending slot. Returns
-    /// `None` when the authenticated budget is full; the pending slot is released either way.
+    /// `None` when the global or per-source authenticated budget is full; the pending slot is
+    /// released either way.
     pub(in super::super) fn authenticate(self) -> Option<AuthenticatedPermit> {
         let limits = self.limits.clone();
+        let source = self.source;
         let mut counts = limits.lock();
-        let admitted = counts.authenticated < limits.max_authenticated;
+        let from_source = counts
+            .authenticated_by_source
+            .get(&source)
+            .copied()
+            .unwrap_or(0);
+        let admitted = counts.authenticated < limits.max_authenticated
+            && from_source < limits.max_authenticated_per_source;
         if admitted {
             counts.authenticated += 1;
+            counts
+                .authenticated_by_source
+                .insert(source, from_source + 1);
         }
         // Release the lock before `self` drops, because releasing the pending slot locks again.
         drop(counts);
         // Build the permit only when admitted, since dropping one releases an authenticated slot.
         if admitted {
-            Some(AuthenticatedPermit { limits })
+            Some(AuthenticatedPermit { limits, source })
         } else {
             None
         }
@@ -225,12 +252,19 @@ impl Drop for PendingPermit {
 /// Holds an authenticated slot until dropped.
 pub(in super::super) struct AuthenticatedPermit {
     limits: ConnectionLimits,
+    source: SourceKey,
 }
 
 impl Drop for AuthenticatedPermit {
     fn drop(&mut self) {
         let mut counts = self.limits.lock();
         counts.authenticated = counts.authenticated.saturating_sub(1);
+        if let Some(from_source) = counts.authenticated_by_source.get_mut(&self.source) {
+            *from_source = from_source.saturating_sub(1);
+            if *from_source == 0 {
+                counts.authenticated_by_source.remove(&self.source);
+            }
+        }
     }
 }
 
@@ -245,7 +279,7 @@ mod tests {
 
     #[test]
     fn pending_connections_are_bounded_per_source_and_globally() {
-        let limits = ConnectionLimits::new(5, 2, 4);
+        let limits = ConnectionLimits::new(5, 2, 4, 4);
         let first = limits.admit(v4(10)).expect("first from source");
         let _second = limits.admit(v4(10)).expect("second from source");
         assert!(limits.admit(v4(10)).is_none(), "per-source bound");
@@ -259,7 +293,7 @@ mod tests {
 
     #[test]
     fn ipv6_sources_are_grouped_by_prefix_and_mapped_ipv4_by_host() {
-        let limits = ConnectionLimits::new(10, 1, 4);
+        let limits = ConnectionLimits::new(10, 1, 4, 4);
         let _held = limits
             .admit("fd00:1:2:3::1".parse().expect("address"))
             .expect("first in prefix");
@@ -339,7 +373,7 @@ mod tests {
 
     #[test]
     fn authentication_frees_the_pending_slot_and_respects_its_own_bound() {
-        let limits = ConnectionLimits::new(1, 1, 1);
+        let limits = ConnectionLimits::new(1, 1, 1, 1);
         let authenticated = limits
             .admit(v4(10))
             .expect("pending")
@@ -358,5 +392,25 @@ mod tests {
                 .and_then(PendingPermit::authenticate)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn one_source_cannot_hold_the_whole_authenticated_budget() {
+        let limits = ConnectionLimits::new(10, 10, 4, 2);
+        let authenticate = |source| limits.admit(source).and_then(PendingPermit::authenticate);
+        let first = authenticate(v4(10)).expect("first from source");
+        let _second = authenticate(v4(10)).expect("second from source");
+        assert!(authenticate(v4(10)).is_none(), "per-source bound");
+        let _other = authenticate(v4(11)).expect("other source");
+        let _mapped = authenticate(IpAddr::V6(Ipv4Addr::new(192, 168, 1, 11).to_ipv6_mapped()))
+            .expect("mapped address of the other source");
+        assert!(
+            authenticate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 11))).is_none(),
+            "mapped and plain addresses share a source"
+        );
+        assert!(authenticate(v4(12)).is_none(), "global bound");
+        drop(first);
+        assert!(authenticate(v4(10)).is_some(), "released slot is reusable");
+        assert!(limits.lock().authenticated <= 4);
     }
 }

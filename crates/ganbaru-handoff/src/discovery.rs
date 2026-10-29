@@ -1,10 +1,10 @@
-//! DNS-SD discovery records for finding a coordinator whose address changed.
+//! DNS-SD discovery records for finding a coordinator or member whose address changed.
 //!
-//! A coordinator advertises `_ganbaru._tcp` over mDNS under an instance name that is an hourly
+//! A coordinator, or a desktop member whose member listener runs, advertises `_ganbaru._tcp` over mDNS under an instance name that is an hourly
 //! member tag: an HMAC of its certificate fingerprint and the current hour under the vault's
 //! discovery key. Linked devices know the key and the fingerprint, so they compute the names to
 //! look for; any other device sees only that a coordinator exists, a name that changes every
-//! hour, a random host name, and the advertised LAN addresses. This module holds the record
+//! hour, a host name that changes with it, and the advertised LAN addresses. This module holds the record
 //! format and the checks shared by every browser and advertiser, independent of the mDNS
 //! implementation that carries them.
 
@@ -12,6 +12,7 @@ use crate::dial::{reportable_address, validate_dial_endpoint};
 use crate::protocol::DISCOVERY_KEY_BYTES;
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
@@ -34,8 +35,8 @@ const MEMBER_TAG_DOMAIN: &[u8] = b"ganbaru-sync/discovery/v1";
 const MEMBER_TAG_BYTES: usize = 16;
 /// Length of one member tag bucket.
 const TAG_HOUR_SECONDS: u64 = 3600;
-/// Random bytes in an advertised host name.
-const HOST_NAME_BYTES: usize = 8;
+/// Hex digits of the member tag an advertised host name repeats.
+const HOST_NAME_DIGITS: usize = 16;
 /// Bytes of a certificate fingerprint.
 pub const FINGERPRINT_BYTES: usize = 32;
 
@@ -105,22 +106,26 @@ pub fn seconds_until_next_tag(unix_seconds: u64) -> u64 {
     TAG_HOUR_SECONDS - unix_seconds % TAG_HOUR_SECONDS
 }
 
-/// The instance names that the devices with `fingerprints` may advertise at `unix_seconds`:
-/// their tags for the previous, current, and next hour, so an hour of clock skew between
-/// advertiser and browser still matches.
+/// The instance names that the devices with `fingerprints` may advertise under any of `keys` at
+/// `unix_seconds`: their tags for the previous, current, and next hour, so an hour of clock skew
+/// between advertiser and browser still matches. Several keys cover the day after a removal
+/// rotated the vault's key, while a device that has not followed the rotation still advertises
+/// under the previous one.
 pub fn expected_instance_names(
-    key: &DiscoveryKey,
+    keys: &[DiscoveryKey],
     fingerprints: &[[u8; FINGERPRINT_BYTES]],
     unix_seconds: u64,
 ) -> Vec<String> {
     let hour = tag_hour(unix_seconds);
     let hours = [hour.checked_sub(1), Some(hour), hour.checked_add(1)];
     let mut names = Vec::new();
-    for fingerprint in fingerprints {
-        for hour in hours.into_iter().flatten() {
-            let name = member_tag(key, fingerprint, hour);
-            if !names.contains(&name) {
-                names.push(name);
+    for key in keys {
+        for fingerprint in fingerprints {
+            for hour in hours.into_iter().flatten() {
+                let name = member_tag(key, fingerprint, hour);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
             }
         }
     }
@@ -132,8 +137,8 @@ pub fn expected_instance_names(
 pub struct Advertisement {
     /// The member tag of the current hour.
     pub instance_name: String,
-    /// Random host name of the form `<16 hex>.local.`, so the operating system host name never
-    /// appears on the network.
+    /// Host name `<16 hex>.local.` taken from the member tag, so the operating system host name
+    /// never appears on the network and the host name changes with the tag every hour.
     pub host_name: String,
     pub port: u16,
     /// Reportable addresses only, at most [`MAX_ADVERTISED_ADDRESSES`].
@@ -149,7 +154,6 @@ pub struct Advertisement {
 pub fn advertisement(
     key: &DiscoveryKey,
     fingerprint: &[u8; FINGERPRINT_BYTES],
-    host_name: &str,
     port: u16,
     addresses: &[IpAddr],
     unix_seconds: u64,
@@ -163,22 +167,15 @@ pub fn advertisement(
             reportable.push(address);
         }
     }
+    let instance_name = member_tag(key, fingerprint, tag_hour(unix_seconds));
+    let host_name = format!("{}.local.", &instance_name[..HOST_NAME_DIGITS]);
     Advertisement {
-        instance_name: member_tag(key, fingerprint, tag_hour(unix_seconds)),
-        host_name: host_name.to_string(),
+        instance_name,
+        host_name,
         port,
         addresses: reportable,
         txt: vec![(TXT_VERSION_KEY.to_string(), TXT_VERSION.to_string())],
     }
-}
-
-/// A random host name `<16 hex>.local.`, chosen once per responder start.
-pub fn random_host_name() -> Result<String, String> {
-    let mut bytes = [0_u8; HOST_NAME_BYTES];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| "generate a discovery host name".to_string())?;
-    Ok(format!("{}.local.", lower_hex(&bytes)))
 }
 
 /// One resolved DNS-SD service, as any browser reports it.
@@ -228,6 +225,42 @@ pub fn match_candidates(expected: &[String], records: &[DiscoveredRecord]) -> Ve
         }
     }
     endpoints
+}
+
+/// The endpoints of each member found in `records`: a record counts for the member whose
+/// certificate fingerprint its instance name was derived from under one of `keys` at
+/// `unix_seconds`, with the same rules as [`match_candidates`]. Members without a matching
+/// record are left out, and a name two members could share (never in practice, since tags are
+/// HMAC outputs over distinct fingerprints) counts for neither.
+pub fn attribute_candidates(
+    keys: &[DiscoveryKey],
+    members: &[(String, [u8; FINGERPRINT_BYTES])],
+    records: &[DiscoveredRecord],
+    unix_seconds: u64,
+) -> BTreeMap<String, Vec<SocketAddr>> {
+    let names: Vec<(&str, Vec<String>)> = members
+        .iter()
+        .map(|(device_id, fingerprint)| {
+            (
+                device_id.as_str(),
+                expected_instance_names(keys, std::slice::from_ref(fingerprint), unix_seconds),
+            )
+        })
+        .collect();
+    let mut found = BTreeMap::new();
+    for (index, (device_id, expected)) in names.iter().enumerate() {
+        let shared = names.iter().enumerate().any(|(other, (_, other_names))| {
+            other != index && other_names.iter().any(|name| expected.contains(name))
+        });
+        if shared {
+            continue;
+        }
+        let endpoints = match_candidates(expected, records);
+        if !endpoints.is_empty() {
+            found.insert((*device_id).to_string(), endpoints);
+        }
+    }
+    found
 }
 
 fn lower_hex(bytes: &[u8]) -> String {
@@ -312,17 +345,13 @@ mod tests {
     fn browsers_accept_one_hour_of_skew_either_way_and_refuse_two() {
         let key = sequential_key();
         let advertised_at = |hour: u64| {
-            advertisement(
-                &key,
-                &fingerprint(),
-                "h.local.",
-                43_821,
-                &[],
-                hour * 3600 + 17,
-            )
-            .instance_name
+            advertisement(&key, &fingerprint(), 43_821, &[], hour * 3600 + 17).instance_name
         };
-        let expected = expected_instance_names(&key, &[fingerprint()], HOUR_START + 1800);
+        let expected = expected_instance_names(
+            std::slice::from_ref(&key),
+            &[fingerprint()],
+            HOUR_START + 1800,
+        );
         assert_eq!(expected.len(), 3);
         for hour in [477_999, 478_000, 478_001] {
             assert!(expected.contains(&advertised_at(hour)), "hour {hour}");
@@ -336,10 +365,14 @@ mod tests {
     fn expected_names_cover_every_fingerprint_and_start_at_hour_zero() {
         let key = sequential_key();
         let second = [0xcd; FINGERPRINT_BYTES];
-        let names = expected_instance_names(&key, &[fingerprint(), second], HOUR_START);
+        let names = expected_instance_names(
+            std::slice::from_ref(&key),
+            &[fingerprint(), second],
+            HOUR_START,
+        );
         assert_eq!(names.len(), 6);
         assert!(names.contains(&member_tag(&key, &second, 478_001)));
-        let at_epoch = expected_instance_names(&key, &[fingerprint()], 0);
+        let at_epoch = expected_instance_names(std::slice::from_ref(&key), &[fingerprint()], 0);
         assert_eq!(
             at_epoch,
             vec![
@@ -347,6 +380,75 @@ mod tests {
                 member_tag(&key, &fingerprint(), 1)
             ]
         );
+    }
+
+    #[test]
+    fn expected_names_cover_every_key_and_none_without_keys() {
+        let current = sequential_key();
+        let previous = DiscoveryKey::from_bytes([9; DISCOVERY_KEY_BYTES]);
+        let names = expected_instance_names(
+            &[current.clone(), previous.clone()],
+            &[fingerprint()],
+            HOUR_START,
+        );
+        assert_eq!(names.len(), 6);
+        assert!(names.contains(&member_tag(&current, &fingerprint(), 478_000)));
+        assert!(names.contains(&member_tag(&previous, &fingerprint(), 478_000)));
+        assert!(expected_instance_names(&[], &[fingerprint()], HOUR_START).is_empty());
+    }
+
+    #[test]
+    fn candidates_are_attributed_to_the_member_whose_tag_they_carry() {
+        let current = sequential_key();
+        let previous = DiscoveryKey::from_bytes([9; DISCOVERY_KEY_BYTES]);
+        let other = [0xcd; FINGERPRINT_BYTES];
+        let members = vec![
+            ("device-a".to_string(), fingerprint()),
+            ("device-b".to_string(), other),
+            ("device-c".to_string(), [0xef; FINGERPRINT_BYTES]),
+        ];
+        let records = vec![
+            record(
+                &member_tag(&current, &fingerprint(), 478_000),
+                43_821,
+                &["192.168.1.20"],
+            ),
+            record(
+                &member_tag(&previous, &other, 477_999),
+                43_822,
+                &["192.168.1.21"],
+            ),
+            record(
+                &member_tag(
+                    &DiscoveryKey::from_bytes([7; DISCOVERY_KEY_BYTES]),
+                    &[0xef; 32],
+                    478_000,
+                ),
+                43_823,
+                &["192.168.1.22"],
+            ),
+            record(
+                "ffffffffffffffffffffffffffffffff",
+                43_824,
+                &["192.168.1.23"],
+            ),
+        ];
+        let found = attribute_candidates(
+            &[current.clone(), previous.clone()],
+            &members,
+            &records,
+            HOUR_START,
+        );
+        assert_eq!(found.len(), 2);
+        assert_eq!(found["device-a"], endpoints(&["192.168.1.20:43821"]));
+        assert_eq!(found["device-b"], endpoints(&["192.168.1.21:43822"]));
+        assert!(attribute_candidates(&[], &members, &records, HOUR_START).is_empty());
+
+        let duplicated = vec![
+            ("device-a".to_string(), fingerprint()),
+            ("device-z".to_string(), fingerprint()),
+        ];
+        assert!(attribute_candidates(&[current], &duplicated, &records, HOUR_START).is_empty());
     }
 
     #[test]
@@ -372,19 +474,12 @@ mod tests {
         .iter()
         .map(|address| address.parse().expect("address"))
         .collect();
-        let advertisement = advertisement(
-            &key,
-            &fingerprint(),
-            "0011223344556677.local.",
-            43_821,
-            &addresses,
-            HOUR_START + 5,
-        );
+        let advertisement = advertisement(&key, &fingerprint(), 43_821, &addresses, HOUR_START + 5);
         assert_eq!(
             advertisement,
             Advertisement {
                 instance_name: "1fbac9365d94a9541d55a6b31eb89632".to_string(),
-                host_name: "0011223344556677.local.".to_string(),
+                host_name: "1fbac9365d94a954.local.".to_string(),
                 port: 43_821,
                 addresses: vec![
                     IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
@@ -397,22 +492,25 @@ mod tests {
         let many: Vec<IpAddr> = (1..=20)
             .map(|host| IpAddr::V4(Ipv4Addr::new(10, 0, 0, host)))
             .collect();
-        let capped = super::advertisement(&key, &fingerprint(), "h.local.", 1, &many, 0);
+        let capped = super::advertisement(&key, &fingerprint(), 1, &many, 0);
         assert_eq!(capped.addresses, many[..MAX_ADVERTISED_ADDRESSES].to_vec());
     }
 
     #[test]
-    fn random_host_names_are_sixteen_hex_digits_under_local() {
-        let first = random_host_name().expect("host name");
-        let second = random_host_name().expect("host name");
-        assert_ne!(first, second);
-        let label = first.strip_suffix(".local.").expect("local domain");
-        assert_eq!(label.len(), 16);
-        assert!(
-            label
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        );
+    fn host_names_change_with_the_member_tag_every_hour() {
+        let key = sequential_key();
+        let at = |hour: u64| advertisement(&key, &fingerprint(), 1, &[], hour * 3600);
+        let (first, next) = (at(478_000), at(478_001));
+        assert_eq!(first.host_name, at(478_000).host_name);
+        assert_ne!(first.host_name, next.host_name);
+        for advertised in [first, next] {
+            let label = advertised
+                .host_name
+                .strip_suffix(".local.")
+                .expect("local domain");
+            assert_eq!(label.len(), 16);
+            assert!(advertised.instance_name.starts_with(label));
+        }
     }
 
     #[test]

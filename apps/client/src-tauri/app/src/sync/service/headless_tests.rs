@@ -4,8 +4,6 @@ use crate::sync::hub::{HubContact, HubVault};
 use crate::vault::handoff::pairing::CoordinatorContact;
 use crate::vault::handoff::transport::tests::{LocalPair, TestDirectory};
 use crate::vault::process_managers::ProcessManagers;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use ganbaru_sync::manifest::TableSpec;
@@ -224,8 +222,11 @@ fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
         })
     });
     let contact = HubContact {
-        endpoints: vec!["192.168.1.20:43821".to_string()],
-        discovery_key: URL_SAFE_NO_PAD.encode([7; ganbaru_handoff::protocol::DISCOVERY_KEY_BYTES]),
+        members: vec![ganbaru_handoff::protocol::MemberEndpoint {
+            device_id: "device-hub".to_string(),
+            endpoint: "192.168.1.20:43821".to_string(),
+            observed_ms: 1,
+        }],
     };
     SyncHub::new(open, watch::Sender::new(0))
         .with_contact(Arc::new(move |_: &str| Ok(contact.clone())))

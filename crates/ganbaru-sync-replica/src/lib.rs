@@ -11,10 +11,11 @@ pub mod authority;
 pub mod backup;
 pub mod carry_forward;
 pub mod client;
-#[cfg(desktop)]
 pub mod hub;
 pub mod outbox;
+pub mod peers;
 pub mod quarantine;
+pub mod records;
 pub mod recovery;
 pub mod reset;
 mod wire;

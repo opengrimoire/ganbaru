@@ -2,7 +2,6 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-#[cfg(desktop)]
 use ganbaru_handoff::protocol::ControlMessage;
 use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
 use ganbaru_sync::assets::AssetRef;
@@ -33,7 +32,6 @@ pub fn vector_from_wire(entries: &[SyncSeq]) -> Result<VersionVector, String> {
 }
 
 /// Wire entries of forked writers with their fork sequences.
-#[cfg(desktop)]
 pub fn forked_to_wire(forked: &[(WriterId, Seq)]) -> Vec<SyncSeq> {
     forked
         .iter()
@@ -105,7 +103,6 @@ pub fn asset_key(asset: &AssetRef) -> SyncAssetKey {
 
 /// Reads a wire asset against the classes the manifest registers, which bound its size and own
 /// its path.
-#[cfg(desktop)]
 pub fn asset_from_wire(
     asset: &SyncAsset,
     manifest: &ganbaru_sync::manifest::Manifest,
@@ -133,7 +130,6 @@ pub fn bytes_from_wire(text: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The answer to a proposal: the revision that holds it, or the wire value of its rejection.
-#[cfg(desktop)]
 pub fn proposed_to_wire(outcome: Result<u64, ProposalRejection>) -> ControlMessage {
     match outcome {
         Ok(revision) => ControlMessage::SyncProposed {

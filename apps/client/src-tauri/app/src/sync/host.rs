@@ -130,6 +130,18 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
         async {}
     }
 
+    /// Keeps this device's member sync listener running for a pass and returns the endpoints
+    /// it is reachable at, which the pass reports to the hubs it dials. A host that serves no
+    /// listener reports none.
+    fn serve_members(&self) -> impl Future<Output = Vec<String>> + Send {
+        async { Vec::new() }
+    }
+
+    /// Stops this device's member sync listener while sync does not run in the active vault.
+    fn stop_serving_members(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
     /// This device's id.
     fn device_id(&self) -> Result<String, String> {
         crate::vault::ensure_device_id_in(&self.config_dir()?)
@@ -265,6 +277,35 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
         crate::music::sync::on_sync_notices(self, notices).await;
         #[cfg(desktop)]
         crate::chat::sync::on_sync_notices(self, notices);
+    }
+
+    /// A phone serves members only while the app is in the foreground, and checks again after
+    /// the listener started, so a move to the background during the start still stops it.
+    async fn serve_members(&self) -> Vec<String> {
+        #[cfg(mobile)]
+        if !self.state::<super::SyncRuntime>().in_foreground() {
+            self.stop_serving_members().await;
+            return Vec::new();
+        }
+        let endpoints = match crate::vault::handoff::ensure_member_listener(self).await {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                eprintln!("sync: member listener: {error}");
+                Vec::new()
+            }
+        };
+        #[cfg(mobile)]
+        if !self.state::<super::SyncRuntime>().in_foreground() {
+            self.stop_serving_members().await;
+            return Vec::new();
+        }
+        endpoints
+    }
+
+    async fn stop_serving_members(&self) {
+        self.state::<crate::vault::handoff::MemberListenerLifecycle>()
+            .stop()
+            .await;
     }
 
     async fn note_platform_degraded(

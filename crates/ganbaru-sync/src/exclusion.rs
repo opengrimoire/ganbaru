@@ -2,7 +2,7 @@
 //!
 //! A selected removal lists a cutoff per writer of the removed device: what the anchor had
 //! stored when it sequenced the removal. Operations past it are excluded on every replica but
-//! the removed device itself. They are still stored, up to [`MAX_EXCLUDED_PER_WRITER`] per
+//! the removed device itself. They are still stored, up to [`excluded_limit`] per
 //! writer, and forwarded, but held as invalid, and the merge effects of those already applied
 //! are removed. The versions such an operation superseded come back from
 //! `sync_displaced_versions`, which a member fills while the anchor has not confirmed storing
@@ -34,11 +34,85 @@ use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{self, Batch, RowState, group_id, mask_param, table_param};
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, SyncError, reseal, sql, store};
+use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store};
 
 /// Most operations past its removal cutoff a removed device's writer may still have stored.
 /// Later ones are refused as revoked.
 pub const MAX_EXCLUDED_PER_WRITER: u64 = 1024;
+
+/// Most writers the removal does not name, with cutoff 0, that keep the excluded operations of a
+/// removed device: the ones with the lowest writer ids, so every replica derives the same late
+/// changes whatever order the writers arrived in. Each keeps up to [`MAX_EXCLUDED_PER_WRITER`]
+/// operations. A surplus writer keeps only its genesis and the authorization entries contiguous
+/// from it, a genesis above the lowest ids is refused as revoked, and a lower one displaces the
+/// highest, so a removed device that mints writers stores a bounded amount anywhere.
+pub const MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE: i64 = 2;
+
+/// A static query with, between `$before` and `$after`, the SQL condition on the writer row
+/// aliased `w` that holds for a surplus unnamed writer, see
+/// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`]. The condition reads that bound from parameter
+/// `?$bound`.
+macro_rules! surplus_unnamed_query {
+    ($before:literal, $bound:literal, $after:literal) => {
+        concat!(
+            $before,
+            "(w.removal_cutoff_seq = 0 AND (
+                SELECT count(*) FROM sync_writers u
+                WHERE u.space_id = w.space_id AND u.device_id = w.device_id
+                    AND u.removal_cutoff_seq = 0 AND u.writer_id < w.writer_id
+             ) >= ?",
+            $bound,
+            ")",
+            $after
+        )
+    };
+}
+
+/// Whether `writer` is a surplus unnamed writer of a removed device, see
+/// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`].
+pub(crate) async fn is_surplus_unnamed(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+) -> SyncResult<bool> {
+    let surplus: i64 = sqlx::query_scalar(surplus_unnamed_query!(
+        "SELECT EXISTS (SELECT 1 FROM sync_writers w
+         WHERE w.space_id = ?1 AND w.writer_id = ?2 AND ",
+        3,
+        ")"
+    ))
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(surplus != 0)
+}
+
+/// Highest sequence a surplus unnamed writer may have stored outside authorization entries: its
+/// genesis.
+pub(crate) const SURPLUS_LIMIT: Seq = 1;
+
+/// Highest sequence of an authorization entry a surplus unnamed writer may have stored,
+/// contiguous from its genesis.
+pub(crate) const SURPLUS_ENTRY_LIMIT: Seq = SURPLUS_LIMIT + MAX_EXCLUDED_ENTRIES_PER_WRITER;
+
+/// Most authorization entries past [`excluded_limit`] a removed device's writer may still have
+/// stored, contiguous from it. On a chain the replica did not select, the device may be an
+/// anchor whose entries veto the selected chain, so they are kept past the bound on excluded
+/// operations.
+pub const MAX_EXCLUDED_ENTRIES_PER_WRITER: u64 = 1024;
+
+/// Highest sequence a removed device's writer with removal cutoff `cutoff` may have stored.
+pub(crate) const fn excluded_limit(cutoff: Seq) -> Seq {
+    cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER)
+}
+
+/// Highest sequence of an authorization entry a removed device's writer with removal cutoff
+/// `cutoff` may have stored, see [`MAX_EXCLUDED_ENTRIES_PER_WRITER`].
+pub(crate) const fn entry_limit(cutoff: Seq) -> Seq {
+    excluded_limit(cutoff).saturating_add(MAX_EXCLUDED_ENTRIES_PER_WRITER)
+}
 
 /// Revision of the selected removal of `device_id`.
 pub(crate) async fn removal_revision(
@@ -149,7 +223,7 @@ pub(crate) async fn excluding(
 /// - Fork: `s` is past the last sequence the copies of the forked writer `W` share, and `W` is
 ///   applied through that sequence. No replica stores either branch once it holds the evidence.
 /// - Removal: `s` is past the removal cutoff of `W`, `W` is applied through the cutoff, and the
-///   excluded operation is stored, or `s` is more than [`MAX_EXCLUDED_PER_WRITER`] past the
+///   excluded operation is stored, or `s` is past the [`excluded_limit`] of the
 ///   cutoff, where no replica stores it. Storing the excluded operations first lets the late
 ///   changes they leave know the rows they created.
 ///
@@ -170,7 +244,7 @@ pub(crate) fn ready(
         let seq = excluded.fork.map_or(seq, |keep| seq.min(keep));
         match excluded.removal {
             Some((cutoff, stored)) if seq > cutoff => {
-                let beyond = seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER);
+                let beyond = seq > excluded_limit(cutoff);
                 applied.get(&writer) >= cutoff && (stored >= seq || beyond)
             }
             _ => applied.get(&writer) >= seq,
@@ -178,7 +252,7 @@ pub(crate) fn ready(
     })
 }
 
-/// Whether `context` covers an operation more than [`MAX_EXCLUDED_PER_WRITER`] past the
+/// Whether `context` covers an operation past the [`excluded_limit`] of the
 /// removal cutoff of an excluded writer. No replica keeps such an operation, so a row only it
 /// created is unknown everywhere, and an honest change to that row is dropped on every replica
 /// alike instead of holding its writer.
@@ -191,7 +265,7 @@ pub(crate) fn beyond_bound(
             excluding
                 .get(&writer)
                 .and_then(|excluded| excluded.removal)
-                .is_some_and(|(cutoff, _)| seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER))
+                .is_some_and(|(cutoff, _)| seq > excluded_limit(cutoff))
         })
 }
 
@@ -253,11 +327,15 @@ pub(crate) async fn reconcile(
         ));
         entry.2 |= state == "applied";
     }
-    // An earlier anchor may have stored these operations, which released what they displaced.
-    if !writers.is_empty() && crate::fork::reseals_excluded(conn, ctx.space).await? {
-        for (writer, (cutoff, _, _)) in &writers {
+    // An earlier anchor may have stored these operations, which released what they displaced;
+    // this replica may be that anchor, the current one or a former one.
+    let reseals = !writers.is_empty() && crate::fork::reseals_excluded(conn, ctx.space).await?;
+    for (writer, (cutoff, _, _)) in &writers {
+        if reseals {
             crate::fork::collect_republish(engine, conn, ctx.space, batch, *writer, *cutoff)
                 .await?;
+        } else {
+            crate::fork::collect_released(engine, conn, ctx.space, batch, *writer, *cutoff).await?;
         }
     }
     for (writer, (cutoff, revision, _)) in &writers {
@@ -471,7 +549,9 @@ pub(crate) async fn restore_displaced(
 /// A member retains what an operation supersedes while the operation's writer belongs to
 /// neither the anchor nor the local device and the anchor has not confirmed storing it: only
 /// such an operation can still fall past a removal cutoff. The anchor and a replica that does
-/// not know its own device retain nothing.
+/// not know its own device retain nothing; the anchor instead records, per writer of another
+/// device, the highest sequence it applied, so it seals the groups those operations wrote again
+/// if they are excluded later.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Retention {
     /// Writers of devices other than the anchor and the local one.
@@ -481,6 +561,11 @@ pub(crate) struct Retention {
     marks: BTreeMap<WriterId, Seq>,
     /// Marks raised since the last flush.
     raised: BTreeSet<WriterId>,
+    /// On the anchor, writers of other devices, whose applied operations release what they
+    /// displace.
+    releasing: BTreeSet<WriterId>,
+    /// Highest sequence applied per releasing writer since the last flush.
+    released: BTreeMap<WriterId, Seq>,
 }
 
 impl Retention {
@@ -494,9 +579,6 @@ impl Retention {
         let Some((Some(anchor), Some(local))) = devices else {
             return Ok(Self::default());
         };
-        if anchor == local {
-            return Ok(Self::default());
-        }
         let mut retention = Self::default();
         let writers: Vec<(Vec<u8>, String)> =
             sqlx::query_as("SELECT writer_id, device_id FROM sync_writers WHERE space_id = ?")
@@ -505,14 +587,30 @@ impl Retention {
                 .await?;
         for (writer, device) in writers {
             let writer = log::writer_id(&writer)?;
-            if device == anchor {
+            if device == local {
+                continue;
+            }
+            if anchor == local {
+                retention.releasing.insert(writer);
+            } else if device == anchor {
                 retention.anchor_writers.insert(writer);
-            } else if device != local {
+            } else {
                 retention.retained.insert(writer);
             }
         }
-        retention.marks = marks(conn, space).await?;
+        if anchor != local {
+            retention.marks = marks(conn, space).await?;
+        }
         Ok(retention)
+    }
+
+    /// Records that the anchor applied the operation `(writer, seq)` without retaining what it
+    /// displaced.
+    pub(crate) fn release(&mut self, writer: WriterId, seq: Seq) {
+        if self.releasing.contains(&writer) {
+            let mark = self.released.entry(writer).or_insert(0);
+            *mark = (*mark).max(seq);
+        }
     }
 
     /// Whether the versions the operation `(writer, seq)` supersedes are retained.
@@ -535,12 +633,14 @@ impl Retention {
         }
     }
 
-    /// Writes raised marks and drops the displaced versions they release.
+    /// Writes raised marks and drops the displaced versions they release, and records what the
+    /// anchor applied.
     pub(crate) async fn flush(
         &mut self,
         conn: &mut SqliteConnection,
         space: SpaceId,
     ) -> SyncResult<()> {
+        self.flush_released(conn, space).await?;
         let raised = std::mem::take(&mut self.raised);
         if raised.is_empty() {
             return Ok(());
@@ -550,6 +650,26 @@ impl Retention {
             .map(|writer| (writer, self.marks.get(&writer).copied().unwrap_or(0)))
             .collect::<Vec<_>>();
         write_marks(conn, space, &marks).await
+    }
+
+    /// Records what the anchor applied, before an authorization entry may exclude it.
+    pub(crate) async fn flush_released(
+        &mut self,
+        conn: &mut SqliteConnection,
+        space: SpaceId,
+    ) -> SyncResult<()> {
+        for (writer, seq) in std::mem::take(&mut self.released) {
+            sqlx::query(
+                "INSERT INTO sync_released_marks (space_id, writer_id, seq) VALUES (?, ?, ?)
+                 ON CONFLICT (space_id, writer_id) DO UPDATE SET seq = max(seq, excluded.seq)",
+            )
+            .bind(space.as_bytes().as_slice())
+            .bind(writer.as_bytes().as_slice())
+            .bind(seq_i64(seq)?)
+            .execute(&mut *conn)
+            .await?;
+        }
+        Ok(())
     }
 }
 
@@ -568,7 +688,7 @@ pub(crate) async fn settle(
     loop {
         let bounded = drop_beyond_bound(engine, conn, ctx.space, batch).await?;
         reconcile(engine, conn, ctx, batch).await?;
-        if !record_excluded_entries(conn, ctx.space).await? && !bounded {
+        if !records::grown(conn, ctx.space).await? && !bounded {
             break;
         }
         match authorization::rederive(conn, ctx.space).await? {
@@ -579,11 +699,14 @@ pub(crate) async fn settle(
     rebuild_late(engine, conn, batch, &resolutions).await
 }
 
-/// Drops the operations a removed device's writers have stored more than
-/// [`MAX_EXCLUDED_PER_WRITER`] past their removal cutoff, which a replica stores only while it
-/// does not know the removal yet: a replica that learned it first refuses them, so dropping
-/// them leaves what never storing them leaves. Their entries go with them, so a removed anchor
-/// device's chain counts for selection only within the bound. Rows a dropped operation created
+/// Drops the operations a removed device's writers have stored past the
+/// [`excluded_limit`] of their removal cutoff, or past the genesis of a surplus unnamed writer
+/// (see [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`]), which a replica stores only while it does
+/// not know the removal or the lower writers yet: a replica that learned them first refuses
+/// them, so dropping them leaves what never storing them leaves. Authorization entries
+/// contiguous past that bound stay up to their own bound, as a replica that knew the removal
+/// stores them too; the
+/// entries of what is dropped go with it. Rows a dropped operation created
 /// lose their whole merge state, honest changes included, since a replica that never stored
 /// the creation skips those changes (see [`beyond_bound`]). The local device keeps its own
 /// operations. Returns whether a dropped operation carried an entry.
@@ -594,30 +717,58 @@ async fn drop_beyond_bound(
     batch: &mut Batch,
 ) -> SyncResult<bool> {
     let local = local_device(conn, space).await?;
-    let rows: Vec<(Vec<u8>, i64, i64)> = sqlx::query_as(
-        "SELECT w.writer_id, w.removal_cutoff_seq, w.applied_seq
-         FROM sync_writers w
-         JOIN sync_devices d ON d.space_id = w.space_id AND d.device_id = w.device_id
-         WHERE w.space_id = ?1 AND w.removal_cutoff_seq IS NOT NULL
-            AND d.removed_revision IS NOT NULL
-            AND (?2 IS NULL OR w.device_id <> ?2)
-            AND w.stored_seq > w.removal_cutoff_seq + ?3",
-    )
+    let rows: Vec<(Vec<u8>, i64, i64, bool)> = sqlx::query_as(surplus_unnamed_query!(
+        "SELECT writer_id, removal_cutoff_seq, applied_seq, surplus FROM (
+            SELECT w.writer_id, w.removal_cutoff_seq, w.applied_seq, w.stored_seq, ",
+        4,
+        " AS surplus
+            FROM sync_writers w
+            JOIN sync_devices d ON d.space_id = w.space_id AND d.device_id = w.device_id
+            WHERE w.space_id = ?1 AND w.removal_cutoff_seq IS NOT NULL
+                AND d.removed_revision IS NOT NULL
+                AND (?2 IS NULL OR w.device_id <> ?2)
+         )
+         WHERE stored_seq > removal_cutoff_seq + ?3 OR (stored_seq > ?5 AND surplus)"
+    ))
     .bind(space.as_bytes().as_slice())
     .bind(local.as_deref())
     .bind(seq_i64(MAX_EXCLUDED_PER_WRITER)?)
+    .bind(MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+    .bind(seq_i64(SURPLUS_LIMIT)?)
     .fetch_all(&mut *conn)
     .await?;
     let mut entries = false;
-    for (writer, cutoff, applied) in rows {
+    for (writer, cutoff, applied, surplus) in rows {
         let writer = log::writer_id(&writer)?;
-        let bound = stored_u64(cutoff, "removal cutoff")?.saturating_add(MAX_EXCLUDED_PER_WRITER);
+        let cutoff = stored_u64(cutoff, "removal cutoff")?;
+        let (limit, entry_bound) = if surplus {
+            (SURPLUS_LIMIT, SURPLUS_ENTRY_LIMIT)
+        } else {
+            (excluded_limit(cutoff), entry_limit(cutoff))
+        };
+        // Authorization entries contiguous past the bound stay, up to their own bound.
+        let first_dropped: Option<i64> = sqlx::query_scalar(
+            "SELECT min(seq) FROM sync_ops
+             WHERE space_id = ? AND writer_id = ? AND seq > ? AND (kind <> ? OR seq > ?)",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(limit)?)
+        .bind(i64::from(OperationKind::Authorization.as_u8()))
+        .bind(seq_i64(entry_bound)?)
+        .fetch_one(&mut *conn)
+        .await?;
+        let Some(first_dropped) = first_dropped else {
+            continue;
+        };
+        let bound = stored_u64(first_dropped, "sequence")?.saturating_sub(1);
         let carried: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?",
+            "SELECT count(*) FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ? AND kind = ?",
         )
         .bind(space.as_bytes().as_slice())
         .bind(writer.as_bytes().as_slice())
         .bind(seq_i64(bound)?)
+        .bind(i64::from(OperationKind::Authorization.as_u8()))
         .fetch_one(&mut *conn)
         .await?;
         entries |= carried > 0;
@@ -696,15 +847,15 @@ async fn purge_row(
     Ok(())
 }
 
-/// Records the entries of excluded operations stored since the last engine write and settles
-/// again when the chain they extend changes the selection.
+/// Selects the chain again when the record store grew since the last walk, or a lower unnamed
+/// writer displaced one, and settles exclusions for the result.
 pub(crate) async fn admit_excluded_entries(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &mut Batch,
 ) -> SyncResult<()> {
-    if !record_excluded_entries(conn, ctx.space).await? {
+    if !records::grown(conn, ctx.space).await? && !displaced_unnamed(conn, ctx.space).await? {
         return Ok(());
     }
     if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
@@ -713,47 +864,31 @@ pub(crate) async fn admit_excluded_entries(
     Ok(())
 }
 
-/// Records the authorization entries that excluded operations carry, which never apply. Chain
-/// selection has to see every entry a replica stores whatever became of its carrier: otherwise
-/// two replicas that learn of competing chains in different orders each keep the first, since
-/// its removals exclude the other chain's carrier. Returns whether any entry was new.
-async fn record_excluded_entries(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
-    let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT o.writer_id, o.seq, o.envelope FROM sync_ops o
-         WHERE o.space_id = ?1 AND o.kind = ?2 AND o.excluded_revision IS NOT NULL
-            AND NOT EXISTS (
-                SELECT 1 FROM sync_auth_entries e
-                WHERE e.space_id = o.space_id AND e.writer_id = o.writer_id AND e.seq = o.seq
-            )
-         ORDER BY o.writer_id, o.seq",
-    )
+/// Whether a lower unnamed writer stored since the last engine write displaced one that still
+/// holds operations past its genesis, which [`settle`] drops along with their late changes.
+async fn displaced_unnamed(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
+    let local = local_device(conn, space).await?;
+    let displaced: i64 = sqlx::query_scalar(surplus_unnamed_query!(
+        "SELECT EXISTS (SELECT 1 FROM sync_writers w
+         JOIN sync_devices d ON d.space_id = w.space_id AND d.device_id = w.device_id
+         WHERE w.space_id = ?1 AND d.removed_revision IS NOT NULL
+            AND (?6 IS NULL OR w.device_id <> ?6) AND ",
+        2,
+        " AND EXISTS (
+                SELECT 1 FROM sync_ops o
+                WHERE o.space_id = w.space_id AND o.writer_id = w.writer_id AND o.seq > ?3
+                    AND (o.kind <> ?4 OR o.seq > ?5)
+            ))"
+    ))
     .bind(space.as_bytes().as_slice())
+    .bind(MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+    .bind(seq_i64(SURPLUS_LIMIT)?)
     .bind(i64::from(OperationKind::Authorization.as_u8()))
-    .fetch_all(&mut *conn)
+    .bind(seq_i64(SURPLUS_ENTRY_LIMIT)?)
+    .bind(local.as_deref())
+    .fetch_one(&mut *conn)
     .await?;
-    let mut recorded = false;
-    for (writer, seq, envelope) in rows {
-        let Some(operation) = Envelope::decode(&envelope)
-            .ok()
-            .and_then(|envelope| envelope.operation().ok())
-        else {
-            continue;
-        };
-        let Content::Authorization(record) = &operation.content else {
-            continue;
-        };
-        let writer = log::writer_id(&writer)?;
-        let carrier = log::writer(conn, space, writer)
-            .await?
-            .ok_or_else(|| corrupt("an excluded operation has no writer"))?;
-        if !authorization::carries(&carrier.device_id, record) {
-            continue;
-        }
-        authorization::insert_entry(conn, space, writer, stored_u64(seq, "sequence")?, record)
-            .await?;
-        recorded = true;
-    }
-    Ok(recorded)
+    Ok(displaced != 0)
 }
 
 /// Records the device of the local writer and, when it changed, settles exclusions again: the
@@ -1442,7 +1577,9 @@ async fn restoring_change(
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
     let restated = crate::fork::restated(conn, record.table, &record.key).await?;
-    // A version restating an older value the anchor sealed again is no newer edit.
+    // A version restating an older value this replica sealed again is no newer edit. Only the
+    // replica that sealed a restatement, the anchor or a former anchor, records it, so on another
+    // admin a restatement still counts as newer and the group keeps the restated value.
     let newer = |group: GroupId, late: &LateValue| {
         versions.iter().any(|version| {
             version.group == group

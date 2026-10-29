@@ -874,8 +874,12 @@ fn settled_update(
 }
 
 /// Writes a settled `update` and captures it as a local edit of `group`, storing again a winner
-/// the row held while its value was elided. Inside a savepoint, so a value a constraint of the
-/// domain table refuses writes nothing and is returned as invalid instead of failing apply.
+/// the row held while its value was elided. Inside a savepoint, so a value a constraint or an
+/// aborting trigger of the domain table refuses writes nothing and is returned as invalid
+/// instead of failing apply. Foreign keys are deferred to the engine write's commit, so they
+/// cannot be refused here; none can fail: a settled group holds no references (see
+/// [`crate::hooks::settle_problem`]) and derived columns are never foreign keys (see
+/// [`crate::manifest::TableSpec::derived_columns`]).
 async fn write_settled(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -896,9 +900,7 @@ async fn write_settled(
     .await?;
     match execute_update(&mut savepoint, table, key, update).await {
         Ok(()) => {}
-        Err(SyncError::Database(sqlx::Error::Database(error)))
-            if error.kind() != sqlx::error::ErrorKind::Other =>
-        {
+        Err(SyncError::Database(sqlx::Error::Database(error))) if is_constraint(error.as_ref()) => {
             savepoint.rollback().await?;
             return Ok(Err("settled value refused by the domain table"));
         }
@@ -907,6 +909,20 @@ async fn write_settled(
     seal::capture_edit(&mut savepoint, table.id, key, group.mask(), now_ms).await?;
     savepoint.commit().await?;
     Ok(Ok(()))
+}
+
+/// SQLite's primary result code for a constraint violation, the low byte of every extended
+/// `SQLITE_CONSTRAINT_*` code.
+const SQLITE_CONSTRAINT: i64 = 19;
+
+/// Whether a database error is a constraint violation of any kind: a CHECK, NOT NULL, UNIQUE,
+/// or foreign key, and also a domain trigger's `RAISE(ABORT)`, which SQLite reports as
+/// `SQLITE_CONSTRAINT_TRIGGER` and sqlx maps to [`sqlx::error::ErrorKind::Other`].
+fn is_constraint(error: &dyn sqlx::error::DatabaseError) -> bool {
+    error
+        .code()
+        .and_then(|code| code.parse::<i64>().ok())
+        .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT)
 }
 
 /// Writes a [`Plan`] into the domain tables, lets hooks settle concurrent versions when

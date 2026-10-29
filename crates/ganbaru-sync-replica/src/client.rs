@@ -3,17 +3,18 @@
 
 use super::outbox::Outbox;
 use super::quarantine::PullSkips;
+use super::records::{self, RecordLink, RecordSession, RecordsExchanged};
 use super::wire::BOOTSTRAP_REQUIRED;
 use super::wire::{
     forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, proposed_from_wire,
     vector_from_wire, vector_to_wire, writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
-    ControlMessage, MAX_SYNC_HASHES, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal,
-    SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
+    ControlMessage, MAX_SYNC_HASHES, MemberEndpoint, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe,
+    SyncRefusal, SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
 };
 use ganbaru_sync::{
-    Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
+    Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal, SyncError,
 };
 use ganbaru_sync_contracts::{
     Digest32, Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
@@ -79,6 +80,10 @@ pub struct Exchanged {
     /// The hub's stored vector as of its last answer to a hello or push. When the hub is the
     /// anchor, it marks what the anchor stores, see `Engine::record_anchor_marks`.
     pub hub: VersionVector,
+    /// The member listener endpoints the hub reported in its sync state.
+    pub members: Vec<MemberEndpoint>,
+    /// What record exchange moved ahead of the operation lanes, when it ran.
+    pub records: Option<RecordsExchanged>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +109,12 @@ pub struct ClientSession<'a, T: SyncTransport> {
     pub pull_skips: Option<&'a PullSkips>,
     /// Operation bytes after which a direction stops, normally [`MAX_EXCHANGE_BYTES`].
     pub max_bytes: usize,
+    /// Endpoints this device's own sync listener serves on, reported in the hello; empty when
+    /// it does not listen.
+    pub listening: &'a [String],
+    /// The record exchange with this peer that runs ahead of the operation lanes; without it
+    /// only the operation lanes run.
+    pub records: Option<RecordLink<'a>>,
 }
 
 impl<T: SyncTransport> ClientSession<'_, T> {
@@ -116,8 +127,66 @@ impl<T: SyncTransport> ClientSession<'_, T> {
     }
 
     /// Hello, push, and pull until both sides hold the same operations or a refusal stops one
-    /// direction.
+    /// direction, after the record exchange when it is set. While the storage backstop runs,
+    /// the operation lanes stop and only the record exchange moves.
     pub async fn exchange(&self) -> Result<Exchange, String> {
+        let result = self.exchange_once().await;
+        // A failed session ends the connection, so the next one with this peer starts anew.
+        if result.is_err()
+            && let Some(link) = &self.records
+        {
+            link.state.disconnected(link.peer);
+        }
+        result
+    }
+
+    async fn exchange_once(&self) -> Result<Exchange, String> {
+        let records = match &self.records {
+            Some(link) => Some(self.exchange_records(link).await?),
+            None => None,
+        };
+        if records
+            .as_ref()
+            .is_some_and(|records| records.backstop.is_some())
+        {
+            return Ok(Exchange::Done(Exchanged {
+                known: self.stored().await?,
+                problem: Some(SyncError::AuthorizationStorageFull.to_string()),
+                records,
+                ..Exchanged::default()
+            }));
+        }
+        let mut exchanged = match self.exchange_ops().await? {
+            Exchange::Done(exchanged) => exchanged,
+            fork => return Ok(fork),
+        };
+        exchanged.records = records;
+        Ok(Exchange::Done(exchanged))
+    }
+
+    /// The record exchange with the peer `link` names.
+    async fn exchange_records(&self, link: &RecordLink<'_>) -> Result<RecordsExchanged, String> {
+        let peer_class = {
+            let mut conn = acquire(self.pool).await?;
+            records::peer_class(self.engine, &mut conn, self.ctx, link.peer)
+                .await
+                .map_err(|error| format!("read authorization state: {error}"))?
+        };
+        RecordSession {
+            transport: self.transport,
+            ids: self.ids,
+            engine: self.engine,
+            pool: self.pool,
+            ctx: self.ctx,
+            state: link.state,
+            peer: link.peer,
+            peer_class,
+        }
+        .exchange()
+        .await
+    }
+
+    async fn exchange_ops(&self) -> Result<Exchange, String> {
         let local = self.stored().await?;
         let probe = self.probe(&local).await?;
         let hello = ControlMessage::SyncHello {
@@ -131,8 +200,14 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 seq: *seq,
                 hash: hash_to_wire(hash),
             }),
+            listening: self
+                .listening
+                .iter()
+                .take(ganbaru_handoff::protocol::MAX_COORDINATOR_ENDPOINTS)
+                .cloned()
+                .collect(),
         };
-        let (stored, probe_hash, stable, bootstrap_required, forked) = answer(
+        let (stored, probe_hash, stable, bootstrap_required, forked, members) = answer(
             self.transport.request(hello).await?,
             "SyncState",
             |response| match response {
@@ -142,8 +217,16 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     stable,
                     bootstrap_required,
                     forked,
+                    members,
                     ..
-                } => Some((stored, probe_hash, stable, bootstrap_required, forked)),
+                } => Some((
+                    stored,
+                    probe_hash,
+                    stable,
+                    bootstrap_required,
+                    forked,
+                    members,
+                )),
                 _ => None,
             },
         )?;
@@ -171,6 +254,7 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             stable: vector_from_wire(&stable)?,
             bootstrap_required,
             confirmed,
+            members,
             ..Exchanged::default()
         };
         let pushed = self.push(&mut hub, &mut exchanged).await?;
@@ -473,8 +557,8 @@ impl<T: SyncTransport> ClientSession<'_, T> {
 
     /// Exchanges fork evidence with the hub: fetches the pair of every writer the hub reports
     /// forked that this replica does not know forked at that sequence, and offers the pair of
-    /// every writer this replica knows forked that the hub does not. A pair whose writer this
-    /// replica has not stored yet waits for a later exchange.
+    /// every writer this replica knows forked that the hub does not. A pair whose writer, or the
+    /// operation before its fork, this replica has not stored yet waits for a later exchange.
     async fn share_evidence(
         &self,
         hub_forked: &[(WriterId, Seq)],
@@ -495,7 +579,10 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             }
             let pair = self.request_evidence(*writer, Vec::new()).await?;
             if let Some(EvidenceOutcome::Refused(refusal)) = self.store_evidence(&pair).await?
-                && refusal != EvidenceRefusal::UnknownWriter
+                && !matches!(
+                    refusal,
+                    EvidenceRefusal::UnknownWriter | EvidenceRefusal::UnknownPrefix
+                )
             {
                 exchanged.problem = Some(format!(
                     "this device refused fork evidence of writer {}: {refusal:?}",
@@ -675,18 +762,23 @@ pub async fn propose<T: SyncTransport>(
 
 /// Sends every waiting proposal of the outbox to the hub and records each answer. A revision
 /// leaves the proposal waiting until [`Outbox::prune`] finds it in the selected chain, after the
-/// exchange brings the entry and the pass applies it. Returns how many proposals the anchor
-/// sequenced.
+/// exchange brings the entry and the pass applies it. A final rejection settles the proposal only
+/// when `answered_by_anchor`, since a rejection carries no anchor signature and a hub that does
+/// not anchor could otherwise drop a proposal that removes it. Returns how many proposals the
+/// anchor sequenced.
 pub async fn replay_outbox<T: SyncTransport>(
     transport: &T,
     ids: &PeerIds,
     outbox: &mut Outbox,
+    answered_by_anchor: bool,
 ) -> Result<usize, String> {
     let mut sequenced = 0;
     for proposal in outbox.pending() {
         let outcome = propose(transport, ids, &proposal).await?;
         sequenced += usize::from(outcome.is_ok());
-        outbox.settle(&proposal.hash(), outcome)?;
+        if answered_by_anchor {
+            outbox.settle(&proposal.hash(), outcome)?;
+        }
     }
     Ok(sequenced)
 }
@@ -694,6 +786,8 @@ pub async fn replay_outbox<T: SyncTransport>(
 /// Follows the local replica's selected chain with [`Outbox::prune`], which also puts a held
 /// proposal a handover superseded back to waiting, then sends what waits with
 /// [`replay_outbox`]. A member runs this after each exchange, even when nothing waited before.
+/// `answering_device_id` is the authenticated device behind `transport`; its rejections settle
+/// proposals only while the local selected log names it as the anchor.
 pub async fn prune_and_replay_outbox<T: SyncTransport>(
     engine: &Engine,
     pool: &SqlitePool,
@@ -701,18 +795,24 @@ pub async fn prune_and_replay_outbox<T: SyncTransport>(
     transport: &T,
     ids: &PeerIds,
     outbox: &mut Outbox,
+    answering_device_id: &str,
 ) -> Result<usize, String> {
     if outbox.entries().is_empty() {
         return Ok(0);
     }
-    {
+    let answered_by_anchor = {
         let mut conn = acquire(pool).await?;
         outbox.prune(engine, &mut conn, ctx).await?;
-    }
+        engine
+            .authorization(&mut conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .is_some_and(|view| view.anchor_device_id == answering_device_id)
+    };
     if outbox.pending().is_empty() {
         return Ok(0);
     }
-    replay_outbox(transport, ids, outbox).await
+    replay_outbox(transport, ids, outbox, answered_by_anchor).await
 }
 
 /// On an anchor that is not the hub, reports the final rejections it gave proposals of an

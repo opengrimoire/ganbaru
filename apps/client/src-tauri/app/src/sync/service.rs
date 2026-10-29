@@ -15,7 +15,8 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds, SyncTransport};
 use super::host::HeadlessHost;
 use super::host::SyncHost;
 #[cfg(desktop)]
-use super::hub::{HubForwards, HubProposals, HubStability, HubVault, OpenHubVault, SyncHub};
+use super::hub::{HubForwards, HubProposals, HubStability};
+use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
 use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
@@ -26,7 +27,9 @@ use super::writer::{
 };
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 #[cfg(desktop)]
-pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, LateDecision, PendingRecoveryKit};
+pub(crate) use anchor::{
+    AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, PendingRecoveryKit,
+};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
@@ -41,11 +44,13 @@ use ganbaru_sync_contracts::{Digest32, ProposalRejection, SignedCharter, SignedP
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
-    ensure_charter,
+    ensure_charter, read_admin_key,
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
+use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
+use ganbaru_sync_replica::records::{FreeSpace, RecordExchange, RecordLink};
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
 use ganbaru_sync_replica::writer::SequencedCheck;
@@ -54,7 +59,7 @@ use std::collections::BTreeSet;
 #[cfg(any(mobile, test))]
 use std::future::Future;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
@@ -114,6 +119,12 @@ pub(crate) struct RuntimeState {
     now: Arc<Notify>,
     /// Bumped after each pass, so hub waits recheck the log.
     changes: watch::Sender<u64>,
+    /// Record exchange windows, cursors, and backstop that this device's hubs and sessions
+    /// share.
+    records: RecordExchange,
+    /// The root of the vault the service last ran for, whose volume the record backstop reads
+    /// free space from.
+    vault_root: Arc<Mutex<Option<PathBuf>>>,
     /// Stability the coordinator pass last computed, reported in every sync state.
     #[cfg(desktop)]
     stability: HubStability,
@@ -132,6 +143,10 @@ pub(crate) struct RuntimeState {
     authority: Mutex<Vec<AuthorityRequest>>,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
+    /// Whether the app is in the foreground, which a phone's member listener requires. False
+    /// until the frontend reports it is visible.
+    #[cfg(any(mobile, test))]
+    foreground: std::sync::atomic::AtomicBool,
     /// Recovery actions waiting for the next pass.
     recovery: Mutex<Vec<RecoveryRequest>>,
     /// Reset sync state requests waiting for the next pass, with where each answer goes.
@@ -146,9 +161,17 @@ pub(crate) struct RuntimeState {
 
 impl Default for RuntimeState {
     fn default() -> Self {
+        let vault_root: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+        let root = Arc::clone(&vault_root);
+        let free_space: FreeSpace = Arc::new(move || {
+            let root = root.lock().ok()?.clone()?;
+            volume_free_bytes(&root)
+        });
         Self {
             now: Arc::default(),
             changes: watch::Sender::new(0),
+            records: RecordExchange::default().with_free_space(free_space),
+            vault_root,
             #[cfg(desktop)]
             stability: HubStability::default(),
             #[cfg(desktop)]
@@ -160,6 +183,8 @@ impl Default for RuntimeState {
             #[cfg(desktop)]
             authority: Mutex::default(),
             pause_request: Mutex::default(),
+            #[cfg(any(mobile, test))]
+            foreground: std::sync::atomic::AtomicBool::new(false),
             recovery: Mutex::default(),
             resets: Mutex::default(),
             status: Mutex::default(),
@@ -168,6 +193,22 @@ impl Default for RuntimeState {
             passes_done: watch::Sender::new(0),
         }
     }
+}
+
+/// Bytes an unprivileged process may still write on the volume holding `path`, or `None` when
+/// the volume cannot be read. The record backstop then applies its byte and envelope bounds
+/// alone.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn volume_free_bytes(path: &Path) -> Option<u64> {
+    let stat = rustix::fs::statvfs(path).ok()?;
+    Some(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+/// Free space is read on Linux and Android only; elsewhere the record backstop applies its
+/// byte and envelope bounds alone.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn volume_free_bytes(_path: &Path) -> Option<u64> {
+    None
 }
 
 impl RuntimeState {
@@ -182,6 +223,32 @@ impl RuntimeState {
     /// Runs a pass now instead of waiting for a commit or the fallback interval.
     pub(crate) fn sync_now(&self) {
         self.now.notify_one();
+    }
+
+    /// The authorization record exchange every pass shares, with its storage backstop.
+    pub(crate) fn records(&self) -> &RecordExchange {
+        &self.records
+    }
+
+    /// Points the record backstop's free space reading at the volume of `root`.
+    fn set_vault_root(&self, root: PathBuf) {
+        if let Ok(mut current) = self.vault_root.lock() {
+            *current = Some(root);
+        }
+    }
+
+    /// Records whether the app is in the foreground. A pass serves the member listener only
+    /// while it is.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn set_foreground(&self, visible: bool) {
+        self.foreground.store(visible, Ordering::SeqCst);
+    }
+
+    /// Whether the app is in the foreground.
+    #[cfg(any(mobile, test))]
+    #[cfg_attr(not(mobile), allow(dead_code))]
+    pub(crate) fn in_foreground(&self) -> bool {
+        self.foreground.load(Ordering::SeqCst)
     }
 
     /// Pauses or resumes exchanges on this device. The writer record keeps the choice.
@@ -420,17 +487,7 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         Box::pin(async move { open_hub_vault(&app).await })
     });
     let runtime = app.state::<SyncRuntime>();
-    let queue = runtime.inner().clone();
-    let proposals: HubProposals = Arc::new(move |proposal| {
-        let runtime = queue.clone();
-        Box::pin(async move {
-            let receiver = runtime.request_proposal(proposal)?;
-            tokio::time::timeout(DELEGATED_PASS_TIMEOUT, receiver)
-                .await
-                .map_err(|_| "the anchor did not sequence the proposal in time".to_string())?
-                .map_err(|_| "the anchor stopped before it sequenced the proposal".to_string())?
-        })
-    });
+    let proposals = hub_proposals(runtime.inner());
     let queue = runtime.inner().clone();
     let forwards: HubForwards = Arc::new(move |device_id, settled| {
         let runtime = queue.clone();
@@ -443,9 +500,86 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         })
     });
     SyncHub::new(open, runtime.changes.clone())
+        .with_records(runtime.records.clone())
         .with_stability(runtime.stability.clone())
         .with_proposals(proposals)
         .with_forwards(forwards)
+}
+
+/// Hands a proposal a listener received to the pass, which sequences it when this desktop
+/// anchors and answers that it is not the anchor otherwise.
+#[cfg(desktop)]
+fn hub_proposals(runtime: &SyncRuntime) -> HubProposals {
+    let queue = runtime.clone();
+    Arc::new(move |proposal| {
+        let runtime = queue.clone();
+        Box::pin(async move {
+            let receiver = runtime.request_proposal(proposal)?;
+            tokio::time::timeout(DELEGATED_PASS_TIMEOUT, receiver)
+                .await
+                .map_err(|_| "the anchor did not sequence the proposal in time".to_string())?
+                .map_err(|_| "the anchor stopped before it sequenced the proposal".to_string())?
+        })
+    })
+}
+
+/// The hub a member listener routes admitted sync requests to, serving the active vault. Its
+/// admission lets proposals through only while the selected log names this desktop as the
+/// anchor, so a member reaches the anchor directly after a handover; it forwards none, since
+/// the coordinator holds proposals for an anchor members cannot reach. It relays geneses of
+/// other members, which the engine admits only for enrolled devices. A phone never anchors, so
+/// its hub takes no proposals and reports no stability.
+pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
+    let opener = app.clone();
+    let open: OpenHubVault = Arc::new(move || {
+        let app = opener.clone();
+        Box::pin(async move { open_hub_vault(&app).await })
+    });
+    let runtime = app.state::<SyncRuntime>();
+    with_anchor_services(
+        SyncHub::new(open, runtime.changes.clone())
+            .with_relayed_geneses()
+            .with_records(runtime.records.clone()),
+        runtime.inner(),
+    )
+}
+
+/// Adds the stability report and proposal sequencing a desktop member serves once it anchors.
+#[cfg(desktop)]
+fn with_anchor_services(hub: SyncHub, runtime: &SyncRuntime) -> SyncHub {
+    hub.with_stability(runtime.stability.clone())
+        .with_proposals(hub_proposals(runtime))
+}
+
+/// A phone never anchors, so its member hub serves no anchor services.
+#[cfg(mobile)]
+fn with_anchor_services(hub: SyncHub, _runtime: &SyncRuntime) -> SyncHub {
+    hub
+}
+
+/// Admission of the active vault's member listener, read from the selected log and the
+/// quarantine for every connection.
+pub(crate) fn member_admission_source<R: Runtime>(
+    app: &AppHandle<R>,
+) -> crate::vault::handoff::transport::MemberAdmissionSource {
+    let app = app.clone();
+    Arc::new(move || {
+        let app = app.clone();
+        Box::pin(async move { super::peers::member_admission(&app).await })
+    })
+}
+
+/// Admission of the coordinator listener, read from the selected log for every connection. The
+/// coordinator applies the quarantine on its own, see [`quarantined_devices`].
+#[cfg(desktop)]
+pub(crate) fn log_admission_source<R: Runtime>(
+    app: &AppHandle<R>,
+) -> crate::vault::handoff::transport::MemberAdmissionSource {
+    let app = app.clone();
+    Arc::new(move || {
+        let app = app.clone();
+        Box::pin(async move { super::peers::log_admission(&app).await })
+    })
 }
 
 /// The devices this installation quarantined in the active vault, which the coordinator
@@ -482,7 +616,6 @@ pub(crate) fn quarantined_devices<R: Runtime>(
     })
 }
 
-#[cfg(desktop)]
 async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVault>, String> {
     if !app.sync_enabled()? {
         return Ok(None);
@@ -515,6 +648,9 @@ pub(crate) async fn stop_for_vault_handoff<R: Runtime>(app: &AppHandle<R>) -> Re
         .lock()
         .map_err(|_| "sync service lock is unavailable".to_string())?
         .take();
+    app.state::<crate::vault::handoff::MemberListenerLifecycle>()
+        .stop()
+        .await;
     if let Some(mut task) = task {
         task.stop.notify_one();
         if tokio::time::timeout_at(deadline, &mut task.handle)
@@ -604,7 +740,9 @@ where
     }
     let host = open.await?;
     let runtime = RuntimeState::default();
-    let next = ServiceState::default().pass(&host, &runtime, gate).await;
+    let next = ServiceState::for_runtime(&runtime)
+        .pass(&host, &runtime, gate)
+        .await;
     Ok(HeadlessPass {
         status: runtime.status()?,
         delegated: false,
@@ -661,6 +799,10 @@ struct OnlineWait {
     /// installation quarantined.
     #[cfg(desktop)]
     hub: VersionVector,
+    /// The anchor the long poll waits on instead of the coordinator, while the coordinator is
+    /// away and an anchor that is not the coordinator answered a complete exchange. The status
+    /// stays offline, and the coordinator is dialed again at the fallback interval.
+    poll: Option<super::transport::MemberTransport>,
 }
 
 struct Signals {
@@ -680,16 +822,28 @@ impl Signals {
     }
 
     /// Long polls the hub until it holds operations this replica lacks, a local commit, a
-    /// request, or `hold` elapses. A wait the hub answers without news is repeated.
+    /// request, or `hold` elapses. A wait the hub answers without news is repeated. A wait on
+    /// the anchor while the coordinator is away also ends at the fallback interval, so the
+    /// coordinator is dialed again.
     async fn online(&self, wait: &OnlineWait, hold: Option<Duration>) -> Wake {
+        let hold = match wait.poll {
+            Some(_) => Some(capped(FALLBACK_INTERVAL, hold)),
+            None => hold,
+        };
         let hold_expiry = hold.map(|delay| tokio::time::Instant::now() + delay);
         loop {
+            let poll = async {
+                match &wait.poll {
+                    Some(anchor) => super::client::wait(anchor, &wait.ids, &wait.known).await,
+                    None => super::client::wait(&wait.transport, &wait.ids, &wait.known).await,
+                }
+            };
             let result = tokio::select! {
                 () = self.stop.notified() => return Wake::Stop,
                 () = self.commits.notified() => return Wake::Commit,
                 () = self.now.notified() => return Wake::Pass,
                 () = sleep_until(hold_expiry) => return Wake::Pass,
-                result = super::client::wait(&wait.transport, &wait.ids, &wait.known) => result,
+                result = poll => result,
             };
             match result {
                 Ok(hub) if !wait.known.dominates(&hub) => return Wake::Pass,
@@ -712,7 +866,7 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
 }
 
 async fn run<H: SyncHost>(host: H, runtime: SyncRuntime, signals: Signals) {
-    let mut state = ServiceState::default();
+    let mut state = ServiceState::for_runtime(&runtime);
     let mut failures = 0usize;
     loop {
         let next = state.pass(&host, &runtime, &PASS_GATE).await;
@@ -752,6 +906,24 @@ async fn run<H: SyncHost>(host: H, runtime: SyncRuntime, signals: Signals) {
             }
         }
     }
+}
+
+/// Whether a linked device reached the anchor in this pass: it anchors itself, the anchor is
+/// the coordinator and the coordinator answered, or a direct exchange with the anchor
+/// completed. A space without a log has no anchor to reach.
+fn anchor_reachable(
+    anchor: Option<&str>,
+    own_device_id: &str,
+    coordinator: Option<&str>,
+    coordinator_answered: bool,
+    anchor_answered: bool,
+) -> bool {
+    let Some(anchor) = anchor else {
+        return true;
+    };
+    anchor == own_device_id
+        || anchor_answered
+        || (coordinator_answered && coordinator == Some(anchor))
 }
 
 /// `delay`, shortened to `limit` when one is given.
@@ -798,6 +970,9 @@ struct ServiceState {
     confirmed: Option<(WriterId, Seq)>,
     /// Operations of quarantined devices pulls already turned away.
     pull_skips: PullSkips,
+    /// A link to an anchor that is not the coordinator and answered the last exchange, which
+    /// the pass sends waiting proposals to instead of the coordinator.
+    anchor_link: Option<super::transport::MemberTransport>,
     /// When this anchor first found its database restored behind its own log, in Unix
     /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
     #[cfg(desktop)]
@@ -806,7 +981,38 @@ struct ServiceState {
     /// which the next forward request reports to the coordinator.
     #[cfg(desktop)]
     settled: Vec<(Digest32, ProposalRejection)>,
+    /// The stored vector the coordinator last reported, quarantined writers included. A
+    /// linked anchor's removal cutoffs cover at least it, since the coordinator and members
+    /// may hold operations of a device the anchor quarantined and never stored.
+    #[cfg(desktop)]
+    hub_reported: VersionVector,
     view: SyncStatusView,
+    /// Record exchange state shared with this device's hubs.
+    records: RecordExchange,
+}
+
+impl ServiceState {
+    /// Fresh state that shares the record exchange state of `runtime`.
+    fn for_runtime(runtime: &RuntimeState) -> Self {
+        Self {
+            records: runtime.records.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// Starts over for the vault `vault_id` at `root`: per-vault state resets, the record
+    /// exchange state stays shared with `runtime` and forgets the previous vault's cursors,
+    /// windows, and backstop, and the backstop reads free space of the volume of `root`.
+    fn enter_vault(&mut self, vault_id: String, runtime: &RuntimeState, root: PathBuf) {
+        *self = Self {
+            vault_id: Some(vault_id),
+            ..Self::for_runtime(runtime)
+        };
+        runtime.records.reset_vault();
+        runtime.set_vault_root(root);
+        #[cfg(desktop)]
+        runtime.stability.clear();
+    }
 }
 
 /// When the service last applied stored operations.
@@ -968,6 +1174,7 @@ impl ServiceState {
         let number = runtime.pass_started();
         let mut view = SyncStatusView {
             last_exchange_at_ms: self.view.last_exchange_at_ms,
+            anchor_unreachable_since_ms: self.view.anchor_unreachable_since_ms,
             connection: self.view.connection.clone(),
             degraded: self.view.degraded.clone(),
             ..SyncStatusView::default()
@@ -1040,19 +1247,16 @@ impl ServiceState {
         resets: &mut Vec<ResetReply>,
     ) -> Result<Next, String> {
         if !host.sync_enabled()? {
+            host.stop_serving_members().await;
             return Ok(Next::Idle);
         }
         let Some(pool) = host.connect_for_sync().await? else {
+            host.stop_serving_members().await;
             return Ok(Next::Idle);
         };
         let vault_id = host.active_vault_id()?;
         if self.vault_id.as_deref() != Some(vault_id.as_str()) {
-            *self = Self {
-                vault_id: Some(vault_id.clone()),
-                ..Self::default()
-            };
-            #[cfg(desktop)]
-            runtime.stability.clear();
+            self.enter_vault(vault_id.clone(), runtime, host.active_vault_path()?);
         }
         let manager = host.pairing();
         let peer = crate::vault::handoff::transport::sync_peer(&manager)?
@@ -1103,6 +1307,7 @@ impl ServiceState {
             runtime.set_pairing_charter(None)?;
             session.install_pinned_charter(&manager).await?;
         }
+        session.follow_discovery_keys().await?;
         if !self.started {
             session.start(&mut self.writer).await?;
             self.started = true;
@@ -1145,27 +1350,65 @@ impl ServiceState {
                     assets: Arc::new(ActiveVaultAssets::open(host, &vault_id)?),
                 };
                 let mut transfer = AssetTransfer::default();
+                let wait = OnlineWait {
+                    transport: assets.transport.clone(),
+                    ids: assets.ids.clone(),
+                    known: VersionVector::new(),
+                    #[cfg(desktop)]
+                    hub: VersionVector::new(),
+                    poll: None,
+                };
                 next = match self.upload_assets(&session, &assets, &mut transfer).await {
+                    // Operations never reach the coordinator ahead of the assets they
+                    // reference, but members still exchange.
                     Err(error) => {
-                        view.state = SyncState::Offline;
-                        view.last_error = Some(error);
-                        Next::Retry
+                        self.anchor_link = None;
+                        let path = session.files.quarantine_path();
+                        let quarantine = blocking(move || Quarantine::load(&path)).await?;
+                        let listening = session.host.serve_members().await;
+                        self.coordinator_away(
+                            &session,
+                            wait,
+                            quarantine.devices(),
+                            &listening,
+                            view,
+                            error,
+                        )
+                        .await
                     }
-                    Ok(()) => {
-                        let wait = OnlineWait {
-                            transport: assets.transport.clone(),
-                            ids: assets.ids.clone(),
-                            known: VersionVector::new(),
-                            #[cfg(desktop)]
-                            hub: VersionVector::new(),
-                        };
-                        self.exchange(&session, wait, view).await?
-                    }
+                    Ok(()) => self.exchange(&session, wait, view).await?,
                 };
                 asset_peer = Some((assets, transfer));
             }
         }
+        let coordinator_answered = asset_peer.is_some() && view.state != SyncState::Offline;
         self.apply_new(&session).await?;
+        let anchor_link = self.anchor_link.take();
+        if is_hub {
+            view.anchor_unreachable_since_ms = None;
+        } else if !view.paused {
+            let reachable = anchor_reachable(
+                session.anchor_device_id().await?.as_deref(),
+                &manager.device_id()?,
+                manager
+                    .coordinator_pin()?
+                    .map(|pin| pin.device_id)
+                    .as_deref(),
+                coordinator_answered,
+                anchor_link.is_some(),
+            );
+            view.anchor_unreachable_since_ms = if reachable {
+                None
+            } else {
+                Some(match view.anchor_unreachable_since_ms {
+                    Some(since) => since,
+                    None => now_ms()?,
+                })
+            };
+        }
+        // Whether this linked desktop anchors and may sequence, once the pass checked it.
+        #[cfg(desktop)]
+        let mut linked_anchor_ready: Option<bool> = None;
         #[cfg(desktop)]
         let mut take_anchor = {
             let (take_anchor, restored) = session
@@ -1185,6 +1428,10 @@ impl ServiceState {
         if let Some((assets, _)) = asset_peer.as_ref()
             && view.state != SyncState::Offline
         {
+            let coordinator = manager
+                .coordinator_pin()?
+                .map(|pin| pin.device_id)
+                .unwrap_or_default();
             #[cfg(desktop)]
             {
                 let hub_stored = match &next {
@@ -1210,14 +1457,18 @@ impl ServiceState {
                 // A linked desktop that anchors checks for a restore as the coordinator does;
                 // members return lost entries through the coordinator's exchange.
                 // A restored anchor sequences nothing while it waits.
-                if session.anchors_here(&manager).await? {
-                    if self.anchor_ready(&session, &manager, true).await? {
+                let anchors_here = session.anchors_here(&manager).await?;
+                linked_anchor_ready =
+                    Some(anchors_here && self.anchor_ready(&session, &manager, true).await?);
+                if anchors_here {
+                    if linked_anchor_ready == Some(true) {
                         match session
                             .anchor_as_member(
                                 &assets.transport,
                                 &assets.ids,
                                 &mut self.writer,
                                 &mut self.settled,
+                                &self.hub_reported,
                             )
                             .await
                         {
@@ -1229,12 +1480,25 @@ impl ServiceState {
                             }
                         }
                     }
-                } else {
-                    session.replay_outbox(&assets.transport, &assets.ids).await;
+                } else if anchor_link.is_none() {
+                    session
+                        .replay_outbox(&assets.transport, &assets.ids, &coordinator)
+                        .await;
                 }
             }
             #[cfg(mobile)]
-            session.replay_outbox(&assets.transport, &assets.ids).await;
+            if anchor_link.is_none() {
+                session
+                    .replay_outbox(&assets.transport, &assets.ids, &coordinator)
+                    .await;
+            }
+        }
+        // An anchor that is not the coordinator and answered this pass takes the proposals
+        // directly, also while the coordinator is away.
+        if let (Some(link), Some((assets, _))) = (anchor_link.as_ref(), asset_peer.as_ref()) {
+            session
+                .replay_outbox(link, &assets.ids, &link.device_id)
+                .await;
         }
         #[cfg(desktop)]
         for request in take_anchor {
@@ -1266,6 +1530,8 @@ impl ServiceState {
         let acknowledged = session.acknowledge(&mut self.writer).await?;
         if is_hub {
             #[cfg(desktop)]
+            session.unlink_removed_devices(&manager, &vault_id).await?;
+            #[cfg(desktop)]
             let anchor_ready = {
                 let members_reachable = !manager.linked_peers_for(&vault_id)?.is_empty();
                 self.anchor_ready(&session, &manager, members_reachable)
@@ -1283,6 +1549,7 @@ impl ServiceState {
                         &manager,
                         &mut self.writer,
                         runtime.take_proposal_requests(),
+                        &VersionVector::new(),
                     )
                     .await;
             } else {
@@ -1303,8 +1570,50 @@ impl ServiceState {
             #[cfg(desktop)]
             {
                 runtime.stability.clear();
-                for request in runtime.take_proposal_requests() {
-                    let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
+                // A linked anchor sequences what members proposed to its listener directly,
+                // also while the coordinator is away.
+                let ready = match linked_anchor_ready {
+                    Some(ready) => ready,
+                    None => {
+                        session.anchors_here(&manager).await?
+                            && self.anchor_ready(&session, &manager, true).await?
+                    }
+                };
+                let requests = runtime.take_proposal_requests();
+                if !requests.is_empty() {
+                    if ready {
+                        session
+                            .sequence_proposals(
+                                &manager,
+                                &mut self.writer,
+                                requests,
+                                &self.hub_reported,
+                            )
+                            .await;
+                        if matches!(next, Next::Online(_)) {
+                            // The coordinator learns of the entries on the next exchange.
+                            next = Next::Continue;
+                        }
+                    } else {
+                        for request in requests {
+                            let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
+                        }
+                    }
+                }
+                // While the coordinator is away, a linked anchor still sequences its own
+                // proposals, such as removing the anchor a forced handover replaced.
+                if linked_anchor_ready.is_none()
+                    && ready
+                    && let Some(active) = self.writer.as_mut()
+                {
+                    match session
+                        .sequence_own_outbox(active, &self.hub_reported)
+                        .await
+                    {
+                        Ok(true) if matches!(next, Next::Online(_)) => next = Next::Continue,
+                        Ok(_) => {}
+                        Err(error) => eprintln!("sync: sequence own proposals: {error}"),
+                    }
                 }
             }
             if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
@@ -1457,6 +1766,10 @@ impl ServiceState {
     ) -> Result<Next, String> {
         let path = session.files.quarantine_path();
         let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        let listening = session.host.serve_members().await;
+        self.anchor_link = None;
+        // The coordinator's device id names it for record exchange windows and cursors.
+        let coordinator = wait.transport.0.coordinator_pin()?.map(|pin| pin.device_id);
         for _ in 0..MAX_FORK_RECOVERIES {
             let own_writers = self
                 .writer
@@ -1474,15 +1787,39 @@ impl ServiceState {
                 quarantined: quarantine.devices(),
                 pull_skips: Some(&self.pull_skips),
                 max_bytes: super::client::MAX_EXCHANGE_BYTES,
+                listening: &listening,
+                records: coordinator.as_deref().map(|peer| RecordLink {
+                    state: &self.records,
+                    peer,
+                }),
             };
             match client.exchange().await {
                 Err(error) => {
-                    view.state = SyncState::Offline;
-                    view.last_error = Some(error);
-                    return Ok(Next::Retry);
+                    return Ok(self
+                        .coordinator_away(
+                            session,
+                            wait,
+                            quarantine.devices(),
+                            &listening,
+                            view,
+                            error,
+                        )
+                        .await);
                 }
                 Ok(Exchange::Done(done)) => {
                     view.last_exchange_at_ms = Some(now_ms()?);
+                    if let Err(error) = super::peers::record_reported_peers(
+                        session.files.peers_path(),
+                        &session.engine,
+                        &session.pool,
+                        &session.ctx,
+                        quarantine.devices(),
+                        done.members.clone(),
+                    )
+                    .await
+                    {
+                        eprintln!("sync: record reported members: {error}");
+                    }
                     if done.pulled > 0 {
                         self.assets.hub_changed();
                     }
@@ -1537,6 +1874,15 @@ impl ServiceState {
                     #[cfg(desktop)]
                     {
                         wait.hub = authority::without_writers(&done.hub, &skipped);
+                        self.hub_reported.clone_from(&done.hub);
+                    }
+                    let members = self
+                        .exchange_members(session, &wait, quarantine.devices(), &listening, true)
+                        .await;
+                    self.anchor_link = members.anchor;
+                    if members.pulled > 0 {
+                        // Apply what members brought, then exchange it with the coordinator.
+                        return Ok(Next::Continue);
                     }
                     wait.known = done.known;
                     wait.known.merge(&skipped);
@@ -1552,6 +1898,73 @@ impl ServiceState {
             }
         }
         Err("sync fork recovery did not settle".to_string())
+    }
+
+    /// The pass while the coordinator does not answer: members still exchange with each other,
+    /// and an anchor that is not the coordinator and answered a complete exchange carries the
+    /// long poll, so its changes arrive without waiting for the coordinator. The status stays
+    /// offline with `error`.
+    async fn coordinator_away<H: SyncHost>(
+        &mut self,
+        session: &Session<'_, H>,
+        mut wait: OnlineWait,
+        quarantined: &BTreeSet<String>,
+        listening: &[String],
+        view: &mut SyncStatusView,
+        error: String,
+    ) -> Next {
+        let members = self
+            .exchange_members(session, &wait, quarantined, listening, false)
+            .await;
+        view.state = SyncState::Offline;
+        view.last_error = Some(error);
+        self.anchor_link = members.anchor;
+        let (Some(anchor), Some(known)) = (self.anchor_link.as_ref(), members.anchor_known) else {
+            return Next::Retry;
+        };
+        wait.known = known;
+        wait.known
+            .merge(&self.pull_skips.for_quarantine(quarantined));
+        wait.poll = Some(anchor.clone());
+        Next::Online(Box::new(wait))
+    }
+
+    /// Exchanges with the other members the pass plan picks. A failure only delays what members
+    /// would bring until a later pass, so it is logged.
+    async fn exchange_members<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+        wait: &OnlineWait,
+        quarantined: &BTreeSet<String>,
+        listening: &[String],
+        coordinator_reachable: bool,
+    ) -> super::peers::MemberPassOutcome {
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        let pass = super::peers::MemberPass {
+            manager: &wait.transport.0,
+            ids: &wait.ids,
+            engine: &session.engine,
+            pool: &session.pool,
+            ctx: &session.ctx,
+            writer: self.writer.as_ref().map(ActiveWriter::id),
+            own_writers: &own_writers,
+            quarantined,
+            pull_skips: &self.pull_skips,
+            listening,
+            files: &session.files,
+            records: &self.records,
+        };
+        match super::peers::exchange_with_members(pass, coordinator_reachable).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("sync: member exchanges: {error}");
+                super::peers::MemberPassOutcome::default()
+            }
+        }
     }
 
     /// Uploads the managed assets this device holds and the hub lacks, ahead of the operations
@@ -1579,8 +1992,10 @@ impl ServiceState {
         next: Next,
         view: &mut SyncStatusView,
     ) -> Next {
-        if !matches!(next, Next::Online(_) | Next::Continue) {
-            return next;
+        match &next {
+            Next::Online(wait) if wait.poll.is_none() => {}
+            Next::Continue => {}
+            _ => return next,
         }
         let downloaded = asset_session(session, peer)
             .download(&mut self.assets, transfer)
@@ -2171,6 +2586,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
             if !self.reseal_own_forks(writer).await? {
                 return Ok(done(tables, notices, None));
             }
+            if !self.retire_compromised(writer).await? {
+                return Ok(done(tables, notices, None));
+            }
             if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
                     return Ok(done(tables, notices, None));
@@ -2211,6 +2629,27 @@ impl<'a, H: SyncHost> Session<'a, H> {
             }
         }
         Ok(true)
+    }
+
+    /// Rotates the active writer once the record store holds a twin of it, provable or not, or
+    /// the selected chain removed its device, see [`ganbaru_sync::WriterRetirement`]. The successor is
+    /// certified by the unchanged device key and names the retired writer as predecessor.
+    /// Returns false while the person key is unavailable.
+    async fn retire_compromised(&self, writer: &mut Option<ActiveWriter>) -> Result<bool, String> {
+        let Some(current) = writer.as_ref().map(ActiveWriter::id) else {
+            return Ok(true);
+        };
+        let retirement = {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .writer_retirement(&mut conn, &self.ctx, current)
+                .await
+                .map_err(|error| format!("check sync writer retirement: {error}"))?
+        };
+        if retirement.is_none() {
+            return Ok(true);
+        }
+        self.rotate(writer).await
     }
 
     /// Recovers from a fork of one of this installation's chains: the hub holds other
@@ -2280,9 +2719,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             };
             let anchor = self.anchor_keys().await?;
             let tls_fingerprint = tls_fingerprint(manager.certificate()?.as_ref());
-            let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::decode(
-                &manager.discovery_key(&self.files.vault_id)?,
-            )?;
+            let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::generate()?;
             let founding = Founding {
                 device_id: &device_id,
                 tls_fingerprint,
@@ -2357,12 +2794,64 @@ impl<'a, H: SyncHost> Session<'a, H> {
         }
     }
 
+    /// Follows the vault's discovery keys from the authorization log into the device-local file
+    /// and publishes them for the advertiser and coordinator discovery of this process.
+    async fn follow_discovery_keys(&self) -> Result<(), String> {
+        let view = {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .authorization(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read sync authorization: {error}"))?
+        };
+        let path = self.files.discovery_keys_path();
+        let vault_id = self.files.vault_id.clone();
+        let now = now_ms()?;
+        let keys =
+            blocking(move || DiscoveryKeys::follow(&path, &vault_id, view.as_ref(), now)).await?;
+        super::discovery_keys::publish(keys);
+        Ok(())
+    }
+
     /// The anchor keys of the vault, each created once.
     #[cfg(desktop)]
     async fn anchor_keys(&self) -> Result<AnchorKeys, String> {
         let keys = self.keys.clone();
         let vault_id = self.files.vault_id.clone();
         blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id)).await
+    }
+
+    /// On the coordinator, unlinks every linked device the selected log removed, whichever admin
+    /// proposed the removal and whether or not this desktop anchors, so pairing stops serving
+    /// it the person key, vault bundles, and every other coordinator service. A device with a
+    /// handoff in progress is reported and unlinked on a later pass; the listener refuses it
+    /// from the log meanwhile.
+    #[cfg(desktop)]
+    async fn unlink_removed_devices(
+        &self,
+        manager: &PairingManager,
+        vault_id: &str,
+    ) -> Result<(), String> {
+        let mut conn = acquire(&self.pool).await?;
+        let Some(view) = self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+        else {
+            return Ok(());
+        };
+        drop(conn);
+        let peers = manager.linked_peers_for(vault_id)?;
+        let removed = authority::removed_linked_devices(&view, |device_id| {
+            peers.iter().any(|peer| peer.device_id == device_id)
+        });
+        for device_id in removed {
+            if let Err(error) = manager.unlink_device(&device_id) {
+                eprintln!("sync: unlink removed device {device_id}: {error}");
+            }
+        }
+        Ok(())
     }
 
     /// On an admin coordinator, enrolls linked devices the space does not know yet and removes
@@ -2380,9 +2869,6 @@ impl<'a, H: SyncHost> Session<'a, H> {
     ) -> Result<(), String> {
         #[cfg(desktop)]
         {
-            let Some(active) = writer.as_mut() else {
-                return Ok(());
-            };
             let mut conn = acquire(&self.pool).await?;
             let Some(view) = self
                 .engine
@@ -2390,6 +2876,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 .await
                 .map_err(|error| format!("read sync authorization: {error}"))?
             else {
+                return Ok(());
+            };
+            let Some(active) = writer.as_mut() else {
                 return Ok(());
             };
             let own_device_id = manager.device_id()?;
@@ -2446,6 +2935,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 &self.ctx,
                 &mut active.local(),
                 &mut outbox,
+                &VersionVector::new(),
                 now_ms()?,
             )
             .await?;
@@ -2465,13 +2955,15 @@ impl<'a, H: SyncHost> Session<'a, H> {
     /// On the anchor, sequences the proposals linked devices sent through the hub with the
     /// anchor writer and answers each. A coordinator that handed the anchor over holds each in
     /// its outbox for the anchor's forward request. Without a writer, each is answered as not
-    /// reaching the anchor; the sender keeps it in its outbox either way.
+    /// reaching the anchor; the sender keeps it in its outbox either way. Removal cutoffs cover
+    /// at least `covered`, the coordinator's last reported stored vector on a linked anchor.
     #[cfg(desktop)]
     async fn sequence_proposals(
         &self,
         manager: &PairingManager,
         writer: &mut Option<ActiveWriter>,
         requests: Vec<ProposalRequest>,
+        covered: &VersionVector,
     ) {
         if requests.is_empty() {
             return;
@@ -2503,12 +2995,13 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 (Ok(true), Some(active)) => match acquire(&self.pool).await {
                     Ok(mut conn) => match now_ms() {
                         Ok(now) => {
-                            authority::sequence(
+                            authority::sequence_covering(
                                 &self.engine,
                                 &mut conn,
                                 &self.ctx,
                                 &mut active.local(),
                                 &request.proposal,
+                                covered,
                                 now,
                             )
                             .await
@@ -2541,11 +3034,22 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .is_some_and(|view| view.anchor_device_id == device_id))
     }
 
+    /// The device the selected log names as the anchor, if the space has a log.
+    async fn anchor_device_id(&self) -> Result<Option<String>, String> {
+        let mut conn = acquire(&self.pool).await?;
+        Ok(self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .map(|view| view.anchor_device_id))
+    }
+
     /// On a client, drops outbox proposals the applied chain holds and sends the rest to the
     /// hub, which hands them to the anchor. A failure is reported and the proposals wait for the
     /// next pass.
-    async fn replay_outbox<T: SyncTransport>(&self, transport: &T, ids: &PeerIds) {
-        if let Err(error) = self.replay_outbox_inner(transport, ids).await {
+    async fn replay_outbox<T: SyncTransport>(&self, transport: &T, ids: &PeerIds, answering: &str) {
+        if let Err(error) = self.replay_outbox_inner(transport, ids, answering).await {
             eprintln!("sync: send waiting proposals: {error}");
         }
     }
@@ -2554,6 +3058,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         &self,
         transport: &T,
         ids: &PeerIds,
+        answering: &str,
     ) -> Result<(), String> {
         let path = self.files.outbox_path();
         let mut outbox = blocking(move || Outbox::load(&path)).await?;
@@ -2564,6 +3069,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             transport,
             ids,
             &mut outbox,
+            answering,
         )
         .await?;
         Ok(())
@@ -2638,6 +3144,21 @@ pub(crate) async fn ensure_admin_key<H: SyncHost>(
     let vault_id = vault_id.to_string();
     blocking(move || {
         ensure_stored_admin_key(keys.as_ref(), &vault_id).map(|admin| admin.public_key())
+    })
+    .await
+}
+
+/// The public half of this desktop's admin key for `vault_id`, `None` when it has none. Unlike
+/// [`ensure_admin_key`], it never creates a key.
+#[cfg(desktop)]
+pub(crate) async fn stored_admin_key<H: SyncHost>(
+    host: &H,
+    vault_id: &str,
+) -> Result<Option<ganbaru_sync_contracts::AdminPublicKey>, String> {
+    let keys = host.key_store()?;
+    let vault_id = vault_id.to_string();
+    blocking(move || {
+        read_admin_key(keys.as_ref(), &vault_id).map(|admin| admin.map(|admin| admin.public_key()))
     })
     .await
 }
@@ -2733,10 +3254,82 @@ mod tests {
     use super::*;
     use ganbaru_sync_contracts::WriterId;
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_record_backstop_reads_free_space_of_the_vault_volume() {
+        let dir = std::env::temp_dir();
+        assert!(volume_free_bytes(dir.as_path()).is_some_and(|free| free > 0));
+        assert_eq!(
+            volume_free_bytes(&dir.as_path().join("ganbaru-absent-volume-probe")),
+            None
+        );
+        let runtime = RuntimeState::default();
+        assert_eq!(runtime.records().free_space(), None);
+        runtime.set_vault_root(dir.clone());
+        assert!(runtime.records().free_space().is_some());
+    }
+
+    /// Each vault change keeps the record exchange state the service charges shared with the
+    /// runtime, so its backstop reads free space of the new vault's volume; a state of its own
+    /// would read none. The previous vault's exchange state does not carry over.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_vault_change_keeps_the_record_exchange_shared_with_the_runtime() {
+        let runtime = RuntimeState::default();
+        let mut state = ServiceState::for_runtime(&runtime);
+        assert_eq!(state.records.free_space(), None);
+        for vault in ["first-vault", "second-vault"] {
+            state.records.disconnected("hub");
+            assert!(runtime.records().holds_vault_state());
+            state.enter_vault(vault.to_owned(), &runtime, std::env::temp_dir());
+            assert_eq!(state.vault_id.as_deref(), Some(vault));
+            assert!(state.records.free_space().is_some());
+            assert!(!runtime.records().holds_vault_state());
+        }
+        assert_eq!(ServiceState::default().records.free_space(), None);
+    }
+
     fn vector(seq: u64) -> VersionVector {
         let mut vector = VersionVector::new();
         vector.set(WriterId::from_bytes([1; 16]), seq);
         vector
+    }
+
+    #[test]
+    fn the_anchor_counts_as_reached_only_through_a_link_that_answered() {
+        assert!(anchor_reachable(None, "own", None, false, false));
+        assert!(anchor_reachable(
+            Some("own"),
+            "own",
+            Some("hub"),
+            false,
+            false
+        ));
+        assert!(anchor_reachable(
+            Some("hub"),
+            "own",
+            Some("hub"),
+            true,
+            false
+        ));
+        assert!(!anchor_reachable(
+            Some("hub"),
+            "own",
+            Some("hub"),
+            false,
+            false
+        ));
+        assert!(
+            !anchor_reachable(Some("desk"), "own", Some("hub"), true, false),
+            "the coordinator answering does not reach a member anchor"
+        );
+        assert!(anchor_reachable(
+            Some("desk"),
+            "own",
+            Some("hub"),
+            false,
+            true
+        ));
     }
 
     #[test]

@@ -289,7 +289,7 @@ async fn store(
 
 /// The writer key a stored certificate of `writer` certifies. Every certificate of one writer id
 /// names the same key, since the id is the hash of the key.
-async fn writer_key(
+pub(crate) async fn writer_key(
     conn: &mut SqliteConnection,
     space: SpaceId,
     writer: WriterId,

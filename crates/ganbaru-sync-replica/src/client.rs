@@ -130,6 +130,17 @@ impl<T: SyncTransport> ClientSession<'_, T> {
     /// direction, after the record exchange when it is set. While the storage backstop runs,
     /// the operation lanes stop and only the record exchange moves.
     pub async fn exchange(&self) -> Result<Exchange, String> {
+        let result = self.exchange_once().await;
+        // A failed session ends the connection, so the next one with this peer starts anew.
+        if result.is_err()
+            && let Some(link) = &self.records
+        {
+            link.state.disconnected(link.peer);
+        }
+        result
+    }
+
+    async fn exchange_once(&self) -> Result<Exchange, String> {
         let records = match &self.records {
             Some(link) => Some(self.exchange_records(link).await?),
             None => None,

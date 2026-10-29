@@ -148,12 +148,30 @@ impl Window {
         }
     }
 
-    /// The window at `now` for windows of `length`, a fresh one once the current one ended.
-    fn at(self, now: Instant, length: Duration) -> Self {
-        if now.duration_since(self.started) >= length {
-            Self::new(now)
-        } else {
-            self
+    /// The window at `now` for windows of `length` and `budget`. Once the current one ended,
+    /// each window that passed repays one `budget` of what was spent, so a page taken whole past
+    /// the budget is debt the next windows carry.
+    fn at(self, now: Instant, length: Duration, budget: RecordBudget) -> Self {
+        let elapsed = now.duration_since(self.started);
+        if elapsed < length {
+            return self;
+        }
+        if length.is_zero() {
+            return Self::new(now);
+        }
+        let passed = elapsed.as_nanos() / length.as_nanos();
+        let passed = usize::try_from(passed).unwrap_or(usize::MAX);
+        let into = elapsed.as_nanos() % length.as_nanos();
+        Self {
+            started: now
+                .checked_sub(Duration::from_nanos(u64::try_from(into).unwrap_or(0)))
+                .unwrap_or(now),
+            bytes: self
+                .bytes
+                .saturating_sub(budget.bytes.saturating_mul(passed)),
+            envelopes: self
+                .envelopes
+                .saturating_sub(budget.envelopes.saturating_mul(passed)),
         }
     }
 
@@ -203,8 +221,15 @@ impl Backstop {
     /// covered them. Kit records and their ancestors may spend the whole reserve; every other
     /// class only the part outside the kit slice. A miss outside the kit slice leaves the kit
     /// slice open, so a flood of contest records or deep junk chains cannot stop a kit
-    /// handover; the backstop stops fully only once kit records find the reserve spent.
-    fn charge(&mut self, limits: &RecordLimits, class: RecordClass, bytes: u64) -> bool {
+    /// handover. The backstop stops fully only when a miss `stops`: a kit record whose carrier
+    /// the binding fixes finds the reserve spent.
+    fn charge(
+        &mut self,
+        limits: &RecordLimits,
+        class: RecordClass,
+        bytes: u64,
+        stops: bool,
+    ) -> bool {
         let shared = limits.reserve.saturating_sub(limits.kit_reserve);
         let covered = match class {
             RecordClass::Kit => self.spent_kit + self.spent_other + bytes <= limits.reserve,
@@ -213,7 +238,7 @@ impl Backstop {
         match (covered, class) {
             (true, RecordClass::Kit) => self.spent_kit += bytes,
             (true, _) => self.spent_other += bytes,
-            (false, RecordClass::Kit) => self.stopped = true,
+            (false, RecordClass::Kit) if stops => self.stopped = true,
             (false, _) => {}
         }
         covered
@@ -340,6 +365,8 @@ struct Inner {
     /// through ancestors stored the same way. Envelopes matching them are charged as kit
     /// records, so the ancestors a kit handover wants draw on the kit slice of the reserve.
     kit_lineage: BTreeSet<Vec<u8>>,
+    /// Peers whose last session failed, so the next one is a new connection.
+    away: BTreeSet<String>,
 }
 
 /// Device-local state of record exchange, shared by every session and listener of one
@@ -416,23 +443,76 @@ impl RecordExchange {
         inner.kit_lineage.clear();
     }
 
+    /// Forgets the state of the vault this exchange served: cursors, windows, wanted retry
+    /// timing, the backstop with its spend, and the kit lineage. The low budget preference is
+    /// device-wide and stays. Called when the runtime enters another vault, since peer ids and
+    /// stores differ between vaults.
+    pub fn reset_vault(&self) {
+        let mut inner = self.lock();
+        let low = inner.low;
+        *inner = Inner {
+            low,
+            ..Inner::default()
+        };
+    }
+
+    /// Whether this exchange holds state of a vault: a cursor, a window, wanted retry timing,
+    /// a session count, the backstop, the kit lineage, or a peer marked away.
+    pub fn holds_vault_state(&self) -> bool {
+        let inner = self.lock();
+        !(inner.pulled.is_empty()
+            && inner.pushed.is_empty()
+            && inner.served.is_empty()
+            && inner.received.is_empty()
+            && inner.backoff.is_empty()
+            && inner.sessions == 0
+            && inner.backstop.is_none()
+            && inner.kit_lineage.is_empty()
+            && inner.away.is_empty())
+    }
+
     /// Forgets a peer's cursors, as when it connects anew, and lets every wanted entry be asked
     /// of it again.
     pub fn connected(&self, peer: &str) {
         let mut inner = self.lock();
+        Self::connect(&mut inner, peer);
+    }
+
+    fn connect(inner: &mut Inner, peer: &str) {
         inner.pulled.remove(peer);
         inner.pushed.remove(peer);
         inner.backoff.clear();
+        inner.away.remove(peer);
     }
 
-    /// Counts a session with `peer`. A peer this device has no cursor for is new, so every
-    /// wanted entry may be asked of it, see the R7.3 A4 rule.
+    /// Marks a peer whose session failed, so the next session with it starts as a new
+    /// connection, see [`Self::connected`].
+    pub fn disconnected(&self, peer: &str) {
+        self.lock().away.insert(peer.to_string());
+    }
+
+    /// Counts a session with `peer`. A peer whose last session failed connects anew, see
+    /// [`Self::connected`]; for a peer this device has no pull cursor for, every wanted entry may
+    /// be asked again, see the R7.3 A4 rule.
     fn start_session(&self, peer: &str) {
         let mut inner = self.lock();
         inner.sessions += 1;
-        if !inner.pulled.contains_key(peer) {
+        if inner.away.contains(peer) {
+            Self::connect(&mut inner, peer);
+        } else if !inner.pulled.contains_key(peer) {
             inner.backoff.clear();
         }
+    }
+
+    /// Wanted keys whose backoff has not ended, which a lookup leaves out before its limit.
+    fn backed_off(&self) -> BTreeSet<Vec<u8>> {
+        let inner = self.lock();
+        inner
+            .backoff
+            .iter()
+            .filter(|(_, backoff)| backoff.next > inner.sessions)
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     /// The backstop state as the last exchange left it, `None` while full sync runs. Unlike
@@ -445,6 +525,14 @@ impl RecordExchange {
                 BackstopState::Reserve
             }
         })
+    }
+
+    /// Bytes the backstop charged to the kit reserve so far, 0 while full sync runs.
+    #[cfg(test)]
+    pub(crate) fn kit_spent(&self) -> u64 {
+        self.lock()
+            .backstop
+            .map_or(0, |backstop| backstop.spent_kit)
     }
 
     /// The backstop state, `None` while full sync runs. Starts the backstop when the store or
@@ -480,64 +568,73 @@ impl RecordExchange {
 
     /// What `peer` may still be served in this window.
     fn serve_budget(&self, peer: &str) -> RecordBudget {
-        let now = (self.clock)();
         let mut inner = self.lock();
-        let window = inner
-            .served
-            .entry(peer.to_string())
-            .or_insert_with(|| Window::new(now));
-        *window = window.at(now, self.limits.window);
-        window.left(self.limits.normal)
+        self.serve_window(&mut inner, peer).left(self.limits.normal)
     }
 
     fn served(&self, peer: &str, bytes: usize, envelopes: usize) {
-        let now = (self.clock)();
         let mut inner = self.lock();
+        self.serve_window(&mut inner, peer).spend(bytes, envelopes);
+    }
+
+    fn serve_window<'a>(&self, inner: &'a mut Inner, peer: &str) -> &'a mut Window {
+        let now = (self.clock)();
         let window = inner
             .served
             .entry(peer.to_string())
             .or_insert_with(|| Window::new(now));
-        *window = window.at(now, self.limits.window);
-        window.spend(bytes, envelopes);
+        *window = window.at(now, self.limits.window, self.limits.normal);
+        window
     }
 
-    /// What `peer` of `class` may still send in this window. Kit envelopes count against the
-    /// normal budget only.
+    /// What `peer` of `class` may still send in this window, by the normal and the low budget.
+    /// Kit envelopes count against the normal budget only.
     fn receive_budget(&self, peer: &str, class: PeerClass) -> (RecordBudget, RecordBudget) {
-        let now = (self.clock)();
         let mut inner = self.lock();
-        let low = match class {
-            PeerClass::Normal => self.limits.normal,
-            PeerClass::Low => inner.low.unwrap_or(self.limits.low),
-        };
-        let windows = inner
-            .received
-            .entry(peer.to_string())
-            .or_insert_with(|| (Window::new(now), Window::new(now)));
-        windows.0 = windows.0.at(now, self.limits.window);
-        windows.1 = windows.1.at(now, self.limits.window);
+        let low = self.low_of(&inner, class);
+        let windows = self.receive_windows(&mut inner, peer, class);
         (windows.0.left(self.limits.normal), windows.1.left(low))
     }
 
-    fn received(&self, peer: &str, all: (usize, usize), not_kit: (usize, usize)) {
-        let now = (self.clock)();
+    fn received(&self, peer: &str, class: PeerClass, all: (usize, usize), not_kit: (usize, usize)) {
         let mut inner = self.lock();
+        let windows = self.receive_windows(&mut inner, peer, class);
+        windows.0.spend(all.0, all.1);
+        windows.1.spend(not_kit.0, not_kit.1);
+    }
+
+    fn low_of(&self, inner: &Inner, class: PeerClass) -> RecordBudget {
+        match class {
+            PeerClass::Normal => self.limits.normal,
+            PeerClass::Low => inner.low.unwrap_or(self.limits.low),
+        }
+    }
+
+    fn receive_windows<'a>(
+        &self,
+        inner: &'a mut Inner,
+        peer: &str,
+        class: PeerClass,
+    ) -> &'a mut (Window, Window) {
+        let now = (self.clock)();
+        let low = self.low_of(inner, class);
         let windows = inner
             .received
             .entry(peer.to_string())
             .or_insert_with(|| (Window::new(now), Window::new(now)));
-        windows.0 = windows.0.at(now, self.limits.window);
-        windows.1 = windows.1.at(now, self.limits.window);
-        windows.0.spend(all.0, all.1);
-        windows.1.spend(not_kit.0, not_kit.1);
+        windows.0 = windows.0.at(now, self.limits.window, self.limits.normal);
+        windows.1 = windows.1.at(now, self.limits.window, low);
+        windows
     }
 
     /// The envelopes of `envelopes` the backstop still stores, charged to its reserve: kit and
     /// contest envelopes and wanted entries. Every envelope while it is not running.
     ///
-    /// An envelope a stored kit envelope reaches through its writer chain, its writer's
+    /// An envelope a stored class 1 envelope reaches through its writer chain, its writer's
     /// genesis certificate, or its parent entry counts as kit, in this batch and in later ones,
-    /// so the ancestors a kit handover wants are charged to the kit slice.
+    /// so the ancestors a kit handover wants are charged to the kit slice. Only envelopes the
+    /// engine classes 1 seed that lineage, each lineage key is spent by the first envelope that
+    /// matches it, and a lineage envelope that misses the reserve never stops the backstop.
     fn backstop_filter(&self, envelopes: Vec<Vec<u8>>, classes: &[RecordClass]) -> Vec<Vec<u8>> {
         let limits = self.limits;
         let mut guard = self.lock();
@@ -554,6 +651,7 @@ impl RecordExchange {
             .map(|class| *class == RecordClass::Kit)
             .collect();
         let mut lineage = inner.kit_lineage.clone();
+        let mut matched = BTreeSet::new();
         loop {
             let mut grew = false;
             for (index, envelope) in decoded.iter().enumerate() {
@@ -561,12 +659,15 @@ impl RecordExchange {
                 if classes[index] > RecordClass::Wanted {
                     continue;
                 }
-                if !kit[index]
-                    && envelope_keys(envelope)
-                        .iter()
-                        .any(|key| lineage.contains(key))
-                {
-                    kit[index] = true;
+                if !kit[index] {
+                    let keys: Vec<Vec<u8>> = envelope_keys(envelope)
+                        .into_iter()
+                        .filter(|key| lineage.contains(key) && !matched.contains(key))
+                        .collect();
+                    if !keys.is_empty() {
+                        kit[index] = true;
+                        matched.extend(keys);
+                    }
                 }
                 if kit[index] {
                     for key in referenced_keys(envelope) {
@@ -578,8 +679,12 @@ impl RecordExchange {
                 break;
             }
         }
+        for key in &matched {
+            inner.kit_lineage.remove(key);
+        }
         let mut stored = Vec::new();
         for (index, bytes) in envelopes.iter().enumerate() {
+            let bound = classes[index] == RecordClass::Kit;
             let class = if kit[index] {
                 RecordClass::Kit
             } else {
@@ -587,14 +692,18 @@ impl RecordExchange {
             };
             if class > RecordClass::Wanted
                 || backstop.stopped
-                || !backstop.charge(&limits, class, bytes.len() as u64)
+                || !backstop.charge(&limits, class, bytes.len() as u64, bound)
             {
                 continue;
             }
             if class == RecordClass::Kit
                 && let Some(envelope) = &decoded[index]
             {
-                inner.kit_lineage.extend(referenced_keys(envelope));
+                inner.kit_lineage.extend(
+                    referenced_keys(envelope)
+                        .into_iter()
+                        .filter(|key| !matched.contains(key)),
+                );
             }
             stored.push(index);
         }
@@ -742,21 +851,22 @@ pub async fn respond(
             if budget.envelopes == 0 || budget.bytes == 0 {
                 return Err(RecordRefusal::Busy);
             }
+            let max_bytes = budget.bytes.min(SYNC_PAGE_BYTES);
+            let max_envelopes = budget.envelopes.min(MAX_SYNC_RECORDS);
             let mut found = engine
-                .records_by_hash(conn, ctx, &wants.hashes)
+                .records_by_hash(conn, ctx, &wants.hashes, max_bytes, max_envelopes)
                 .await
                 .map_err(failed)?;
             found.extend(
                 engine
-                    .certificates_of(conn, ctx, &wants.writers)
+                    .certificates_of(conn, ctx, &wants.writers, max_bytes, max_envelopes)
                     .await
                     .map_err(failed)?,
             );
             let mut bytes = Vec::new();
             let mut size = 0;
             for envelope in found {
-                let fits = bytes.len() < budget.envelopes.min(MAX_SYNC_RECORDS)
-                    && size + envelope.bytes.len() <= budget.bytes.min(SYNC_PAGE_BYTES);
+                let fits = bytes.len() < max_envelopes && size + envelope.bytes.len() <= max_bytes;
                 if !fits && !bytes.is_empty() {
                     break;
                 }
@@ -806,7 +916,18 @@ pub async fn respond(
                 return Err(RecordRefusal::Busy);
             }
             let kept = state.backstop_filter(records, &classes);
-            admit_pushed(state, engine, conn, ctx, peer, kept, all, not_kit, busy).await
+            admit_pushed(
+                state,
+                engine,
+                conn,
+                ctx,
+                (peer, class),
+                kept,
+                all,
+                not_kit,
+                busy,
+            )
+            .await
         }
         _ => Err(RecordRefusal::Invalid(
             "not a record exchange request".to_string(),
@@ -820,14 +941,14 @@ async fn admit_pushed(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
-    peer: &str,
+    (peer, class): (&str, PeerClass),
     records: Vec<Vec<u8>>,
     all: (usize, usize),
     not_kit: (usize, usize),
     busy: bool,
 ) -> Result<(ControlMessage, bool), RecordRefusal> {
     let now = super::now_ms().map_err(RecordRefusal::Failed)?;
-    state.received(peer, all, if busy { (0, 0) } else { not_kit });
+    state.received(peer, class, all, if busy { (0, 0) } else { not_kit });
     let admission = engine
         .admit_records(conn, ctx, &records, now)
         .await
@@ -925,7 +1046,8 @@ impl<T: SyncTransport> RecordSession<'_, T> {
             .await
             .map_err(|error| format!("class authorization records: {error}"))?;
         let (all, not_kit) = sizes(&envelopes, &classes);
-        self.state.received(self.peer, all, not_kit);
+        self.state
+            .received(self.peer, self.peer_class, all, not_kit);
         let kept = self.state.backstop_filter(envelopes, &classes);
         let now = super::now_ms()?;
         let RecordAdmission { admitted, missing } = self
@@ -1004,15 +1126,22 @@ impl<T: SyncTransport> RecordSession<'_, T> {
             }
         }
     }
-
     /// Asks the peer for what the store wants, following each chain until the peer has
-    /// nothing more of it.
+    /// nothing more of it. Keys the peer answered unknown back off and leave room for the next
+    /// ones in the same session.
     async fn fetch_wanted(&self, exchanged: &mut RecordsExchanged) -> Result<(), String> {
         for _ in 0..WANTED_ROUNDS {
+            // An answer cannot be limited, so asking stops once an ingress window is spent; what an
+            // answer takes past it is debt the later windows carry.
+            if self.ingress_page().is_none() {
+                exchanged.more = true;
+                return Ok(());
+            }
+            let skip = self.state.backed_off();
             let wants = {
                 let mut conn = self.conn().await?;
                 self.engine
-                    .record_wants(&mut conn, self.ctx, MAX_SYNC_RECORDS)
+                    .record_wants(&mut conn, self.ctx, MAX_SYNC_RECORDS, &skip)
                     .await
                     .map_err(|error| format!("read wanted records: {error}"))?
             };
@@ -1042,7 +1171,6 @@ impl<T: SyncTransport> RecordSession<'_, T> {
             exchanged.stored += stored;
             if stored == 0 {
                 self.back_off(&wants);
-                return Ok(());
             }
         }
         Ok(())
@@ -1155,12 +1283,24 @@ impl<T: SyncTransport> RecordSession<'_, T> {
                 let mut conn = self.conn().await?;
                 let mut found = self
                     .engine
-                    .records_by_hash(&mut conn, self.ctx, &missing.hashes)
+                    .records_by_hash(
+                        &mut conn,
+                        self.ctx,
+                        &missing.hashes,
+                        SYNC_PAGE_BYTES,
+                        MAX_SYNC_RECORDS,
+                    )
                     .await
                     .map_err(|error| format!("read authorization records: {error}"))?;
                 found.extend(
                     self.engine
-                        .certificates_of(&mut conn, self.ctx, &missing.writers)
+                        .certificates_of(
+                            &mut conn,
+                            self.ctx,
+                            &missing.writers,
+                            SYNC_PAGE_BYTES,
+                            MAX_SYNC_RECORDS,
+                        )
                         .await
                         .map_err(|error| format!("read writer certificates: {error}"))?,
                 );
@@ -1268,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_spends_until_its_budget_and_renews_after_its_length() {
+    fn a_window_spends_until_its_budget_and_carries_overspend_into_later_windows() {
         let start = Instant::now();
         let mut window = Window::new(start);
         window.spend(NORMAL_BUDGET.bytes - 10, 5);
@@ -1282,10 +1422,19 @@ mod tests {
         window.spend(100, NORMAL_BUDGET.envelopes);
         assert_eq!(window.left(NORMAL_BUDGET).bytes, 0);
         assert_eq!(window.left(NORMAL_BUDGET).envelopes, 0);
-        let same = window.at(start + RECORD_WINDOW / 2, RECORD_WINDOW);
+        let same = window.at(start + RECORD_WINDOW / 2, RECORD_WINDOW, NORMAL_BUDGET);
         assert_eq!(same.left(NORMAL_BUDGET).bytes, 0);
-        let next = window.at(start + RECORD_WINDOW, RECORD_WINDOW);
-        assert_eq!(next.left(NORMAL_BUDGET), NORMAL_BUDGET);
+        // The page taken past the budget is debt the next window starts with.
+        let next = window.at(start + RECORD_WINDOW, RECORD_WINDOW, NORMAL_BUDGET);
+        assert_eq!(
+            next.left(NORMAL_BUDGET),
+            RecordBudget {
+                bytes: NORMAL_BUDGET.bytes - 90,
+                envelopes: NORMAL_BUDGET.envelopes - 5,
+            }
+        );
+        let later = window.at(start + RECORD_WINDOW * 2, RECORD_WINDOW, NORMAL_BUDGET);
+        assert_eq!(later.left(NORMAL_BUDGET), NORMAL_BUDGET);
     }
 
     #[test]
@@ -1293,25 +1442,29 @@ mod tests {
         let limits = RecordLimits::default();
         let shared = BACKSTOP_RESERVE - BACKSTOP_KIT_RESERVE;
         let mut backstop = Backstop::default();
-        assert!(backstop.charge(&limits, RecordClass::Contest, shared - MIB));
+        assert!(backstop.charge(&limits, RecordClass::Contest, shared - MIB, true));
         // Contest and wanted records cannot reach into the kit part, and their miss leaves it
         // open.
-        assert!(!backstop.charge(&limits, RecordClass::Wanted, 2 * MIB));
+        assert!(!backstop.charge(&limits, RecordClass::Wanted, 2 * MIB, true));
         assert!(!backstop.stopped);
-        assert!(backstop.charge(&limits, RecordClass::Kit, BACKSTOP_KIT_RESERVE + MIB));
-        assert!(!backstop.charge(&limits, RecordClass::Kit, 1));
+        assert!(backstop.charge(&limits, RecordClass::Kit, BACKSTOP_KIT_RESERVE + MIB, true));
+        // A kit-charged envelope the binding does not fix, such as an ancestor, misses without
+        // stopping.
+        assert!(!backstop.charge(&limits, RecordClass::Kit, 1, false));
+        assert!(!backstop.stopped);
+        assert!(!backstop.charge(&limits, RecordClass::Kit, 1, true));
         assert!(backstop.stopped);
 
         // A full shared part still admits kit records up to the whole reserve.
         let mut backstop = Backstop::default();
-        assert!(backstop.charge(&limits, RecordClass::Contest, shared));
-        assert!(!backstop.charge(&limits, RecordClass::Contest, 1));
-        assert!(backstop.charge(&limits, RecordClass::Kit, BACKSTOP_KIT_RESERVE));
+        assert!(backstop.charge(&limits, RecordClass::Contest, shared, true));
+        assert!(!backstop.charge(&limits, RecordClass::Contest, 1, true));
+        assert!(backstop.charge(&limits, RecordClass::Kit, BACKSTOP_KIT_RESERVE, true));
         assert!(!backstop.stopped);
 
         // Kit records may spend the whole reserve.
         let mut backstop = Backstop::default();
-        assert!(backstop.charge(&limits, RecordClass::Kit, BACKSTOP_RESERVE));
+        assert!(backstop.charge(&limits, RecordClass::Kit, BACKSTOP_RESERVE, true));
         assert!(!backstop.stopped);
     }
 

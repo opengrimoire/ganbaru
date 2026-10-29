@@ -1001,13 +1001,14 @@ impl ServiceState {
     }
 
     /// Starts over for the vault `vault_id` at `root`: per-vault state resets, the record
-    /// exchange state stays shared with `runtime`, and the backstop reads free space of the
-    /// volume of `root`.
+    /// exchange state stays shared with `runtime` and forgets the previous vault's cursors,
+    /// windows, and backstop, and the backstop reads free space of the volume of `root`.
     fn enter_vault(&mut self, vault_id: String, runtime: &RuntimeState, root: PathBuf) {
         *self = Self {
             vault_id: Some(vault_id),
             ..Self::for_runtime(runtime)
         };
+        runtime.records.reset_vault();
         runtime.set_vault_root(root);
         #[cfg(desktop)]
         runtime.stability.clear();
@@ -3270,7 +3271,7 @@ mod tests {
 
     /// Each vault change keeps the record exchange state the service charges shared with the
     /// runtime, so its backstop reads free space of the new vault's volume; a state of its own
-    /// would read none.
+    /// would read none. The previous vault's exchange state does not carry over.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_vault_change_keeps_the_record_exchange_shared_with_the_runtime() {
@@ -3278,9 +3279,12 @@ mod tests {
         let mut state = ServiceState::for_runtime(&runtime);
         assert_eq!(state.records.free_space(), None);
         for vault in ["first-vault", "second-vault"] {
+            state.records.disconnected("hub");
+            assert!(runtime.records().holds_vault_state());
             state.enter_vault(vault.to_owned(), &runtime, std::env::temp_dir());
             assert_eq!(state.vault_id.as_deref(), Some(vault));
             assert!(state.records.free_space().is_some());
+            assert!(!runtime.records().holds_vault_state());
         }
         assert_eq!(ServiceState::default().records.free_space(), None);
     }

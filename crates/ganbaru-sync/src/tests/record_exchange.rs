@@ -16,6 +16,8 @@ use super::replica::{
 };
 use crate::{AuthorizationView, RecordClass, RecordCursor, RecordEnvelope, RecordRole};
 
+use std::collections::BTreeSet;
+
 const PAGE_BYTES: usize = 600 * 1024;
 const PAGE_ENVELOPES: usize = 256;
 const MAX_ROUNDS: usize = 64;
@@ -157,12 +159,24 @@ fn a_record_without_its_parent_wants_the_parent_and_certificate_until_the_chain_
             );
             let mut found = hub
                 .engine
-                .records_by_hash(&mut hub.conn, &hub.ctx, &missing.hashes)
+                .records_by_hash(
+                    &mut hub.conn,
+                    &hub.ctx,
+                    &missing.hashes,
+                    usize::MAX,
+                    usize::MAX,
+                )
                 .await
                 .unwrap();
             found.extend(
                 hub.engine
-                    .certificates_of(&mut hub.conn, &hub.ctx, &missing.writers)
+                    .certificates_of(
+                        &mut hub.conn,
+                        &hub.ctx,
+                        &missing.writers,
+                        usize::MAX,
+                        usize::MAX,
+                    )
                     .await
                     .unwrap(),
             );
@@ -177,7 +191,12 @@ fn a_record_without_its_parent_wants_the_parent_and_certificate_until_the_chain_
         assert!(rounds > 1, "the chain closes one parent at a time");
         let wants = phone
             .engine
-            .record_wants(&mut phone.conn, &phone.ctx, PAGE_ENVELOPES)
+            .record_wants(
+                &mut phone.conn,
+                &phone.ctx,
+                PAGE_ENVELOPES,
+                &BTreeSet::new(),
+            )
             .await
             .unwrap();
         assert!(wants.is_empty());
@@ -225,12 +244,24 @@ async fn exchange(into: &mut Replica, from: &mut Replica) {
         }
         let mut found = from
             .engine
-            .records_by_hash(&mut from.conn, &from.ctx, &missing.hashes)
+            .records_by_hash(
+                &mut from.conn,
+                &from.ctx,
+                &missing.hashes,
+                usize::MAX,
+                usize::MAX,
+            )
             .await
             .unwrap();
         found.extend(
             from.engine
-                .certificates_of(&mut from.conn, &from.ctx, &missing.writers)
+                .certificates_of(
+                    &mut from.conn,
+                    &from.ctx,
+                    &missing.writers,
+                    usize::MAX,
+                    usize::MAX,
+                )
                 .await
                 .unwrap(),
         );
@@ -368,7 +399,12 @@ fn a_chain_received_ascending_or_descending_beside_a_take_stores_and_selects_the
         for replica in [&mut ascending, &mut descending] {
             let wants = replica
                 .engine
-                .record_wants(&mut replica.conn, &replica.ctx, PAGE_ENVELOPES)
+                .record_wants(
+                    &mut replica.conn,
+                    &replica.ctx,
+                    PAGE_ENVELOPES,
+                    &BTreeSet::new(),
+                )
                 .await
                 .unwrap();
             assert!(wants.is_empty(), "{wants:?}");
@@ -827,12 +863,24 @@ async fn chase(into: &mut Replica, from: &mut Replica, mut missing: crate::Recor
         }
         let mut found = from
             .engine
-            .records_by_hash(&mut from.conn, &from.ctx, &missing.hashes)
+            .records_by_hash(
+                &mut from.conn,
+                &from.ctx,
+                &missing.hashes,
+                usize::MAX,
+                usize::MAX,
+            )
             .await
             .unwrap();
         found.extend(
             from.engine
-                .certificates_of(&mut from.conn, &from.ctx, &missing.writers)
+                .certificates_of(
+                    &mut from.conn,
+                    &from.ctx,
+                    &missing.writers,
+                    usize::MAX,
+                    usize::MAX,
+                )
                 .await
                 .unwrap(),
         );
@@ -878,7 +926,12 @@ fn a_purged_pending_hash_is_requested_until_an_honest_copy_is_stored() {
             }
             let wants = member
                 .engine
-                .record_wants(&mut member.conn, &member.ctx, PAGE_ENVELOPES)
+                .record_wants(
+                    &mut member.conn,
+                    &member.ctx,
+                    PAGE_ENVELOPES,
+                    &BTreeSet::new(),
+                )
                 .await
                 .unwrap();
             if order == [0, 1, 2] {
@@ -906,7 +959,12 @@ fn a_purged_pending_hash_is_requested_until_an_honest_copy_is_stored() {
             );
             let wants = member
                 .engine
-                .record_wants(&mut member.conn, &member.ctx, PAGE_ENVELOPES)
+                .record_wants(
+                    &mut member.conn,
+                    &member.ctx,
+                    PAGE_ENVELOPES,
+                    &BTreeSet::new(),
+                )
                 .await
                 .unwrap();
             assert!(wants.hashes.iter().all(|wanted| wanted.to_vec() != hash));
@@ -1001,5 +1059,64 @@ fn a_forged_genesis_for_another_writer_settles_and_purges_nothing() {
         assert_eq!(after.len(), pending_rows.len() + 1);
         assert!(after.iter().all(|(_, verified)| *verified == 1));
         assert!(refetch_rows(&mut member).await.is_empty());
+    });
+}
+
+/// A data envelope a peer sends is kept only as fork evidence beside a stored twin, see the
+/// R7.3 A2 rule. Alone, or beside its own twin in the same batch, it is refused and never
+/// served on record pages; once a record of the same writer at the same sequence is stored, it
+/// is kept as evidence.
+#[test]
+fn a_lone_data_envelope_is_refused_and_a_twin_of_a_stored_record_is_kept() {
+    block_on(async {
+        let salt = 92;
+        let (mut anchor, _) = anchor_and_admin(salt).await;
+        let (_, revision, parent) = head(&mut anchor).await;
+        let last = anchor.own_ops().await.pop().unwrap();
+        let now_ms = anchor.now_ms;
+        let key = &anchor.identity.key;
+        let data = seal_after(&last, key, Content::Changes(Vec::new()), revision, now_ms);
+        let data_twin = seal_after(&last, key, Content::Acknowledgement, revision, now_ms);
+        let record = AuthorizationRecord {
+            epoch: 0,
+            revision: revision + 1,
+            previous_entry_hash: parent,
+            anchor_device_id: ANCHOR_DEVICE_ID.to_owned(),
+            proposal: proposal(
+                anchor.ctx.space,
+                &anchor_admin(&person()),
+                now_ms + 1,
+                enroll_entry(&person(), 23, DeviceRole::Member),
+            ),
+            sequencing: Sequencing::Empty,
+        };
+        let record_twin = seal_after(
+            &last,
+            key,
+            Content::Authorization(Box::new(record)),
+            revision,
+            now_ms,
+        );
+
+        let mut member = Replica::new(31, salt).await;
+        let before = store_set(&mut member).await;
+        for batch in [vec![data.clone()], vec![data.clone(), data_twin.clone()]] {
+            let admission = admit_bytes(&mut member, &batch).await;
+            assert_eq!(admission.admitted, 0);
+            assert_eq!(store_set(&mut member).await, before);
+            let served = page_bytes(&mut member).await;
+            assert!(!served.contains(&data) && !served.contains(&data_twin));
+        }
+
+        admit_bytes(&mut member, std::slice::from_ref(&record_twin)).await;
+        let admission = admit_bytes(&mut member, std::slice::from_ref(&data)).await;
+        assert_eq!(admission.admitted, 1);
+        let data_hash = Envelope::decode(&data).unwrap().hash().to_vec();
+        assert!(
+            store_set(&mut member)
+                .await
+                .iter()
+                .any(|(role, hash, _)| role == "evidence" && *hash == data_hash)
+        );
     });
 }

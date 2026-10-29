@@ -2,7 +2,8 @@
 //! anchor that keeps sequencing is pulled within the low budget, kit records lead what a peer
 //! serves, and the storage backstop stops sync while its kit reserve still takes a kit forced
 //! handover and the ancestors it wants. A record purged with a bad copy is fetched again by
-//! hash from an honest peer.
+//! hash from an honest peer. Kit records a removed peer seals again under its own writers never
+//! take kit class.
 
 use super::handover::{LAPTOP_DEVICE, enroll_mobile, laptop_ids, sequence_here};
 use super::{
@@ -16,9 +17,14 @@ use crate::records::{
     self, BackstopState, RecordBudget, RecordClock, RecordExchange, RecordLimits, RecordSession,
     RecordsExchanged,
 };
-use crate::tests::{NOW_MS, acquire};
-use ganbaru_sync::{Engine, SyncError};
-use ganbaru_sync_contracts::{AdminKeyPair, DeviceKind, Envelope, WriterId};
+use crate::tests::{NOW_MS, VAULT_ID, acquire};
+use crate::wire::ops_to_wire;
+use ganbaru_handoff::protocol::{ControlMessage, PROTOCOL_VERSION};
+use ganbaru_sync::{Engine, RecordClass, SyncError};
+use ganbaru_sync_contracts::{
+    AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, Entry, Envelope,
+    WriterId, WriterKeyPair, sign_certificate,
+};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -128,6 +134,29 @@ impl Replica {
             .expect("count record envelopes")
     }
 
+    /// Bytes of the largest stored envelope of `writer`.
+    async fn largest_record_of(&self, writer: WriterId) -> usize {
+        let bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(length(envelope)), 0) FROM sync_auth_envelopes WHERE writer_id = ?",
+        )
+        .bind(writer.as_bytes().as_slice())
+        .fetch_one(&self.pool)
+        .await
+        .expect("measure record envelopes");
+        usize::try_from(bytes).expect("an envelope size")
+    }
+
+    /// Stored envelopes of every writer but `writer`, in store order.
+    async fn records_besides(&self, writer: WriterId) -> Vec<Vec<u8>> {
+        sqlx::query_scalar(
+            "SELECT envelope FROM sync_auth_envelopes WHERE writer_id != ? ORDER BY stored_order",
+        )
+        .bind(writer.as_bytes().as_slice())
+        .fetch_all(&self.pool)
+        .await
+        .expect("read record envelopes")
+    }
+
     /// Whether the selected log removed `device_id`.
     async fn removed(&self, device_id: &str) -> bool {
         let mut conn = acquire(&self.pool).await;
@@ -215,10 +244,12 @@ async fn forced_away(label: &str) -> (Replica, Replica) {
     (hub_replica, laptop)
 }
 
-/// Limits whose low budget lets one envelope that is not a kit envelope through per window.
-fn one_low_envelope() -> RecordLimits {
+/// Limits whose low budget lets one envelope of at most `bytes` that is not a kit envelope
+/// through per window. Overspend carries into later windows, so `bytes` is the largest
+/// envelope expected for the budget to renew each window.
+fn one_low_envelope(bytes: usize) -> RecordLimits {
     let one = RecordBudget {
-        bytes: 1,
+        bytes,
         envelopes: 1,
     };
     RecordLimits {
@@ -240,7 +271,7 @@ fn a_removed_anchors_flood_moves_within_the_low_budget_one_window_at_a_time() {
         let before = laptop.records_of(hub_writer).await;
         assert_eq!(flooded - before, i64::try_from(FLOOD).expect("small flood"));
         let transport = record_hub(&hub_replica, RecordExchange::default());
-        let limits = one_low_envelope();
+        let limits = one_low_envelope(hub_replica.largest_record_of(hub_writer).await);
 
         // A member that has not heard of the forced handover classes the old anchor normal.
         let phone = Replica::new("phone-flood-low", PHONE_DEVICE).await;
@@ -371,10 +402,11 @@ fn kit_reserve_only(reserve: u64) -> RecordLimits {
 }
 
 /// R7.6 tests 45 and 50: a member whose record store is past the backstop syncs with the new
-/// anchor. The operation lanes stop with `AuthorizationStorageFull`, the kit reserve still takes
-/// the kit forced handover with the enrollment and certificate it wants, so the removal
-/// selects, and nothing of the flood is stored. A reserve too small for one kit record stops
-/// record exchange fully. Once the bounds are raised, full sync runs again.
+/// anchor. The member already holds the log up to the handover, so the handover binds to the
+/// laptop the log enrolled. The operation lanes stop with `AuthorizationStorageFull`, the kit
+/// reserve still takes the kit forced handover with the certificate it wants, so the removal
+/// selects, and nothing of the flood is stored. A reserve too small for that bound kit record
+/// stops record exchange fully. Once the bounds are raised, full sync runs again.
 #[test]
 fn the_backstop_stops_sync_and_its_kit_reserve_still_takes_a_kit_removal() {
     block_on(async {
@@ -382,6 +414,7 @@ fn the_backstop_stops_sync_and_its_kit_reserve_still_takes_a_kit_removal() {
         let hub_writer = hub_replica.writer.id();
         let laptop_writer = laptop.writer.id();
         let flooded = hub_replica.records_of(hub_writer).await;
+        let log = laptop.records_besides(laptop_writer).await;
         let (transport, _changes) = hub(&hub_replica);
         laptop
             .records_with(
@@ -394,8 +427,9 @@ fn the_backstop_stops_sync_and_its_kit_reserve_still_takes_a_kit_removal() {
         let transport = record_hub(&laptop, RecordExchange::default());
         let ancestors = flooded - i64::try_from(FLOOD).expect("small flood");
 
-        // A reserve too small for any kit record stops record exchange fully.
+        // A reserve too small for the bound kit record stops record exchange fully.
         let stopped_phone = Replica::new("phone-flood-stopped", PHONE_DEVICE).await;
+        stopped_phone.hold_records(&log).await;
         let stopped = RecordExchange::default().with_limits(kit_reserve_only(1));
         let exchanged = stopped_phone
             .sync_with(&transport, &phone_ids(), LAPTOP_DEVICE, &stopped)
@@ -418,6 +452,7 @@ fn the_backstop_stops_sync_and_its_kit_reserve_still_takes_a_kit_removal() {
 
         // A kit reserve that fits the kit records takes them and their ancestors only.
         let phone = Replica::new("phone-flood-backstop", PHONE_DEVICE).await;
+        phone.hold_records(&log).await;
         let reserve = RecordExchange::default().with_limits(kit_reserve_only(1024 * 1024));
         for _ in 0..2 {
             let exchanged = phone
@@ -495,7 +530,7 @@ impl Replica {
     async fn wants_hash(&self, hash: &[u8]) -> bool {
         let mut conn = acquire(&self.pool).await;
         Engine::vault()
-            .record_wants(&mut conn, &self.ctx, usize::MAX)
+            .record_wants(&mut conn, &self.ctx, usize::MAX, &BTreeSet::new())
             .await
             .expect("record wants")
             .hashes
@@ -628,5 +663,419 @@ fn a_purged_record_is_fetched_by_hash_from_an_honest_peer_after_a_bad_copy() {
         relay_honest.close().await;
         relay_certificate.close().await;
         phone.close().await;
+    });
+}
+
+impl Replica {
+    /// How many hashes the record exchange would ask peers for.
+    async fn wanted_hashes(&self) -> usize {
+        let mut conn = acquire(&self.pool).await;
+        Engine::vault()
+            .record_wants(&mut conn, &self.ctx, usize::MAX, &BTreeSet::new())
+            .await
+            .expect("record wants")
+            .hashes
+            .len()
+    }
+
+    /// The certificate of `writer` and its records in sequence order.
+    async fn own_records(&self, writer: WriterId) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+            "SELECT role, envelope FROM sync_auth_envelopes WHERE writer_id = ? ORDER BY seq",
+        )
+        .bind(writer.as_bytes().as_slice())
+        .fetch_all(&self.pool)
+        .await
+        .expect("read own records");
+        let certificate = rows
+            .iter()
+            .find(|(role, _)| role == "certificate")
+            .map(|(_, envelope)| envelope.clone())
+            .expect("a certificate");
+        let records = rows
+            .into_iter()
+            .filter(|(role, _)| role == "record")
+            .map(|(_, envelope)| envelope)
+            .collect();
+        (certificate, records)
+    }
+}
+
+/// How a rewrap differs from the kit records it copies.
+struct Rewrap {
+    /// Seed of the throwaway writer key.
+    writer_seed: u8,
+    /// The device id its certificate names.
+    device_id: &'static str,
+    /// The device key that signs its certificate.
+    device: DeviceKeyPair,
+    /// Changes to the fields the kit does not sign of each record but a handover, whose
+    /// unsigned fields its signed entry fixes.
+    edit: fn(&mut AuthorizationRecord),
+}
+
+/// `records` sealed again under the throwaway writer `rewrap` names, after a genesis re-sealed
+/// from `genesis` with a certificate the rewrap's device key signs. Every kit-signed proposal
+/// stays as the kit signed it.
+fn rewrapped(genesis: &[u8], records: &[Vec<u8>], rewrap: &Rewrap) -> Vec<Vec<u8>> {
+    let key = WriterKeyPair::from_seed(&[rewrap.writer_seed; 32]).expect("writer seed");
+    let writer = WriterId::for_public_key(&key.public_key());
+    let mut operation = Envelope::decode(genesis)
+        .expect("decode")
+        .operation()
+        .expect("operation");
+    let Content::Genesis(signed) = &operation.content else {
+        panic!("a genesis operation");
+    };
+    let mut certificate = signed.certificate.clone();
+    certificate.writer_key = key.public_key();
+    certificate.device_id = rewrap.device_id.to_string();
+    certificate.device_key = rewrap.device.public_key();
+    operation.writer = writer;
+    operation.content =
+        Content::Genesis(sign_certificate(&certificate, &rewrap.device).expect("certificate"));
+    let mut sealed = vec![operation.seal(&key).expect("seal").into_bytes()];
+    for record in records {
+        let previous = Envelope::decode(sealed.last().expect("a genesis")).expect("decode");
+        let (previous_hash, previous_seq) = (previous.hash(), previous.seq);
+        let mut operation = Envelope::decode(record)
+            .expect("decode")
+            .operation()
+            .expect("operation");
+        let Content::Authorization(mut copied) = operation.content else {
+            panic!("an authorization record");
+        };
+        if !matches!(copied.proposal.proposal.entry, Entry::Handover(_)) {
+            (rewrap.edit)(&mut copied);
+        }
+        operation.header.authorization_revision = copied.revision - 1;
+        operation.writer = writer;
+        operation.seq = previous_seq + 1;
+        operation.previous_hash = previous_hash;
+        operation.content = Content::Authorization(copied);
+        sealed.push(operation.seal(&key).expect("seal").into_bytes());
+    }
+    sealed
+}
+
+/// The H1 amendment to R7.6 tests 45 and 50: the kit removed the hub, which serves and pushes the
+/// kit records again under throwaway writers its own device key certifies, as itself, as the
+/// laptop, with a fresh device key, and with forged anchor ids and revisions. None of them takes
+/// kit class, so none draws on the kit reserve and the backstop never stops, before or after the
+/// honest kit records are stored. The honest forced handover from the laptop still lands past
+/// the backstop bound.
+#[test]
+fn rewraps_of_kit_records_by_a_removed_peer_never_take_kit_class() {
+    block_on(async {
+        let (hub_replica, laptop) = forced_away("rewrap").await;
+        let laptop_writer = laptop.writer.id();
+        let log = laptop.records_besides(laptop_writer).await;
+        let (genesis, kit) = laptop.own_records(laptop_writer).await;
+        let chains: Vec<Vec<Vec<u8>>> = [
+            Rewrap {
+                writer_seed: 70,
+                device_id: HUB_DEVICE,
+                device: device_key(HUB_DEVICE),
+                edit: |_| {},
+            },
+            Rewrap {
+                writer_seed: 71,
+                device_id: HUB_DEVICE,
+                device: device_key(HUB_DEVICE),
+                edit: |record| record.anchor_device_id = HUB_DEVICE.to_string(),
+            },
+            Rewrap {
+                writer_seed: 72,
+                device_id: LAPTOP_DEVICE,
+                device: device_key(HUB_DEVICE),
+                edit: |record| record.anchor_device_id = LAPTOP_DEVICE.to_string(),
+            },
+            Rewrap {
+                writer_seed: 73,
+                device_id: HUB_DEVICE,
+                device: device_key("device-rewrap-fresh"),
+                edit: |record| record.anchor_device_id = "device-rewrap-fresh".to_string(),
+            },
+            Rewrap {
+                writer_seed: 74,
+                device_id: HUB_DEVICE,
+                device: device_key(HUB_DEVICE),
+                edit: |record| record.revision += 1,
+            },
+        ]
+        .iter()
+        .map(|rewrap| rewrapped(&genesis, &kit, rewrap))
+        .collect();
+        let rewraps = chains.concat();
+        let rewrap_writers: BTreeSet<WriterId> = rewraps
+            .iter()
+            .map(|envelope| Envelope::decode(envelope).expect("decode").writer)
+            .collect();
+
+        let phone = Replica::new("phone-rewrap", PHONE_DEVICE).await;
+        phone.hold_records(&log).await;
+        {
+            let mut conn = acquire(&phone.pool).await;
+            let classes = Engine::vault()
+                .record_classes(&mut conn, &phone.ctx, &rewraps)
+                .await
+                .expect("classes");
+            assert!(!classes.contains(&RecordClass::Kit), "{classes:?}");
+            let honest: Vec<Vec<u8>> = std::iter::once(genesis.clone()).chain(kit).collect();
+            let classes = Engine::vault()
+                .record_classes(&mut conn, &phone.ctx, &honest)
+                .await
+                .expect("classes");
+            assert!(classes.contains(&RecordClass::Kit), "{classes:?}");
+        }
+
+        let relay = Replica::new("relay-rewrap", "device-relay-rewrap").await;
+        relay.hold_records(&log).await;
+        relay.hold_records(&rewraps).await;
+        for writer in &rewrap_writers {
+            assert!(
+                relay.records_of(*writer).await > 0,
+                "the relay serves {writer:?}"
+            );
+        }
+        let rogue = record_hub(&relay, RecordExchange::default());
+        let state = RecordExchange::default().with_limits(kit_reserve_only(1024 * 1024));
+        // The hub serves the rewraps from its first page, and pushes them chain by chain.
+        let pushed = || async {
+            state.connected(HUB_DEVICE);
+            for _ in 0..3 {
+                phone
+                    .sync_with(&rogue, &phone_ids(), HUB_DEVICE, &state)
+                    .await;
+            }
+            let engine = Engine::vault();
+            for chain in &chains {
+                let mut conn = acquire(&phone.pool).await;
+                let push = ControlMessage::SyncRecordPush {
+                    protocol_version: PROTOCOL_VERSION,
+                    vault_id: VAULT_ID.to_string(),
+                    device_id: HUB_DEVICE.to_string(),
+                    records: ops_to_wire(chain),
+                };
+                // The backstop keeps nothing of them, whatever the answer.
+                let _ = records::respond(&state, &engine, &mut conn, &phone.ctx, HUB_DEVICE, push)
+                    .await;
+            }
+        };
+        let rewraps_held = || async {
+            let mut held = 0;
+            for writer in &rewrap_writers {
+                held += phone.records_of(*writer).await;
+            }
+            held
+        };
+        pushed().await;
+        assert_eq!(state.kit_spent(), 0);
+        assert_eq!(state.backstop_state(), Some(BackstopState::Reserve));
+        assert_eq!(rewraps_held().await, 0);
+        assert!(!phone.removed(HUB_DEVICE).await);
+
+        let honest = record_hub(&laptop, RecordExchange::default());
+        phone
+            .sync_with(&honest, &phone_ids(), LAPTOP_DEVICE, &state)
+            .await;
+        assert!(phone.removed(HUB_DEVICE).await);
+        let spent = state.kit_spent();
+        assert!(spent > 0);
+        assert_eq!(state.backstop_state(), Some(BackstopState::Reserve));
+
+        // Once the honest records are stored, a rewrap carries an entry the store holds.
+        pushed().await;
+        assert_eq!(state.kit_spent(), spent);
+        assert_eq!(state.backstop_state(), Some(BackstopState::Reserve));
+        assert_eq!(rewraps_held().await, 0);
+        hub_replica.close().await;
+        laptop.close().await;
+        relay.close().await;
+        phone.close().await;
+    });
+}
+
+/// Wanted entries a planted chain names that no peer holds, more than one request carries.
+const PLANTED: usize = 300;
+
+/// A chain of [`PLANTED`] copies of `record` under a throwaway writer the hub's device key
+/// certifies, each naming a parent entry no peer holds whose hash sorts below every real one.
+fn planted(genesis: &[u8], record: &[u8]) -> Vec<Vec<u8>> {
+    let key = WriterKeyPair::from_seed(&[80; 32]).expect("writer seed");
+    let writer = WriterId::for_public_key(&key.public_key());
+    let mut operation = Envelope::decode(genesis)
+        .expect("decode")
+        .operation()
+        .expect("operation");
+    let Content::Genesis(signed) = &operation.content else {
+        panic!("a genesis operation");
+    };
+    let mut certificate = signed.certificate.clone();
+    certificate.writer_key = key.public_key();
+    let device = device_key(HUB_DEVICE);
+    operation.writer = writer;
+    operation.content =
+        Content::Genesis(sign_certificate(&certificate, &device).expect("certificate"));
+    let mut sealed = vec![operation.seal(&key).expect("seal").into_bytes()];
+    for index in 0..PLANTED {
+        let previous = Envelope::decode(sealed.last().expect("a genesis")).expect("decode");
+        let (previous_hash, previous_seq) = (previous.hash(), previous.seq);
+        let mut operation = Envelope::decode(record)
+            .expect("decode")
+            .operation()
+            .expect("operation");
+        let Content::Authorization(mut copied) = operation.content else {
+            panic!("an authorization record");
+        };
+        let mut parent = [0u8; 32];
+        parent[30..].copy_from_slice(&u16::try_from(index + 1).expect("few").to_be_bytes());
+        copied.previous_entry_hash = parent;
+        operation.writer = writer;
+        operation.seq = previous_seq + 1;
+        operation.previous_hash = previous_hash;
+        operation.content = Content::Authorization(copied);
+        sealed.push(operation.seal(&key).expect("seal").into_bytes());
+    }
+    sealed
+}
+
+/// The M1 amendment to R7.7: a member holds a chain naming [`PLANTED`] parent entries no peer
+/// holds, all sorting below every real key. It loses an envelope of the anchor's chain and
+/// holds the hash of another for refetch. Without a restart, the next sessions with the
+/// anchor ask for both and store them, the unanswered planted keys backing off.
+#[test]
+fn planted_wants_do_not_starve_an_honest_want_or_a_refetch_hash() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-planted", HUB_DEVICE).await;
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        for index in 0..FLOOD {
+            let seed = 60 + u8::try_from(index).expect("small flood");
+            sequence_here(
+                &mut hub_replica,
+                &enroll_mobile(space, charter, &format!("device-planted-{index}"), seed),
+            )
+            .await;
+        }
+        let hub_writer = hub_replica.writer.id();
+        let (genesis, records) = hub_replica.own_records(hub_writer).await;
+        assert_eq!(records.len(), FLOOD);
+        let transport = record_hub(&hub_replica, RecordExchange::default());
+        let phone = Replica::new("phone-planted", PHONE_DEVICE).await;
+        let state = RecordExchange::default();
+        phone
+            .records_with(&transport, &phone_ids(), HUB_DEVICE, &state)
+            .await;
+        let held = hub_replica.records_of(hub_writer).await;
+        assert_eq!(phone.records_of(hub_writer).await, held);
+
+        phone.hold_records(&planted(&genesis, &records[0])).await;
+        let planted_wants: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sync_auth_wanted WHERE kind = 'entry'")
+                .fetch_one(&phone.pool)
+                .await
+                .expect("count wanted entries");
+        assert!(planted_wants >= i64::try_from(PLANTED).expect("few"));
+        let hash = |bytes: &[u8]| Envelope::decode(bytes).expect("decode").hash().to_vec();
+        let wanted = phone.wanted_hashes().await;
+        let (lost, refetched) = (hash(&records[2]), hash(&records[4]));
+        for gone in [&lost, &refetched] {
+            sqlx::query("DELETE FROM sync_auth_envelopes WHERE envelope_hash = ?")
+                .bind(gone.as_slice())
+                .execute(&phone.pool)
+                .await
+                .expect("lose an envelope");
+        }
+        sqlx::query("INSERT INTO sync_auth_refetch (space_id, envelope_hash) VALUES (?, ?)")
+            .bind(space.as_bytes().as_slice())
+            .bind(refetched.as_slice())
+            .execute(&phone.pool)
+            .await
+            .expect("hold a refetch hash");
+        // Each lost envelope is wanted by its entry, which the next record of the chain names,
+        // and the refetch hash by itself.
+        assert_eq!(phone.wanted_hashes().await, wanted + 3);
+        assert!(phone.wants_hash(&refetched).await);
+
+        let mut sessions = 0;
+        while !(phone.holds_verified(&lost).await && phone.holds_verified(&refetched).await) {
+            assert!(sessions < 2, "still wanted after {sessions} sessions");
+            sessions += 1;
+            phone
+                .records_with(&transport, &phone_ids(), HUB_DEVICE, &state)
+                .await;
+        }
+        assert_eq!(phone.records_of(hub_writer).await, held);
+        assert!(phone.refetching().await.is_empty());
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// Envelopes per page the held peer of the M2 test pushes.
+const PUSHED_PAGE: usize = 2;
+
+/// The M2 amendment to R7.6: the hub the kit removed pushes its flood to the new anchor in
+/// full pages every window, past a low budget of one envelope per window. A page that starts
+/// in budget is taken whole and its overspend is debt later windows repay, so after each window
+/// the anchor holds no more than one envelope per window that passed and one page.
+#[test]
+fn a_held_peer_pushing_full_pages_stays_within_its_budget_over_windows() {
+    block_on(async {
+        let (hub_replica, laptop) = forced_away("flood-push").await;
+        let hub_writer = hub_replica.writer.id();
+        let before = laptop.records_of(hub_writer).await;
+        let (_, records) = hub_replica.own_records(hub_writer).await;
+        let hash = |bytes: &[u8]| Envelope::decode(bytes).expect("decode").hash().to_vec();
+        let mut flood = Vec::new();
+        for record in records {
+            if !laptop.holds(&hash(&record)).await {
+                flood.push(record);
+            }
+        }
+        assert_eq!(flood.len(), FLOOD);
+        let clock = ManualClock::new();
+        let limits = one_low_envelope(hub_replica.largest_record_of(hub_writer).await);
+        let state = RecordExchange::default()
+            .with_limits(limits)
+            .with_clock(clock.clock());
+        let engine = Engine::vault();
+
+        let mut windows = 0;
+        loop {
+            windows += 1;
+            assert!(windows <= 4 * FLOOD, "the flood never finished moving");
+            for page in flood.chunks(PUSHED_PAGE) {
+                if laptop.holds(&hash(page.last().expect("a page"))).await {
+                    continue;
+                }
+                let mut conn = acquire(&laptop.pool).await;
+                let push = ControlMessage::SyncRecordPush {
+                    protocol_version: PROTOCOL_VERSION,
+                    vault_id: VAULT_ID.to_string(),
+                    device_id: HUB_DEVICE.to_string(),
+                    records: ops_to_wire(page),
+                };
+                // A spent window answers busy; the pusher tries every page it has not
+                // delivered again.
+                let _ = records::respond(&state, &engine, &mut conn, &laptop.ctx, HUB_DEVICE, push)
+                    .await;
+            }
+            let taken =
+                usize::try_from(laptop.records_of(hub_writer).await - before).expect("a count");
+            assert!(
+                taken <= windows + PUSHED_PAGE,
+                "{taken} after {windows} windows"
+            );
+            if taken == FLOOD {
+                break;
+            }
+            clock.advance(limits.window);
+        }
+        assert!(windows > FLOOD / PUSHED_PAGE, "{windows} windows");
+        assert!(laptop.removed(HUB_DEVICE).await);
+        hub_replica.close().await;
+        laptop.close().await;
     });
 }

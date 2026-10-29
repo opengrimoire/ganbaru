@@ -18,7 +18,7 @@
 | `sync_version_refs` | The non-null reference values of each retained version, one row per reference column, indexed by referenced key so redirects and deletions find their referrers. |
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect or an optional cause (`cause_table`, `cause_row`) naming the deleted root a cascade repair followed. |
 | `sync_auth_entries` | One row per applied authorization log entry (kind `4`), with its revision, chain hash, and whether chain selection chose it. Unselected entries stay stored and forwarded. |
-| `sync_devices` | Devices the selected chain enrolls: device key, TLS fingerprint, kind, role and admin key, label, and the revisions that enrolled and removed the device. |
+| `sync_devices` | Devices the selected chain enrolls: device key, TLS fingerprint, kind, role and admin key, label, the revisions that enrolled and removed the device, and whether an unresolved handover contest holds its data. |
 | `sync_displaced_versions` | Versions an operation past the anchor mark superseded, kept until the anchor confirms it so excluding it can restore them. |
 | `sync_late_changes` | Rows a removed device changed past its cutoff, per removal, until an admin restores or discards them. |
 | `sync_fork_evidence` | Two signed operations of one writer at one sequence with different hashes. |

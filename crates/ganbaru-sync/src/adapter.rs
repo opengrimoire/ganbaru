@@ -20,6 +20,10 @@ impl fmt::Display for AdapterError {
 
 impl std::error::Error for AdapterError {}
 
+/// Winning values of another deleted row of the same recovery offer, by table and key, or `None`
+/// when that row is not part of it.
+pub type OfferedRows<'f, 'o> = &'f dyn Fn(TableId, &str) -> Option<&'o [(GroupId, Value)]>;
+
 /// Title and preview of a row offered for recovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Presentation {
@@ -110,6 +114,19 @@ pub trait DomainAdapter: Send + Sync {
 
     /// Presentation of a retained row from its winning group values.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation;
+
+    /// Whether a deleted row offered for recovery is superseded by another row of the same offer,
+    /// read through `offered`, so the offer leaves its presentation out of the unseen text.
+    fn superseded_in_offer<'o>(
+        &self,
+        table: TableId,
+        key: &str,
+        values: &[(GroupId, Value)],
+        offered: OfferedRows<'_, 'o>,
+    ) -> bool {
+        let _ = (table, key, values, offered);
+        false
+    }
 }
 
 /// Registered adapters by name.

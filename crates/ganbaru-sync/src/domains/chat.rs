@@ -25,7 +25,7 @@
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
 
-use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
 use crate::codec;
 use crate::manifest::OwnedTable;
@@ -1399,6 +1399,47 @@ impl DomainAdapter for ChatAdapter {
             },
         }
     }
+
+    /// A message revision is superseded when its message, deleted with it, names another revision
+    /// as current or was itself deleted: an offer shows a post's newest text, and never the text
+    /// of a post its author deleted.
+    fn superseded_in_offer<'o>(
+        &self,
+        table: TableId,
+        key: &str,
+        values: &[(GroupId, Value)],
+        offered: OfferedRows<'_, 'o>,
+    ) -> bool {
+        if table != REVISIONS_TABLE {
+            return false;
+        }
+        let Some(Field::Text(message)) =
+            group_fields(values, timeline_group::CREATED).and_then(|fields| fields.first())
+        else {
+            return false;
+        };
+        let Some(message_values) = offered(MESSAGES_TABLE, message) else {
+            return false;
+        };
+        let deleted = group_fields(message_values, message_group::LIFECYCLE)
+            .and_then(|fields| fields.first())
+            .is_some_and(|field| *field != Field::Null);
+        let replaced = match group_fields(message_values, message_group::CONTENT)
+            .and_then(|fields| fields.first())
+        {
+            Some(Field::Text(current)) => current != key,
+            _ => false,
+        };
+        deleted || replaced
+    }
+}
+
+/// Fields of `group` among winning group values, `None` when the group has no value.
+fn group_fields(values: &[(GroupId, Value)], group: GroupId) -> Option<&[Field]> {
+    values
+        .iter()
+        .find(|(candidate, _)| *candidate == group)
+        .map(|(_, value)| value.fields())
 }
 
 #[cfg(test)]

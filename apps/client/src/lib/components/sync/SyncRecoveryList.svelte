@@ -143,6 +143,11 @@
               </li>
             {/each}
           </ul>
+          {#if entry.unseenOmitted > 0}
+            <div class="mt-1 text-[0.75rem] text-muted-foreground">
+              {t("sync.recovery.unseenOmitted", entry.unseenOmitted)}
+            </div>
+          {/if}
         {/if}
       </div>
       <div class="flex shrink-0 gap-2">

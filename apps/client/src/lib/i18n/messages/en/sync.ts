@@ -75,6 +75,7 @@ export const sync = {
     thisDevice: "this device",
     otherDevice: "another device",
     unseen: "Written on a device that had not seen the deletion yet. These do not come back, so copy what you need first.",
+    unseenOmitted: (count: number) => `And ${count} more not shown here`,
     copy: "Copy",
     copied: "Copied",
     copyFailed: "Could not copy the text",

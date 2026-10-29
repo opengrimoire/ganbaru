@@ -125,6 +125,8 @@ export interface SyncRecoveryEntry {
    * project, which restoring the row does not bring back.
    */
   unseen: SyncRecoveryText[];
+  /** Unseen rows past the ones listed in `unseen`, which the offer counts instead of listing. */
+  unseenOmitted: number;
   /** Device of the newest unseen edit. */
   device: SyncDeviceRef;
   editedAtMs: number;
@@ -754,6 +756,7 @@ function readRecoveryEntry(value: unknown, label: string): SyncRecoveryEntry {
     preview: readString(row.preview, `${label}.preview`),
     descendants: readNonNegativeSafeInteger(row.descendants, `${label}.descendants`),
     unseen: readArray(row.unseen, `${label}.unseen`, readRecoveryText),
+    unseenOmitted: readNonNegativeSafeInteger(row.unseenOmitted, `${label}.unseenOmitted`),
     device: mapSyncDeviceRef(row.device, `${label}.device`),
     editedAtMs: readNonNegativeSafeInteger(row.editedAtMs, `${label}.editedAtMs`),
   };

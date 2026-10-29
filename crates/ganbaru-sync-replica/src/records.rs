@@ -16,11 +16,16 @@ use ganbaru_sync::{
 };
 use ganbaru_sync_contracts::{Content, Envelope, OperationKind, WriterId};
 use sqlx::SqliteConnection;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 const _: () = assert!(RECORD_CLASSES == SYNC_RECORD_CLASSES);
+
+/// Bytes of unpaired data envelopes kept per peer: one page, which holds the largest operation,
+/// so the half of a fork pair a page ends with waits for the page that starts with the other.
+const UNPAIRED_BYTES: usize = SYNC_PAGE_BYTES;
+const _: () = assert!(ganbaru_sync_contracts::bounds::MAX_OPERATION_BYTES <= UNPAIRED_BYTES);
 
 /// Length of one admission window.
 pub const RECORD_WINDOW: Duration = Duration::from_secs(10);
@@ -364,6 +369,10 @@ struct Inner {
     /// The wanted key each peer's next lookup continues after, so a session resumes the
     /// rotation through the wanted set where the last answered request left it.
     wanted_after: HashMap<String, Vec<u8>>,
+    /// The latest data envelopes each peer sent that the store did not hold, at most
+    /// [`UNPAIRED_BYTES`], sent again with that peer's next batch so the halves of a fork pair
+    /// that a page boundary split still arrive together.
+    unpaired: HashMap<String, VecDeque<Vec<u8>>>,
     /// Sessions run, for backoff.
     sessions: u64,
     /// The backstop once it started.
@@ -475,6 +484,7 @@ impl RecordExchange {
             && inner.received.is_empty()
             && inner.backoff.is_empty()
             && inner.wanted_after.is_empty()
+            && inner.unpaired.is_empty()
             && inner.sessions == 0
             && inner.backstop.is_none()
             && inner.kit_lineage.is_empty()
@@ -493,7 +503,62 @@ impl RecordExchange {
         inner.pulled.remove(peer);
         inner.pushed.remove(peer);
         inner.backoff.remove(peer);
+        inner.unpaired.remove(peer);
         inner.away.remove(peer);
+    }
+
+    /// Takes the unpaired data envelopes `peer` sent before, to send with its next batch. None
+    /// while the backstop runs, since it stores no fork evidence beyond its reserve.
+    fn take_unpaired(&self, peer: &str) -> Vec<Vec<u8>> {
+        let mut inner = self.lock();
+        let unpaired = inner.unpaired.remove(peer).unwrap_or_default();
+        if inner.backstop.is_some() {
+            return Vec::new();
+        }
+        unpaired.into()
+    }
+
+    /// Keeps the latest of `envelopes`, in order, that fit in [`UNPAIRED_BYTES`] as the
+    /// unpaired data envelopes of `peer`.
+    fn keep_unpaired(&self, peer: &str, envelopes: Vec<Vec<u8>>) {
+        let mut kept = VecDeque::new();
+        let mut bytes = 0;
+        for envelope in envelopes.into_iter().rev() {
+            if kept.len() == MAX_SYNC_RECORDS || bytes + envelope.len() > UNPAIRED_BYTES {
+                break;
+            }
+            bytes += envelope.len();
+            kept.push_front(envelope);
+        }
+        let mut inner = self.lock();
+        if kept.is_empty() || inner.backstop.is_some() {
+            inner.unpaired.remove(peer);
+        } else {
+            inner.unpaired.insert(peer.to_string(), kept);
+        }
+    }
+
+    /// Admits `envelopes` from `peer` after the unpaired data envelopes it sent before, and
+    /// keeps the data envelopes the store still does not hold for its next batch.
+    async fn admit_from(
+        &self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        peer: &str,
+        envelopes: Vec<Vec<u8>>,
+        now_ms: u64,
+    ) -> Result<RecordAdmission, SyncError> {
+        let mut batch = self.take_unpaired(peer);
+        batch.extend(envelopes);
+        let admission = engine.admit_records(conn, ctx, &batch, now_ms).await?;
+        let unpaired = admission
+            .unpaired
+            .iter()
+            .filter_map(|index| batch.get(*index).cloned())
+            .collect();
+        self.keep_unpaired(peer, unpaired);
+        Ok(admission)
     }
 
     /// Marks a peer whose session failed, so the next session with it starts as a new
@@ -963,8 +1028,8 @@ async fn admit_pushed(
 ) -> Result<(ControlMessage, bool), RecordRefusal> {
     let now = super::now_ms().map_err(RecordRefusal::Failed)?;
     state.received(peer, class, all, if busy { (0, 0) } else { not_kit });
-    let admission = engine
-        .admit_records(conn, ctx, &records, now)
+    let admission = state
+        .admit_from(engine, conn, ctx, peer, records, now)
         .await
         .map_err(|error| RecordRefusal::Failed(error.to_string()))?;
     if busy {
@@ -1067,9 +1132,11 @@ impl<T: SyncTransport> RecordSession<'_, T> {
             .received(self.peer, self.peer_class, all, not_kit);
         let kept = self.state.backstop_filter(envelopes, &classes);
         let now = super::now_ms()?;
-        let RecordAdmission { admitted, missing } = self
-            .engine
-            .admit_records(&mut conn, self.ctx, &kept, now)
+        let RecordAdmission {
+            admitted, missing, ..
+        } = self
+            .state
+            .admit_from(self.engine, &mut conn, self.ctx, self.peer, kept, now)
             .await
             .map_err(|error| format!("store authorization records: {error}"))?;
         // Wanted entries a newly stored envelope references are asked for again right away.

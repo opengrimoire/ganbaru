@@ -142,6 +142,10 @@ pub struct RecordAdmission {
     /// The part of the store's wanted set the admitted envelopes reference, and the hashes
     /// whose pending copies they purged.
     pub missing: RecordWants,
+    /// Indexes of the data envelopes of the space in the set that the store does not hold
+    /// verified afterwards. A fork pair whose halves arrive in different sets pairs once a
+    /// later set carries them again together with the other half.
+    pub unpaired: Vec<usize>,
 }
 
 /// Stored envelope bytes and envelope count of the record store, in total and by the device
@@ -197,7 +201,7 @@ struct Classes {
     binding: Option<Binding>,
     /// Revisions and entry hashes of the stored records whose chains [`priority_keys`] completes
     /// first: the records the kit key signs that bound as class 1, and, when asked for, the
-    /// yields an admin at their parent on the selected chain signs.
+    /// yields its parent on the selected chain admits whose author is an admin at the head.
     priority: Vec<(u64, Digest32)>,
 }
 
@@ -270,8 +274,30 @@ struct Bound {
     /// Whether a carrier those keys certify makes the record class 1. Otherwise it only spends
     /// the record's slots.
     kit: bool,
-    /// The epoch instance of the record's parent, `None` when the parent is not read.
-    instance: Option<Digest32>,
+    /// Where the record spends its proposal slot, `None` when its parent is not read.
+    instance: Option<SlotScope>,
+}
+
+/// Where a bound record spends the slot of its proposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SlotScope {
+    /// Inside the epoch instance a kit handover opened, which the handover names. Kit handovers
+    /// bound how many such instances there are.
+    Kit(Digest32),
+    /// Anywhere outside such instances: one slot per proposal in total, so a chain of takes that
+    /// opens new epoch instances cannot mint new slots.
+    Outside,
+}
+
+impl SlotScope {
+    /// The scope of a record whose parent reads `parent`.
+    fn at(parent: &BoundState) -> Self {
+        if parent.kit_instance {
+            Self::Kit(parent.instance)
+        } else {
+            Self::Outside
+        }
+    }
 }
 
 /// What binds a record the head's kit key signs to the envelopes that carry it.
@@ -296,12 +322,15 @@ struct Bound {
 /// class, which only delays it.
 ///
 /// A record whose carrier the parent's key certifies spends its slots even where it is not
-/// class 1: its entry, its parent and proposal pair, and its epoch instance and proposal pair.
+/// class 1: its entry, its parent and proposal pair, and its proposal slot: one per epoch
+/// instance a kit handover opened, and one in total outside them ([`SlotScope`]).
 /// Each slot takes one entry, so another entry that needs a spent slot is not class 1. The
 /// slots are derived from every verified stored record, nodes or not, so a slot stays spent as
 /// the store grows; only a change of the local selected chain can read them anew.
 struct Binding {
     kit_key: AdminPublicKey,
+    /// The state of the local selected head.
+    head: AuthState,
     /// States by entry hash: those the local selected chain reaches and records need, and those
     /// bound records extend.
     states: BTreeMap<Digest32, BoundState>,
@@ -313,8 +342,8 @@ struct Binding {
     bound_entries: BTreeSet<Digest32>,
     /// Spent parent and proposal hash pairs.
     bound_pairs: BTreeSet<(Digest32, Digest32)>,
-    /// Spent epoch instance and proposal hash pairs.
-    bound_instances: BTreeSet<(Digest32, Digest32)>,
+    /// Spent proposal slots, by scope and proposal hash.
+    bound_instances: BTreeSet<(SlotScope, Digest32)>,
 }
 
 impl Binding {
@@ -344,7 +373,7 @@ impl Binding {
                 return Some(Bound {
                     keys: BTreeSet::from([enroll.device_key]),
                     kit: true,
-                    instance: Some(parent.instance),
+                    instance: Some(SlotScope::at(parent)),
                 });
             }
             Entry::Handover(handover) => (state.devices.get(&handover.new_anchor_device_id), true),
@@ -356,7 +385,7 @@ impl Binding {
         Some(Bound {
             keys: device.map(|device| device.device_key).into_iter().collect(),
             kit,
-            instance: Some(parent.instance),
+            instance: Some(SlotScope::at(parent)),
         })
     }
 
@@ -392,7 +421,7 @@ impl Binding {
         &mut self,
         record: &AuthorizationRecord,
         hash: Digest32,
-        instance: Option<Digest32>,
+        instance: Option<SlotScope>,
     ) -> bool {
         let proposal = record.proposal.hash();
         let pair = (record.previous_entry_hash, proposal);
@@ -592,7 +621,7 @@ impl Engine {
     /// Up to `limit` hashes and `limit` writers of what the record store lacks and of the refetch
     /// hashes, leaving out the keys in `skip` before the limit applies. When they do not fit, the
     /// missing ancestors of stored records the kit key binds as class 1 and of stored yields an
-    /// admin signs come first, then the rest in key order from the lowest key.
+    /// admin at the selected head signs come first, then the rest in key order from the lowest key.
     pub async fn record_wants(
         &self,
         conn: &mut SqliteConnection,
@@ -633,8 +662,10 @@ impl Engine {
     /// checks, then the lowest data fork pair of each writer the batch carries (see
     /// [`fork_pairs`]), then any other envelope as fork evidence only when it is a twin of a
     /// stored envelope at its writer and sequence, or the envelope a stored twin pair continues
-    /// from. Returns how many it did not hold, and the part of its wanted set those envelopes
-    /// reference. The next apply selects again.
+    /// from. Returns how many it did not hold, the part of its wanted set those envelopes
+    /// reference, and the data envelopes it does not hold, which a caller may add to a later
+    /// batch from the same peer so a fork pair split across pages still pairs. The next apply
+    /// selects again.
     pub async fn admit_records(
         &self,
         conn: &mut SqliteConnection,
@@ -694,8 +725,28 @@ impl Engine {
         );
         refresh(&mut tx, ctx).await?;
         let missing = wanted(&mut tx, ctx, Some(&referenced), usize::MAX).await?;
+        let mut unpaired = Vec::new();
+        for (index, bytes) in envelopes.iter().enumerate() {
+            let Ok(envelope) = Envelope::decode(bytes) else {
+                continue;
+            };
+            let data = !matches!(
+                OperationKind::from_u8(envelope.kind),
+                Some(OperationKind::Genesis | OperationKind::Authorization)
+            );
+            if data
+                && envelope.space == ctx.space
+                && !holds_verified(&mut tx, ctx, envelope.hash()).await?
+            {
+                unpaired.push(index);
+            }
+        }
         tx.commit().await?;
-        Ok(RecordAdmission { admitted, missing })
+        Ok(RecordAdmission {
+            admitted,
+            missing,
+            unpaired,
+        })
     }
 
     /// The class each of `envelopes` has at the local selected head, for ingress budgets.
@@ -976,7 +1027,8 @@ fn light(row: &sqlx::sqlite::SqliteRow) -> SyncResult<Light> {
 /// and their ancestors, yields and objections, and the writers of live devices that are not
 /// held. `needed` names further entry hashes whose state on the selected chain the binding should
 /// read, the parents of records a peer sends. With `yields` set, the stored yields whose parent
-/// on the selected chain admits them join [`Classes::priority`].
+/// on the selected chain admits them and whose author is an admin at the selected head join
+/// [`Classes::priority`].
 async fn classes(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -1020,7 +1072,9 @@ async fn classes(
     );
     let mut binding = binding(&stored, &resolution, &needed);
     for node in stored_yields {
-        if binding.admits(&node.record) {
+        if binding.admits(&node.record)
+            && binding.head.is_admin(&node.record.proposal.proposal.author)
+        {
             classes.priority.push((node.record.revision, node.hash));
         }
     }
@@ -1184,6 +1238,7 @@ fn binding(stored: &Stored, resolution: &Resolution<'_>, needed: &BTreeSet<Diges
     }
     Binding {
         kit_key,
+        head: state,
         states,
         enrolled,
         certificates: stored
@@ -1490,19 +1545,7 @@ async fn wanted_first(
     let mut wrapped = false;
     'rotation: while !full(&wants) {
         let upper: Option<&[u8]> = wrapped.then_some(after);
-        let keys: Vec<(String, Vec<u8>)> = sqlx::query_as(
-            "SELECT kind, key FROM (
-                SELECT kind, key FROM sync_auth_wanted WHERE space_id = ?1
-                UNION ALL SELECT 'envelope', envelope_hash FROM sync_auth_refetch
-                WHERE space_id = ?1)
-             WHERE key > ?2 AND (?3 IS NULL OR key <= ?3) ORDER BY key, kind LIMIT ?4",
-        )
-        .bind(space.as_slice())
-        .bind(cursor.as_slice())
-        .bind(upper)
-        .bind(WANTED_PAGE)
-        .fetch_all(&mut *conn)
-        .await?;
+        let keys = wanted_page(conn, ctx, &cursor, upper).await?;
         if keys.is_empty() {
             if wrapped || after.is_empty() {
                 break;
@@ -1522,12 +1565,58 @@ async fn wanted_first(
     Ok((wants, cursor))
 }
 
+/// Kinds of the wanted set, each read through its own primary key range.
+const WANTED_KINDS: [&str; 3] = ["entry", "envelope", "writer"];
+
+/// Up to [`WANTED_PAGE`] wanted keys and refetch hashes past `after`, and at most `upper` when
+/// it is set, in key order. Each kind and the refetch hashes are read in key order through
+/// their primary keys and merged here, so no read sorts the whole set.
+async fn wanted_page(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    after: &[u8],
+    upper: Option<&[u8]>,
+) -> SyncResult<Vec<(String, Vec<u8>)>> {
+    let space = ctx.space.as_bytes();
+    let mut keys: Vec<(String, Vec<u8>)> = Vec::new();
+    for kind in WANTED_KINDS {
+        let page: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT key FROM sync_auth_wanted
+             WHERE space_id = ?1 AND kind = ?2 AND key > ?3 AND (?4 IS NULL OR key <= ?4)
+             ORDER BY key LIMIT ?5",
+        )
+        .bind(space.as_slice())
+        .bind(kind)
+        .bind(after)
+        .bind(upper)
+        .bind(WANTED_PAGE)
+        .fetch_all(&mut *conn)
+        .await?;
+        keys.extend(page.into_iter().map(|key| (kind.to_string(), key)));
+    }
+    let refetch: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT envelope_hash FROM sync_auth_refetch
+         WHERE space_id = ?1 AND envelope_hash > ?2 AND (?3 IS NULL OR envelope_hash <= ?3)
+         ORDER BY envelope_hash LIMIT ?4",
+    )
+    .bind(space.as_slice())
+    .bind(after)
+    .bind(upper)
+    .bind(WANTED_PAGE)
+    .fetch_all(&mut *conn)
+    .await?;
+    keys.extend(refetch.into_iter().map(|key| ("envelope".to_string(), key)));
+    keys.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+    keys.truncate(usize::try_from(WANTED_PAGE).unwrap_or(usize::MAX));
+    Ok(keys)
+}
+
 /// Wanted keys that complete the chains of the stored records the kit key at the local selected
-/// head signs that bound as class 1, and of the stored yields an admin at their parent on the
-/// selected chain signs, newest first: the parent entry, writer, and previous envelope of each,
-/// then the same of each stored ancestor, within [`PRIORITY_SCAN_ROWS`] reads. Records that
-/// bound nothing and yields of keys that are not admins there never lead. Best effort: it
-/// orders requests and decides nothing.
+/// head signs that bound as class 1, and of the stored yields their parent on the selected chain
+/// admits and an admin at the selected head signs, newest first: the parent entry, writer, and
+/// previous envelope of each, then the same of each stored ancestor, within
+/// [`PRIORITY_SCAN_ROWS`] reads. Records that bound nothing and yields of keys that are not
+/// admins at the head never lead. Best effort: it orders requests and decides nothing.
 async fn priority_keys(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -1577,6 +1666,23 @@ async fn refresh(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<
         records::refresh_wanted(conn, ctx.space, &charter.hash()).await?;
     }
     Ok(())
+}
+
+/// Whether the store holds a verified envelope with `hash`.
+async fn holds_verified(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    hash: Digest32,
+) -> SyncResult<bool> {
+    let held: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sync_auth_envelopes
+         WHERE space_id = ? AND envelope_hash = ? AND verified = 1 LIMIT 1",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(hash.as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(held.is_some())
 }
 
 /// Envelope hashes whose pending copy was purged and that no verified copy has replaced yet.

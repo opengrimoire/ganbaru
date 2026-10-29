@@ -4,7 +4,8 @@
 //! handover and the ancestors it wants. A record purged with a bad copy is fetched again by
 //! hash from an honest peer. Kit records a removed peer seals again under its own writers never
 //! take kit class, at its own historical parents either. Planted wants and a busy peer do not
-//! starve an honest want, and a held peer admits a data fork pair from one page.
+//! starve an honest want, and a held peer admits a data fork pair from one page or from two.
+//! The self-takes of an admin the stolen anchor enrolled spend one kit slot per kit proposal.
 
 use super::handover::{LAPTOP_DEVICE, enroll_mobile, laptop_ids, sequence_here};
 use super::{
@@ -20,11 +21,14 @@ use crate::records::{
 };
 use crate::tests::{NOW_MS, VAULT_ID, acquire};
 use crate::wire::ops_to_wire;
-use ganbaru_handoff::protocol::{ControlMessage, PROTOCOL_VERSION};
+use ganbaru_handoff::protocol::{
+    ControlMessage, MAX_SYNC_RECORDS, PROTOCOL_VERSION, SYNC_PAGE_BYTES,
+};
 use ganbaru_sync::{Engine, RecordClass, SyncError};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, Digest32, Entry,
-    Envelope, Operation, Sequencing, WriterId, WriterKeyPair, Yield, sign_certificate,
+    AdminKeyPair, AuthorizationRecord, Change, ChangeAction, Content, DeviceKeyPair, DeviceKind,
+    Digest32, Entry, Envelope, Field, GroupId, GroupValue, Operation, RowKey, Sequencing, TableId,
+    Value, WriterId, WriterKeyPair, Yield, sign_certificate,
 };
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1502,5 +1506,309 @@ fn a_held_peer_takes_a_data_fork_pair_from_one_page_and_walks_as_a_member_does()
         hub_replica.close().await;
         member.close().await;
         phone.close().await;
+    });
+}
+
+/// An admin desktop the stolen anchor enrolls, which then takes the anchor from itself.
+const PUPPET_DEVICE: &str = "device-puppet";
+/// Self-takes the puppet seals, each the selected head of the replica that stores it.
+const SELF_TAKES: u8 = 6;
+
+/// The D2-M1 amendment to R7.6 tests 45 and 50: the stolen anchor enrolls an admin puppet,
+/// which takes the anchor and then takes it from itself [`SELF_TAKES`] times, each take a new
+/// epoch instance. A phone without the kit handover stores each take as its selected head, and
+/// the puppet's key rewraps the kit removal of the hub at that head under a throwaway writer.
+/// Outside the instances a kit handover opened, a kit proposal spends one kit slot in total, so
+/// one rewrap at most takes kit class: the kit reserve keeps nearly all its room, the backstop
+/// never stops, and the honest kit handover still lands past the bound.
+#[test]
+fn self_takes_of_a_puppet_admin_spend_one_kit_slot_per_kit_proposal() {
+    block_on(async {
+        let (mut hub_replica, laptop) = forced_away_removing("self-take", &[]).await;
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        let puppet_admin = AdminKeyPair::from_seed(&[44; 32]).expect("admin seed");
+        for entry in [
+            authority::enroll_entry(Enrollment {
+                device_id: PUPPET_DEVICE.to_string(),
+                device_key: device_key(PUPPET_DEVICE).public_key(),
+                tls_fingerprint: [44; 32],
+                label: "Puppet".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            authority::promote_entry(PUPPET_DEVICE, puppet_admin.public_key()),
+        ] {
+            let proposal = authority::propose(space, charter, &hub_keys().admin, entry, NOW_MS)
+                .expect("sign the puppet's entry");
+            sequence_here(&mut hub_replica, &proposal).await;
+        }
+        let laptop_writer = laptop.writer.id();
+        let log = hub_replica.records_besides(laptop_writer).await;
+        let (laptop_genesis, kit) = laptop.own_records(laptop_writer).await;
+        let removal = kit
+            .iter()
+            .find(|envelope| {
+                authorization_record(envelope).is_some_and(|record| {
+                    matches!(&record.proposal.proposal.entry,
+                        Entry::Remove(remove) if remove.device_id == HUB_DEVICE)
+                })
+            })
+            .expect("the kit removal of the hub");
+
+        let mut puppet = Replica::new("puppet-self-take", PUPPET_DEVICE).await;
+        puppet.hold_records(&log).await;
+        let phone = Replica::new("phone-self-take", PHONE_DEVICE).await;
+        phone.hold_records(&log).await;
+        let state = RecordExchange::default().with_limits(kit_reserve_only(1024 * 1024));
+        let engine = Engine::vault();
+        let puppet_device = device_key(PUPPET_DEVICE);
+        let puppet_writer = puppet.writer.id();
+        let mut kit_rewraps = 0;
+        let mut largest_rewrap = 0;
+        for round in 0..SELF_TAKES {
+            let mut conn = acquire(&puppet.pool).await;
+            authority::seal_handover_here(
+                &puppet.engine,
+                &mut conn,
+                &puppet.ctx,
+                &puppet_admin,
+                &mut puppet.writer.local(),
+                None,
+                NOW_MS,
+            )
+            .await
+            .expect("seal a take")
+            .expect("the puppet takes the anchor");
+            drop(conn);
+            let seq = puppet.stored().await.get(&puppet_writer);
+            puppet.writer.committed(seq).expect("record commit");
+            let (certificate, takes) = puppet.own_records(puppet_writer).await;
+            let take = takes.last().expect("a take");
+            let take_record = authorization_record(take).expect("an authorization record");
+            assert_eq!(take_record.anchor_device_id, PUPPET_DEVICE);
+            phone.hold_records(&[certificate, take.clone()]).await;
+
+            let mut operation = operation_of(removal);
+            let Content::Authorization(record) = &mut operation.content else {
+                panic!("an authorization record");
+            };
+            record.previous_entry_hash = take_record.hash();
+            record.revision = take_record.revision + 1;
+            record.epoch = take_record.epoch;
+            record.anchor_device_id = PUPPET_DEVICE.to_string();
+            let Sequencing::Removal { discovery_key, .. } = &mut record.sequencing else {
+                panic!("a removal");
+            };
+            discovery_key[0] = round;
+            let (key, genesis) =
+                throwaway_writer(&laptop_genesis, 120 + round, PUPPET_DEVICE, &puppet_device);
+            let rewrap = vec![genesis.clone(), seal_next(&genesis, &key, operation)];
+            largest_rewrap = largest_rewrap.max(rewrap.iter().map(Vec::len).sum::<usize>());
+            let classes = {
+                let mut conn = acquire(&phone.pool).await;
+                engine
+                    .record_classes(&mut conn, &phone.ctx, &rewrap)
+                    .await
+                    .expect("classes")
+            };
+            if classes[1] == RecordClass::Kit {
+                kit_rewraps += 1;
+            }
+            let mut conn = acquire(&phone.pool).await;
+            let push = ControlMessage::SyncRecordPush {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: PUPPET_DEVICE.to_string(),
+                records: ops_to_wire(&rewrap),
+            };
+            // Past the backstop only a kit envelope is stored, whatever the answer.
+            let _ =
+                records::respond(&state, &engine, &mut conn, &phone.ctx, PUPPET_DEVICE, push).await;
+            assert_ne!(state.backstop_state(), Some(BackstopState::Stopped));
+        }
+        assert_eq!(kit_rewraps, 1, "the head allowance takes one slot in total");
+        assert!(
+            state.kit_spent() <= u64::try_from(largest_rewrap).expect("a small rewrap"),
+            "the kit reserve spent {} bytes",
+            state.kit_spent()
+        );
+
+        let honest = record_hub(&laptop, RecordExchange::default());
+        phone
+            .sync_with(&honest, &phone_ids(), LAPTOP_DEVICE, &state)
+            .await;
+        for envelope in &kit {
+            assert!(phone.holds_verified(&envelope_hash(envelope)).await);
+        }
+        assert_eq!(state.backstop_state(), Some(BackstopState::Reserve));
+        hub_replica.close().await;
+        laptop.close().await;
+        puppet.close().await;
+        phone.close().await;
+    });
+}
+
+/// A data operation of `writer`'s chain after `previous`, at the selected head's revision,
+/// whose one change carries a blob of `bytes` bytes filled with `fill`.
+fn large_changes(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    revision: u64,
+    bytes: usize,
+    fill: u8,
+) -> Vec<u8> {
+    let table = TableId(0);
+    let group = GroupId::new(0).expect("a group id");
+    let value = Value::new(vec![Field::Blob(vec![fill; bytes])]).expect("a blob in bounds");
+    let mut operation = operation_of(previous);
+    operation.header.authorization_revision = revision;
+    operation.content = Content::Changes(vec![Change {
+        table,
+        row: RowKey::new("large-row").expect("a row key"),
+        action: ChangeAction::Create,
+        groups: vec![GroupValue::new(table, group, value)],
+        replaced_by: None,
+        cause: None,
+    }]);
+    seal_next(previous, key, operation)
+}
+
+/// The D2-M2 amendment to R7.7: the two halves of a data fork pair are each over half a page,
+/// so no page carries both. A member holds the pair and a record that continues from one half.
+/// A peer the log does not enroll pulls the member's pages and a relay takes them as pushed
+/// pages: each keeps the half one page ends with until the next page brings the other, admits
+/// the pair, and walks as the member does.
+#[test]
+fn halves_of_a_data_fork_pair_on_two_pages_reach_a_held_peer_and_a_relay() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-split-fork", HUB_DEVICE).await;
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        sequence_here(
+            &mut hub_replica,
+            &enroll_mobile(space, charter, "device-split-fork", 64),
+        )
+        .await;
+        let hub_writer = hub_replica.writer.id();
+        let (genesis, records) = hub_replica.own_records(hub_writer).await;
+        let head_envelope = records.last().expect("a record");
+        let head = authorization_record(head_envelope).expect("an authorization record");
+        let (key, fork_genesis) =
+            throwaway_writer(&genesis, 84, HUB_DEVICE, &device_key(HUB_DEVICE));
+        let half = SYNC_PAGE_BYTES / 2 + 1024;
+        let first = large_changes(&fork_genesis, &key, head.revision, half, 1);
+        let second = large_changes(&fork_genesis, &key, head.revision, half, 2);
+        assert!(first.len() + second.len() > SYNC_PAGE_BYTES);
+        let mut operation = operation_of(head_envelope);
+        let Content::Authorization(record) = &mut operation.content else {
+            panic!("an authorization record");
+        };
+        record.revision = head.revision + 1;
+        record.previous_entry_hash = head.hash();
+        record.proposal = enroll_mobile(space, charter, FORK_ENROLLED, 97);
+        record.sequencing = Sequencing::Empty;
+        let enrolled = seal_next(&first, &key, operation);
+        let fork_writer = Envelope::decode(&fork_genesis).expect("decode").writer;
+        let fork = vec![fork_genesis, first, second, enrolled];
+
+        let member = Replica::new("member-split-fork", "device-member-split-fork").await;
+        member
+            .hold_records(&hub_replica.records_besides(fork_writer).await)
+            .await;
+        member.hold_records(&fork).await;
+        for envelope in &fork {
+            assert!(member.holds(&envelope_hash(envelope)).await);
+        }
+        let limits = RecordLimits {
+            low: RecordLimits::default().normal,
+            ..RecordLimits::default()
+        };
+
+        let phone = Replica::new("phone-split-fork", PHONE_DEVICE).await;
+        let transport = record_hub(&member, RecordExchange::default());
+        let state = RecordExchange::default().with_limits(limits);
+        phone
+            .records_with(&transport, &phone_ids(), "device-member-split-fork", &state)
+            .await;
+
+        let relay = Replica::new("relay-split-fork", "device-relay-split-fork").await;
+        let relay_state = RecordExchange::default().with_limits(limits);
+        let engine = Engine::vault();
+        let mut cursor = ganbaru_sync::RecordCursor::default();
+        loop {
+            let page = {
+                let mut conn = acquire(&member.pool).await;
+                engine
+                    .record_page(
+                        &mut conn,
+                        &member.ctx,
+                        &cursor,
+                        SYNC_PAGE_BYTES,
+                        MAX_SYNC_RECORDS,
+                    )
+                    .await
+                    .expect("a record page")
+            };
+            if page.envelopes.is_empty() {
+                break;
+            }
+            let bytes: Vec<Vec<u8>> = page.envelopes.into_iter().map(|e| e.bytes).collect();
+            assert!(bytes.iter().map(Vec::len).sum::<usize>() <= SYNC_PAGE_BYTES);
+            let mut conn = acquire(&relay.pool).await;
+            let push = ControlMessage::SyncRecordPush {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: "device-member-split-fork".to_string(),
+                records: ops_to_wire(&bytes),
+            };
+            records::respond(
+                &relay_state,
+                &engine,
+                &mut conn,
+                &relay.ctx,
+                "device-member-split-fork",
+                push,
+            )
+            .await
+            .expect("the relay takes the page");
+            cursor = page.cursor;
+        }
+
+        let walk = |replica: &Replica| {
+            let (pool, ctx) = (replica.pool.clone(), replica.ctx.clone());
+            async move {
+                let mut conn = acquire(&pool).await;
+                let engine = Engine::vault();
+                let view = engine
+                    .authorization(&mut conn, &ctx)
+                    .await
+                    .expect("authorization")
+                    .expect("charter");
+                let storage = engine
+                    .authorization_storage(&mut conn, &ctx)
+                    .await
+                    .expect("authorization storage");
+                (view, storage)
+            }
+        };
+        let (member_view, member_storage) = walk(&member).await;
+        assert!(
+            member_storage
+                .forked_writers
+                .iter()
+                .any(|forked| forked.writer == fork_writer)
+        );
+        for peer in [&phone, &relay] {
+            for envelope in &fork {
+                assert!(peer.holds_verified(&envelope_hash(envelope)).await);
+            }
+            let (view, storage) = walk(peer).await;
+            assert_eq!(view, member_view);
+            assert_eq!(storage, member_storage);
+        }
+        hub_replica.close().await;
+        member.close().await;
+        phone.close().await;
+        relay.close().await;
     });
 }

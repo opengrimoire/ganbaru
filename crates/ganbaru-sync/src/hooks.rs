@@ -76,9 +76,10 @@ pub trait MaterializeHook: Send + Sync {
     ) -> HookFuture<'a>;
 
     /// Groups of `table` whose concurrent versions [`MaterializeHook::settle`] decides. Each
-    /// must be a `Register` or `Coupled` group of plain columns, without owned tables,
-    /// references, or duplicate-repaired columns; [`crate::Engine::with`] refuses others.
-    /// None by default.
+    /// must be a `Register` or `Coupled` group of columns, without owned tables or
+    /// duplicate-repaired columns; [`crate::Engine::with`] refuses others. Its reference columns
+    /// may only take a row one of the versions names, see [`MaterializeHook::settle`]. None by
+    /// default.
     fn settled_groups(&self, table: &'static TableSpec) -> &'static [GroupId] {
         let _ = table;
         &[]
@@ -97,8 +98,9 @@ pub trait MaterializeHook: Send + Sync {
     /// apply groups is open, so the chain's last pass decides the state the whole chain
     /// leaves. It skips the row while it holds a local capture, or when this connection may
     /// not edit the table, and reports a value that breaks the group's rules, the adapter's
-    /// derived columns, or a constraint of the domain table as an invalid row instead of
-    /// writing it.
+    /// derived columns, or a constraint of the domain table, or whose reference column names a
+    /// row no version names, as an invalid row instead of writing it. A reference is written
+    /// resolved, so a row hidden since resolves to null as a winner's would.
     ///
     /// Every device decides the same versions, so the result must depend only on `versions`
     /// and on replicated rows, never on device-local state; devices that settle concurrently
@@ -162,8 +164,9 @@ impl Hooks {
 }
 
 /// Why a hook may not settle `group` of `table`, see [`MaterializeHook::settled_groups`]. The
-/// engine writes a settled value into plain columns of the row only, so a group whose value
-/// resolves references, fills owned tables, or takes part in a duplicate repair is refused.
+/// engine writes a settled value into columns of the row only, so a group whose value fills
+/// owned tables or takes part in a duplicate repair is refused. Reference columns are allowed:
+/// the engine resolves them like a winner's and accepts only rows a version names.
 pub(crate) fn settle_problem(table: &TableSpec, group: GroupId) -> Option<&'static str> {
     let Some(spec) = table.group(group) else {
         return Some("names an unknown group");
@@ -176,9 +179,6 @@ pub(crate) fn settle_problem(table: &TableSpec, group: GroupId) -> Option<&'stat
     }
     if !spec.owned_tables().is_empty() {
         return Some("names a group with owned tables");
-    }
-    if spec.reference_columns().next().is_some() {
-        return Some("names a group with references");
     }
     let repaired = table.resolutions.iter().any(|resolution| match resolution {
         Resolution::DuplicateRepair { columns, .. } => spec

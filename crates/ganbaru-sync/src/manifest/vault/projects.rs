@@ -664,6 +664,7 @@ const BASE: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -907,6 +908,7 @@ pub const PRIMARY_FOLDERS: TableSpec = TableSpec {
     id: PRIMARY_FOLDERS_TABLE,
     name: "project_primary_working_folders",
     key_column: "project_id",
+    key_parent: Some(PROJECTS_TABLE),
     groups: &[
         group(
             primary_folder_group::CREATED,

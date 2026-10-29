@@ -713,6 +713,10 @@ pub struct TableSpec {
     pub publish_when: Option<&'static str>,
     /// The predicate table whose row publishes this table's rows.
     pub published_with: Option<PublishedWith>,
+    /// The earlier table whose row key this table's key also names, through a key foreign key
+    /// with `ON DELETE CASCADE`. The key is not a group column, so no reference declares it: the
+    /// row is hidden while that parent row is, and it is recovered with it.
+    pub key_parent: Option<TableId>,
     /// Whether domain code may hold local deletes of the table for Undo with
     /// [`crate::hold::hold_deletes`]. Rows that the held delete removes through
     /// `ON DELETE CASCADE` inherit the hold, see [`Manifest::may_hold_deletes`]. Device
@@ -1088,6 +1092,7 @@ impl Manifest {
                 .chain(acyclic_problems(table))
                 .chain(self.acyclic_cascade_problems(table))
                 .chain(self.publication_problems(table))
+                .chain(self.key_parent_problems(table))
             {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
             }
@@ -1100,6 +1105,33 @@ impl Manifest {
         } else {
             Err(problems.trim_end().to_string())
         }
+    }
+
+    /// Why a key parent cannot hide its children by key. Both tables hold one row per plain
+    /// key, so the child's key names the parent row; the parent never redirects, since the key
+    /// could not follow; and the parent holds no deletes, since a held delete would not reach
+    /// the child.
+    fn key_parent_problems(&self, table: &TableSpec) -> Vec<String> {
+        let Some(parent) = table.key_parent else {
+            return Vec::new();
+        };
+        let mut problems = Vec::new();
+        if table.has_composite_key() || table.derived_key.is_some() {
+            problems.push("a key-parent child is keyed by a plain row key".to_string());
+        }
+        match self.table(parent) {
+            Some(spec) if spec.has_composite_key() || spec.derived_key.is_some() => {
+                problems.push("the key parent is keyed by a plain row key".to_string());
+            }
+            Some(spec) if spec.redirects => {
+                problems.push("the key parent does not redirect".to_string());
+            }
+            Some(_) if self.may_hold_deletes(parent) => {
+                problems.push("the key parent holds no deletes".to_string());
+            }
+            _ => {}
+        }
+        problems
     }
 
     /// Why a table's publication declarations are malformed. A predicate is one non-blank
@@ -1277,8 +1309,8 @@ impl Manifest {
     }
 
     /// Tables whose rows can root a recovery offer, in manifest order: tables with a
-    /// recoverable group and, transitively, the tables they reference with `ON DELETE CASCADE`,
-    /// because a cascaded deletion groups its rows under the deleted parent. Derived-key tables
+    /// recoverable group and, transitively, the tables they reference with `ON DELETE CASCADE`
+    /// or name as their key parent, because a cascaded deletion groups its rows under the deleted parent. Derived-key tables
     /// are left out: a removed derived-key row stays live in merge state, so it never carries
     /// the recovery flag, and adding the key again is how it comes back.
     pub fn recovery_root_tables(&self) -> Vec<&'static TableSpec> {
@@ -1293,9 +1325,12 @@ impl Manifest {
                 .tables
                 .iter()
                 .filter(|spec| roots.contains(&spec.id))
-                .flat_map(|spec| spec.references())
-                .filter(|(_, _, reference)| reference.on_delete == OnDelete::Cascade)
-                .map(|(_, _, reference)| reference.table)
+                .flat_map(|spec| {
+                    spec.references()
+                        .filter(|(_, _, reference)| reference.on_delete == OnDelete::Cascade)
+                        .map(|(_, _, reference)| reference.table)
+                        .chain(spec.key_parent)
+                })
                 .filter(|table| !roots.contains(table))
                 .collect();
             if parents.is_empty() {

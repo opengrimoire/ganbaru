@@ -4,11 +4,13 @@
     listSyncRecovery,
     restoreSyncRecovery,
     type SyncRecoveryEntry,
+    type SyncRecoveryText,
   } from "$lib/api/sync";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { syncPresentations } from "$lib/sync/presentations";
   import { formatSyncTime, syncDeviceName } from "$lib/sync/status";
+  import { writeTextToClipboard } from "$lib/utils/clipboard";
 
   let {
     buttonClass,
@@ -82,6 +84,21 @@
     }
   }
 
+  /** Copies the text of a deleted row the offer may not bring back. */
+  async function copyUnseen(text: SyncRecoveryText): Promise<void> {
+    message = "";
+    failed = false;
+    loadFailed = false;
+    try {
+      await writeTextToClipboard(text.title && text.preview ? `${text.title}\n\n${text.preview}` : text.title || text.preview);
+      message = t("sync.recovery.copied");
+    } catch (cause: unknown) {
+      console.warn("sync recovery text could not be copied", cause);
+      failed = true;
+      message = t("sync.recovery.copyFailed");
+    }
+  }
+
   $effect(() => {
     void recoveryCount;
     void load();
@@ -111,6 +128,22 @@
             formatSyncTime(t, localization.locale, entry.editedAtMs, now),
           )}
         </div>
+        {#if entry.unseen.length > 0}
+          <div class="mt-1 text-[0.75rem] text-muted-foreground">{t("sync.recovery.unseen")}</div>
+          <ul class="mt-1 flex min-w-0 flex-col gap-1">
+            {#each entry.unseen as text, index (index)}
+              <li class="flex min-w-0 items-start gap-2">
+                <div class="min-w-0 flex-1 text-[0.8rem] break-words whitespace-pre-wrap text-foreground">
+                  {#if text.title}<div class="font-medium">{text.title}</div>{/if}
+                  {#if text.preview}<div class="line-clamp-4">{text.preview}</div>{/if}
+                </div>
+                <button type="button" class={actionClass} onclick={() => void copyUnseen(text)}>
+                  {t("sync.recovery.copy")}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </div>
       <div class="flex shrink-0 gap-2">
         {#if syncPresentations.recoveryRestorable(entry.table)}

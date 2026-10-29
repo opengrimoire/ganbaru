@@ -18,7 +18,10 @@
 //! the ones whose executing device is this one. Started assignments are reported so a device
 //! whose concurrent start merged onto another executing device stops its own run. The hook also
 //! settles concurrent folder grant edits: when one inherits the channel override and that
-//! override is stricter than the explicit override the merge kept, the grant takes it. Android
+//! override is stricter than the explicit override the merge kept, the grant takes it. It settles
+//! concurrent channel membership access edits onto the narrowest of each part, so a narrower
+//! profile or an inherited stricter scratch override survives a concurrent widening the priority
+//! cannot rank. Android
 //! never holds an active authorization, since runs execute only on desktop, so it has no drain to
 //! wake. Dispatch and the readers of teammates and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
@@ -27,7 +30,7 @@ use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::chat;
-use ganbaru_sync::manifest::vault::chat::folder_grant_group;
+use ganbaru_sync::manifest::vault::chat::{channel_membership_group, folder_grant_group};
 use ganbaru_sync::{
     ChangeSink, ConcurrentVersion, HookError, HookFuture, Hooks, MaterializeHook, SettleFuture,
 };
@@ -138,6 +141,8 @@ impl MaterializeHook for ChatApplyHook {
     fn settled_groups(&self, table: &'static TableSpec) -> &'static [GroupId] {
         if table.id == chat::FOLDER_GRANTS.id {
             &SETTLED_GRANT_GROUPS
+        } else if table.id == chat::CHANNEL_MEMBERSHIPS.id {
+            &SETTLED_CHANNEL_MEMBERSHIP_GROUPS
         } else {
             &[]
         }
@@ -152,18 +157,111 @@ impl MaterializeHook for ChatApplyHook {
         versions: &'a [ConcurrentVersion],
     ) -> SettleFuture<'a> {
         Box::pin(async move {
-            if table.id != chat::FOLDER_GRANTS.id || group != folder_grant_group::GRANT {
-                return Ok(None);
-            }
-            settle_folder_grant(conn, key, versions)
-                .await
-                .map_err(hook_error)
+            let settled =
+                if table.id == chat::FOLDER_GRANTS.id && group == folder_grant_group::GRANT {
+                    settle_folder_grant(conn, key, versions).await
+                } else if table.id == chat::CHANNEL_MEMBERSHIPS.id
+                    && group == channel_membership_group::ACCESS
+                {
+                    settle_channel_access(conn, versions).await
+                } else {
+                    Ok(None)
+                };
+            settled.map_err(hook_error)
         })
     }
 }
 
 /// Folder grant groups whose concurrent versions [`ChatApplyHook`] settles.
 const SETTLED_GRANT_GROUPS: [GroupId; 1] = [folder_grant_group::GRANT];
+
+/// Channel membership groups whose concurrent versions [`ChatApplyHook`] settles.
+const SETTLED_CHANNEL_MEMBERSHIP_GROUPS: [GroupId; 1] = [channel_membership_group::ACCESS];
+
+/// Number of fields in a channel membership's access group value, the last being `removed_at`.
+const ACCESS_FIELDS: usize = 11;
+
+/// Decodes a channel membership access group value, `None` when it is removed or malformed.
+fn channel_access(value: &Value) -> Option<sync_effects::ChannelAccess> {
+    let fields = value.fields();
+    if fields.len() != ACCESS_FIELDS || !matches!(fields[10], Field::Null) {
+        return None;
+    }
+    let text = |field: &Field| match field {
+        Field::Text(text) => Some(text.clone()),
+        _ => None,
+    };
+    let optional_text = |field: &Field| match field {
+        Field::Null => Some(None),
+        Field::Text(text) => Some(Some(text.clone())),
+        _ => None,
+    };
+    let flag = |field: &Field| match field {
+        Field::Integer(0) => Some(false),
+        Field::Integer(1) => Some(true),
+        _ => None,
+    };
+    Some(sync_effects::ChannelAccess {
+        access_profile_id: text(&fields[0])?,
+        read_history: flag(&fields[1])?,
+        read_history_inherits_profile: flag(&fields[2])?,
+        participate: flag(&fields[3])?,
+        participate_inherits_profile: flag(&fields[4])?,
+        history_boundary: text(&fields[5])?,
+        history_boundary_inherits_profile: flag(&fields[6])?,
+        history_from_order_key: optional_text(&fields[7])?,
+        runtime_approval_policy: optional_text(&fields[8])?,
+        scratch_runtime_approval_policy: optional_text(&fields[9])?,
+    })
+}
+
+/// Encodes `access` as a live channel membership access group value.
+fn channel_access_value(access: sync_effects::ChannelAccess) -> Option<Value> {
+    let flag = |value: bool| Field::Integer(i64::from(value));
+    let optional_text = |value: Option<String>| value.map_or(Field::Null, Field::Text);
+    Value::new(vec![
+        Field::Text(access.access_profile_id),
+        flag(access.read_history),
+        flag(access.read_history_inherits_profile),
+        flag(access.participate),
+        flag(access.participate_inherits_profile),
+        Field::Text(access.history_boundary),
+        flag(access.history_boundary_inherits_profile),
+        optional_text(access.history_from_order_key),
+        optional_text(access.runtime_approval_policy),
+        optional_text(access.scratch_runtime_approval_policy),
+        Field::Null,
+    ])
+    .ok()
+}
+
+/// Settles the concurrent access group `versions` of one channel membership onto the narrowest
+/// of each part, see [`sync_effects::settled_channel_access`]. A removal stands, since the
+/// priority already ranks it above every live version.
+async fn settle_channel_access(
+    conn: &mut SqliteConnection,
+    versions: &[ConcurrentVersion],
+) -> ganbaru_chat_contracts::models::ChatResult<Option<Value>> {
+    let Some(winner) = versions.iter().position(|version| version.won) else {
+        return Ok(None);
+    };
+    let Some(accesses) = versions
+        .iter()
+        .map(|version| channel_access(&version.value))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let profile_ids: Vec<&str> = accesses
+        .iter()
+        .map(|access| access.access_profile_id.as_str())
+        .collect();
+    let profiles = sync_effects::channel_access_profiles(conn, &profile_ids).await?;
+    Ok(
+        sync_effects::settled_channel_access(&accesses, winner, &profiles)
+            .and_then(channel_access_value),
+    )
+}
 
 /// Position of the runtime approval override in a folder grant's grant group value.
 const GRANT_APPROVAL_FIELD: usize = 3;

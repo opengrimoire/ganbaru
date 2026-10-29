@@ -6,6 +6,12 @@
 //! with plain SQL and no dependency on the engine, so any caller holding the connection can run
 //! it. It never writes replicated rows.
 
+mod channel_access;
+
+pub use channel_access::{
+    ChannelAccess, ProfileDefaults, channel_access_profiles, settled_channel_access,
+};
+
 use crate::attachment_files;
 use crate::coordination::revocation::{
     revoke_assignment_authorizations, revoke_teammate_authorizations,

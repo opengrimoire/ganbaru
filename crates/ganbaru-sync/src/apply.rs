@@ -1179,7 +1179,8 @@ pub(crate) async fn finish(
             // A settle is a local edit, so it needs a slot that could seal it, and it waits
             // with the repairs for the state the whole chain leaves.
             let settles = !resuming && slot.may_seal(conn, ctx).await?;
-            let mut changed = materialize::execute(engine, conn, plan, settles, now_ms).await?;
+            let mut changed =
+                materialize::execute(engine, conn, &mut visibility, plan, settles, now_ms).await?;
             changed.stale_left = stale_left;
             report.invalid_rows.append(&mut changed.refused);
             // A settled row holds its captured value instead of the winner.

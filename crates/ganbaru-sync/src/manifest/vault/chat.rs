@@ -631,6 +631,7 @@ const BASE: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -676,6 +677,7 @@ pub const TEAMMATES: TableSpec = TableSpec {
     id: TEAMMATES_TABLE,
     name: "chat_teammates",
     key_column: "participant_id",
+    key_parent: Some(PARTICIPANTS_TABLE),
     groups: &[
         immutable(teammate_group::CREATED, &[timestamp("created_at")], &[]),
         surfaced(register(
@@ -902,7 +904,8 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
 /// capabilities, history boundary, and approval overrides form one coupled value, so concurrent
 /// edits keep one whole setting: a removal first, then the one that clears more capabilities
 /// explicitly, then the stricter approval overrides, with no override counting as the least
-/// strict.
+/// strict. The Chat materialize hook settles the access group onto the narrowest profile and
+/// resolved parts the priority cannot rank.
 pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     id: CHANNEL_MEMBERSHIPS_TABLE,
     name: "chat_teammate_channel_memberships",
@@ -1140,6 +1143,7 @@ pub const MESSAGES: TableSpec = TableSpec {
     id: MESSAGES_TABLE,
     name: "chat_communication_messages",
     key_column: "item_id",
+    key_parent: Some(ITEMS_TABLE),
     groups: &[
         immutable(
             message_group::CREATED,
@@ -1280,6 +1284,7 @@ pub const REFERENCES: TableSpec = TableSpec {
 /// values without foreign keys; a missing target renders the label snapshot.
 const TARGET: TableSpec = TableSpec {
     key_column: "reference_id",
+    key_parent: Some(REFERENCES_TABLE),
     ..BASE
 };
 
@@ -1633,6 +1638,7 @@ pub const SEMANTIC_UPDATES: TableSpec = TableSpec {
     id: SEMANTIC_UPDATES_TABLE,
     name: "chat_work_semantic_updates",
     key_column: "item_id",
+    key_parent: Some(ITEMS_TABLE),
     groups: &[immutable(
         semantic_update_group::CREATED,
         &[

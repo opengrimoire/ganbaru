@@ -2,6 +2,7 @@ use super::*;
 use crate::models::UtcTimestamp;
 use crate::project_defaults::{default_channel_ids, ensure_project_chat_defaults};
 use sqlx::SqlitePool;
+use std::collections::BTreeMap;
 
 const NOW: &str = "2026-10-24T09:00:00.000Z";
 const PROJECT_ID: &str = "project-sync-effects";
@@ -1375,4 +1376,33 @@ async fn an_inheriting_grant_edit_settles_onto_a_stricter_channel_override() {
     .await
     .unwrap();
     assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
+}
+
+/// The channel access settle reads each named profile's effective revision and its folder
+/// capability rank, leaving out a profile without one.
+#[tokio::test]
+async fn channel_access_profiles_read_effective_revisions_with_their_capability_rank() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    let mut connection = pool.acquire().await.unwrap();
+
+    let profiles = channel_access_profiles(
+        &mut connection,
+        &[PROFILE_ID, "access-profile:unknown", PROFILE_ID],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        profiles,
+        BTreeMap::from([(
+            PROFILE_ID.to_string(),
+            ProfileDefaults {
+                read_history: true,
+                participate: true,
+                history_boundary: "entire".to_string(),
+                folder_capability_rank: 2,
+            },
+        )])
+    );
 }

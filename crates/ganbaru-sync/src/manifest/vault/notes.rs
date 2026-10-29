@@ -605,6 +605,7 @@ const BASE: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -1410,6 +1411,7 @@ pub const ANCHORS: TableSpec = TableSpec {
     id: ANCHORS_TABLE,
     name: "notes_comment_thread_anchors",
     key_column: "thread_id",
+    key_parent: Some(THREADS_TABLE),
     groups: &[
         immutable(anchor_group::CREATED, "created", &[CREATED_TIME], &[]),
         reference(

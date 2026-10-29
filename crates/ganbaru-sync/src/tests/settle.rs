@@ -3,21 +3,26 @@
 //! stricter value by every device that decides both, each device writes at most one settle,
 //! equal settles converge quietly, and a crash before the settle is sealed loses nothing. A
 //! device that cannot seal settles nothing, settles wait for an open chain, refused values
-//! leave apply going, and an elided winner is stored back before its row is overwritten.
+//! leave apply going, and an elided winner is stored back before its row is overwritten. A
+//! settle may take a reference a concurrent version names, and one naming another row is
+//! refused.
 
-use ganbaru_sync_contracts::Field;
 use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
+use ganbaru_sync_contracts::{Field, GroupId, Value};
 use sqlx::SqliteConnection;
 
 use super::block_on;
 use super::fixture::{
-    ASK, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, RESERVED, TEST_MANIFEST, UNATTENDED,
-    UNDERIVABLE, list_group, override_group, test_adapters, test_engine_with,
+    ASK, LINKS, LINKS_TABLE, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, RESERVED, TEST_MANIFEST,
+    UNATTENDED, UNDERIVABLE, list_group, override_group, test_adapters, test_engine_hooking,
+    test_engine_with,
 };
 use super::groups::{insert_note, new_ops, reseal_chain};
 use super::replica::{Replica, connection_from, converge, pair, quoted};
 use crate::error::failpoints;
-use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
+use crate::hooks::{
+    ChangeSink, ConcurrentVersion, HookFuture, Hooks, MaterializeHook, SettleFuture,
+};
 use crate::manifest::TableSpec;
 use crate::{ApplyReport, Engine, SyncError, local};
 
@@ -537,4 +542,136 @@ fn an_engine_refuses_a_hook_that_settles_a_group_with_owned_tables() {
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+/// The ends group of links, a register with references to both cycle tables.
+const LINK_ENDS: GroupId = LINKS.groups[1].id;
+
+const LINK: &str = "l-1";
+
+/// Settles the ends of a link on the winner's value with the highest left end any version
+/// names, or with `invented` as the left end, for tests of refused references.
+struct LinkEndsHook {
+    invented: Option<&'static str>,
+}
+
+impl MaterializeHook for LinkEndsHook {
+    fn after_materialize<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changed_keys: &'a [String],
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn settled_groups(&self, _table: &'static TableSpec) -> &'static [GroupId] {
+        &[LINK_ENDS]
+    }
+
+    fn settle<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _key: &'a str,
+        _group: GroupId,
+        versions: &'a [ConcurrentVersion],
+    ) -> SettleFuture<'a> {
+        let left = |version: &ConcurrentVersion| match version.value.fields().get(1) {
+            Some(Field::Text(left)) => Some(left.clone()),
+            _ => None,
+        };
+        let settled = versions
+            .iter()
+            .find(|version| version.won)
+            .and_then(|winner| {
+                let highest = self
+                    .invented
+                    .map(str::to_string)
+                    .or_else(|| versions.iter().filter_map(left).max())?;
+                if left(winner).as_ref() == Some(&highest) {
+                    return None;
+                }
+                let mut fields = winner.value.fields().to_vec();
+                fields[1] = Field::Text(highest);
+                Value::new(fields).ok()
+            });
+        Box::pin(std::future::ready(Ok(settled)))
+    }
+}
+
+/// Two replicas running [`LinkEndsHook`] that share [`LINK`] from `a-1` and cycle rows `a-1`,
+/// `a-2`, and `a-9`; replica 0 moves the left end to `a-2` while replica 1 edits the note.
+async fn concurrent_end_and_note(invented: Option<&'static str>) -> Vec<Replica> {
+    let mut replicas = vec![Replica::new(0, 37).await, Replica::new(1, 37).await];
+    for replica in replicas.iter_mut() {
+        replica.engine = test_engine_hooking(LINKS_TABLE, Box::new(LinkEndsHook { invented }));
+    }
+    replicas[0]
+        .exec(
+            "INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'one'), ('a-2', 'two'),
+                 ('a-9', 'nine');
+             INSERT INTO fixture_links (id, note, left_id) VALUES ('l-1', 'n', 'a-1')",
+        )
+        .await;
+    converge(&mut replicas).await;
+    replicas[0]
+        .exec("UPDATE fixture_links SET left_id = 'a-2' WHERE id = 'l-1'")
+        .await;
+    assert_eq!(replicas[0].seal().await.unwrap().sealed_ops, 1);
+    replicas[1]
+        .exec("UPDATE fixture_links SET note = 'x' WHERE id = 'l-1'")
+        .await;
+    assert_eq!(replicas[1].seal().await.unwrap().sealed_ops, 1);
+    replicas
+}
+
+/// The note and left end of [`LINK`].
+async fn link(replica: &mut Replica) -> (String, Option<String>) {
+    sqlx::query_as("SELECT note, left_id FROM fixture_links WHERE id = ?")
+        .bind(LINK)
+        .fetch_one(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn a_settle_may_choose_a_reference_a_concurrent_version_names() {
+    block_on(async {
+        let mut replicas = concurrent_end_and_note(None).await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                link(replica).await,
+                ("x".to_string(), Some("a-2".to_string()))
+            );
+            assert_eq!(pending(replica).await, 0);
+            replica.check_invariants().await;
+            replica.check_version_values().await;
+        }
+        let first = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, first);
+    });
+}
+
+#[test]
+fn a_settled_reference_no_concurrent_version_names_is_refused() {
+    block_on(async {
+        let mut replicas = concurrent_end_and_note(Some("a-9")).await;
+        let reports = pull(&mut replicas, 1, 0).await;
+        let refused: Vec<_> = reports
+            .iter()
+            .filter_map(|report| report.seal.as_ref())
+            .flat_map(|seal| &seal.invalid_rows)
+            .collect();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].table, LINKS_TABLE);
+        assert_eq!(refused[0].row_key, LINK);
+        let replica = &mut replicas[1];
+        assert_ne!(link(replica).await.1.as_deref(), Some("a-9"));
+        assert_eq!(pending(replica).await, 0);
+        replica.check_invariants().await;
+        replica.check_version_values().await;
+    });
 }

@@ -1300,14 +1300,19 @@ pub(crate) async fn captured_in(
     Ok(found)
 }
 
-/// Rows a change depends on: the rows its reference columns and owned rows name, and the cause
-/// and redirect target of a tombstone. Sealing a change without the create of such a row would
-/// materialize the reference as null, leave the owned row out, or hide the row.
+/// Rows a change depends on: its key parent, the rows its reference columns and owned rows
+/// name, and the cause and redirect target of a tombstone. Sealing a change without the create
+/// of such a row would materialize the reference as null, leave the owned row out, or hide the
+/// row.
 pub(crate) fn change_dependencies(engine: &Engine, change: &Change) -> Vec<RowRef> {
     let Some(table) = engine.manifest().table(change.table) else {
         return Vec::new();
     };
-    let mut rows = Vec::new();
+    let mut rows: Vec<RowRef> = table
+        .key_parent
+        .map(|parent| (parent, change.row.as_str().to_string()))
+        .into_iter()
+        .collect();
     for (group, field, reference) in table.references() {
         let value = change.groups.iter().find(|value| value.group == group.id);
         if let Some(Field::Text(key)) = value.and_then(|value| value.value.fields().get(field)) {

@@ -223,6 +223,79 @@ fn a_restored_notes_page_brings_back_its_blocks_and_comments() {
     });
 }
 
+/// A pair sharing the seeded page filed under the seeded project `project-1`, with the page
+/// deleted on the hub, then `hub_sql` run there, while the phone edits the child paragraph.
+async fn project_pair_with_offer(label: &str, hub_sql: &str) -> Pair {
+    let mut pair = Pair::new(label).await;
+    pair.hub_edit(&format!(
+        "{page}
+         UPDATE notes_pages SET project_id = 'project-1' WHERE id = '{PAGE}';",
+        page = page_sql(),
+    ))
+    .await;
+    pair.converge().await;
+    pair.hub_edit(&format!(
+        "DELETE FROM notes_pages WHERE id = '{PAGE}'; {hub_sql}"
+    ))
+    .await;
+    pair.phone_edit(&format!(
+        "UPDATE notes_blocks SET text = '{edited}', plain_text = 'Edited child'
+         WHERE id = '{CHILD}'",
+        edited = text("Edited child"),
+    ))
+    .await;
+    pair.converge().await;
+    pair
+}
+
+/// A restored page keeps its project while the project exists.
+#[test]
+fn a_restored_notes_page_keeps_its_project() {
+    super::block_on(async {
+        let mut pair = project_pair_with_offer("notes-recovery-project-page", "").await;
+        assert_eq!(pair.offers().await, [PAGE]);
+
+        let page = restore(&mut pair, &PAGES, PAGE, false).await;
+        assert_eq!(
+            pair.texts(format!(
+                "SELECT title || '|' || coalesce(project_id, '') FROM notes_pages
+                 WHERE id = '{page}'"
+            ))
+            .await,
+            ["Plans|project-1"]
+        );
+        pair.finish().await;
+    });
+}
+
+/// A restored page whose project is gone returns to the workspace without a project.
+#[test]
+fn a_restored_notes_page_drops_a_deleted_project() {
+    super::block_on(async {
+        let mut pair = project_pair_with_offer(
+            "notes-recovery-gone-project-page",
+            "DELETE FROM projects WHERE id = 'project-1';",
+        )
+        .await;
+        assert_eq!(pair.offers().await, [PAGE]);
+
+        let page = restore(&mut pair, &PAGES, PAGE, false).await;
+        assert_eq!(
+            pair.texts(format!(
+                "SELECT title || '|' || coalesce(project_id, '') FROM notes_pages
+                 WHERE id = '{page}'"
+            ))
+            .await,
+            ["Plans|"]
+        );
+        assert_eq!(
+            page_blocks(&pair, &page).await,
+            ["Parent|0", "Edited child|0", "Second|0"]
+        );
+        pair.finish().await;
+    });
+}
+
 /// A deleted block returns under its page in its retained position, with its child.
 #[test]
 fn a_restored_notes_block_returns_to_its_page_with_its_children() {

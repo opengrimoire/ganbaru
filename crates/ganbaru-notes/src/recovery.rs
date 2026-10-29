@@ -34,6 +34,7 @@ use std::collections::{HashMap, HashSet};
 use ganbaru_sync::RecoveryDescendant;
 use ganbaru_sync::codec;
 use ganbaru_sync::guards::is_guard_abort;
+use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::manifest::vault::notes::{
     ASSETS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE,
     DATABASES_TABLE, DOMAIN, FOLDERS_TABLE, LOCAL_USERS_TABLE, OPTIONS_TABLE, PAGE_TEMPLATES_TABLE,
@@ -324,7 +325,10 @@ async fn restore(
 
     let root_id = match state.prepare(conn, &root, true).await? {
         Step::Ready { row, key, patches } => {
-            state.insert(conn, row, &key, patches, true).await?;
+            state
+                .insert(conn, row, &key, patches, true)
+                .await
+                .map_err(InsertError::into_message)?;
             key
         }
         Step::Wait => {
@@ -353,26 +357,30 @@ async fn restore(
                         .begin()
                         .await
                         .map_err(|error| format!("begin restore descendant: {error}"))?;
-                    match state
+                    let inserted = state
                         .insert(&mut savepoint, ready, &key, patches, false)
-                        .await
-                    {
-                        Ok(()) => savepoint
+                        .await;
+                    if let Err(InsertError::Failed(reason)) = inserted {
+                        return Err(reason);
+                    }
+                    if inserted.is_ok() {
+                        savepoint
                             .commit()
                             .await
-                            .map_err(|error| format!("commit restore descendant: {error}"))?,
-                        Err(_) => {
-                            savepoint.rollback().await.map_err(|error| {
-                                format!("roll back restore descendant: {error}")
-                            })?;
-                            state.leave_out(&row);
-                        }
+                            .map_err(|error| format!("commit restore descendant: {error}"))?;
+                    } else {
+                        savepoint
+                            .rollback()
+                            .await
+                            .map_err(|error| format!("roll back restore descendant: {error}"))?;
+                        state.leave_out(&row);
                     }
                 }
-                Ok(Step::Skip(_)) | Err(_) => {
+                Ok(Step::Skip(_)) => {
                     progressed = true;
                     state.leave_out(&row);
                 }
+                Err(reason) => return Err(reason),
             }
         }
         queue = waiting;
@@ -429,7 +437,11 @@ impl Restore {
         if self.pending.contains(&(table, old.to_string())) {
             return Ok(Reference::Wait);
         }
-        let spec = spec_of(table)?;
+        // A reference into another domain, such as a page's project, is only checked for
+        // existence: that domain restores its own rows.
+        let spec = VAULT_MANIFEST
+            .table(table)
+            .ok_or_else(|| format!("table {} is not a vault table", table.0))?;
         let exists: Option<i64> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT 1 FROM {} WHERE {} = ?",
             spec.name, spec.key_column
@@ -547,7 +559,10 @@ impl Restore {
         self.leave_trash(original, &mut row, root);
 
         if key.is_none() {
-            key = Some(derived_key(&row)?);
+            match derived_key(&row) {
+                Ok(derived) => key = Some(derived),
+                Err(reason) => return Ok(Step::Skip(reason)),
+            }
         }
         let key = key.ok_or_else(|| format!("a recovered {} row has no key", spec.name))?;
         Ok(Step::Ready { row, key, patches })
@@ -647,7 +662,7 @@ impl Restore {
         key: &str,
         patches: Vec<Patch>,
         root: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), InsertError> {
         insert_row(conn, &row, key, root).await?;
         for (owned, bytes) in &row.owned {
             insert_owned(conn, owned, key, bytes).await?;
@@ -742,7 +757,7 @@ async fn insert_row(
     row: &RestoredRow,
     key: &str,
     root: bool,
-) -> Result<(), String> {
+) -> Result<(), InsertError> {
     let mut names = vec![row.spec.key_column];
     let mut placeholders = vec!["?"];
     let mut binds = vec![Field::Text(key.to_string())];
@@ -776,7 +791,7 @@ async fn insert_row(
     query
         .execute(&mut *conn)
         .await
-        .map_err(|error| format!("restore {} row: {error}", row.spec.name))?;
+        .map_err(|error| InsertError::from_sqlx(row.spec.name, &error))?;
     Ok(())
 }
 
@@ -786,15 +801,18 @@ async fn insert_owned(
     owned: &'static OwnedTable,
     parent_key: &str,
     bytes: &[u8],
-) -> Result<(), String> {
+) -> Result<(), InsertError> {
+    let unsupported =
+        || InsertError::Failed(format!("restoring {} rows is not supported", owned.table));
     let OwnedOrder::Ordinal(ordinal_column) = owned.order else {
-        return Err(format!("restoring {} rows is not supported", owned.table));
+        return Err(unsupported());
     };
     if !owned.references.is_empty() {
-        return Err(format!("restoring {} rows is not supported", owned.table));
+        return Err(unsupported());
     }
-    let rows = codec::decode(owned, bytes)
-        .map_err(|reason| format!("decode recovered {}: {reason}", owned.table))?;
+    let rows = codec::decode(owned, bytes).map_err(|reason| {
+        InsertError::Failed(format!("decode recovered {}: {reason}", owned.table))
+    })?;
     let names: Vec<&str> = owned.columns.iter().map(|column| column.name).collect();
     let sql = format!(
         "INSERT INTO {} ({}, {}, {}) VALUES (?, ?{})",
@@ -819,7 +837,99 @@ async fn insert_owned(
         query
             .execute(&mut *conn)
             .await
-            .map_err(|error| format!("restore {} row: {error}", owned.table))?;
+            .map_err(|error| InsertError::from_sqlx(owned.table, &error))?;
     }
     Ok(())
+}
+
+/// Primary SQLite result code of a constraint failure, including a trigger's `RAISE(ABORT)`.
+const SQLITE_CONSTRAINT: i32 = 19;
+
+/// Why a restored row could not be inserted.
+#[derive(Debug, PartialEq)]
+enum InsertError {
+    /// The row breaks a constraint of the vault as it is now, so a descendant is left out.
+    Unfit(String),
+    /// Reading or writing failed, so the whole restore fails.
+    Failed(String),
+}
+
+impl InsertError {
+    /// Classifies an insert error: constraint failures are unfit rows, and everything else,
+    /// such as I/O, a busy database, or the replica guard, fails the restore.
+    fn from_sqlx(table: &str, error: &sqlx::Error) -> Self {
+        let message = format!("restore {table} row: {error}");
+        let constraint = error
+            .as_database_error()
+            .and_then(|database| database.code())
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT);
+        if constraint && !is_guard_abort(&message) {
+            Self::Unfit(message)
+        } else {
+            Self::Failed(message)
+        }
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::Unfit(message) | Self::Failed(message) => message,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ganbaru_sync::guards::READ_ONLY_MESSAGE;
+    use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
+
+    use super::InsertError;
+
+    async fn insert_error(sql: &str) -> InsertError {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "CREATE TABLE rows (id TEXT PRIMARY KEY, size INTEGER CHECK (size > 0));
+             CREATE TABLE guarded (id TEXT PRIMARY KEY);
+             CREATE TRIGGER rows_nesting BEFORE INSERT ON rows WHEN NEW.id = 'nested'
+               BEGIN SELECT RAISE(ABORT, 'nested rows are not allowed'); END;
+             CREATE TRIGGER guarded_read_only BEFORE INSERT ON guarded
+               BEGIN SELECT RAISE(ABORT, '{READ_ONLY_MESSAGE}'); END;
+             INSERT INTO rows (id, size) VALUES ('taken', 1);"
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let error = sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
+            .execute(&mut conn)
+            .await
+            .unwrap_err();
+        InsertError::from_sqlx("rows", &error)
+    }
+
+    #[tokio::test]
+    async fn constraint_failures_leave_a_row_out() {
+        for sql in [
+            "INSERT INTO rows (id, size) VALUES ('taken', 1)",
+            "INSERT INTO rows (id, size) VALUES ('small', 0)",
+            "INSERT INTO rows (id, size) VALUES ('nested', 1)",
+        ] {
+            assert!(
+                matches!(insert_error(sql).await, InsertError::Unfit(_)),
+                "{sql}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn other_failures_fail_the_restore() {
+        for sql in [
+            "INSERT INTO missing (id) VALUES ('row')",
+            "INSERT INTO guarded (id) VALUES ('row')",
+        ] {
+            assert!(
+                matches!(insert_error(sql).await, InsertError::Failed(_)),
+                "{sql}"
+            );
+        }
+    }
 }

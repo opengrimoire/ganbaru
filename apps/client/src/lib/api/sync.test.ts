@@ -197,6 +197,7 @@ describe("sync API boundary", () => {
         title: "Plan",
         preview: "Start",
         descendants: 2,
+        unseen: [{ title: "", preview: "Written offline" }],
         device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
         editedAtMs: 2_000,
       },
@@ -208,6 +209,7 @@ describe("sync API boundary", () => {
         title: "Plan",
         preview: "Start",
         descendants: 2,
+        unseen: [{ title: "", preview: "Written offline" }],
         device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
         editedAtMs: 2_000,
       },
@@ -220,12 +222,29 @@ describe("sync API boundary", () => {
       rowKey: "note-1",
       title: "Plan",
       preview: "Start",
+      unseen: [],
       device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
       editedAtMs: 2_000,
     };
     vi.mocked(invoke).mockResolvedValueOnce([offer]);
     await expect(listSyncRecovery()).rejects.toThrow();
     vi.mocked(invoke).mockResolvedValueOnce([{ ...offer, descendants: -1 }]);
+    await expect(listSyncRecovery()).rejects.toThrow();
+  });
+
+  it("rejects recovery offers without valid unseen texts", async () => {
+    const offer = {
+      table: "projects",
+      rowKey: "project-1",
+      title: "Launch",
+      preview: "",
+      descendants: 1,
+      device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
+      editedAtMs: 2_000,
+    };
+    vi.mocked(invoke).mockResolvedValueOnce([offer]);
+    await expect(listSyncRecovery()).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce([{ ...offer, unseen: [{ title: "" }] }]);
     await expect(listSyncRecovery()).rejects.toThrow();
   });
 

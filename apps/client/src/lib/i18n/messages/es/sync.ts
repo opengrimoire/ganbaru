@@ -80,6 +80,10 @@ export const sync = {
     editedBy: (device: string, time: string) => `Se editó en ${device}, ${time}`,
     thisDevice: "este dispositivo",
     otherDevice: "otro dispositivo",
+    unseen: "Se escribió en un dispositivo que aún no había visto la eliminación. Esto no se recupera, así que copia antes lo que necesites.",
+    copy: "Copiar",
+    copied: "Copiado",
+    copyFailed: "No se pudo copiar el texto",
   },
   unconfirmed: (count: number) =>
     count === 1

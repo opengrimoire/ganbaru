@@ -112,9 +112,20 @@ export interface SyncRecoveryEntry {
   preview: string;
   /** Deleted descendants that restoring the row brings back with it. */
   descendants: number;
+  /**
+   * Deleted descendants of another domain written or edited unseen by the deletion, such as Chat posts in a
+   * project, which restoring the row does not bring back.
+   */
+  unseen: SyncRecoveryText[];
   /** Device of the newest unseen edit. */
   device: SyncDeviceRef;
   editedAtMs: number;
+}
+
+/** Title and preview of one deleted row in a recovery offer. */
+export interface SyncRecoveryText {
+  title: string;
+  preview: string;
 }
 
 export interface SyncRecoveryTarget {
@@ -421,8 +432,17 @@ function readRecoveryEntry(value: unknown, label: string): SyncRecoveryEntry {
     title: readString(row.title, `${label}.title`),
     preview: readString(row.preview, `${label}.preview`),
     descendants: readNonNegativeSafeInteger(row.descendants, `${label}.descendants`),
+    unseen: readArray(row.unseen, `${label}.unseen`, readRecoveryText),
     device: mapSyncDeviceRef(row.device, `${label}.device`),
     editedAtMs: readNonNegativeSafeInteger(row.editedAtMs, `${label}.editedAtMs`),
+  };
+}
+
+function readRecoveryText(value: unknown, label: string): SyncRecoveryText {
+  const row = readRecord(value, label);
+  return {
+    title: readString(row.title, `${label}.title`),
+    preview: readString(row.preview, `${label}.preview`),
   };
 }
 

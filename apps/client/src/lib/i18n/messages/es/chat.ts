@@ -52,7 +52,7 @@ export const chat = {
     teammateUntitled: "Compañero sin nombre",
     channelUntitled: "Canal sin nombre",
     messageUntitled: "Mensaje",
-    recoveryNote: "Se eliminó con su proyecto. Al restaurar el proyecto vuelve su canal predeterminado, así que esto solo se puede descartar.",
+    recoveryNote: "Se eliminó con su proyecto y no se puede restaurar, ni siquiera con el proyecto. Un proyecto restaurado empieza con un canal predeterminado nuevo y vacío.",
   },
   conflict: {
     participantTitle: "Este nombre se editó en dos dispositivos",

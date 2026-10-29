@@ -302,7 +302,7 @@ pub(crate) async fn domain_exists(
 }
 
 /// Keys of domain rows of `referrer` whose reference columns, or owned rows, name `key` of
-/// `target`.
+/// `target`, and the row of `referrer` keyed by `key` when `target` is its key parent.
 async fn domain_referrers(
     conn: &mut SqliteConnection,
     referrer: &TableSpec,
@@ -310,6 +310,9 @@ async fn domain_referrers(
     key: &str,
 ) -> SyncResult<Vec<String>> {
     let mut keys = Vec::new();
+    if referrer.key_parent == Some(target) && domain_exists(conn, referrer, key).await? {
+        keys.push(key.to_string());
+    }
     for (_, _, owned, reference) in referrer.owned_references() {
         if reference.table != target {
             continue;
@@ -711,10 +714,12 @@ async fn has_capture(conn: &mut SqliteConnection, table: TableId, key: &str) -> 
 /// Lets each hook settle the concurrent versions of its settled groups on the live rows of the
 /// plan, see [`crate::hooks::MaterializeHook::settle`]. A settled value is written to the
 /// domain row, with the derived columns the adapter computes from it, and captured as a local
-/// edit of its group; its row joins `changed`.
+/// edit of its group; its row joins `changed`. A reference column of the value must name a row
+/// one of the versions names, and is written resolved as a winner's would be.
 async fn settle(
     engine: &Engine,
     conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
     plans: &[BTreeMap<String, Desired>],
     changed: &mut [BTreeSet<String>],
     now_ms: u64,
@@ -759,9 +764,25 @@ async fn settle(
                     continue;
                 }
                 let written = match settled_update(engine, table, group, &value)? {
-                    Ok(update) => write_settled(engine, conn, table, key, group, &update, now_ms)
+                    Ok(mut update) => {
+                        match resolve_settled_references(
+                            engine,
+                            conn,
+                            visibility,
+                            group,
+                            versions,
+                            &mut update,
+                        )
                         .await?
-                        .err(),
+                        {
+                            Ok(()) => {
+                                write_settled(engine, conn, table, key, group, &update, now_ms)
+                                    .await?
+                                    .err()
+                            }
+                            Err(reason) => Some(reason),
+                        }
+                    }
                     Err(reason) => Some(reason),
                 };
                 if let Some(reason) = written {
@@ -778,6 +799,39 @@ async fn settle(
         }
     }
     Ok(())
+}
+
+/// Resolves the reference columns of a settled `update`, whose leading columns are the group's
+/// in order, as [`desired`] resolves a winner's. A hook only chooses among the references the
+/// concurrent `versions` name, so a value naming any other row is refused.
+async fn resolve_settled_references(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    group: &'static GroupSpec,
+    versions: &[ConcurrentVersion],
+    update: &mut Update,
+) -> SyncResult<Result<(), validate::Invalid>> {
+    for (field, reference) in group.reference_columns() {
+        let Some((_, settled)) = update.columns.get(field) else {
+            return Err(corrupt("settled value does not match its group"));
+        };
+        let named = versions
+            .iter()
+            .any(|version| version.value.fields().get(field) == Some(settled));
+        if !named {
+            return Ok(Err(
+                "settled reference names a row no concurrent version names",
+            ));
+        }
+        if let Field::Text(referenced) = settled {
+            let referenced = referenced.clone();
+            let resolved =
+                resolve_reference(engine, conn, visibility, reference.table, &referenced).await?;
+            update.columns[field].1 = resolved;
+        }
+    }
+    Ok(Ok(()))
 }
 
 /// The update that writes a settled value into the columns of its group and the derived
@@ -877,6 +931,7 @@ fn is_constraint(error: &dyn sqlx::error::DatabaseError) -> bool {
 pub(crate) async fn execute(
     engine: &Engine,
     conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
     plan: Plan,
     settles: bool,
     now_ms: u64,
@@ -980,6 +1035,7 @@ pub(crate) async fn execute(
         settle(
             engine,
             conn,
+            visibility,
             &plans,
             &mut changed,
             now_ms,

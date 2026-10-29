@@ -45,6 +45,11 @@ pub struct RecoveryEntry {
     pub presentation: Presentation,
     /// Deleted descendants that restoring the row brings back with it.
     pub descendants: usize,
+    /// Title and preview of each deleted descendant of another domain than the row's, written or
+    /// edited unseen by the deletion, nearest first and at most [`MAX_UNSEEN_PRESENTATIONS`],
+    /// leaving out rows whose adapter presents nothing. A restore brings back rows of the row's
+    /// own domain only, so the text of these stays readable before the offer is closed.
+    pub unseen: Vec<Presentation>,
     /// Writer of the newest unseen edit in the row or its descendants.
     pub writer: WriterId,
     /// Device of that writer.
@@ -63,6 +68,9 @@ pub struct RecoveryDescendant {
     /// Winning retained value per group.
     pub values: Vec<(GroupId, Value)>,
 }
+
+/// Most unseen descendant presentations one recovery entry carries.
+pub const MAX_UNSEEN_PRESENTATIONS: usize = 16;
 
 /// One tombstone of a row: its operation and the row it names as its cause.
 struct Tombstone {
@@ -374,6 +382,43 @@ async fn newest_unseen(
         .max())
 }
 
+/// The presentation of a deleted descendant holding a version of any group its coverage does
+/// not cover, such as a message revision posted while the deletion was unseen, or `None` when
+/// it holds none or presents nothing.
+async fn unseen_presentation(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<Option<Presentation>> {
+    let spec = table_spec(engine, *table)?;
+    let Some(adapter) = engine.adapter(spec) else {
+        return Ok(None);
+    };
+    let versions = merge::versions(engine, conn, *table, key).await?;
+    let covering = coverage(engine, conn, batch, visibility, *table, key).await?;
+    if !versions.iter().any(|version| uncovered(version, &covering)) {
+        return Ok(None);
+    }
+    let presentation = adapter.presentation(spec.id, &retained_values(engine, spec, &versions));
+    Ok(
+        (!presentation.title.is_empty() || !presentation.preview.is_empty())
+            .then_some(presentation),
+    )
+}
+
+impl Engine {
+    /// Name of the domain that declares `table`.
+    fn domain_name(&self, table: TableId) -> SyncResult<&'static str> {
+        let spec = table_spec(self, table)?;
+        self.manifest()
+            .domain_of(spec.name)
+            .map(|domain| domain.name)
+            .ok_or_else(|| corrupt("a replicated table belongs to no domain"))
+    }
+}
+
 /// Visibility for reads outside an apply.
 async fn read_visibility(engine: &Engine, conn: &mut SqliteConnection) -> SyncResult<Visibility> {
     Visibility::load(engine, conn, &mut BTreeSet::new()).await
@@ -464,6 +509,21 @@ impl Engine {
             let Some((clock, writer)) = newest else {
                 continue;
             };
+            let root_domain = self.domain_name(root.0)?;
+            let mut unseen = Vec::new();
+            for row in &descendants {
+                if unseen.len() == MAX_UNSEEN_PRESENTATIONS {
+                    break;
+                }
+                if self.domain_name(row.0)? == root_domain {
+                    continue;
+                }
+                if let Some(presentation) =
+                    unseen_presentation(self, conn, &mut batch, &mut visibility, row).await?
+                {
+                    unseen.push(presentation);
+                }
+            }
             let spec = table_spec(self, root.0)?;
             let versions = merge::versions(self, conn, root.0, &root.1).await?;
             let values = retained_values(self, spec, &versions);
@@ -477,6 +537,7 @@ impl Engine {
                 row_key: root.1,
                 presentation,
                 descendants,
+                unseen,
                 writer,
                 device_id: devices
                     .get(&writer)

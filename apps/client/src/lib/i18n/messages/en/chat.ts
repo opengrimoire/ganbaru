@@ -49,7 +49,7 @@ export const chat = {
     teammateUntitled: "Unnamed teammate",
     channelUntitled: "Unnamed channel",
     messageUntitled: "Message",
-    recoveryNote: "This was deleted with its project. Restoring the project brings its default channel back, so this can only be discarded.",
+    recoveryNote: "This was deleted with its project and cannot be restored, not even with the project. A restored project starts with a new, empty default channel.",
   },
   conflict: {
     participantTitle: "This name was edited on two devices",

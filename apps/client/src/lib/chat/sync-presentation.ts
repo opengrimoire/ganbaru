@@ -38,7 +38,8 @@ export const CHAT_SYNC_TABLES: readonly string[] = [
 
 /**
  * Chat archives its rows instead of deleting them, so a Chat row is deleted only with its project. Its offer is
- * only discarded; restoring the project brings its default channel back.
+ * only discarded: restoring the project restores no Chat rows and starts a new, empty default channel. The
+ * project's offer lists the text of posts written unseen by the deletion so it can be copied.
  */
 function discardOnly(untitled: (t: Translate) => string): SyncRecoveryPresentation {
   return { untitled, note: (t) => t("chat.sync.recoveryNote"), restorable: false };

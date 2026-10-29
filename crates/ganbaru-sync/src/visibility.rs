@@ -343,7 +343,8 @@ impl Visibility {
 
     /// Rows the cascading references of a live row reach from its winning versions: identity
     /// references name their row as stored, and the others go through [`Self::follow`] and are
-    /// dropped when it reaches nothing. The parent of a detached tree row is not followed.
+    /// dropped when it reaches nothing. The parent of a detached tree row is not followed. A
+    /// key parent is named by the row's own key, as an identity.
     pub(crate) async fn cascade_targets(
         &mut self,
         engine: &Engine,
@@ -351,11 +352,19 @@ impl Visibility {
         table: &TableSpec,
         key: &str,
     ) -> SyncResult<Vec<CascadeTarget>> {
+        let mut targets: Vec<CascadeTarget> = table
+            .key_parent
+            .map(|parent| CascadeTarget {
+                row: (parent, key.to_string()),
+                identity: true,
+            })
+            .into_iter()
+            .collect();
         let cascades = table
             .references()
             .any(|(_, _, reference)| reference.on_delete == OnDelete::Cascade);
         if !cascades {
-            return Ok(Vec::new());
+            return Ok(targets);
         }
         let versions = merge::versions(engine, conn, table.id, key).await?;
         let winners = merge::winners(engine, table, &versions);
@@ -363,7 +372,6 @@ impl Visibility {
             .is_detached(table.id, key)
             .then(|| table.tree.map(|tree| tree.parent_group))
             .flatten();
-        let mut targets = Vec::new();
         for (group, field, reference) in table.references() {
             if reference.on_delete != OnDelete::Cascade || detached_parent == Some(group.id) {
                 continue;

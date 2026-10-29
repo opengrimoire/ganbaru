@@ -867,6 +867,35 @@ fn optional_bounded(field: &Field, max: usize, what: &'static str) -> Result<(),
     }
 }
 
+/// The Markdown a message revision or a scheduled message holds among `values`, `None` for other
+/// rows or a value without it.
+fn presented_markdown(table: TableId, values: &[(GroupId, Value)]) -> Option<String> {
+    let group_value = |group: GroupId| {
+        values
+            .iter()
+            .find(|(candidate, _)| *candidate == group)
+            .map(|(_, value)| value.fields())
+    };
+    match table {
+        REVISIONS_TABLE => match group_value(timeline_group::CREATED)?.get(1)? {
+            Field::Text(markdown) => Some(markdown.clone()),
+            _ => None,
+        },
+        SCHEDULED_TABLE => {
+            let Field::Text(request) = group_value(scheduled_group::CONTENT)?.get(1)? else {
+                return None;
+            };
+            let request =
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(request).ok()?;
+            request
+                .get("normalizedMarkdown")?
+                .as_str()
+                .map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 fn validate_scheduled(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (scheduled_group::CREATED, [command, _channel, _thread, device, created_at]) => {
@@ -1096,8 +1125,9 @@ fn membership_priority(fields: &[Field]) -> u8 {
 ///
 /// A capability counts as cleared only when it is set explicitly: an inherited one follows the
 /// profile, which may grant it, and an explicit grant is still capped by the profile, so only
-/// an explicit clear narrows. The access profile itself carries no rank, so concurrent edits
-/// that differ only in the profile keep the engine's tie order.
+/// an explicit clear narrows. The access profile itself carries no rank, since its
+/// restrictiveness lives in its revision, so the Chat materialize hook settles concurrent
+/// versions onto the narrowest profile and the strictest resolved parts.
 fn channel_membership_priority(fields: &[Field]) -> u8 {
     if ended(fields, 10) {
         return ENDED;
@@ -1337,9 +1367,16 @@ impl DomainAdapter for ChatAdapter {
     }
 
     /// A participant presents its display name, a teammate its role, and a channel its name with
-    /// its topic as the preview. Other rows present nothing: a message's text lives in its
-    /// revisions, outside the row's values.
+    /// its topic as the preview. A message revision and a scheduled message present their
+    /// Markdown as the preview, unchanged so it can be copied back. Other rows present nothing:
+    /// a message's text lives in its revisions, outside the row's values.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
+        if let Some(markdown) = presented_markdown(table, values) {
+            return Presentation {
+                title: String::new(),
+                preview: markdown,
+            };
+        }
         let profile_group = match table {
             PARTICIPANTS_TABLE => participant_group::PROFILE,
             TEAMMATES_TABLE => teammate_group::PROFILE,

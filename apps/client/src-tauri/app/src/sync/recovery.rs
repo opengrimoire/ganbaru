@@ -41,6 +41,7 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&chat::TEAMMATES, refuse_chat_row)
         .with(&chat::CONVERSATIONS, refuse_chat_row)
         .with(&chat::CHANNELS, refuse_chat_row)
+        .with(&chat::ITEMS, refuse_chat_row)
         .with(&chat::MESSAGES, refuse_chat_row)
 });
 
@@ -148,12 +149,17 @@ fn refuse_distraction_settings(_: &mut SqliteConnection, _: RecoveredRow) -> Res
 }
 
 /// Refuses to restore a deleted Chat row. Chat archives participants, teammates, channels, and
-/// messages instead of deleting them, so a row is deleted only with its project; restoring the
-/// project brings its default channel back, and the offer of the Chat row can only be
-/// discarded.
+/// messages, with the timeline items that hold them, instead of deleting them, so a row is deleted only with its project. Restoring the
+/// project restores none of its Chat rows: the restored project has a new id and starts with a
+/// new, empty default channel. The offer of a Chat row can only be discarded, and the project's
+/// offer shows the text of posts written unseen by the deletion so it can be copied first.
 fn refuse_chat_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
     Box::pin(async {
-        Err("a deleted Chat row comes back with its project, not on its own".to_string())
+        Err(
+            "a deleted Chat row is not restored, not even with its project, so it can only be \
+             discarded"
+                .to_string(),
+        )
     })
 }
 
@@ -194,10 +200,20 @@ pub(crate) struct RecoveryEntryView {
     pub preview: String,
     /// Deleted descendants that restoring the row brings back with it.
     pub descendants: usize,
+    /// Title and preview of deleted descendants of another domain written or edited unseen by
+    /// the deletion, such as Chat posts, which restoring the row does not bring back.
+    pub unseen: Vec<RecoveryTextView>,
     /// Device of the newest unseen edit.
     pub device: DeviceRef,
     /// When that edit was made, in Unix milliseconds.
     pub edited_at_ms: u64,
+}
+
+/// Title and preview of one deleted row in a recovery offer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RecoveryTextView {
+    pub title: String,
+    pub preview: String,
 }
 
 /// A recovery action waiting for the service, which owns the local writer.
@@ -240,6 +256,14 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
                 title: entry.presentation.title,
                 preview: entry.presentation.preview,
                 descendants: entry.descendants,
+                unseen: entry
+                    .unseen
+                    .into_iter()
+                    .map(|presentation| RecoveryTextView {
+                        title: presentation.title,
+                        preview: presentation.preview,
+                    })
+                    .collect(),
                 device: devices.describe(&entry.device_id),
                 edited_at_ms: entry.clock.physical_ms(),
             })

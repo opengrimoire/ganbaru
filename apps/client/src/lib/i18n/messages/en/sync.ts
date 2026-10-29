@@ -74,6 +74,10 @@ export const sync = {
     editedBy: (device: string, time: string) => `Edited on ${device}, ${time}`,
     thisDevice: "this device",
     otherDevice: "another device",
+    unseen: "Written on a device that had not seen the deletion yet. These do not come back, so copy what you need first.",
+    copy: "Copy",
+    copied: "Copied",
+    copyFailed: "Could not copy the text",
   },
   unconfirmed: (count: number) =>
     `The anchor has not confirmed storing ${count} ${count === 1 ? "change" : "changes"} from this device yet.`,

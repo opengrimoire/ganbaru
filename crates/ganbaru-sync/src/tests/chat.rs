@@ -30,6 +30,7 @@ use crate::manifest::vault::chat::{
     PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
     REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
+use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::{Engine, SyncError, SyncResult};
 
 const SALT: u64 = 73;
@@ -1592,6 +1593,53 @@ fn chat_hook_sees_applied_messages_and_revisions_for_search() {
                 .await,
             0
         );
+    });
+}
+
+/// A post written offline in a project another device deleted cannot come back with the
+/// project, so the recovery offer of the project carries its text for the person to copy, while
+/// a message the deletion saw stays out of it.
+#[test]
+fn chat_an_offline_post_in_a_deleted_project_is_readable_in_its_recovery_offer() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&message_sql("item:seen", None, "c001", "Seen before"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[1]
+            .exec(&message_sql(
+                "item:offline",
+                None,
+                "c002",
+                "Written offline",
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            let entries = replica
+                .engine
+                .recovery_entries(&mut replica.conn, &replica.ctx)
+                .await
+                .unwrap();
+            let entry = entries
+                .iter()
+                .find(|entry| (entry.table, entry.row_key.as_str()) == (PROJECTS_TABLE, PROJECT))
+                .unwrap_or_else(|| panic!("no project offer in {entries:?}"));
+            let previews: Vec<&str> = entry
+                .unseen
+                .iter()
+                .map(|presentation| presentation.preview.as_str())
+                .collect();
+            assert_eq!(previews, vec!["Written offline"], "{entry:?}");
+        }
     });
 }
 

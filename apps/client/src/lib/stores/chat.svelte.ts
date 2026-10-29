@@ -88,7 +88,11 @@ export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-
 
 const paneStores = new ChatPaneStores<ChatStore>();
 
-/** Vault-wide Chat state that every pane's store shows, loaded by the primary pane's store. */
+/**
+ * Vault-wide Chat state that every pane's store shows, loaded by the primary pane's store. It lives as long as the
+ * WebView, as pane stores do, so its configuration controller is never disposed and its listener ends with the
+ * WebView.
+ */
 class ChatSharedState {
   teammates = $state<ChatAiTeammateRead[]>([]);
   archivedTeammates = $state<ChatAiTeammateRead[]>([]);
@@ -1137,7 +1141,10 @@ export class ChatStore {
     });
   }
 
-  /** Starts rereading Chat rows that linked devices changed through sync, once per store. */
+  /**
+   * Starts rereading Chat rows that linked devices changed through sync, once per store. Pane stores live as long as
+   * the WebView, so the listeners are never removed and end with it.
+   */
   private listenForSync(): void {
     if (this.syncListening) return;
     this.syncListening = true;

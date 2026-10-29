@@ -52,7 +52,10 @@ export class ChatConfigurationController {
     });
   }
 
-  /** Stops refreshing settings when the Chat behavior changes elsewhere. */
+  /**
+   * Stops refreshing settings when the Chat behavior changes elsewhere. The shared Chat configuration lives as long
+   * as the WebView and is never disposed; shorter-lived controllers call this.
+   */
   dispose(): void {
     this.stopBehaviorRefresh();
   }

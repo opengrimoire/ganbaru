@@ -77,7 +77,7 @@ pub use exclusion::{
 pub use fork::{EvidenceOutcome, EvidenceRefusal, ForkEvidence};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
-pub use recovery::{RecoveryDescendant, RecoveryEntry};
+pub use recovery::{MAX_UNSEEN_PRESENTATIONS, RecoveryDescendant, RecoveryEntry};
 pub use reseal::ResealReport;
 pub use seal::{
     InvalidRow, MAX_BYTES_PER_SEAL, MAX_CHANGES_PER_SEAL, MAX_OPS_PER_SEAL, SealReport,

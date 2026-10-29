@@ -319,6 +319,7 @@ pub const TAGS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -352,6 +353,7 @@ pub const NOTES: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 

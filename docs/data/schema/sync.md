@@ -19,6 +19,7 @@
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect or an optional cause (`cause_table`, `cause_row`) naming the deleted root a cascade repair followed. |
 | `sync_auth_envelopes` | The authorization record store: every authorization record, writer certificate (genesis), and fork evidence envelope that passes its intrinsic checks, by envelope hash and role. Rows never leave by selection, writer slot state, or arrival order; authority reads only this table. Envelopes of a writer without a stored certificate wait unverified. |
 | `sync_auth_wanted` | Entry hashes, envelope hashes, and writers the record store names but lacks, derived from it. |
+| `sync_auth_refetch` | Envelope hashes whose pending copy failed verification when the certificate arrived, requested again until a verified copy is stored. |
 | `sync_auth_selected` | The selected chain past the charter, one row per revision with its entry, proposal, and carrying envelope hash, derived on every selection. |
 | `sync_devices` | Devices the selected chain enrolls: device key, TLS fingerprint, kind, role and admin key, label, the revisions that enrolled and removed the device, and whether an unresolved handover contest holds its data. |
 | `sync_displaced_versions` | Versions an operation past the anchor mark superseded, kept until the anchor confirms it so excluding it can restore them. |

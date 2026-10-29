@@ -1,7 +1,8 @@
 //! Record floods between replicas, under limits scaled down through configuration: a removed
 //! anchor that keeps sequencing is pulled within the low budget, kit records lead what a peer
 //! serves, and the storage backstop stops sync while its kit reserve still takes a kit forced
-//! handover and the ancestors it wants.
+//! handover and the ancestors it wants. A record purged with a bad copy is fetched again by
+//! hash from an honest peer.
 
 use super::handover::{LAPTOP_DEVICE, enroll_mobile, laptop_ids, sequence_here};
 use super::{
@@ -17,7 +18,7 @@ use crate::records::{
 };
 use crate::tests::{NOW_MS, acquire};
 use ganbaru_sync::{Engine, SyncError};
-use ganbaru_sync_contracts::{AdminKeyPair, DeviceKind, WriterId};
+use ganbaru_sync_contracts::{AdminKeyPair, DeviceKind, Envelope, WriterId};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -446,5 +447,186 @@ fn the_backstop_stops_sync_and_its_kit_reserve_still_takes_a_kit_removal() {
         laptop.close().await;
         phone.close().await;
         stopped_phone.close().await;
+    });
+}
+
+impl Replica {
+    /// Admits `envelopes` into the record store directly, as a relay that holds them would.
+    async fn hold_records(&self, envelopes: &[Vec<u8>]) {
+        let mut conn = acquire(&self.pool).await;
+        Engine::vault()
+            .admit_records(&mut conn, &self.ctx, envelopes, NOW_MS)
+            .await
+            .expect("admit records");
+    }
+
+    /// Whether the record store holds a verified envelope with `hash`.
+    async fn holds_verified(&self, hash: &[u8]) -> bool {
+        let verified: Option<i64> = sqlx::query_scalar(
+            "SELECT verified FROM sync_auth_envelopes WHERE envelope_hash = ? LIMIT 1",
+        )
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await
+        .expect("read stored envelope");
+        verified == Some(1)
+    }
+
+    /// Whether the record store holds any envelope with `hash`.
+    async fn holds(&self, hash: &[u8]) -> bool {
+        let stored: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM sync_auth_envelopes WHERE envelope_hash = ? LIMIT 1")
+                .bind(hash)
+                .fetch_optional(&self.pool)
+                .await
+                .expect("read stored envelope");
+        stored.is_some()
+    }
+
+    /// The envelope hashes held for refetch.
+    async fn refetching(&self) -> Vec<Vec<u8>> {
+        sqlx::query_scalar("SELECT envelope_hash FROM sync_auth_refetch ORDER BY envelope_hash")
+            .fetch_all(&self.pool)
+            .await
+            .expect("read refetch hashes")
+    }
+
+    /// Whether the record exchange would ask peers for `hash`.
+    async fn wants_hash(&self, hash: &[u8]) -> bool {
+        let mut conn = acquire(&self.pool).await;
+        Engine::vault()
+            .record_wants(&mut conn, &self.ctx, usize::MAX)
+            .await
+            .expect("record wants")
+            .hashes
+            .iter()
+            .any(|wanted| wanted.as_slice() == hash)
+    }
+}
+
+/// The refetch amendment to R7.7 between replicas. Relays hold a copy of the laptop's newest
+/// kit record with a bad signature, the honest copy with its ancestry, and the laptop's
+/// certificate, one each. The phone takes the bad copy first, so the honest copy its pages bring
+/// later is dropped, and the certificate then purges the bad copy. The purged hash stays
+/// requested: the relay with the bad copy answers it again and is refused, and the relay with
+/// the honest copy, whose page cursor is already past it, answers the request by hash, so the
+/// honest record is stored without its pages delivering it again.
+#[test]
+fn a_purged_record_is_fetched_by_hash_from_an_honest_peer_after_a_bad_copy() {
+    block_on(async {
+        let (hub_replica, laptop) = forced_away("refetch").await;
+        let laptop_writer = laptop.writer.id();
+        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT role, writer_id, envelope FROM sync_auth_envelopes ORDER BY stored_order",
+        )
+        .fetch_all(&laptop.pool)
+        .await
+        .expect("read the laptop's records");
+        let own = |writer: &[u8]| writer == laptop_writer.as_bytes().as_slice();
+        let certificate = rows
+            .iter()
+            .find(|(role, writer, _)| role == "certificate" && own(writer))
+            .map(|(_, _, envelope)| envelope.clone())
+            .expect("the laptop's certificate");
+        let honest = rows
+            .iter()
+            .filter(|(role, writer, _)| role == "record" && own(writer))
+            .max_by_key(|(_, _, envelope)| Envelope::decode(envelope).expect("decode").seq)
+            .map(|(_, _, envelope)| envelope.clone())
+            .expect("the laptop's kit record");
+        let mut bad = honest.clone();
+        *bad.last_mut().expect("signature") ^= 1;
+        let hash = Envelope::decode(&honest).expect("decode").hash().to_vec();
+        let without_certificate: Vec<Vec<u8>> = rows
+            .iter()
+            .filter(|(_, _, envelope)| *envelope != certificate)
+            .map(|(_, _, envelope)| envelope.clone())
+            .collect();
+
+        let relay_bad = Replica::new("relay-bad-refetch", "device-relay-bad").await;
+        relay_bad.hold_records(std::slice::from_ref(&bad)).await;
+        let relay_honest = Replica::new("relay-honest-refetch", "device-relay-honest").await;
+        relay_honest.hold_records(&without_certificate).await;
+        let relay_certificate =
+            Replica::new("relay-certificate-refetch", "device-relay-certificate").await;
+        relay_certificate
+            .hold_records(std::slice::from_ref(&certificate))
+            .await;
+        assert!(relay_bad.holds(&hash).await && relay_honest.holds(&hash).await);
+        let bad_transport = record_hub(&relay_bad, RecordExchange::default());
+        let honest_transport = record_hub(&relay_honest, RecordExchange::default());
+        let certificate_transport = record_hub(&relay_certificate, RecordExchange::default());
+
+        let phone = Replica::new("phone-refetch", PHONE_DEVICE).await;
+        let limits = RecordLimits {
+            low: RecordLimits::default().normal,
+            ..RecordLimits::default()
+        };
+        let state = RecordExchange::default().with_limits(limits);
+        phone
+            .records_with(&bad_transport, &phone_ids(), "relay-bad", &state)
+            .await;
+        assert!(phone.holds(&hash).await && !phone.holds_verified(&hash).await);
+        phone
+            .records_with(&honest_transport, &phone_ids(), "relay-honest", &state)
+            .await;
+        assert!(
+            !phone.holds_verified(&hash).await,
+            "the honest copy is dropped"
+        );
+        phone
+            .records_with(
+                &certificate_transport,
+                &phone_ids(),
+                "relay-certificate",
+                &state,
+            )
+            .await;
+        assert!(phone.records_of(laptop_writer).await > 0);
+        assert!(
+            !phone.holds(&hash).await,
+            "the certificate purges the bad copy"
+        );
+        assert_eq!(phone.refetching().await, vec![hash.clone()]);
+        assert!(phone.wants_hash(&hash).await);
+
+        // The relay with the bad copy is asked first and answers with it again: refused at
+        // admission now that the certificate is stored, and the hash stays requested.
+        state.connected("relay-bad");
+        phone
+            .records_with(&bad_transport, &phone_ids(), "relay-bad", &state)
+            .await;
+        assert!(!phone.holds(&hash).await);
+        assert_eq!(phone.refetching().await, vec![hash.clone()]);
+        assert!(phone.wants_hash(&hash).await);
+
+        // The honest relay's cursor is past its copy, so only the request by hash brings it,
+        // once the backoff the refused answer set is due.
+        phone
+            .records_with(&honest_transport, &phone_ids(), "relay-honest", &state)
+            .await;
+        assert!(
+            !phone.holds(&hash).await,
+            "pages past the cursor do not deliver the honest copy again"
+        );
+        for _ in 0..MAX_SESSIONS {
+            if phone.holds(&hash).await {
+                break;
+            }
+            phone
+                .records_with(&honest_transport, &phone_ids(), "relay-honest", &state)
+                .await;
+        }
+        assert!(phone.holds_verified(&hash).await);
+        assert!(phone.refetching().await.is_empty());
+        assert!(!phone.wants_hash(&hash).await);
+        assert!(phone.removed(HUB_DEVICE).await);
+
+        hub_replica.close().await;
+        laptop.close().await;
+        relay_bad.close().await;
+        relay_honest.close().await;
+        relay_certificate.close().await;
+        phone.close().await;
     });
 }

@@ -775,3 +775,231 @@ fn twins_above_a_take_store_alike_and_freeze_or_select_the_same_in_every_order()
         assert_eq!(fewer, selected);
     });
 }
+
+/// A record of `admin`'s writer one revision above its selected head, sealed honestly, and a
+/// copy of it with one signature byte flipped. Both copies have the same envelope hash, since
+/// the hash leaves out the signature.
+async fn honest_and_bad_copy(admin: &mut Replica) -> (Vec<u8>, Vec<u8>) {
+    let (epoch, revision, parent) = head(admin).await;
+    let record = AuthorizationRecord {
+        epoch,
+        revision: revision + 1,
+        previous_entry_hash: parent,
+        anchor_device_id: device_id(20),
+        proposal: proposal(
+            admin.ctx.space,
+            &device_admin(20),
+            admin.now_ms,
+            enroll_entry(&person(), 21, DeviceRole::Member),
+        ),
+        sequencing: Sequencing::Empty,
+    };
+    let last = admin.own_ops().await.pop().unwrap();
+    let honest = seal_after(
+        &last,
+        &admin.identity.key,
+        Content::Authorization(Box::new(record)),
+        revision,
+        admin.now_ms,
+    );
+    let mut bad = honest.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert_eq!(
+        Envelope::decode(&bad).unwrap().hash(),
+        Envelope::decode(&honest).unwrap().hash()
+    );
+    (honest, bad)
+}
+
+/// The envelope hashes `replica` holds for refetch, sorted.
+async fn refetch_rows(replica: &mut Replica) -> Vec<Vec<u8>> {
+    sqlx::query_scalar("SELECT envelope_hash FROM sync_auth_refetch ORDER BY envelope_hash")
+        .fetch_all(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+/// Chases `missing` against `from` by wanted lookups until nothing more is found.
+async fn chase(into: &mut Replica, from: &mut Replica, mut missing: crate::RecordWants) {
+    for _ in 0..MAX_ROUNDS {
+        if missing.is_empty() {
+            return;
+        }
+        let mut found = from
+            .engine
+            .records_by_hash(&mut from.conn, &from.ctx, &missing.hashes)
+            .await
+            .unwrap();
+        found.extend(
+            from.engine
+                .certificates_of(&mut from.conn, &from.ctx, &missing.writers)
+                .await
+                .unwrap(),
+        );
+        if found.is_empty() {
+            return;
+        }
+        missing = admit(into, &found).await.missing;
+    }
+}
+
+/// The refetch amendment to R7.7: a copy with a bad signature stored pending first makes the
+/// store drop the honest copy of the same hash, and the certificate then purges the bad copy.
+/// The purged hash stays on the request list, so chasing that list against an honest peer
+/// stores the honest envelope verified in every arrival order of the bad copy, the honest copy,
+/// and the certificate, and the hash leaves the list once it is stored.
+#[test]
+fn a_purged_pending_hash_is_requested_until_an_honest_copy_is_stored() {
+    block_on(async {
+        let salt = 90;
+        let (_, mut admin) = anchor_and_admin(salt).await;
+        take(&mut admin, 20).await;
+        let admin_writer = admin.writer();
+        let certificate = genesis_of_writer(&mut admin, admin_writer).await;
+        let (honest, bad) = honest_and_bad_copy(&mut admin).await;
+        let hash = Envelope::decode(&honest).unwrap().hash().to_vec();
+        let mut source = Replica::new(32, salt).await;
+        let mut held = page_bytes(&mut admin).await;
+        held.push(honest.clone());
+        admit_bytes(&mut source, &held).await;
+        assert!(
+            store_set(&mut source)
+                .await
+                .iter()
+                .any(|(_, stored, verified)| *stored == hash && *verified == 1)
+        );
+
+        let arrivals = [bad, honest, certificate];
+        let mut dropped = false;
+        for order in arrival_orders(arrivals.len()) {
+            let mut member = Replica::new(31, salt).await;
+            for index in &order {
+                admit_bytes(&mut member, std::slice::from_ref(&arrivals[*index])).await;
+            }
+            let wants = member
+                .engine
+                .record_wants(&mut member.conn, &member.ctx, PAGE_ENVELOPES)
+                .await
+                .unwrap();
+            if order == [0, 1, 2] {
+                dropped = true;
+                assert_eq!(refetch_rows(&mut member).await, vec![hash.clone()]);
+                assert!(
+                    store_set(&mut member)
+                        .await
+                        .iter()
+                        .all(|(_, stored, _)| *stored != hash)
+                );
+                assert!(wants.hashes.iter().any(|wanted| wanted.to_vec() == hash));
+            }
+            chase(&mut member, &mut source, wants).await;
+            assert!(
+                store_set(&mut member)
+                    .await
+                    .iter()
+                    .any(|(_, stored, verified)| *stored == hash && *verified == 1),
+                "arrival order {order:?}"
+            );
+            assert!(
+                refetch_rows(&mut member).await.is_empty(),
+                "arrival order {order:?}"
+            );
+            let wants = member
+                .engine
+                .record_wants(&mut member.conn, &member.ctx, PAGE_ENVELOPES)
+                .await
+                .unwrap();
+            assert!(wants.hashes.iter().all(|wanted| wanted.to_vec() != hash));
+        }
+        assert!(dropped, "the forward order drops the honest copy");
+    });
+}
+
+/// The envelope hashes of `writer` that `replica` stores, with whether each is verified, sorted.
+async fn writer_rows(replica: &mut Replica, writer: WriterId) -> Vec<(Vec<u8>, i64)> {
+    sqlx::query_as(
+        "SELECT envelope_hash, verified FROM sync_auth_envelopes WHERE writer_id = ?
+         ORDER BY envelope_hash",
+    )
+    .bind(writer.as_bytes().as_slice())
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap()
+}
+
+/// A copy of `genesis` sealed by `forger` whose envelope names `writer`: the writer id field is
+/// rewritten and the signed bytes signed again with the forger's key, so the signature verifies
+/// under the key the certificate names but the id does not derive from it.
+fn forged_for(genesis: &[u8], forger: &Identity, writer: WriterId) -> Vec<u8> {
+    let mut bytes = genesis_of(genesis, forger);
+    let signed = Envelope::decode(&bytes).unwrap().signed.len();
+    let own = forger.id();
+    let at = bytes[..signed]
+        .windows(own.as_bytes().len())
+        .position(|window| window == own.as_bytes().as_slice())
+        .expect("the envelope names its writer");
+    bytes[at..at + own.as_bytes().len()].copy_from_slice(writer.as_bytes().as_slice());
+    let signature = forger.key.sign_operation(&bytes[..signed]);
+    let end = bytes.len();
+    bytes[end - signature.len()..].copy_from_slice(&signature);
+    bytes
+}
+
+/// A genesis is admitted only when its envelope's writer is the id derived from the key it
+/// certifies. A forged genesis that names another writer, with a matching or a mismatching
+/// signature, is refused, and that writer's pending envelopes stay pending, neither verified nor
+/// purged; the real certificate then verifies them.
+#[test]
+fn a_forged_genesis_for_another_writer_settles_and_purges_nothing() {
+    block_on(async {
+        let salt = 91;
+        let (_, mut admin) = anchor_and_admin(salt).await;
+        take(&mut admin, 20).await;
+        let admin_writer = admin.writer();
+        let certificate = genesis_of_writer(&mut admin, admin_writer).await;
+        let (honest, _) = honest_and_bad_copy(&mut admin).await;
+        let mut pending: Vec<Vec<u8>> = page_bytes(&mut admin)
+            .await
+            .into_iter()
+            .filter(|bytes| {
+                let envelope = Envelope::decode(bytes).unwrap();
+                envelope.writer == admin_writer && envelope.genesis().is_err()
+            })
+            .collect();
+        pending.push(honest);
+        let mut member = Replica::new(31, salt).await;
+        admit_bytes(&mut member, &pending).await;
+        let before = store_set(&mut member).await;
+        let pending_rows = writer_rows(&mut member, admin_writer).await;
+        assert!(pending_rows.len() >= 2);
+        assert!(pending_rows.iter().all(|(_, verified)| *verified == 0));
+
+        let forger = Identity::new(
+            [91; 32],
+            &anchor_device_key(&person()),
+            &device_id(20),
+            None,
+        );
+        let named = forged_for(&certificate, &forger, admin_writer);
+        let mut resigned = certificate.clone();
+        let signed = Envelope::decode(&resigned).unwrap().signed.len();
+        let signature = forger.key.sign_operation(&resigned[..signed]);
+        let end = resigned.len();
+        resigned[end - signature.len()..].copy_from_slice(&signature);
+        for forged in [named, resigned] {
+            let envelope = Envelope::decode(&forged).unwrap();
+            assert_eq!(envelope.writer, admin_writer);
+            assert!(envelope.genesis().is_err());
+            let admission = admit_bytes(&mut member, std::slice::from_ref(&forged)).await;
+            assert_eq!(admission.admitted, 0);
+            assert_eq!(store_set(&mut member).await, before);
+            assert!(refetch_rows(&mut member).await.is_empty());
+        }
+
+        admit_bytes(&mut member, std::slice::from_ref(&certificate)).await;
+        let after = writer_rows(&mut member, admin_writer).await;
+        assert_eq!(after.len(), pending_rows.len() + 1);
+        assert!(after.iter().all(|(_, verified)| *verified == 1));
+        assert!(refetch_rows(&mut member).await.is_empty());
+    });
+}

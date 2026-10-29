@@ -999,6 +999,19 @@ impl ServiceState {
             ..Self::default()
         }
     }
+
+    /// Starts over for the vault `vault_id` at `root`: per-vault state resets, the record
+    /// exchange state stays shared with `runtime`, and the backstop reads free space of the
+    /// volume of `root`.
+    fn enter_vault(&mut self, vault_id: String, runtime: &RuntimeState, root: PathBuf) {
+        *self = Self {
+            vault_id: Some(vault_id),
+            ..Self::for_runtime(runtime)
+        };
+        runtime.set_vault_root(root);
+        #[cfg(desktop)]
+        runtime.stability.clear();
+    }
 }
 
 /// When the service last applied stored operations.
@@ -1242,13 +1255,7 @@ impl ServiceState {
         };
         let vault_id = host.active_vault_id()?;
         if self.vault_id.as_deref() != Some(vault_id.as_str()) {
-            *self = Self {
-                vault_id: Some(vault_id.clone()),
-                ..Self::for_runtime(runtime)
-            };
-            runtime.set_vault_root(host.active_vault_path()?);
-            #[cfg(desktop)]
-            runtime.stability.clear();
+            self.enter_vault(vault_id.clone(), runtime, host.active_vault_path()?);
         }
         let manager = host.pairing();
         let peer = crate::vault::handoff::transport::sync_peer(&manager)?
@@ -3259,6 +3266,23 @@ mod tests {
         assert_eq!(runtime.records().free_space(), None);
         runtime.set_vault_root(dir.clone());
         assert!(runtime.records().free_space().is_some());
+    }
+
+    /// Each vault change keeps the record exchange state the service charges shared with the
+    /// runtime, so its backstop reads free space of the new vault's volume; a state of its own
+    /// would read none.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_vault_change_keeps_the_record_exchange_shared_with_the_runtime() {
+        let runtime = RuntimeState::default();
+        let mut state = ServiceState::for_runtime(&runtime);
+        assert_eq!(state.records.free_space(), None);
+        for vault in ["first-vault", "second-vault"] {
+            state.enter_vault(vault.to_owned(), &runtime, std::env::temp_dir());
+            assert_eq!(state.vault_id.as_deref(), Some(vault));
+            assert!(state.records.free_space().is_some());
+        }
+        assert_eq!(ServiceState::default().records.free_space(), None);
     }
 
     fn vector(seq: u64) -> VersionVector {

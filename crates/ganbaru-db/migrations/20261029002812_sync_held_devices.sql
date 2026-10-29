@@ -51,6 +51,16 @@ CREATE TABLE sync_auth_wanted (
     PRIMARY KEY (space_id, kind, key)
 ) STRICT, WITHOUT ROWID;
 
+-- Envelope hashes whose pending copy failed verification once the writer's certificate
+-- arrived. An honest copy with the same hash may have been dropped while the failed copy was
+-- held, so the hash stays requested until a verified copy is stored. Not derived from the
+-- record store.
+CREATE TABLE sync_auth_refetch (
+    space_id BLOB NOT NULL REFERENCES sync_spaces(space_id) ON DELETE CASCADE,
+    envelope_hash BLOB NOT NULL CHECK (length(envelope_hash) = 32),
+    PRIMARY KEY (space_id, envelope_hash)
+) STRICT, WITHOUT ROWID;
+
 -- The selected chain, one row per revision past the charter, with the stored record envelope
 -- of lowest hash that carries each entry. Derived on every selection.
 CREATE TABLE sync_auth_selected (

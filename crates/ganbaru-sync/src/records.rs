@@ -7,7 +7,9 @@
 //! intrinsic to them: a decode failure, a wrong content kind, an entry hash that does not
 //! recompute, or a signature that the writer key does not verify. An envelope whose writer has
 //! no stored certificate yet is pending: stored, but read by no rule until a certificate arrives,
-//! which verifies or purges every pending envelope of that writer in the same transaction.
+//! which verifies or purges every pending envelope of that writer in the same transaction. A
+//! purged hash stays requested from peers until a verified copy is stored, since an honest copy
+//! of the same hash may have been dropped while the purged one was held.
 //!
 //! The walk reads nodes: record bodies, deduplicated by entry hash, that some stored envelope
 //! carries at a sequence below its writer's horizon (the lowest sequence at which two distinct
@@ -269,6 +271,13 @@ async fn store(
     .await?
     .rows_affected()
         > 0;
+    if inserted && verified {
+        sqlx::query("DELETE FROM sync_auth_refetch WHERE space_id = ? AND envelope_hash = ?")
+            .bind(space.as_bytes().as_slice())
+            .bind(admission.hash.as_slice())
+            .execute(&mut *conn)
+            .await?;
+    }
     if inserted
         && known.is_none()
         && let Some(key) = &admission.writer_key
@@ -304,7 +313,12 @@ async fn writer_key(
 }
 
 /// Verifies every pending envelope of `writer` with its newly stored key and deletes those the
-/// key did not sign, so the store ends the same whichever arrived first.
+/// key did not sign.
+///
+/// The envelope hash leaves out the signature, so a pending copy with a bad signature makes the
+/// store drop an honest copy of the same hash that arrives while it is held. Arrival order alone
+/// would then decide whether the honest envelope is stored, so every purged hash is recorded in
+/// `sync_auth_refetch`, which the exchange keeps requesting until a verified copy is stored.
 async fn settle_pending(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -331,9 +345,18 @@ async fn settle_pending(
         sqlx::query(statement)
             .bind(space.as_bytes().as_slice())
             .bind(role)
-            .bind(hash)
+            .bind(hash.as_slice())
             .execute(&mut *conn)
             .await?;
+        if !signed {
+            sqlx::query(
+                "INSERT OR IGNORE INTO sync_auth_refetch (space_id, envelope_hash) VALUES (?, ?)",
+            )
+            .bind(space.as_bytes().as_slice())
+            .bind(hash.as_slice())
+            .execute(&mut *conn)
+            .await?;
+        }
     }
     Ok(())
 }

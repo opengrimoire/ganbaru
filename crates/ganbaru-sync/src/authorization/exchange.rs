@@ -114,7 +114,8 @@ pub struct RecordPage {
 /// What a store lacks to complete the chains of what it holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordWants {
-    /// Entry hashes of missing parent records and envelope hashes of missing chain prefixes.
+    /// Entry hashes of missing parent records, envelope hashes of missing chain prefixes, and
+    /// envelope hashes whose pending copy was purged before a verified copy was stored.
     pub hashes: Vec<Digest32>,
     /// Writers with stored envelopes and no stored certificate.
     pub writers: Vec<WriterId>,
@@ -132,7 +133,8 @@ impl RecordWants {
 pub struct RecordAdmission {
     /// Envelopes the store did not hold before.
     pub admitted: usize,
-    /// The part of the store's wanted set the admitted envelopes reference.
+    /// The part of the store's wanted set the admitted envelopes reference, and the hashes
+    /// whose pending copies they purged.
     pub missing: RecordWants,
 }
 
@@ -140,9 +142,9 @@ pub struct RecordAdmission {
 /// each writer's certificate names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthorizationStorage {
-    /// Bytes of every stored envelope.
+    /// Bytes of every stored envelope and refetch hash.
     pub bytes: u64,
-    /// Stored envelopes.
+    /// Stored envelopes and refetch hashes, each refetch hash counted as one envelope.
     pub envelopes: u64,
     /// Bytes each certified device carries, largest first. Envelopes of writers without a
     /// stored certificate are counted in the totals only.
@@ -408,6 +410,7 @@ impl Engine {
         log::ensure_space(&mut tx, ctx.space).await?;
         let mut admitted = 0;
         let mut referenced = BTreeSet::new();
+        let refetched = refetch_hashes(&mut tx, ctx).await?;
         for bytes in envelopes {
             let Ok(envelope) = Envelope::decode(bytes) else {
                 continue;
@@ -429,6 +432,12 @@ impl Engine {
                 }
             }
         }
+        referenced.extend(
+            refetch_hashes(&mut tx, ctx)
+                .await?
+                .difference(&refetched)
+                .cloned(),
+        );
         refresh(&mut tx, ctx).await?;
         let missing = wanted(&mut tx, ctx, Some(&referenced), usize::MAX).await?;
         tx.commit().await?;
@@ -461,8 +470,12 @@ impl Engine {
         log::ensure_space(conn, ctx.space).await?;
         let space = ctx.space.as_bytes().as_slice();
         let (bytes, envelopes): (i64, i64) = sqlx::query_as(
-            "SELECT coalesce(sum(length(envelope)), 0), count(*) FROM sync_auth_envelopes
-             WHERE space_id = ?",
+            "SELECT coalesce(sum(bytes), 0), coalesce(sum(rows), 0) FROM (
+                 SELECT sum(length(envelope)) AS bytes, count(*) AS rows
+                 FROM sync_auth_envelopes WHERE space_id = ?1
+                 UNION ALL
+                 SELECT sum(length(envelope_hash)), count(*)
+                 FROM sync_auth_refetch WHERE space_id = ?1)",
         )
         .bind(space)
         .fetch_one(&mut *conn)
@@ -685,12 +698,15 @@ async fn classes(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<
         }
     }
     classes.kit_key = Some(kit_key);
-    classes.wanted = sqlx::query_scalar("SELECT key FROM sync_auth_wanted WHERE space_id = ?")
-        .bind(ctx.space.as_bytes().as_slice())
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .collect();
+    classes.wanted = sqlx::query_scalar(
+        "SELECT key FROM sync_auth_wanted WHERE space_id = ?1
+         UNION SELECT envelope_hash FROM sync_auth_refetch WHERE space_id = ?1",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
     Ok(classes)
 }
 
@@ -702,7 +718,23 @@ async fn refresh(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<
     Ok(())
 }
 
-/// Up to `limit` hashes and writers of the wanted set, only those among `among` when set.
+/// Envelope hashes whose pending copy was purged and that no verified copy has replaced yet.
+async fn refetch_hashes(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+) -> SyncResult<BTreeSet<Vec<u8>>> {
+    Ok(
+        sqlx::query_scalar("SELECT envelope_hash FROM sync_auth_refetch WHERE space_id = ?")
+            .bind(ctx.space.as_bytes().as_slice())
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect(),
+    )
+}
+
+/// Up to `limit` hashes and writers of the wanted set and the refetch hashes, only those among
+/// `among` when set.
 async fn wanted(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -710,7 +742,9 @@ async fn wanted(
     limit: usize,
 ) -> SyncResult<RecordWants> {
     let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
-        "SELECT kind, key FROM sync_auth_wanted WHERE space_id = ? ORDER BY kind, key",
+        "SELECT kind, key FROM sync_auth_wanted WHERE space_id = ?1
+         UNION SELECT 'envelope', envelope_hash FROM sync_auth_refetch WHERE space_id = ?1
+         ORDER BY 1, 2",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .fetch_all(&mut *conn)

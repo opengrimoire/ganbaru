@@ -56,6 +56,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_stable",
     "sync_auth_envelopes",
     "sync_auth_wanted",
+    "sync_auth_refetch",
     "sync_auth_selected",
     "sync_devices",
     "sync_displaced_versions",

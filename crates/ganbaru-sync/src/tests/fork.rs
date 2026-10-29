@@ -1318,7 +1318,6 @@ fn a_second_operation_claiming_the_shared_prefix_revision_freezes_there() {
 }
 
 #[test]
-#[ignore = "milestone 11 step 9 freeze pin: settling the fork drops the forked writer's authorization entries past its shared prefix, the take's own ancestry included, so the walk never sees the take"]
 fn a_removed_old_anchors_fork_does_not_freeze_its_epoch_below_the_handover_out_of_it() {
     block_on(async {
         let mut anchor = Replica::anchor(0, 321).await;

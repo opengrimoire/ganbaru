@@ -23,9 +23,9 @@
 //! once the exclusion materialized. Its operations cover every version the anchor holds, so
 //! every member converges to the anchor's state whether or not a copy of the branch re-seals.
 //!
-//! A fork of a writer of the epoch's anchor device freezes the epoch at the revision its forked
-//! operations were sealed against: entries past it are superseded, and only a handover continues
-//! the log.
+//! Authority does not read this table: the record store keeps both twins and the operation
+//! they continue from, and a provable fork of a writer that carries records freezes their epoch
+//! instance from those envelopes alone, see [`crate::authorization`].
 
 use std::collections::BTreeMap;
 
@@ -94,16 +94,13 @@ pub enum EvidenceRefusal {
     UnprovableRevision,
 }
 
-/// A forked writer as exclusion and chain selection see it.
+/// A forked writer as exclusion sees it.
 #[derive(Debug, Clone)]
 pub(crate) struct Forked {
     /// First sequence where its copies differ.
     pub(crate) seq: Seq,
     /// Device the writer belongs to.
     pub(crate) device_id: String,
-    /// Lowest authorization revision either forked operation was sealed against, which stored
-    /// evidence proves.
-    pub(crate) revision: u64,
 }
 
 impl Forked {
@@ -113,8 +110,8 @@ impl Forked {
     }
 }
 
-/// A stored evidence row: writer, fork sequence, device, and both envelopes.
-type EvidenceRow = (Vec<u8>, i64, String, Vec<u8>, Vec<u8>);
+/// A stored evidence row: writer, fork sequence, and device.
+type EvidenceRow = (Vec<u8>, i64, String);
 
 /// Every forked writer of the space.
 pub(crate) async fn forked(
@@ -122,7 +119,7 @@ pub(crate) async fn forked(
     space: SpaceId,
 ) -> SyncResult<BTreeMap<WriterId, Forked>> {
     let rows: Vec<EvidenceRow> = sqlx::query_as(
-        "SELECT e.writer_id, e.seq, w.device_id, e.first_envelope, e.second_envelope
+        "SELECT e.writer_id, e.seq, w.device_id
          FROM sync_fork_evidence e JOIN sync_writers w
             ON w.space_id = e.space_id AND w.writer_id = e.writer_id
          WHERE e.space_id = ?",
@@ -131,14 +128,12 @@ pub(crate) async fn forked(
     .fetch_all(&mut *conn)
     .await?;
     rows.into_iter()
-        .map(|(writer, seq, device_id, first, second)| {
-            let revision = claimed_revision(&first)?.min(claimed_revision(&second)?);
+        .map(|(writer, seq, device_id)| {
             Ok((
                 log::writer_id(&writer)?,
                 Forked {
                     seq: stored_u64(seq, "fork sequence")?,
                     device_id,
-                    revision,
                 },
             ))
         })
@@ -173,35 +168,6 @@ pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> Syn
         .execute(&mut *conn)
         .await?;
     Ok(())
-}
-
-/// The authorization revision a stored forked operation was sealed against. Evidence is stored
-/// only once both operations decode, see [`unprovable`].
-fn claimed_revision(bytes: &[u8]) -> SyncResult<u64> {
-    Envelope::decode(bytes)
-        .ok()
-        .and_then(|envelope| envelope.operation().ok())
-        .map(|operation| operation.header.authorization_revision)
-        .ok_or_else(|| corrupt("stored fork evidence does not decode"))
-}
-
-/// Revisions at which forks freeze epochs, by anchor device: the lowest revision each forked
-/// writer of the device proves, see [`unprovable`].
-pub(crate) async fn freezes(
-    conn: &mut SqliteConnection,
-    space: SpaceId,
-) -> SyncResult<BTreeMap<String, Vec<u64>>> {
-    let mut freezes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-    for fork in forked(conn, space).await?.into_values() {
-        freezes
-            .entry(fork.device_id)
-            .or_default()
-            .push(fork.revision);
-    }
-    for revisions in freezes.values_mut() {
-        revisions.sort_unstable();
-    }
-    Ok(freezes)
 }
 
 /// Records evidence that `writer` forked at `seq` and makes it forked with the last shared
@@ -327,6 +293,7 @@ async fn store_evidence(
     if a.hash() == b.hash() {
         return refused(EvidenceRefusal::SameOperation);
     }
+    crate::records::admit_fork(conn, ctx.space, a.writer, a.seq, [first, second], now_ms).await?;
     let Some(writer) = log::writer(conn, ctx.space, a.writer).await? else {
         return refused(EvidenceRefusal::UnknownWriter);
     };
@@ -468,7 +435,7 @@ pub(crate) async fn reseals_excluded(
     }
     let handed_over: bool = sqlx::query_scalar(
         "SELECT EXISTS (
-            SELECT 1 FROM sync_auth_entries WHERE space_id = ? AND selected = 1 AND epoch > 0
+            SELECT 1 FROM sync_auth_selected WHERE space_id = ? AND epoch > 0
          )",
     )
     .bind(space.as_bytes().as_slice())
@@ -746,10 +713,10 @@ pub(crate) async fn drop_restated(conn: &mut SqliteConnection) -> SyncResult<()>
     Ok(())
 }
 
-/// Drops the operations of `writer` past `keep`, with the authorization entries they carry, and
-/// makes `keep` its head. A fork at the genesis keeps the stored genesis, unapplied, since a
-/// known writer keeps at least one operation. Chain selection and late changes have to be
-/// derived again afterwards.
+/// Drops the operations of `writer` past `keep` and makes `keep` its head. The authorization
+/// record store keeps the records they carry. A fork at the genesis keeps the stored genesis,
+/// unapplied, since a known writer keeps at least one operation. Chain selection and late
+/// changes have to be derived again afterwards.
 pub(crate) async fn drop_branch(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -758,12 +725,6 @@ pub(crate) async fn drop_branch(
     applied: Seq,
 ) -> SyncResult<()> {
     let stored = keep.max(1);
-    sqlx::query("DELETE FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?")
-        .bind(space.as_bytes().as_slice())
-        .bind(writer.as_bytes().as_slice())
-        .bind(seq_i64(keep)?)
-        .execute(&mut *conn)
-        .await?;
     sqlx::query("DELETE FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ?")
         .bind(space.as_bytes().as_slice())
         .bind(writer.as_bytes().as_slice())

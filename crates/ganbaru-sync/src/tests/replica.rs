@@ -1254,7 +1254,7 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_register_versions", &["value"]),
     ("sync_version_refs", &[]),
     ("sync_tombstones", &[]),
-    ("sync_auth_entries", &[]),
+    ("sync_auth_selected", &[]),
     ("sync_devices", &[]),
     ("sync_late_changes", &[]),
     ("sync_row_creations", &[]),

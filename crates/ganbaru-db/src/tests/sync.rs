@@ -177,22 +177,65 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
             .await
             .expect("a removed writer the anchor never stored keeps nothing");
 
-        let entry = "INSERT INTO sync_auth_entries
-                (space_id, writer_id, seq, epoch, revision, previous_hash, entry_hash, entry_kind,
-                 proposal_hash, selected)
-             VALUES (zeroblob(16), zeroblob(16), ?, 0, 1, zeroblob(32), zeroblob(32), 1,
-                     zeroblob(32), 1)";
-        sqlx::query(entry).bind(2).execute(&pool).await.unwrap();
-        sqlx::query(entry)
-            .bind(1)
+        let selected = "INSERT INTO sync_auth_selected
+                (space_id, revision, epoch, entry_hash, proposal_hash, envelope_hash)
+             VALUES (zeroblob(16), 1, 0, ?, zeroblob(32), zeroblob(32))";
+        sqlx::query(selected)
+            .bind(vec![0_u8; 32])
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(selected)
+            .bind(vec![1_u8; 32])
             .execute(&pool)
             .await
             .expect_err("one selected entry per revision");
-        sqlx::query(entry)
+        let envelope = "INSERT INTO sync_auth_envelopes
+                (space_id, role, envelope_hash, writer_id, seq, previous_hash, stamp, entry_hash,
+                 previous_entry_hash,
+                 device_id, device_key, envelope, verified, stored_order, stored_at_ms)
+             VALUES (zeroblob(16), ?1, ?2, zeroblob(16), 1, zeroblob(32), 0, ?3, ?3, ?4, ?5, x'01', 1,
+                     ?6, 1)";
+        sqlx::query(envelope)
+            .bind("record")
+            .bind(vec![0_u8; 32])
+            .bind(Some(vec![0_u8; 32]))
+            .bind(None::<String>)
+            .bind(None::<Vec<u8>>)
+            .bind(1)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(envelope)
+            .bind("record")
+            .bind(vec![1_u8; 32])
+            .bind(None::<Vec<u8>>)
+            .bind(None::<String>)
+            .bind(None::<Vec<u8>>)
+            .bind(2)
+            .execute(&pool)
+            .await
+            .expect_err("every stored record names its entry hash");
+        sqlx::query(envelope)
+            .bind("certificate")
+            .bind(vec![2_u8; 32])
+            .bind(None::<Vec<u8>>)
+            .bind(None::<String>)
+            .bind(None::<Vec<u8>>)
             .bind(3)
             .execute(&pool)
             .await
-            .expect_err("an entry names a stored operation");
+            .expect_err("every stored certificate names its device and key");
+        sqlx::query(envelope)
+            .bind("evidence")
+            .bind(vec![3_u8; 32])
+            .bind(None::<Vec<u8>>)
+            .bind(None::<String>)
+            .bind(None::<Vec<u8>>)
+            .bind(1)
+            .execute(&pool)
+            .await
+            .expect_err("each stored envelope has its own position");
 
         let device = "INSERT INTO sync_devices
                 (space_id, device_id, device_key, tls_fingerprint, kind, role, admin_key,
@@ -237,7 +280,8 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
             .await
             .unwrap();
         let left: i64 = sqlx::query_scalar(
-            "SELECT (SELECT COUNT(*) FROM sync_ops) + (SELECT COUNT(*) FROM sync_auth_entries)
+            "SELECT (SELECT COUNT(*) FROM sync_ops) + (SELECT COUNT(*) FROM sync_auth_selected)
+                 + (SELECT COUNT(*) FROM sync_auth_envelopes)
                  + (SELECT COUNT(*) FROM sync_devices)",
         )
         .fetch_one(&pool)

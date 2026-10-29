@@ -1,8 +1,11 @@
 //! Anchor handover selection: takes, contests between handovers out of one epoch instance,
 //! objections, yields, kit pins and demotions, rotation vetoes, installed recovery keys, and the
 //! devices held for data while an instance is frozen. Each case selects the same head whatever
-//! order its entries arrive in, and most run twice: once with the attacker's records under a
-//! writer whose fork freezes its epoch, once under a fresh writer id.
+//! order its entries arrive in, and most run twice: once with the attacker's records under the
+//! anchor's own writer, forked just past the point the attacker continues from, and once under a
+//! fresh writer id. A forked writer's records at or past its fork sequence are not nodes, so in
+//! the first run the attacker's branch neither contests, objects, nor holds anybody, and the
+//! fork only lowers a freeze to the writer's last record below it.
 
 use std::collections::BTreeMap;
 
@@ -34,10 +37,12 @@ struct Log {
     records: Vec<AuthorizationRecord>,
     /// The writer that carries each record.
     writers: Vec<WriterId>,
-    /// The writer that carries the next records.
+    /// The writer that carries the next records the charter anchor device sequences.
     writer: WriterId,
-    /// Revisions at which forks freeze epochs, by anchor device.
-    freezes: BTreeMap<String, Vec<u64>>,
+    /// Writers that carry the records other anchor devices sequence, by device.
+    device_writers: BTreeMap<String, WriterId>,
+    /// First provable fork sequence of forked writers. A record is carried at its revision.
+    forks: BTreeMap<WriterId, u64>,
     clock: u64,
 }
 
@@ -88,7 +93,8 @@ impl Log {
             records: Vec::new(),
             writers: Vec::new(),
             writer: writer(0),
-            freezes: BTreeMap::new(),
+            device_writers: BTreeMap::new(),
+            forks: BTreeMap::new(),
             clock: START_MS,
         };
         (log, root)
@@ -127,8 +133,9 @@ impl Log {
             hash: record.hash(),
             anchor,
         };
+        let carrier = self.carrier(&record.anchor_device_id);
         self.records.push(record);
-        self.writers.push(self.writer);
+        self.writers.push(carrier);
         next
     }
 
@@ -176,23 +183,44 @@ impl Log {
     }
 
     /// The attacker's later records: under a fresh writer id with `fresh`, otherwise under the
-    /// anchor's own writer, whose fork freezes the anchor's epoch at `fork`.
+    /// anchor's own writer, forked just past `fork`, so that they are not nodes.
     fn attacker(&mut self, fresh: bool, fork: &At) {
         if fresh {
             self.writer = writer(9);
         } else {
-            self.freezes
-                .insert(ANCHOR_DEVICE_ID.to_owned(), vec![fork.revision]);
+            self.fork_anchor(fork);
         }
+    }
+
+    /// The writer that carries the records `anchor` sequences.
+    fn carrier(&mut self, anchor: &str) -> WriterId {
+        if anchor == ANCHOR_DEVICE_ID {
+            return self.writer;
+        }
+        let next = u8::try_from(20 + self.device_writers.len()).unwrap();
+        *self
+            .device_writers
+            .entry(anchor.to_owned())
+            .or_insert_with(|| writer(next))
+    }
+
+    /// Forks the current writer of the charter anchor device just past `at`: its records from
+    /// there on are not nodes, and a freeze of an instance it carries records of is lowered to
+    /// its last record there below the fork.
+    fn fork_anchor(&mut self, at: &At) {
+        self.forks.insert(self.writer, at.revision + 1);
     }
 
     /// What the records in `order` select.
     fn select(&self, order: &[usize]) -> SelectedHead {
-        let records: Vec<(WriterId, AuthorizationRecord)> = order
+        let records: Vec<(WriterId, u64, AuthorizationRecord)> = order
             .iter()
-            .map(|index| (self.writers[*index], self.records[*index].clone()))
+            .map(|index| {
+                let record = self.records[*index].clone();
+                (self.writers[*index], record.revision, record)
+            })
             .collect();
-        select_records(&self.charter, self.freezes.clone(), &records)
+        select_records(&self.charter, self.forks.clone(), &records)
     }
 
     /// Asserts that every arrival order selects `expected` and derives the same state: the
@@ -356,7 +384,11 @@ fn an_old_anchor_removed_through_a_freeze_takes_nothing_back_from_the_recovery()
         let selected = contest.log.assert_frozen(&contest.next);
         for device in [ANCHOR_DEVICE_ID, &device_id(FIRST), &device_id(SECOND)] {
             assert!(live(&selected, device));
-            assert!(selected.held.contains(device), "{device} is held");
+        }
+        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        // The removals of both admins hold them only when they are nodes.
+        for device in [device_id(FIRST), device_id(SECOND)] {
+            assert_eq!(selected.held.contains(&device), fresh, "{device} held");
         }
         assert!(live(&selected, &device_id(MEMBER)));
         assert!(live(&selected, &device_id(4)));
@@ -372,7 +404,13 @@ fn an_old_anchor_removed_through_a_freeze_takes_nothing_back_from_the_recovery()
         } = takeover(fresh);
         log.yield_to(&acted, &device_admin(FIRST), &forced);
         let objection = log.append(&forced, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
-        log.yield_to(&objection, &device_admin(SECOND), &forced);
+        let yielded = log.yield_to(&objection, &device_admin(SECOND), &forced);
+        if !fresh {
+            // Without the self-handover as a node, SECOND's removal of the anchor stands.
+            let selected = log.assert_selects(&yielded);
+            assert!(removed(&selected, ANCHOR_DEVICE_ID));
+            continue;
+        }
         let selected = log.assert_frozen(&forced);
         for device in [ANCHOR_DEVICE_ID, &device_id(FIRST), &device_id(SECOND)] {
             assert!(live(&selected, device));
@@ -647,9 +685,15 @@ fn an_ousted_anchors_objection_freezes_and_holds_both_until_the_kit() {
         let ousted = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
         log.attacker(fresh, &point);
         log.append(&point, &anchor_admin(&person()), remove(&device_id(SECOND)));
-        let selected = log.assert_frozen(&point);
-        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
-        assert!(selected.held.contains(&device_id(SECOND)));
+        if fresh {
+            let selected = log.assert_frozen(&point);
+            assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+            assert!(selected.held.contains(&device_id(SECOND)));
+        } else {
+            // A forked writer's objection is no node: the single take wins.
+            let selected = log.assert_selects(&ousted);
+            assert!(removed(&selected, ANCHOR_DEVICE_ID));
+        }
 
         let kit = log.kit(&ousted, &device_id(SECOND));
         let selected = log.assert_selects(&kit);
@@ -697,8 +741,7 @@ fn a_restored_admins_second_take_is_withdrawn_by_its_yield_to_the_first() {
 fn a_take_beside_a_clone_stands_and_the_other_clone_branch_is_not_effective() {
     let (mut log, base) = Log::new();
     let anchor = anchor_admin(&person());
-    log.freezes
-        .insert(ANCHOR_DEVICE_ID.to_owned(), vec![base.revision]);
+    log.fork_anchor(&base);
     let one = log.append(
         &base,
         &anchor,
@@ -734,8 +777,7 @@ fn a_removed_old_anchors_fork_below_a_take_freezes_only_once_it_contests() {
         );
         let taken = log.take(&point, SECOND);
         let ousted = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
-        log.freezes
-            .insert(ANCHOR_DEVICE_ID.to_owned(), vec![shared.revision]);
+        log.fork_anchor(&shared);
         let selected = log.assert_selects(&ousted);
         assert!(removed(&selected, ANCHOR_DEVICE_ID));
 
@@ -743,9 +785,14 @@ fn a_removed_old_anchors_fork_below_a_take_freezes_only_once_it_contests() {
             log.writer = writer(9);
         }
         log.self_handover(&shared);
-        let selected = log.assert_frozen(&shared);
-        assert_eq!(selected.anchor, ANCHOR_DEVICE_ID);
-        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        if fresh {
+            let selected = log.assert_frozen(&shared);
+            assert_eq!(selected.anchor, ANCHOR_DEVICE_ID);
+            assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        } else {
+            // Under the forked writer past its fork the self-handover is no node.
+            log.assert_selects(&ousted);
+        }
 
         let kit = log.kit(&ousted, &device_id(MEMBER));
         let selected = log.assert_selects(&kit);
@@ -756,8 +803,7 @@ fn a_removed_old_anchors_fork_below_a_take_freezes_only_once_it_contests() {
 #[test]
 fn the_kit_recovers_a_clone_freeze_and_demotes_every_other_admin() {
     let (mut log, base) = Log::new();
-    log.freezes
-        .insert(ANCHOR_DEVICE_ID.to_owned(), vec![base.revision]);
+    log.fork_anchor(&base);
     log.append(
         &base,
         &anchor_admin(&person()),
@@ -878,9 +924,17 @@ fn a_leaked_kits_conflicting_rotation_turns_its_recovery_into_a_freeze() {
         log.attacker(fresh, &next);
         log.append(&base, &leaked, rotate_recovery(&other_recovery(93)));
         log.self_handover(&next);
-        let selected = log.assert_frozen(&next);
-        assert_eq!(selected.kit_handovers, 0);
-        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        if fresh {
+            let selected = log.assert_frozen(&next);
+            assert_eq!(selected.kit_handovers, 0);
+            assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        } else {
+            // The conflicting rotation, below the fork, still vetoes the kit handover; the
+            // self-handover past the fork is no node, so the vetoed kit handover wins alone
+            // as an ordinary candidate and its own rotation is refused.
+            let selected = log.assert_selects(&ousted);
+            assert_eq!(selected.kit_handovers, 0);
+        }
     }
 }
 
@@ -946,13 +1000,19 @@ fn an_ousted_anchors_installed_key_only_contests_its_old_instance() {
         let (mut log, base) = Log::new();
         let install = log.append(&base, &anchor_admin(&person()), rotate_recovery(&installed));
         let taken = log.take(&install, SECOND);
-        log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+        let ousted = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
         log.attacker(fresh, &install);
         let own = log.handover(&install, &installed, ANCHOR_DEVICE_ID);
         log.handover(&own, &installed, ANCHOR_DEVICE_ID);
-        let selected = log.assert_frozen(&install);
-        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
-        assert_eq!(selected.kit_handovers, 0);
+        if fresh {
+            let selected = log.assert_frozen(&install);
+            assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+            assert_eq!(selected.kit_handovers, 0);
+        } else {
+            // Past the fork the installed key's handovers are no nodes: the take wins alone.
+            let selected = log.assert_selects(&ousted);
+            assert!(removed(&selected, ANCHOR_DEVICE_ID));
+        }
     }
 }
 

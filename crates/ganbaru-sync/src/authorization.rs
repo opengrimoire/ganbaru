@@ -1,20 +1,24 @@
 //! The authorization log: the space charter, kind 4 entries in the anchor's writer chain, chain
 //! selection, and the device and writer state derived from the selected chain.
 //!
-//! Every kind 4 operation an anchor writer seals is kept in `sync_auth_entries`. Selection walks
-//! the tree of entries whose rules hold at their parent and keeps the effective entry of highest
-//! rank; `sync_devices` and the writer states of removed devices are recomputed from the selected
-//! chain whenever an entry arrives, so a reselection reverts what a superseded chain set.
+//! Every authorization record envelope, writer certificate, and fork evidence envelope that
+//! passes its intrinsic checks is kept in the record store (`records`). Selection walks the tree
+//! of stored records whose rules hold at their parent, whose anchor sequence lies below its
+//! writer's horizon, and whose anchor is bound by a stored certificate of a carrier, and keeps
+//! the effective entry of highest rank; `sync_auth_selected`, `sync_devices`, and the writer
+//! states of removed devices are recomputed from the selected chain whenever the store grows, so
+//! a reselection reverts what a superseded chain set.
 //!
 //! A handover is taken: the target device's admin key signs it, or the kit key, or an installed
 //! recovery key. Each epoch instance resolves its handovers before the head is chosen. Two
 //! handovers out of one instance, or an entry of it that revokes a handover's signer or target,
 //! contest it; a kit handover's ancestry pins the winner, a lone candidate wins, a yield that
 //! every other contestant signed accepts one, and otherwise the instance freezes. A kit or
-//! recovery handover demotes every other admin and resets the recovery key to the kit key. A fork
-//! of a writer of an epoch's anchor freezes the instance at the revision its forked operations
-//! were sealed against. While the selected instance is frozen, devices that an ineffective entry
-//! past the freeze removes are held: their operations are stored but not applied.
+//! recovery handover demotes every other admin and resets the recovery key to the kit key. A
+//! provable fork of a writer that carries an instance's records freezes the instance at the last
+//! record that writer carries below the fork. While the selected instance is frozen, devices
+//! that an ineffective entry past the freeze removes are held: their operations are stored but
+//! not applied.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -25,14 +29,15 @@ use ganbaru_sync_contracts::{
     Digest32, Entry, Envelope, ProposalRejection, ResolveLate, Seq, Sequencing, SetRole,
     SignedCharter, SignedProposal, SpaceId, VersionVector, WriterId,
 };
-use sqlx::{Connection, Row, SqliteConnection};
+use sqlx::{Connection, SqliteConnection};
 
 use crate::apply::{self, Constrained};
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::Batch;
+use crate::records::{self, Node};
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, exclusion, fork, sql};
+use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
 
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,17 +146,6 @@ pub(crate) struct AuthState {
     previous_discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
     /// Hashes of the proposals the chain holds, so a chain never orders one proposal twice.
     proposals: Arc<BTreeSet<Digest32>>,
-}
-
-/// Revision past which an epoch that `anchor` opened at revision `start` is frozen: the lowest
-/// fork revision of the anchor's writers at or past the start. A fork sealed before the epoch
-/// opened belongs to an earlier one.
-fn frozen_at(freezes: &BTreeMap<String, Vec<u64>>, anchor: &str, start: u64) -> Option<u64> {
-    freezes
-        .get(anchor)?
-        .iter()
-        .copied()
-        .find(|revision| *revision >= start)
 }
 
 /// Selection order of a chain head, see [`AuthState::rank`].
@@ -584,19 +578,22 @@ impl AuthState {
     }
 }
 
-/// A stored entry: the kind 4 operation that carries it and its record.
-struct Node {
-    writer: WriterId,
-    seq: Seq,
-    hash: Digest32,
-    record: AuthorizationRecord,
+/// One entry of the selected chain, with the stored record envelope of lowest hash that carries
+/// it.
+#[derive(Debug, Clone)]
+struct SelectedEntry {
+    revision: u64,
+    epoch: u32,
+    entry_hash: Digest32,
+    proposal_hash: Digest32,
+    envelope_hash: Digest32,
 }
 
-/// The selected chain: its head state and the operations of its entries in revision order.
+/// The selected chain: its head state and its entries in revision order.
 #[derive(Clone)]
 pub(crate) struct Selection {
     pub(crate) state: AuthState,
-    path: Vec<(WriterId, Seq)>,
+    path: Vec<SelectedEntry>,
     /// Late change decisions of the chain with their revisions, in revision order.
     pub(crate) resolutions: Vec<(u64, ResolveLate)>,
     /// Highest revision any stored chain reaches from the charter, selected or not.
@@ -614,7 +611,15 @@ impl Selection {
     /// This chain extended by `node`, which its head state admits.
     fn extended(mut self, node: &Node) -> Self {
         self.state.advance(&node.record, node.hash);
-        self.path.push((node.writer, node.seq));
+        if let Some(carrier) = node.carriers.first() {
+            self.path.push(SelectedEntry {
+                revision: node.record.revision,
+                epoch: node.record.epoch,
+                entry_hash: node.hash,
+                proposal_hash: node.record.proposal.hash(),
+                envelope_hash: carrier.envelope_hash,
+            });
+        }
         if let Entry::ResolveLate(resolve) = &node.record.proposal.proposal.entry {
             self.resolutions
                 .push((node.record.revision, resolve.clone()));
@@ -669,8 +674,7 @@ async fn selected_proposal_revision(
     proposal_hash: &Digest32,
 ) -> SyncResult<Option<u64>> {
     let revision: Option<i64> = sqlx::query_scalar(
-        "SELECT revision FROM sync_auth_entries
-         WHERE space_id = ? AND proposal_hash = ? AND selected = 1",
+        "SELECT revision FROM sync_auth_selected WHERE space_id = ? AND proposal_hash = ?",
     )
     .bind(space.as_bytes().as_slice())
     .bind(proposal_hash.as_slice())
@@ -687,8 +691,7 @@ async fn selected_proposal_position(
     proposal_hash: &Digest32,
 ) -> SyncResult<Option<(u32, u64)>> {
     let row: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT epoch, revision FROM sync_auth_entries
-         WHERE space_id = ? AND proposal_hash = ? AND selected = 1",
+        "SELECT epoch, revision FROM sync_auth_selected WHERE space_id = ? AND proposal_hash = ?",
     )
     .bind(space.as_bytes().as_slice())
     .bind(proposal_hash.as_slice())
@@ -702,46 +705,24 @@ async fn selected_proposal_position(
     .transpose()
 }
 
-/// Every stored entry, deduplicated by entry hash.
-async fn load_nodes(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Vec<Node>> {
-    let rows = sqlx::query(
-        "SELECT e.writer_id, e.seq, e.entry_hash, o.envelope
-         FROM sync_auth_entries e JOIN sync_ops o
-            ON o.space_id = e.space_id AND o.writer_id = e.writer_id AND o.seq = e.seq
-         WHERE e.space_id = ? ORDER BY e.writer_id, e.seq",
-    )
-    .bind(space.as_bytes().as_slice())
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut seen = BTreeSet::new();
-    let mut nodes = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let hash = log::digest(&row.try_get::<Vec<u8>, _>(2)?)?;
-        if !seen.insert(hash) {
-            continue;
-        }
-        let envelope: Vec<u8> = row.try_get(3)?;
-        let record = record_of(&envelope)
-            .ok_or_else(|| corrupt("a stored authorization entry does not decode"))?;
-        nodes.push(Node {
-            writer: log::writer_id(&row.try_get::<Vec<u8>, _>(0)?)?,
-            seq: stored_u64(row.try_get(1)?, "sequence")?,
-            hash,
-            record,
-        });
-    }
-    Ok(nodes)
-}
-
-/// Readiness revision of a space whose stored chains reach a freeze: every revision, kept within
-/// the stored integer range.
+/// Readiness revision of a space whose stored chains reach a writer-fork freeze: every
+/// revision, kept within the stored integer range.
 const UNBOUNDED_REVISION: u64 = i64::MAX.unsigned_abs();
 
-/// The charter, the freezes, and every stored entry of a space.
+/// The charter and what the record store derives for the walk.
 struct Stored {
     charter: SignedCharter,
-    freezes: Arc<BTreeMap<String, Vec<u64>>>,
+    /// Every node, see [`records::load`].
     nodes: Vec<Node>,
+    /// The device id and key each verified certificate of a writer names.
+    certificates: BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>,
+    /// Lowest sequence of each writer with provable fork evidence.
+    provable: BTreeMap<WriterId, Seq>,
+    /// Highest revision of any verified stored record.
+    max_revision: u64,
+    /// Whether a node needs a certificate of a carrier that names its anchor device and key.
+    /// Only the selection rule's tests, which have no certificates, leave it unset.
+    check_binding: bool,
 }
 
 impl Stored {
@@ -750,13 +731,34 @@ impl Stored {
         let Some(charter) = load_charter(conn, space).await? else {
             return Ok(None);
         };
-        let nodes = load_nodes(conn, space).await?;
-        let freezes = Arc::new(fork::freezes(conn, space).await?);
+        let loaded = records::load(conn, space, &charter.hash()).await?;
         Ok(Some(Self {
             charter,
-            freezes,
-            nodes,
+            nodes: loaded.nodes,
+            certificates: loaded.certificates,
+            provable: loaded.provable,
+            max_revision: loaded.max_revision,
+            check_binding: true,
         }))
+    }
+
+    /// The carriers of `node` bound at `state`, its parent: those with a certificate that names
+    /// the node's anchor device and the key that device holds at `state`.
+    fn bound(&self, node: &Node, state: &AuthState) -> Vec<(WriterId, Seq)> {
+        let anchor = &node.record.anchor_device_id;
+        let key = state.devices.get(anchor).map(|device| device.device_key);
+        node.carriers
+            .iter()
+            .filter(|carrier| {
+                !self.check_binding
+                    || self.certificates.get(&carrier.writer).is_some_and(|names| {
+                        names
+                            .iter()
+                            .any(|(device, named)| device == anchor && Some(*named) == key)
+                    })
+            })
+            .map(|carrier| (carrier.writer, carrier.seq))
+            .collect()
     }
 }
 
@@ -775,8 +777,6 @@ struct Visit {
     rank: Rank,
     /// Revision of the entry, 0 for the charter.
     revision: u64,
-    /// Anchor of the state after the entry.
-    anchor: String,
     /// Key that signed the entry's proposal, `None` for the charter.
     author: Option<AdminPublicKey>,
     /// Signer kind and target device when the entry is a handover.
@@ -791,6 +791,9 @@ struct Visit {
     removes: Option<String>,
     /// Kit key of the state after the entry.
     kit_key: AdminPublicKey,
+    /// Writers and sequences of the envelopes that carry the entry bound to its anchor device
+    /// at the parent, empty for the charter.
+    bound: Vec<(WriterId, Seq)>,
 }
 
 /// The tree of check-valid stored entries from the charter, see [`Resolution`].
@@ -824,7 +827,6 @@ impl<'a> Walk<'a> {
                 hash: root.entry_hash,
                 rank: root.rank(),
                 revision: 0,
-                anchor: root.anchor_device_id.clone(),
                 author: None,
                 handover: None,
                 parent_anchor_key: None,
@@ -832,6 +834,7 @@ impl<'a> Walk<'a> {
                 yields_to: None,
                 removes: None,
                 kit_key: root.kit_key,
+                bound: Vec::new(),
             }],
             children: vec![Vec::new()],
             enrolled: BTreeSet::new(),
@@ -841,27 +844,37 @@ impl<'a> Walk<'a> {
         // state, so a chain without forks is walked in linear time.
         let mut stack = vec![(root, 0)];
         while let Some((state, visit)) = stack.pop() {
-            let valid: Vec<usize> = by_parent
+            // A child is valid when its rules hold at the parent and a certificate of one of its
+            // carriers binds it to the key its anchor device holds there.
+            let mut valid: Vec<(usize, Vec<(WriterId, Seq)>)> = by_parent
                 .get(&state.entry_hash)
                 .into_iter()
                 .flatten()
                 .copied()
                 .filter(|index| state.check(&stored.nodes[*index].record).is_ok())
+                .map(|index| (index, stored.bound(&stored.nodes[index], &state)))
+                .filter(|(_, bound)| !bound.is_empty())
                 .collect();
-            let Some((last, forks)) = valid.split_last() else {
+            let Some((last, bound)) = valid.pop() else {
                 continue;
             };
-            for index in forks {
-                stack.push(walk.visit(visit, *index, state.clone()));
+            for (index, bound) in valid {
+                stack.push(walk.visit(visit, index, bound, state.clone()));
             }
-            stack.push(walk.visit(visit, *last, state));
+            stack.push(walk.visit(visit, last, bound, state));
         }
         walk
     }
 
     /// Records entry `index`, which `state` admits, as a child of `parent`, and returns the
     /// state after it with its visit.
-    fn visit(&mut self, parent: usize, index: usize, mut state: AuthState) -> (AuthState, usize) {
+    fn visit(
+        &mut self,
+        parent: usize,
+        index: usize,
+        bound: Vec<(WriterId, Seq)>,
+        mut state: AuthState,
+    ) -> (AuthState, usize) {
         let stored = self.stored;
         let node = &stored.nodes[index];
         let record = &node.record;
@@ -900,7 +913,6 @@ impl<'a> Walk<'a> {
             hash: node.hash,
             rank: state.rank(),
             revision: state.revision,
-            anchor: state.anchor_device_id.clone(),
             author: Some(record.proposal.proposal.author),
             handover,
             parent_anchor_key,
@@ -908,6 +920,7 @@ impl<'a> Walk<'a> {
             yields_to,
             removes,
             kit_key: state.kit_key,
+            bound,
         });
         self.children.push(Vec::new());
         self.children[parent].push(visit);
@@ -1059,10 +1072,41 @@ impl<'a> Walk<'a> {
             .collect()
     }
 
-    /// Revision past which a writer fork of its anchor freezes the instance opened at `root`.
-    fn fork(&self, root: usize) -> Option<u64> {
-        let visit = &self.visits[root];
-        frozen_at(&self.stored.freezes, &visit.anchor, visit.revision)
+    /// The freeze node of each writer fork of every instance, by instance root.
+    ///
+    /// A writer with provable fork evidence that carries a bound entry of an instance below its
+    /// first provable sequence forks the instance: its freeze node is the visit of the instance
+    /// it carries at the highest such sequence, the common ancestor of several at one sequence.
+    /// Every bound entry of an instance is carried by a writer of the instance's anchor, since
+    /// its certificate names the anchor device. A writer without such an entry forks nothing.
+    fn freeze_nodes(&self) -> BTreeMap<usize, Vec<usize>> {
+        let mut highest: BTreeMap<(usize, WriterId), (Seq, usize)> = BTreeMap::new();
+        for (index, visit) in self.visits.iter().enumerate() {
+            for (writer, seq) in &visit.bound {
+                let Some(first) = self.stored.provable.get(writer) else {
+                    continue;
+                };
+                if seq >= first {
+                    continue;
+                }
+                highest
+                    .entry((visit.instance, *writer))
+                    .and_modify(|(at, node)| {
+                        if seq > at {
+                            *at = *seq;
+                            *node = index;
+                        } else if seq == at {
+                            *node = self.common_ancestor(*node, index);
+                        }
+                    })
+                    .or_insert((*seq, index));
+            }
+        }
+        let mut nodes: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for ((instance, _), (_, node)) in highest {
+            nodes.entry(instance).or_default().push(node);
+        }
+        nodes
     }
 
     /// The chain from the charter through `visit`.
@@ -1096,11 +1140,9 @@ enum Outcome {
     Open,
     /// The handover out of the instance that wins it.
     Won(usize),
-    /// Contested without a winner: only the visit and its ancestors are effective.
+    /// Contested without a winner, or forked by a writer without a candidate: only the visit
+    /// and its ancestors are effective.
     FrozenAt(usize),
-    /// A writer fork of its anchor with no handover out of it: entries past the revision are
-    /// not effective.
-    FrozenPast(u64),
 }
 
 /// The authority the stored tree derives, all of it before the head is selected.
@@ -1118,16 +1160,17 @@ enum Outcome {
 /// ancestry of the highest ranked unvetoed kit handover wins; a lone unobjected candidate wins;
 /// a candidate every other contestant and, for objections, the instance's anchor yielded to wins,
 /// the lowest hash among several; otherwise a contested instance freezes at the common ancestor
-/// of the candidates' parents, lowered to the revision a writer fork of its anchor froze it at, and an
-/// uncontested one with a writer fork freezes past that revision.
+/// of the candidates' parents, lowered to the common ancestor with the freeze node of each writer
+/// fork of the instance, and an uncontested one with a writer fork freezes at the common ancestor
+/// of its freeze nodes.
 ///
 /// An entry is effective when its parent is, it is not a handover that lost or left a frozen
-/// instance, it is not off the path to a contested freeze point, it is not past a writer-fork
-/// freeze, and in an instance whose winner has a writer fork, it is not past the fork beside the
-/// winner's ancestry. The effective entry of highest rank is the head. Nothing reads the selected
-/// chain afterwards to change any of this: the head reports the state its ancestry derives, the
-/// freeze point, and the devices held for data. The result depends only on the stored entries
-/// and the writer forks, not on arrival order or the writers that carried them.
+/// instance, it is not off the path to a freeze point, and in an instance whose winner has a
+/// writer fork, it is an ancestor of the winner or of every freeze node. The effective entry of
+/// highest rank is the head. Nothing reads the selected chain afterwards to change any of this:
+/// the head reports the state its ancestry derives, the freeze point, and the devices held for
+/// data. The result depends only on the stored envelope set, not on arrival order, the peer that
+/// delivered an envelope, or the operation slots a replica kept.
 struct Resolution<'a> {
     walk: Walk<'a>,
     /// Handovers out of each instance, by instance root.
@@ -1138,7 +1181,8 @@ struct Resolution<'a> {
     effective: Vec<bool>,
     /// The effective visit of highest rank.
     best: usize,
-    /// Highest revision any check-valid chain reaches.
+    /// Highest revision of any verified stored record, or every revision once a writer fork
+    /// freezes an instance.
     reachable: u64,
 }
 
@@ -1160,42 +1204,32 @@ impl<'a> Resolution<'a> {
         }
         let pinned = walk.pinned();
         let yields = walk.yields();
+        let forks = walk.freeze_nodes();
         let mut outcomes = BTreeMap::new();
-        let mut forks = BTreeMap::new();
         for root in 0..walk.visits.len() {
             if walk.visits[root].instance != root {
                 continue;
             }
-            let fork = walk.fork(root);
             let own = candidates.get(&root).map_or(&[][..], Vec::as_slice);
+            let freezes = forks.get(&root).map_or(&[][..], Vec::as_slice);
             outcomes.insert(
                 root,
-                Self::outcome(&walk, root, own, fork, &pinned, &yields),
+                Self::outcome(&walk, root, own, freezes, &pinned, &yields),
             );
-            forks.insert(root, fork);
         }
-        let mut reachable = 0;
+        // Copies of a forked anchor writer may carry entries past its freeze node that no
+        // replica walks. An author that applied one before the fork was found must not wait for
+        // it, so a writer fork makes every revision reachable. Each operation's device is still
+        // checked against the selected chain when it applies.
+        let reachable = if forks.is_empty() {
+            stored.max_revision
+        } else {
+            UNBOUNDED_REVISION
+        };
         let mut effective = vec![true; walk.visits.len()];
-        for index in 0..walk.visits.len() {
-            let visit = &walk.visits[index];
-            reachable = reachable.max(visit.revision);
-            // Copies of a forked anchor writer may carry entries past the revision its instance
-            // froze at, which no replica keeps once the fork is excluded. An author that applied
-            // one before the fork was found must not wait for it, so a chain that reaches a
-            // writer-fork freeze reaches every revision. Each operation's device is still
-            // checked against the selected chain when it applies.
-            if forks
-                .get(&visit.instance)
-                .copied()
-                .flatten()
-                .is_some_and(|fork| visit.revision >= fork)
-            {
-                reachable = UNBOUNDED_REVISION;
-            }
-            if index > 0 {
-                effective[index] = effective[walk.parent(index)]
-                    && Self::admitted(&walk, index, &outcomes, &forks);
-            }
+        for index in 1..walk.visits.len() {
+            effective[index] =
+                effective[walk.parent(index)] && Self::admitted(&walk, index, &outcomes, &forks);
         }
         let best = (0..walk.visits.len())
             .filter(|index| effective[*index])
@@ -1216,7 +1250,7 @@ impl<'a> Resolution<'a> {
         walk: &Walk<'_>,
         root: usize,
         candidates: &[usize],
-        fork: Option<u64>,
+        freezes: &[usize],
         pinned: &BTreeMap<usize, usize>,
         yields: &[(AdminPublicKey, Digest32)],
     ) -> Outcome {
@@ -1224,7 +1258,11 @@ impl<'a> Resolution<'a> {
             return Outcome::Won(*winner);
         }
         let Some(first) = candidates.first() else {
-            return fork.map_or(Outcome::Open, Outcome::FrozenPast);
+            return freezes
+                .iter()
+                .copied()
+                .reduce(|a, b| walk.common_ancestor(a, b))
+                .map_or(Outcome::Open, Outcome::FrozenAt);
         };
         let objections: Vec<Vec<usize>> = candidates
             .iter()
@@ -1255,16 +1293,12 @@ impl<'a> Resolution<'a> {
         if let Some(winner) = accepted {
             return Outcome::Won(winner);
         }
-        let mut point = candidates
+        let point = candidates
             .iter()
             .map(|candidate| walk.parent(*candidate))
+            .chain(freezes.iter().copied())
             .reduce(|a, b| walk.common_ancestor(a, b))
             .unwrap_or(root);
-        if let Some(fork) = fork {
-            while point != root && walk.visits[point].revision > fork {
-                point = walk.parent(point);
-            }
-        }
         Outcome::FrozenAt(point)
     }
 
@@ -1273,7 +1307,7 @@ impl<'a> Resolution<'a> {
         walk: &Walk<'_>,
         index: usize,
         outcomes: &BTreeMap<usize, Outcome>,
-        forks: &BTreeMap<usize, Option<u64>>,
+        forks: &BTreeMap<usize, Vec<usize>>,
     ) -> bool {
         let visit = &walk.visits[index];
         if visit.handover.is_some() {
@@ -1284,11 +1318,14 @@ impl<'a> Resolution<'a> {
         }
         match outcomes.get(&visit.instance) {
             Some(Outcome::FrozenAt(point)) => walk.is_ancestor(index, *point),
-            Some(Outcome::FrozenPast(fork)) => visit.revision <= *fork,
-            Some(Outcome::Won(winner)) => match forks.get(&visit.instance).copied().flatten() {
-                Some(fork) => visit.revision <= fork || walk.is_ancestor(index, *winner),
-                None => true,
-            },
+            Some(Outcome::Won(winner)) => {
+                walk.is_ancestor(index, *winner)
+                    || forks.get(&visit.instance).is_none_or(|freezes| {
+                        freezes
+                            .iter()
+                            .all(|freeze| walk.is_ancestor(index, *freeze))
+                    })
+            }
             Some(Outcome::Open) | None => true,
         }
     }
@@ -1297,7 +1334,6 @@ impl<'a> Resolution<'a> {
     fn frozen_at(&self) -> Option<u64> {
         match self.outcomes.get(&self.walk.visits[self.best].instance) {
             Some(Outcome::FrozenAt(point)) => Some(self.walk.visits[*point].revision),
-            Some(Outcome::FrozenPast(fork)) => Some(*fork),
             _ => None,
         }
     }
@@ -1308,7 +1344,6 @@ impl<'a> Resolution<'a> {
         let instance = self.walk.visits[self.best].instance;
         let start = match self.outcomes.get(&instance) {
             Some(Outcome::FrozenAt(point)) => *point,
-            Some(Outcome::FrozenPast(_)) => instance,
             _ => return BTreeSet::new(),
         };
         let mut held = BTreeSet::new();
@@ -1385,12 +1420,6 @@ impl<'a> Resolution<'a> {
         let instance = self.walk.visits[self.best].instance;
         let continuations: Vec<usize> = match self.outcomes.get(&instance) {
             Some(Outcome::FrozenAt(point)) => self.walk.children[*point].clone(),
-            Some(Outcome::FrozenPast(fork)) => (0..self.walk.visits.len())
-                .filter(|index| {
-                    let visit = &self.walk.visits[*index];
-                    visit.instance == instance && visit.revision == fork.saturating_add(1)
-                })
-                .collect(),
             _ => return points,
         };
         let branches = self
@@ -1453,36 +1482,31 @@ pub(crate) async fn enrolled_on_any_chain(
     Ok(enrolled.contains(&wanted))
 }
 
-/// What the enrollments of every stored chain depend on: the space, its charter, the hashes of
-/// its stored authorization entries, and its freezes. The charter keeps a reset space that a
-/// new charter founds, or another vault with the same space, from reading a stale answer.
+/// What the enrollments of every stored chain depend on: the space, its charter, and the
+/// envelopes of its record store with whether each is verified. The charter keeps a reset space
+/// that a new charter founds, or another vault with the same space, from reading a stale answer.
 #[derive(Debug, PartialEq, Eq)]
 struct EnrolledKey {
     space: SpaceId,
     charter: Option<Digest32>,
-    entries: Vec<Digest32>,
-    freezes: BTreeMap<String, Vec<u64>>,
+    envelopes: Vec<(Vec<u8>, i64)>,
 }
 
 impl EnrolledKey {
     async fn load(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Self> {
-        let rows: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT entry_hash FROM sync_auth_entries WHERE space_id = ? ORDER BY entry_hash",
+        let envelopes = sqlx::query_as(
+            "SELECT envelope_hash, verified FROM sync_auth_envelopes
+             WHERE space_id = ? ORDER BY envelope_hash, role",
         )
         .bind(space.as_bytes().as_slice())
         .fetch_all(&mut *conn)
         .await?;
-        let entries = rows
-            .iter()
-            .map(|hash| log::digest(hash))
-            .collect::<SyncResult<Vec<_>>>()?;
         Ok(Self {
             space,
             charter: load_charter(conn, space)
                 .await?
                 .map(|charter| charter.hash()),
-            entries,
-            freezes: fork::freezes(conn, space).await?,
+            envelopes,
         })
     }
 }
@@ -1605,30 +1629,80 @@ pub(crate) struct SelectedHead {
     pub(crate) recovery_admin_key: AdminPublicKey,
 }
 
-/// What the stored `records` derive from `charter`, each carried by its writer, for tests of
-/// the selection rule.
+/// What the stored `records` derive from `charter`, each carried by its writer at its sequence,
+/// for tests of the selection rule. `forks` names the first provable fork sequence of forked
+/// writers. Every carrier counts as bound, since the records come without certificates, and a
+/// record of a forked writer at or past its fork sequence is a node only as an ancestor of
+/// another, as in a record store whose horizon equals the provable sequence.
 #[cfg(test)]
 pub(crate) fn select_records(
     charter: &SignedCharter,
-    freezes: BTreeMap<String, Vec<u64>>,
-    records: &[(WriterId, AuthorizationRecord)],
+    forks: BTreeMap<WriterId, Seq>,
+    records: &[(WriterId, Seq, AuthorizationRecord)],
 ) -> SelectedHead {
-    let mut seen = BTreeSet::new();
-    let nodes = records
-        .iter()
-        .filter(|(_, record)| seen.insert(record.hash()))
-        .enumerate()
-        .map(|(index, (writer, record))| Node {
-            writer: *writer,
-            seq: u64::try_from(index).unwrap_or(u64::MAX),
-            hash: record.hash(),
-            record: record.clone(),
+    let mut bodies: BTreeMap<Digest32, Node> = BTreeMap::new();
+    for (writer, seq, record) in records {
+        let hash = record.hash();
+        bodies
+            .entry(hash)
+            .or_insert_with(|| Node {
+                hash,
+                record: record.clone(),
+                carriers: Vec::new(),
+            })
+            .carriers
+            .push(records::Carrier {
+                writer: *writer,
+                seq: *seq,
+                envelope_hash: ganbaru_sync_contracts::signing::domain_digest(
+                    b"test carrier",
+                    &[writer.as_bytes(), &seq.to_be_bytes()],
+                ),
+            });
+    }
+    let charter_hash = charter.hash();
+    let anchors: Vec<Digest32> = bodies
+        .values()
+        .filter(|node| {
+            node.carriers.iter().any(|carrier| {
+                forks
+                    .get(&carrier.writer)
+                    .is_none_or(|fork| carrier.seq < *fork)
+            })
         })
+        .map(|node| node.hash)
         .collect();
+    let mut included = BTreeSet::new();
+    for hash in anchors {
+        let mut path = Vec::new();
+        let mut at = hash;
+        while at != charter_hash && !included.contains(&at) {
+            let Some(node) = bodies.get(&at) else {
+                path.clear();
+                break;
+            };
+            path.push(at);
+            at = node.record.previous_entry_hash;
+        }
+        included.extend(path);
+    }
+    let max_revision = bodies
+        .values()
+        .map(|node| node.record.revision)
+        .max()
+        .unwrap_or(0);
+    let mut nodes: Vec<Node> = bodies
+        .into_values()
+        .filter(|node| included.contains(&node.hash))
+        .collect();
+    nodes.sort_by_key(|node| (node.record.revision, node.hash));
     let stored = Stored {
         charter: charter.clone(),
-        freezes: Arc::new(freezes),
         nodes,
+        certificates: BTreeMap::new(),
+        provable: forks,
+        max_revision,
+        check_binding: false,
     };
     let selection = Resolution::new(&stored).selected();
     let state = &selection.state;
@@ -1681,12 +1755,11 @@ pub(crate) async fn selected_revision(
     conn: &mut SqliteConnection,
     space: SpaceId,
 ) -> SyncResult<u64> {
-    let revision: Option<i64> = sqlx::query_scalar(
-        "SELECT max(revision) FROM sync_auth_entries WHERE space_id = ? AND selected = 1",
-    )
-    .bind(space.as_bytes().as_slice())
-    .fetch_one(&mut *conn)
-    .await?;
+    let revision: Option<i64> =
+        sqlx::query_scalar("SELECT max(revision) FROM sync_auth_selected WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .fetch_one(&mut *conn)
+            .await?;
     revision.map_or(Ok(0), |revision| stored_u64(revision, "revision"))
 }
 
@@ -1718,35 +1791,6 @@ pub(crate) async fn sealing_revision(
 /// names as anchor carry entries, and only well-formed ones.
 pub(crate) fn carries(carrier_device: &str, record: &AuthorizationRecord) -> bool {
     carrier_device == record.anchor_device_id && record.validate().is_ok()
-}
-
-/// Records a kind 4 operation of `writer` at `seq` as a log entry.
-pub(crate) async fn insert_entry(
-    conn: &mut SqliteConnection,
-    space: SpaceId,
-    writer: WriterId,
-    seq: Seq,
-    record: &AuthorizationRecord,
-) -> SyncResult<()> {
-    sqlx::query(
-        "INSERT INTO sync_auth_entries
-            (space_id, writer_id, seq, epoch, revision, previous_hash, entry_hash, entry_kind,
-             proposal_hash, selected)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(space.as_bytes().as_slice())
-    .bind(writer.as_bytes().as_slice())
-    .bind(seq_i64(seq)?)
-    .bind(i64::from(record.epoch))
-    .bind(seq_i64(record.revision)?)
-    .bind(record.previous_entry_hash.as_slice())
-    .bind(record.hash().as_slice())
-    .bind(i64::from(record.proposal.proposal.entry.kind()))
-    .bind(record.proposal.hash().as_slice())
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
 }
 
 /// Selects the chain and writes what it derives: the selected flags, `sync_devices` with the
@@ -1783,20 +1827,27 @@ pub(crate) async fn rederive(
     .bind(space.as_bytes().as_slice())
     .execute(&mut *conn)
     .await?;
-    sqlx::query("UPDATE sync_auth_entries SET selected = 0 WHERE space_id = ? AND selected = 1")
+    sqlx::query("DELETE FROM sync_auth_selected WHERE space_id = ?")
         .bind(space.as_bytes().as_slice())
         .execute(&mut *conn)
         .await?;
-    for (writer, seq) in &selection.path {
+    for entry in &selection.path {
         sqlx::query(
-            "UPDATE sync_auth_entries SET selected = 1
-             WHERE space_id = ? AND writer_id = ? AND seq = ?",
+            "INSERT INTO sync_auth_selected
+                 (space_id, revision, epoch, entry_hash, proposal_hash, envelope_hash)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(space.as_bytes().as_slice())
-        .bind(writer.as_bytes().as_slice())
-        .bind(seq_i64(*seq)?)
+        .bind(seq_i64(entry.revision)?)
+        .bind(i64::from(entry.epoch))
+        .bind(entry.entry_hash.as_slice())
+        .bind(entry.proposal_hash.as_slice())
+        .bind(entry.envelope_hash.as_slice())
         .execute(&mut *conn)
         .await?;
+    }
+    if let Some(charter) = load_charter(conn, space).await? {
+        records::walked(conn, space, &charter.hash()).await?;
     }
     sqlx::query("DELETE FROM sync_devices WHERE space_id = ?")
         .bind(space.as_bytes().as_slice())
@@ -1914,11 +1965,12 @@ pub(crate) async fn removal_cutoff(
     writer: WriterId,
 ) -> SyncResult<Seq> {
     let envelope: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT o.envelope
+        "SELECT r.envelope
          FROM sync_devices d
-         JOIN sync_auth_entries e
-            ON e.space_id = d.space_id AND e.revision = d.removed_revision AND e.selected = 1
-         JOIN sync_ops o ON o.space_id = e.space_id AND o.writer_id = e.writer_id AND o.seq = e.seq
+         JOIN sync_auth_selected s
+            ON s.space_id = d.space_id AND s.revision = d.removed_revision
+         JOIN sync_auth_envelopes r
+            ON r.space_id = s.space_id AND r.role = 'record' AND r.envelope_hash = s.envelope_hash
          WHERE d.space_id = ? AND d.device_id = ?
          LIMIT 1",
     )
@@ -2305,7 +2357,7 @@ impl Engine {
             .reservation
             .reserve_entry(state.charter, record.epoch, revision, record.hash())
             .map_err(SyncError::Reservation)?;
-        let seq = sealer
+        sealer
             .seal_authorization(
                 self,
                 &mut tx,
@@ -2317,7 +2369,6 @@ impl Engine {
                 &mut report,
             )
             .await?;
-        insert_entry(&mut tx, ctx.space, writer.id(), seq, &record).await?;
         if let Some(selection) = rederive(&mut tx, ctx.space).await? {
             exclusion::settle(self, &mut tx, ctx, &mut batch, &selection).await?;
         }

@@ -18,7 +18,7 @@ use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::exclusion;
 use crate::log::{self, WriterRow, WriterState, clamp_ms, seq_i64};
-use crate::{Engine, SpaceContext, fork, validate};
+use crate::{Engine, SpaceContext, fork, records, validate};
 
 /// Why a stored operation cannot be applied yet or ever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -471,6 +471,17 @@ async fn store_next(
         .await?;
         return Ok(match stored {
             Some((hash, stored)) if hash != envelope.hash() => {
+                if !stored.is_empty() {
+                    records::admit_fork(
+                        conn,
+                        ctx.space,
+                        writer.id,
+                        envelope.seq,
+                        [&stored, bytes],
+                        now_ms,
+                    )
+                    .await?;
+                }
                 // Both operations are signed by the writer key: the pair is fork evidence,
                 // unless compaction dropped the stored body or the pair proves no revision.
                 if !stored.is_empty()
@@ -690,6 +701,9 @@ impl Engine {
         // so the writer's later operations would otherwise read as unknown.
         let mut refused_writers = BTreeSet::new();
         for bytes in operations {
+            // The record store keeps every certificate and record that passes its intrinsic
+            // checks, whatever the slot and transport rules below refuse.
+            records::admit(&mut tx, ctx.space, bytes, now_ms).await?;
             let writer = Envelope::decode(bytes).ok().map(|envelope| envelope.writer);
             if writer.is_some_and(|writer| refused_writers.contains(&writer)) {
                 outcomes.push(StoreOutcome::Refused(StoreRefusal::Quarantined));

@@ -166,7 +166,8 @@ async fn writers_of(replica: &mut Replica, devices: &BTreeSet<String>) -> BTreeS
 async fn carriers(replica: &mut Replica) -> BTreeSet<WriterId> {
     ids(
         replica,
-        "SELECT DISTINCT lower(hex(writer_id)) FROM sync_auth_entries ORDER BY 1",
+        "SELECT DISTINCT lower(hex(writer_id)) FROM sync_auth_envelopes WHERE role = 'record'
+         ORDER BY 1",
     )
     .await
     .iter()
@@ -178,7 +179,7 @@ async fn carriers(replica: &mut Replica) -> BTreeSet<WriterId> {
 async fn holds(replica: &mut Replica, signed: &SignedProposal) -> bool {
     replica
         .count(&format!(
-            "SELECT count(*) FROM sync_auth_entries WHERE proposal_hash = x'{}' AND selected = 1",
+            "SELECT count(*) FROM sync_auth_selected WHERE proposal_hash = x'{}'",
             hex(signed.hash().as_slice())
         ))
         .await

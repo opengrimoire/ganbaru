@@ -871,12 +871,12 @@ async fn apply_one(
     }
 }
 
-/// Records an authorization entry and selects the chain again. Only a writer of the device the
+/// Selects the chain again for an applied authorization entry. Only a writer of the device the
 /// record names as anchor may carry entries; any other carrier is held. The entry is stored and
 /// forwarded whether or not selection takes it, and the local writer freezes when the selected
 /// chain removes its device. Operations the selected removals exclude, or no longer exclude,
-/// change state in the same transaction. Entries of excluded operations, which never get here,
-/// are recorded by [`exclusion::settle`] and at the start of each apply call.
+/// change state in the same transaction. The record store admitted the entry when it was
+/// stored, see [`crate::records`].
 #[allow(clippy::too_many_arguments)]
 async fn apply_authorization(
     engine: &Engine,
@@ -894,7 +894,6 @@ async fn apply_authorization(
     if !authorization::carries(&issuer.device_id, record) {
         return Ok(Outcome::Held);
     }
-    authorization::insert_entry(conn, ctx.space, candidate.writer, candidate.seq, record).await?;
     if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
         exclusion::settle(engine, conn, ctx, batch, &selection).await?;
     }

@@ -68,8 +68,7 @@ pub(super) async fn view(replica: &mut Replica) -> AuthorizationView {
 pub(super) async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
     let view = view(replica).await;
     let hash: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT entry_hash FROM sync_auth_entries WHERE selected = 1
-         ORDER BY revision DESC LIMIT 1",
+        "SELECT entry_hash FROM sync_auth_selected ORDER BY revision DESC LIMIT 1",
     )
     .fetch_optional(&mut replica.conn)
     .await
@@ -208,9 +207,9 @@ async fn assert_devices_replay_the_selected_chain(replica: &mut Replica) {
         ),
     )]);
     let envelopes: Vec<(i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT e.revision, o.envelope FROM sync_auth_entries e JOIN sync_ops o
-            ON o.space_id = e.space_id AND o.writer_id = e.writer_id AND o.seq = e.seq
-         WHERE e.selected = 1 ORDER BY e.revision",
+        "SELECT s.revision, e.envelope FROM sync_auth_selected s JOIN sync_auth_envelopes e
+            ON e.space_id = s.space_id AND e.role = 'record' AND e.envelope_hash = s.envelope_hash
+         ORDER BY s.revision",
     )
     .fetch_all(&mut replica.conn)
     .await
@@ -433,13 +432,13 @@ fn entries_are_taken_only_from_the_anchor_and_unknown_kinds_are_kept_but_ignored
         let ignored = view(&mut observer).await;
         assert_eq!(ignored.revision, unknown_revision);
         assert_eq!(ignored.devices, before.devices);
-        let kinds: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT revision, selected FROM sync_auth_entries WHERE entry_kind = 200",
-        )
-        .fetch_all(&mut observer.conn)
-        .await
-        .unwrap();
-        assert_eq!(kinds, [(i64::try_from(unknown_revision).unwrap(), 1)]);
+        let selected_unknown: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sync_auth_selected WHERE revision = ?")
+                .bind(i64::try_from(unknown_revision).unwrap())
+                .fetch_one(&mut observer.conn)
+                .await
+                .unwrap();
+        assert_eq!(selected_unknown, 1);
 
         let next = hub
             .sequence(enroll_entry(&person(), 20, DeviceRole::Member))
@@ -550,11 +549,14 @@ fn concurrent_takes_freeze_the_old_epoch_until_the_kit_supersedes_it() {
             assert_devices_replay_the_selected_chain(observer).await;
         }
         assert_devices_replay_the_selected_chain(&mut hub).await;
-        let unselected: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM sync_auth_entries WHERE selected = 0")
-                .fetch_one(&mut hub.conn)
-                .await
-                .unwrap();
+        let unselected: i64 = sqlx::query_scalar(
+            "SELECT count(DISTINCT entry_hash) FROM sync_auth_envelopes
+                 WHERE role = 'record'
+                    AND entry_hash NOT IN (SELECT entry_hash FROM sync_auth_selected)",
+        )
+        .fetch_one(&mut hub.conn)
+        .await
+        .unwrap();
         assert_eq!(unselected, 3, "both takes and the superseded enrollment");
     });
 }
@@ -924,7 +926,9 @@ type Settled = (
 async fn settled(replica: &mut Replica) -> Settled {
     let head = head(replica).await;
     let entries = sqlx::query_as(
-        "SELECT writer_id, seq, selected FROM sync_auth_entries ORDER BY writer_id, seq",
+        "SELECT r.writer_id, r.seq,
+            EXISTS (SELECT 1 FROM sync_auth_selected s WHERE s.entry_hash = r.entry_hash)
+         FROM sync_auth_envelopes r WHERE r.role = 'record' ORDER BY r.writer_id, r.seq",
     )
     .fetch_all(&mut replica.conn)
     .await

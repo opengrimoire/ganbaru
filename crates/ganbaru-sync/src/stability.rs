@@ -92,11 +92,11 @@ impl Engine {
         let rows = sqlx::query(
             "SELECT d.device_id, d.enrolled_revision, o.stored_at_ms
              FROM sync_devices d
-             LEFT JOIN sync_auth_entries e
+             LEFT JOIN sync_auth_selected e
                 ON e.space_id = d.space_id AND e.revision = d.enrolled_revision
-                AND e.selected = 1
-             LEFT JOIN sync_ops o
-                ON o.space_id = e.space_id AND o.writer_id = e.writer_id AND o.seq = e.seq
+             LEFT JOIN sync_auth_envelopes o
+                ON o.space_id = e.space_id AND o.role = 'record'
+                AND o.envelope_hash = e.envelope_hash
              WHERE d.space_id = ? AND d.removed_revision IS NULL AND d.device_id <> ?
              ORDER BY d.device_id",
         )

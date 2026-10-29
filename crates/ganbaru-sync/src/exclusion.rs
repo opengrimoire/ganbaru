@@ -34,7 +34,7 @@ use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{self, Batch, RowState, group_id, mask_param, table_param};
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, SyncError, reseal, sql, store};
+use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store};
 
 /// Most operations past its removal cutoff a removed device's writer may still have stored.
 /// Later ones are refused as revoked.
@@ -688,7 +688,7 @@ pub(crate) async fn settle(
     loop {
         let bounded = drop_beyond_bound(engine, conn, ctx.space, batch).await?;
         reconcile(engine, conn, ctx, batch).await?;
-        if !record_excluded_entries(conn, ctx.space).await? && !bounded {
+        if !records::grown(conn, ctx.space).await? && !bounded {
             break;
         }
         match authorization::rederive(conn, ctx.space).await? {
@@ -763,11 +763,12 @@ async fn drop_beyond_bound(
         };
         let bound = stored_u64(first_dropped, "sequence")?.saturating_sub(1);
         let carried: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?",
+            "SELECT count(*) FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ? AND kind = ?",
         )
         .bind(space.as_bytes().as_slice())
         .bind(writer.as_bytes().as_slice())
         .bind(seq_i64(bound)?)
+        .bind(i64::from(OperationKind::Authorization.as_u8()))
         .fetch_one(&mut *conn)
         .await?;
         entries |= carried > 0;
@@ -846,17 +847,15 @@ async fn purge_row(
     Ok(())
 }
 
-/// Records the entries of excluded operations stored since the last engine write and settles
-/// again when the chain they extend changes the selection.
+/// Selects the chain again when the record store grew since the last walk, or a lower unnamed
+/// writer displaced one, and settles exclusions for the result.
 pub(crate) async fn admit_excluded_entries(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &mut Batch,
 ) -> SyncResult<()> {
-    if !record_excluded_entries(conn, ctx.space).await?
-        && !displaced_unnamed(conn, ctx.space).await?
-    {
+    if !records::grown(conn, ctx.space).await? && !displaced_unnamed(conn, ctx.space).await? {
         return Ok(());
     }
     if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
@@ -890,54 +889,6 @@ async fn displaced_unnamed(conn: &mut SqliteConnection, space: SpaceId) -> SyncR
     .fetch_one(&mut *conn)
     .await?;
     Ok(displaced != 0)
-}
-
-/// Records the authorization entries that excluded operations carry, which never apply. Chain
-/// selection has to see every entry a replica stores whatever became of its carrier: otherwise
-/// two replicas that learn of competing chains in different orders each keep the first, since
-/// its removals exclude the other chain's carrier. The same holds for entries whose operations
-/// wait: a yield a device held for data seals after writing waits behind its held row changes,
-/// and a kit handover sealed against a revision past a frozen point waits until that revision is
-/// reachable, yet each has to resolve the contest that keeps it waiting. Returns whether any
-/// entry was new.
-async fn record_excluded_entries(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
-    let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT o.writer_id, o.seq, o.envelope FROM sync_ops o
-         WHERE o.space_id = ?1 AND o.kind = ?2
-            AND (o.excluded_revision IS NOT NULL OR o.state = 'waiting')
-            AND NOT EXISTS (
-                SELECT 1 FROM sync_auth_entries e
-                WHERE e.space_id = o.space_id AND e.writer_id = o.writer_id AND e.seq = o.seq
-            )
-         ORDER BY o.writer_id, o.seq",
-    )
-    .bind(space.as_bytes().as_slice())
-    .bind(i64::from(OperationKind::Authorization.as_u8()))
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut recorded = false;
-    for (writer, seq, envelope) in rows {
-        let Some(operation) = Envelope::decode(&envelope)
-            .ok()
-            .and_then(|envelope| envelope.operation().ok())
-        else {
-            continue;
-        };
-        let Content::Authorization(record) = &operation.content else {
-            continue;
-        };
-        let writer = log::writer_id(&writer)?;
-        let carrier = log::writer(conn, space, writer)
-            .await?
-            .ok_or_else(|| corrupt("an excluded operation has no writer"))?;
-        if !authorization::carries(&carrier.device_id, record) {
-            continue;
-        }
-        authorization::insert_entry(conn, space, writer, stored_u64(seq, "sequence")?, record)
-            .await?;
-        recorded = true;
-    }
-    Ok(recorded)
 }
 
 /// Records the device of the local writer and, when it changed, settles exclusions again: the

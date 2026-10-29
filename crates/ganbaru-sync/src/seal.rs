@@ -13,7 +13,7 @@ use ganbaru_sync_contracts::op::ends_group;
 use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH};
 use ganbaru_sync_contracts::{
     AuthorizationRecord, Cause, Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask,
-    GroupValue, Header, Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, RowKey, Seq,
+    GroupValue, Header, Hlc, HlcClock, Operation, OperationKind, PENDING_KEY_PREFIX, RowKey, Seq,
     SignedCertificate, TableId, Value, VersionVector, WriterId,
 };
 use sqlx::sqlite::SqliteRow;
@@ -164,6 +164,9 @@ pub(crate) async fn insert_applied_op(
     .bind(continues)
     .execute(&mut *conn)
     .await?;
+    if kind == OperationKind::Genesis.as_u8() || kind == OperationKind::Authorization.as_u8() {
+        crate::records::admit(conn, ctx.space, bytes, now_ms).await?;
+    }
     Ok(())
 }
 

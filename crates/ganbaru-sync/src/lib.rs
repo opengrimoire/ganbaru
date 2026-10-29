@@ -46,6 +46,7 @@ mod log;
 mod materialize;
 mod merge;
 mod publication;
+mod records;
 mod recovery;
 mod repair;
 mod reseal;

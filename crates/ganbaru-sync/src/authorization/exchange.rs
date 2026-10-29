@@ -195,7 +195,9 @@ struct Classes {
     writers: BTreeMap<WriterId, RecordClass>,
     /// Writers of devices live and not held at the local head.
     live: BTreeSet<WriterId>,
-    /// Keys of the wanted set: entry and envelope hashes, and writers.
+    /// Keys of the wanted set among those of the envelopes being classed: entry and envelope
+    /// hashes, and writers. Empty outside [`Engine::record_classes`], which reads it per key so
+    /// the cost of a set does not grow with the wanted set.
     wanted: BTreeSet<Vec<u8>>,
     /// What binds records the kit key signs to their carriers, `None` without a charter.
     binding: Option<Binding>,
@@ -323,7 +325,8 @@ impl SlotScope {
 ///
 /// A record whose carrier the parent's key certifies spends its slots even where it is not
 /// class 1: its entry, its parent and proposal pair, and its proposal slot: one per epoch
-/// instance a kit handover opened, and one in total outside them ([`SlotScope`]).
+/// instance a kit handover opened, and one in total outside them ([`SlotScope`]), which goes to
+/// the first stored record that binds there, or else the first one a set sends.
 /// Each slot takes one entry, so another entry that needs a spent slot is not class 1. The
 /// slots are derived from every verified stored record, nodes or not, so a slot stays spent as
 /// the store grows; only a change of the local selected chain can read them anew.
@@ -417,16 +420,24 @@ impl Binding {
     }
 
     /// Spends the slots of a record bound at `instance`, returning whether none was spent.
+    /// `outside` names the entry the [`SlotScope::Outside`] slot of the record's proposal goes
+    /// to, the first stored or first sent; another entry neither takes nor spends that slot.
     fn spend(
         &mut self,
         record: &AuthorizationRecord,
         hash: Digest32,
         instance: Option<SlotScope>,
+        outside: Option<Digest32>,
     ) -> bool {
         let proposal = record.proposal.hash();
         let pair = (record.previous_entry_hash, proposal);
-        let in_instance = instance.map(|instance| (instance, proposal));
-        let fresh = !self.bound_entries.contains(&hash)
+        let owner =
+            instance != Some(SlotScope::Outside) || outside.is_none_or(|first| first == hash);
+        let in_instance = instance
+            .filter(|_| owner)
+            .map(|instance| (instance, proposal));
+        let fresh = owner
+            && !self.bound_entries.contains(&hash)
             && !self.bound_pairs.contains(&pair)
             && in_instance.is_none_or(|slot| !self.bound_instances.contains(&slot));
         self.bound_entries.insert(hash);
@@ -702,10 +713,15 @@ impl Engine {
             }
         }
         let paired = fork_pairs(&mut tx, ctx, &data).await?;
-        for (bytes, envelope) in &data {
-            if paired.contains(&envelope.hash())
-                && records::admit_evidence(&mut tx, ctx.space, &[bytes], now_ms).await?
-            {
+        // The two halves of a pair take consecutive stored orders, whatever their batch order,
+        // so a page of the store splits at most the one pair at its boundary.
+        let mut halves: Vec<&(&[u8], &Envelope<'_>)> = data
+            .iter()
+            .filter(|(_, envelope)| paired.contains(&envelope.hash()))
+            .collect();
+        halves.sort_by_key(|(_, envelope)| (envelope.writer, envelope.seq, envelope.hash()));
+        for (bytes, envelope) in halves {
+            if records::admit_evidence(&mut tx, ctx.space, &[bytes], now_ms).await? {
                 note(envelope);
             }
         }
@@ -779,6 +795,23 @@ impl Engine {
             .map(|record| record.previous_entry_hash)
             .collect();
         let mut classes = classes(conn, ctx, &needed, false).await?;
+        for (envelope, record) in decoded.iter().zip(&records) {
+            let Some(envelope) = envelope else {
+                continue;
+            };
+            let mut keys = vec![(WantedKind::Envelope, envelope.hash().to_vec())];
+            if OperationKind::from_u8(envelope.kind) == Some(OperationKind::Genesis) {
+                keys.push((WantedKind::Writer, envelope.writer.as_bytes().to_vec()));
+            }
+            if let Some(record) = record {
+                keys.push((WantedKind::Entry, record.hash().to_vec()));
+            }
+            for (kind, key) in keys {
+                if !classes.wanted.contains(&key) && is_wanted(conn, ctx, kind, &key).await? {
+                    classes.wanted.insert(key);
+                }
+            }
+        }
         let facts = Facts::load(conn, ctx, &decoded, &records).await?;
         let mut kit = vec![false; envelopes.len()];
         let mut kit_writers = BTreeSet::new();
@@ -790,6 +823,32 @@ impl Engine {
                         .is_some_and(|record| record.proposal.proposal.author == binding.kit_key)
                 })
                 .collect();
+            // The Outside slot of a proposal goes to the first record of the set that binds
+            // there, as it went to the first stored one, so a rewrap at an older parent sent
+            // behind the record the kit sealed at the head does not take it.
+            let mut outside: BTreeMap<Digest32, Digest32> = BTreeMap::new();
+            for &index in &order {
+                let (Some(envelope), Some(record)) = (&decoded[index], &records[index]) else {
+                    continue;
+                };
+                if facts.held.contains(&envelope.hash()) || facts.entries.contains(&record.hash()) {
+                    continue;
+                }
+                let Some(bound) = binding.keys(record) else {
+                    continue;
+                };
+                let certified = bound.instance == Some(SlotScope::Outside)
+                    && facts.carrier_keys(envelope.writer, binding).iter().any(
+                        |(writer_key, device_key)| {
+                            bound.keys.contains(device_key) && envelope.verify(writer_key)
+                        },
+                    );
+                if certified {
+                    outside
+                        .entry(record.proposal.hash())
+                        .or_insert_with(|| record.hash());
+                }
+            }
             order.sort_by_key(|index| (records[*index].as_ref().map(|r| r.revision), *index));
             let mut seen = BTreeSet::new();
             for index in order {
@@ -812,7 +871,8 @@ impl Engine {
                         bound.keys.contains(device_key) && envelope.verify(writer_key)
                     },
                 );
-                if certified && binding.spend(record, entry, bound.instance) && bound.kit {
+                let first = outside.get(&record.proposal.hash()).copied();
+                if certified && binding.spend(record, entry, bound.instance, first) && bound.kit {
                     binding.extend(record, entry);
                     kit[index] = true;
                     kit_writers.insert(envelope.writer);
@@ -1035,18 +1095,7 @@ async fn classes(
     needed: &BTreeSet<Digest32>,
     yields: bool,
 ) -> SyncResult<Classes> {
-    let mut classes = Classes {
-        wanted: sqlx::query_scalar(
-            "SELECT key FROM sync_auth_wanted WHERE space_id = ?1
-             UNION SELECT envelope_hash FROM sync_auth_refetch WHERE space_id = ?1",
-        )
-        .bind(ctx.space.as_bytes().as_slice())
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .collect(),
-        ..Classes::default()
-    };
+    let mut classes = Classes::default();
     let Some(stored) = Stored::load(conn, ctx.space).await? else {
         return Ok(classes);
     };
@@ -1096,22 +1145,19 @@ async fn classes(
         .filter(|node| node.record.proposal.proposal.author == binding.kit_key)
         .collect();
     signed.sort_by_key(|node| (node.record.revision, node.hash));
+    let outside = outside_owners(conn, ctx, &binding, &signed).await?;
     for node in signed {
         let Some(slot) = binding.keys(&node.record) else {
             continue;
         };
-        let bound: BTreeSet<WriterId> = node
-            .carriers
-            .iter()
+        let bound: BTreeSet<WriterId> = bound_carriers(&binding, node, &slot)
             .map(|carrier| carrier.writer)
-            .filter(|writer| {
-                binding
-                    .certificates
-                    .get(writer)
-                    .is_some_and(|named| named.iter().any(|key| slot.keys.contains(key)))
-            })
             .collect();
-        if bound.is_empty() || !binding.spend(&node.record, node.hash, slot.instance) || !slot.kit {
+        let first = outside.get(&node.record.proposal.hash()).copied();
+        if bound.is_empty()
+            || !binding.spend(&node.record, node.hash, slot.instance, first)
+            || !slot.kit
+        {
             continue;
         }
         binding.extend(&node.record, node.hash);
@@ -1171,6 +1217,108 @@ async fn classes(
     }
     classes.binding = Some(binding);
     Ok(classes)
+}
+
+/// The carriers of `node` whose writer's certificate names a key `slot` binds.
+fn bound_carriers<'a>(
+    binding: &'a Binding,
+    node: &'a records::Node,
+    slot: &'a Bound,
+) -> impl Iterator<Item = &'a records::Carrier> {
+    node.carriers.iter().filter(|carrier| {
+        binding
+            .certificates
+            .get(&carrier.writer)
+            .is_some_and(|named| named.iter().any(|key| slot.keys.contains(key)))
+    })
+}
+
+/// The entry each proposal's [`SlotScope::Outside`] slot goes to among the stored records in
+/// `signed` that bind there: the one with the first stored bound carrier. Stored order is
+/// local, which classes may read since they only order transport, and it lets a record the kit
+/// sealed at the head keep its slot against a rewrap at an older parent stored after it.
+async fn outside_owners(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    binding: &Binding,
+    signed: &[&records::Node],
+) -> SyncResult<BTreeMap<Digest32, Digest32>> {
+    let mut first: BTreeMap<Digest32, (i64, Digest32)> = BTreeMap::new();
+    for node in signed {
+        let Some(slot) = binding.keys(&node.record) else {
+            continue;
+        };
+        if slot.instance != Some(SlotScope::Outside) {
+            continue;
+        }
+        let mut order: Option<i64> = None;
+        for carrier in bound_carriers(binding, node, &slot) {
+            let stored: Option<i64> = sqlx::query_scalar(
+                "SELECT stored_order FROM sync_auth_envelopes
+                 WHERE space_id = ? AND envelope_hash = ? AND verified = 1",
+            )
+            .bind(ctx.space.as_bytes().as_slice())
+            .bind(carrier.envelope_hash.as_slice())
+            .fetch_optional(&mut *conn)
+            .await?;
+            order = match (order, stored) {
+                (Some(order), Some(stored)) => Some(order.min(stored)),
+                (order, stored) => order.or(stored),
+            };
+        }
+        let Some(order) = order else {
+            continue;
+        };
+        let candidate = (order, node.hash);
+        first
+            .entry(node.record.proposal.hash())
+            .and_modify(|best| *best = (*best).min(candidate))
+            .or_insert(candidate);
+    }
+    Ok(first
+        .into_iter()
+        .map(|(proposal, (_, entry))| (proposal, entry))
+        .collect())
+}
+
+/// The kinds of key the wanted set holds.
+#[derive(Clone, Copy)]
+enum WantedKind {
+    Entry,
+    Envelope,
+    Writer,
+}
+
+impl WantedKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Entry => "entry",
+            Self::Envelope => "envelope",
+            Self::Writer => "writer",
+        }
+    }
+}
+
+/// Whether the wanted set holds `key` of `kind`, an envelope hash also counting when a
+/// refetch names it.
+async fn is_wanted(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    kind: WantedKind,
+    key: &[u8],
+) -> SyncResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sync_auth_wanted
+                        WHERE space_id = ?1 AND kind = ?2 AND key = ?3)
+             OR (?2 = 'envelope'
+                 AND EXISTS (SELECT 1 FROM sync_auth_refetch
+                             WHERE space_id = ?1 AND envelope_hash = ?3))",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(kind.as_str())
+    .bind(key)
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 /// The binding at the local selected head: the states of the selected chain at the parents of

@@ -47,9 +47,12 @@ pub struct RecoveryEntry {
     pub descendants: usize,
     /// Title and preview of each deleted descendant of another domain than the row's, written or
     /// edited unseen by the deletion, nearest first and at most [`MAX_UNSEEN_PRESENTATIONS`],
-    /// leaving out rows whose adapter presents nothing. A restore brings back rows of the row's
-    /// own domain only, so the text of these stays readable before the offer is closed.
+    /// leaving out rows whose adapter presents nothing or finds superseded by another row of the
+    /// offer. A restore brings back rows of the row's own domain only, so the text of these stays
+    /// readable before the offer is closed.
     pub unseen: Vec<Presentation>,
+    /// Unseen descendants that would be presented but exceed [`MAX_UNSEEN_PRESENTATIONS`].
+    pub unseen_omitted: usize,
     /// Writer of the newest unseen edit in the row or its descendants.
     pub writer: WriterId,
     /// Device of that writer.
@@ -382,33 +385,63 @@ async fn newest_unseen(
         .max())
 }
 
-/// The presentation of a deleted descendant holding a version of any group its coverage does
-/// not cover, such as a message revision posted while the deletion was unseen, or `None` when
-/// it holds none or presents nothing.
-async fn unseen_presentation(
-    engine: &Engine,
-    conn: &mut SqliteConnection,
-    batch: &mut Batch,
-    visibility: &mut Visibility,
-    (table, key): &RowRef,
-) -> SyncResult<Option<Presentation>> {
-    let spec = table_spec(engine, *table)?;
-    let Some(adapter) = engine.adapter(spec) else {
-        return Ok(None);
-    };
-    let versions = merge::versions(engine, conn, *table, key).await?;
-    let covering = coverage(engine, conn, batch, visibility, *table, key).await?;
-    if !versions.iter().any(|version| uncovered(version, &covering)) {
-        return Ok(None);
-    }
-    let presentation = adapter.presentation(spec.id, &retained_values(engine, spec, &versions));
-    Ok(
-        (!presentation.title.is_empty() || !presentation.preview.is_empty())
-            .then_some(presentation),
-    )
-}
-
 impl Engine {
+    /// Presentations of the deleted descendants of another domain than `root`'s that hold a
+    /// version of any group their coverage does not cover, such as a message revision posted
+    /// while the deletion was unseen, nearest first and at most [`MAX_UNSEEN_PRESENTATIONS`],
+    /// with the count of the ones past that cap. Rows that present nothing, or that their
+    /// adapter finds superseded by another row of the offer, are left out and not counted.
+    async fn unseen_presentations(
+        &self,
+        conn: &mut SqliteConnection,
+        batch: &mut Batch,
+        visibility: &mut Visibility,
+        root: &RowRef,
+        descendants: &[RowRef],
+    ) -> SyncResult<(Vec<Presentation>, usize)> {
+        let root_domain = self.domain_name(root.0)?;
+        let mut offered: BTreeMap<RowRef, Vec<(GroupId, Value)>> = BTreeMap::new();
+        let mut candidates = Vec::new();
+        for row in descendants {
+            if self.domain_name(row.0)? == root_domain {
+                continue;
+            }
+            let spec = table_spec(self, row.0)?;
+            let versions = merge::versions(self, conn, row.0, &row.1).await?;
+            let covering = coverage(self, conn, batch, visibility, row.0, &row.1).await?;
+            if versions.iter().any(|version| uncovered(version, &covering)) {
+                candidates.push(row);
+            }
+            offered.insert(row.clone(), retained_values(self, spec, &versions));
+        }
+        let lookup =
+            |table: TableId, key: &str| offered.get(&(table, key.to_string())).map(Vec::as_slice);
+        let mut unseen = Vec::new();
+        let mut omitted = 0;
+        for row in candidates {
+            let spec = table_spec(self, row.0)?;
+            let Some(adapter) = self.adapter(spec) else {
+                continue;
+            };
+            let Some(values) = offered.get(row) else {
+                continue;
+            };
+            if adapter.superseded_in_offer(spec.id, &row.1, values, &lookup) {
+                continue;
+            }
+            let presentation = adapter.presentation(spec.id, values);
+            if presentation.title.is_empty() && presentation.preview.is_empty() {
+                continue;
+            }
+            if unseen.len() < MAX_UNSEEN_PRESENTATIONS {
+                unseen.push(presentation);
+            } else {
+                omitted += 1;
+            }
+        }
+        Ok((unseen, omitted))
+    }
+
     /// Name of the domain that declares `table`.
     fn domain_name(&self, table: TableId) -> SyncResult<&'static str> {
         let spec = table_spec(self, table)?;
@@ -509,21 +542,9 @@ impl Engine {
             let Some((clock, writer)) = newest else {
                 continue;
             };
-            let root_domain = self.domain_name(root.0)?;
-            let mut unseen = Vec::new();
-            for row in &descendants {
-                if unseen.len() == MAX_UNSEEN_PRESENTATIONS {
-                    break;
-                }
-                if self.domain_name(row.0)? == root_domain {
-                    continue;
-                }
-                if let Some(presentation) =
-                    unseen_presentation(self, conn, &mut batch, &mut visibility, row).await?
-                {
-                    unseen.push(presentation);
-                }
-            }
+            let (unseen, unseen_omitted) = self
+                .unseen_presentations(conn, &mut batch, &mut visibility, &root, &descendants)
+                .await?;
             let spec = table_spec(self, root.0)?;
             let versions = merge::versions(self, conn, root.0, &root.1).await?;
             let values = retained_values(self, spec, &versions);
@@ -538,6 +559,7 @@ impl Engine {
                 presentation,
                 descendants,
                 unseen,
+                unseen_omitted,
                 writer,
                 device_id: devices
                     .get(&writer)

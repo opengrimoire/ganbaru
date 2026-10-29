@@ -81,6 +81,8 @@ export const sync = {
     thisDevice: "este dispositivo",
     otherDevice: "otro dispositivo",
     unseen: "Se escribió en un dispositivo que aún no había visto la eliminación. Esto no se recupera, así que copia antes lo que necesites.",
+    unseenOmitted: (count: number) =>
+      count === 1 ? "Y 1 más que no se muestra aquí" : `Y ${count} más que no se muestran aquí`,
     copy: "Copiar",
     copied: "Copiado",
     copyFailed: "No se pudo copiar el texto",

@@ -4,7 +4,7 @@
 use std::sync::LazyLock;
 
 use ganbaru_sync::manifest::vault::{
-    calendar, chat, distractions, music, projects, quick_notes, themes,
+    calendar, chat, distractions, music, notes, projects, quick_notes, themes,
 };
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
@@ -43,6 +43,14 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&chat::CHANNELS, refuse_chat_row)
         .with(&chat::ITEMS, refuse_chat_row)
         .with(&chat::MESSAGES, refuse_chat_row)
+        .with(&notes::PAGES, restore_notes_row)
+        .with(&notes::BLOCKS, restore_notes_row)
+        .with(&notes::DATABASES, restore_notes_row)
+        .with(&notes::DATA_SOURCES, restore_notes_row)
+        .with(&notes::DATA_SOURCE_TEMPLATES, restore_notes_row)
+        .with(&notes::PAGE_TEMPLATES, restore_notes_row)
+        .with(&notes::THREADS, restore_notes_row)
+        .with(&notes::COMMENTS, restore_notes_row)
 });
 
 /// The recovery restorers of the vault domains.
@@ -163,6 +171,23 @@ fn refuse_chat_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'
     })
 }
 
+/// Restores a deleted Notes page, block, data source, template, comment thread, or comment as a
+/// new row with copies of its deleted Notes descendants. A database comes back with the block
+/// that holds it, and a device that does not write Notes refuses; a refused restore keeps its
+/// offer discardable.
+fn restore_notes_row(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_notes::recovery::restore_recovered_row(
+            conn,
+            row.table,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
 /// Restores a deleted custom distraction category as a new category with its deleted hosts.
 fn restore_distraction_category(
     conn: &mut SqliteConnection,
@@ -203,6 +228,8 @@ pub(crate) struct RecoveryEntryView {
     /// Title and preview of deleted descendants of another domain written or edited unseen by
     /// the deletion, such as Chat posts, which restoring the row does not bring back.
     pub unseen: Vec<RecoveryTextView>,
+    /// Unseen rows past the ones listed in `unseen`.
+    pub unseen_omitted: usize,
     /// Device of the newest unseen edit.
     pub device: DeviceRef,
     /// When that edit was made, in Unix milliseconds.
@@ -264,6 +291,7 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
                         preview: presentation.preview,
                     })
                     .collect(),
+                unseen_omitted: entry.unseen_omitted,
                 device: devices.describe(&entry.device_id),
                 edited_at_ms: entry.clock.physical_ms(),
             })
@@ -282,7 +310,9 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
 mod tests {
     use super::*;
 
-    /// Only replica-writable domains have concurrent writers, so only they can open offers.
+    /// Replica-writable domains have concurrent writers, so they can open offers. Notes is held
+    /// to the same rule before its replicas can write, so a Notes table without a restorer fails
+    /// here rather than when replica writes are enabled.
     #[test]
     fn sync_recovery_restorers_cover_every_table_that_can_root_an_offer() {
         let manifest = Engine::vault().manifest();
@@ -290,9 +320,9 @@ mod tests {
             .recovery_root_tables()
             .into_iter()
             .filter(|table| {
-                manifest
-                    .domain_of(table.name)
-                    .is_some_and(|domain| domain.replica_writable)
+                manifest.domain_of(table.name).is_some_and(|domain| {
+                    domain.replica_writable || domain.name == notes::DOMAIN_NAME
+                })
             })
             .map(|table| table.name)
             .collect();

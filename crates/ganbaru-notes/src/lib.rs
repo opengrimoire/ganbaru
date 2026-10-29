@@ -17,6 +17,7 @@ pub mod page_property_storage;
 pub mod project_history;
 pub mod property_storage;
 pub mod reads;
+pub mod recovery;
 pub mod search;
 pub(crate) mod structure;
 pub mod suggestions;

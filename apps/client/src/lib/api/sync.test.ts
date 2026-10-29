@@ -198,6 +198,7 @@ describe("sync API boundary", () => {
         preview: "Start",
         descendants: 2,
         unseen: [{ title: "", preview: "Written offline" }],
+        unseenOmitted: 3,
         device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
         editedAtMs: 2_000,
       },
@@ -210,6 +211,7 @@ describe("sync API boundary", () => {
         preview: "Start",
         descendants: 2,
         unseen: [{ title: "", preview: "Written offline" }],
+        unseenOmitted: 3,
         device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
         editedAtMs: 2_000,
       },
@@ -223,6 +225,7 @@ describe("sync API boundary", () => {
       title: "Plan",
       preview: "Start",
       unseen: [],
+      unseenOmitted: 0,
       device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
       editedAtMs: 2_000,
     };
@@ -239,6 +242,7 @@ describe("sync API boundary", () => {
       title: "Launch",
       preview: "",
       descendants: 1,
+      unseenOmitted: 0,
       device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
       editedAtMs: 2_000,
     };
@@ -246,6 +250,25 @@ describe("sync API boundary", () => {
     await expect(listSyncRecovery()).rejects.toThrow();
     vi.mocked(invoke).mockResolvedValueOnce([{ ...offer, unseen: [{ title: "" }] }]);
     await expect(listSyncRecovery()).rejects.toThrow();
+  });
+
+  it("rejects recovery offers without a valid omitted unseen count", async () => {
+    const offer = {
+      table: "projects",
+      rowKey: "project-1",
+      title: "Launch",
+      preview: "",
+      descendants: 1,
+      unseen: [],
+      device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
+      editedAtMs: 2_000,
+    };
+    vi.mocked(invoke).mockResolvedValueOnce([offer]);
+    await expect(listSyncRecovery()).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce([{ ...offer, unseenOmitted: 1.5 }]);
+    await expect(listSyncRecovery()).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce([{ ...offer, unseenOmitted: 2 }]);
+    await expect(listSyncRecovery()).resolves.toMatchObject([{ unseenOmitted: 2 }]);
   });
 
   it("sends the recovery target and returns the restored id", async () => {

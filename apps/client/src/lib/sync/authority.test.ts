@@ -14,6 +14,7 @@ import {
   canSuggestSyncHandover,
   canTakeSyncAnchor,
   canForceSyncAnchor,
+  canInstallSyncRecoveryKey,
   SYNC_HANDOVER_SUGGESTION_MS,
   type SyncAuthorityContext,
   syncDeviceActions,
@@ -141,6 +142,17 @@ describe("sync authority controls", () => {
     expect(canForceSyncAnchor(context(lost, { ownIsAdmin: false }))).toBe(false);
     expect(canForceSyncAnchor(context(lost, { devices: [{ ...own, anchor: true }] }))).toBe(false);
     expect(canForceSyncAnchor(context(lost, { devices: [{ ...own, removedRevision: 3 }, anchor] }))).toBe(false);
+  });
+
+  it("offers a new recovery key only on the anchor's own admin desktop", () => {
+    const anchorHere = { devices: [{ ...own, anchor: true }, memberDesktop] };
+    expect(canInstallSyncRecoveryKey(context({}, anchorHere))).toBe(true);
+    expect(canInstallSyncRecoveryKey(context({ statusRole: "hub" }, anchorHere))).toBe(true);
+    expect(canInstallSyncRecoveryKey(context())).toBe(false);
+    expect(canInstallSyncRecoveryKey(context({ mobileLayout: true }, anchorHere))).toBe(false);
+    expect(canInstallSyncRecoveryKey(context({}, { ...anchorHere, ownIsAdmin: false }))).toBe(false);
+    expect(canInstallSyncRecoveryKey(context({}, { devices: [{ ...own, anchor: true, removedRevision: 3 }] }))).toBe(false);
+    expect(canInstallSyncRecoveryKey(context({}, { devices: [anchor] }))).toBe(false);
   });
 
   it("offers the anchor for quarantine only while it is another live device not quarantined yet", () => {

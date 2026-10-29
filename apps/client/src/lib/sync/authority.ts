@@ -166,6 +166,15 @@ export function canManageSyncRecoveryKit(context: SyncAuthorityContext): boolean
 }
 
 /**
+ * Whether this admin desktop may install a new recovery key. Only the anchor's own admin key
+ * installs one, and it never replaces the printed kit, which alone rotates the kit.
+ */
+export function canInstallSyncRecoveryKey(context: SyncAuthorityContext): boolean {
+  const own = syncOwnDevice(context.authority);
+  return adminHere(context) && own !== null && own.anchor && own.removedRevision === null;
+}
+
+/**
  * How this desktop may use a recovery kit, or null when it may not. An enrolled desktop that is
  * not an admin yet proposes its promotion while its last exchange reached the anchor; a linked
  * one forces the handover to itself once the anchor stopped answering. A desktop that is not

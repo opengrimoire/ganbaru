@@ -31,6 +31,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import {
+    canInstallSyncRecoveryKey,
     canManageSyncRecoveryKit,
     canResetSyncState,
     canResolveSyncLateChanges,
@@ -91,6 +92,7 @@
     syncUnconfirmedNotice(t, localization.locale, status, now, canSuggestSyncHandover(authorityContext)),
   );
   const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
+  const canInstallKey = $derived(authorityContext !== null && canInstallSyncRecoveryKey(authorityContext));
   const kitUse = $derived(authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state));
   const canReset = $derived(canResetSyncState(status.role, mobileLayout));
 
@@ -294,6 +296,7 @@
         <SyncRecoveryKit
           {buttonClass}
           canManage={canManageKit}
+          {canInstallKey}
           use={kitUse}
           anchor={syncQuarantinableAnchor(authorityContext.authority)}
           pendingKit={authorityState.pendingKit}

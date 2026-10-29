@@ -16,13 +16,16 @@
   let {
     buttonClass,
     canManage,
+    canInstallKey,
     use,
     anchor,
     pendingKit,
   }: {
     buttonClass: string;
-    /** Whether this admin desktop shows, saves, and replaces the kit. */
+    /** Whether this admin desktop shows and saves a waiting kit or recovery key. */
     canManage: boolean;
+    /** Whether this anchor desktop may install a new recovery key. */
+    canInstallKey: boolean;
     /** How this desktop may use a kit to become an admin, or null when it may not. */
     use: SyncKitUse | null;
     /** The anchor a forced handover may also quarantine, when there is one. */
@@ -130,7 +133,7 @@
         {t("sync.kit.confirmSaved")}
       </button>
     </div>
-  {:else if canManage}
+  {:else if canInstallKey}
     <div class="flex flex-wrap gap-2">
       <button type="button" class={buttonClass} disabled={busy} onclick={() => { confirmation = "regenerate"; }}>
         {t("sync.kit.regenerate")}

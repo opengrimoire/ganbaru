@@ -11,14 +11,14 @@
 use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AuthorizationRecord, DeviceRole, Digest32, Entry, Handover, Remove, Sequencing,
-    SetRole, SignedCharter, SpaceId, WriterId, Yield,
+    AdminKeyPair, AuthorizationRecord, DevicePublicKey, DeviceRole, Digest32, Entry, Handover,
+    Remove, Sequencing, SetRole, SignedCharter, SpaceId, WriterId, Yield,
 };
 
 use super::authorization::admin_entry;
 use super::replica::{
-    ANCHOR_DEVICE_ID, START_MS, anchor_admin, device_admin, device_id, enroll_entry, person,
-    proposal, recovery_admin, test_charter,
+    ANCHOR_DEVICE_ID, START_MS, anchor_admin, anchor_device_key, device_admin, device_id,
+    device_key, enroll_entry, person, proposal, recovery_admin, test_charter,
 };
 use crate::authorization::{SelectedHead, select_records};
 
@@ -44,8 +44,13 @@ struct Log {
     device_writers: BTreeMap<String, WriterId>,
     /// First provable fork sequence of forked writers. A record is carried at its revision.
     forks: BTreeMap<WriterId, u64>,
+    /// The device id and key each writer's certificates name, once [`Self::bind`] asks the
+    /// selection to check carrier binding.
+    certificates: Option<Certificates>,
     clock: u64,
 }
+
+type Certificates = BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>;
 
 /// Admin desktops 1 and 2 and member desktop 3.
 const FIRST: usize = 1;
@@ -96,6 +101,7 @@ impl Log {
             writer: writer(0),
             device_writers: BTreeMap::new(),
             forks: BTreeMap::new(),
+            certificates: None,
             clock: START_MS,
         };
         (log, root)
@@ -193,16 +199,55 @@ impl Log {
         }
     }
 
-    /// The writer that carries the records `anchor` sequences.
+    /// The writer that carries the records `anchor` sequences. With binding checked, a writer
+    /// it has not seen before is certified for `anchor` under the key its enrollment names.
     fn carrier(&mut self, anchor: &str) -> WriterId {
-        if anchor == ANCHOR_DEVICE_ID {
-            return self.writer;
+        let carrier = if anchor == ANCHOR_DEVICE_ID {
+            self.writer
+        } else {
+            let next = u8::try_from(20 + self.device_writers.len()).unwrap();
+            *self
+                .device_writers
+                .entry(anchor.to_owned())
+                .or_insert_with(|| writer(next))
+        };
+        if let Some(certificates) = &mut self.certificates {
+            certificates
+                .entry(carrier)
+                .or_insert_with(|| vec![(anchor.to_owned(), enrolled_key(anchor))]);
         }
-        let next = u8::try_from(20 + self.device_writers.len()).unwrap();
-        *self
-            .device_writers
-            .entry(anchor.to_owned())
-            .or_insert_with(|| writer(next))
+        carrier
+    }
+
+    /// Checks carrier binding from here on: every writer seen so far is certified for the
+    /// device it carries records of, under the key that device's enrollment names.
+    fn bind(&mut self) {
+        let mut certificates = Certificates::new();
+        for (record, carrier) in self.records.iter().zip(&self.writers) {
+            let device = &record.anchor_device_id;
+            certificates
+                .entry(*carrier)
+                .or_insert_with(|| vec![(device.clone(), enrolled_key(device))]);
+        }
+        self.certificates = Some(certificates);
+    }
+
+    /// Adds a certificate of `carrier` that names `device` under `key`.
+    fn certify(&mut self, carrier: WriterId, device: &str, key: DevicePublicKey) {
+        self.certificates
+            .as_mut()
+            .expect("binding is checked")
+            .entry(carrier)
+            .or_default()
+            .push((device.to_owned(), key));
+    }
+
+    /// An entry `author` signed that the anchor of `at` sequences after it, carried by
+    /// `carrier` instead of that anchor's writer.
+    fn append_by(&mut self, at: &At, author: &AdminKeyPair, entry: Entry, carrier: WriterId) -> At {
+        let next = self.append(at, author, entry);
+        *self.writers.last_mut().unwrap() = carrier;
+        next
     }
 
     /// Forks the current writer of the charter anchor device just past `at`: its records from
@@ -221,7 +266,12 @@ impl Log {
                 (self.writers[*index], record.revision, record)
             })
             .collect();
-        select_records(&self.charter, self.forks.clone(), &records)
+        select_records(
+            &self.charter,
+            self.forks.clone(),
+            self.certificates.clone(),
+            &records,
+        )
     }
 
     /// Asserts that every arrival order selects `expected` and derives the same state: the
@@ -274,6 +324,19 @@ impl Log {
         assert_eq!(selected.frozen_at, Some(expected.revision));
         selected
     }
+}
+
+/// The device key the enrollment of `device` names: the charter's for the anchor device, the
+/// test key of its index for a replica device.
+fn enrolled_key(device: &str) -> DevicePublicKey {
+    if device == ANCHOR_DEVICE_ID {
+        return anchor_device_key(&person()).public_key();
+    }
+    let index = device
+        .strip_prefix("device-")
+        .and_then(|index| index.parse().ok())
+        .expect("a replica device id");
+    device_key(&person(), index).public_key()
 }
 
 /// A writer id derived from `seed`.
@@ -1066,4 +1129,252 @@ fn a_restored_anchor_beside_a_planted_take_freezes_rather_than_withdrawing() {
     log.self_handover(&base);
     let selected = log.assert_frozen(&base);
     assert_eq!(selected.anchor, ANCHOR_DEVICE_ID);
+}
+
+/// An enrollment of `device` under the test key of `key_index`, which need not be its own.
+fn enroll_under(device: usize, key_index: usize, role: DeviceRole) -> Entry {
+    let Entry::Enroll(mut enroll) = enroll_entry(&person(), key_index, role) else {
+        unreachable!("enroll_entry builds an enrollment");
+    };
+    enroll.device_id = device_id(device);
+    Entry::Enroll(enroll)
+}
+
+/// `count` entries the charter anchor signs after `at`, each moving [`MEMBER`] between the
+/// member and admin roles, so the device table stays small however long the chain grows.
+fn churn(log: &mut Log, at: &At, count: usize) -> At {
+    let anchor = anchor_admin(&person());
+    let mut head = at.clone();
+    for index in 0..count {
+        let entry = if index % 2 == 0 {
+            promote(MEMBER)
+        } else {
+            Entry::SetRole(SetRole::Device {
+                device_id: device_id(MEMBER),
+                role: DeviceRole::Member,
+            })
+        };
+        head = log.append(&head, &anchor, entry);
+    }
+    head
+}
+
+/// Records a long-lived founder seals while it is trusted, before a planned move: past 65,536,
+/// so a record count per device never takes authority from an honest anchor.
+const FOUNDER_HISTORY: usize = 65_600;
+/// Records a removed founder seals on a fresh writer past the take that removed it.
+const FOUNDER_FLOOD: usize = 70_000;
+
+#[test]
+fn a_planned_move_after_a_long_founder_history_hands_the_log_to_the_new_anchor() {
+    let (mut log, base) = Log::new();
+    let history = churn(&mut log, &base, FOUNDER_HISTORY);
+    let planned = log.take(&history, SECOND);
+    let enrolled = log.append(
+        &planned,
+        &device_admin(SECOND),
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let selected = log.assert_selects(&enrolled);
+    assert_eq!(selected.kit_handovers, 0);
+    assert!(live(&selected, ANCHOR_DEVICE_ID));
+}
+
+#[test]
+fn a_removed_founders_flood_on_a_fresh_writer_never_outranks_the_take_that_removed_it() {
+    let (mut log, base) = Log::new();
+    let history = churn(&mut log, &base, 300 - 4);
+    let taken = log.take(&history, SECOND);
+    let removal = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+    log.attacker(true, &history);
+    churn(&mut log, &history, FOUNDER_FLOOD);
+    let selected = log.assert_selects(&removal);
+    assert!(removed(&selected, ANCHOR_DEVICE_ID));
+    assert_eq!(selected.kit_handovers, 0);
+}
+
+#[test]
+fn a_fresh_writers_self_handover_past_filler_contests_a_take_that_removes_its_anchor() {
+    let (mut log, base) = Log::new();
+    let root = log.self_handover(&base);
+    let taken = log.take(&root, SECOND);
+    log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+    log.attacker(true, &root);
+    let filler = churn(&mut log, &root, 64);
+    log.self_handover(&filler);
+    let selected = log.assert_frozen(&root);
+    assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+    let kit = log.kit(&root, &device_id(SECOND));
+    let selected = log.assert_selects(&kit);
+    assert_eq!(selected.kit_handovers, 1);
+}
+
+#[test]
+fn puppets_a_removed_anchor_enrolls_after_the_kit_never_take_past_its_pin() {
+    let (mut log, base) = Log::new();
+    let taken = log.take(&base, SECOND);
+    log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+    log.attacker(true, &base);
+    let fabricated = log.self_handover(&base);
+    log.assert_frozen(&base);
+    let kit = log.kit(&base, &device_id(SECOND));
+    let cleared = log.append(&kit, &recovery_admin(&person()), remove(ANCHOR_DEVICE_ID));
+    let anchor = anchor_admin(&person());
+    let mut at = fabricated;
+    for puppet in [7, 8] {
+        at = log.append(&at, &anchor, admin_entry(puppet));
+    }
+    for puppet in [7, 8] {
+        log.take(&at, puppet);
+    }
+    let selected = log.assert_selects(&cleared);
+    assert!(removed(&selected, ANCHOR_DEVICE_ID));
+    assert_eq!(selected.kit_handovers, 1);
+}
+
+/// The impersonation base of R7.6 tests 41 to 43: [`SECOND`] takes the charter anchor's
+/// instance (`taken`) and removes the anchor (`removal`), with carrier binding checked.
+struct Impersonation {
+    log: Log,
+    base: At,
+    taken: At,
+    removal: At,
+}
+
+fn impersonation() -> Impersonation {
+    let (mut log, base) = Log::new();
+    log.bind();
+    let taken = log.take(&base, SECOND);
+    let removal = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+    Impersonation {
+        log,
+        base,
+        taken,
+        removal,
+    }
+}
+
+/// The old anchor's records in [`SECOND`]'s instance past `taken`, signed with its own admin
+/// key and carried by `carrier`, which outrank the removal by length. Returns the last one.
+fn outrank(log: &mut Log, taken: &At, carrier: WriterId) -> At {
+    let anchor = anchor_admin(&person());
+    let mut at = taken.clone();
+    for device in 40..43 {
+        at = log.append_by(
+            &at,
+            &anchor,
+            enroll_entry(&person(), device, DeviceRole::Member),
+            carrier,
+        );
+    }
+    at
+}
+
+/// Asserts that the removal stands in every order with binding checked, and that the
+/// impersonating records would have outranked it without the check.
+fn assert_impersonation_fails(log: &mut Log, removal: &At, impersonated: &At) {
+    let selected = log.assert_selects(removal);
+    assert!(removed(&selected, ANCHOR_DEVICE_ID));
+    let certificates = log.certificates.take();
+    log.assert_selected(impersonated);
+    log.certificates = certificates;
+}
+
+#[test]
+fn a_writer_certified_for_the_new_anchor_under_the_old_anchors_key_carries_no_authority() {
+    let Impersonation {
+        mut log,
+        taken,
+        removal,
+        ..
+    } = impersonation();
+    let forged = writer(9);
+    log.certify(
+        forged,
+        &device_id(SECOND),
+        anchor_device_key(&person()).public_key(),
+    );
+    let impersonated = outrank(&mut log, &taken, forged);
+    assert_impersonation_fails(&mut log, &removal, &impersonated);
+}
+
+#[test]
+fn a_second_certificate_under_another_held_key_binds_no_impersonating_writer() {
+    let Impersonation {
+        mut log,
+        taken,
+        removal,
+        ..
+    } = impersonation();
+    let forged = writer(9);
+    log.certify(
+        forged,
+        &device_id(SECOND),
+        anchor_device_key(&person()).public_key(),
+    );
+    log.certify(
+        forged,
+        &device_id(SECOND),
+        device_key(&person(), 77).public_key(),
+    );
+    let impersonated = outrank(&mut log, &taken, forged);
+    assert_impersonation_fails(&mut log, &removal, &impersonated);
+}
+
+#[test]
+fn a_junk_enrollment_of_the_new_anchor_on_the_old_anchors_branch_binds_nothing_past_the_take() {
+    let Impersonation {
+        mut log,
+        base,
+        taken,
+        removal,
+    } = impersonation();
+    let junk = device_key(&person(), 77).public_key();
+    log.append(
+        &base,
+        &anchor_admin(&person()),
+        enroll_under(
+            SECOND,
+            77,
+            DeviceRole::Admin(device_admin(SECOND).public_key()),
+        ),
+    );
+    let forged = writer(9);
+    log.certify(forged, &device_id(SECOND), junk);
+    let impersonated = outrank(&mut log, &taken, forged);
+    assert_impersonation_fails(&mut log, &removal, &impersonated);
+}
+
+/// R7.6 test 44 against the enrollment rule: a device id is enrolled once for the life of the
+/// log, so a removed admin's re-enrollment is refused under a new key and under its own, its
+/// key never changes, and a take it carries past its removal is never selected.
+#[test]
+fn a_removed_admin_is_never_re_enrolled_and_takes_nothing_past_its_removal() {
+    for key_index in [FIRST, 88] {
+        let (mut log, base) = Log::new();
+        log.bind();
+        let taken = log.take(&base, SECOND);
+        let second = device_admin(SECOND);
+        let dropped = log.append(&taken, &second, remove(&device_id(FIRST)));
+        let back = log.append(
+            &dropped,
+            &second,
+            enroll_under(
+                FIRST,
+                key_index,
+                DeviceRole::Admin(device_admin(FIRST).public_key()),
+            ),
+        );
+        log.take(&back, FIRST);
+        let renewed = writer(10);
+        log.certify(
+            renewed,
+            &device_id(FIRST),
+            device_key(&person(), key_index).public_key(),
+        );
+        log.take(&dropped, FIRST);
+        *log.writers.last_mut().unwrap() = renewed;
+        let selected = log.assert_selects(&dropped);
+        assert!(removed(&selected, &device_id(FIRST)));
+    }
 }

@@ -117,7 +117,8 @@ pub(super) fn device_key(person: &PersonKeyPair, index: usize) -> DeviceKeyPair 
         .expect("test device seed should be valid")
 }
 
-fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
+/// The device key of the charter anchor device in `person`'s spaces.
+pub(super) fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
     DeviceKeyPair::from_seed(&key_seed(person, DEVICE_PURPOSE, ANCHOR_KEY_INDEX))
         .expect("test device seed should be valid")
 }

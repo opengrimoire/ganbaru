@@ -1638,13 +1638,15 @@ pub(crate) struct SelectedHead {
 
 /// What the stored `records` derive from `charter`, each carried by its writer at its sequence,
 /// for tests of the selection rule. `forks` names the first provable fork sequence of forked
-/// writers. Every carrier counts as bound, since the records come without certificates, and a
-/// record of a forked writer at or past its fork sequence is a node only as an ancestor of
-/// another, as in a record store whose horizon equals the provable sequence.
+/// writers. With `certificates`, the device id and key each certificate of a writer names, a
+/// carrier is bound as in the record store; without, every carrier counts as bound. A record
+/// of a forked writer at or past its fork sequence is a node only as an ancestor of another,
+/// as in a record store whose horizon equals the provable sequence.
 #[cfg(test)]
 pub(crate) fn select_records(
     charter: &SignedCharter,
     forks: BTreeMap<WriterId, Seq>,
+    certificates: Option<BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>>,
     records: &[(WriterId, Seq, AuthorizationRecord)],
 ) -> SelectedHead {
     let mut bodies: BTreeMap<Digest32, Node> = BTreeMap::new();
@@ -1706,10 +1708,10 @@ pub(crate) fn select_records(
     let stored = Stored {
         charter: charter.clone(),
         nodes,
-        certificates: BTreeMap::new(),
+        check_binding: certificates.is_some(),
+        certificates: certificates.unwrap_or_default(),
         provable: forks,
         max_revision,
-        check_binding: false,
     };
     let selection = Resolution::new(&stored).selected();
     let state = &selection.state;

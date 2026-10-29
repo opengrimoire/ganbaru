@@ -2,9 +2,11 @@
 //! requester keeps, wanted lookups that chase missing parents and certificates, and storage
 //! accounting for the backstop and growth alerts.
 
-use super::authorization::{admin_entry, view};
+use ganbaru_sync_contracts::{DeviceRole, Digest32, Entry, SetRole};
+
+use super::authorization::{admin_entry, head, view};
 use super::block_on;
-use super::replica::{ANCHOR_DEVICE_ID, Replica};
+use super::replica::{ANCHOR_DEVICE_ID, Replica, device_admin, device_id, enroll_entry, person};
 use crate::{RecordClass, RecordCursor, RecordEnvelope, RecordRole};
 
 const PAGE_BYTES: usize = 600 * 1024;
@@ -202,5 +204,171 @@ fn storage_counts_bytes_by_certified_device_and_names_no_fork_in_an_honest_store
             .expect("the anchor carries its records");
         assert!(anchor.1 > 0 && anchor.1 <= storage.bytes);
         assert!(storage.forked_writers.is_empty());
+    });
+}
+
+/// Brings `into` every record `from` stores by record exchange alone, chasing what the pages
+/// leave missing through wanted lookups, then applies what `into` stores.
+async fn exchange(into: &mut Replica, from: &mut Replica) {
+    let (envelopes, _) = all_pages(from, PAGE_ENVELOPES).await;
+    let mut missing = admit(into, &envelopes).await.missing;
+    for _ in 0..MAX_ROUNDS {
+        if missing.is_empty() {
+            break;
+        }
+        let mut found = from
+            .engine
+            .records_by_hash(&mut from.conn, &from.ctx, &missing.hashes)
+            .await
+            .unwrap();
+        found.extend(
+            from.engine
+                .certificates_of(&mut from.conn, &from.ctx, &missing.writers)
+                .await
+                .unwrap(),
+        );
+        if found.is_empty() {
+            break;
+        }
+        missing = admit(into, &found).await.missing;
+    }
+    into.apply_all().await.unwrap();
+}
+
+/// The envelope bytes `replica` stores, sorted.
+async fn stored(replica: &mut Replica) -> Vec<Vec<u8>> {
+    let (envelopes, _) = all_pages(replica, PAGE_ENVELOPES).await;
+    let mut bytes: Vec<Vec<u8>> = envelopes
+        .into_iter()
+        .map(|envelope| envelope.bytes)
+        .collect();
+    bytes.sort();
+    bytes.dedup();
+    bytes
+}
+
+async fn take(replica: &mut Replica, index: usize) -> Digest32 {
+    let signed = replica.handover_proposal(&device_admin(index)).await;
+    replica.seal_handover(&signed, None).await.unwrap().unwrap();
+    head(replica).await.2
+}
+
+/// R7.6 test 18 with every lane withheld: two admins take the anchor, the contest freezes, and
+/// one contestant's yield resolves it on the hub, the other contestant, and a member that see
+/// only record pages.
+#[test]
+fn two_takes_resolve_by_a_yield_that_travels_by_record_pages_alone() {
+    block_on(async {
+        let mut hub = anchor_with_admins(84).await;
+        hub.sequence(enroll_entry(&person(), 30, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut first = Replica::new(20, 84).await;
+        let mut second = Replica::new(21, 84).await;
+        let mut member = Replica::new(30, 84).await;
+        for replica in [&mut first, &mut second, &mut member] {
+            exchange(replica, &mut hub).await;
+        }
+        let point = view(&mut hub).await.revision;
+        let to_first = take(&mut first, 20).await;
+        take(&mut second, 21).await;
+        exchange(&mut hub, &mut first).await;
+        exchange(&mut hub, &mut second).await;
+        assert_eq!(view(&mut hub).await.frozen_at, Some(point));
+        exchange(&mut second, &mut hub).await;
+        exchange(&mut member, &mut hub).await;
+        assert_eq!(view(&mut member).await.frozen_at, Some(point));
+
+        second
+            .seal_yield(&device_admin(21), &to_first)
+            .await
+            .unwrap()
+            .unwrap();
+        exchange(&mut hub, &mut second).await;
+        let resolved = view(&mut hub).await;
+        assert_eq!(
+            (resolved.anchor_device_id.as_str(), resolved.frozen_at),
+            (device_id(20).as_str(), None)
+        );
+        for replica in [&mut first, &mut member] {
+            exchange(replica, &mut hub).await;
+            assert_eq!(view(replica).await, resolved);
+        }
+        assert_eq!(stored(&mut member).await, stored(&mut hub).await);
+    });
+}
+
+/// Entries the Q2 sequence chains past the hub's admins. The design's figure is 100,000; each
+/// entry here is sequenced and rederived on the hub in a debug build, so the chain is shorter.
+const Q2_CHAIN: usize = 2_000;
+
+/// R7.6 test 30 (Q2): one replica receives the anchor's chain ascending and the other
+/// descending, with a take between; both store the same envelopes, want nothing, and select
+/// the same head.
+#[test]
+fn a_chain_received_ascending_or_descending_beside_a_take_stores_and_selects_the_same() {
+    block_on(async {
+        let mut hub = anchor_with_admins(85).await;
+        hub.sequence(enroll_entry(&person(), 30, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut first = Replica::new(20, 85).await;
+        exchange(&mut first, &mut hub).await;
+        for index in 0..Q2_CHAIN {
+            let role = if index % 2 == 0 {
+                DeviceRole::Admin(device_admin(30).public_key())
+            } else {
+                DeviceRole::Member
+            };
+            hub.sequence(Entry::SetRole(SetRole::Device {
+                device_id: device_id(30),
+                role,
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        }
+        take(&mut first, 20).await;
+        let (chain, _) = all_pages(&mut hub, PAGE_ENVELOPES).await;
+        let chain_set: Vec<Vec<u8>> = chain
+            .iter()
+            .map(|envelope| envelope.bytes.clone())
+            .collect();
+        let (taken, _) = all_pages(&mut first, PAGE_ENVELOPES).await;
+        let taken: Vec<RecordEnvelope> = taken
+            .into_iter()
+            .filter(|envelope| !chain_set.contains(&envelope.bytes))
+            .collect();
+        assert!(!taken.is_empty());
+
+        let mut ascending = Replica::new(31, 85).await;
+        let mut descending = Replica::new(32, 85).await;
+        let half = chain.len() / 2;
+        for (replica, reverse) in [(&mut ascending, false), (&mut descending, true)] {
+            let mut order = chain.clone();
+            if reverse {
+                order.reverse();
+            }
+            order.splice(half..half, taken.iter().cloned());
+            for page in order.chunks(16) {
+                admit(replica, page).await;
+            }
+        }
+        exchange(&mut ascending, &mut descending).await;
+        exchange(&mut descending, &mut ascending).await;
+        for replica in [&mut ascending, &mut descending] {
+            let wants = replica
+                .engine
+                .record_wants(&mut replica.conn, &replica.ctx, PAGE_ENVELOPES)
+                .await
+                .unwrap();
+            assert!(wants.is_empty(), "{wants:?}");
+        }
+        assert_eq!(stored(&mut ascending).await, stored(&mut descending).await);
+        let selected = view(&mut ascending).await;
+        assert_eq!(selected, view(&mut descending).await);
+        assert_eq!(selected.anchor_device_id, device_id(20));
     });
 }

@@ -2,16 +2,19 @@
 //! selection, and the device and writer state derived from the selected chain.
 //!
 //! Every kind 4 operation an anchor writer seals is kept in `sync_auth_entries`. Selection walks
-//! the entries from the charter through the ones whose rules hold at their parent, and keeps the
-//! chain whose head has the highest epoch; between two handovers into the same epoch the lower
-//! entry hash wins, then the longer chain, then the lower head hash. `sync_devices` and the
-//! writer states of removed devices are recomputed from the selected chain whenever an entry
-//! arrives, so a reselection reverts what a superseded chain set.
+//! the tree of entries whose rules hold at their parent and keeps the effective entry of highest
+//! rank; `sync_devices` and the writer states of removed devices are recomputed from the selected
+//! chain whenever an entry arrives, so a reselection reverts what a superseded chain set.
 //!
-//! A fork of a writer of an epoch's anchor freezes the epoch at the authorization revision its
-//! forked operations were sealed against, the last one both copies of the anchor share: entries
-//! of the epoch past it are rejected, so the chain through them is superseded, and only a
-//! handover continues the log.
+//! A handover is taken: the target device's admin key signs it, or the kit key, or an installed
+//! recovery key. Each epoch instance resolves its handovers before the head is chosen. Two
+//! handovers out of one instance, or an entry of it that revokes a handover's signer or target,
+//! contest it; a kit handover's ancestry pins the winner, a lone candidate wins, a yield that
+//! every other contestant signed accepts one, and otherwise the instance freezes. A kit or
+//! recovery handover demotes every other admin and resets the recovery key to the kit key. A fork
+//! of a writer of an epoch's anchor freezes the instance at the revision its forked operations
+//! were sealed against. While the selected instance is frozen, devices that an ineffective entry
+//! past the freeze removes are held: their operations are stored but not applied.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -61,19 +64,22 @@ pub struct AuthorizationView {
     pub revision: u64,
     /// Entry hash of the selected head; the charter hash when only the charter is known.
     pub entry_hash: Digest32,
-    /// Device id of the current anchor; empty when the slot is vacant because a removal that
-    /// survived a freeze removed it, so only a forced handover continues the log.
+    /// Device id of the current anchor.
     pub anchor_device_id: String,
-    /// Revision past which the epoch is frozen because a writer of its anchor forked; only a
-    /// handover continues the log then.
+    /// Revision past which the epoch is frozen because a writer of its anchor forked or
+    /// handovers out of it are contested; only a handover continues the log then.
     pub frozen_at: Option<u64>,
     /// The old anchor's stored vector the handover that opened this epoch carried. The new
     /// anchor must know every writer it names before it sequences a removal.
     pub catch_up: Option<VersionVector>,
     /// Hash of the charter the selected chain starts from, which every proposal names.
     pub charter: Digest32,
-    /// The recovery admin key the selected chain names, which the current recovery kit derives.
+    /// The recovery admin key the selected chain names: the kit key, or a recovery key the
+    /// anchor installed.
     pub recovery_admin_key: AdminPublicKey,
+    /// The admin key the printed recovery kit derives, which only a rotation the kit key signs
+    /// replaces.
+    pub kit_admin_key: AdminPublicKey,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
     /// The discovery key devices advertise under now: the charter's, replaced by each removal.
@@ -97,30 +103,37 @@ struct DeviceState {
     cutoffs: BTreeMap<WriterId, Seq>,
 }
 
-/// Authorization state after some prefix of the log.
+/// Authorization state after some prefix of the log. It depends only on the entries from the
+/// charter through that prefix.
 #[derive(Debug, Clone)]
 pub(crate) struct AuthState {
     space: SpaceId,
     epoch: u32,
     revision: u64,
     entry_hash: Digest32,
-    /// Entry hash that opened the current epoch: the charter hash for epoch 0.
+    /// Entry hash that opened the current epoch instance: the charter hash for epoch 0.
     epoch_root: Digest32,
     /// Hash of the charter, which every proposal of the space names.
     charter: Digest32,
     anchor_device_id: String,
+    /// The kit-lineage recovery key: the charter's, or the one a rotation it signed installed.
+    /// Only a `SetRole::Recovery` this key signs replaces it.
+    kit_key: AdminPublicKey,
+    /// The recovery key the current recovery kit derives: the kit key, or a key the anchor
+    /// installed from Settings, see [`Self::recovery_admits`].
     recovery_admin_key: AdminPublicKey,
-    /// Whether the recovery key is of kit lineage: the charter's, or one a `SetRole::Recovery`
-    /// signed by the then current kit-lineage key installed. A key a device admin installed is a
-    /// full admin key without the precedence of the kit.
-    recovery_from_kit: bool,
-    /// Handovers on the chain that a kit-lineage recovery key signed.
+    /// Device that installed `recovery_admin_key` when it is not the kit key.
+    installer: Option<String>,
+    /// Root of the epoch instance a handover the installed recovery key signed opened.
+    recovery_opened: Option<Digest32>,
+    /// Handovers on the chain that the kit key signed and no rotation vetoed.
     kit_handovers: u32,
     devices: BTreeMap<String, DeviceState>,
-    /// Revisions at which forks freeze epochs, by anchor device.
-    freezes: Arc<BTreeMap<String, Vec<u64>>>,
-    /// Revision past which the current epoch is frozen.
+    /// Revision past which the selected epoch is frozen. Only a selected head carries it, so
+    /// the walk never reads it.
     frozen_at: Option<u64>,
+    /// Kit rotations and kit handovers the stored tree vetoes, see [`Vetoes`].
+    vetoes: Arc<Vetoes>,
     /// The old anchor's stored vector from the handover that opened the current epoch.
     catch_up: Option<Arc<VersionVector>>,
     /// The current discovery key and the one the latest removal replaced.
@@ -150,96 +163,44 @@ type Rank = (
     std::cmp::Reverse<Digest32>,
 );
 
-/// A revocation an entry carries. Revocations in the continuation of a fork point veto the
-/// competing handovers they name, see [`Walk`].
+/// A revocation an entry carries. An entry of an epoch instance that revokes the signer key or
+/// the target of a handover out of it objects to that handover, and kit rotations veto the kit
+/// handovers and rotations of the key they replace, see [`Walk`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Revocation {
     /// A device removed, or demoted from admin to member.
     Device(String),
-    /// An admin key revoked or replaced, the recovery key included.
+    /// An admin key revoked or replaced, recovery keys included.
     Key(AdminPublicKey),
-    /// A rotation away from a kit-lineage recovery key, signed by that key.
+    /// A rotation away from a kit key that the key itself signed.
     KitRotation(AdminPublicKey),
 }
 
-/// A revocation with the entry that carries it, which decides the handovers it counts against.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Evidence {
-    revocation: Revocation,
-    /// Admin key that signed the entry's proposal.
-    author: AdminPublicKey,
-    /// Device that sequenced the entry: the anchor of its epoch.
-    carrier: String,
-    /// Whether the entry continues an epoch past the point its anchor handed over from, see
-    /// [`Walk`].
-    orphan: bool,
+/// Kit rotations and kit handovers the stored tree vetoes, computed from every stored rotation
+/// before the walk that selects, see [`Walk`].
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Vetoes {
+    /// Kit keys with two stored rotations away from them, neither an ancestor of the other. Their
+    /// rotations are refused.
+    conflicted: BTreeSet<AdminPublicKey>,
+    /// Hashes of kit handovers that stay valid but neither pin nor count in rank.
+    kit_handovers: BTreeSet<Digest32>,
 }
 
-/// Who signed a handover, judged at its fork point, in the order the veto test settles them.
+/// Who signed a handover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HandoverSigner {
-    /// The kit-lineage recovery key.
+enum Signer {
+    /// The admin key its target holds.
+    Take,
+    /// The kit key.
     Kit,
-    /// The admin key of the anchor of the fork point's epoch: the anchor's own continuation.
-    Anchor,
-    /// Any other admin key, which forces the handover.
-    Admin,
-}
-
-/// What the veto test of a handover needs from its fork point.
-#[derive(Debug, Clone)]
-struct HandoverFacts {
-    signer: HandoverSigner,
-    author: AdminPublicKey,
-    target: String,
-    /// Anchor of the fork point's epoch.
-    anchor: String,
-    /// Live devices that hold the author key as their admin role.
-    holders: Vec<String>,
-}
-
-impl HandoverFacts {
-    /// Whether `item` counts against the handover. Every entry counts against a kit handover,
-    /// whose only veto is a rotation its own key signed. Orphaned entries count against no
-    /// other handover, and nothing the anchor signed or sequenced counts against its own.
-    fn counts(&self, item: &Evidence) -> bool {
-        match self.signer {
-            HandoverSigner::Kit => true,
-            HandoverSigner::Admin => !item.orphan,
-            HandoverSigner::Anchor => {
-                !item.orphan && item.author != self.author && item.carrier != self.anchor
-            }
-        }
-    }
-
-    /// Whether `evidence` from the continuation of the fork point vetoes the handover.
-    fn vetoed_by(&self, evidence: &BTreeSet<Evidence>) -> bool {
-        let revoked: BTreeSet<&Revocation> = evidence
-            .iter()
-            .filter(|item| self.counts(item))
-            .map(|item| &item.revocation)
-            .collect();
-        if self.signer == HandoverSigner::Kit {
-            return revoked.contains(&Revocation::KitRotation(self.author));
-        }
-        revoked.contains(&Revocation::Key(self.author))
-            || revoked.contains(&Revocation::Device(self.target.clone()))
-            || self
-                .holders
-                .iter()
-                .any(|holder| revoked.contains(&Revocation::Device(holder.clone())))
-    }
-
-    /// Whether the handover gives the anchor to the device that signed it.
-    fn to_self(&self) -> bool {
-        self.target == self.anchor
-    }
+    /// A recovery key the anchor installed.
+    Recovery,
 }
 
 impl AuthState {
-    /// State at revision 0: the charter enrolls its anchor as an admin desktop. `freezes` lists
-    /// the revisions at which forks freeze epochs, by anchor device.
-    fn from_charter(charter: &SignedCharter, freezes: Arc<BTreeMap<String, Vec<u64>>>) -> Self {
+    /// State at revision 0: the charter enrolls its anchor as an admin desktop.
+    fn from_charter(charter: &SignedCharter, vetoes: Arc<Vetoes>) -> Self {
         let body = &charter.charter;
         let hash = charter.hash();
         let anchor = DeviceState {
@@ -260,12 +221,14 @@ impl AuthState {
             epoch_root: hash,
             charter: hash,
             anchor_device_id: body.anchor_device_id.clone(),
+            kit_key: body.recovery_admin_key,
             recovery_admin_key: body.recovery_admin_key,
-            recovery_from_kit: true,
+            installer: None,
+            recovery_opened: None,
             kit_handovers: 0,
             devices: BTreeMap::from([(body.anchor_device_id.clone(), anchor)]),
-            frozen_at: frozen_at(&freezes, &body.anchor_device_id, 0),
-            freezes,
+            frozen_at: None,
+            vetoes,
             catch_up: None,
             discovery_key: body.discovery_key,
             previous_discovery_key: None,
@@ -273,13 +236,35 @@ impl AuthState {
         }
     }
 
-    /// The recovery key and every enrolled admin key whose device is not removed.
+    /// The kit key, an installed recovery key where [`Self::recovery_admits`] it, and every
+    /// enrolled admin key whose device is not removed.
     fn is_admin(&self, key: &AdminPublicKey) -> bool {
-        *key == self.recovery_admin_key
+        *key == self.kit_key
+            || self.recovery_admits(key)
             || self
                 .devices
                 .values()
                 .any(|device| device.removed.is_none() && device.role == DeviceRole::Admin(*key))
+    }
+
+    /// Whether `key` is a recovery key the anchor installed and an admin here: in a state its
+    /// installer anchors, or in the epoch instance its own handover opened.
+    fn recovery_admits(&self, key: &AdminPublicKey) -> bool {
+        *key == self.recovery_admin_key
+            && self.installer.as_ref().is_some_and(|installer| {
+                *installer == self.anchor_device_id || self.recovery_opened == Some(self.epoch_root)
+            })
+    }
+
+    /// Admin key of the live anchor device.
+    fn anchor_admin_key(&self) -> Option<AdminPublicKey> {
+        self.devices
+            .get(&self.anchor_device_id)
+            .filter(|device| device.removed.is_none())
+            .and_then(|device| match device.role {
+                DeviceRole::Admin(key) => Some(key),
+                DeviceRole::Member => None,
+            })
     }
 
     fn live_device(&self, device_id: &str) -> Result<&DeviceState, ProposalRejection> {
@@ -293,7 +278,24 @@ impl AuthState {
         Ok(device)
     }
 
-    /// Whether `record` may follow this state.
+    /// Who signed `record` when it is a handover this state admits.
+    fn signer(&self, record: &AuthorizationRecord) -> Option<Signer> {
+        let proposal = &record.proposal.proposal;
+        let Entry::Handover(handover) = &proposal.entry else {
+            return None;
+        };
+        let author = proposal.author;
+        if author == self.kit_key {
+            return Some(Signer::Kit);
+        }
+        let target = self.devices.get(&handover.new_anchor_device_id)?;
+        if target.role == DeviceRole::Admin(author) {
+            return Some(Signer::Take);
+        }
+        self.recovery_admits(&author).then_some(Signer::Recovery)
+    }
+
+    /// Whether `record` may follow this state, whatever other entries the tree stores.
     pub(crate) fn check(&self, record: &AuthorizationRecord) -> Result<(), ProposalRejection> {
         let proposal = &record.proposal.proposal;
         if proposal.space != self.space || proposal.charter != self.charter {
@@ -315,11 +317,10 @@ impl AuthState {
                 return Err(ProposalRejection::HandoverConflict);
             }
             let device = self.live_device(&handover.new_anchor_device_id)?;
-            // The recovery key forces a handover to any live desktop, because the anchor that
-            // would sequence its promotion to admin may be lost. That desktop proposes its own
-            // promotion as the first entry of the new epoch.
-            let forced_by_recovery = proposal.author == self.recovery_admin_key;
-            if !forced_by_recovery && !matches!(device.role, DeviceRole::Admin(_)) {
+            // A handover is a take, signed by the admin key its target holds, unless the kit key
+            // or an admitted installed recovery key signed it: those name any live desktop,
+            // because the anchor that would sequence its promotion to admin may be lost.
+            if self.signer(record).is_none() {
                 return Err(ProposalRejection::NotAdmin);
             }
             if device.kind != DeviceKind::Desktop {
@@ -371,7 +372,20 @@ impl AuthState {
                     return Err(ProposalRejection::AdminNotDesktop);
                 }
             }
-            Entry::SetRole(SetRole::Recovery { .. }) | Entry::Unknown { .. } => {}
+            // Only the kit key rotates the kit, and a rotation the stored tree vetoes is
+            // refused. Otherwise only the anchor installs a recovery key.
+            Entry::SetRole(SetRole::Recovery { recovery_admin_key }) => {
+                if proposal.author == self.kit_key {
+                    if *recovery_admin_key != self.kit_key
+                        && self.vetoes.conflicted.contains(&self.kit_key)
+                    {
+                        return Err(ProposalRejection::HandoverConflict);
+                    }
+                } else if self.anchor_admin_key() != Some(proposal.author) {
+                    return Err(ProposalRejection::NotAdmin);
+                }
+            }
+            Entry::Yield(_) | Entry::Unknown { .. } => {}
             Entry::ResolveLate(resolve) => {
                 let known = self
                     .devices
@@ -388,25 +402,39 @@ impl AuthState {
 
     /// Applies a record that passed [`Self::check`].
     fn advance(&mut self, record: &AuthorizationRecord, hash: Digest32) {
+        let author = record.proposal.proposal.author;
+        let signer = self.signer(record);
         self.revision = record.revision;
         self.entry_hash = hash;
         Arc::make_mut(&mut self.proposals).insert(record.proposal.hash());
-        let by_kit = self.signed_by_kit(&record.proposal.proposal.author);
         match &record.proposal.proposal.entry {
             Entry::Handover(handover) => {
-                if by_kit {
+                if signer == Some(Signer::Kit) && !self.vetoes.kit_handovers.contains(&hash) {
                     self.kit_handovers = self.kit_handovers.saturating_add(1);
                 }
                 self.epoch = record.epoch;
                 self.epoch_root = hash;
                 self.anchor_device_id = handover.new_anchor_device_id.clone();
-                self.frozen_at = frozen_at(&self.freezes, &self.anchor_device_id, record.revision);
                 self.catch_up = match &record.sequencing {
                     Sequencing::Handover {
                         old_anchor_vector: Some(vector),
                     } => Some(Arc::new(vector.clone())),
                     _ => None,
                 };
+                // A kit or recovery handover leaves no admin but its target, so no other
+                // device, planted or former anchor, can take the new instance from it.
+                if matches!(signer, Some(Signer::Kit | Signer::Recovery)) {
+                    for (device_id, device) in &mut self.devices {
+                        if *device_id != handover.new_anchor_device_id && device.removed.is_none() {
+                            device.role = DeviceRole::Member;
+                        }
+                    }
+                }
+                match signer {
+                    Some(Signer::Kit) => self.reset_recovery(),
+                    Some(Signer::Recovery) => self.recovery_opened = Some(hash),
+                    _ => {}
+                }
             }
             Entry::Enroll(enroll) => {
                 self.devices.insert(
@@ -442,32 +470,31 @@ impl AuthState {
                     device.role = *role;
                 }
             }
-            // Installing the current key again changes nothing, so a device admin cannot strip
-            // the kit's lineage by restating its key.
-            Entry::SetRole(SetRole::Recovery { recovery_admin_key })
-                if *recovery_admin_key != self.recovery_admin_key =>
-            {
-                self.recovery_admin_key = *recovery_admin_key;
-                self.recovery_from_kit = by_kit;
+            Entry::SetRole(SetRole::Recovery { recovery_admin_key }) => {
+                if author == self.kit_key {
+                    self.kit_key = *recovery_admin_key;
+                    self.reset_recovery();
+                } else {
+                    self.recovery_admin_key = *recovery_admin_key;
+                    self.installer = (*recovery_admin_key != self.kit_key)
+                        .then(|| self.anchor_device_id.clone());
+                    self.recovery_opened = None;
+                }
             }
-            Entry::SetRole(SetRole::Recovery { .. })
-            | Entry::ResolveLate(_)
-            | Entry::Unknown { .. } => {}
+            Entry::ResolveLate(_) | Entry::Yield(_) | Entry::Unknown { .. } => {}
         }
     }
 
-    /// Whether `author` is the recovery key and of kit lineage.
-    fn signed_by_kit(&self, author: &AdminPublicKey) -> bool {
-        self.recovery_from_kit && *author == self.recovery_admin_key
-    }
-
-    /// The recovery key when it is of kit lineage.
-    fn kit_key(&self) -> Option<AdminPublicKey> {
-        self.recovery_from_kit.then_some(self.recovery_admin_key)
+    /// Makes the kit key the recovery key again, dropping an installed one.
+    fn reset_recovery(&mut self) {
+        self.recovery_admin_key = self.kit_key;
+        self.installer = None;
+        self.recovery_opened = None;
     }
 
     /// The revocations `record`, which this state admits, carries: removed and demoted devices,
-    /// revoked or replaced admin keys, and rotations away from a kit-lineage key that key signed.
+    /// revoked or replaced admin and recovery keys, and rotations away from the kit key that it
+    /// signed.
     fn revocations(&self, record: &AuthorizationRecord) -> Vec<Revocation> {
         let proposal = &record.proposal.proposal;
         let role = |device_id: &str| self.devices.get(device_id).map(|device| device.role);
@@ -491,13 +518,16 @@ impl AuthState {
                 }
                 _ => Vec::new(),
             },
-            Entry::SetRole(SetRole::Recovery { recovery_admin_key })
-                if *recovery_admin_key != self.recovery_admin_key =>
-            {
-                let old = self.recovery_admin_key;
-                let mut revoked = vec![Revocation::Key(old)];
-                if self.signed_by_kit(&proposal.author) {
-                    revoked.push(Revocation::KitRotation(old));
+            Entry::SetRole(SetRole::Recovery { recovery_admin_key }) => {
+                let mut revoked = Vec::new();
+                if self.recovery_admin_key != self.kit_key
+                    && *recovery_admin_key != self.recovery_admin_key
+                {
+                    revoked.push(Revocation::Key(self.recovery_admin_key));
+                }
+                if proposal.author == self.kit_key && *recovery_admin_key != self.kit_key {
+                    revoked.push(Revocation::Key(self.kit_key));
+                    revoked.push(Revocation::KitRotation(self.kit_key));
                 }
                 revoked
             }
@@ -505,46 +535,9 @@ impl AuthState {
         }
     }
 
-    /// The veto facts of `record` when it is a handover this state admits.
-    fn handover_facts(&self, record: &AuthorizationRecord) -> Option<HandoverFacts> {
-        let proposal = &record.proposal.proposal;
-        let Entry::Handover(handover) = &proposal.entry else {
-            return None;
-        };
-        let author = proposal.author;
-        let anchor_key =
-            self.devices
-                .get(&self.anchor_device_id)
-                .and_then(|device| match device.role {
-                    DeviceRole::Admin(key) if device.removed.is_none() => Some(key),
-                    _ => None,
-                });
-        let signer = if self.signed_by_kit(&author) {
-            HandoverSigner::Kit
-        } else if anchor_key == Some(author) {
-            HandoverSigner::Anchor
-        } else {
-            HandoverSigner::Admin
-        };
-        Some(HandoverFacts {
-            signer,
-            author,
-            target: handover.new_anchor_device_id.clone(),
-            anchor: self.anchor_device_id.clone(),
-            holders: self
-                .devices
-                .iter()
-                .filter(|(_, device)| {
-                    device.removed.is_none() && device.role == DeviceRole::Admin(author)
-                })
-                .map(|(device_id, _)| device_id.clone())
-                .collect(),
-        })
-    }
-
-    /// Selection order of a chain head: more handovers a kit-lineage recovery key signed, then
-    /// the higher epoch, then the lower hash of the handover that opened it, then the higher
-    /// revision, then the lower head hash.
+    /// Selection order of a chain head: more unvetoed kit handovers, then the higher epoch, then
+    /// the lower hash of the handover that opened it, then the higher revision, then the lower
+    /// head hash.
     fn rank(&self) -> Rank {
         (
             self.kit_handovers,
@@ -560,48 +553,17 @@ impl AuthState {
         &self.anchor_device_id
     }
 
-    /// Whether no live device holds the anchor slot. A chain never removes its anchor, so only a
-    /// removal that survived a freeze leaves the slot vacant, see [`Walk`].
-    fn anchor_vacant(&self) -> bool {
-        self.devices
-            .get(&self.anchor_device_id)
-            .is_none_or(|device| device.removed.is_some())
-    }
-
-    /// Applies `record`, a removal from a branch that contended at a freeze point of this chain,
-    /// see [`Walk`]. `point` is the revision of the freeze point. A device this state does not
-    /// know, already removed, or enrolled again after the point keeps its state, so the earliest
-    /// surviving removal of a device sets its cutoffs and a later admission stands.
-    fn narrow(&mut self, record: &AuthorizationRecord, point: u64) {
-        let Entry::Remove(remove) = &record.proposal.proposal.entry else {
-            return;
-        };
-        let Some(device) = self.devices.get_mut(&remove.device_id) else {
-            return;
-        };
-        if device.removed.is_some() || device.enrolled > point {
-            return;
-        }
-        device.removed = Some(record.revision);
-        if let Sequencing::Removal { cutoffs, .. } = &record.sequencing {
-            device.cutoffs = cutoffs.iter().copied().collect();
-        }
-    }
-
     pub(crate) fn view(&self) -> AuthorizationView {
         AuthorizationView {
             epoch: self.epoch,
             revision: self.revision,
             entry_hash: self.entry_hash,
-            anchor_device_id: if self.anchor_vacant() {
-                String::new()
-            } else {
-                self.anchor_device_id.clone()
-            },
+            anchor_device_id: self.anchor_device_id.clone(),
             frozen_at: self.frozen_at,
             catch_up: self.catch_up.as_deref().cloned(),
             charter: self.charter,
             recovery_admin_key: self.recovery_admin_key,
+            kit_admin_key: self.kit_key,
             devices: self
                 .devices
                 .iter()
@@ -639,6 +601,13 @@ pub(crate) struct Selection {
     pub(crate) resolutions: Vec<(u64, ResolveLate)>,
     /// Highest revision any stored chain reaches from the charter, selected or not.
     pub(crate) reachable: u64,
+    /// Devices held while the head's epoch instance is frozen: removed on a stored branch of the
+    /// contest that is not effective. Their operations wait and they are served authorization
+    /// records only.
+    pub(crate) held: BTreeSet<String>,
+    /// Whether the stored tree holds a handover out of the head's epoch instance, so its anchor
+    /// stops sequencing there.
+    pub(crate) handed_over: bool,
 }
 
 impl Selection {
@@ -650,13 +619,12 @@ impl Selection {
             self.resolutions
                 .push((node.record.revision, resolve.clone()));
         }
-        self.reachable = 0;
         self
     }
 
-    /// Device id of the selected anchor, `None` when the slot is vacant.
-    pub(crate) fn anchor(&self) -> Option<&str> {
-        (!self.state.anchor_vacant()).then_some(self.state.anchor_device_id.as_str())
+    /// Device id of the selected anchor.
+    pub(crate) fn anchor(&self) -> &str {
+        &self.state.anchor_device_id
     }
 }
 
@@ -798,132 +766,74 @@ struct Visit {
     node: Option<usize>,
     /// Index of the parent visit, `None` for the charter.
     parent: Option<usize>,
-    /// Veto facts when the entry is a handover.
-    handover: Option<HandoverFacts>,
-    /// Revocations the entry carries.
-    revocations: Vec<Revocation>,
+    /// Index of the visit that opened the entry's epoch instance: the charter, or the entry
+    /// itself when it is a handover.
+    instance: usize,
+    /// Entry hash, the charter hash for the charter.
+    hash: Digest32,
     /// Rank of the state after the entry.
     rank: Rank,
     /// Revision of the entry, 0 for the charter.
     revision: u64,
-    /// Index of the visit that opened the entry's epoch: the charter or a handover.
-    epoch_root: usize,
-    /// Kit-lineage recovery key of the state after the entry, if any.
-    kit_key: Option<AdminPublicKey>,
-    /// Whether no vetoed handover lies on the path from the charter through the entry.
-    alive: bool,
-    /// Whether the entry continues its epoch past the point the epoch's anchor handed over
-    /// from, so it is never a head and casts no veto but against kit handovers.
-    orphan: bool,
-    /// Whether the epoch freezes at the entry because its anchor signed handovers out of it
-    /// that no rule can choose between.
-    freeze: bool,
-    /// At a freeze point, the removals in the contending branches, which every chain through
-    /// the point keeps, in revision and hash order.
-    narrowing: Vec<usize>,
+    /// Anchor of the state after the entry.
+    anchor: String,
+    /// Key that signed the entry's proposal, `None` for the charter.
+    author: Option<AdminPublicKey>,
+    /// Signer kind and target device when the entry is a handover.
+    handover: Option<(Signer, String)>,
+    /// Admin key of the anchor at the parent, if the anchor is a live admin there.
+    parent_anchor_key: Option<AdminPublicKey>,
+    /// Revocations the entry carries.
+    revocations: Vec<Revocation>,
+    /// Hash of the handover a yield names.
+    yields_to: Option<Digest32>,
+    /// Device a removal removes.
+    removes: Option<String>,
+    /// Kit key of the state after the entry.
+    kit_key: AdminPublicKey,
 }
 
-/// Where the anchor's handovers to other devices cut one epoch, see [`Walk::contenders`].
-struct Cut {
-    /// The handovers that contend for the epoch.
-    contenders: Vec<usize>,
-    /// Their common fork point.
-    point: usize,
-    /// Whether their targets are eligible; `false` when no handover's target is.
-    eligible: bool,
-}
-
-/// Whether `record` enrolls `device_id` or makes it an admin.
-fn enables(record: &AuthorizationRecord, device_id: &str) -> bool {
-    match &record.proposal.proposal.entry {
-        Entry::Enroll(enroll) => enroll.device_id == device_id,
-        Entry::SetRole(SetRole::Device {
-            device_id: named,
-            role: DeviceRole::Admin(_),
-        }) => named == device_id,
-        _ => false,
-    }
-}
-
-/// The tree of check-valid stored entries from the charter, with vetoed handovers marked.
-///
-/// Trust at a fork point P, the entry competing branches continue from, runs from a handover a
-/// kit-lineage recovery key signed, through the anchor's continuation of its own epoch, to a
-/// handover a device admin key signed.
-///
-/// Once the anchor of an epoch signs a handover out of it, nothing the anchor signs or
-/// sequences afterwards selects another branch or grants authority on one, whatever writer
-/// carries it. Three rules hold this:
-///
-/// - Orphans carry no authority. The handovers to other devices contend, and the point they cut
-///   the epoch at is their common fork point. A target the epoch enrolled or made an admin past
-///   that point is not eligible and its handover drops out of the contest, so an entry the old
-///   anchor added off the cut never enrolls, removes, or promotes a device that selection,
-///   standing, or enrollment reads. The epoch's entries off the path from its start to the
-///   point are orphaned: never a head, and no evidence against any handover but a kit
-///   handover. A device admin handover continuing from an orphaned entry is vetoed.
-/// - The cut is structural, never temporal. Self handovers, which leave the anchor where it
-///   was, never cut an epoch: alone they stand by rank and orphan nothing, and beside a
-///   handover to another device they are vetoed. So an old anchor cannot move a cut back to an
-///   earlier point and orphan the parent of a forced handover.
-/// - A freeze keeps narrowing and discards widening. Several handovers the anchor signed out of
-///   one epoch have no honest explanation, and their hashes and depths are the anchor's to
-///   choose, so rank never decides between them. A lone eligible one stands, since its target
-///   sealed it; when several are eligible, the one whose target alone sealed entries after it
-///   stands. Otherwise every one is vetoed and the epoch freezes at the cut, so the old anchor
-///   sequences nothing more there; a kit or device admin handover recovers it. The removals in
-///   the subtrees of eligible contenders still apply to every chain through the freeze point,
-///   after its entries, while their enrollments and role changes do not. A surviving removal of
-///   the old anchor leaves the anchor slot vacant until a recovery handover fills it.
-///
-/// The continuation of P is the entries after P that are not handovers, the handovers the
-/// kit-lineage key or the admin key of the anchor of P's epoch signed, and what follows them. A
-/// handover H that an admin key `a` which is not of kit lineage signed for target T is vetoed
-/// when the continuation, H's own subtree excluded, revokes `a`, or removes or demotes T or the
-/// device holding `a`. A handover a kit-lineage key `k` signed is vetoed only by a rotation away
-/// from `k` that `k` signed, anywhere after P. Kit handovers are settled first, then the
-/// anchor's, which read only kit handovers left standing, then device admin handovers, which
-/// read only continuation handovers left standing. Device admin handovers are otherwise never
-/// evidence, so two admins forcing handovers after an anchor loss rank rather than veto each
-/// other. Vetoed subtrees are skipped, and the live entry of highest rank that is not orphaned
-/// is selected, so a chain through more kit handovers wins. The result depends only on the
-/// stored entries, not on the order they arrived in or the writers that carried them.
+/// The tree of check-valid stored entries from the charter, see [`Resolution`].
 struct Walk<'a> {
     stored: &'a Stored,
+    vetoes: Arc<Vetoes>,
     visits: Vec<Visit>,
-    /// Highest revision any check-valid chain reaches, vetoed ones included.
-    reachable: u64,
-    /// Device ids and keys any check-valid chain enrolls, vetoed ones included.
-    enrolled: BTreeSet<(String, DevicePublicKey)>,
+    /// Child visits of each visit.
+    children: Vec<Vec<usize>>,
+    /// Device ids and keys any check-valid chain enrolls.
+    enrolled: EnrolledSet,
 }
 
 impl<'a> Walk<'a> {
-    fn new(stored: &'a Stored) -> Self {
-        let mut children: BTreeMap<Digest32, Vec<usize>> = BTreeMap::new();
+    fn new(stored: &'a Stored, vetoes: Arc<Vetoes>) -> Self {
+        let mut by_parent: BTreeMap<Digest32, Vec<usize>> = BTreeMap::new();
         for (index, node) in stored.nodes.iter().enumerate() {
-            children
+            by_parent
                 .entry(node.record.previous_entry_hash)
                 .or_default()
                 .push(index);
         }
-        let root = AuthState::from_charter(&stored.charter, Arc::clone(&stored.freezes));
+        let root = AuthState::from_charter(&stored.charter, Arc::clone(&vetoes));
         let mut walk = Self {
             stored,
+            vetoes,
             visits: vec![Visit {
                 node: None,
                 parent: None,
-                handover: None,
-                revocations: Vec::new(),
+                instance: 0,
+                hash: root.entry_hash,
                 rank: root.rank(),
                 revision: 0,
-                epoch_root: 0,
-                kit_key: root.kit_key(),
-                alive: true,
-                orphan: false,
-                freeze: false,
-                narrowing: Vec::new(),
+                anchor: root.anchor_device_id.clone(),
+                author: None,
+                handover: None,
+                parent_anchor_key: None,
+                revocations: Vec::new(),
+                yields_to: None,
+                removes: None,
+                kit_key: root.kit_key,
             }],
-            reachable: 0,
+            children: vec![Vec::new()],
             enrolled: BTreeSet::new(),
         };
         // Entries name their parent by hash and duplicates are dropped, so the walk visits each
@@ -931,19 +841,7 @@ impl<'a> Walk<'a> {
         // state, so a chain without forks is walked in linear time.
         let mut stack = vec![(root, 0)];
         while let Some((state, visit)) = stack.pop() {
-            walk.reachable = walk.reachable.max(state.revision);
-            // Copies of a forked anchor writer may carry entries past the revision its epoch
-            // froze at, which no replica keeps once the fork is excluded. An author that applied
-            // one before the fork was found must not wait for it, so a chain that reaches a
-            // freeze reaches every revision. Each operation's device is still checked against
-            // the selected chain when it applies.
-            if state
-                .frozen_at
-                .is_some_and(|frozen| state.revision >= frozen)
-            {
-                walk.reachable = UNBOUNDED_REVISION;
-            }
-            let valid: Vec<usize> = children
+            let valid: Vec<usize> = by_parent
                 .get(&state.entry_hash)
                 .into_iter()
                 .flatten()
@@ -958,359 +856,216 @@ impl<'a> Walk<'a> {
             }
             stack.push(walk.visit(visit, *last, state));
         }
-        walk.veto();
         walk
     }
 
     /// Records entry `index`, which `state` admits, as a child of `parent`, and returns the
     /// state after it with its visit.
     fn visit(&mut self, parent: usize, index: usize, mut state: AuthState) -> (AuthState, usize) {
-        let node = &self.stored.nodes[index];
-        if let Entry::Enroll(enroll) = &node.record.proposal.proposal.entry {
+        let stored = self.stored;
+        let node = &stored.nodes[index];
+        let record = &node.record;
+        let entry = &record.proposal.proposal.entry;
+        if let Entry::Enroll(enroll) = entry {
             self.enrolled
                 .insert((enroll.device_id.clone(), enroll.device_key));
         }
-        let handover = state.handover_facts(&node.record);
-        let revocations = state.revocations(&node.record);
-        state.advance(&node.record, node.hash);
-        let epoch_root = if handover.is_some() {
-            self.visits.len()
+        let handover = match entry {
+            Entry::Handover(handover) => state
+                .signer(record)
+                .map(|signer| (signer, handover.new_anchor_device_id.clone())),
+            _ => None,
+        };
+        let yields_to = match entry {
+            Entry::Yield(give_way) => Some(give_way.handover_hash),
+            _ => None,
+        };
+        let removes = match entry {
+            Entry::Remove(remove) => Some(remove.device_id.clone()),
+            _ => None,
+        };
+        let parent_anchor_key = state.anchor_admin_key();
+        let revocations = state.revocations(record);
+        state.advance(record, node.hash);
+        let visit = self.visits.len();
+        let instance = if handover.is_some() {
+            visit
         } else {
-            self.visits[parent].epoch_root
+            self.visits[parent].instance
         };
         self.visits.push(Visit {
             node: Some(index),
             parent: Some(parent),
-            handover,
-            revocations,
+            instance,
+            hash: node.hash,
             rank: state.rank(),
             revision: state.revision,
-            epoch_root,
-            kit_key: state.kit_key(),
-            alive: true,
-            orphan: false,
-            freeze: false,
-            narrowing: Vec::new(),
+            anchor: state.anchor_device_id.clone(),
+            author: Some(record.proposal.proposal.author),
+            handover,
+            parent_anchor_key,
+            revocations,
+            yields_to,
+            removes,
+            kit_key: state.kit_key,
         });
-        (state, self.visits.len() - 1)
-    }
-
-    fn signer(&self, visit: usize) -> Option<HandoverSigner> {
-        self.visits[visit]
-            .handover
-            .as_ref()
-            .map(|facts| facts.signer)
+        self.children.push(Vec::new());
+        self.children[parent].push(visit);
+        (state, visit)
     }
 
     fn parent(&self, visit: usize) -> usize {
         self.visits[visit].parent.unwrap_or(0)
     }
 
-    /// The anchor's own handovers out of each epoch, by the visit that opened the epoch.
-    fn anchor_handovers(&self) -> BTreeMap<usize, Vec<usize>> {
-        let mut by_epoch: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for index in 0..self.visits.len() {
-            if self.signer(index) == Some(HandoverSigner::Anchor) {
-                let epoch = self.visits[self.parent(index)].epoch_root;
-                by_epoch.entry(epoch).or_default().push(index);
-            }
-        }
-        by_epoch
-    }
-
-    /// Whether visit `visit` is a handover giving the anchor to the device that signed it.
-    fn to_self(&self, visit: usize) -> bool {
+    fn signer(&self, visit: usize) -> Option<Signer> {
         self.visits[visit]
             .handover
             .as_ref()
-            .is_some_and(HandoverFacts::to_self)
+            .map(|(signer, _)| *signer)
     }
 
-    /// Whether `handover`'s target is enrolled, or made an admin, by an entry between `point`,
-    /// excluded, and the handover, so only the epoch's own continuation past the cut admitted it.
-    fn enabled_past(&self, handover: usize, point: usize) -> bool {
-        let Some(facts) = self.visits[handover].handover.as_ref() else {
-            return false;
-        };
-        let mut at = self.parent(handover);
-        while at != point && self.visits[at].parent.is_some() {
-            if let Some(node) = self.visits[at].node
-                && enables(&self.stored.nodes[node].record, &facts.target)
-            {
+    /// Whether `ancestor` is `visit` or one of its ancestors.
+    fn is_ancestor(&self, ancestor: usize, mut visit: usize) -> bool {
+        let floor = self.visits[ancestor].revision;
+        loop {
+            if visit == ancestor {
                 return true;
             }
-            at = self.parent(at);
+            match self.visits[visit].parent {
+                Some(parent) if self.visits[visit].revision > floor => visit = parent,
+                _ => return false,
+            }
         }
-        false
     }
 
-    /// The anchor's handovers out of one epoch that give it to other devices and contend for
-    /// the epoch, and the point they cut it at, or `None` when every one of `handovers` is a
-    /// self handover, see [`Walk`]. A target enrolled past the common point of the contenders
-    /// is not eligible, and its handover drops out, which can only move the point deeper. When
-    /// no target is eligible every handover keeps contending, so none stands and the epoch
-    /// still freezes.
-    fn contenders(&self, handovers: &[usize]) -> Option<Cut> {
-        let mut contenders: Vec<usize> = handovers
+    /// The deepest common ancestor-or-self of `a` and `b`.
+    fn common_ancestor(&self, mut a: usize, mut b: usize) -> usize {
+        while a != b {
+            let (here, there) = (self.visits[a].revision, self.visits[b].revision);
+            if here >= there {
+                a = self.parent(a);
+            }
+            if there >= here {
+                b = self.parent(b);
+            }
+        }
+        a
+    }
+
+    /// The rotation vetoes this walk's rotations cast, see [`Resolution`].
+    fn vetoes(&self) -> Vetoes {
+        let mut rotations: BTreeMap<AdminPublicKey, Vec<usize>> = BTreeMap::new();
+        for (index, visit) in self.visits.iter().enumerate() {
+            for revocation in &visit.revocations {
+                if let Revocation::KitRotation(key) = revocation {
+                    rotations.entry(*key).or_default().push(index);
+                }
+            }
+        }
+        let conflicted: BTreeSet<AdminPublicKey> = rotations
+            .iter()
+            .filter(|(_, members)| {
+                members.iter().any(|a| {
+                    members
+                        .iter()
+                        .any(|b| !self.is_ancestor(*a, *b) && !self.is_ancestor(*b, *a))
+                })
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        let kit_handovers = (0..self.visits.len())
+            .filter(|index| self.signer(*index) == Some(Signer::Kit))
+            .filter(|index| {
+                self.visits[*index].author.is_some_and(|key| {
+                    conflicted.contains(&key)
+                        || rotations.get(&key).is_some_and(|members| {
+                            members
+                                .iter()
+                                .any(|rotation| !self.is_ancestor(*index, *rotation))
+                        })
+                })
+            })
+            .map(|index| self.visits[index].hash)
+            .collect();
+        Vetoes {
+            conflicted,
+            kit_handovers,
+        }
+    }
+
+    /// The winner of each instance a pin source passes through: the handover out of it on the
+    /// ancestry of the highest ranked kit handover no rotation vetoed.
+    fn pinned(&self) -> BTreeMap<usize, usize> {
+        let mut sources: Vec<usize> = (0..self.visits.len())
+            .filter(|index| {
+                self.signer(*index) == Some(Signer::Kit)
+                    && !self
+                        .vetoes
+                        .kit_handovers
+                        .contains(&self.visits[*index].hash)
+            })
+            .collect();
+        sources.sort_by(|a, b| self.visits[*b].rank.cmp(&self.visits[*a].rank));
+        let mut winners = BTreeMap::new();
+        for source in sources {
+            let mut at = source;
+            while let Some(parent) = self.visits[at].parent {
+                if self.visits[at].handover.is_some() {
+                    winners.entry(self.visits[parent].instance).or_insert(at);
+                }
+                at = parent;
+            }
+        }
+        winners
+    }
+
+    /// Entries of the parent's instance that revoke the signer key or the target of
+    /// `handover`, after its parent and not through it.
+    fn objections(&self, handover: usize) -> Vec<usize> {
+        let visit = &self.visits[handover];
+        let Some((_, target)) = &visit.handover else {
+            return Vec::new();
+        };
+        let revokes = |revocation: &Revocation| match revocation {
+            Revocation::Device(device) => device == target,
+            Revocation::Key(key) => Some(*key) == visit.author,
+            Revocation::KitRotation(_) => false,
+        };
+        let mut found = Vec::new();
+        let mut stack: Vec<usize> = self.children[self.parent(handover)]
             .iter()
             .copied()
-            .filter(|handover| !self.to_self(*handover))
+            .filter(|child| *child != handover)
             .collect();
-        if contenders.is_empty() {
-            return None;
-        }
-        loop {
-            let point = self.common_point(&contenders);
-            let eligible: Vec<usize> = contenders
-                .iter()
-                .copied()
-                .filter(|handover| !self.enabled_past(*handover, point))
-                .collect();
-            if eligible.len() == contenders.len() || eligible.is_empty() {
-                return Some(Cut {
-                    eligible: !eligible.is_empty(),
-                    contenders,
-                    point,
-                });
-            }
-            contenders = eligible;
-        }
-    }
-
-    /// Which of the anchor's `handovers` out of one epoch stands, or `None` when none can, see
-    /// [`Walk`]. Neither rank nor arrival order decides between handovers to other devices.
-    fn standing(
-        &self,
-        handovers: &[usize],
-        cut: Option<&Cut>,
-        children: &[Vec<usize>],
-    ) -> Option<usize> {
-        let Some(cut) = cut else {
-            return handovers
-                .iter()
-                .copied()
-                .max_by(|a, b| self.visits[*a].rank.cmp(&self.visits[*b].rank));
-        };
-        if !cut.eligible {
-            return None;
-        }
-        match cut.contenders.as_slice() {
-            [only] => Some(*only),
-            contenders => {
-                // Entries after a handover in its epoch are sealed by its target, and a
-                // handover the target signs as the new anchor carries its own key.
-                let active: Vec<usize> = contenders
-                    .iter()
-                    .copied()
-                    .filter(|handover| {
-                        children[*handover].iter().any(|child| {
-                            matches!(self.signer(*child), None | Some(HandoverSigner::Anchor))
-                        })
-                    })
-                    .collect();
-                match active.as_slice() {
-                    [only] => Some(*only),
-                    _ => None,
-                }
-            }
-        }
-    }
-
-    /// The removals in the subtrees of `contenders`, in revision and hash order.
-    fn narrowing(&self, contenders: &[usize], children: &[Vec<usize>]) -> Vec<usize> {
-        let mut removals = Vec::new();
-        let mut stack = contenders.to_vec();
-        while let Some(visit) = stack.pop() {
-            if let Some(node) = self.visits[visit].node
-                && matches!(
-                    self.stored.nodes[node].record.proposal.proposal.entry,
-                    Entry::Remove(_)
-                )
-            {
-                removals.push(visit);
-            }
-            stack.extend(children[visit].iter().copied());
-        }
-        removals.sort_by_key(|visit| {
-            let node = self.visits[*visit].node.unwrap_or(0);
-            (self.visits[*visit].revision, self.stored.nodes[node].hash)
-        });
-        removals
-    }
-
-    /// The deepest visit that is an ancestor of, or equal to, the parent of every one of
-    /// `handovers`.
-    fn common_point(&self, handovers: &[usize]) -> usize {
-        let mut points = handovers.iter().map(|handover| self.parent(*handover));
-        let mut point = points.next().unwrap_or(0);
-        for mut other in points {
-            while point != other {
-                let (here, there) = (self.visits[point].revision, self.visits[other].revision);
-                if here >= there {
-                    point = self.parent(point);
-                }
-                if there >= here {
-                    other = self.parent(other);
-                }
-            }
-        }
-        point
-    }
-
-    /// Settles the anchor's own handovers of each epoch before the veto test: marks the ones
-    /// that do not stand, the epoch's orphaned entries, and freeze points. Returns the visits
-    /// vetoed so far.
-    fn settle_anchor_handovers(&mut self, children: &[Vec<usize>]) -> Vec<bool> {
-        let count = self.visits.len();
-        let mut vetoed = vec![false; count];
-        let mut epochs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for (index, visit) in self.visits.iter().enumerate() {
-            epochs.entry(visit.epoch_root).or_default().push(index);
-        }
-        for (epoch, handovers) in self.anchor_handovers() {
-            let cut = self.contenders(&handovers);
-            let standing = self.standing(&handovers, cut.as_ref(), children);
-            for handover in &handovers {
-                vetoed[*handover] = Some(*handover) != standing;
-            }
-            // Self handovers alone leave the anchor where it was, so they cut nothing.
-            let Some(cut) = cut else {
+        while let Some(at) = stack.pop() {
+            // A handover opens another instance, whose entries object to nothing here.
+            if self.visits[at].handover.is_some() {
                 continue;
-            };
-            let point = match standing {
-                Some(handover) => self.parent(handover),
-                None => {
-                    self.visits[cut.point].freeze = true;
-                    if cut.eligible {
-                        let removals = self.narrowing(&cut.contenders, children);
-                        self.visits[cut.point].narrowing.extend(removals);
-                    }
-                    cut.point
-                }
-            };
-            let mut path = BTreeSet::new();
-            let mut at = point;
-            loop {
-                path.insert(at);
-                if at == epoch || self.visits[at].parent.is_none() {
-                    break;
-                }
-                at = self.parent(at);
             }
-            for visit in epochs.get(&epoch).into_iter().flatten() {
-                if !path.contains(visit) {
-                    self.visits[*visit].orphan = true;
-                }
+            if self.visits[at].revocations.iter().any(revokes) {
+                found.push(at);
             }
+            stack.extend(self.children[at].iter().copied());
         }
-        for (index, vetoed) in vetoed.iter_mut().enumerate().skip(1) {
-            if self.signer(index) == Some(HandoverSigner::Admin)
-                && self.visits[self.parent(index)].orphan
-            {
-                *vetoed = true;
-            }
-        }
-        vetoed
+        found
     }
 
-    /// The evidence entry `visit` carries.
-    fn own_evidence(&self, visit: usize) -> BTreeSet<Evidence> {
-        let Some(node) = self.visits[visit].node else {
-            return BTreeSet::new();
-        };
-        let record = &self.stored.nodes[node].record;
-        self.visits[visit]
-            .revocations
+    /// The author key and named handover hash of every stored yield.
+    fn yields(&self) -> Vec<(AdminPublicKey, Digest32)> {
+        self.visits
             .iter()
-            .map(|revocation| Evidence {
-                revocation: revocation.clone(),
-                author: record.proposal.proposal.author,
-                carrier: record.anchor_device_id.clone(),
-                orphan: self.visits[visit].orphan,
-            })
+            .filter_map(|visit| visit.author.zip(visit.yields_to))
             .collect()
     }
 
-    /// Marks vetoed handovers and the subtrees below them.
-    fn veto(&mut self) {
-        let count = self.visits.len();
-        let mut children: Vec<Vec<usize>> = vec![Vec::new(); count];
-        for (index, visit) in self.visits.iter().enumerate() {
-            if let Some(parent) = visit.parent {
-                children[parent].push(index);
-            }
-        }
-        let settled = self.settle_anchor_handovers(&children);
-        let mut vetoed = settled.clone();
-        let mut evidence: Vec<BTreeSet<Evidence>> = vec![BTreeSet::new(); count];
-        // A visit comes after its parent, so the reverse order is a post-order.
-        for index in (0..count).rev() {
-            let mut continuation = BTreeSet::new();
-            for child in children[index]
-                .iter()
-                .filter(|child| self.signer(**child).is_none())
-            {
-                continuation.append(&mut evidence[*child]);
-            }
-            // Kit handovers first, then the anchor's, then forced ones, so a handover's veto
-            // reads only evidence from handovers it does not outrank or already settled ones.
-            for stage in [
-                HandoverSigner::Kit,
-                HandoverSigner::Anchor,
-                HandoverSigner::Admin,
-            ] {
-                for child in children[index]
-                    .iter()
-                    .filter(|child| self.signer(**child) == Some(stage))
-                {
-                    let mut against = continuation.clone();
-                    for sibling in &children[index] {
-                        // Only the kit key signs a rotation away from itself, so every sibling
-                        // subtree is evidence against a kit handover. The anchor's handovers
-                        // that do not stand are settled before this test.
-                        let counts = match self.signer(*sibling) {
-                            None => false,
-                            Some(_) if stage == HandoverSigner::Kit => true,
-                            Some(HandoverSigner::Admin) => false,
-                            Some(_) => !vetoed[*sibling],
-                        };
-                        if counts && sibling != child {
-                            against.extend(evidence[*sibling].iter().cloned());
-                        }
-                    }
-                    let facts = self.visits[*child].handover.as_ref();
-                    vetoed[*child] =
-                        settled[*child] || facts.is_some_and(|facts| facts.vetoed_by(&against));
-                }
-            }
-            let mut own = self.own_evidence(index);
-            own.append(&mut continuation);
-            for child in &children[index] {
-                if self.signer(*child).is_some() && !vetoed[*child] {
-                    own.append(&mut evidence[*child]);
-                }
-            }
-            evidence[index] = own;
-        }
-        for (index, vetoed) in vetoed.iter().enumerate().skip(1) {
-            let parent = self.parent(index);
-            self.visits[index].alive = !vetoed && self.visits[parent].alive;
-        }
+    /// Revision past which a writer fork of its anchor freezes the instance opened at `root`.
+    fn fork(&self, root: usize) -> Option<u64> {
+        let visit = &self.visits[root];
+        frozen_at(&self.stored.freezes, &visit.anchor, visit.revision)
     }
 
-    /// The live visit of highest rank that is not orphaned. Along a chain the rank only grows,
-    /// so it is a head once vetoed subtrees and orphaned entries are skipped.
-    fn best(&self) -> usize {
-        self.visits
-            .iter()
-            .enumerate()
-            .filter(|(_, visit)| visit.alive && !visit.orphan)
-            .max_by(|(_, a), (_, b)| a.rank.cmp(&b.rank))
-            .map_or(0, |(index, _)| index)
-    }
-
-    /// The chain from the charter through `visit`, with the removals that contended at each of
-    /// its freeze points applied after it.
+    /// The chain from the charter through `visit`.
     fn selection(&self, visit: usize) -> Selection {
         let mut path = Vec::new();
         let mut at = Some(visit);
@@ -1320,53 +1075,349 @@ impl<'a> Walk<'a> {
         }
         path.reverse();
         let mut selection = Selection {
-            state: AuthState::from_charter(&self.stored.charter, Arc::clone(&self.stored.freezes)),
+            state: AuthState::from_charter(&self.stored.charter, Arc::clone(&self.vetoes)),
             path: Vec::new(),
             resolutions: Vec::new(),
             reachable: 0,
+            held: BTreeSet::new(),
+            handed_over: false,
         };
         for node in path.iter().filter_map(|index| self.visits[*index].node) {
             selection = selection.extended(&self.stored.nodes[node]);
         }
-        // Applied after the chain, not inside the walk, so the removals never change which
-        // handovers contend at the point they narrow.
-        for point in &path {
-            for removal in &self.visits[*point].narrowing {
-                if let Some(node) = self.visits[*removal].node {
-                    let revision = self.visits[*point].revision;
-                    selection
-                        .state
-                        .narrow(&self.stored.nodes[node].record, revision);
-                }
+        selection
+    }
+}
+
+/// How an epoch instance resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// No handover leaves the instance and no writer fork freezes it.
+    Open,
+    /// The handover out of the instance that wins it.
+    Won(usize),
+    /// Contested without a winner: only the visit and its ancestors are effective.
+    FrozenAt(usize),
+    /// A writer fork of its anchor with no handover out of it: entries past the revision are
+    /// not effective.
+    FrozenPast(u64),
+}
+
+/// The authority the stored tree derives, all of it before the head is selected.
+///
+/// Two walks build the tree of check-valid entries from the charter. The first collects every
+/// rotation away from a kit key that the key signed; two rotations away from one key, neither an
+/// ancestor of the other, refuse each other, and a kit handover that is not an ancestor of every
+/// rotation away from its key, or whose key is in such a conflict, keeps its validity and rule K
+/// but neither pins nor counts in rank. The second walk applies those vetoes.
+///
+/// Each epoch instance, identified by the entry that opened it, has the handovers out of it as
+/// candidates. An entry of the instance after a candidate's parent, not through the candidate,
+/// that revokes its signer key or its target objects to it. The instance is contested when it
+/// has two candidates or an objected one, and resolves in this order: the candidate on the
+/// ancestry of the highest ranked unvetoed kit handover wins; a lone unobjected candidate wins;
+/// a candidate every other contestant and, for objections, the instance's anchor yielded to wins,
+/// the lowest hash among several; otherwise a contested instance freezes at the common ancestor
+/// of the candidates' parents, lowered to the revision a writer fork of its anchor froze it at, and an
+/// uncontested one with a writer fork freezes past that revision.
+///
+/// An entry is effective when its parent is, it is not a handover that lost or left a frozen
+/// instance, it is not off the path to a contested freeze point, it is not past a writer-fork
+/// freeze, and in an instance whose winner has a writer fork, it is not past the fork beside the
+/// winner's ancestry. The effective entry of highest rank is the head. Nothing reads the selected
+/// chain afterwards to change any of this: the head reports the state its ancestry derives, the
+/// freeze point, and the devices held for data. The result depends only on the stored entries
+/// and the writer forks, not on arrival order or the writers that carried them.
+struct Resolution<'a> {
+    walk: Walk<'a>,
+    /// Handovers out of each instance, by instance root.
+    candidates: BTreeMap<usize, Vec<usize>>,
+    /// Outcome of each instance, by instance root.
+    outcomes: BTreeMap<usize, Outcome>,
+    /// Whether each visit is effective.
+    effective: Vec<bool>,
+    /// The effective visit of highest rank.
+    best: usize,
+    /// Highest revision any check-valid chain reaches.
+    reachable: u64,
+}
+
+impl<'a> Resolution<'a> {
+    fn new(stored: &'a Stored) -> Self {
+        let first = Walk::new(stored, Arc::default());
+        let vetoes = first.vetoes();
+        let walk = if vetoes == Vetoes::default() {
+            first
+        } else {
+            Walk::new(stored, Arc::new(vetoes))
+        };
+        let mut candidates: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for index in 1..walk.visits.len() {
+            if walk.visits[index].handover.is_some() {
+                let instance = walk.visits[walk.parent(index)].instance;
+                candidates.entry(instance).or_default().push(index);
             }
         }
-        // Only a handover continues an epoch frozen at its anchor's competing handovers.
-        if self.visits[visit].freeze {
-            let revision = self.visits[visit].revision;
-            let frozen = &mut selection.state.frozen_at;
-            *frozen = Some(frozen.map_or(revision, |earlier| earlier.min(revision)));
+        let pinned = walk.pinned();
+        let yields = walk.yields();
+        let mut outcomes = BTreeMap::new();
+        let mut forks = BTreeMap::new();
+        for root in 0..walk.visits.len() {
+            if walk.visits[root].instance != root {
+                continue;
+            }
+            let fork = walk.fork(root);
+            let own = candidates.get(&root).map_or(&[][..], Vec::as_slice);
+            outcomes.insert(
+                root,
+                Self::outcome(&walk, root, own, fork, &pinned, &yields),
+            );
+            forks.insert(root, fork);
         }
-        Selection {
-            reachable: self.reachable,
-            ..selection
+        let mut reachable = 0;
+        let mut effective = vec![true; walk.visits.len()];
+        for index in 0..walk.visits.len() {
+            let visit = &walk.visits[index];
+            reachable = reachable.max(visit.revision);
+            // Copies of a forked anchor writer may carry entries past the revision its instance
+            // froze at, which no replica keeps once the fork is excluded. An author that applied
+            // one before the fork was found must not wait for it, so a chain that reaches a
+            // writer-fork freeze reaches every revision. Each operation's device is still
+            // checked against the selected chain when it applies.
+            if forks
+                .get(&visit.instance)
+                .copied()
+                .flatten()
+                .is_some_and(|fork| visit.revision >= fork)
+            {
+                reachable = UNBOUNDED_REVISION;
+            }
+            if index > 0 {
+                effective[index] = effective[walk.parent(index)]
+                    && Self::admitted(&walk, index, &outcomes, &forks);
+            }
+        }
+        let best = (0..walk.visits.len())
+            .filter(|index| effective[*index])
+            .max_by(|a, b| walk.visits[*a].rank.cmp(&walk.visits[*b].rank))
+            .unwrap_or(0);
+        Self {
+            walk,
+            candidates,
+            outcomes,
+            effective,
+            best,
+            reachable,
         }
     }
 
-    /// Live visits whose state holds `key` as its kit-lineage recovery key, highest rank first.
-    fn kit_visits(&self, key: &AdminPublicKey) -> Vec<usize> {
-        let mut visits: Vec<usize> = (0..self.visits.len())
-            .filter(|index| {
-                let visit = &self.visits[*index];
-                visit.alive && visit.kit_key.as_ref() == Some(key)
-            })
+    /// How the instance opened at `root` resolves, see [`Resolution`].
+    fn outcome(
+        walk: &Walk<'_>,
+        root: usize,
+        candidates: &[usize],
+        fork: Option<u64>,
+        pinned: &BTreeMap<usize, usize>,
+        yields: &[(AdminPublicKey, Digest32)],
+    ) -> Outcome {
+        if let Some(winner) = pinned.get(&root) {
+            return Outcome::Won(*winner);
+        }
+        let Some(first) = candidates.first() else {
+            return fork.map_or(Outcome::Open, Outcome::FrozenPast);
+        };
+        let objections: Vec<Vec<usize>> = candidates
+            .iter()
+            .map(|candidate| walk.objections(*candidate))
             .collect();
-        visits.sort_by(|a, b| self.visits[*b].rank.cmp(&self.visits[*a].rank));
-        visits
+        if candidates.len() == 1 && objections.iter().all(Vec::is_empty) {
+            return Outcome::Won(*first);
+        }
+        let accepted = candidates
+            .iter()
+            .zip(&objections)
+            .filter(|(candidate, objected)| {
+                let hash = walk.visits[**candidate].hash;
+                let gave_way = |key: Option<AdminPublicKey>| {
+                    key.is_some_and(|key| {
+                        yields
+                            .iter()
+                            .any(|(author, named)| *author == key && *named == hash)
+                    })
+                };
+                candidates
+                    .iter()
+                    .all(|other| other == *candidate || gave_way(walk.visits[*other].author))
+                    && (objected.is_empty() || gave_way(walk.visits[**candidate].parent_anchor_key))
+            })
+            .map(|(candidate, _)| *candidate)
+            .min_by_key(|candidate| walk.visits[*candidate].hash);
+        if let Some(winner) = accepted {
+            return Outcome::Won(winner);
+        }
+        let mut point = candidates
+            .iter()
+            .map(|candidate| walk.parent(*candidate))
+            .reduce(|a, b| walk.common_ancestor(a, b))
+            .unwrap_or(root);
+        if let Some(fork) = fork {
+            while point != root && walk.visits[point].revision > fork {
+                point = walk.parent(point);
+            }
+        }
+        Outcome::FrozenAt(point)
+    }
+
+    /// Whether visit `index`, whose parent is effective, is effective itself.
+    fn admitted(
+        walk: &Walk<'_>,
+        index: usize,
+        outcomes: &BTreeMap<usize, Outcome>,
+        forks: &BTreeMap<usize, Option<u64>>,
+    ) -> bool {
+        let visit = &walk.visits[index];
+        if visit.handover.is_some() {
+            let out_of = walk.visits[walk.parent(index)].instance;
+            if outcomes.get(&out_of) != Some(&Outcome::Won(index)) {
+                return false;
+            }
+        }
+        match outcomes.get(&visit.instance) {
+            Some(Outcome::FrozenAt(point)) => walk.is_ancestor(index, *point),
+            Some(Outcome::FrozenPast(fork)) => visit.revision <= *fork,
+            Some(Outcome::Won(winner)) => match forks.get(&visit.instance).copied().flatten() {
+                Some(fork) => visit.revision <= fork || walk.is_ancestor(index, *winner),
+                None => true,
+            },
+            Some(Outcome::Open) | None => true,
+        }
+    }
+
+    /// Revision past which the head's instance is frozen, if it is.
+    fn frozen_at(&self) -> Option<u64> {
+        match self.outcomes.get(&self.walk.visits[self.best].instance) {
+            Some(Outcome::FrozenAt(point)) => Some(self.walk.visits[*point].revision),
+            Some(Outcome::FrozenPast(fork)) => Some(*fork),
+            _ => None,
+        }
+    }
+
+    /// Devices a stored entry that is not effective removes after the freeze point of the
+    /// head's instance, while it is frozen.
+    fn held(&self) -> BTreeSet<String> {
+        let instance = self.walk.visits[self.best].instance;
+        let start = match self.outcomes.get(&instance) {
+            Some(Outcome::FrozenAt(point)) => *point,
+            Some(Outcome::FrozenPast(_)) => instance,
+            _ => return BTreeSet::new(),
+        };
+        let mut held = BTreeSet::new();
+        let mut stack = vec![start];
+        while let Some(at) = stack.pop() {
+            if !self.effective[at]
+                && let Some(device) = &self.walk.visits[at].removes
+            {
+                held.insert(device.clone());
+            }
+            stack.extend(self.walk.children[at].iter().copied());
+        }
+        held
+    }
+
+    /// The selected chain, with the freeze, the hold, and the handovers of the head's instance.
+    fn selected(&self) -> Selection {
+        let mut selection = self.walk.selection(self.best);
+        selection.state.frozen_at = self.frozen_at();
+        selection.held = self.held();
+        selection.handed_over = self
+            .candidates
+            .get(&self.walk.visits[self.best].instance)
+            .is_some_and(|candidates| !candidates.is_empty());
+        selection.reachable = self.reachable;
+        selection
+    }
+
+    /// The highest ranked visit in the subtree of `start` where `signer` is the kit key and
+    /// `target` a live desktop, staying in `start`'s instance when `within` is set.
+    fn kit_point_under(
+        &self,
+        start: usize,
+        within: bool,
+        signer: &AdminPublicKey,
+        target: &str,
+    ) -> Option<usize> {
+        let instance = self.walk.visits[start].instance;
+        let mut subtree = Vec::new();
+        let mut stack = vec![start];
+        while let Some(at) = stack.pop() {
+            if within && self.walk.visits[at].instance != instance {
+                continue;
+            }
+            if self.walk.visits[at].kit_key == *signer {
+                subtree.push(at);
+            }
+            stack.extend(self.walk.children[at].iter().copied());
+        }
+        subtree.sort_by(|a, b| self.walk.visits[*b].rank.cmp(&self.walk.visits[*a].rank));
+        subtree
+            .into_iter()
+            .find(|visit| self.admits_kit_target(*visit, target))
+    }
+
+    fn admits_kit_target(&self, visit: usize, target: &str) -> bool {
+        let state = self.walk.selection(visit).state;
+        state.epoch < u32::MAX
+            && state
+                .live_device(target)
+                .is_ok_and(|device| device.kind == DeviceKind::Desktop)
+    }
+
+    /// Visits a kit handover `signer` signs for the desktop `target` may continue from, the
+    /// selected head first: when the head's instance is frozen, also the best entry under each
+    /// handover out of it and on each branch of its own continuation past the freeze point.
+    fn kit_points(&self, signer: &AdminPublicKey, target: &str) -> Vec<usize> {
+        let mut points = Vec::new();
+        if self.walk.visits[self.best].kit_key == *signer
+            && self.admits_kit_target(self.best, target)
+        {
+            points.push(self.best);
+        }
+        let instance = self.walk.visits[self.best].instance;
+        let continuations: Vec<usize> = match self.outcomes.get(&instance) {
+            Some(Outcome::FrozenAt(point)) => self.walk.children[*point].clone(),
+            Some(Outcome::FrozenPast(fork)) => (0..self.walk.visits.len())
+                .filter(|index| {
+                    let visit = &self.walk.visits[*index];
+                    visit.instance == instance && visit.revision == fork.saturating_add(1)
+                })
+                .collect(),
+            _ => return points,
+        };
+        let branches = self
+            .candidates
+            .get(&instance)
+            .into_iter()
+            .flatten()
+            .map(|candidate| (*candidate, false))
+            .chain(
+                continuations
+                    .into_iter()
+                    .filter(|visit| self.walk.visits[*visit].handover.is_none())
+                    .map(|visit| (visit, true)),
+            );
+        for (start, within) in branches {
+            if let Some(point) = self.kit_point_under(start, within, signer, target)
+                && !points.contains(&point)
+            {
+                points.push(point);
+            }
+        }
+        points
     }
 }
 
 /// Selects the chain from the charter through the stored entries, or `None` without a charter.
-/// See [`Walk`] for the rule.
+/// See [`Resolution`] for the rule.
 pub(crate) async fn select(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -1374,15 +1425,14 @@ pub(crate) async fn select(
     let Some(stored) = Stored::load(conn, space).await? else {
         return Ok(None);
     };
-    let walk = Walk::new(&stored);
-    Ok(Some(walk.selection(walk.best())))
+    Ok(Some(Resolution::new(&stored).selected()))
 }
 
 /// Whether any check-valid stored chain enrolls `device_id` with `device_key`, selected or not.
-/// A replica that selected one branch still stores the writers of another, whose entries may be
-/// the evidence that vetoes its selection. This admits storage only, never authority: selection
-/// and enrollment read the selected chain. The walk is cached per stored entry set and freezes,
-/// so a batch of geneses walks the tree once.
+/// A replica that selected one branch still stores the writers of another, whose entries may
+/// contest its selection. This admits storage only, never authority: selection and enrollment
+/// read the selected chain. The walk is cached per stored entry set and freezes, so a batch of
+/// geneses walks the tree once.
 pub(crate) async fn enrolled_on_any_chain(
     conn: &mut SqliteConnection,
     cache: &EnrolledCache,
@@ -1398,7 +1448,7 @@ pub(crate) async fn enrolled_on_any_chain(
     let Some(stored) = Stored::load(conn, space).await? else {
         return Ok(false);
     };
-    let enrolled = Arc::new(Walk::new(&stored).enrolled);
+    let enrolled = Arc::new(Walk::new(&stored, Arc::default()).enrolled);
     cache.store(key, Arc::clone(&enrolled));
     Ok(enrolled.contains(&wanted))
 }
@@ -1458,60 +1508,50 @@ impl EnrolledCache {
     }
 }
 
-/// The state after the live stored entry at `revision` with `entry_hash` when `author` is its
-/// kit-lineage recovery key: a point a kit handover may continue from although it is not the
-/// selected head.
+/// The state after the stored entry at `revision` with `entry_hash` when it is one of the
+/// points a kit handover `author` signs for `target` may continue from, see
+/// [`Resolution::kit_points`].
 async fn kit_point(
     conn: &mut SqliteConnection,
     space: SpaceId,
     author: &AdminPublicKey,
+    target: &str,
     revision: u64,
     entry_hash: &Digest32,
 ) -> SyncResult<Option<AuthState>> {
     let Some(stored) = Stored::load(conn, space).await? else {
         return Ok(None);
     };
-    let walk = Walk::new(&stored);
-    let hash_of = |visit: usize| {
-        walk.visits[visit]
-            .node
-            .map_or_else(|| stored.charter.hash(), |node| stored.nodes[node].hash)
-    };
-    Ok(walk
-        .kit_visits(author)
+    let resolution = Resolution::new(&stored);
+    Ok(resolution
+        .kit_points(author, target)
         .into_iter()
-        .find(|visit| hash_of(*visit) == *entry_hash)
-        .map(|visit| walk.selection(visit).state)
-        .filter(|state| state.revision == revision))
+        .find(|visit| {
+            let visit = &resolution.walk.visits[*visit];
+            visit.hash == *entry_hash && visit.revision == revision
+        })
+        .map(|visit| resolution.walk.selection(visit).state))
 }
 
-/// Whether the stored tree holds a handover other than the one hashed `handover` that the anchor
-/// of the epoch holding the entry hashed `point` signed out of that epoch, vetoed or not.
-async fn anchor_handed_over(
+/// Where a handover that `signer` signs for the desktop `target` continues from: the first kit
+/// point, see [`Resolution::kit_points`], or else the selected head. `None` without a charter.
+async fn handover_point(
     conn: &mut SqliteConnection,
     space: SpaceId,
-    point: &Digest32,
-    handover: &Digest32,
-) -> SyncResult<bool> {
+    signer: &AdminPublicKey,
+    target: &str,
+) -> SyncResult<Option<HandoverPoint>> {
     let Some(stored) = Stored::load(conn, space).await? else {
-        return Ok(false);
+        return Ok(None);
     };
-    let walk = Walk::new(&stored);
-    let hash_of = |visit: usize| {
-        walk.visits[visit]
-            .node
-            .map_or_else(|| stored.charter.hash(), |node| stored.nodes[node].hash)
-    };
-    let Some(at) = (0..walk.visits.len()).find(|visit| hash_of(*visit) == *point) else {
-        return Ok(false);
-    };
-    let epoch = walk.visits[at].epoch_root;
-    Ok(walk
-        .anchor_handovers()
-        .get(&epoch)
-        .into_iter()
-        .flatten()
-        .any(|visit| hash_of(*visit) != *handover))
+    let resolution = Resolution::new(&stored);
+    if let Some(point) = resolution.kit_points(signer, target).first() {
+        let state = resolution.walk.selection(*point).state;
+        return Ok(Some(HandoverPoint::of(&state, true)));
+    }
+    let state = resolution.selected().state;
+    let by_kit = state.kit_key == *signer;
+    Ok(Some(HandoverPoint::of(&state, by_kit)))
 }
 
 /// Where a handover that `signer` signs for the desktop `target` continues from.
@@ -1525,7 +1565,7 @@ pub struct HandoverPoint {
     pub entry_hash: Digest32,
     /// Anchor of the entry's epoch.
     pub anchor_device_id: String,
-    /// Whether `signer` is the kit-lineage recovery key there.
+    /// Whether `signer` is the kit key there.
     pub by_kit: bool,
 }
 
@@ -1541,35 +1581,6 @@ impl HandoverPoint {
     }
 }
 
-/// The live entry of highest rank where `signer` is the kit-lineage recovery key and `target` a
-/// live desktop, or the selected head when there is none.
-async fn handover_point(
-    conn: &mut SqliteConnection,
-    space: SpaceId,
-    signer: &AdminPublicKey,
-    target: &str,
-) -> SyncResult<Option<HandoverPoint>> {
-    let Some(stored) = Stored::load(conn, space).await? else {
-        return Ok(None);
-    };
-    let walk = Walk::new(&stored);
-    let kit = walk
-        .kit_visits(signer)
-        .into_iter()
-        .map(|visit| walk.selection(visit).state)
-        .find(|state| {
-            state.epoch < u32::MAX
-                && state
-                    .live_device(target)
-                    .is_ok_and(|device| device.kind == DeviceKind::Desktop)
-        });
-    if let Some(state) = kit {
-        return Ok(Some(HandoverPoint::of(&state, true)));
-    }
-    let selected = walk.selection(walk.best()).state;
-    Ok(Some(HandoverPoint::of(&selected, false)))
-}
-
 /// What the selection rule derives from stored entries, for its tests.
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1580,10 +1591,18 @@ pub(crate) struct SelectedHead {
     pub(crate) reachable: u64,
     /// Revision past which the selected epoch is frozen.
     pub(crate) frozen_at: Option<u64>,
-    /// Anchor of the selected epoch, empty when the slot is vacant.
+    /// Anchor of the selected epoch.
     pub(crate) anchor: String,
     /// Revision that removed each enrolled device, by device id, `None` for a live one.
     pub(crate) devices: BTreeMap<String, Option<u64>>,
+    /// Live devices with an admin role.
+    pub(crate) admins: BTreeSet<String>,
+    /// Devices held for data while the head's instance is frozen.
+    pub(crate) held: BTreeSet<String>,
+    /// Unvetoed kit handovers on the selected chain.
+    pub(crate) kit_handovers: u32,
+    /// The recovery key the head names.
+    pub(crate) recovery_admin_key: AdminPublicKey,
 }
 
 /// What the stored `records` derive from `charter`, each carried by its writer, for tests of
@@ -1611,19 +1630,29 @@ pub(crate) fn select_records(
         freezes: Arc::new(freezes),
         nodes,
     };
-    let walk = Walk::new(&stored);
-    let selection = walk.selection(walk.best());
+    let selection = Resolution::new(&stored).selected();
+    let state = &selection.state;
     SelectedHead {
-        head: selection.state.entry_hash,
-        reachable: walk.reachable,
-        frozen_at: selection.state.frozen_at,
-        anchor: selection.state.view().anchor_device_id,
-        devices: selection
-            .state
+        head: state.entry_hash,
+        reachable: selection.reachable,
+        frozen_at: state.frozen_at,
+        anchor: state.anchor_device_id.clone(),
+        devices: state
             .devices
             .iter()
             .map(|(id, device)| (id.clone(), device.removed))
             .collect(),
+        admins: state
+            .devices
+            .iter()
+            .filter(|(_, device)| {
+                device.removed.is_none() && matches!(device.role, DeviceRole::Admin(_))
+            })
+            .map(|(id, _)| id.clone())
+            .collect(),
+        held: selection.held.clone(),
+        kit_handovers: state.kit_handovers,
+        recovery_admin_key: state.recovery_admin_key,
     }
 }
 
@@ -1661,13 +1690,37 @@ pub(crate) async fn selected_revision(
     revision.map_or(Ok(0), |revision| stored_u64(revision, "revision"))
 }
 
-/// Records a kind 4 operation of `writer` at `seq` as a log entry.
+/// The revision `writer`'s next content operation is sealed against: the selected revision, but
+/// never below what the writer's own stored operations were sealed against. A freeze or a
+/// reselection can lower the selected revision under an anchor that already sequenced past it,
+/// and fork evidence is provable only when no forked operation claims a revision below the
+/// shared operation before it, so a writer's revisions never decrease.
+pub(crate) async fn sealing_revision(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+) -> SyncResult<u64> {
+    let selected = selected_revision(conn, space).await?;
+    let own: Option<i64> = sqlx::query_scalar(
+        "SELECT max(authorization_revision) FROM sync_ops WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_one(&mut *conn)
+    .await?;
+    let own = own.map_or(Ok(0), |revision| {
+        stored_u64(revision, "authorization revision")
+    })?;
+    Ok(selected.max(own))
+}
+
 /// Whether a writer of `carrier_device` may carry `record`: only writers of the device the record
 /// names as anchor carry entries, and only well-formed ones.
 pub(crate) fn carries(carrier_device: &str, record: &AuthorizationRecord) -> bool {
     carrier_device == record.anchor_device_id && record.validate().is_ok()
 }
 
+/// Records a kind 4 operation of `writer` at `seq` as a log entry.
 pub(crate) async fn insert_entry(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -1696,8 +1749,8 @@ pub(crate) async fn insert_entry(
     Ok(())
 }
 
-/// Selects the chain and writes what it derives: the selected flags, `sync_devices`, the
-/// reachable revision, the anchor, and the writer state of removed devices. Writers of a removed
+/// Selects the chain and writes what it derives: the selected flags, `sync_devices` with the
+/// devices held for data, the reachable revision, the anchor, and the writer state of removed devices. Writers of a removed
 /// device become revoked at the cutoff the removal lists, or 0 when it lists none, and every
 /// writer of a removed device, retired and forked ones included, gets that cutoff as its removal
 /// cutoff; revoked writers of a device that is no longer removed become active again. Retired
@@ -1716,7 +1769,7 @@ pub(crate) async fn rederive(
             .bind(space.as_bytes().as_slice())
             .fetch_one(&mut *conn)
             .await?;
-    if previous_anchor.as_deref() != selection.anchor() {
+    if previous_anchor.as_deref() != Some(selection.anchor()) {
         sqlx::query("DELETE FROM sync_anchor_marks WHERE space_id = ?")
             .bind(space.as_bytes().as_slice())
             .execute(&mut *conn)
@@ -1757,8 +1810,8 @@ pub(crate) async fn rederive(
         sqlx::query(
             "INSERT INTO sync_devices
                 (space_id, device_id, device_key, tls_fingerprint, label, kind, role, admin_key,
-                 enrolled_revision, removed_revision)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 enrolled_revision, removed_revision, held)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(space.as_bytes().as_slice())
         .bind(device_id.as_str())
@@ -1770,6 +1823,7 @@ pub(crate) async fn rederive(
         .bind(admin_key)
         .bind(seq_i64(device.enrolled)?)
         .bind(device.removed.map(seq_i64).transpose()?)
+        .bind(i64::from(selection.held.contains(device_id)))
         .execute(&mut *conn)
         .await?;
     }
@@ -2063,10 +2117,11 @@ impl Engine {
         .await
     }
 
-    /// Where a handover that `signer` signs for the desktop `target` continues from: the live
-    /// stored entry of highest rank where `signer` is the kit-lineage recovery key and `target`
-    /// a live desktop, so a kit can recover from a stolen anchor that removed its target, or
-    /// else the selected head. `None` without a charter.
+    /// Where a handover that `signer` signs for the desktop `target` continues from: the
+    /// selected head when `signer` is its kit key and `target` a live desktop there, or, while
+    /// the head's instance is frozen, the best such entry on a branch past the freeze, so a kit
+    /// can recover from a stolen anchor that removed its target; else the selected head. `None`
+    /// without a charter.
     pub async fn handover_point(
         &self,
         conn: &mut SqliteConnection,
@@ -2080,11 +2135,12 @@ impl Engine {
 
     /// Seals an admin-signed handover as the first entry of the epoch it opens, in the local
     /// writer's chain. The local device must be the handover's new anchor and the selected head
-    /// the revision the handover continues from, or, for a kit-lineage recovery key, a live
-    /// entry where it is that key, see [`Self::handover_point`]; `old_anchor_vector` is the old anchor's stored
-    /// vector when known. A frozen epoch does not stop a handover. Returns the revision, or why
-    /// the handover was rejected; one already in the selected chain returns its revision without
-    /// sealing again.
+    /// the revision the handover continues from, or, for the kit key, one of its kit points,
+    /// see [`Self::handover_point`]; `old_anchor_vector` is the old anchor's stored vector when
+    /// known. A frozen epoch does not stop a handover, but a target refuses a take out of an
+    /// instance that another handover already leaves. Returns the revision, or why the handover
+    /// was rejected; one already in the selected chain returns its revision without sealing
+    /// again.
     pub async fn seal_handover(
         &self,
         conn: &mut SqliteConnection,
@@ -2124,13 +2180,16 @@ impl Engine {
         let Some(selection) = select(&mut tx, ctx.space).await? else {
             return Err(SyncError::ResetRequired("the space has no charter"));
         };
+        let handed_over = selection.handed_over;
         let mut state = selection.state;
         let local_device = &writer.certificate.certificate.device_id;
         let record = match (ordering, &proposal.proposal.entry) {
-            (Ordering::Anchor { .. }, _)
-                if *local_device != state.anchor_device_id || state.anchor_vacant() =>
-            {
+            (Ordering::Anchor { .. }, _) if *local_device != state.anchor_device_id => {
                 return Ok(Err(ProposalRejection::NotAnchor));
+            }
+            // An anchor that stores a handover out of its instance stops sequencing there.
+            (Ordering::Anchor { .. }, _) if handed_over => {
+                return Ok(Err(ProposalRejection::HandoverConflict));
             }
             (
                 Ordering::Anchor {
@@ -2140,9 +2199,10 @@ impl Engine {
                 entry,
             ) => {
                 let sequencing = match entry {
-                    Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) => {
-                        Sequencing::Empty
-                    }
+                    Entry::Enroll(_)
+                    | Entry::SetRole(_)
+                    | Entry::ResolveLate(_)
+                    | Entry::Yield(_) => Sequencing::Empty,
                     Entry::Remove(remove) => {
                         let Some(cutoffs) = removal_cutoffs(
                             &mut tx,
@@ -2180,12 +2240,13 @@ impl Engine {
                 if handover.continues_from_revision != state.revision
                     || handover.continues_from_hash != state.entry_hash
                 {
-                    // A kit-lineage recovery key may continue from a live entry below the
-                    // selected head, such as one before a stolen anchor removed its target.
+                    // The kit key may continue from a branch past a freeze, such as one before
+                    // a stolen anchor removed its target.
                     let point = kit_point(
                         &mut tx,
                         ctx.space,
                         &proposal.proposal.author,
+                        &handover.new_anchor_device_id,
                         handover.continues_from_revision,
                         &handover.continues_from_hash,
                     )
@@ -2211,12 +2272,12 @@ impl Engine {
         if record.validate().is_err() {
             return Ok(Err(ProposalRejection::Malformed));
         }
-        // A target refuses a second handover the anchor signed out of one epoch, which no
-        // honest anchor makes.
-        if state
-            .handover_facts(&record)
-            .is_some_and(|facts| facts.signer == HandoverSigner::Anchor)
-            && anchor_handed_over(&mut tx, ctx.space, &state.entry_hash, &record.hash()).await?
+        // A take out of an instance that another handover already leaves would only contest it;
+        // the kit alone continues there.
+        if handed_over
+            && state
+                .signer(&record)
+                .is_some_and(|signer| signer != Signer::Kit)
         {
             return Ok(Err(ProposalRejection::HandoverConflict));
         }

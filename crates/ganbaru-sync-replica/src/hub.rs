@@ -344,7 +344,7 @@ impl SyncHub {
                 "the hub vault has no person identity",
             ));
         };
-        {
+        let held = {
             let mut conn = acquire(&vault.pool).await?;
             let view = Engine::vault()
                 .authorization(&mut conn, &ctx)
@@ -353,6 +353,21 @@ impl SyncHub {
             if let Some(refusal) = view.as_ref().and_then(|view| log_refusal(view, &device_id)) {
                 return Err(HubError::rejected(refusal.code(), refusal.describe()));
             }
+            Engine::vault()
+                .device_held(&mut conn, &ctx, &device_id)
+                .await
+                .map_err(|error| HubError::failed(format!("read sync authorization: {error}")))?
+        };
+        if held
+            && matches!(
+                request,
+                ControlMessage::SyncAssetGet { .. } | ControlMessage::SyncAssetPut { .. }
+            )
+        {
+            return Err(HubError::rejected(
+                "device_held",
+                "an anchor handover contest holds this device's data until it is resolved",
+            ));
         }
         let assets = vault.assets;
         let hub = HubSession {
@@ -360,6 +375,7 @@ impl SyncHub {
             pool: vault.pool,
             ctx,
             quarantined: vault.quarantined,
+            held,
         };
         let manifest = hub.engine.manifest();
         match request {
@@ -507,7 +523,7 @@ impl SyncHub {
                 .map_err(|_| HubError::failed("sync wait lock is unavailable"))?
                 .get(device_id)
                 != Some(&token);
-            if superseded || !known.dominates(&stored) {
+            if superseded || hub.servable(known, &stored).await? {
                 break hub
                     .state_message(&stored, None, bootstrap_required, report)
                     .await;
@@ -715,9 +731,31 @@ struct HubSession {
     pool: SqlitePool,
     ctx: SpaceContext,
     quarantined: BTreeSet<String>,
+    /// Whether the selected chain holds the requesting peer for data: it is then served
+    /// authorization records only, and no assets.
+    held: bool,
 }
 
 impl HubSession {
+    /// Whether a pull from `known` would return any operation: anything the hub stored past it,
+    /// or for a held peer an operation before the first row change of some writer's chain.
+    async fn servable(
+        &self,
+        known: &VersionVector,
+        stored: &VersionVector,
+    ) -> Result<bool, HubError> {
+        if !self.held || known.dominates(stored) {
+            return Ok(!known.dominates(stored));
+        }
+        let mut conn = acquire(&self.pool).await?;
+        let page = self
+            .engine
+            .authorization_ops_after(&mut conn, &self.ctx, known, 1)
+            .await
+            .map_err(|error| HubError::failed(format!("read sync operations: {error}")))?;
+        Ok(!page.ops.is_empty())
+    }
+
     async fn stored(&self) -> Result<VersionVector, HubError> {
         let mut conn = acquire(&self.pool).await?;
         self.engine
@@ -916,16 +954,21 @@ impl HubSession {
         max_bytes: usize,
     ) -> Result<ControlMessage, HubError> {
         let mut conn = acquire(&self.pool).await?;
-        let page = self
-            .engine
-            .ops_after(&mut conn, &self.ctx, known, max_bytes)
-            .await
-            .map_err(|error| match error {
-                SyncError::Compacted { .. } => {
-                    HubError::rejected(BOOTSTRAP_REQUIRED, error.to_string())
-                }
-                error => HubError::failed(format!("read sync operations: {error}")),
-            })?;
+        let page = if self.held {
+            self.engine
+                .authorization_ops_after(&mut conn, &self.ctx, known, max_bytes)
+                .await
+        } else {
+            self.engine
+                .ops_after(&mut conn, &self.ctx, known, max_bytes)
+                .await
+        };
+        let page = page.map_err(|error| match error {
+            SyncError::Compacted { .. } => {
+                HubError::rejected(BOOTSTRAP_REQUIRED, error.to_string())
+            }
+            error => HubError::failed(format!("read sync operations: {error}")),
+        })?;
         Ok(ControlMessage::SyncOps {
             ops: ops_to_wire(&page.ops),
             more: page.more,

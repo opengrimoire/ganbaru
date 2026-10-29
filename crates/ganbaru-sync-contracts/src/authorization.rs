@@ -33,6 +33,7 @@
 //!   length (1) and key | resolution (1).
 //! - Handover (4): new anchor device id length (1) and id | new epoch (4) | continues from
 //!   revision (8) | continues from entry hash (32).
+//! - Yield (5): hash of the handover the author gives way to (32).
 //!
 //! Sequencing is what only the anchor knows when it orders a proposal, outside the admin
 //! signature: for a removal, the stored sequence cutoff of each writer of the removed device and
@@ -65,6 +66,7 @@ const ENTRY_REMOVE: u8 = 1;
 const ENTRY_SET_ROLE: u8 = 2;
 const ENTRY_RESOLVE_LATE: u8 = 3;
 const ENTRY_HANDOVER: u8 = 4;
+const ENTRY_YIELD: u8 = 5;
 
 const ROLE_MEMBER: u8 = 0;
 const ROLE_ADMIN: u8 = 1;
@@ -283,6 +285,14 @@ pub struct Handover {
     pub continues_from_hash: Digest32,
 }
 
+/// Withdraws the author's other handovers out of one epoch instance, and the anchor's objections
+/// to the named handover, in favor of the named handover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Yield {
+    /// Entry hash of the handover the author gives way to.
+    pub handover_hash: Digest32,
+}
+
 /// One authorization change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -296,6 +306,8 @@ pub enum Entry {
     ResolveLate(ResolveLate),
     /// Moves the anchor role.
     Handover(Handover),
+    /// Gives way to a handover that contests the author's own handover or objection.
+    Yield(Yield),
     /// An entry kind this build does not know, kept byte for byte.
     Unknown {
         /// Wire kind.
@@ -314,6 +326,7 @@ impl Entry {
             Self::SetRole(_) => ENTRY_SET_ROLE,
             Self::ResolveLate(_) => ENTRY_RESOLVE_LATE,
             Self::Handover(_) => ENTRY_HANDOVER,
+            Self::Yield(_) => ENTRY_YIELD,
             Self::Unknown { kind, .. } => *kind,
         }
     }
@@ -348,8 +361,9 @@ impl Entry {
                     return Err(CodecError::Malformed("handover").into());
                 }
             }
+            Self::Yield(_) => {}
             Self::Unknown { kind, .. } => {
-                if *kind <= ENTRY_HANDOVER {
+                if *kind <= ENTRY_YIELD {
                     return Err(CodecError::Malformed("entry kind").into());
                 }
             }
@@ -393,6 +407,7 @@ impl Entry {
                 writer.u64(handover.continues_from_revision);
                 writer.raw(&handover.continues_from_hash);
             }
+            Self::Yield(give_way) => writer.raw(&give_way.handover_hash),
             Self::Unknown { bytes, .. } => writer.raw(bytes),
         }
         writer.into_bytes()
@@ -468,6 +483,9 @@ impl Entry {
                 epoch: reader.u32()?,
                 continues_from_revision: reader.u64()?,
                 continues_from_hash: reader.array::<DIGEST_BYTES>()?,
+            }),
+            ENTRY_YIELD => Self::Yield(Yield {
+                handover_hash: reader.array::<DIGEST_BYTES>()?,
             }),
             _ => {
                 let bytes = reader.take(reader.remaining())?.to_vec();
@@ -650,7 +668,9 @@ impl Sequencing {
     fn decode(entry: &Entry, bytes: &[u8]) -> Result<Self, CodecError> {
         let mut reader = Reader::new(bytes);
         let sequencing = match entry {
-            Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) => Self::Empty,
+            Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) | Entry::Yield(_) => {
+                Self::Empty
+            }
             Entry::Remove(_) => {
                 let count = usize::from(reader.u16()?);
                 if count > MAX_REMOVAL_CUTOFFS {
@@ -684,7 +704,10 @@ impl Sequencing {
 
     fn validate(&self, entry: &Entry) -> Result<(), CodecError> {
         match (entry, self) {
-            (Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_), Self::Empty)
+            (
+                Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) | Entry::Yield(_),
+                Self::Empty,
+            )
             | (Entry::Unknown { .. }, Self::Opaque(_)) => Ok(()),
             (Entry::Remove(_), Self::Removal { cutoffs, .. }) => {
                 if cutoffs.len() > MAX_REMOVAL_CUTOFFS {
@@ -828,7 +851,8 @@ pub enum ProposalRejection {
     UnknownRemoval,
     /// The handover does not continue the current log, or another handover won.
     HandoverConflict,
-    /// A writer of the anchor forked in the current epoch, so only a handover continues the log.
+    /// A writer of the anchor forked in the current epoch, or the epoch's handovers are
+    /// contested, so only a yield or a recovery kit handover continues the log.
     EpochFrozen,
     /// The anchor a handover installed does not yet know a writer the old anchor had stored, so
     /// it cannot set a removal's cutoffs yet.

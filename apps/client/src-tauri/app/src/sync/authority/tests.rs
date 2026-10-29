@@ -41,6 +41,7 @@ fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
         catch_up: None,
         charter: [2; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([3; 32]),
+        kit_admin_key: AdminPublicKey::from_bytes([3; 32]),
         devices,
         discovery_key: [4; 32],
         previous_discovery_key: None,

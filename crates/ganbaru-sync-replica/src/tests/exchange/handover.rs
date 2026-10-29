@@ -325,7 +325,7 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
 }
 
 #[test]
-fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
+fn a_regenerated_recovery_key_recovers_beside_the_printed_kit() {
     block_on(async {
         let mut hub_replica = Replica::new("hub-recovery-kit", HUB_DEVICE).await;
         let charter = hub_replica.charter().await;
@@ -398,8 +398,8 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
         }
         commit_sequenced(&mut hub_replica).await;
 
-        // Only the regenerated kit signs for the space now.
-        let enroll = |admin: &AdminKeyPair, device_id: &str| {
+        // The installed recovery key signs for the space, and the printed kit still does.
+        let enroll = |admin: &AdminKeyPair, device_id: &str, fingerprint: u8| {
             authority::propose(
                 space,
                 charter,
@@ -407,7 +407,7 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
                 authority::enroll_entry(Enrollment {
                     device_id: device_id.to_string(),
                     device_key: device_key(device_id).public_key(),
-                    tls_fingerprint: [42; 32],
+                    tls_fingerprint: [fingerprint; 32],
                     label: device_id.to_string(),
                     device_kind: DeviceKind::Mobile,
                 }),
@@ -420,22 +420,19 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
             .recovery_admin_key()
             .expect("old recovery key");
         let new_kit = seed.recovery_admin_key().expect("new recovery key");
-        let mut conn = acquire(&hub_replica.pool).await;
+        sequence_here(&mut hub_replica, &enroll(&new_kit, "device-new-kit", 42)).await;
+        let view = view_of(&hub_replica).await;
         assert_eq!(
-            authority::sequence(
-                &hub_replica.engine,
-                &mut conn,
-                &hub_replica.ctx,
-                &mut hub_replica.writer.local(),
-                &enroll(&old_kit, "device-old-kit"),
-                NOW_MS,
-            )
-            .await
-            .expect("sequence"),
-            Err(ProposalRejection::NotAdmin)
+            view.recovery_admin_key,
+            new_kit.public_key(),
+            "the installed key recovers"
         );
-        drop(conn);
-        sequence_here(&mut hub_replica, &enroll(&new_kit, "device-new-kit")).await;
+        assert_eq!(
+            view.kit_admin_key,
+            old_kit.public_key(),
+            "a recovery key never replaces the printed kit"
+        );
+        sequence_here(&mut hub_replica, &enroll(&old_kit, "device-old-kit", 43)).await;
         let view = view_of(&hub_replica).await;
         authority::forget_recovery_seed(&keys, VAULT_ID, &view).expect("save the active kit");
         assert_eq!(

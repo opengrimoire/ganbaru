@@ -178,7 +178,8 @@ impl Sealing<'_, '_, '_> {
 /// Waiting operations whose writer's previous operation is applied, that are within their
 /// writer's cutoff, whose writer's device the selected chain enrolls, and whose authorization
 /// revision a stored chain reaches. A device a reselection leaves unenrolled keeps what applied
-/// and its later operations wait until a selected chain enrolls it again.
+/// and its later operations wait until a selected chain enrolls it again; the row changes of a
+/// device the selection holds for data wait until it releases the device.
 async fn candidates(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -194,18 +195,21 @@ async fn candidates(
             AND EXISTS (
                 SELECT 1 FROM sync_devices d
                 WHERE d.space_id = w.space_id AND d.device_id = w.device_id
+                    AND (d.held = 0 OR o.kind <> ?)
             )
          ORDER BY o.clock, o.writer_id",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(seq_i64(revision)?)
+    .bind(i64::from(OperationKind::Changes.as_u8()))
     .fetch_all(&mut *conn)
     .await?;
     rows.iter().map(candidate_from_row).collect()
 }
 
 /// The candidate `seq` of `writer`, when it is stored, not held, within the writer's cutoff,
-/// of an enrolled device, and sealed against a reachable revision. A small envelope is read
+/// of an enrolled device that is not held for data or not a row change, and sealed against a
+/// reachable revision. A small envelope is read
 /// with it, since the candidate usually applies next.
 async fn writer_candidate(
     conn: &mut SqliteConnection,
@@ -227,6 +231,7 @@ async fn writer_candidate(
                         OR NOT EXISTS (
                             SELECT 1 FROM sync_devices d
                             WHERE d.space_id = w.space_id AND d.device_id = w.device_id
+                                AND (d.held = 0 OR o.kind <> ?)
                         ))
             )",
     )
@@ -235,6 +240,7 @@ async fn writer_candidate(
     .bind(writer.as_bytes().as_slice())
     .bind(seq_i64(seq)?)
     .bind(seq_i64(revision)?)
+    .bind(i64::from(OperationKind::Changes.as_u8()))
     .fetch_optional(&mut *conn)
     .await?;
     row.as_ref().map(candidate_from_row).transpose()

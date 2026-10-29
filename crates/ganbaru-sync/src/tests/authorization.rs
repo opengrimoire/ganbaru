@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKind, DeviceRole, Digest32, Enroll, Entry,
     Envelope, Handover, Header, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
-    SetRole, SignedProposal,
+    SetRole, SignedProposal, Yield,
 };
 
 use super::block_on;
@@ -252,6 +252,20 @@ async fn assert_devices_replay_the_selected_chain(replica: &mut Replica) {
                 device.1 = role;
                 device.2 = key;
             }
+            // A handover its target's own admin key does not sign is a kit or recovery one,
+            // which leaves no admin but the target.
+            Entry::Handover(handover) => {
+                let author = record.proposal.proposal.author.as_bytes().to_vec();
+                let target = &handover.new_anchor_device_id;
+                if expected[target].2.as_ref() != Some(&author) {
+                    for (device_id, device) in &mut expected {
+                        if device_id != target && device.4.is_none() {
+                            device.1 = "member".to_owned();
+                            device.2 = None;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -453,7 +467,7 @@ fn entries_are_taken_only_from_the_anchor_and_unknown_kinds_are_kept_but_ignored
 }
 
 #[test]
-fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_hash() {
+fn concurrent_takes_freeze_the_old_epoch_until_the_kit_supersedes_it() {
     block_on(async {
         let mut hub = Replica::anchor(0, 41).await;
         for index in [20, 21] {
@@ -481,12 +495,6 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
             ops.push(bytes);
             handovers.push((record, ops));
         }
-        let winner = handovers
-            .iter()
-            .min_by_key(|(record, _)| record.hash())
-            .map(|(record, _)| record.anchor_device_id.clone())
-            .unwrap();
-
         let mut observers = vec![Replica::new(2, 41).await, Replica::new(3, 41).await];
         for (position, observer) in observers.iter_mut().enumerate() {
             observer.pull(&mut hub).await;
@@ -501,18 +509,43 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
         }
         hub.apply_all().await.unwrap();
 
-        let selected = view(&mut hub).await;
-        assert_eq!(selected.epoch, 1);
-        assert_eq!(selected.revision, continued + 1);
-        assert_eq!(selected.anchor_device_id, winner);
+        // Two takes out of one epoch instance contest it: it freezes at their shared point and
+        // the old anchor's later entry is past the freeze.
+        let frozen = view(&mut hub).await;
+        assert_eq!(
+            (frozen.epoch, frozen.revision, frozen.frozen_at),
+            (0, continued, Some(continued))
+        );
+        assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
         assert!(
-            !selected
+            !frozen
                 .devices
                 .iter()
                 .any(|device| device.device_id == device_id(22)),
-            "the old epoch's entry at revision {superseded} is superseded"
+            "the old epoch's entry at revision {superseded} is past the freeze"
         );
         for observer in &mut observers {
+            assert_eq!(view(observer).await, frozen);
+        }
+
+        // The kit's handover from the freeze point pins it and demotes both takers.
+        let kit = hub.handover_proposal(&recovery_admin(&person())).await;
+        let revision = hub.seal_handover(&kit, None).await.unwrap().unwrap();
+        let selected = view(&mut hub).await;
+        assert_eq!(
+            (selected.epoch, selected.revision, selected.frozen_at),
+            (1, revision, None)
+        );
+        assert_eq!(selected.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert!(
+            selected
+                .devices
+                .iter()
+                .filter(|device| device.device_id != ANCHOR_DEVICE_ID)
+                .all(|device| device.role == DeviceRole::Member)
+        );
+        for observer in &mut observers {
+            observer.pull(&mut hub).await;
             assert_eq!(view(observer).await, selected);
             assert_devices_replay_the_selected_chain(observer).await;
         }
@@ -522,16 +555,7 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
                 .fetch_one(&mut hub.conn)
                 .await
                 .unwrap();
-        assert_eq!(
-            unselected, 2,
-            "the losing handover and the superseded enrollment"
-        );
-        assert_eq!(
-            hub.sequence(enroll_entry(&person(), 23, DeviceRole::Member))
-                .await
-                .unwrap(),
-            Err(ProposalRejection::NotAnchor)
-        );
+        assert_eq!(unselected, 3, "both takes and the superseded enrollment");
     });
 }
 
@@ -616,7 +640,7 @@ fn the_named_admin_desktop_seals_a_handover_from_the_head_it_continues() {
 }
 
 #[test]
-fn an_anchors_two_handovers_from_one_head_freeze_it_until_an_admin_forces_a_handover() {
+fn two_takes_from_one_head_freeze_it_and_refuse_a_third_until_the_kit_recovers() {
     block_on(async {
         let mut hub = Replica::anchor(0, 44).await;
         for index in [20, 21, 22] {
@@ -629,13 +653,11 @@ fn an_anchors_two_handovers_from_one_head_freeze_it_until_an_admin_forces_a_hand
             replica.pull(&mut hub).await;
         }
         let (_, point, _) = head(&mut hub).await;
-        let anchor = anchor_admin(&person());
 
-        // The anchor key signs a handover to each of two devices, which seal them unaware of
-        // each other.
-        let to_first = first.handover_proposal(&anchor).await;
+        // Two admins take the anchor from the same head, unaware of each other.
+        let to_first = first.handover_proposal(&device_admin(20)).await;
         first.seal_handover(&to_first, None).await.unwrap().unwrap();
-        let to_second = second.handover_proposal(&anchor).await;
+        let to_second = second.handover_proposal(&device_admin(21)).await;
         second
             .seal_handover(&to_second, None)
             .await
@@ -646,24 +668,24 @@ fn an_anchors_two_handovers_from_one_head_freeze_it_until_an_admin_forces_a_hand
         let frozen = view(&mut hub).await;
         assert_eq!((frozen.revision, frozen.frozen_at), (point, Some(point)));
         assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
-        assert_eq!(
+        assert_ne!(
             hub.sequence(enroll_entry(&person(), 23, DeviceRole::Member))
                 .await
                 .unwrap(),
-            Err(ProposalRejection::EpochFrozen)
+            Ok(point + 1)
         );
 
-        // A device that knows one handover from the point refuses another the same key signed.
+        // A device that knows the contest refuses to add a third take to it.
         third.pull(&mut hub).await;
         assert_eq!(view(&mut third).await, frozen);
-        let to_third = third.handover_proposal(&anchor).await;
+        let to_third = third.handover_proposal(&device_admin(22)).await;
         assert_eq!(
             third.seal_handover(&to_third, None).await.unwrap(),
             Err(ProposalRejection::HandoverConflict)
         );
 
-        // An admin's forced handover at the point recovers the space.
-        let forced = third.handover_proposal(&device_admin(22)).await;
+        // The kit's handover at the point recovers the space.
+        let forced = third.handover_proposal(&recovery_admin(&person())).await;
         third.seal_handover(&forced, None).await.unwrap().unwrap();
         let recovered = view(&mut third).await;
         assert_eq!(
@@ -676,7 +698,7 @@ fn an_anchors_two_handovers_from_one_head_freeze_it_until_an_admin_forces_a_hand
 }
 
 #[test]
-fn a_removal_of_the_anchor_that_one_of_its_two_targets_sealed_survives_the_freeze() {
+fn a_removal_of_the_anchor_under_one_of_two_takes_stands_once_the_kit_continues_it() {
     block_on(async {
         let mut hub = Replica::anchor(0, 45).await;
         for index in [20, 21, 22] {
@@ -690,13 +712,12 @@ fn a_removal_of_the_anchor_that_one_of_its_two_targets_sealed_survives_the_freez
             replica.pull(&mut hub).await;
         }
         let (_, point, _) = head(&mut hub).await;
-        let anchor = anchor_admin(&person());
 
-        // Both targets act under the handovers the anchor key signed to each: the first
-        // removes the old anchor, the second enrolls a device.
-        let to_first = first.handover_proposal(&anchor).await;
+        // Both takers act under their takes: the first removes the old anchor, the second
+        // enrolls a device.
+        let to_first = first.handover_proposal(&device_admin(20)).await;
         first.seal_handover(&to_first, None).await.unwrap().unwrap();
-        let to_second = second.handover_proposal(&anchor).await;
+        let to_second = second.handover_proposal(&device_admin(21)).await;
         second
             .seal_handover(&to_second, None)
             .await
@@ -719,31 +740,35 @@ fn a_removal_of_the_anchor_that_one_of_its_two_targets_sealed_survives_the_freez
         // The old anchor keeps writing past the cutoff the removal sealed.
         tag(&mut hub, "tag-after").await;
 
-        for from in [&mut hub, &mut first, &mut second] {
+        for from in [&mut first, &mut second, &mut hub] {
             third.pull(from).await;
         }
         let frozen = view(&mut third).await;
         assert_eq!((frozen.revision, frozen.frozen_at), (point, Some(point)));
-        assert_eq!(frozen.anchor_device_id, "", "the removal vacates the slot");
-        assert!(matches!(
+        assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert_eq!(
             removed_revision(&mut third, ANCHOR_DEVICE_ID).await,
-            Some(Some(_))
-        ));
+            Some(None),
+            "a removal on a contested branch is not effective"
+        );
         assert_eq!(removed_revision(&mut third, &device_id(23)).await, None);
+        // It holds the old anchor for data instead: its later write is stored, not applied.
         assert_eq!(tags(&mut third).await, vec!["tag-before".to_owned()]);
 
-        // An admin's forced handover at the point still recovers the space.
-        let forced = third.handover_proposal(&device_admin(22)).await;
-        third.seal_handover(&forced, None).await.unwrap().unwrap();
+        // The kit's handover continuing the first taker's branch keeps its removal.
+        let forced = first.handover_proposal(&recovery_admin(&person())).await;
+        first.seal_handover(&forced, None).await.unwrap().unwrap();
+        third.pull(&mut first).await;
         let recovered = view(&mut third).await;
         assert_eq!(
             (recovered.anchor_device_id.as_str(), recovered.frozen_at),
-            (device_id(22).as_str(), None)
+            (device_id(20).as_str(), None)
         );
         assert!(matches!(
             removed_revision(&mut third, ANCHOR_DEVICE_ID).await,
             Some(Some(_))
         ));
+        assert_eq!(removed_revision(&mut third, &device_id(23)).await, None);
         assert_eq!(tags(&mut third).await, vec!["tag-before".to_owned()]);
     });
 }
@@ -929,7 +954,7 @@ async fn tags(replica: &mut Replica) -> Vec<String> {
 }
 
 #[test]
-fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_arrive_in() {
+fn two_admins_removing_each_other_freeze_until_one_yields_whatever_order_their_chains_arrive_in() {
     block_on(async {
         let mut hub = Replica::anchor(0, 71).await;
         for index in [20, 21] {
@@ -968,11 +993,25 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
             chains.push((record, after[before.len()..].to_vec()));
             shared.extend(before);
         }
-        let (winner, loser) = if chains[0].0.hash() < chains[1].0.hash() {
-            (20, 21)
-        } else {
-            (21, 20)
-        };
+
+        // Admin 21 gives way to admin 20's take on its own branch.
+        let (winner, loser) = (20, 21);
+        let loser_replica = &mut contenders[1];
+        let before = loser_replica.own_ops().await;
+        let concession = proposal(
+            loser_replica.ctx.space,
+            &device_admin(loser),
+            loser_replica.now_ms,
+            Entry::Yield(Yield {
+                handover_hash: chains[0].0.hash(),
+            }),
+        );
+        loser_replica
+            .sequence_signed(&concession)
+            .await
+            .unwrap()
+            .unwrap();
+        let yielded = loser_replica.own_ops().await[before.len()..].to_vec();
 
         let mut observers = vec![Replica::new(2, 71).await, Replica::new(3, 71).await];
         for (position, observer) in observers.iter_mut().enumerate() {
@@ -984,12 +1023,28 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
                 observer.receive(ops).await;
                 observer.apply_all().await.unwrap();
             }
+            // Both takes continue the same head, so the old epoch freezes there and holds both
+            // admins, each of which a take removes.
+            let frozen = view(observer).await;
+            assert_eq!(frozen.anchor_device_id, ANCHOR_DEVICE_ID);
+            assert!(frozen.frozen_at.is_some());
+            for index in [winner, loser] {
+                assert!(held(observer, index).await, "device {index} is held");
+            }
         }
 
+        for observer in &mut observers {
+            assert_eq!(
+                observer.receive(&yielded).await,
+                vec![STORED; yielded.len()]
+            );
+            observer.apply_all().await.unwrap();
+        }
         let expected = settled(&mut observers[0]).await;
         assert_eq!(settled(&mut observers[1]).await, expected);
         let selected = view(&mut observers[0]).await;
         assert_eq!(selected.anchor_device_id, device_id(winner));
+        assert_eq!(selected.frozen_at, None);
         let removed = |index: usize| {
             selected
                 .devices
@@ -1001,10 +1056,16 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
         assert!(removed(loser).is_some());
         assert_eq!(removed(winner), None);
         let unselected = expected.1.iter().filter(|entry| entry.2 == 0).count();
-        assert_eq!(unselected, 2, "the losing handover and its removal");
+        assert_eq!(
+            unselected, 3,
+            "the yielded handover, its removal, and the yield"
+        );
         for observer in &mut observers {
             assert_eq!(view(observer).await, selected);
             assert_devices_replay_the_selected_chain(observer).await;
+            for index in [winner, loser] {
+                assert!(!held(observer, index).await, "device {index} is released");
+            }
             assert_eq!(
                 tags(observer).await,
                 vec![
@@ -1020,6 +1081,14 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
             );
         }
     });
+}
+
+async fn held(replica: &mut Replica, index: usize) -> bool {
+    replica
+        .engine
+        .device_held(&mut replica.conn, &replica.ctx, &device_id(index))
+        .await
+        .unwrap()
 }
 
 /// Devices of a space whose epoch 0 goes on after admin 20 took the anchor over in epoch 1.

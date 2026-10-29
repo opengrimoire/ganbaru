@@ -117,6 +117,7 @@ fn admission_with(fingerprint: &str, removed: bool) -> MemberAdmission {
         catch_up: None,
         charter: [8; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
+        kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
         devices: vec![EnrolledDevice {
             device_id: PHONE.to_string(),
             device_key: DevicePublicKey::from_bytes([3; 32]),

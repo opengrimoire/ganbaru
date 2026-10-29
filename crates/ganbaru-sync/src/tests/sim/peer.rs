@@ -29,7 +29,7 @@ use super::super::authorization::{head, view};
 use super::super::block_on;
 use super::super::replica::{
     ENROLLED_DEVICES, Replica, START_MS, anchor_admin, connection_from, device_admin, device_id,
-    pair, person, proposal, quoted,
+    pair, person, proposal, quoted, recovery_admin,
 };
 use super::{
     DEFAULT_SEEDS, RECOVERY_FAILPOINTS, Rng, SEED_VARIABLE, SEQUENCE_FAILPOINTS, SHARDS, STEPS,
@@ -911,7 +911,17 @@ impl PeerSim {
         node: usize,
         old_anchor_vector: Option<VersionVector>,
     ) -> bool {
-        let admin = admin_key(node);
+        self.seal_handover_to(node, &admin_key(node), old_anchor_vector)
+            .await
+    }
+
+    /// `node` seals a handover of the anchor to itself that `admin` signs, from its own head.
+    async fn seal_handover_to(
+        &mut self,
+        node: usize,
+        admin: &AdminKeyPair,
+        old_anchor_vector: Option<VersionVector>,
+    ) -> bool {
         let Sim {
             rng, replicas, hub, ..
         } = &mut self.sim;
@@ -920,7 +930,7 @@ impl PeerSim {
         } else {
             &mut replicas[node]
         };
-        let signed = replica.handover_proposal(&admin).await;
+        let signed = replica.handover_proposal(admin).await;
         let result = crashing(
             rng,
             replica,
@@ -1280,9 +1290,14 @@ impl PeerSim {
                     .or(admins.first().copied());
                 if let Some(taker) = taker {
                     self.meet(taker, anchor, true).await;
+                    // Only the printed kit recovers a frozen epoch: a take out of it would join
+                    // the contest.
                     let stored = self.node(anchor).stored_vector().await;
-                    if self.seal_self_handover(taker, Some(stored)).await {
-                        self.count("handover of a frozen epoch");
+                    if self
+                        .seal_handover_to(taker, &recovery_admin(&person()), Some(stored))
+                        .await
+                    {
+                        self.count("kit recovery of a frozen epoch");
                     }
                     continue;
                 }

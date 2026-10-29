@@ -13,7 +13,7 @@ use crate::{
     AdminKeyPair, AuthorizationError, AuthorizationRecord, CharterError, Content, DeviceRole,
     Enroll, Entry, Envelope, Handover, LateResolution, LateRow, OperationError, OperationKind,
     PayloadError, Proposal, ProposalRejection, Remove, ResolveLate, Sequencing, SignedCharter,
-    SignedProposal, TableId, sign_proposal,
+    SignedProposal, TableId, Yield, sign_proposal,
 };
 use ganbaru_contacts::PersonKeyPair;
 use std::collections::BTreeSet;
@@ -309,6 +309,36 @@ fn removal_cutoffs_are_ascending_nonzero_and_bounded() {
 }
 
 #[test]
+fn a_yield_names_one_handover_and_round_trips_with_empty_sequencing() {
+    let entry = Entry::Yield(Yield {
+        handover_hash: [0x5a; 32],
+    });
+    assert_eq!(entry.kind(), 5);
+    let signed = proposal(entry.clone(), 0);
+    let decoded = SignedProposal::decode(&signed.encode()).unwrap();
+    assert_eq!(decoded, signed);
+    assert_eq!(decoded.encode(), signed.encode());
+
+    let mut give_way = record(entry.clone(), Sequencing::Empty, 1);
+    give_way.previous_entry_hash = golden_charter().hash();
+    assert!(give_way.validate().is_ok());
+    let decoded = AuthorizationRecord::decode(&give_way.encode()).unwrap();
+    assert_eq!(decoded, give_way);
+    assert_eq!(decoded.encode(), give_way.encode());
+    assert!(
+        record(
+            entry,
+            Sequencing::Handover {
+                old_anchor_vector: None
+            },
+            1
+        )
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
 fn unknown_entry_kinds_round_trip_byte_for_byte() {
     let entry = Entry::Unknown {
         kind: 0xc8,
@@ -329,7 +359,7 @@ fn unknown_entry_kinds_round_trip_byte_for_byte() {
     assert_eq!(decoded.seal(&writer_key()).unwrap().bytes(), sealed.bytes());
     assert_eq!(future.hash(), entry_hash(envelope.body));
 
-    for kind in 0..=4 {
+    for kind in 0..=5 {
         let entry = Entry::Unknown {
             kind,
             bytes: Vec::new(),

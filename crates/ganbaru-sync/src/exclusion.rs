@@ -895,11 +895,16 @@ async fn displaced_unnamed(conn: &mut SqliteConnection, space: SpaceId) -> SyncR
 /// Records the authorization entries that excluded operations carry, which never apply. Chain
 /// selection has to see every entry a replica stores whatever became of its carrier: otherwise
 /// two replicas that learn of competing chains in different orders each keep the first, since
-/// its removals exclude the other chain's carrier. Returns whether any entry was new.
+/// its removals exclude the other chain's carrier. The same holds for entries whose operations
+/// wait: a yield a device held for data seals after writing waits behind its held row changes,
+/// and a kit handover sealed against a revision past a frozen point waits until that revision is
+/// reachable, yet each has to resolve the contest that keeps it waiting. Returns whether any
+/// entry was new.
 async fn record_excluded_entries(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
     let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
         "SELECT o.writer_id, o.seq, o.envelope FROM sync_ops o
-         WHERE o.space_id = ?1 AND o.kind = ?2 AND o.excluded_revision IS NOT NULL
+         WHERE o.space_id = ?1 AND o.kind = ?2
+            AND (o.excluded_revision IS NOT NULL OR o.state = 'waiting')
             AND NOT EXISTS (
                 SELECT 1 FROM sync_auth_entries e
                 WHERE e.space_id = o.space_id AND e.writer_id = o.writer_id AND e.seq = o.seq

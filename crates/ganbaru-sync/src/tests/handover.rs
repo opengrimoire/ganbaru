@@ -1,13 +1,14 @@
-//! Handover selection at a fork point: the trust order between a kit-lineage recovery
-//! handover, the anchor's continuation, and a device admin handover, and the vetoes the
-//! continuation's revocations cast. Each case selects the same head whatever order its entries
-//! arrive in.
+//! Anchor handover selection: takes, contests between handovers out of one epoch instance,
+//! objections, yields, kit pins and demotions, rotation vetoes, installed recovery keys, and the
+//! devices held for data while an instance is frozen. Each case selects the same head whatever
+//! order its entries arrive in, and most run twice: once with the attacker's records under a
+//! writer whose fork freezes its epoch, once under a fresh writer id.
 
 use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, DeviceRole, Digest32, Entry, Handover, Remove, Sequencing,
-    SetRole, SignedCharter, SpaceId, WriterId,
+    SetRole, SignedCharter, SpaceId, WriterId, Yield,
 };
 
 use super::authorization::admin_entry;
@@ -49,23 +50,7 @@ impl Log {
     /// The charter, then the enrollment of [`FIRST`] and [`SECOND`] as admins and [`MEMBER`]
     /// as a member. Returns the log and its head.
     fn new() -> (Self, At) {
-        let space = SpaceId::from_bytes([41; 16]);
-        let charter = test_charter(&person(), space);
-        let root = At {
-            epoch: 0,
-            revision: 0,
-            hash: charter.hash(),
-            anchor: ANCHOR_DEVICE_ID.to_owned(),
-        };
-        let mut log = Self {
-            space,
-            charter,
-            records: Vec::new(),
-            writers: Vec::new(),
-            writer: writer(0),
-            freezes: BTreeMap::new(),
-            clock: START_MS,
-        };
+        let (mut log, root) = Self::charter();
         let anchor = anchor_admin(&person());
         let first = log.append(&root, &anchor, admin_entry(FIRST));
         let second = log.append(&first, &anchor, admin_entry(SECOND));
@@ -75,6 +60,38 @@ impl Log {
             enroll_entry(&person(), MEMBER, DeviceRole::Member),
         );
         (log, head)
+    }
+
+    /// The charter, then the enrollment of [`MEMBER`] only: the anchor is the single admin.
+    fn single() -> (Self, At) {
+        let (mut log, root) = Self::charter();
+        let head = log.append(
+            &root,
+            &anchor_admin(&person()),
+            enroll_entry(&person(), MEMBER, DeviceRole::Member),
+        );
+        (log, head)
+    }
+
+    fn charter() -> (Self, At) {
+        let space = SpaceId::from_bytes([41; 16]);
+        let charter = test_charter(&person(), space);
+        let root = At {
+            epoch: 0,
+            revision: 0,
+            hash: charter.hash(),
+            anchor: ANCHOR_DEVICE_ID.to_owned(),
+        };
+        let log = Self {
+            space,
+            charter,
+            records: Vec::new(),
+            writers: Vec::new(),
+            writer: writer(0),
+            freezes: BTreeMap::new(),
+            clock: START_MS,
+        };
+        (log, root)
     }
 
     fn record(
@@ -115,12 +132,6 @@ impl Log {
         next
     }
 
-    /// Drops the last record.
-    fn pop(&mut self) {
-        self.records.pop();
-        self.writers.pop();
-    }
-
     /// An entry `author` signed that the anchor of `at` sequences after it.
     fn append(&mut self, at: &At, author: &AdminKeyPair, entry: Entry) -> At {
         self.record(at, author, entry, at.epoch, at.anchor.clone())
@@ -138,6 +149,43 @@ impl Log {
         self.record(at, author, entry, epoch, target.to_owned())
     }
 
+    /// The take of admin desktop `device`, signed by its own admin key, from `at`.
+    fn take(&mut self, at: &At, device: usize) -> At {
+        self.handover(at, &device_admin(device), &device_id(device))
+    }
+
+    /// The charter anchor's take of its own device from `at`.
+    fn self_handover(&mut self, at: &At) -> At {
+        self.handover(at, &anchor_admin(&person()), ANCHOR_DEVICE_ID)
+    }
+
+    /// A handover the charter's kit key signs to `target` from `at`.
+    fn kit(&mut self, at: &At, target: &str) -> At {
+        self.handover(at, &recovery_admin(&person()), target)
+    }
+
+    /// A yield `author` signs to `handover`, sequenced after `at`.
+    fn yield_to(&mut self, at: &At, author: &AdminKeyPair, handover: &At) -> At {
+        self.append(
+            at,
+            author,
+            Entry::Yield(Yield {
+                handover_hash: handover.hash,
+            }),
+        )
+    }
+
+    /// The attacker's later records: under a fresh writer id with `fresh`, otherwise under the
+    /// anchor's own writer, whose fork freezes the anchor's epoch at `fork`.
+    fn attacker(&mut self, fresh: bool, fork: &At) {
+        if fresh {
+            self.writer = writer(9);
+        } else {
+            self.freezes
+                .insert(ANCHOR_DEVICE_ID.to_owned(), vec![fork.revision]);
+        }
+    }
+
     /// What the records in `order` select.
     fn select(&self, order: &[usize]) -> SelectedHead {
         let records: Vec<(WriterId, AuthorizationRecord)> = order
@@ -152,6 +200,7 @@ impl Log {
     fn assert_selected(&self, expected: &At) -> SelectedHead {
         let selected = self.assert_agreed();
         assert_eq!(selected.head, expected.hash);
+        assert_eq!(selected.anchor, expected.anchor);
         selected
     }
 
@@ -182,13 +231,19 @@ impl Log {
         selected.unwrap()
     }
 
-    /// [`Self::assert_selected`] for a head its epoch is not frozen at. Returns the reachable
-    /// revision.
-    fn assert_selects(&self, expected: &At) -> u64 {
+    /// [`Self::assert_selected`] for a head whose instance is not frozen and holds nobody.
+    fn assert_selects(&self, expected: &At) -> SelectedHead {
         let selected = self.assert_selected(expected);
-        assert_eq!(selected.anchor, expected.anchor);
         assert_eq!(selected.frozen_at, None);
-        selected.reachable
+        assert!(selected.held.is_empty(), "held {:?}", selected.held);
+        selected
+    }
+
+    /// [`Self::assert_selected`] for a head its instance is frozen at.
+    fn assert_frozen(&self, expected: &At) -> SelectedHead {
+        let selected = self.assert_selected(expected);
+        assert_eq!(selected.frozen_at, Some(expected.revision));
+        selected
     }
 }
 
@@ -203,10 +258,10 @@ fn remove(device: &str) -> Entry {
     })
 }
 
-fn demote(device: &str) -> Entry {
+fn promote(device: usize) -> Entry {
     Entry::SetRole(SetRole::Device {
-        device_id: device.to_owned(),
-        role: DeviceRole::Member,
+        device_id: device_id(device),
+        role: DeviceRole::Admin(device_admin(device).public_key()),
     })
 }
 
@@ -221,487 +276,27 @@ fn other_recovery(seed: u8) -> AdminKeyPair {
     AdminKeyPair::from_seed(&[seed; 32]).unwrap()
 }
 
-/// `admin` hands the anchor to its own device from `at` and then again `count - 1` times.
-fn self_handovers(log: &mut Log, at: &At, admin: &AdminKeyPair, device: &str, count: usize) -> At {
-    let mut head = at.clone();
-    for _ in 0..count {
-        head = log.handover(&head, admin, device);
-    }
-    head
+/// Whether `device` is enrolled and live at the selected head.
+fn live(selected: &SelectedHead, device: &str) -> bool {
+    selected.devices.get(device) == Some(&None)
 }
 
-#[test]
-fn a_stale_admin_the_continuation_removes_or_demotes_loses_its_self_handovers() {
-    for revoke in [remove, demote] {
-        let (mut log, base) = Log::new();
-        let anchor = anchor_admin(&person());
-        let continuation = log.append(&base, &anchor, revoke(&device_id(FIRST)));
-        let stale = self_handovers(&mut log, &base, &device_admin(FIRST), &device_id(FIRST), 5);
-        assert_eq!(stale.epoch, 5);
-        let reachable = log.assert_selects(&continuation);
-        assert_eq!(
-            reachable, stale.revision,
-            "a vetoed chain still counts for readiness"
-        );
-    }
+/// Whether `device` is enrolled and removed at the selected head.
+fn removed(selected: &SelectedHead, device: &str) -> bool {
+    selected.devices.get(device).is_some_and(Option::is_some)
 }
 
-#[test]
-fn a_demotion_in_a_later_epoch_after_a_planned_handover_still_vetoes_a_stale_admin() {
-    let (mut log, base) = Log::new();
-    let anchor = anchor_admin(&person());
-    let next = log.append(
-        &base,
-        &anchor,
-        enroll_entry(&person(), 4, DeviceRole::Member),
-    );
-    let planned = log.handover(&next, &anchor, &device_id(SECOND));
-    let demoted = log.append(&planned, &device_admin(SECOND), demote(&device_id(FIRST)));
-    self_handovers(&mut log, &base, &device_admin(FIRST), &device_id(FIRST), 5);
-    log.assert_selects(&demoted);
-}
-
-#[test]
-fn a_handover_to_a_device_the_continuation_removes_is_vetoed() {
-    let (mut log, base) = Log::new();
-    let continuation = log.append(&base, &anchor_admin(&person()), remove(&device_id(FIRST)));
-    log.handover(&base, &device_admin(SECOND), &device_id(FIRST));
-    log.assert_selects(&continuation);
-}
-
-#[test]
-fn sibling_admin_handovers_do_not_veto_each_other() {
-    let (mut log, base) = Log::new();
-    let first = log.handover(&base, &device_admin(FIRST), &device_id(FIRST));
-    let second = log.handover(&base, &device_admin(SECOND), &device_id(SECOND));
-    let first = log.append(&first, &device_admin(FIRST), remove(&device_id(SECOND)));
-    let second = log.append(&second, &device_admin(SECOND), remove(&device_id(FIRST)));
-    // Equal epochs: the lower handover hash opens the selected epoch.
-    let (low, high) = (
-        &log.records[log.records.len() - 4],
-        &log.records[log.records.len() - 3],
-    );
-    let expected = if low.hash() < high.hash() {
-        first
-    } else {
-        second
-    };
-    log.assert_selects(&expected);
-}
-
-#[test]
-fn a_stolen_anchors_admin_signed_rotation_does_not_veto_a_kit_handover() {
-    let (mut log, base) = Log::new();
-    let stolen = anchor_admin(&person());
-    let rotated = log.append(&base, &stolen, rotate_recovery(&other_recovery(90)));
-    log.append(
-        &rotated,
-        &stolen,
-        enroll_entry(&person(), 4, DeviceRole::Member),
-    );
-    let kit = log.handover(&base, &recovery_admin(&person()), &device_id(MEMBER));
-    log.assert_selects(&kit);
-}
-
-#[test]
-fn a_stolen_anchor_vetoes_an_admin_forced_handover_by_removing_the_forcer() {
-    let (mut log, base) = Log::new();
-    let continuation = log.append(&base, &anchor_admin(&person()), remove(&device_id(SECOND)));
-    log.handover(&base, &device_admin(SECOND), &device_id(SECOND));
-    log.assert_selects(&continuation);
-}
-
-#[test]
-fn a_stolen_anchor_removing_the_kit_target_does_not_veto_the_kit_handover() {
-    let (mut log, base) = Log::new();
-    log.append(&base, &anchor_admin(&person()), remove(&device_id(MEMBER)));
-    let kit = log.handover(&base, &recovery_admin(&person()), &device_id(MEMBER));
-    log.assert_selects(&kit);
-}
-
-#[test]
-fn a_stolen_anchors_self_handovers_from_below_the_kit_fork_point_lose_on_recovery_count() {
-    let (mut log, base) = Log::new();
-    let stolen = anchor_admin(&person());
-    let next = log.append(
-        &base,
-        &stolen,
-        enroll_entry(&person(), 4, DeviceRole::Member),
-    );
-    let kit = log.handover(&next, &recovery_admin(&person()), &device_id(MEMBER));
-    self_handovers(&mut log, &base, &stolen, ANCHOR_DEVICE_ID, 4);
-    log.assert_selects(&kit);
-}
-
-#[test]
-fn a_stolen_anchors_handover_inside_the_kit_epoch_is_vetoed_once_its_removal_is_stored() {
-    let (mut log, base) = Log::new();
-    let stolen = anchor_admin(&person());
-    let recovery = recovery_admin(&person());
-    let kit = log.handover(&base, &recovery, &device_id(MEMBER));
-    let taken = log.handover(&kit, &stolen, ANCHOR_DEVICE_ID);
-    log.assert_selects(&taken);
-    let removed = log.append(&kit, &recovery, remove(ANCHOR_DEVICE_ID));
-    log.assert_selects(&removed);
-}
-
-#[test]
-fn a_recovery_key_an_admin_installed_carries_no_kit_precedence() {
-    let (mut log, base) = Log::new();
-    let stolen = anchor_admin(&person());
-    let installed = other_recovery(91);
-    let rotated = log.append(&base, &stolen, rotate_recovery(&installed));
-    let continuation = log.append(&rotated, &stolen, remove(&device_id(MEMBER)));
-    log.handover(&rotated, &installed, &device_id(MEMBER));
-    log.assert_selects(&continuation);
-}
-
-#[test]
-fn a_forced_handover_after_a_loss_beats_unseen_continuation_unless_it_removes_the_forcer() {
-    let (mut log, base) = Log::new();
-    let anchor = anchor_admin(&person());
-    let lost = log.append(
-        &base,
-        &anchor,
-        enroll_entry(&person(), 4, DeviceRole::Member),
-    );
-    let later = log.append(
-        &lost,
-        &anchor,
-        enroll_entry(&person(), 5, DeviceRole::Member),
-    );
-    let forced = log.handover(&base, &device_admin(SECOND), &device_id(SECOND));
-    log.assert_selects(&forced);
-    let removal = log.append(&later, &anchor, remove(&device_id(SECOND)));
-    log.assert_selects(&removal);
-}
-
-#[test]
-fn a_restored_anchors_self_handover_beats_its_own_lost_continuation() {
-    let (mut log, base) = Log::new();
-    let anchor = anchor_admin(&person());
-    let lost = log.append(
-        &base,
-        &anchor,
-        enroll_entry(&person(), 4, DeviceRole::Member),
-    );
-    log.append(&lost, &anchor, remove(&device_id(FIRST)));
-    let restored = log.handover(&base, &anchor, ANCHOR_DEVICE_ID);
-    log.assert_selects(&restored);
-}
-
-#[test]
-fn a_leaked_old_kit_is_vetoed_before_its_rotation_and_refused_after_it() {
-    let (mut log, base) = Log::new();
-    let leaked = recovery_admin(&person());
-    let current = other_recovery(92);
-    let rotated = log.append(&base, &leaked, rotate_recovery(&current));
-    log.handover(&base, &leaked, &device_id(MEMBER));
-    log.assert_selects(&rotated);
-    // Past the rotation the old key is no admin, so its handover never enters the tree.
-    log.handover(&rotated, &leaked, &device_id(MEMBER));
-    log.assert_selects(&rotated);
-    // The rotated key is of kit lineage: it overrules the anchor's continuation.
-    log.append(
-        &rotated,
-        &anchor_admin(&person()),
-        remove(&device_id(MEMBER)),
-    );
-    let kit = log.handover(&rotated, &current, &device_id(MEMBER));
-    log.assert_selects(&kit);
-}
-
-#[test]
-fn entries_of_a_frozen_epoch_past_its_freeze_are_no_evidence() {
-    let (mut log, base) = Log::new();
-    log.freezes
-        .insert(ANCHOR_DEVICE_ID.to_owned(), vec![base.revision]);
-    log.append(&base, &anchor_admin(&person()), remove(&device_id(FIRST)));
-    let forced = log.handover(&base, &device_admin(FIRST), &device_id(FIRST));
-    log.assert_selects(&forced);
-}
-
-/// The enrollment of a fourth device after `base`, then the anchor's planned handover to
-/// [`SECOND`] from it. Returns the enrollment and the handover.
-fn planned_handover(log: &mut Log, base: &At) -> (At, At) {
-    let anchor = anchor_admin(&person());
-    let next = log.append(
-        base,
-        &anchor,
-        enroll_entry(&person(), 4, DeviceRole::Member),
-    );
-    let planned = log.handover(&next, &anchor, &device_id(SECOND));
-    (next, planned)
-}
-
-#[test]
-fn a_stale_admin_forking_beside_a_planned_handover_that_revokes_it_is_vetoed() {
-    for revoke in [remove, demote] {
-        let (mut log, base) = Log::new();
-        let (next, planned) = planned_handover(&mut log, &base);
-        let revoked = log.append(&planned, &device_admin(SECOND), revoke(&device_id(FIRST)));
-        let stale = self_handovers(&mut log, &next, &device_admin(FIRST), &device_id(FIRST), 5);
-        assert!(stale.epoch > revoked.epoch);
-        log.assert_selects(&revoked);
-    }
-}
-
-#[test]
-fn a_stale_admin_forking_beside_a_restored_anchors_self_handover_that_removes_it_is_vetoed() {
-    let (mut log, base) = Log::new();
-    let anchor = anchor_admin(&person());
-    let restored = log.handover(&base, &anchor, ANCHOR_DEVICE_ID);
-    let removed = log.append(&restored, &anchor, remove(&device_id(FIRST)));
-    self_handovers(&mut log, &base, &device_admin(FIRST), &device_id(FIRST), 4);
-    log.assert_selects(&removed);
-}
-
-#[test]
-fn a_leaked_old_kit_forking_before_a_planned_handover_that_preceded_its_rotation_is_vetoed() {
-    let (mut log, base) = Log::new();
-    let leaked = recovery_admin(&person());
-    let (next, planned) = planned_handover(&mut log, &base);
-    let rotated = log.append(&planned, &leaked, rotate_recovery(&other_recovery(93)));
-    let kit = log.handover(&next, &leaked, &device_id(MEMBER));
-    log.append(&kit, &leaked, remove(&device_id(SECOND)));
-    log.assert_selects(&rotated);
-}
-
-#[test]
-fn admins_forcing_handovers_after_an_anchor_loss_rank_rather_than_veto_each_other() {
-    let (mut log, base) = Log::new();
-    let first = log.handover(&base, &device_admin(FIRST), &device_id(FIRST));
-    log.append(&first, &device_admin(FIRST), remove(&device_id(SECOND)));
-    let second = self_handovers(
-        &mut log,
-        &base,
-        &device_admin(SECOND),
-        &device_id(SECOND),
-        2,
-    );
-    let second = log.append(&second, &device_admin(SECOND), remove(&device_id(FIRST)));
-    log.assert_selects(&second);
-}
-
-#[test]
-fn a_leaked_old_kit_is_vetoed_by_its_rotation_inside_a_forced_handover_beside_it() {
-    let (mut log, base) = Log::new();
-    let leaked = recovery_admin(&person());
-    let forced = log.handover(&base, &device_admin(SECOND), &device_id(SECOND));
-    let rotated = log.append(&forced, &leaked, rotate_recovery(&other_recovery(94)));
-    let kit = log.handover(&base, &leaked, &device_id(MEMBER));
-    log.append(&kit, &leaked, remove(&device_id(SECOND)));
-    log.assert_selects(&rotated);
-}
-
-/// A planned handover and the head its target reaches.
-struct Handed {
+/// The shared contest: from `next`, where the anchor enrolls device 4, [`SECOND`] takes
+/// (`planned`) and, when asked, removes the anchor; [`FIRST`], standing for a planted admin,
+/// takes from `next` and enrolls 6 (`acted`).
+struct Contest {
     log: Log,
-    /// The head of [`Log::new`].
-    base: At,
-    /// The enrollment the handover continues from.
     next: At,
     planned: At,
-    reached: At,
+    acted: At,
 }
 
-/// The anchor's planned handover to [`SECOND`] and, with `active`, the removal of the old
-/// anchor that [`SECOND`] seals under it. With `fresh` the old anchor's later records come from a
-/// writer of its device it never used; otherwise its fork at the enrollment freezes its epoch
-/// there.
-fn handed(fresh: bool, active: bool) -> Handed {
-    let (mut log, base) = Log::new();
-    let (next, planned) = planned_handover(&mut log, &base);
-    let reached = if active {
-        log.append(&planned, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID))
-    } else {
-        planned.clone()
-    };
-    if fresh {
-        log.writer = writer(9);
-    } else {
-        log.freezes
-            .insert(ANCHOR_DEVICE_ID.to_owned(), vec![next.revision]);
-    }
-    Handed {
-        log,
-        base,
-        next,
-        planned,
-        reached,
-    }
-}
-
-#[test]
-fn an_anchors_revocation_at_its_own_handover_point_is_no_evidence_against_it() {
-    for fresh in [false, true] {
-        for active in [true, false] {
-            let Handed {
-                mut log,
-                next,
-                reached,
-                ..
-            } = handed(fresh, active);
-            let anchor = anchor_admin(&person());
-            log.append(&next, &anchor, remove(&device_id(SECOND)));
-            log.append(&next, &anchor, demote(&device_id(SECOND)));
-            log.assert_selects(&reached);
-        }
-    }
-}
-
-#[test]
-fn an_anchors_harmless_entry_at_its_handover_point_carries_no_later_revocation() {
-    for fresh in [false, true] {
-        for active in [true, false] {
-            let Handed {
-                mut log,
-                next,
-                reached,
-                ..
-            } = handed(fresh, active);
-            let anchor = anchor_admin(&person());
-            let harmless = log.append(
-                &next,
-                &anchor,
-                enroll_entry(&person(), 5, DeviceRole::Member),
-            );
-            log.append(&harmless, &anchor, remove(&device_id(SECOND)));
-            log.assert_selects(&reached);
-        }
-    }
-}
-
-#[test]
-fn an_admin_the_anchor_mints_after_its_handover_point_vetoes_nothing() {
-    for fresh in [false, true] {
-        let Handed {
-            mut log,
-            next,
-            reached,
-            ..
-        } = handed(fresh, true);
-        let minted = log.append(&next, &anchor_admin(&person()), admin_entry(5));
-        log.append(&minted, &device_admin(5), remove(&device_id(SECOND)));
-        log.handover(&minted, &device_admin(5), &device_id(5));
-        log.assert_selects(&reached);
-    }
-}
-
-#[test]
-fn an_anchors_self_handovers_at_its_handover_point_lose_whatever_their_rank() {
-    for fresh in [false, true] {
-        for below_plain in [false, true] {
-            let Handed {
-                mut log,
-                next,
-                reached,
-                ..
-            } = handed(fresh, true);
-            let anchor = anchor_admin(&person());
-            let from = if below_plain {
-                log.append(
-                    &next,
-                    &anchor,
-                    enroll_entry(&person(), 5, DeviceRole::Member),
-                )
-            } else {
-                next.clone()
-            };
-            let taken = self_handovers(&mut log, &from, &anchor, ANCHOR_DEVICE_ID, 3);
-            assert!(taken.epoch > reached.epoch);
-            log.append(&taken, &anchor, remove(&device_id(SECOND)));
-            log.assert_selects(&reached);
-        }
-    }
-}
-
-/// A second planned handover from `next` to [`FIRST`] whose hash ranks it above `planned`.
-fn better_ranked_handover(log: &mut Log, next: &At, planned: &At) -> At {
-    loop {
-        let other = log.handover(next, &anchor_admin(&person()), &device_id(FIRST));
-        if other.hash < planned.hash {
-            return other;
-        }
-        log.pop();
-    }
-}
-
-#[test]
-fn an_anchors_better_ranked_second_handover_yields_to_the_target_that_acted() {
-    for fresh in [false, true] {
-        let Handed {
-            mut log,
-            next,
-            planned,
-            reached,
-            ..
-        } = handed(fresh, true);
-        better_ranked_handover(&mut log, &next, &planned);
-        log.assert_selects(&reached);
-
-        // A better ranked handover whose target acted wins over an idle one as well.
-        let Handed {
-            mut log,
-            next,
-            planned,
-            ..
-        } = handed(fresh, false);
-        let other = better_ranked_handover(&mut log, &next, &planned);
-        let acted = log.append(&other, &device_admin(FIRST), remove(ANCHOR_DEVICE_ID));
-        log.assert_selects(&acted);
-    }
-}
-
-#[test]
-fn an_anchors_equivocation_without_a_lone_active_target_freezes_its_point() {
-    for fresh in [false, true] {
-        for active in [false, true] {
-            let Handed {
-                mut log,
-                next,
-                planned,
-                ..
-            } = handed(fresh, active);
-            let other = better_ranked_handover(&mut log, &next, &planned);
-            if active {
-                log.append(
-                    &other,
-                    &device_admin(FIRST),
-                    enroll_entry(&person(), 6, DeviceRole::Member),
-                );
-            }
-            // Neither handover opens an epoch, and the point stays frozen. The old anchor stays
-            // named there unless the removal its target sealed survives and vacates the slot.
-            let frozen = log.assert_selected(&next);
-            let anchor = if active { "" } else { ANCHOR_DEVICE_ID };
-            assert_eq!(frozen.anchor, anchor);
-            assert_eq!(frozen.frozen_at, Some(next.revision));
-            // An admin's forced handover at the point recovers the space.
-            let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
-            log.assert_selects(&forced);
-        }
-    }
-}
-
-#[test]
-fn an_anchors_self_handovers_from_above_its_handover_point_lose_to_it() {
-    for fresh in [false, true] {
-        for active in [true, false] {
-            let Handed {
-                mut log,
-                base,
-                reached,
-                ..
-            } = handed(fresh, active);
-            let anchor = anchor_admin(&person());
-            let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 3);
-            log.append(&taken, &anchor, remove(&device_id(SECOND)));
-            log.assert_selects(&reached);
-        }
-    }
-    // Without a handover to another device the anchor's self-handovers are its continuation,
-    // which vetoes a forced handover by the admin it removes.
+fn contest(fresh: bool, removes_anchor: bool) -> Contest {
     let (mut log, base) = Log::new();
     let anchor = anchor_admin(&person());
     let next = log.append(
@@ -709,156 +304,39 @@ fn an_anchors_self_handovers_from_above_its_handover_point_lose_to_it() {
         &anchor,
         enroll_entry(&person(), 4, DeviceRole::Member),
     );
-    let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 3);
-    let removal = log.append(&taken, &anchor, remove(&device_id(SECOND)));
-    log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
-    log.assert_selects(&removal);
-}
-
-/// The anchor's equivocation at `next`: its planned handover to [`SECOND`] and a better ranked
-/// one to [`FIRST`]. With `active` each target seals an entry under its handover: [`SECOND`]
-/// the removal of the old anchor in [`handed`], and [`FIRST`] the enrollment of device 6.
-fn equivocation(fresh: bool, active: bool) -> Handed {
-    let mut handed = handed(fresh, active);
-    let other = better_ranked_handover(&mut handed.log, &handed.next, &handed.planned);
-    if active {
-        handed.log.append(
-            &other,
-            &device_admin(FIRST),
-            enroll_entry(&person(), 6, DeviceRole::Member),
-        );
+    let planned = log.take(&next, SECOND);
+    if removes_anchor {
+        log.append(&planned, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
     }
-    handed
-}
-
-#[test]
-fn a_target_the_anchor_enrolls_off_its_handover_point_carries_no_authority() {
-    for fresh in [false, true] {
-        for active in [true, false] {
-            let Handed {
-                mut log,
-                next,
-                reached,
-                ..
-            } = handed(fresh, active);
-            let anchor = anchor_admin(&person());
-            let minted = log.append(&next, &anchor, admin_entry(5));
-            let taken = log.handover(&minted, &anchor, &device_id(5));
-            log.append(&taken, &device_admin(5), remove(&device_id(SECOND)));
-            log.assert_selects(&reached);
-            let selected = log.assert_selected(&reached);
-            assert!(!selected.devices.contains_key(&device_id(5)));
-            let removed = active.then_some(reached.revision);
-            assert_eq!(selected.devices[ANCHOR_DEVICE_ID], removed);
-        }
+    log.attacker(fresh, &next);
+    let other = log.take(&next, FIRST);
+    let acted = log.append(
+        &other,
+        &device_admin(FIRST),
+        enroll_entry(&person(), 6, DeviceRole::Member),
+    );
+    Contest {
+        log,
+        next,
+        planned,
+        acted,
     }
 }
 
-#[test]
-fn a_device_the_anchor_promotes_off_its_handover_point_carries_no_authority() {
-    for fresh in [false, true] {
-        for active in [true, false] {
-            let Handed {
-                mut log,
-                next,
-                reached,
-                ..
-            } = handed(fresh, active);
-            let anchor = anchor_admin(&person());
-            let promoted = log.append(
-                &next,
-                &anchor,
-                Entry::SetRole(SetRole::Device {
-                    device_id: device_id(MEMBER),
-                    role: DeviceRole::Admin(device_admin(MEMBER).public_key()),
-                }),
-            );
-            let taken = log.handover(&promoted, &anchor, &device_id(MEMBER));
-            log.append(&taken, &device_admin(MEMBER), remove(&device_id(SECOND)));
-            log.assert_selects(&reached);
-        }
-    }
-}
-
-#[test]
-fn an_anchors_self_handover_from_an_earlier_point_does_not_move_its_freeze() {
-    for fresh in [false, true] {
-        for active in [false, true] {
-            let Handed {
-                mut log,
-                base,
-                next,
-                ..
-            } = equivocation(fresh, active);
-            let anchor = anchor_admin(&person());
-            let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 3);
-            log.append(&taken, &anchor, remove(&device_id(SECOND)));
-            let frozen = log.assert_selected(&next);
-            assert_eq!(frozen.frozen_at, Some(next.revision));
-        }
-    }
-}
-
-#[test]
-fn an_admins_forced_recovery_sticks_after_the_anchor_tries_to_walk_its_freeze_back() {
-    for fresh in [false, true] {
-        for active in [false, true] {
-            let Handed {
-                mut log,
-                base,
-                next,
-                reached,
-                ..
-            } = equivocation(fresh, active);
-            let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
-            let anchor = anchor_admin(&person());
-            let taken = self_handovers(&mut log, &base, &anchor, ANCHOR_DEVICE_ID, 4);
-            log.append(&taken, &anchor, remove(&device_id(SECOND)));
-            log.assert_selects(&forced);
-            let selected = log.assert_selected(&forced);
-            let removed = active.then_some(reached.revision);
-            assert_eq!(selected.devices[ANCHOR_DEVICE_ID], removed);
-            assert!(!selected.devices.contains_key(&device_id(6)));
-        }
-    }
-}
-
-#[test]
-fn a_removal_of_the_old_anchor_survives_its_freeze_and_vacates_the_slot() {
-    for fresh in [false, true] {
-        let Handed {
-            log, next, reached, ..
-        } = equivocation(fresh, true);
-        let frozen = log.assert_selected(&next);
-        assert_eq!(frozen.frozen_at, Some(next.revision));
-        assert_eq!(frozen.anchor, "");
-        assert_eq!(
-            frozen.devices[ANCHOR_DEVICE_ID],
-            Some(reached.revision),
-            "the removal the target sealed narrows the frozen point"
-        );
-        assert!(
-            !frozen.devices.contains_key(&device_id(6)),
-            "the enrollment the other target sealed does not widen it"
-        );
-    }
-}
-
-/// The takeover the round 4 review describes: [`equivocation`] with both targets acting freezes
-/// the old anchor's point and vacates the slot, [`SECOND`] forces a recovery handover at that
-/// point, and the old anchor forces a handover to itself under the recovery, removes both admins,
-/// and enrolls device 7 as an admin that enrolls member 8.
+/// [`contest`], then [`SECOND`]'s second take from `next` (`forced`), the anchor's
+/// self-handover from `forced`, its removal of both admins, its enrollment of admin 7, and 7's
+/// enrollment of 8.
 struct Takeover {
-    log: Log,
-    /// The recovery head [`SECOND`] forces.
+    contest: Contest,
     forced: At,
 }
 
 fn takeover(fresh: bool) -> Takeover {
-    let Handed { mut log, next, .. } = equivocation(fresh, true);
-    let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
+    let mut contest = contest(fresh, true);
+    let log = &mut contest.log;
+    let forced = log.take(&contest.next, SECOND);
     let anchor = anchor_admin(&person());
-    let mut taken = log.handover(&forced, &anchor, ANCHOR_DEVICE_ID);
+    let mut taken = log.self_handover(&forced);
     for admin in [FIRST, SECOND] {
         taken = log.append(&taken, &anchor, remove(&device_id(admin)));
     }
@@ -868,105 +346,663 @@ fn takeover(fresh: bool) -> Takeover {
         &device_admin(7),
         enroll_entry(&person(), 8, DeviceRole::Member),
     );
-    Takeover { log, forced }
+    Takeover { contest, forced }
 }
 
 #[test]
-#[ignore = "milestone 11 step 9 handover redesign: a narrowed removal is invisible to the walk, so the old anchor forces past the recovery"]
 fn an_old_anchor_removed_through_a_freeze_takes_nothing_back_from_the_recovery() {
     for fresh in [false, true] {
-        let Takeover { log, forced } = takeover(fresh);
-        log.assert_selects(&forced);
-        let selected = log.assert_selected(&forced);
-        assert!(selected.devices[ANCHOR_DEVICE_ID].is_some());
-        assert_eq!(selected.devices[&device_id(FIRST)], None);
-        assert!(!selected.devices.contains_key(&device_id(7)));
-        assert!(!selected.devices.contains_key(&device_id(8)));
+        let Takeover { contest, .. } = takeover(fresh);
+        let selected = contest.log.assert_frozen(&contest.next);
+        for device in [ANCHOR_DEVICE_ID, &device_id(FIRST), &device_id(SECOND)] {
+            assert!(live(&selected, device));
+            assert!(selected.held.contains(device), "{device} is held");
+        }
+        assert!(live(&selected, &device_id(MEMBER)));
+        assert!(live(&selected, &device_id(4)));
+        for absent in [6, 7, 8] {
+            assert!(!selected.devices.contains_key(&device_id(absent)));
+        }
+
+        // Both admins yield to the second take: epoch 0 resolves to it, and the removal of the
+        // anchor SECOND seals under it objects to the anchor's self-handover out of it.
+        let Takeover {
+            contest: Contest { mut log, acted, .. },
+            forced,
+        } = takeover(fresh);
+        log.yield_to(&acted, &device_admin(FIRST), &forced);
+        let objection = log.append(&forced, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+        log.yield_to(&objection, &device_admin(SECOND), &forced);
+        let selected = log.assert_frozen(&forced);
+        for device in [ANCHOR_DEVICE_ID, &device_id(FIRST), &device_id(SECOND)] {
+            assert!(live(&selected, device));
+        }
+        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        assert!(selected.held.contains(&device_id(SECOND)));
+        for absent in [6, 7, 8] {
+            assert!(!selected.devices.contains_key(&device_id(absent)));
+        }
     }
 }
 
 #[test]
-#[ignore = "milestone 11 step 9 handover redesign: the old anchor forces again inside the kit epoch and outranks it"]
 fn a_kit_recovery_stands_after_an_old_anchor_removed_through_a_freeze_forces_again() {
     for fresh in [false, true] {
-        let Takeover { mut log, forced } = takeover(fresh);
-        let kit = log.handover(&forced, &recovery_admin(&person()), &device_id(MEMBER));
-        log.handover(&kit, &anchor_admin(&person()), ANCHOR_DEVICE_ID);
-        log.assert_selects(&kit);
-        let selected = log.assert_selected(&kit);
-        assert!(!selected.devices.contains_key(&device_id(7)));
+        let Takeover {
+            contest: Contest { mut log, .. },
+            forced,
+        } = takeover(fresh);
+        let kit = log.kit(&forced, &device_id(MEMBER));
+        // Rule K demoted the anchor at the kit handover, so its key signs nothing there.
+        log.self_handover(&kit);
+        let selected = log.assert_selects(&kit);
+        for device in [ANCHOR_DEVICE_ID, &device_id(FIRST), &device_id(SECOND)] {
+            assert!(live(&selected, device));
+        }
+        assert!(selected.admins.is_empty(), "admins {:?}", selected.admins);
+        assert!(live(&selected, &device_id(MEMBER)));
+        assert_eq!(selected.kit_handovers, 1);
+        for absent in [7, 8] {
+            assert!(!selected.devices.contains_key(&device_id(absent)));
+        }
     }
 }
 
 #[test]
-#[ignore = "milestone 11 step 9 handover redesign: an earlier fork to a pre-planted target moves the cut and leaves its handover alone"]
 fn a_target_enrolled_before_the_planned_one_does_not_stand_alone_by_forking_earlier() {
     for fresh in [false, true] {
         let (mut log, base) = Log::new();
         let anchor = anchor_admin(&person());
         let planted = log.append(&base, &anchor, admin_entry(5));
         let enrolled = log.append(&planted, &anchor, admin_entry(6));
-        let planned = log.handover(&enrolled, &anchor, &device_id(6));
-        let removed = log.append(&planned, &device_admin(6), remove(ANCHOR_DEVICE_ID));
-        log.append(&removed, &device_admin(6), remove(&device_id(5)));
-        if fresh {
-            log.writer = writer(9);
-        } else {
-            log.freezes
-                .insert(ANCHOR_DEVICE_ID.to_owned(), vec![planted.revision]);
-        }
-        let pushed = log.handover(&planted, &anchor, &device_id(5));
-        let acted = log.append(
+        let planned = log.take(&enrolled, 6);
+        let removed_anchor = log.append(&planned, &device_admin(6), remove(ANCHOR_DEVICE_ID));
+        let cleared = log.append(&removed_anchor, &device_admin(6), remove(&device_id(5)));
+        log.attacker(fresh, &planted);
+        let pushed = log.take(&planted, 5);
+        log.append(
             &pushed,
             &device_admin(5),
             enroll_entry(&person(), 8, DeviceRole::Member),
         );
-        let selected = log.assert_agreed();
-        assert_ne!(selected.head, pushed.hash);
-        assert_ne!(selected.head, acted.hash);
-        assert!(selected.devices[ANCHOR_DEVICE_ID].is_some());
-        assert!(selected.devices[&device_id(5)].is_some());
+        let selected = log.assert_frozen(&planted);
+        for device in [ANCHOR_DEVICE_ID, &device_id(5)] {
+            assert!(live(&selected, device));
+            assert!(selected.held.contains(device), "{device} is held");
+        }
+        assert!(!selected.devices.contains_key(&device_id(6)));
+        assert!(!selected.devices.contains_key(&device_id(8)));
+
+        // The kit continues from the last entry of 6's branch and pins its ancestry.
+        let kit = log.kit(&cleared, &device_id(6));
+        let selected = log.assert_selects(&kit);
+        assert!(removed(&selected, ANCHOR_DEVICE_ID));
+        assert!(removed(&selected, &device_id(5)));
+        assert!(live(&selected, &device_id(6)));
+        assert!(!selected.devices.contains_key(&device_id(8)));
     }
 }
 
 #[test]
-#[ignore = "milestone 11 step 9 handover redesign: narrowing collects removals from vetoed subtrees of a contender"]
 fn a_removal_in_a_vetoed_subtree_of_a_contender_does_not_narrow_its_freeze() {
     for fresh in [false, true] {
-        let Handed {
+        let Contest {
             mut log,
             next,
             planned,
             ..
-        } = equivocation(fresh, true);
+        } = contest(fresh, true);
         let anchor = anchor_admin(&person());
-        let vetoed = log.handover(&planned, &anchor, ANCHOR_DEVICE_ID);
-        log.append(&vetoed, &anchor, remove(&device_id(MEMBER)));
-        let frozen = log.assert_selected(&next);
-        assert_eq!(frozen.frozen_at, Some(next.revision));
-        assert_eq!(frozen.devices[&device_id(MEMBER)], None);
+        let taken = log.self_handover(&planned);
+        log.append(&taken, &anchor, remove(&device_id(MEMBER)));
+        let selected = log.assert_frozen(&next);
+        assert!(live(&selected, &device_id(MEMBER)));
     }
 }
 
 #[test]
-#[ignore = "milestone 11 step 9 handover redesign: narrowing collects removals whoever sealed them"]
 fn a_removal_the_old_anchor_seals_under_a_contender_does_not_narrow_its_freeze() {
     for fresh in [false, true] {
-        let Handed {
+        let Contest {
             mut log,
             next,
-            planned,
+            acted,
             ..
-        } = handed(fresh, true);
-        let other = better_ranked_handover(&mut log, &next, &planned);
-        let acted = log.append(
-            &other,
-            &device_admin(FIRST),
-            enroll_entry(&person(), 6, DeviceRole::Member),
-        );
+        } = contest(fresh, false);
         log.append(&acted, &anchor_admin(&person()), remove(&device_id(MEMBER)));
-        let frozen = log.assert_selected(&next);
-        assert_eq!(frozen.frozen_at, Some(next.revision));
-        assert_eq!(frozen.devices[&device_id(MEMBER)], None);
+        let selected = log.assert_frozen(&next);
+        assert!(live(&selected, &device_id(MEMBER)));
     }
+}
+
+#[test]
+fn an_uncontested_take_stands_and_two_takes_freeze_until_one_yields() {
+    // A planned or forced take by an admin and the anchor's self-handover each stand alone.
+    for taker in [Some(SECOND), None] {
+        let (mut log, base) = Log::new();
+        let taken = match taker {
+            Some(device) => log.take(&base, device),
+            None => log.self_handover(&base),
+        };
+        let selected = log.assert_selects(&taken);
+        assert!(live(&selected, ANCHOR_DEVICE_ID));
+        assert!(selected.admins.contains(ANCHOR_DEVICE_ID));
+    }
+    // Two of them out of one instance freeze at the common ancestor of their parents.
+    let (mut log, base) = Log::new();
+    let next = log.append(
+        &base,
+        &anchor_admin(&person()),
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let taken = log.take(&next, SECOND);
+    let restored = log.self_handover(&base);
+    log.assert_frozen(&base);
+    // The anchor yields to the take.
+    log.yield_to(&restored, &anchor_admin(&person()), &taken);
+    log.assert_selects(&taken);
+}
+
+#[test]
+fn a_restored_anchor_racing_a_planned_move_resolves_by_either_yield() {
+    let build = || {
+        let (mut log, base) = Log::new();
+        let point = log.append(
+            &base,
+            &anchor_admin(&person()),
+            enroll_entry(&person(), 4, DeviceRole::Member),
+        );
+        let taken = log.take(&point, SECOND);
+        let restored = log.self_handover(&base);
+        (log, base, taken, restored)
+    };
+    let (log, base, ..) = build();
+    log.assert_frozen(&base);
+
+    let (mut log, _, taken, restored) = build();
+    log.yield_to(&restored, &anchor_admin(&person()), &taken);
+    log.assert_selects(&taken);
+
+    let (mut log, _, taken, restored) = build();
+    log.yield_to(&taken, &device_admin(SECOND), &restored);
+    log.assert_selects(&restored);
+
+    // Crossed yields accept both, and the lower hash wins; its branch continues with the yield
+    // sealed on it.
+    let (mut log, _, taken, restored) = build();
+    let on_restored = log.yield_to(&restored, &anchor_admin(&person()), &taken);
+    let on_taken = log.yield_to(&taken, &device_admin(SECOND), &restored);
+    let lower = if taken.hash < restored.hash {
+        on_taken
+    } else {
+        on_restored
+    };
+    log.assert_selects(&lower);
+}
+
+#[test]
+fn a_returning_anchor_objects_to_a_take_or_yields_to_it() {
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    let point = log.append(
+        &base,
+        &anchor,
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let taken = log.take(&point, SECOND);
+    let ousted = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+    let unseen = log.append(&point, &anchor, admin_entry(7));
+    let selected = log.assert_selects(&ousted);
+    assert!(removed(&selected, ANCHOR_DEVICE_ID));
+    assert!(!selected.devices.contains_key(&device_id(7)));
+
+    let objection = log.append(&unseen, &anchor, remove(&device_id(SECOND)));
+    let selected = log.assert_frozen(&point);
+    assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+    assert!(selected.held.contains(&device_id(SECOND)));
+
+    log.yield_to(&objection, &anchor, &taken);
+    log.assert_selects(&ousted);
+}
+
+#[test]
+fn concurrent_forced_takes_freeze_at_their_common_point_until_one_yields() {
+    for same_point in [true, false] {
+        let (mut log, base) = Log::new();
+        let next = log.append(
+            &base,
+            &anchor_admin(&person()),
+            enroll_entry(&person(), 4, DeviceRole::Member),
+        );
+        let first = log.take(if same_point { &next } else { &base }, FIRST);
+        let second = log.take(&next, SECOND);
+        log.assert_frozen(if same_point { &next } else { &base });
+        log.yield_to(&first, &device_admin(FIRST), &second);
+        log.assert_selects(&second);
+    }
+}
+
+#[test]
+fn a_single_admin_space_restores_by_self_handover_and_recovers_by_kit() {
+    let (mut log, head) = Log::single();
+    let restored = log.self_handover(&head);
+    log.assert_selects(&restored);
+
+    // A member's key is no admin, so its take never enters the tree.
+    let (mut log, head) = Log::single();
+    log.take(&head, MEMBER);
+    log.assert_selects(&head);
+
+    let kit = log.kit(&head, &device_id(MEMBER));
+    log.assert_selects(&kit);
+}
+
+#[test]
+fn a_stale_removed_admins_take_freezes_until_the_kit_continues_the_removal() {
+    for fresh in [false, true] {
+        let (mut log, base) = Log::new();
+        let anchor = anchor_admin(&person());
+        let next = log.append(
+            &base,
+            &anchor,
+            enroll_entry(&person(), 4, DeviceRole::Member),
+        );
+        let removal = log.append(&next, &anchor, remove(&device_id(FIRST)));
+        log.attacker(fresh, &removal);
+        let stale = log.take(&next, FIRST);
+        log.append(
+            &stale,
+            &device_admin(FIRST),
+            enroll_entry(&person(), 9, DeviceRole::Member),
+        );
+        let selected = log.assert_frozen(&next);
+        assert!(live(&selected, &device_id(FIRST)));
+        assert!(selected.held.contains(&device_id(FIRST)));
+        assert!(!selected.devices.contains_key(&device_id(9)));
+
+        // The kit continues from the head of the objection branch.
+        let kit = log.kit(&removal, &device_id(MEMBER));
+        let selected = log.assert_selects(&kit);
+        assert!(removed(&selected, &device_id(FIRST)));
+        assert!(!selected.devices.contains_key(&device_id(9)));
+
+        // The kit pins its ancestry against later takes out of the same instance.
+        log.take(&next, FIRST);
+        log.take(&base, FIRST);
+        log.take(&base, SECOND);
+        log.assert_selects(&kit);
+    }
+}
+
+#[test]
+fn an_ousted_anchors_objection_freezes_and_holds_both_until_the_kit() {
+    for fresh in [false, true] {
+        let (mut log, base) = Log::new();
+        let point = log.append(
+            &base,
+            &anchor_admin(&person()),
+            enroll_entry(&person(), 4, DeviceRole::Member),
+        );
+        let taken = log.take(&point, SECOND);
+        let ousted = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+        log.attacker(fresh, &point);
+        log.append(&point, &anchor_admin(&person()), remove(&device_id(SECOND)));
+        let selected = log.assert_frozen(&point);
+        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        assert!(selected.held.contains(&device_id(SECOND)));
+
+        let kit = log.kit(&ousted, &device_id(SECOND));
+        let selected = log.assert_selects(&kit);
+        assert!(removed(&selected, ANCHOR_DEVICE_ID));
+        assert!(live(&selected, &device_id(SECOND)));
+    }
+}
+
+#[test]
+fn a_planted_admins_take_stands_until_the_anchor_objects() {
+    let (mut log, head) = Log::new();
+    let taken = log.take(&head, FIRST);
+    let cleared = log.append(&taken, &device_admin(FIRST), remove(&device_id(SECOND)));
+    log.assert_selects(&cleared);
+
+    log.append(&head, &anchor_admin(&person()), remove(&device_id(FIRST)));
+    let selected = log.assert_frozen(&head);
+    assert!(live(&selected, &device_id(SECOND)));
+
+    let kit = log.kit(&head, &device_id(MEMBER));
+    let selected = log.assert_selects(&kit);
+    assert!(live(&selected, &device_id(FIRST)));
+    assert!(!selected.admins.contains(&device_id(FIRST)));
+}
+
+#[test]
+fn a_restored_admins_second_take_is_withdrawn_by_its_yield_to_the_first() {
+    let (mut log, base) = Log::new();
+    let point = log.append(
+        &base,
+        &anchor_admin(&person()),
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let first = log.take(&point, SECOND);
+    let second = log.take(&base, SECOND);
+    log.assert_frozen(&base);
+    log.yield_to(&second, &device_admin(SECOND), &first);
+    log.assert_selects(&first);
+    // A yield binds the key for the whole instance, takes it stores later included.
+    log.take(&point, SECOND);
+    log.assert_selects(&first);
+}
+
+#[test]
+fn a_take_beside_a_clone_stands_and_the_other_clone_branch_is_not_effective() {
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    log.freezes
+        .insert(ANCHOR_DEVICE_ID.to_owned(), vec![base.revision]);
+    let one = log.append(
+        &base,
+        &anchor,
+        enroll_entry(&person(), 5, DeviceRole::Member),
+    );
+    log.append(
+        &base,
+        &anchor,
+        enroll_entry(&person(), 6, DeviceRole::Member),
+    );
+    let selected = log.assert_frozen(&base);
+    assert!(!selected.devices.contains_key(&device_id(5)));
+    let taken = log.take(&one, SECOND);
+    let selected = log.assert_selects(&taken);
+    assert!(live(&selected, &device_id(5)));
+    assert!(!selected.devices.contains_key(&device_id(6)));
+}
+
+#[test]
+fn a_removed_old_anchors_fork_below_a_take_freezes_only_once_it_contests() {
+    for fresh in [false, true] {
+        let (mut log, base) = Log::new();
+        let anchor = anchor_admin(&person());
+        let shared = log.append(
+            &base,
+            &anchor,
+            enroll_entry(&person(), 4, DeviceRole::Member),
+        );
+        let point = log.append(
+            &shared,
+            &anchor,
+            enroll_entry(&person(), 5, DeviceRole::Member),
+        );
+        let taken = log.take(&point, SECOND);
+        let ousted = log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+        log.freezes
+            .insert(ANCHOR_DEVICE_ID.to_owned(), vec![shared.revision]);
+        let selected = log.assert_selects(&ousted);
+        assert!(removed(&selected, ANCHOR_DEVICE_ID));
+
+        if fresh {
+            log.writer = writer(9);
+        }
+        log.self_handover(&shared);
+        let selected = log.assert_frozen(&shared);
+        assert_eq!(selected.anchor, ANCHOR_DEVICE_ID);
+        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+
+        let kit = log.kit(&ousted, &device_id(MEMBER));
+        let selected = log.assert_selects(&kit);
+        assert!(removed(&selected, ANCHOR_DEVICE_ID));
+    }
+}
+
+#[test]
+fn the_kit_recovers_a_clone_freeze_and_demotes_every_other_admin() {
+    let (mut log, base) = Log::new();
+    log.freezes
+        .insert(ANCHOR_DEVICE_ID.to_owned(), vec![base.revision]);
+    log.append(
+        &base,
+        &anchor_admin(&person()),
+        enroll_entry(&person(), 5, DeviceRole::Member),
+    );
+    log.assert_frozen(&base);
+    let kit = log.kit(&base, &device_id(MEMBER));
+    let selected = log.assert_selects(&kit);
+    assert!(selected.admins.is_empty(), "admins {:?}", selected.admins);
+    assert_eq!(selected.kit_handovers, 1);
+}
+
+#[test]
+fn concurrent_kit_uses_converge_on_the_higher_ranked_one() {
+    for same_point in [true, false] {
+        let (mut log, base) = Log::new();
+        let anchor = anchor_admin(&person());
+        let one = log.append(
+            &base,
+            &anchor,
+            enroll_entry(&person(), 5, DeviceRole::Member),
+        );
+        let two = if same_point {
+            one.clone()
+        } else {
+            log.append(
+                &base,
+                &anchor,
+                enroll_entry(&person(), 6, DeviceRole::Member),
+            )
+        };
+        let to_first = log.kit(&one, &device_id(FIRST));
+        let to_member = log.kit(&two, &device_id(MEMBER));
+        let selected = log.assert_agreed();
+        assert!(selected.head == to_first.hash || selected.head == to_member.hash);
+        assert_eq!(selected.frozen_at, None);
+        assert_eq!(selected.kit_handovers, 1);
+    }
+}
+
+#[test]
+fn a_kit_handover_that_precedes_its_rotation_pins_and_the_old_key_signs_nothing_after_it() {
+    let (mut log, base) = Log::new();
+    let leaked = recovery_admin(&person());
+    let kit = log.kit(&base, &device_id(MEMBER));
+    let rotated = log.append(&kit, &leaked, rotate_recovery(&other_recovery(92)));
+    let selected = log.assert_selects(&rotated);
+    assert_eq!(selected.kit_handovers, 1);
+    log.handover(&rotated, &leaked, &device_id(MEMBER));
+    log.assert_selects(&rotated);
+}
+
+#[test]
+fn a_leaked_old_kit_on_a_side_branch_is_an_objected_candidate_once_the_rotation_is_stored() {
+    let leaked = recovery_admin(&person());
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    let side = log.kit(&base, &device_id(FIRST));
+    let honest = log.append(
+        &base,
+        &anchor,
+        enroll_entry(&person(), 5, DeviceRole::Member),
+    );
+    let selected = log.assert_selects(&side);
+    assert_eq!(selected.kit_handovers, 1);
+
+    // The rotation the honest chain stores vetoes the side branch's kit handover, objects to
+    // it by revoking its key, and the anchor's removal of its target objects too.
+    let rotated = log.append(&honest, &leaked, rotate_recovery(&other_recovery(92)));
+    log.append(&rotated, &anchor, remove(&device_id(FIRST)));
+    let selected = log.assert_frozen(&base);
+    assert_eq!(selected.kit_handovers, 0);
+    assert!(selected.held.contains(&device_id(FIRST)));
+}
+
+#[test]
+fn a_leaked_old_kits_second_rotation_vetoes_both_and_leaves_no_kit_lineage() {
+    let leaked = recovery_admin(&person());
+    let current = other_recovery(92);
+    let stolen = other_recovery(93);
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    let rotated = log.append(&base, &leaked, rotate_recovery(&current));
+    let side = log.append(
+        &base,
+        &anchor,
+        enroll_entry(&person(), 5, DeviceRole::Member),
+    );
+    let second = log.append(&side, &leaked, rotate_recovery(&stolen));
+    let by_stolen = log.handover(&second, &stolen, &device_id(FIRST));
+    let by_current = log.handover(&rotated, &current, &device_id(MEMBER));
+    let selected = log.assert_agreed();
+    assert_eq!(selected.head, side.hash);
+    assert_ne!(selected.head, by_stolen.hash);
+    assert_ne!(selected.head, by_current.hash);
+    assert_eq!(selected.kit_handovers, 0);
+    assert_eq!(
+        selected.recovery_admin_key,
+        recovery_admin(&person()).public_key()
+    );
+}
+
+#[test]
+fn a_leaked_kits_conflicting_rotation_turns_its_recovery_into_a_freeze() {
+    for fresh in [false, true] {
+        let leaked = recovery_admin(&person());
+        let (mut log, base) = Log::new();
+        let anchor = anchor_admin(&person());
+        let next = log.append(
+            &base,
+            &anchor,
+            enroll_entry(&person(), 4, DeviceRole::Member),
+        );
+        let recovered = log.kit(&next, &device_id(MEMBER));
+        let ousted = log.append(&recovered, &leaked, remove(ANCHOR_DEVICE_ID));
+        log.append(&ousted, &leaked, rotate_recovery(&other_recovery(92)));
+        log.assert_selects(&log_head(&log));
+        log.attacker(fresh, &next);
+        log.append(&base, &leaked, rotate_recovery(&other_recovery(93)));
+        log.self_handover(&next);
+        let selected = log.assert_frozen(&next);
+        assert_eq!(selected.kit_handovers, 0);
+        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+    }
+}
+
+/// The head the last stored record reaches.
+fn log_head(log: &Log) -> At {
+    let record = log.records.last().unwrap();
+    At {
+        epoch: record.epoch,
+        revision: record.revision,
+        hash: record.hash(),
+        anchor: record.anchor_device_id.clone(),
+    }
+}
+
+#[test]
+fn only_the_anchor_installs_a_recovery_key_and_the_printed_kit_outranks_it() {
+    let installed = other_recovery(91);
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    log.append(&base, &device_admin(FIRST), rotate_recovery(&installed));
+    log.assert_selects(&base);
+
+    let install = log.append(&base, &anchor, rotate_recovery(&installed));
+    log.assert_selects(&install);
+    let recovered = log.handover(&install, &installed, &device_id(MEMBER));
+    let selected = log.assert_selects(&recovered);
+    assert!(selected.admins.is_empty(), "admins {:?}", selected.admins);
+    assert_eq!(selected.kit_handovers, 0);
+    let promoted = log.append(&recovered, &installed, promote(MEMBER));
+    let selected = log.assert_selects(&promoted);
+    assert!(selected.admins.contains(&device_id(MEMBER)));
+
+    // Beside an admin's take the installed key's handover contests.
+    let taken = log.take(&install, SECOND);
+    log.assert_frozen(&install);
+
+    // The printed kit beside both pins and resets the installed key.
+    let kit = log.kit(&install, &device_id(FIRST));
+    let selected = log.assert_selects(&kit);
+    assert_eq!(
+        selected.recovery_admin_key,
+        recovery_admin(&person()).public_key()
+    );
+
+    // Once an admin's take wins, the installed key signs nothing in its instance.
+    let (mut log, base) = Log::new();
+    let install = log.append(&base, &anchor, rotate_recovery(&installed));
+    let taken_alone = log.take(&install, SECOND);
+    log.append(
+        &taken_alone,
+        &installed,
+        enroll_entry(&person(), 9, DeviceRole::Member),
+    );
+    let selected = log.assert_selects(&taken_alone);
+    assert!(!selected.devices.contains_key(&device_id(9)));
+    let _ = taken;
+}
+
+#[test]
+fn an_ousted_anchors_installed_key_only_contests_its_old_instance() {
+    for fresh in [false, true] {
+        let installed = other_recovery(91);
+        let (mut log, base) = Log::new();
+        let install = log.append(&base, &anchor_admin(&person()), rotate_recovery(&installed));
+        let taken = log.take(&install, SECOND);
+        log.append(&taken, &device_admin(SECOND), remove(ANCHOR_DEVICE_ID));
+        log.attacker(fresh, &install);
+        let own = log.handover(&install, &installed, ANCHOR_DEVICE_ID);
+        log.handover(&own, &installed, ANCHOR_DEVICE_ID);
+        let selected = log.assert_frozen(&install);
+        assert!(selected.held.contains(ANCHOR_DEVICE_ID));
+        assert_eq!(selected.kit_handovers, 0);
+    }
+}
+
+#[test]
+fn a_single_admin_recovers_with_an_installed_key_unless_a_thief_contests() {
+    let installed = other_recovery(91);
+    let (mut log, head) = Log::single();
+    let install = log.append(&head, &anchor_admin(&person()), rotate_recovery(&installed));
+    let recovered = log.handover(&install, &installed, &device_id(MEMBER));
+    let promoted = log.append(&recovered, &installed, promote(MEMBER));
+    let cleared = log.append(&promoted, &installed, remove(ANCHOR_DEVICE_ID));
+    let selected = log.assert_selects(&cleared);
+    assert!(selected.admins.contains(&device_id(MEMBER)));
+    assert!(removed(&selected, ANCHOR_DEVICE_ID));
+
+    // A thief holding the anchor's device contests with its self-handover; the kit wins.
+    log.self_handover(&install);
+    log.assert_frozen(&install);
+    let kit = log.kit(&install, &device_id(MEMBER));
+    let cleared = log.append(&kit, &recovery_admin(&person()), remove(ANCHOR_DEVICE_ID));
+    let selected = log.assert_selects(&cleared);
+    assert!(removed(&selected, ANCHOR_DEVICE_ID));
+}
+
+#[test]
+fn a_yield_withdraws_only_candidates_of_its_own_instance() {
+    let (mut log, base) = Log::new();
+    let next = log.append(
+        &base,
+        &anchor_admin(&person()),
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    let first = log.take(&next, FIRST);
+    let second = log.take(&next, SECOND);
+    log.yield_to(&first, &device_admin(FIRST), &second);
+    log.assert_selects(&second);
+    let later = log.take(&second, FIRST);
+    log.assert_selects(&later);
+}
+
+#[test]
+fn a_restored_anchor_beside_a_planted_take_freezes_rather_than_withdrawing() {
+    let (mut log, base) = Log::new();
+    let next = log.append(
+        &base,
+        &anchor_admin(&person()),
+        enroll_entry(&person(), 4, DeviceRole::Member),
+    );
+    log.take(&next, FIRST);
+    log.self_handover(&base);
+    let selected = log.assert_frozen(&base);
+    assert_eq!(selected.anchor, ANCHOR_DEVICE_ID);
 }

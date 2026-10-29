@@ -212,7 +212,8 @@ pub(crate) struct Sealer {
     head_hash: Digest32,
     head_context: VersionVector,
     clock: HlcClock,
-    /// Selected authorization revision when the sealer opened, stamped on content operations.
+    /// Revision content operations are stamped with: the selected authorization revision when
+    /// the sealer opened, never below the writer's own earlier operations.
     revision: u64,
     /// Whether the last sealed operation marks the writer's next one as continuing its set of
     /// changes. Receivers cut the set at the bounds of [`ends_group`] and still read it as one
@@ -238,8 +239,8 @@ impl Sealer {
         {
             return Err(SyncError::WriterMismatch);
         }
-        let revision = authorization::selected_revision(conn, ctx.space).await?;
         let id = cert.writer_id();
+        let revision = authorization::sealing_revision(conn, ctx.space, id).await?;
         let newest: Option<i64> =
             sqlx::query_scalar("SELECT max(head_clock) FROM sync_writers WHERE space_id = ?")
                 .bind(ctx.space.as_bytes().as_slice())

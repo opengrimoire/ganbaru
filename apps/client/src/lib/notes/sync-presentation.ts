@@ -69,6 +69,13 @@ const TEMPLATE_RECOVERY: SyncRecoveryPresentation = {
   restoreFailed: (t) => t("notes.sync.templateRestoreFailed"),
 };
 
+const DATA_SOURCE_RECOVERY: SyncRecoveryPresentation = {
+  untitled: (t) => t("notes.sync.dataSourceUntitled"),
+  note: (t) => t("notes.sync.dataSourceRecoveryNote"),
+  restored: (t) => t("notes.sync.dataSourceRestored"),
+  restoreFailed: (t) => t("notes.sync.dataSourceRestoreFailed"),
+};
+
 /** A database is restored with the block that holds it, so an offer rooted in the database alone is only discarded. */
 const DATABASE_RECOVERY: SyncRecoveryPresentation = {
   untitled: (t) => t("notes.sync.databaseUntitled"),
@@ -80,6 +87,7 @@ const TABLE_PRESENTATIONS: Readonly<Record<string, SyncTablePresentation>> = {
   notes_pages: { conflicts: (t, count) => t("notes.sync.pageConflicts", count), recovery: PAGE_RECOVERY },
   notes_blocks: { conflicts: (t, count) => t("notes.sync.blockConflicts", count), recovery: BLOCK_RECOVERY },
   notes_databases: { recovery: DATABASE_RECOVERY },
+  notes_data_sources: { recovery: DATA_SOURCE_RECOVERY },
   notes_data_source_properties: { conflicts: (t, count) => t("notes.sync.propertyConflicts", count) },
   notes_page_property_values: { conflicts: (t, count) => t("notes.sync.valueConflicts", count) },
   notes_page_templates: {

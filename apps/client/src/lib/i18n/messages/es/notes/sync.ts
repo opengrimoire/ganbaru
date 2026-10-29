@@ -37,7 +37,11 @@ export const syncMessages = {
     commentUntitled: "Comentario",
     templateUntitled: "Plantilla sin título",
     databaseUntitled: "Base de datos sin título",
-    pageRecoveryNote: "Al restaurarla se crea la página de nuevo donde estaba, fuera de la papelera, con sus bloques y comentarios.",
+    dataSourceUntitled: "Fuente de datos sin título",
+    pageRecoveryNote:
+      "Al restaurarla se crea la página de nuevo fuera de la papelera, con sus bloques y comentarios, en su fuente de datos si aún existe y, si no, en el espacio de trabajo.",
+    dataSourceRecoveryNote:
+      "Al restaurarla se crea la fuente de datos de nuevo en su base de datos, con sus propiedades, páginas, vistas y plantillas, mientras la base de datos exista.",
     blockRecoveryNote: "Al restaurarlo se crea el bloque de nuevo en su página, con los bloques y comentarios que contiene.",
     threadRecoveryNote: "Al restaurarla se crea la conversación de nuevo en su página, con sus comentarios.",
     commentRecoveryNote: "Al restaurarlo se añade el comentario de nuevo a su conversación, mientras la conversación exista.",
@@ -51,6 +55,8 @@ export const syncMessages = {
     threadRestoreFailed: "No se pudo restaurar la conversación",
     commentRestored: "Comentario restaurado",
     commentRestoreFailed: "No se pudo restaurar el comentario",
+    dataSourceRestored: "Fuente de datos restaurada",
+    dataSourceRestoreFailed: "No se pudo restaurar la fuente de datos",
     templateRestored: "Plantilla restaurada",
     templateRestoreFailed: "No se pudo restaurar la plantilla",
   },

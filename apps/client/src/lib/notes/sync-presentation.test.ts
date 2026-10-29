@@ -28,6 +28,7 @@ const RESTORABLE_TABLES = [
   "notes_comments",
   "notes_page_templates",
   "notes_data_source_templates",
+  "notes_data_sources",
 ];
 
 describe("notes sync presentation", () => {

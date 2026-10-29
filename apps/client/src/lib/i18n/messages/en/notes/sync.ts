@@ -20,7 +20,11 @@ export const syncMessages = {
     commentUntitled: "Comment",
     templateUntitled: "Untitled template",
     databaseUntitled: "Untitled database",
-    pageRecoveryNote: "Restoring creates the page again where it was, out of the trash, with its blocks and comments.",
+    dataSourceUntitled: "Untitled data source",
+    pageRecoveryNote:
+      "Restoring creates the page again out of the trash, with its blocks and comments, in its data source if that still exists and otherwise in the workspace.",
+    dataSourceRecoveryNote:
+      "Restoring creates the data source again in its database, with its properties, pages, views, and templates, while the database still exists.",
     blockRecoveryNote: "Restoring creates the block again in its page, with the blocks and comments inside it.",
     threadRecoveryNote: "Restoring creates the discussion again on its page, with its comments.",
     commentRecoveryNote: "Restoring adds the comment back to its discussion while the discussion still exists.",
@@ -34,6 +38,8 @@ export const syncMessages = {
     threadRestoreFailed: "The discussion could not be restored",
     commentRestored: "Comment restored",
     commentRestoreFailed: "The comment could not be restored",
+    dataSourceRestored: "Data source restored",
+    dataSourceRestoreFailed: "The data source could not be restored",
     templateRestored: "Template restored",
     templateRestoreFailed: "The template could not be restored",
   },

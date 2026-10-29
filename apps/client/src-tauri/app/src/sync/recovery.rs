@@ -203,6 +203,8 @@ pub(crate) struct RecoveryEntryView {
     /// Title and preview of deleted descendants of another domain written or edited unseen by
     /// the deletion, such as Chat posts, which restoring the row does not bring back.
     pub unseen: Vec<RecoveryTextView>,
+    /// Unseen rows past the ones listed in `unseen`.
+    pub unseen_omitted: usize,
     /// Device of the newest unseen edit.
     pub device: DeviceRef,
     /// When that edit was made, in Unix milliseconds.
@@ -264,6 +266,7 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
                         preview: presentation.preview,
                     })
                     .collect(),
+                unseen_omitted: entry.unseen_omitted,
                 device: devices.describe(&entry.device_id),
                 edited_at_ms: entry.clock.physical_ms(),
             })

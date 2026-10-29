@@ -31,7 +31,7 @@ use crate::manifest::vault::chat::{
     REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
-use crate::{Engine, SyncError, SyncResult};
+use crate::{Engine, MAX_UNSEEN_PRESENTATIONS, SyncError, SyncResult};
 
 const SALT: u64 = 73;
 const TEAMMATE: &str = "participant:reviewer";
@@ -1639,6 +1639,120 @@ fn chat_an_offline_post_in_a_deleted_project_is_readable_in_its_recovery_offer()
                 .map(|presentation| presentation.preview.as_str())
                 .collect();
             assert_eq!(previews, vec!["Written offline"], "{entry:?}");
+        }
+    });
+}
+
+/// Unseen previews and omitted count of the recovery offer of [`PROJECT`] on `replica`.
+async fn project_offer_unseen(replica: &mut Replica) -> (Vec<String>, usize) {
+    let entries = replica
+        .engine
+        .recovery_entries(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap();
+    let entry = entries
+        .into_iter()
+        .find(|entry| (entry.table, entry.row_key.as_str()) == (PROJECTS_TABLE, PROJECT))
+        .expect("an offer for the deleted project");
+    let previews = entry
+        .unseen
+        .into_iter()
+        .map(|presentation| presentation.preview)
+        .collect();
+    (previews, entry.unseen_omitted)
+}
+
+/// Deletes [`PROJECT`] on the first replica while the second runs `offline`, then converges.
+/// The first replica receives the offline writes after its deletion and the second the deletion
+/// after its writes, so checking both covers both arrival orders.
+async fn delete_project_against(replicas: &mut [Replica], offline: &str) {
+    replicas[0]
+        .exec(&format!(
+            "DELETE FROM projects WHERE id = {}",
+            quoted(PROJECT)
+        ))
+        .await;
+    replicas[1].exec(offline).await;
+    converge(replicas).await;
+    assert_converged(replicas).await;
+}
+
+/// A post written and then edited offline shows only its newest text in the offer, in both
+/// arrival orders.
+#[test]
+fn chat_a_recovery_offer_shows_only_the_newest_revision_of_an_offline_post() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        let offline = format!(
+            "{}{}{}",
+            message_sql("item:offline", None, "c001", "First draft"),
+            edit_sql(
+                "item:offline",
+                "item:offline:1",
+                "Second draft",
+                "2026-10-24T10:52:00.000Z"
+            ),
+            edit_sql(
+                "item:offline",
+                "item:offline:2",
+                "Final text",
+                "2026-10-24T10:53:00.000Z"
+            ),
+        );
+        delete_project_against(&mut replicas, &offline).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                project_offer_unseen(replica).await,
+                (vec!["Final text".to_string()], 0)
+            );
+        }
+    });
+}
+
+/// A post written and then deleted offline stays out of the offer, while another offline post
+/// stays in it, in both arrival orders.
+#[test]
+fn chat_a_recovery_offer_leaves_out_a_post_deleted_offline() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        let offline = format!(
+            "{}{}UPDATE chat_communication_messages SET deleted_at = '2026-10-24T10:55:00.000Z'
+             WHERE item_id = 'item:removed';",
+            message_sql("item:kept", None, "c001", "Kept post"),
+            message_sql("item:removed", None, "c002", "Removed post"),
+        );
+        delete_project_against(&mut replicas, &offline).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                project_offer_unseen(replica).await,
+                (vec!["Kept post".to_string()], 0)
+            );
+        }
+    });
+}
+
+/// An offer lists at most [`MAX_UNSEEN_PRESENTATIONS`] posts and counts the rest, so none is
+/// dropped without a trace.
+#[test]
+fn chat_a_recovery_offer_counts_the_unseen_posts_past_its_list() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        let extra = 3;
+        let offline: String = (0..MAX_UNSEEN_PRESENTATIONS + extra)
+            .map(|index| {
+                message_sql(
+                    &format!("item:{index:02}"),
+                    None,
+                    &format!("c{index:03}"),
+                    &format!("Post {index}"),
+                )
+            })
+            .collect();
+        delete_project_against(&mut replicas, &offline).await;
+        for replica in &mut replicas {
+            let (previews, omitted) = project_offer_unseen(replica).await;
+            assert_eq!(previews.len(), MAX_UNSEEN_PRESENTATIONS);
+            assert_eq!(omitted, extra);
         }
     });
 }

@@ -180,6 +180,22 @@ describe("sync authority controls", () => {
     expect(syncRecoveryKitUse({ ...lost, authority: { ...lost.authority, devices: [anchor] } }, "offline")).toBeNull();
   });
 
+  it("forces the handover with the kit on any linked desktop a contest offers it to", () => {
+    const frozen = { frozen: true };
+    expect(syncRecoveryKitUse(context({}, frozen), "idle", true)).toBe("force");
+    expect(syncRecoveryKitUse(context({}, { ...frozen, ownIsAdmin: false }), "offline", true)).toBe("force");
+    const removed = { ...own, role: "member" as const, removedRevision: 4 };
+    expect(syncRecoveryKitUse(context({}, { ...frozen, ownIsAdmin: false, devices: [removed, anchor] }), "idle", true))
+      .toBe("force");
+
+    expect(syncRecoveryKitUse(context({}, frozen), "idle", false)).toBeNull();
+    expect(syncRecoveryKitUse(context({}, { ...frozen, devices: [{ ...own, anchor: true }] }), "idle", true)).toBeNull();
+    expect(syncRecoveryKitUse(context({ statusRole: "hub" }, frozen), "idle", true)).toBeNull();
+    expect(syncRecoveryKitUse(context({ mobileLayout: true }, frozen), "idle", true)).toBeNull();
+    expect(syncRecoveryKitUse(context({}, { ...frozen, devices: [{ ...own, kind: "mobile" }, anchor] }), "idle", true))
+      .toBeNull();
+  });
+
   it("limits late decisions to admin desktops and reset to the coordinator", () => {
     expect(canResolveSyncLateChanges(context())).toBe(true);
     expect(canResolveSyncLateChanges(context({ mobileLayout: true }))).toBe(false);

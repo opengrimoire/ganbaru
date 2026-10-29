@@ -176,8 +176,12 @@ pub enum GrowthAlert {
     Device { device_id: String, bytes: u64 },
     /// Stored envelopes exceed [`ALERT_TOTAL_BYTES`].
     Total { bytes: u64 },
-    /// A writer holds two envelopes at one sequence or two certificates.
-    ForkedWriter { writer: WriterId },
+    /// A writer holds two envelopes at one sequence or two certificates. `device_id` is the
+    /// device a stored certificate of the writer names, if any.
+    ForkedWriter {
+        writer: WriterId,
+        device_id: Option<String>,
+    },
 }
 
 /// The growth alerts `storage` raises.
@@ -200,7 +204,10 @@ pub fn growth_alerts(storage: &AuthorizationStorage) -> Vec<GrowthAlert> {
         storage
             .forked_writers
             .iter()
-            .map(|writer| GrowthAlert::ForkedWriter { writer: *writer }),
+            .map(|forked| GrowthAlert::ForkedWriter {
+                writer: forked.writer,
+                device_id: forked.device_id.clone(),
+            }),
     );
     alerts
 }
@@ -288,6 +295,18 @@ impl RecordExchange {
         if !inner.pulled.contains_key(peer) {
             inner.backoff.clear();
         }
+    }
+
+    /// The backstop state as the last exchange left it, `None` while full sync runs. Unlike
+    /// [`Self::backstop`], it reads no storage and never starts the backstop.
+    pub fn backstop_state(&self) -> Option<BackstopState> {
+        self.lock().backstop.map(|backstop| {
+            if backstop.stopped {
+                BackstopState::Stopped
+            } else {
+                BackstopState::Reserve
+            }
+        })
     }
 
     /// The backstop state, `None` while full sync runs. Starts the backstop when the store or
@@ -1016,13 +1035,14 @@ fn is_busy(response: &ControlMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync::ForkedWriter;
 
     const MIB: u64 = 1024 * 1024;
 
     fn storage(
         bytes: u64,
         by_device: Vec<(&str, u64)>,
-        forked: Vec<WriterId>,
+        forked: Vec<ForkedWriter>,
     ) -> AuthorizationStorage {
         AuthorizationStorage {
             bytes,
@@ -1131,7 +1151,10 @@ mod tests {
                 ("flooder", ALERT_DEVICE_BYTES + 1),
                 ("phone", ALERT_DEVICE_BYTES),
             ],
-            vec![writer],
+            vec![ForkedWriter {
+                writer,
+                device_id: Some("forker".to_string()),
+            }],
         ));
         assert_eq!(
             alerts,
@@ -1143,7 +1166,10 @@ mod tests {
                 GrowthAlert::Total {
                     bytes: ALERT_TOTAL_BYTES + 1,
                 },
-                GrowthAlert::ForkedWriter { writer },
+                GrowthAlert::ForkedWriter {
+                    writer,
+                    device_id: Some("forker".to_string()),
+                },
             ]
         );
     }

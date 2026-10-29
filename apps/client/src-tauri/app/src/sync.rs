@@ -8,6 +8,7 @@ mod asset_collection;
 mod authority;
 pub(crate) mod commands;
 mod connectivity;
+mod contests;
 pub(crate) mod devices;
 pub(crate) mod discovery_keys;
 #[cfg(any(target_os = "android", test))]

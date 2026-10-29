@@ -2,27 +2,33 @@ import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
   discardSyncLateChange,
+  forceSyncAnchor,
   getPendingSyncRecoveryKit,
   getSyncAuthority,
+  getSyncContests,
   listenSyncApplied,
   listenSyncStatus,
   listSyncLateChanges,
   listSyncOutbox,
   listSyncRecovery,
   mapSyncAuthority,
+  mapSyncContests,
   mapSyncLateChange,
   mapSyncLateChanges,
   mapSyncNotice,
   mapSyncOutboxEntry,
   mapSyncPendingRecoveryKit,
   mapSyncStatus,
+  objectSyncContest,
   OFF_SYNC_STATUS,
   regenerateSyncRecoveryKit,
   removeSyncDevice,
   restoreSyncLateChange,
   restoreSyncRecovery,
+  resumeSyncRecords,
   saveSyncRecoveryKitFile,
   takeSyncAnchor,
+  yieldSyncContest,
 } from "./sync";
 
 const channels = vi.hoisted(() => [] as { onmessage: (value: unknown) => void }[]);
@@ -416,5 +422,145 @@ describe("sync authority API boundary", () => {
     await expect(saveSyncRecoveryKitFile("kit.txt", "code")).rejects.toThrow();
     vi.mocked(invoke).mockResolvedValueOnce(-1);
     await expect(takeSyncAnchor()).rejects.toThrow();
+  });
+});
+
+const HASH_A = "a".repeat(64);
+const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
+const HASH_D = "d".repeat(64);
+
+function ref(deviceId: string, ownDevice = false): Record<string, unknown> {
+  return { deviceId, deviceLabel: null, ownDevice };
+}
+
+function validCandidate(hash: string, target: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    hash,
+    parent: { hash: HASH_A, revision: 7 },
+    kind: "forced",
+    target: ref(target),
+    signer: ref(target),
+    targetEnrolledRevision: 2,
+    targetEnroller: ref("anchor"),
+    withdrawnInFavorOf: null,
+    local: false,
+    ...overrides,
+  };
+}
+
+function validContest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    rootHash: HASH_A,
+    epoch: 3,
+    anchor: ref("anchor"),
+    frozenAt: { hash: HASH_A, revision: 7 },
+    cause: "contested",
+    candidates: [
+      validCandidate(HASH_B, "laptop", { local: true, target: ref("own", true) }),
+      validCandidate(HASH_C, "intruder", { withdrawnInFavorOf: HASH_B, signer: null, targetEnroller: null }),
+    ],
+    objections: [{ hash: HASH_D, against: HASH_C, objector: ref("anchor"), withdrawn: false }],
+    yields: [{ hash: HASH_D, author: null, to: HASH_B }],
+    held: [ref("intruder")],
+    localRole: { kind: "contestant", candidate: HASH_B },
+    actions: [
+      { kind: "yieldTo", candidate: HASH_C },
+      { kind: "useKit", points: [{ entry: { hash: HASH_A, revision: 7 }, epoch: 3, place: { kind: "head" } }] },
+    ],
+    ...overrides,
+  };
+}
+
+function validContests(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    contests: [validContest()],
+    losingRemovals: [{ device: ref("phone"), removedBy: ref("intruder"), revision: 8 }],
+    storage: {
+      backstop: "reserve",
+      alerts: [
+        { kind: "device", device: ref("intruder"), bytes: 4_000_000 },
+        { kind: "total", bytes: 9_000_000 },
+        { kind: "forkedWriter", writer: "e".repeat(32), device: null },
+      ],
+    },
+    ...overrides,
+  };
+}
+
+describe("sync contest API boundary", () => {
+  it("maps contests, losing removals, and storage alerts", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(validContests());
+    const contests = await getSyncContests();
+    expect(invoke).toHaveBeenLastCalledWith("sync_contests");
+    expect(contests?.contests[0]?.candidates[1]).toEqual({
+      hash: HASH_C,
+      parent: { hash: HASH_A, revision: 7 },
+      kind: "forced",
+      target: { deviceId: "intruder", deviceLabel: null, ownDevice: false },
+      signer: null,
+      targetEnrolledRevision: 2,
+      targetEnroller: null,
+      withdrawnInFavorOf: HASH_B,
+      local: false,
+    });
+    expect(contests?.contests[0]?.localRole).toEqual({ kind: "contestant", candidate: HASH_B });
+    expect(contests?.losingRemovals[0]?.removedBy?.deviceId).toBe("intruder");
+    expect(contests?.storage.backstop).toBe("reserve");
+    expect(contests?.storage.alerts.map((alert) => alert.kind)).toEqual(["device", "total", "forkedWriter"]);
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(getSyncContests()).resolves.toBeNull();
+  });
+
+  it("maps a lone take without a freeze point", () => {
+    const taken = validContest({ cause: "taken", frozenAt: null, localRole: { kind: "anchor" }, actions: [] });
+    expect(mapSyncContests(validContests({ contests: [taken] })).contests[0]?.frozenAt).toBeNull();
+  });
+
+  it("rejects contests that break their invariants", () => {
+    const rejects = (contest: Record<string, unknown>) =>
+      expect(() => mapSyncContests(validContests({ contests: [contest] }))).toThrow();
+    rejects(validContest({ cause: "taken" }));
+    rejects(validContest({ frozenAt: null }));
+    rejects(validContest({ candidates: [validCandidate(HASH_B, "a"), validCandidate(HASH_B, "b")] }));
+    rejects(validContest({ actions: [{ kind: "object", candidate: HASH_D }] }));
+    rejects(validContest({ actions: [{ kind: "useKit", points: [] }] }));
+    rejects(validContest({ rootHash: HASH_A.toUpperCase() }));
+    rejects(validContest({ rootHash: "a".repeat(63) }));
+    rejects(validContest({ cause: "unknown" }));
+    rejects(validContest({ candidates: [validCandidate(HASH_B, "a", { kind: "admin" })] }));
+    rejects(validContest({ localRole: { kind: "contestant" } }));
+    expect(() => mapSyncContests(validContests({ storage: { backstop: "full", alerts: [] } }))).toThrow();
+    expect(() =>
+      mapSyncContests(validContests({ storage: { backstop: null, alerts: [{ kind: "forkedWriter", writer: "e", device: null }] } })),
+    ).toThrow();
+    expect(() =>
+      mapSyncContests(validContests({ storage: { backstop: null, alerts: [{ kind: "total", bytes: -1 }] } })),
+    ).toThrow();
+  });
+
+  it("sends contest choices, the resume, and the kit review with their native names", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(12);
+    await expect(yieldSyncContest(HASH_B)).resolves.toBe(12);
+    expect(invoke).toHaveBeenLastCalledWith("sync_contest_yield", { handover: HASH_B });
+    vi.mocked(invoke).mockResolvedValueOnce(13);
+    await expect(objectSyncContest(HASH_C)).resolves.toBe(13);
+    expect(invoke).toHaveBeenLastCalledWith("sync_contest_object", { handover: HASH_C });
+    vi.mocked(invoke).mockResolvedValueOnce(-1);
+    await expect(objectSyncContest(HASH_C)).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await resumeSyncRecords();
+    expect(invoke).toHaveBeenLastCalledWith("sync_records_resume");
+    vi.mocked(invoke).mockResolvedValueOnce(14);
+    const point = { hash: HASH_A, revision: 7 };
+    await expect(
+      forceSyncAnchor({ kitCode: "CODE", point, removeDevices: ["intruder"], quarantineAnchor: false }),
+    ).resolves.toBe(14);
+    expect(invoke).toHaveBeenLastCalledWith("sync_force_anchor", {
+      kitCode: "CODE",
+      point,
+      removeDevices: ["intruder"],
+      quarantineAnchor: false,
+    });
   });
 });

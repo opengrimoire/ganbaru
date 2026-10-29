@@ -2,6 +2,8 @@
 //! the admin-signed proposals it places in its outbox, and the sequencing of proposals through
 //! the engine.
 
+use std::collections::BTreeSet;
+
 use super::outbox::{Outbox, is_final};
 use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
@@ -12,7 +14,9 @@ use ganbaru_handoff::discovery::DiscoveryKey;
 use ganbaru_handoff::protocol::{
     DeviceKind as HandoffDeviceKind, MAX_SYNC_FORWARDED_PROPOSALS, encode_sync_proposal,
 };
-use ganbaru_sync::{AuthorizationView, ContestRejection, Engine, LocalWriter, SpaceContext};
+use ganbaru_sync::{
+    AuthorizationView, ContestEntry, ContestRejection, Engine, LocalWriter, SpaceContext,
+};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole,
@@ -756,30 +760,52 @@ pub async fn seal_handover_here(
         .map_err(|error| format!("seal sync handover: {error}"))
 }
 
-/// Forces the anchor to this desktop after the anchor is lost or stolen: signs with `signer`
-/// and seals a handover without an old anchor vector, so operations only the lost anchor stored
-/// can become provisional again. A kit-lineage recovery key continues from the live entry of
-/// highest rank where this desktop is still live, which may lie below a stolen anchor's removal
-/// of it, and then removes the old anchor; any other signer continues from the selected head.
-/// When `promote` is set, which is when the recovery key signs for a desktop that is not an
-/// admin yet, the new anchor then sequences the promotion of its own device to admin with that
-/// key, signed by the same `signer`. Returns the revision of the last entry, or why the engine
-/// rejected one.
+/// What a forced handover to this desktop signs and seals after it.
+pub struct ForcedHandover<'a> {
+    /// The admin key or kit recovery key that signs the handover and the entries after it.
+    pub signer: &'a AdminKeyPair,
+    /// The admin key this desktop is promoted with, set when the recovery key signs for a
+    /// desktop that is not an admin yet.
+    pub promote: Option<AdminPublicKey>,
+    /// The kit point to continue from, one the contest view offers; `None` continues from the
+    /// default point.
+    pub point: Option<ContestEntry>,
+    /// Devices the user marked in the device review of a kit recovery, removed under the kit
+    /// key after the handover. Only a handover the kit key signs removes them.
+    pub removals: Vec<String>,
+}
+
+/// Forces the anchor to this desktop after the anchor is lost or stolen: signs with the
+/// request's signer and seals a handover without an old anchor vector, so operations only the
+/// lost anchor stored can become provisional again. A kit-lineage recovery key continues from
+/// the chosen kit point, or by default from the live entry of highest rank where this desktop
+/// is still live, which may lie below a stolen anchor's removal of it, and then removes the old
+/// anchor and every device marked in the device review; any other signer continues from the
+/// selected head. With a promotion, the new anchor then sequences the promotion of its own
+/// device to admin with that key, signed by the same signer. Returns the revision of the last
+/// entry, or why the engine rejected one.
 pub async fn force_handover_here(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
-    signer: &AdminKeyPair,
-    promote: Option<AdminPublicKey>,
+    forced: &ForcedHandover<'_>,
     writer: &mut LocalWriter<'_>,
     now_ms: u64,
 ) -> Result<Result<u64, ProposalRejection>, String> {
+    let signer = forced.signer;
     let device_id = writer.certificate.certificate.device_id.clone();
-    let point = engine
-        .handover_point(conn, ctx, &signer.public_key(), &device_id)
-        .await
-        .map_err(|error| format!("read sync authorization: {error}"))?
-        .ok_or_else(|| "the sync space has no charter".to_string())?;
+    let point = match &forced.point {
+        Some(entry) => engine
+            .kit_handover_point(conn, ctx, &signer.public_key(), &device_id, entry)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "the chosen entry is not a recovery kit point".to_string())?,
+        None => engine
+            .handover_point(conn, ctx, &signer.public_key(), &device_id)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "the sync space has no charter".to_string())?,
+    };
     if point.revision == 0 {
         return Err(
             "the log holds only its charter, so no epoch can continue it; link the devices again"
@@ -817,10 +843,16 @@ pub async fn force_handover_here(
         Err(rejection) => return Ok(Err(rejection)),
     };
     let mut follow_up = Vec::new();
-    if point.by_kit && point.anchor_device_id != device_id {
-        follow_up.push(remove_entry(&point.anchor_device_id));
+    if point.by_kit {
+        let mut removed = BTreeSet::from([device_id.clone()]);
+        let reviewed = forced.removals.iter().map(String::as_str);
+        for removal in std::iter::once(point.anchor_device_id.as_str()).chain(reviewed) {
+            if removed.insert(removal.to_owned()) {
+                follow_up.push(remove_entry(removal));
+            }
+        }
     }
-    if let Some(admin_key) = promote {
+    if let Some(admin_key) = forced.promote {
         follow_up.push(promote_entry(&device_id, admin_key));
     }
     for entry in follow_up {

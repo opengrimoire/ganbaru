@@ -1,14 +1,18 @@
 //! Yields and objections the local device seals into a contested epoch instance.
 
-use ganbaru_sync_contracts::{DeviceKeyPair, DeviceRole, Digest32, WriterId};
+use ganbaru_sync_contracts::{AdminKeyPair, DeviceKeyPair, DeviceRole, Digest32, WriterId};
 
-use super::authorization::{admin_entry, genesis_of, head, tag, view};
+use super::authorization::{admin_entry, genesis_of, head, remove_entry, tag, view};
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, enroll_entry,
-    person,
+    person, proposal,
 };
-use crate::{ContestRejection, StoreOutcome, StoreRefusal, WriterRetirement};
+use crate::{
+    CandidateKind, ContestAction, ContestCause, ContestEntry, ContestRejection, ContestRole,
+    ContestView, ContestsView, KitPointPlace, LosingRemoval, StoreOutcome, StoreRefusal,
+    WriterRetirement,
+};
 
 /// A hub anchor with admins 20, 21, and 22, and a replica of each admin that stores the log.
 async fn admins(seed: u64) -> (Replica, Replica, Replica, Replica) {
@@ -339,5 +343,314 @@ fn the_writer_of_a_removed_device_is_retired() {
         );
         let anchor = hub.writer();
         assert_eq!(retirement(&mut hub, anchor).await, None);
+    });
+}
+
+/// The contests `replica` shows to its own device, holding `admin` when it has one.
+async fn contests(replica: &mut Replica, admin: Option<&AdminKeyPair>) -> ContestsView {
+    let device = replica.device_id.clone();
+    let key = admin.map(AdminKeyPair::public_key);
+    replica
+        .engine
+        .contests(&mut replica.conn, &replica.ctx, &device, key.as_ref())
+        .await
+        .unwrap()
+        .expect("test spaces have a charter")
+}
+
+/// The yield and objection actions of `view`, without the kit action.
+fn contest_actions(view: &ContestView) -> Vec<ContestAction> {
+    view.actions
+        .iter()
+        .filter(|action| !matches!(action, ContestAction::UseKit { .. }))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn two_takes_show_one_contest_with_a_yield_for_each_contestant_and_the_kit_for_everyone() {
+    block_on(async {
+        let (mut hub, mut first, mut second, mut third) = admins(76).await;
+        let (_, point, point_hash) = head(&mut hub).await;
+        assert_eq!(
+            contests(&mut hub, Some(&anchor_admin(&person()))).await,
+            ContestsView::default()
+        );
+        let to_first = take(&mut first, 20).await;
+        let to_second = take(&mut second, 21).await;
+        hub.pull(&mut first).await;
+        hub.pull(&mut second).await;
+        for replica in [&mut first, &mut second, &mut third] {
+            replica.pull(&mut hub).await;
+        }
+
+        let shown = contests(&mut second, Some(&device_admin(21))).await;
+        assert_eq!(shown.contests.len(), 1);
+        assert!(shown.losing_removals.is_empty());
+        let contest = &shown.contests[0];
+        assert_eq!(contest.cause, ContestCause::Contested);
+        assert_eq!(
+            contest.frozen_at,
+            Some(ContestEntry {
+                hash: point_hash,
+                revision: point
+            })
+        );
+        assert_eq!(contest.instance.anchor_device_id, ANCHOR_DEVICE_ID);
+        assert_eq!(contest.instance.epoch, 0);
+        let candidates: Vec<(Digest32, &str, Option<&str>, bool)> = contest
+            .candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.hash,
+                    candidate.target_device_id.as_str(),
+                    candidate.signer_device_id.as_deref(),
+                    candidate.local,
+                )
+            })
+            .collect();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.contains(&(
+            to_first,
+            device_id(20).as_str(),
+            Some(device_id(20).as_str()),
+            false
+        )));
+        assert!(candidates.contains(&(
+            to_second,
+            device_id(21).as_str(),
+            Some(device_id(21).as_str()),
+            true
+        )));
+        for candidate in &contest.candidates {
+            assert_eq!(candidate.kind, CandidateKind::Forced);
+            assert_eq!(candidate.parent.hash, point_hash);
+            assert!(
+                candidate
+                    .target_enrolled_revision
+                    .is_some_and(|revision| revision <= point)
+            );
+            assert_eq!(
+                candidate.target_enroller_device_id.as_deref(),
+                Some(ANCHOR_DEVICE_ID)
+            );
+            assert_eq!(candidate.withdrawn_in_favor_of, None);
+        }
+        assert!(contest.objections.is_empty() && contest.yields.is_empty());
+        assert!(contest.held_device_ids.is_empty());
+        assert_eq!(
+            contest.local_role,
+            ContestRole::Contestant {
+                candidate: to_second
+            }
+        );
+        assert_eq!(
+            contest_actions(contest),
+            vec![ContestAction::YieldTo {
+                candidate: to_first
+            }]
+        );
+        let Some(ContestAction::UseKit { points }) = contest.actions.last() else {
+            panic!("the kit action closes every contest's actions");
+        };
+        assert_eq!(
+            points.first().map(|point| &point.place),
+            Some(&KitPointPlace::Head)
+        );
+
+        // A device without a candidate only has the kit, and so does one without an admin key.
+        let bystander = contests(&mut third, Some(&device_admin(22))).await;
+        assert_eq!(bystander.contests[0].local_role, ContestRole::Bystander);
+        assert!(contest_actions(&bystander.contests[0]).is_empty());
+        let keyless = contests(&mut third, None).await;
+        assert_eq!(keyless.contests[0].local_role, ContestRole::Bystander);
+        assert!(matches!(
+            keyless.contests[0].actions.as_slice(),
+            [ContestAction::UseKit { .. }]
+        ));
+
+        // The offered yield is one the sealing path accepts, and it resolves the contest.
+        second
+            .seal_yield(&device_admin(21), &to_first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            contests(&mut second, Some(&device_admin(21))).await,
+            ContestsView::default()
+        );
+        // The old anchor may still object to the take that won by the yield.
+        hub.pull(&mut second).await;
+        let resolved = contests(&mut hub, Some(&anchor_admin(&person()))).await;
+        assert_eq!(resolved.contests.len(), 1);
+        assert_eq!(
+            (resolved.contests[0].cause, resolved.contests[0].frozen_at),
+            (ContestCause::Taken, None)
+        );
+        assert_eq!(
+            contest_actions(&resolved.contests[0]),
+            vec![ContestAction::Object {
+                candidate: to_first
+            }]
+        );
+    });
+}
+
+#[test]
+fn a_third_contestant_sees_the_yield_of_another_withdraw_its_candidate() {
+    block_on(async {
+        let (mut hub, mut first, mut second, mut third) = admins(77).await;
+        let to_first = take(&mut first, 20).await;
+        let to_second = take(&mut second, 21).await;
+        let to_third = take(&mut third, 22).await;
+        for replica in [&mut first, &mut second, &mut third] {
+            hub.pull(replica).await;
+        }
+        second.pull(&mut hub).await;
+        second
+            .seal_yield(&device_admin(21), &to_first)
+            .await
+            .unwrap()
+            .unwrap();
+        hub.pull(&mut second).await;
+        third.pull(&mut hub).await;
+
+        let shown = contests(&mut third, Some(&device_admin(22))).await;
+        let contest = &shown.contests[0];
+        assert_eq!(contest.yields.len(), 1);
+        assert_eq!(contest.yields[0].to, to_first);
+        assert_eq!(
+            contest.yields[0].author_device_id.as_deref(),
+            Some(device_id(21).as_str())
+        );
+        let withdrawn: Vec<(Digest32, Option<Digest32>)> = contest
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.hash, candidate.withdrawn_in_favor_of))
+            .collect();
+        assert!(withdrawn.contains(&(to_second, Some(to_first))));
+        assert!(withdrawn.contains(&(to_first, None)));
+        assert!(withdrawn.contains(&(to_third, None)));
+        // A withdrawn candidate is no longer one to give way to.
+        assert_eq!(
+            contest_actions(contest),
+            vec![ContestAction::YieldTo {
+                candidate: to_first
+            }]
+        );
+
+        // The contestant that already yielded is offered nothing more.
+        let own = contests(&mut second, Some(&device_admin(21))).await;
+        assert!(contest_actions(&own.contests[0]).is_empty());
+    });
+}
+
+#[test]
+fn the_old_anchor_is_offered_an_objection_to_a_lone_take_and_then_its_withdrawal() {
+    block_on(async {
+        let (mut hub, mut first, mut second, _) = admins(78).await;
+        let taken = take(&mut first, 20).await;
+        hub.pull(&mut first).await;
+        second.pull(&mut hub).await;
+        let anchor = anchor_admin(&person());
+
+        let shown = contests(&mut hub, Some(&anchor)).await;
+        assert_eq!(shown.contests.len(), 1);
+        let contest = &shown.contests[0];
+        assert_eq!(
+            (contest.cause, contest.frozen_at),
+            (ContestCause::Taken, None)
+        );
+        assert_eq!(contest.local_role, ContestRole::Anchor);
+        assert_eq!(
+            contest_actions(contest),
+            vec![ContestAction::Object { candidate: taken }]
+        );
+        // Nobody else sees a contest in a take that won.
+        assert_eq!(
+            contests(&mut second, Some(&device_admin(21))).await,
+            ContestsView::default()
+        );
+        assert_eq!(
+            contests(&mut first, Some(&device_admin(20))).await,
+            ContestsView::default()
+        );
+
+        hub.seal_objection(&anchor, &taken).await.unwrap().unwrap();
+        let objected = contests(&mut hub, Some(&anchor)).await;
+        let contest = &objected.contests[0];
+        assert_eq!(contest.cause, ContestCause::Contested);
+        assert!(contest.frozen_at.is_some());
+        assert_eq!(contest.objections.len(), 1);
+        assert_eq!(
+            (
+                contest.objections[0].against,
+                contest.objections[0].withdrawn
+            ),
+            (taken, false)
+        );
+        assert_eq!(
+            contest.objections[0].objector_device_id.as_deref(),
+            Some(ANCHOR_DEVICE_ID)
+        );
+        assert_eq!(
+            contest_actions(contest),
+            vec![ContestAction::WithdrawObjection { candidate: taken }]
+        );
+        first.pull(&mut hub).await;
+        let contestant = contests(&mut first, Some(&device_admin(20))).await;
+        assert_eq!(
+            contestant.contests[0].local_role,
+            ContestRole::Contestant { candidate: taken }
+        );
+        assert!(contest_actions(&contestant.contests[0]).is_empty());
+        // The objection removes the taker on the anchor's branch, which is not effective.
+        assert_eq!(
+            contestant.losing_removals,
+            vec![LosingRemoval {
+                device_id: device_id(20),
+                removed_by_device_id: Some(ANCHOR_DEVICE_ID.to_owned()),
+                revision: contestant.losing_removals[0].revision,
+            }]
+        );
+
+        hub.seal_yield(&anchor, &taken).await.unwrap().unwrap();
+        assert_eq!(
+            contests(&mut hub, Some(&anchor)).await,
+            ContestsView::default()
+        );
+    });
+}
+
+#[test]
+fn a_removal_on_a_contested_branch_is_listed_with_its_remover_for_the_kit_review() {
+    block_on(async {
+        let (mut hub, mut first, mut second, mut third) = admins(79).await;
+        take(&mut first, 20).await;
+        take(&mut second, 21).await;
+        let removal = proposal(
+            first.ctx.space,
+            &device_admin(20),
+            first.now_ms,
+            remove_entry(&device_id(22)),
+        );
+        first.sequence_signed(&removal).await.unwrap().unwrap();
+        for from in [&mut first, &mut second, &mut hub] {
+            third.pull(from).await;
+        }
+
+        let shown = contests(&mut third, Some(&device_admin(22))).await;
+        assert_eq!(shown.contests.len(), 1);
+        assert_eq!(shown.contests[0].held_device_ids, vec![device_id(22)]);
+        assert_eq!(shown.losing_removals.len(), 1);
+        let removed = &shown.losing_removals[0];
+        assert_eq!(
+            (
+                removed.device_id.as_str(),
+                removed.removed_by_device_id.as_deref()
+            ),
+            (device_id(22).as_str(), Some(device_id(20).as_str()))
+        );
     });
 }

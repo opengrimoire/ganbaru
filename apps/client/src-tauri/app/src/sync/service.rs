@@ -27,7 +27,9 @@ use super::writer::{
 };
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 #[cfg(desktop)]
-pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, LateDecision, PendingRecoveryKit};
+pub(crate) use anchor::{
+    AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, PendingRecoveryKit,
+};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
@@ -195,6 +197,11 @@ impl RuntimeState {
     /// Runs a pass now instead of waiting for a commit or the fallback interval.
     pub(crate) fn sync_now(&self) {
         self.now.notify_one();
+    }
+
+    /// The authorization record exchange every pass shares, with its storage backstop.
+    pub(crate) fn records(&self) -> &RecordExchange {
+        &self.records
     }
 
     /// Records whether the app is in the foreground. A pass serves the member listener only

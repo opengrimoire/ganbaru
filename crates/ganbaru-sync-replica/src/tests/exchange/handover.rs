@@ -634,6 +634,11 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
         )
         .expect("sign enrollment");
         sequence_here(&mut hub_replica, &enroll).await;
+        sequence_here(
+            &mut hub_replica,
+            &enroll_mobile(space, charter, "device-watch", 50),
+        )
+        .await;
         laptop
             .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
             .await
@@ -651,12 +656,22 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
             .expect("charter");
         let recovery =
             authority::recovery_admin(&view, &hub_keys().recovery.kit_code()).expect("kit");
+        // The device review marks the watch and, redundantly, the lost anchor and this desktop.
+        let forced = authority::ForcedHandover {
+            signer: &recovery,
+            promote: Some(laptop_admin.public_key()),
+            point: None,
+            removals: vec![
+                "device-watch".to_string(),
+                HUB_DEVICE.to_string(),
+                LAPTOP_DEVICE.to_string(),
+            ],
+        };
         let revision = authority::force_handover_here(
             &laptop.engine,
             &mut conn,
             &laptop.ctx,
-            &recovery,
-            Some(laptop_admin.public_key()),
+            &forced,
             &mut laptop.writer.local(),
             NOW_MS,
         )
@@ -685,6 +700,18 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
                 .any(|device| device.device_id == HUB_DEVICE && device.removed_revision.is_some()),
             "the lost anchor is removed"
         );
+        let removed: Vec<&str> = view
+            .devices
+            .iter()
+            .filter(|device| device.removed_revision.is_some())
+            .map(|device| device.device_id.as_str())
+            .collect();
+        assert_eq!(
+            removed.len(),
+            2,
+            "the reviewed device is removed under the kit, each device once and never this desktop"
+        );
+        assert!(removed.contains(&"device-watch"));
         assert!(
             authority::recovery_admin(&view, &RecoverySeed::from_bytes([78; 32]).kit_code())
                 .is_err()

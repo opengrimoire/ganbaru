@@ -44,8 +44,25 @@ pub enum ContestRejection {
     Rejected(ProposalRejection),
 }
 
+impl std::fmt::Display for ContestRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::NotContestant => "this device has no take in the contest",
+            Self::UnknownCandidate => "no stored handover has that hash",
+            Self::AlreadyYielded => "this device already gave way in the contest",
+            Self::NotFrozen => "the contest is already resolved",
+            Self::NotAnchor => "this device is not the anchor the handover replaces",
+            Self::NotCandidate => "the entry is not a stored handover",
+            Self::AlreadyObjected => "the handover is already blocked",
+            Self::Resolved => "the handover can no longer be blocked",
+            Self::Rejected(rejection) => return rejection.fmt(formatter),
+        };
+        formatter.write_str(reason)
+    }
+}
+
 /// Where a contest record continues from and what it carries.
-struct ContestPoint {
+pub(super) struct ContestPoint {
     /// State after the parent entry.
     state: AuthState,
     /// Entry the record carries.
@@ -62,7 +79,7 @@ impl Resolution<'_> {
     }
 
     /// The anchor device of the instance opened at `root`.
-    fn instance_anchor(&self, root: usize) -> String {
+    pub(super) fn instance_anchor(&self, root: usize) -> String {
         self.walk.selection(root).state.anchor_device_id
     }
 
@@ -74,7 +91,7 @@ impl Resolution<'_> {
     /// Where `author`, the admin key of `device`, yields to `handover`: as a contestant, at the
     /// best entry of the instance its own other candidate opened, or, as the anchor of the
     /// contested instance, at its best entry past an objection to `handover`.
-    fn yield_point(
+    pub(super) fn yield_point(
         &self,
         author: &AdminPublicKey,
         device: &str,
@@ -142,7 +159,7 @@ impl Resolution<'_> {
 
     /// Where `author`, the admin key of `device`, objects to `handover`: the best entry of the
     /// contested instance past the handover's parent, with a removal of its target.
-    fn objection_point(
+    pub(super) fn objection_point(
         &self,
         author: &AdminPublicKey,
         device: &str,

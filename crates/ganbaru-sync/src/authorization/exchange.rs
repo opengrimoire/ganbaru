@@ -148,7 +148,17 @@ pub struct AuthorizationStorage {
     /// stored certificate are counted in the totals only.
     pub by_device: Vec<(String, u64)>,
     /// Writers with more than one stored certificate or two envelopes at one sequence.
-    pub forked_writers: Vec<WriterId>,
+    pub forked_writers: Vec<ForkedWriter>,
+}
+
+/// A writer of the record store with two envelopes at one sequence or two certificates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForkedWriter {
+    /// The writer.
+    pub writer: WriterId,
+    /// The device a stored certificate of the writer names, the lowest device id when several
+    /// do, or `None` without a stored certificate.
+    pub device_id: Option<String>,
 }
 
 /// One stored envelope as the classes read it, without its bytes.
@@ -469,10 +479,13 @@ impl Engine {
         .bind(space)
         .fetch_all(&mut *conn)
         .await?;
-        let forked: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT DISTINCT writer_id FROM (SELECT writer_id FROM sync_auth_envelopes WHERE space_id = ?1
-             GROUP BY writer_id, seq HAVING count(*) > 1)
-             ORDER BY writer_id",
+        let forked: Vec<(Vec<u8>, Option<String>)> = sqlx::query_as(
+            "SELECT f.writer_id,
+                    (SELECT min(c.device_id) FROM sync_auth_envelopes c
+                     WHERE c.space_id = ?1 AND c.role = 'certificate' AND c.writer_id = f.writer_id)
+             FROM (SELECT DISTINCT writer_id FROM sync_auth_envelopes WHERE space_id = ?1
+                   GROUP BY writer_id, seq HAVING count(*) > 1) f
+             ORDER BY f.writer_id",
         )
         .bind(space)
         .fetch_all(&mut *conn)
@@ -487,8 +500,13 @@ impl Engine {
                 })
                 .collect::<SyncResult<_>>()?,
             forked_writers: forked
-                .iter()
-                .map(|writer| log::writer_id(writer))
+                .into_iter()
+                .map(|(writer, device_id)| {
+                    Ok(ForkedWriter {
+                        writer: log::writer_id(&writer)?,
+                        device_id,
+                    })
+                })
                 .collect::<SyncResult<_>>()?,
         })
     }

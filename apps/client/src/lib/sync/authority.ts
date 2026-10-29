@@ -130,6 +130,16 @@ function linkedDesktopBesideAnchor(context: SyncAuthorityContext): boolean {
     && !own.anchor;
 }
 
+/** Whether this is a linked desktop, enrolled even if since removed, that does not hold the anchor. */
+function linkedDesktopInContest(context: SyncAuthorityContext): boolean {
+  const own = syncOwnDevice(context.authority);
+  return !context.mobileLayout
+    && context.statusRole === "client"
+    && own !== null
+    && own.kind === "desktop"
+    && !own.anchor;
+}
+
 /** Whether this linked admin desktop may take the anchor in a planned handover. */
 export function canTakeSyncAnchor(context: SyncAuthorityContext): boolean {
   return adminHere(context)
@@ -178,9 +188,17 @@ export function canInstallSyncRecoveryKey(context: SyncAuthorityContext): boolea
  * How this desktop may use a recovery kit, or null when it may not. An enrolled desktop that is
  * not an admin yet proposes its promotion while its last exchange reached the anchor; a linked
  * one forces the handover to itself once the anchor stopped answering. A desktop that is not
- * enrolled cannot use a kit, since the forced anchor must already be an enrolled device.
+ * enrolled cannot use a kit, since the forced anchor must already be an enrolled device. When a
+ * contest offers the kit, any linked enrolled desktop that is not the anchor, admin or not,
+ * forces the handover with it, even one a losing branch removed, since the kit may continue from
+ * before that removal.
  */
-export function syncRecoveryKitUse(context: SyncAuthorityContext, state: SyncState): SyncKitUse | null {
+export function syncRecoveryKitUse(
+  context: SyncAuthorityContext,
+  state: SyncState,
+  kitContested = false,
+): SyncKitUse | null {
+  if (kitContested && linkedDesktopInContest(context)) return "force";
   if (context.authority.ownIsAdmin) return null;
   if (context.anchorUnreachableSinceMs !== null) return linkedDesktopBesideAnchor(context) ? "force" : null;
   const own = syncOwnDevice(context.authority);

@@ -75,7 +75,12 @@
     try {
       if (action === "takeAnchor") await authorityState.takeAnchor();
       else if (action === "forceAnchor") {
-        await authorityState.forceAnchor({ kitCode: null, quarantineAnchor: quarantineAnchor && lostAnchor !== null });
+        await authorityState.forceAnchor({
+          kitCode: null,
+          point: null,
+          removeDevices: [],
+          quarantineAnchor: quarantineAnchor && lostAnchor !== null,
+        });
         quarantineAnchor = false;
       } else if (deviceId === null) throw new Error("A device action needs a device");
       else if (action === "remove") await authorityState.removeDevice(deviceId);

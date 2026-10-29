@@ -40,11 +40,17 @@ use crate::seal::{SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
 
 mod contest;
+mod contest_view;
 mod exchange;
 
 pub use contest::ContestRejection;
+pub use contest_view::{
+    CandidateKind, ContestAction, ContestCandidate, ContestCause, ContestEntry, ContestInstance,
+    ContestObjection, ContestRole, ContestView, ContestYield, ContestsView, KitPoint,
+    KitPointPlace, LosingRemoval,
+};
 pub use exchange::{
-    AuthorizationStorage, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
+    AuthorizationStorage, ForkedWriter, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
     RecordEnvelope, RecordPage, RecordRole, RecordWants,
 };
 
@@ -1354,21 +1360,10 @@ impl<'a> Resolution<'a> {
     /// head's instance, while it is frozen.
     fn held(&self) -> BTreeSet<String> {
         let instance = self.walk.visits[self.best].instance;
-        let start = match self.outcomes.get(&instance) {
-            Some(Outcome::FrozenAt(point)) => *point,
-            _ => return BTreeSet::new(),
-        };
-        let mut held = BTreeSet::new();
-        let mut stack = vec![start];
-        while let Some(at) = stack.pop() {
-            if !self.effective[at]
-                && let Some(device) = &self.walk.visits[at].removes
-            {
-                held.insert(device.clone());
-            }
-            stack.extend(self.walk.children[at].iter().copied());
+        match self.outcomes.get(&instance) {
+            Some(Outcome::FrozenAt(point)) => self.held_under(*point),
+            _ => BTreeSet::new(),
         }
-        held
     }
 
     /// The selected chain, with the freeze, the hold, and the handovers of the head's instance.
@@ -2195,6 +2190,25 @@ impl Engine {
     ) -> SyncResult<Option<HandoverPoint>> {
         log::ensure_space(conn, ctx.space).await?;
         handover_point(conn, ctx.space, signer, target).await
+    }
+
+    /// The kit point at `entry` for a handover the kit key `signer` signs for the desktop
+    /// `target`, when `entry` is one of the kit points, see [`ContestAction::UseKit`]. `None`
+    /// without a charter or when `entry` is not a kit point.
+    pub async fn kit_handover_point(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        signer: &AdminPublicKey,
+        target: &str,
+        entry: &ContestEntry,
+    ) -> SyncResult<Option<HandoverPoint>> {
+        log::ensure_space(conn, ctx.space).await?;
+        Ok(
+            kit_point(conn, ctx.space, signer, target, entry.revision, &entry.hash)
+                .await?
+                .map(|state| HandoverPoint::of(&state, true)),
+        )
     }
 
     /// Seals an admin-signed handover as the first entry of the epoch it opens, in the local

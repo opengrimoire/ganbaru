@@ -28,6 +28,8 @@
   import SyncLateChanges from "./SyncLateChanges.svelte";
   import SyncOutboxList from "./SyncOutboxList.svelte";
   import SyncRecoveryKit from "./SyncRecoveryKit.svelte";
+  import SyncContestCard from "./SyncContestCard.svelte";
+  import { syncKitContested, syncStorageAlertLines } from "$lib/sync/contests";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import {
@@ -93,7 +95,13 @@
   );
   const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
   const canInstallKey = $derived(authorityContext !== null && canInstallSyncRecoveryKey(authorityContext));
-  const kitUse = $derived(authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state));
+  const contests = $derived(authorityState.contests);
+  const kitUse = $derived(
+    authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state, syncKitContested(contests)),
+  );
+  const storageBackstop = $derived(contests?.storage.backstop ?? null);
+  const storageAlerts = $derived(contests ? syncStorageAlertLines(t, localization.locale, contests.storage) : []);
+  let resuming = $state(false);
   const canReset = $derived(canResetSyncState(status.role, mobileLayout));
 
   async function resetSync(): Promise<void> {
@@ -127,6 +135,21 @@
       await openMobileBackgroundExecutionSettings("battery");
     } catch (cause: unknown) {
       console.warn("Android battery settings could not be opened", cause);
+    }
+  }
+
+  /** Resumes the record exchange the storage backstop stopped. */
+  async function resumeRecords(): Promise<void> {
+    if (resuming) return;
+    resuming = true;
+    actionError = "";
+    try {
+      await authorityState.resumeRecords();
+    } catch (cause: unknown) {
+      console.warn("sync record exchange could not be resumed", cause);
+      actionError = t("sync.storage.resumeFailed");
+    } finally {
+      resuming = false;
     }
   }
 
@@ -231,6 +254,23 @@
       {#if anchorUnreachable}
         <Notice tone="warning" role="status" copy={false} message={anchorUnreachable} />
       {/if}
+      {#if storageBackstop}
+        <Notice
+          tone="warning"
+          role="status"
+          copy={false}
+          message={`${storageBackstop === "reserve" ? t("sync.storage.reserve") : t("sync.storage.stopped")} ${t("sync.storage.resumeHint")}`}
+        >
+          {#snippet actions()}
+            <button type="button" class="notice-action-text" disabled={resuming} onclick={() => void resumeRecords()}>
+              {t("sync.storage.resume")}
+            </button>
+          {/snippet}
+        </Notice>
+      {/if}
+      {#each storageAlerts as line (line)}
+        <Notice tone="warning" role="status" copy={false} message={line} />
+      {/each}
     </div>
 
     {#if held.length > 0}
@@ -279,6 +319,9 @@
       <Notice class="px-1 text-[0.8rem] leading-5" message={t("sync.authority.loadFailed")} copy={false} onRetry={authorityState.refresh} />
     {/if}
     {#if authorityContext}
+      {#each contests?.contests ?? [] as contest (contest.rootHash)}
+        <SyncContestCard buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass} {contest} />
+      {/each}
       <SyncDevicesList {buttonClass} {mobileLayout} context={authorityContext} />
       {#if authorityState.outbox.length > 0}
         <SyncOutboxList entries={authorityState.outbox} {now} />
@@ -300,6 +343,7 @@
           use={kitUse}
           anchor={syncQuarantinableAnchor(authorityContext.authority)}
           pendingKit={authorityState.pendingKit}
+          {contests}
         />
       {/if}
     {/if}

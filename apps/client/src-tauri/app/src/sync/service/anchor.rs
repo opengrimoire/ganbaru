@@ -10,12 +10,12 @@
 use super::{Session, SyncHost, acquire, blocking};
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
-use ganbaru_sync::AuthorizationView;
+use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKind, Digest32, Entry, LateResolution, LateRow, ProposalRejection,
     ResolveLate, RowKey, SignedProposal, TableId, VersionVector,
 };
-use ganbaru_sync_replica::authority::{self, ensure_admin_key};
+use ganbaru_sync_replica::authority::{self, ForcedHandover, ensure_admin_key};
 use ganbaru_sync_replica::client::{self, PeerIds, SyncTransport};
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
@@ -49,7 +49,52 @@ pub(crate) enum AuthorityAction {
     /// Seal a handover to this linked desktop without the anchor, after the anchor is lost.
     /// An admin desktop signs with its admin key; any other enrolled desktop signs with the
     /// recovery admin key the kit code derives, and then promotes itself to admin.
-    ForceAnchor(Option<String>),
+    ForceAnchor(ForceRequest),
+    /// Seal, with this desktop's admin key, a yield to the stored handover with this hash in a
+    /// contested epoch instance.
+    Yield(Digest32),
+    /// Seal, as the anchor of the instance the stored handover with this hash leaves, an
+    /// objection to it.
+    Object(Digest32),
+}
+
+/// A forced handover a person asks for. Its debug form never shows the kit code.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub(crate) struct ForceRequest {
+    /// The kit code whose recovery admin key signs, or `None` for this desktop's admin key.
+    pub(crate) kit: Option<String>,
+    /// The kit point to continue from, `None` for the default one.
+    pub(crate) point: Option<ContestEntry>,
+    /// Devices the person marked in the device review of a kit recovery.
+    pub(crate) removals: Vec<String>,
+}
+
+impl std::fmt::Debug for ForceRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ForceRequest")
+            .field("kit", &self.kit.as_ref().map(|_| "<redacted>"))
+            .field("point", &self.point)
+            .field("removals", &self.removals)
+            .finish()
+    }
+}
+
+/// Which contest record a person asks this desktop to seal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContestStep {
+    Yield,
+    Object,
+}
+
+impl ContestStep {
+    /// The action named in an error.
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Yield => "give way",
+            Self::Object => "block the take",
+        }
+    }
 }
 
 /// An admin's decision on one late change.
@@ -83,8 +128,11 @@ impl std::fmt::Debug for AuthorityAction {
                 .debug_tuple("ResolveLate")
                 .field(decision)
                 .finish(),
-            Self::ForceAnchor(None) => formatter.write_str("ForceAnchor(None)"),
-            Self::ForceAnchor(Some(_)) => formatter.write_str("ForceAnchor(<redacted>)"),
+            Self::ForceAnchor(request) => {
+                formatter.debug_tuple("ForceAnchor").field(request).finish()
+            }
+            Self::Yield(handover) => formatter.debug_tuple("Yield").field(handover).finish(),
+            Self::Object(handover) => formatter.debug_tuple("Object").field(handover).finish(),
         }
     }
 }
@@ -99,6 +147,8 @@ pub(crate) enum AuthorityAnswer {
     /// The authorization revision of the forced handover, and its promotion when the kit
     /// signed it, with the device id of the anchor it replaced.
     ForcedAnchor { revision: u64, old_anchor: String },
+    /// The authorization revision of the yield or objection this desktop sealed.
+    Contested(u64),
     /// The code of the regenerated recovery kit, shown once.
     RecoveryKit(String),
     /// The recovery kit waiting to be saved, if any.
@@ -130,6 +180,9 @@ impl std::fmt::Debug for AuthorityAnswer {
                 .field("revision", revision)
                 .field("old_anchor", old_anchor)
                 .finish(),
+            Self::Contested(revision) => {
+                formatter.debug_tuple("Contested").field(revision).finish()
+            }
             Self::RecoveryKit(_) => formatter.write_str("RecoveryKit(<redacted>)"),
             Self::PendingRecoveryKit(kit) => formatter
                 .debug_tuple("PendingRecoveryKit")
@@ -265,8 +318,15 @@ impl<H: SyncHost> Session<'_, H> {
                     self.resolve_late(manager, writer, decision, &mut restored)
                         .await
                 }
-                AuthorityAction::ForceAnchor(kit) => {
-                    self.force_anchor(manager, is_hub, writer, kit.as_deref())
+                AuthorityAction::ForceAnchor(request) => {
+                    self.force_anchor(manager, is_hub, writer, request).await
+                }
+                AuthorityAction::Yield(handover) => {
+                    self.contest(manager, writer, handover, ContestStep::Yield)
+                        .await
+                }
+                AuthorityAction::Object(handover) => {
+                    self.contest(manager, writer, handover, ContestStep::Object)
                         .await
                 }
                 action => self.propose_action(manager, vault_id, is_hub, action).await,
@@ -383,6 +443,9 @@ impl<H: SyncHost> Session<'_, H> {
             }
             AuthorityAction::ForceAnchor(_) => {
                 Err("forcing the anchor runs with the sync writer".to_string())
+            }
+            AuthorityAction::Yield(_) | AuthorityAction::Object(_) => {
+                Err("a contest record runs with the sync writer".to_string())
             }
             AuthorityAction::Remove(device_id) => {
                 if *device_id == admin.device_id {
@@ -563,14 +626,22 @@ impl<H: SyncHost> Session<'_, H> {
     /// anchor, and this desktop's promotion to admin when it is not one, and is dropped at once;
     /// a stolen anchor that removed this desktop does not stop it. Without it, an admin desktop
     /// signs with its admin key. The coordinator does not force the anchor: while it anchors nothing
-    /// is lost, and otherwise its members reach it, so a planned handover applies.
+    /// is lost, and otherwise its members reach it, so a planned handover applies. A kit use may
+    /// name the kit point it continues from and the devices the device review marked, which the
+    /// kit key removes after the handover.
     async fn force_anchor(
         &self,
         manager: &PairingManager,
         is_hub: bool,
         writer: &mut Option<ActiveWriter>,
-        kit: Option<&str>,
+        request: &ForceRequest,
     ) -> Result<AuthorityAnswer, String> {
+        let kit = request.kit.as_deref();
+        if kit.is_none() && (request.point.is_some() || !request.removals.is_empty()) {
+            return Err(
+                "only the recovery kit chooses a point or removes reviewed devices".to_string(),
+            );
+        }
         if is_hub {
             return Err("the coordinator takes the anchor through a planned handover".to_string());
         }
@@ -609,13 +680,18 @@ impl<H: SyncHost> Session<'_, H> {
         let Some(active) = writer.as_mut() else {
             return Err("the sync writer is not ready".to_string());
         };
+        let forced = ForcedHandover {
+            signer,
+            promote,
+            point: request.point,
+            removals: request.removals.clone(),
+        };
         let mut conn = acquire(&self.pool).await?;
         let revision = authority::force_handover_here(
             &self.engine,
             &mut conn,
             &self.ctx,
-            signer,
-            promote,
+            &forced,
             &mut active.local(),
             now_ms()?,
         )
@@ -630,6 +706,52 @@ impl<H: SyncHost> Session<'_, H> {
             revision,
             old_anchor: admin.view.anchor_device_id.clone(),
         })
+    }
+
+    /// Seals, with this desktop's admin key, a yield to or an objection against the stored
+    /// handover `handover` of a contested epoch instance.
+    async fn contest(
+        &self,
+        manager: &PairingManager,
+        writer: &mut Option<ActiveWriter>,
+        handover: &Digest32,
+        step: ContestStep,
+    ) -> Result<AuthorityAnswer, String> {
+        let admin = self.admin_context(manager).await?;
+        let Some(active) = writer.as_mut() else {
+            return Err("the sync writer is not ready".to_string());
+        };
+        let mut conn = acquire(&self.pool).await?;
+        let sealed = match step {
+            ContestStep::Yield => {
+                authority::yield_here(
+                    &self.engine,
+                    &mut conn,
+                    &self.ctx,
+                    &admin.admin,
+                    handover,
+                    &mut active.local(),
+                    now_ms()?,
+                )
+                .await?
+            }
+            ContestStep::Object => {
+                authority::object_here(
+                    &self.engine,
+                    &mut conn,
+                    &self.ctx,
+                    &admin.admin,
+                    handover,
+                    &mut active.local(),
+                    now_ms()?,
+                )
+                .await?
+            }
+        };
+        let revision = sealed.map_err(|rejection| format!("{}: {rejection}", step.verb()))?;
+        drop(conn);
+        self.record_commit(active).await?;
+        Ok(AuthorityAnswer::Contested(revision))
     }
 
     /// The anchor duties of a linked desktop: reports the final rejections of the last

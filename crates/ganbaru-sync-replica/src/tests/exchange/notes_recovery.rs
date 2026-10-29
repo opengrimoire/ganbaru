@@ -416,6 +416,34 @@ fn a_restored_notes_database_block_brings_back_its_database() {
     });
 }
 
+/// A deleted data source returns to its surviving database with the property change the
+/// deletion made unseen.
+#[test]
+fn a_restored_notes_data_source_returns_to_its_database() {
+    super::block_on(async {
+        let mut pair = database_pair_with_offer(
+            "notes-recovery-data-source",
+            &format!("DELETE FROM notes_data_sources WHERE id = '{SOURCE}'"),
+        )
+        .await;
+        assert_eq!(pair.offers().await, [SOURCE]);
+
+        let source = restore(&mut pair, &DATA_SOURCES, SOURCE, false).await;
+        assert_eq!(
+            pair.texts(format!(
+                "SELECT source.database_id || '|' || property.name || '|' || property.type
+                 FROM notes_data_sources AS source
+                 JOIN notes_data_source_properties AS property
+                     ON property.data_source_id = source.id
+                 WHERE source.id = '{source}'"
+            ))
+            .await,
+            [format!("{DATABASE}|Stage|rich_text")]
+        );
+        pair.finish().await;
+    });
+}
+
 /// A database deleted without its block cannot come back under the block's id, so its restore
 /// is refused, the offer stays, and a discard closes it on both replicas.
 #[test]

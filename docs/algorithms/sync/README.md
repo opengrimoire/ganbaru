@@ -108,6 +108,17 @@ A unique column set equal to the non-empty inputs of a derived key needs no reso
 
 A conflict is a surfaced group of a live row with two or more versions whose values differ, or the existence group of a [severed edge](#trees-and-acyclic-edge-sets). Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
 
+## Authorization and exclusion
+
+The authorization log's format, roles, and bounds are owned by [Device linking and synchronization](../../data/sync.md#writers); this section states the pure rules every replica derives from the records it stores.
+
+- **Chain selection.** Every authorization record that passes its intrinsic checks is kept in a content-addressed record store. Selection walks the tree of stored records whose rules hold at their parent and keeps the effective entry of highest rank: kit handover count, then anchor epoch, then lowest epoch root hash, then revision, then lowest entry hash. The result depends only on the stored set, never on arrival order or the delivering peer.
+- **Contests.** Each epoch instance has the handovers out of it as candidates; an entry of the instance that revokes a candidate's signer or target objects to it. A candidate on the ancestry of the highest ranked kit handover wins, then a lone unobjected candidate, then a candidate every other contestant (and, for objections, the instance's anchor) yielded to. Otherwise the instance freezes at the common ancestor of the candidates' parents. A provable fork of a writer that carries the instance's records freezes it too. While frozen, devices that an entry past the freeze removes are held: their operations are stored but not applied.
+- **Exclusion.** A selected removal names a cutoff per writer of the removed device. Every replica but the removed device holds that writer's operations past the cutoff as invalid, removes the merge effects of those already applied, and restores the versions they superseded unless the superseded version's own operation is excluded, its writer has a later version of the group, or a remaining version saw it. Operations of other writers stay applied, so an honest operation that saw an excluded one keeps its effects. Reselecting a chain without the removal classifies the operations again and reverts the exclusion.
+- **Fork exclusion.** Two operations of one writer at one sequence with different hashes, both signed by its key, are fork evidence. Every replica but the writer's own device excludes both branches past the shared prefix in the same way, and a fork leaves no late changes.
+- **Displaced versions.** A member keeps the versions an operation superseded while that operation's writer belongs to neither the anchor nor the local device and the anchor has not confirmed storing it, since only such an operation can still fall past a cutoff. The anchor keeps none; after a handover or a fork it seals again the current value of every live group an excluded operation wrote, so members that kept nothing converge with those that restored.
+- **Late changes.** Excluded operations fold commutatively into one late change per row and removal: the strongest kind (created, then deletion, then values), the union of groups written, and per group the latest value by clock, then writer, then sequence. A row the removed device created stays hidden until restored. An admin decides each row through a `resolve late` entry, and the first decision on a row stays. Restoring first seals, with the admin's own writer, the late values no current version is newer than: a create of every group for a created row or one no published state knows, a deletion for a late deletion, otherwise ordinary writes. Discarding writes no values.
+
 ## Worked examples
 
 Phone P and desktop A share a vault. A is the hub. Clocks are written as small integers.
@@ -167,9 +178,27 @@ If P later renames `t7` concurrently with the repair, the rename is discarded wi
 ### Fork re-seal
 
 1. Desktop A's disk is cloned to a second machine C, including the writer key and record. Both continue with writer W after its seq 30.
-2. C pushes W's seq 31. The hub already stores a different seq 31 from A and refuses with `fork`. A clone whose chain has the same length as the hub's is found through the probe in the hello request instead.
-3. C fetches W's operation hashes from the hub and compares them with its own chain from seq 1. The chains agree through seq 30.
-4. C creates successor writer W2, removes W's operations past seq 30 from its own merge state, and re-seals them under W2 with their original clocks, manifest versions, and causal contexts. Its local view of W stops at seq 30.
-5. The hub keeps A's operations under W, and receives C's changes under W2. Every change from both machines survives and converges like any concurrent edits.
+2. C pushes W's seq 31. The hub already stores a different seq 31 from A, refuses with `fork`, and stores both signed operations as fork evidence. A clone whose chain has the same length as the hub's is found through the probe in the hello request instead.
+3. The evidence travels to every member. Every replica but the device's own installations excludes both branches of W past seq 30 and restores what they displaced; the anchor seals again the current value of every live group the branch it stored wrote.
+4. A and C each create a successor writer, remove W's operations past seq 30 from their own merge state, and re-seal them under the successor with their original clocks, manifest versions, and causal contexts.
+5. Every replica receives both successors. Every change from both machines survives and converges like any concurrent edits; a copy destroyed before it re-seals loses its branch.
 
 The re-seal is refused when an operation from another writer already depends on one of the operations being replaced, because renaming them would change what that writer saw.
+
+### Removal against offline edits
+
+1. Phone P, offline, edits note N's title (seq 41) and then its body (seq 42). The anchor A has stored P's writer through seq 40, and desktop D has received seq 41 from P on the LAN.
+2. An admin removes P. A sequences the removal with cutoff 40, its stored sequence for P's writer.
+3. D applies the removal: seq 41 is excluded, its title version is removed, and the title it superseded comes back. Seq 42 later reaches D from P and is held as excluded without applying. Both leave one late change for N with the title and body values.
+4. The admin restores the late change. The restore seals the late title and body under the admin's own writer, which every replica applies as ordinary writes, and the `resolve late` entry closes the late change everywhere. Had the admin discarded it, N would keep the values from before seq 41.
+
+### Late-created row
+
+1. Removed phone P had created quick note Q past its cutoff. Members that held the creation now hide Q, and members that never stored it do not know Q at all.
+2. Q appears as a late change of kind created. Restoring seals a create of every group under the admin's writer, so Q reappears on every replica. An honest edit another device made to Q after seeing it keeps its effects once Q is restored.
+
+### Two admins removing each other
+
+1. Admin desktops A and B both take the anchor from the same head, and each handover's epoch removes the other.
+2. Every replica that holds both chains sees two candidates out of one instance and freezes the log at that head, whichever chain it received first. Neither removal applies; both desktops are held, so their later operations are stored but not applied.
+3. B yields, naming A's handover. The instance now has one candidate every other contestant yielded to, so A's branch is selected on every replica and B's removal applies with its cutoff. Without a yield, the printed recovery kit decides.

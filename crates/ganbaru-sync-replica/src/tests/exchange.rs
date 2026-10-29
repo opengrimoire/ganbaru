@@ -3301,5 +3301,6 @@ mod calendar_conflicts;
 mod calendar_recovery;
 mod handover;
 mod notes_conflicts;
+mod notes_recovery;
 mod projects_conflicts;
 mod projects_recovery;

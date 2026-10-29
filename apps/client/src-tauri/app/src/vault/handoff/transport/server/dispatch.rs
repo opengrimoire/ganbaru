@@ -1012,8 +1012,10 @@ fn server_config(
 }
 
 /// Why the selected log turns away `request` from the device whose certificate is
-/// `certificate`: a device the log removed reaches no coordinator service, pairing still linking
-/// it or not, and a sync request needs a device the log enrolled. A request from a certificate
+/// `certificate`: a device the log removed reaches no coordinator service but record exchange,
+/// pairing still linking it or not, and any other sync request needs a device the log enrolled.
+/// Record exchange is served to every paired device, so an authorization branch the local log
+/// does not select still reaches it. A request from a certificate
 /// the log does not know, such as a device linked before its enrollment was sequenced, keeps
 /// every other service. Without a log pairing alone decides, and a log that cannot be read
 /// refuses every request until it can be, since it may hold the removal.
@@ -1033,6 +1035,9 @@ pub(crate) fn log_refusal(
     let fingerprint = crate::vault::handoff::pairing::certificate_fingerprint(certificate.as_ref());
     match admission.certificate(&fingerprint) {
         Ok(_) | Err(MemberRefusal::Quarantined) => None,
+        Err(MemberRefusal::Removed | MemberRefusal::Unknown) if request.is_record_exchange() => {
+            None
+        }
         Err(MemberRefusal::Removed) => Some(MemberRefusal::Removed),
         Err(refusal) if request.sync_peer().is_some() => Some(refusal),
         Err(_) => None,

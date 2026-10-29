@@ -179,12 +179,27 @@ async fn a_member_listener_refuses_a_client_without_a_certificate() {
 }
 
 #[tokio::test]
-async fn a_member_listener_refuses_a_device_removed_before_the_handshake() {
+async fn a_member_listener_serves_a_device_removed_before_the_handshake_record_exchange_only() {
     let listener = MemberListener::start().await;
     listener.admit(admission_with(&listener.phone_fingerprint, true));
+    // A removed device still completes the handshake so it can take the records that removed
+    // it, and every other request is refused.
+    let response = listener.request(hello(PHONE)).await;
     assert!(
-        listener.request(hello(PHONE)).await.is_err(),
-        "a removed device must not complete the handshake"
+        matches!(&response, Ok(message) if refused_with(message, "member_removed")),
+        "{response:?}"
+    );
+    let records = ControlMessage::SyncRecordGet {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: PHONE.to_string(),
+        hashes: Vec::new(),
+        writers: Vec::new(),
+    };
+    let response = listener.request(records).await.expect("record exchange");
+    assert!(
+        !refused_with(&response, "member_removed"),
+        "record exchange reaches the hub: {response:?}"
     );
 }
 

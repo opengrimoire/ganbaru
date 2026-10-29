@@ -40,8 +40,13 @@ use crate::seal::{SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
 
 mod contest;
+mod exchange;
 
 pub use contest::ContestRejection;
+pub use exchange::{
+    AuthorizationStorage, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
+    RecordEnvelope, RecordPage, RecordRole, RecordWants,
+};
 
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]

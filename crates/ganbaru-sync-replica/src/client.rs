@@ -3,6 +3,7 @@
 
 use super::outbox::Outbox;
 use super::quarantine::PullSkips;
+use super::records::{self, RecordLink, RecordSession, RecordsExchanged};
 use super::wire::BOOTSTRAP_REQUIRED;
 use super::wire::{
     forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, proposed_from_wire,
@@ -13,7 +14,7 @@ use ganbaru_handoff::protocol::{
     SyncRefusal, SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
 };
 use ganbaru_sync::{
-    Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
+    Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal, SyncError,
 };
 use ganbaru_sync_contracts::{
     Digest32, Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
@@ -81,6 +82,8 @@ pub struct Exchanged {
     pub hub: VersionVector,
     /// The member listener endpoints the hub reported in its sync state.
     pub members: Vec<MemberEndpoint>,
+    /// What record exchange moved ahead of the operation lanes, when it ran.
+    pub records: Option<RecordsExchanged>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +112,9 @@ pub struct ClientSession<'a, T: SyncTransport> {
     /// Endpoints this device's own sync listener serves on, reported in the hello; empty when
     /// it does not listen.
     pub listening: &'a [String],
+    /// The record exchange with this peer that runs ahead of the operation lanes; without it
+    /// only the operation lanes run.
+    pub records: Option<RecordLink<'a>>,
 }
 
 impl<T: SyncTransport> ClientSession<'_, T> {
@@ -121,8 +127,55 @@ impl<T: SyncTransport> ClientSession<'_, T> {
     }
 
     /// Hello, push, and pull until both sides hold the same operations or a refusal stops one
-    /// direction.
+    /// direction, after the record exchange when it is set. While the storage backstop runs,
+    /// the operation lanes stop and only the record exchange moves.
     pub async fn exchange(&self) -> Result<Exchange, String> {
+        let records = match &self.records {
+            Some(link) => Some(self.exchange_records(link).await?),
+            None => None,
+        };
+        if records
+            .as_ref()
+            .is_some_and(|records| records.backstop.is_some())
+        {
+            return Ok(Exchange::Done(Exchanged {
+                known: self.stored().await?,
+                problem: Some(SyncError::AuthorizationStorageFull.to_string()),
+                records,
+                ..Exchanged::default()
+            }));
+        }
+        let mut exchanged = match self.exchange_ops().await? {
+            Exchange::Done(exchanged) => exchanged,
+            fork => return Ok(fork),
+        };
+        exchanged.records = records;
+        Ok(Exchange::Done(exchanged))
+    }
+
+    /// The record exchange with the peer `link` names.
+    async fn exchange_records(&self, link: &RecordLink<'_>) -> Result<RecordsExchanged, String> {
+        let peer_class = {
+            let mut conn = acquire(self.pool).await?;
+            records::peer_class(self.engine, &mut conn, self.ctx, link.peer)
+                .await
+                .map_err(|error| format!("read authorization state: {error}"))?
+        };
+        RecordSession {
+            transport: self.transport,
+            ids: self.ids,
+            engine: self.engine,
+            pool: self.pool,
+            ctx: self.ctx,
+            state: link.state,
+            peer: link.peer,
+            peer_class,
+        }
+        .exchange()
+        .await
+    }
+
+    async fn exchange_ops(&self) -> Result<Exchange, String> {
         let local = self.stored().await?;
         let probe = self.probe(&local).await?;
         let hello = ControlMessage::SyncHello {

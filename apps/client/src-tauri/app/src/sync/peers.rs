@@ -18,6 +18,7 @@ use ganbaru_sync_replica::peers::book::{PeerBook, PeerEndpoints};
 use ganbaru_sync_replica::peers::plan::{PlanInput, PlannedPeer, plan_pass};
 use ganbaru_sync_replica::quarantine::PullSkips;
 use ganbaru_sync_replica::quarantine::Quarantine;
+use ganbaru_sync_replica::records::{RecordExchange, RecordLink};
 use ganbaru_sync_replica::writer::SyncFiles;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -245,6 +246,8 @@ pub(super) struct MemberPass<'a> {
     pub pull_skips: &'a PullSkips,
     pub listening: &'a [String],
     pub files: &'a SyncFiles,
+    /// Record exchange state shared with this device's hubs.
+    pub records: &'a RecordExchange,
 }
 
 /// What the member exchanges of a pass moved.
@@ -369,6 +372,10 @@ pub(super) async fn exchange_with_members(
                 pull_skips: Some(pass.pull_skips),
                 max_bytes: super::client::MAX_EXCHANGE_BYTES,
                 listening: pass.listening,
+                records: Some(RecordLink {
+                    state: pass.records,
+                    peer: &peer.device_id,
+                }),
             };
             (peer.device_id.clone(), session.exchange().await)
         }

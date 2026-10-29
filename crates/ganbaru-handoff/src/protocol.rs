@@ -17,7 +17,7 @@ pub use sync::{
     encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
     validate_member_endpoints,
 };
-pub use sync::{MAX_MEMBER_ENDPOINTS, MemberEndpoint};
+pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
 pub const PROTOCOL_VERSION: u16 = 15;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
@@ -492,6 +492,47 @@ pub enum ControlMessage {
     SyncForwarded {
         proposals: Vec<String>,
     },
+    /// Authenticated: a page of the hub's authorization record store past `cursor`, the
+    /// stored order the requester reached in each envelope class. Served to removed and held
+    /// devices too.
+    SyncRecords {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        cursor: Vec<u64>,
+        max_bytes: u32,
+    },
+    SyncRecordPage {
+        records: Vec<String>,
+        cursor: Vec<u64>,
+        more: bool,
+    },
+    /// Authenticated: stored envelopes whose envelope or entry hash is among `hashes`, and the
+    /// certificates of `writers`.
+    SyncRecordGet {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        hashes: Vec<String>,
+        writers: Vec<String>,
+    },
+    SyncRecordFound {
+        records: Vec<String>,
+    },
+    /// Authenticated: authorization records, certificates, and fork evidence the hub may lack.
+    SyncRecordPush {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        records: Vec<String>,
+    },
+    /// How many pushed envelopes the hub did not hold, and what it still lacks that they
+    /// reference.
+    SyncRecordPushResult {
+        admitted: u32,
+        missing_hashes: Vec<String>,
+        missing_writers: Vec<String>,
+    },
     Error {
         code: String,
         message: String,
@@ -500,6 +541,15 @@ pub enum ControlMessage {
 }
 
 impl ControlMessage {
+    /// Whether this is a record exchange request, which every paired peer is served whatever
+    /// the authorization log says of its device.
+    pub fn is_record_exchange(&self) -> bool {
+        matches!(
+            self,
+            Self::SyncRecords { .. } | Self::SyncRecordGet { .. } | Self::SyncRecordPush { .. }
+        )
+    }
+
     /// The vault and device a sync request names, or `None` for any other message.
     pub fn sync_peer(&self) -> Option<(&str, &str)> {
         match self {
@@ -554,6 +604,21 @@ impl ControlMessage {
                 ..
             }
             | Self::SyncForward {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecords {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecordGet {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecordPush {
                 vault_id,
                 device_id,
                 ..
@@ -953,6 +1018,55 @@ impl ControlMessage {
                 sync::validate_settled(settled)?;
             }
             Self::SyncForwarded { proposals } => sync::validate_forwarded(proposals)?,
+            Self::SyncRecords {
+                protocol_version,
+                vault_id,
+                device_id,
+                cursor,
+                max_bytes,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_record_cursor(cursor)?;
+                sync::validate_page_bytes(*max_bytes)?;
+            }
+            Self::SyncRecordPage {
+                records,
+                cursor,
+                more: _,
+            } => {
+                sync::validate_records(records)?;
+                sync::validate_record_cursor(cursor)?;
+            }
+            Self::SyncRecordGet {
+                protocol_version,
+                vault_id,
+                device_id,
+                hashes,
+                writers,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_record_wants(hashes, writers)?;
+            }
+            Self::SyncRecordFound { records } => sync::validate_records(records)?,
+            Self::SyncRecordPush {
+                protocol_version,
+                vault_id,
+                device_id,
+                records,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_records(records)?;
+            }
+            Self::SyncRecordPushResult {
+                admitted,
+                missing_hashes,
+                missing_writers,
+            } => {
+                sync::validate_record_wants(missing_hashes, missing_writers)?;
+                if *admitted as usize > sync::MAX_SYNC_RECORDS {
+                    return Err("sync record admission count is invalid".to_string());
+                }
+            }
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -2340,5 +2454,108 @@ mod tests {
             hello(PROTOCOL_VERSION - 1).validate(),
             Err("handoff protocol version is unsupported".to_string())
         );
+    }
+
+    #[test]
+    fn record_exchange_messages_round_trip_within_their_bounds() {
+        let peer = || {
+            (
+                "vault-abcdefghijklmnopqrstuv".to_string(),
+                "device-phone".to_string(),
+            )
+        };
+        let records = |count: usize| vec!["AAEC".to_string(); count];
+        let (vault_id, device_id) = peer();
+        let request = ControlMessage::SyncRecords {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            cursor: vec![0, 3, 0, 9, 12],
+            max_bytes: 64 * 1024,
+        };
+        assert!(request.is_record_exchange());
+        assert_eq!(frame_round_trip(&request), Ok(request));
+        let (vault_id, device_id) = peer();
+        let get = ControlMessage::SyncRecordGet {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            hashes: vec!["a".repeat(64); MAX_SYNC_RECORDS],
+            writers: vec!["b".repeat(32); MAX_SYNC_RECORDS],
+        };
+        assert!(get.is_record_exchange());
+        assert_eq!(frame_round_trip(&get), Ok(get));
+        let (vault_id, device_id) = peer();
+        let push = ControlMessage::SyncRecordPush {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            records: records(MAX_SYNC_RECORDS),
+        };
+        assert!(push.is_record_exchange());
+        assert_eq!(frame_round_trip(&push), Ok(push));
+        let page = ControlMessage::SyncRecordPage {
+            records: records(MAX_SYNC_RECORDS),
+            cursor: vec![1; SYNC_RECORD_CLASSES],
+            more: true,
+        };
+        assert!(!page.is_record_exchange());
+        assert_eq!(frame_round_trip(&page), Ok(page));
+        let result = ControlMessage::SyncRecordPushResult {
+            admitted: MAX_SYNC_RECORDS as u32,
+            missing_hashes: vec!["c".repeat(64)],
+            missing_writers: vec!["d".repeat(32)],
+        };
+        assert_eq!(frame_round_trip(&result), Ok(result));
+    }
+
+    #[test]
+    fn record_exchange_messages_refuse_oversized_or_malformed_fields() {
+        let records = |count: usize| vec!["AAEC".to_string(); count];
+        let malformed = [
+            ControlMessage::SyncRecords {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                cursor: vec![0; SYNC_RECORD_CLASSES - 1],
+                max_bytes: 64 * 1024,
+            },
+            ControlMessage::SyncRecordPage {
+                records: records(MAX_SYNC_RECORDS + 1),
+                cursor: vec![0; SYNC_RECORD_CLASSES],
+                more: false,
+            },
+            ControlMessage::SyncRecordGet {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                hashes: vec!["a".repeat(64); MAX_SYNC_RECORDS + 1],
+                writers: Vec::new(),
+            },
+            ControlMessage::SyncRecordGet {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                hashes: Vec::new(),
+                writers: vec!["B".repeat(32)],
+            },
+            ControlMessage::SyncRecordFound {
+                records: vec![String::new()],
+            },
+            ControlMessage::SyncRecordPush {
+                protocol_version: PROTOCOL_VERSION - 1,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                records: records(1),
+            },
+            ControlMessage::SyncRecordPushResult {
+                admitted: MAX_SYNC_RECORDS as u32 + 1,
+                missing_hashes: Vec::new(),
+                missing_writers: Vec::new(),
+            },
+        ];
+        for message in malformed {
+            assert!(message.validate().is_err(), "{message:?}");
+        }
     }
 }

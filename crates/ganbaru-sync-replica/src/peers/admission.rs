@@ -1,8 +1,9 @@
 //! Admission to a member's sync listener, decided from the local selected authorization log.
 //!
-//! A listener accepts exactly the TLS certificates of devices the selected log enrolled and did
-//! not remove, and that this installation did not quarantine. A non-anchor listener serves only
-//! sync requests, so pairing, other handoff, and contact requests are refused there.
+//! A listener accepts the TLS certificates of devices the selected log enrolled and this
+//! installation did not quarantine. A device the log removed is served record exchange only.
+//! A non-anchor listener serves only sync requests, so pairing, other handoff, and contact
+//! requests are refused there.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -126,11 +127,12 @@ impl MemberAdmission {
     }
 
     /// The certificate fingerprints a TLS handshake may complete with, in the lowercase hex
-    /// form of [`ganbaru_handoff::pairing::certificate_fingerprint`].
+    /// form of [`ganbaru_handoff::pairing::certificate_fingerprint`]. A removed device still
+    /// completes it, for record exchange only.
     pub fn admitted_fingerprints(&self) -> BTreeSet<String> {
         self.by_fingerprint
             .iter()
-            .filter(|(fingerprint, _)| self.certificate(fingerprint).is_ok())
+            .filter(|(_, enrolled)| !self.quarantined.contains(&enrolled.device_id))
             .map(|(fingerprint, _)| fingerprint.clone())
             .collect()
     }
@@ -151,7 +153,8 @@ impl MemberAdmission {
     }
 
     /// Whether a connection whose certificate has `fingerprint` may have `request` answered:
-    /// a sync request for this vault that names the device the certificate enrolled. A
+    /// a sync request for this vault that names the device the certificate enrolled, and only
+    /// record exchange when the selected log removed that device. A
     /// proposal is answered only by the anchor's listener, and a forward request never, since
     /// the coordinator holds proposals for an anchor that is not reachable directly. A phone
     /// runs a member listener only while the app is in the foreground.
@@ -161,7 +164,20 @@ impl MemberAdmission {
         request: &ControlMessage,
     ) -> Result<(), MemberRefusal> {
         let (vault_id, device_id) = request.sync_peer().ok_or(MemberRefusal::NotSync)?;
-        let enrolled = self.certificate(fingerprint)?;
+        let enrolled = match self.certificate(fingerprint) {
+            Err(MemberRefusal::Removed) if request.is_record_exchange() => {
+                let device = self
+                    .by_fingerprint
+                    .get(fingerprint)
+                    .map(|enrolled| enrolled.device_id.as_str())
+                    .ok_or(MemberRefusal::Unknown)?;
+                if self.quarantined.contains(device) {
+                    return Err(MemberRefusal::Quarantined);
+                }
+                device
+            }
+            enrolled => enrolled?,
+        };
         match request {
             ControlMessage::SyncPropose { .. } if !self.takes_proposals => {
                 return Err(MemberRefusal::Proposal);

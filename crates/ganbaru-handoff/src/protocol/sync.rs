@@ -141,6 +141,39 @@ pub(super) fn validate_refusal(refusal: &SyncRefusal) -> Result<(), String> {
     Ok(())
 }
 
+/// Envelopes in one record page, lookup, or push, and hashes or writers one record lookup or
+/// push result names.
+pub const MAX_SYNC_RECORDS: usize = 256;
+/// Classes of the record exchange cursor.
+pub const SYNC_RECORD_CLASSES: usize = 5;
+
+/// Checks a bounded list of authorization record store envelopes.
+pub(super) fn validate_records(records: &[String]) -> Result<(), String> {
+    if records.len() > MAX_SYNC_RECORDS {
+        return Err("sync record page holds too many envelopes".to_string());
+    }
+    validate_ops(records)
+}
+
+/// Checks a record exchange cursor: one stored order for each class.
+pub(super) fn validate_record_cursor(cursor: &[u64]) -> Result<(), String> {
+    if cursor.len() != SYNC_RECORD_CLASSES {
+        return Err("sync record cursor is invalid".to_string());
+    }
+    Ok(())
+}
+
+/// Checks the hashes and writers a record lookup names.
+pub(super) fn validate_record_wants(hashes: &[String], writers: &[String]) -> Result<(), String> {
+    if hashes.len() > MAX_SYNC_RECORDS || writers.len() > MAX_SYNC_RECORDS {
+        return Err("sync record lookup is too large".to_string());
+    }
+    hashes.iter().try_for_each(|hash| validate_hash(hash))?;
+    writers
+        .iter()
+        .try_for_each(|writer| validate_writer(writer))
+}
+
 pub(super) fn validate_page_bytes(max_bytes: u32) -> Result<(), String> {
     if max_bytes == 0 || max_bytes as usize > SYNC_PAGE_BYTES {
         return Err("sync page size is invalid".to_string());

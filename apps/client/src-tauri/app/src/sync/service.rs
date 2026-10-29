@@ -48,6 +48,7 @@ use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
+use ganbaru_sync_replica::records::{RecordExchange, RecordLink};
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
 use ganbaru_sync_replica::writer::SequencedCheck;
@@ -116,6 +117,9 @@ pub(crate) struct RuntimeState {
     now: Arc<Notify>,
     /// Bumped after each pass, so hub waits recheck the log.
     changes: watch::Sender<u64>,
+    /// Record exchange windows, cursors, and backstop that this device's hubs and sessions
+    /// share.
+    records: RecordExchange,
     /// Stability the coordinator pass last computed, reported in every sync state.
     #[cfg(desktop)]
     stability: HubStability,
@@ -155,6 +159,7 @@ impl Default for RuntimeState {
         Self {
             now: Arc::default(),
             changes: watch::Sender::new(0),
+            records: RecordExchange::default(),
             #[cfg(desktop)]
             stability: HubStability::default(),
             #[cfg(desktop)]
@@ -455,6 +460,7 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         })
     });
     SyncHub::new(open, runtime.changes.clone())
+        .with_records(runtime.records.clone())
         .with_stability(runtime.stability.clone())
         .with_proposals(proposals)
         .with_forwards(forwards)
@@ -491,7 +497,9 @@ pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
     });
     let runtime = app.state::<SyncRuntime>();
     with_anchor_services(
-        SyncHub::new(open, runtime.changes.clone()).with_relayed_geneses(),
+        SyncHub::new(open, runtime.changes.clone())
+            .with_relayed_geneses()
+            .with_records(runtime.records.clone()),
         runtime.inner(),
     )
 }
@@ -692,7 +700,9 @@ where
     }
     let host = open.await?;
     let runtime = RuntimeState::default();
-    let next = ServiceState::default().pass(&host, &runtime, gate).await;
+    let next = ServiceState::for_runtime(&runtime)
+        .pass(&host, &runtime, gate)
+        .await;
     Ok(HeadlessPass {
         status: runtime.status()?,
         delegated: false,
@@ -816,7 +826,7 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
 }
 
 async fn run<H: SyncHost>(host: H, runtime: SyncRuntime, signals: Signals) {
-    let mut state = ServiceState::default();
+    let mut state = ServiceState::for_runtime(&runtime);
     let mut failures = 0usize;
     loop {
         let next = state.pass(&host, &runtime, &PASS_GATE).await;
@@ -937,6 +947,18 @@ struct ServiceState {
     #[cfg(desktop)]
     hub_reported: VersionVector,
     view: SyncStatusView,
+    /// Record exchange state shared with this device's hubs.
+    records: RecordExchange,
+}
+
+impl ServiceState {
+    /// Fresh state that shares the record exchange state of `runtime`.
+    fn for_runtime(runtime: &RuntimeState) -> Self {
+        Self {
+            records: runtime.records.clone(),
+            ..Self::default()
+        }
+    }
 }
 
 /// When the service last applied stored operations.
@@ -1697,6 +1719,8 @@ impl ServiceState {
         let quarantine = blocking(move || Quarantine::load(&path)).await?;
         let listening = session.host.serve_members().await;
         self.anchor_link = None;
+        // The coordinator's device id names it for record exchange windows and cursors.
+        let coordinator = wait.transport.0.coordinator_pin()?.map(|pin| pin.device_id);
         for _ in 0..MAX_FORK_RECOVERIES {
             let own_writers = self
                 .writer
@@ -1715,6 +1739,10 @@ impl ServiceState {
                 pull_skips: Some(&self.pull_skips),
                 max_bytes: super::client::MAX_EXCHANGE_BYTES,
                 listening: &listening,
+                records: coordinator.as_deref().map(|peer| RecordLink {
+                    state: &self.records,
+                    peer,
+                }),
             };
             match client.exchange().await {
                 Err(error) => {
@@ -1879,6 +1907,7 @@ impl ServiceState {
             pull_skips: &self.pull_skips,
             listening,
             files: &session.files,
+            records: &self.records,
         };
         match super::peers::exchange_with_members(pass, coordinator_reachable).await {
             Ok(outcome) => outcome,

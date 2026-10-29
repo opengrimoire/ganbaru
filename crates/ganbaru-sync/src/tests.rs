@@ -30,6 +30,7 @@ mod owned;
 mod preferences;
 mod projects;
 mod publication;
+mod record_exchange;
 mod replica;
 mod settle;
 mod sim;

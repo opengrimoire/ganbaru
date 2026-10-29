@@ -36,6 +36,10 @@ pub enum SyncError {
     /// The selected authorization chain has not enrolled the local device yet, so its writer
     /// cannot seal a genesis.
     NotEnrolled,
+    /// The authorization record store crossed its storage backstop: record exchange stores only
+    /// kit and contest records and their ancestors, and the operation lanes stop, until the user
+    /// frees space, raises the bound, or re-founds the space.
+    AuthorizationStorageFull,
     /// A request names a row, group, or table the engine cannot act on.
     InvalidRequest(&'static str),
     /// A replicated row of the named table still holds a `pending:` placeholder key, which a
@@ -89,6 +93,9 @@ impl fmt::Display for SyncError {
             Self::NotEnrolled => {
                 formatter.write_str("this device is not enrolled in the space yet")
             }
+            Self::AuthorizationStorageFull => formatter.write_str(
+                "authorization storage is full; sync stores only recovery and contest records",
+            ),
             Self::InvalidRequest(detail) => write!(formatter, "invalid sync request: {detail}"),
             Self::PendingKey(table) => write!(
                 formatter,

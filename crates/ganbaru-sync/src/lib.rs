@@ -63,7 +63,11 @@ mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
-pub use authorization::{AuthorizationView, ContestRejection, EnrolledDevice, HandoverPoint};
+pub use authorization::{
+    AuthorizationStorage, AuthorizationView, ContestRejection, EnrolledDevice, HandoverPoint,
+    RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor, RecordEnvelope, RecordPage,
+    RecordRole, RecordWants,
+};
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
 };

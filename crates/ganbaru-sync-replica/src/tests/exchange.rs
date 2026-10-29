@@ -358,6 +358,7 @@ impl Replica {
             pull_skips: None,
             max_bytes,
             listening: &[],
+            records: None,
         }
         .exchange()
         .await
@@ -386,6 +387,7 @@ impl Replica {
             pull_skips: Some(skips),
             max_bytes: MAX_EXCHANGE_BYTES,
             listening: &[],
+            records: None,
         }
         .exchange()
         .await
@@ -3487,3 +3489,4 @@ mod handover;
 mod notes_conflicts;
 mod projects_conflicts;
 mod projects_recovery;
+mod records;

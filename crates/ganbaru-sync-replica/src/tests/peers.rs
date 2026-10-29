@@ -65,7 +65,7 @@ fn sync_hello(vault_id: &str, device_id: &str) -> ControlMessage {
 }
 
 #[test]
-fn member_admission_accepts_only_enrolled_unremoved_unquarantined_certificates() {
+fn member_admission_accepts_enrolled_unquarantined_certificates_and_removed_ones_for_records() {
     let quarantined = BTreeSet::from(["device-3".to_string()]);
     let admission = MemberAdmission::new(
         VAULT,
@@ -96,7 +96,54 @@ fn member_admission_accepts_only_enrolled_unremoved_unquarantined_certificates()
     );
     assert_eq!(
         admission.admitted_fingerprints(),
-        BTreeSet::from([fingerprint_hex(&[1; 32]), fingerprint_hex(&[4; 32])])
+        BTreeSet::from([
+            fingerprint_hex(&[1; 32]),
+            fingerprint_hex(&[2; 32]),
+            fingerprint_hex(&[4; 32])
+        ])
+    );
+}
+
+fn record_get(vault_id: &str, device_id: &str) -> ControlMessage {
+    ControlMessage::SyncRecordGet {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: vault_id.to_string(),
+        device_id: device_id.to_string(),
+        hashes: Vec::new(),
+        writers: Vec::new(),
+    }
+}
+
+#[test]
+fn member_admission_serves_a_removed_device_record_exchange_only() {
+    let quarantined = BTreeSet::from(["device-3".to_string()]);
+    let admission = MemberAdmission::new(
+        VAULT,
+        &view(vec![device(1, false), device(2, true), device(3, true)]),
+        &quarantined,
+    );
+    let removed = fingerprint_hex(&[2; 32]);
+
+    assert_eq!(
+        admission.request(&removed, &record_get(VAULT, "device-2")),
+        Ok(())
+    );
+    assert_eq!(
+        admission.request(&removed, &sync_hello(VAULT, "device-2")),
+        Err(MemberRefusal::Removed)
+    );
+    assert_eq!(
+        admission.request(&removed, &record_get(VAULT, "device-1")),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+    assert_eq!(
+        admission.request(&fingerprint_hex(&[3; 32]), &record_get(VAULT, "device-3")),
+        Err(MemberRefusal::Quarantined)
+    );
+    assert!(
+        !admission
+            .admitted_fingerprints()
+            .contains(&fingerprint_hex(&[3; 32]))
     );
 }
 

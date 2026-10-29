@@ -5,6 +5,7 @@ use super::assets::{
     ASSET_UNAVAILABLE, AssetStore, AssetStoreError, INVALID_ASSET, STALE_STAGING_AGE, StagedAsset,
     blocking, partition_held, write_staged,
 };
+use super::records::{self, RecordExchange};
 use super::wire::{
     asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, forked_to_wire, hash_from_wire,
     hash_to_wire, ops_from_wire, ops_to_wire, proposed_to_wire, vector_from_wire, vector_to_wire,
@@ -219,6 +220,8 @@ pub struct SyncHub {
     /// geneses and leaves enrollment and device key checks to the engine; the coordinator
     /// takes a genesis only from the device it certifies.
     relay_geneses: bool,
+    /// Device-local record exchange state, shared with this device's sessions.
+    records: RecordExchange,
 }
 
 /// The received prefix of an upload, staged in a temporary file beside its final path.
@@ -242,7 +245,15 @@ impl SyncHub {
             proposals: None,
             forwards: None,
             relay_geneses: false,
+            records: RecordExchange::default(),
         }
+    }
+
+    /// Sets the record exchange state this device's sessions share, for one set of windows and
+    /// one backstop.
+    pub fn with_records(mut self, records: RecordExchange) -> Self {
+        self.records = records;
+        self
     }
 
     /// Sets where the hub hands the proposals linked devices send.
@@ -344,6 +355,32 @@ impl SyncHub {
                 "the hub vault has no person identity",
             ));
         };
+        // Record exchange reaches every paired device, removed, held, or not enrolled, so a
+        // branch this log does not select can still reach it, see the R7.3 A5 rule.
+        if request.is_record_exchange() {
+            let mut conn = acquire(&vault.pool).await?;
+            let engine = Engine::vault();
+            let answer =
+                records::respond(&self.records, &engine, &mut conn, &ctx, &device_id, request)
+                    .await;
+            return match answer {
+                Ok((response, stored)) => {
+                    if stored {
+                        self.changes.send_modify(|generation| *generation += 1);
+                    }
+                    Ok(response)
+                }
+                Err(records::RecordRefusal::Busy) => Err(HubError {
+                    code: records::RECORDS_BUSY,
+                    message: "the record window of this device is spent".to_string(),
+                    retryable: true,
+                }),
+                Err(records::RecordRefusal::Invalid(message)) => {
+                    Err(HubError::rejected("invalid_sync_request", message))
+                }
+                Err(records::RecordRefusal::Failed(message)) => Err(HubError::failed(message)),
+            };
+        }
         let held = {
             let mut conn = acquire(&vault.pool).await?;
             let view = Engine::vault()

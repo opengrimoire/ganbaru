@@ -588,3 +588,50 @@ fn complete_chains(
     }
     complete
 }
+
+/// Why the local device stops sealing with a writer and seals with a successor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterRetirement {
+    /// The record store holds two distinct verified envelopes of the writer at one sequence,
+    /// provable or not, certificate twins included, so its key may be in other hands.
+    Forked,
+    /// The selected chain removed the writer's device while the writer belonged to it, so a
+    /// device enrolled again under the same key seals with a new writer.
+    Removed,
+}
+
+impl crate::Engine {
+    /// Whether the local device must retire `writer`, see [`WriterRetirement`]. The successor's
+    /// certificate is signed by the unchanged device key and names `writer` as predecessor, so
+    /// a copy of the old writer key alone cannot mint it. No authority rule reads this: it only
+    /// chooses which writer the local device seals with.
+    pub async fn writer_retirement(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &crate::SpaceContext,
+        writer: WriterId,
+    ) -> SyncResult<Option<WriterRetirement>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let forked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sync_auth_envelopes
+             WHERE space_id = ? AND writer_id = ? AND verified = 1
+             GROUP BY seq HAVING COUNT(DISTINCT envelope_hash) > 1)",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_one(&mut *conn)
+        .await?;
+        if forked {
+            return Ok(Some(WriterRetirement::Forked));
+        }
+        let removed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sync_writers
+             WHERE space_id = ? AND writer_id = ? AND removal_cutoff_seq IS NOT NULL)",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(removed.then_some(WriterRetirement::Removed))
+    }
+}

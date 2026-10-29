@@ -2508,6 +2508,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
             if !self.reseal_own_forks(writer).await? {
                 return Ok(done(tables, notices, None));
             }
+            if !self.retire_compromised(writer).await? {
+                return Ok(done(tables, notices, None));
+            }
             if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
                     return Ok(done(tables, notices, None));
@@ -2548,6 +2551,27 @@ impl<'a, H: SyncHost> Session<'a, H> {
             }
         }
         Ok(true)
+    }
+
+    /// Rotates the active writer once the record store holds a twin of it, provable or not, or
+    /// the selected chain removed its device, see [`ganbaru_sync::WriterRetirement`]. The successor is
+    /// certified by the unchanged device key and names the retired writer as predecessor.
+    /// Returns false while the person key is unavailable.
+    async fn retire_compromised(&self, writer: &mut Option<ActiveWriter>) -> Result<bool, String> {
+        let Some(current) = writer.as_ref().map(ActiveWriter::id) else {
+            return Ok(true);
+        };
+        let retirement = {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .writer_retirement(&mut conn, &self.ctx, current)
+                .await
+                .map_err(|error| format!("check sync writer retirement: {error}"))?
+        };
+        if retirement.is_none() {
+            return Ok(true);
+        }
+        self.rotate(writer).await
     }
 
     /// Recovers from a fork of one of this installation's chains: the hub holds other

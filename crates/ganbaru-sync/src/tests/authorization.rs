@@ -37,7 +37,7 @@ pub(super) fn remove_entry(device: &str) -> Entry {
     })
 }
 
-async fn tag(replica: &mut Replica, id: &str) {
+pub(super) async fn tag(replica: &mut Replica, id: &str) {
     replica
         .exec(&format!(
             "INSERT INTO quick_note_tags (id, name, order_key) VALUES ('{id}', '{id}', 'a0')"
@@ -118,7 +118,7 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
 
 /// `genesis` sealed again as the genesis of `identity`, which the engine would refuse to seal
 /// for a device key the chain did not enroll.
-fn genesis_of(genesis: &[u8], identity: &Identity) -> Vec<u8> {
+pub(super) fn genesis_of(genesis: &[u8], identity: &Identity) -> Vec<u8> {
     let mut operation = Envelope::decode(genesis).unwrap().operation().unwrap();
     operation.writer = identity.id();
     operation.content = Content::Genesis(identity.certificate.clone());

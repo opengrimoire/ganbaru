@@ -39,6 +39,10 @@ use crate::records::{self, Node};
 use crate::seal::{SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
 
+mod contest;
+
+pub use contest::ContestRejection;
+
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrolledDevice {
@@ -1175,6 +1179,8 @@ struct Resolution<'a> {
     walk: Walk<'a>,
     /// Handovers out of each instance, by instance root.
     candidates: BTreeMap<usize, Vec<usize>>,
+    /// The winner a pin source names for each instance it passes through, by instance root.
+    pinned: BTreeMap<usize, usize>,
     /// Outcome of each instance, by instance root.
     outcomes: BTreeMap<usize, Outcome>,
     /// Whether each visit is effective.
@@ -1238,6 +1244,7 @@ impl<'a> Resolution<'a> {
         Self {
             walk,
             candidates,
+            pinned,
             outcomes,
             effective,
             best,
@@ -2336,11 +2343,32 @@ impl Engine {
         if let Err(rejection) = state.check(&record) {
             return Ok(Err(rejection));
         }
-        sql::begin_engine_write(&mut tx).await?;
-        let mut batch = Batch::load(&mut tx, ctx.space).await?;
+        let revision = record.revision;
+        self.seal_record(&mut tx, ctx, state.charter, record, writer, now_ms)
+            .await?;
+        failpoint!("sequence.before_commit");
+        sql::set_applying(&mut tx, false).await?;
+        tx.commit().await?;
+        Ok(Ok(revision))
+    }
+
+    /// Seals `record`, which the rules at its parent admit, as the next operation of the local
+    /// writer, rederives the selection, and applies what the sealed operation makes ready. The
+    /// caller commits.
+    pub(super) async fn seal_record(
+        &self,
+        tx: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        charter: Digest32,
+        record: AuthorizationRecord,
+        writer: &mut LocalWriter<'_>,
+        now_ms: u64,
+    ) -> SyncResult<()> {
+        sql::begin_engine_write(&mut *tx).await?;
+        let mut batch = Batch::load(&mut *tx, ctx.space).await?;
         exclusion::note_local_device(
             self,
-            &mut tx,
+            &mut *tx,
             ctx,
             &mut batch,
             &writer.certificate.certificate.device_id,
@@ -2349,32 +2377,31 @@ impl Engine {
         let mut slot = SealSlot::new(Some(writer));
         let mut report = SealReport::default();
         let (sealer, writer) = slot
-            .open(self, &mut tx, ctx, &mut batch, now_ms)
+            .open(self, &mut *tx, ctx, &mut batch, now_ms)
             .await?
             .ok_or_else(|| corrupt("sealer slot has no writer"))?;
-        let revision = record.revision;
         writer
             .reservation
-            .reserve_entry(state.charter, record.epoch, revision, record.hash())
+            .reserve_entry(charter, record.epoch, record.revision, record.hash())
             .map_err(SyncError::Reservation)?;
         sealer
             .seal_authorization(
                 self,
-                &mut tx,
+                &mut *tx,
                 ctx,
                 &mut batch,
                 writer,
-                record.clone(),
+                record,
                 now_ms,
                 &mut report,
             )
             .await?;
-        if let Some(selection) = rederive(&mut tx, ctx.space).await? {
-            exclusion::settle(self, &mut tx, ctx, &mut batch, &selection).await?;
+        if let Some(selection) = rederive(&mut *tx, ctx.space).await? {
+            exclusion::settle(self, &mut *tx, ctx, &mut batch, &selection).await?;
         }
         apply::finish_sealed(
             self,
-            &mut tx,
+            &mut *tx,
             ctx,
             &mut batch,
             &mut slot,
@@ -2383,10 +2410,7 @@ impl Engine {
             &mut report,
         )
         .await?;
-        failpoint!("sequence.before_commit");
-        sql::set_applying(&mut tx, false).await?;
-        tx.commit().await?;
-        Ok(Ok(revision))
+        Ok(())
     }
 }
 

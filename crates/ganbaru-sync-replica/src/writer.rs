@@ -703,6 +703,16 @@ pub async fn check_writer(
     {
         return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
     }
+    // A forked writer, or one of a device the selected chain removed, seals no more: the
+    // device key certifies a successor that names it as predecessor.
+    if engine
+        .writer_retirement(conn, ctx, certificate.certificate.writer_id())
+        .await
+        .map_err(|error| format!("check sync writer retirement: {error}"))?
+        .is_some()
+    {
+        return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
+    }
     Ok(WriterCheck::Ready(Box::new(ActiveWriter {
         key,
         certificate,

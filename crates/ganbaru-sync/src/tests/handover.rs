@@ -1,11 +1,12 @@
 //! Anchor handover selection: takes, contests between handovers out of one epoch instance,
 //! objections, yields, kit pins and demotions, rotation vetoes, installed recovery keys, and the
 //! devices held for data while an instance is frozen. Each case selects the same head whatever
-//! order its entries arrive in, and most run twice: once with the attacker's records under the
-//! anchor's own writer, forked just past the point the attacker continues from, and once under a
-//! fresh writer id. A forked writer's records at or past its fork sequence are not nodes, so in
-//! the first run the attacker's branch neither contests, objects, nor holds anybody, and the
-//! fork only lowers a freeze to the writer's last record below it.
+//! order its entries arrive in, and most run twice, once per attacker. The first half models an
+//! attacker that does not anchor its records: they stay under the anchor's own writer, forked
+//! just past the point the attacker continues from, so they are not nodes, neither contest,
+//! object, nor hold anybody, and the fork only lowers a freeze to the writer's last record below
+//! it. The second half (`fresh`) models the attacker that anchors them through a fresh writer
+//! id, its best play, so its records are nodes and count in full.
 
 use std::collections::BTreeMap;
 

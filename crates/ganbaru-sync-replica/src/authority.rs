@@ -12,7 +12,7 @@ use ganbaru_handoff::discovery::DiscoveryKey;
 use ganbaru_handoff::protocol::{
     DeviceKind as HandoffDeviceKind, MAX_SYNC_FORWARDED_PROPOSALS, encode_sync_proposal,
 };
-use ganbaru_sync::{AuthorizationView, Engine, LocalWriter, SpaceContext};
+use ganbaru_sync::{AuthorizationView, ContestRejection, Engine, LocalWriter, SpaceContext};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole,
@@ -849,4 +849,42 @@ pub fn without_writers(vector: &VersionVector, excluded: &VersionVector) -> Vers
         }
     }
     kept
+}
+
+/// Signs with `admin` and seals a yield to the stored handover `handover`, as a contestant of
+/// its frozen instance or as the anchor of that instance with an objection to it. The yield
+/// enters the record store at once and travels with the writer's other operations. Returns the
+/// revision, or why the engine did not seal it.
+pub async fn yield_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    handover: &Digest32,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ContestRejection>, String> {
+    engine
+        .seal_yield(conn, ctx, admin, handover, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync yield: {error}"))
+}
+
+/// Signs with `admin` and seals, as the anchor of the instance the stored handover `handover`
+/// leaves, a removal of its target with a fresh discovery key, which objects to it. Returns the
+/// revision, or why the engine did not seal it.
+pub async fn object_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    handover: &Digest32,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ContestRejection>, String> {
+    let discovery_key = *DiscoveryKey::generate()?.as_bytes();
+    engine
+        .seal_objection(conn, ctx, admin, handover, discovery_key, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync objection: {error}"))
 }

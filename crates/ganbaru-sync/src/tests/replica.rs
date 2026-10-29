@@ -7,10 +7,10 @@ use std::sync::{Mutex, OnceLock};
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Enroll,
-    Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove, SignedCertificate,
-    SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector, WriterCertificate,
-    WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
+    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
+    Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove,
+    SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector,
+    WriterCertificate, WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
@@ -18,8 +18,8 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
-    ApplyReport, CompactionReport, Engine, LocalWriter, SealReport, SequenceReservation,
-    SpaceContext, StoreOutcome, SyncResult,
+    ApplyReport, CompactionReport, ContestRejection, Engine, LocalWriter, SealReport,
+    SequenceReservation, SpaceContext, StoreOutcome, SyncResult,
 };
 use crate::{hydrate, log, publication};
 
@@ -213,7 +213,7 @@ pub(super) fn enroll_entry(person: &PersonKeyPair, index: usize, role: DeviceRol
 
 /// A local writer: key, certificate, and reservation.
 pub(super) struct Identity {
-    seed: [u8; 32],
+    pub(super) seed: [u8; 32],
     pub(super) key: WriterKeyPair,
     pub(super) certificate: SignedCertificate,
     pub(super) reservation: Reservation,
@@ -534,6 +534,43 @@ impl Replica {
                 &self.ctx,
                 signed,
                 old_anchor_vector,
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
+    /// Seals a yield of `admin` to the stored handover `handover`.
+    pub(super) async fn seal_yield(
+        &mut self,
+        admin: &AdminKeyPair,
+        handover: &Digest32,
+    ) -> SyncResult<Result<u64, ContestRejection>> {
+        self.engine
+            .seal_yield(
+                &mut self.conn,
+                &self.ctx,
+                admin,
+                handover,
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
+    /// Seals an objection of `admin` to the stored handover `handover`.
+    pub(super) async fn seal_objection(
+        &mut self,
+        admin: &AdminKeyPair,
+        handover: &Digest32,
+    ) -> SyncResult<Result<u64, ContestRejection>> {
+        self.engine
+            .seal_objection(
+                &mut self.conn,
+                &self.ctx,
+                admin,
+                handover,
+                [6; 32],
                 &mut self.identity.local(),
                 self.now_ms,
             )

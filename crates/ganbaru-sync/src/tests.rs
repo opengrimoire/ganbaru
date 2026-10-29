@@ -7,6 +7,7 @@ mod chains;
 mod chat;
 mod compaction;
 mod conformance;
+mod contest;
 mod distractions;
 mod elision;
 mod engine;

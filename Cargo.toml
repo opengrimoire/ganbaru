@@ -151,7 +151,7 @@ rodio = { version = "0.22.2", default-features = false, features = [
   "symphonia-wav",
   "symphonia-pcm",
 ] }
-rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process", "fs"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"

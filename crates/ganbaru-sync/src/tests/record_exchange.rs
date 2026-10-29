@@ -2,12 +2,19 @@
 //! requester keeps, wanted lookups that chase missing parents and certificates, and storage
 //! accounting for the backstop and growth alerts.
 
-use ganbaru_sync_contracts::{DeviceRole, Digest32, Entry, SetRole};
+use ganbaru_sync_contracts::{
+    AuthorizationRecord, Content, DeviceKeyPair, DeviceRole, Digest32, Entry, Envelope, Sequencing,
+    SetRole, WriterId, WriterKeyPair, sign_certificate,
+};
 
-use super::authorization::{admin_entry, head, view};
+use super::arrival_orders;
+use super::authorization::{admin_entry, genesis_of, head, remove_entry, seal_after, view};
 use super::block_on;
-use super::replica::{ANCHOR_DEVICE_ID, Replica, device_admin, device_id, enroll_entry, person};
-use crate::{RecordClass, RecordCursor, RecordEnvelope, RecordRole};
+use super::replica::{
+    ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, anchor_device_key, device_admin, device_id,
+    enroll_entry, person, proposal,
+};
+use crate::{AuthorizationView, RecordClass, RecordCursor, RecordEnvelope, RecordRole};
 
 const PAGE_BYTES: usize = 600 * 1024;
 const PAGE_ENVELOPES: usize = 256;
@@ -370,5 +377,401 @@ fn a_chain_received_ascending_or_descending_beside_a_take_stores_and_selects_the
         let selected = view(&mut ascending).await;
         assert_eq!(selected, view(&mut descending).await);
         assert_eq!(selected.anchor_device_id, device_id(20));
+    });
+}
+
+/// Every envelope the record store holds, with its role and whether it is verified, sorted.
+async fn store_set(replica: &mut Replica) -> Vec<(String, Vec<u8>, i64)> {
+    sqlx::query_as(
+        "SELECT role, envelope_hash, verified FROM sync_auth_envelopes
+         ORDER BY role, envelope_hash",
+    )
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap()
+}
+
+/// The stored genesis certificate envelope of `writer`.
+async fn genesis_of_writer(replica: &mut Replica, writer: WriterId) -> Vec<u8> {
+    sqlx::query_scalar(
+        "SELECT envelope FROM sync_auth_envelopes WHERE role = 'certificate' AND writer_id = ?",
+    )
+    .bind(writer.as_bytes().as_slice())
+    .fetch_one(&mut replica.conn)
+    .await
+    .unwrap()
+}
+
+/// A second genesis of the writer `key` signs, re-sealed from `genesis` with a certificate that
+/// names the same device and device key and a later creation time, as a reinstalled copy of the
+/// installation would seal.
+fn resealed_genesis(genesis: &[u8], key: &WriterKeyPair, device: &DeviceKeyPair) -> Vec<u8> {
+    let mut operation = Envelope::decode(genesis).unwrap().operation().unwrap();
+    let Content::Genesis(signed) = &operation.content else {
+        panic!("a genesis operation");
+    };
+    let mut certificate = signed.certificate.clone();
+    certificate.created_at_ms += 1;
+    operation.content = Content::Genesis(sign_certificate(&certificate, device).unwrap());
+    operation.seal(key).unwrap().into_bytes()
+}
+
+/// What a fresh member selects and stores once it admits `envelopes` one at a time in each
+/// arrival order of [`arrival_orders`]. Asserts that every order derives the same view, head,
+/// and stored set, and returns them.
+async fn admitted_in_every_order(
+    envelopes: &[Vec<u8>],
+    salt: u64,
+) -> (AuthorizationView, Digest32, Vec<(String, Vec<u8>, i64)>) {
+    let mut agreed = None;
+    for order in arrival_orders(envelopes.len()) {
+        let mut member = Replica::new(31, salt).await;
+        for index in &order {
+            let now_ms = member.now_ms;
+            member
+                .engine
+                .admit_records(
+                    &mut member.conn,
+                    &member.ctx,
+                    std::slice::from_ref(&envelopes[*index]),
+                    now_ms,
+                )
+                .await
+                .unwrap();
+        }
+        member.apply_all().await.unwrap();
+        let derived = (
+            view(&mut member).await,
+            head(&mut member).await.2,
+            store_set(&mut member).await,
+        );
+        let first = agreed.get_or_insert_with(|| derived.clone());
+        assert_eq!(*first, derived, "arrival order {order:?}");
+    }
+    agreed.unwrap()
+}
+
+/// The anchor with admin 20 enrolled, and admin 20's replica holding its log.
+async fn anchor_and_admin(salt: u64) -> (Replica, Replica) {
+    let mut anchor = Replica::anchor(0, salt).await;
+    anchor.sequence(admin_entry(20)).await.unwrap().unwrap();
+    let mut admin = Replica::new(20, salt).await;
+    admin.pull(&mut anchor).await;
+    (anchor, admin)
+}
+
+/// Every envelope `replica` serves on record pages, as bytes.
+async fn page_bytes(replica: &mut Replica) -> Vec<Vec<u8>> {
+    let (envelopes, _) = all_pages(replica, PAGE_ENVELOPES).await;
+    envelopes
+        .into_iter()
+        .map(|envelope| envelope.bytes)
+        .collect()
+}
+
+/// R7.6 test 47: the founder, removed by a take, re-seals a second genesis certificate for its
+/// old writer and seals a branch from the charter under a new writer certified by its device
+/// key. Its old writer stays bound, so the take and the removal keep their authority; head the
+/// removal, unfrozen, in every arrival order.
+#[test]
+fn a_founders_second_genesis_after_its_removal_keeps_the_take_and_the_removal_selected() {
+    block_on(async {
+        let salt = 86;
+        let (mut founder, mut admin) = anchor_and_admin(salt).await;
+        let taken = take(&mut admin, 20).await;
+        let signed = proposal(
+            admin.ctx.space,
+            &device_admin(20),
+            admin.now_ms,
+            remove_entry(ANCHOR_DEVICE_ID),
+        );
+        admin.sequence_signed(&signed).await.unwrap().unwrap();
+        let removal = head(&mut admin).await.2;
+        let mut envelopes = page_bytes(&mut admin).await;
+
+        let device = anchor_device_key(&person());
+        let founder_writer = founder.writer();
+        let genesis = genesis_of_writer(&mut founder, founder_writer).await;
+        envelopes.push(resealed_genesis(&genesis, &founder.identity.key, &device));
+        let fresh = Identity::new([86; 32], &device, ANCHOR_DEVICE_ID, None);
+        let mut previous = genesis_of(&genesis, &fresh);
+        envelopes.push(previous.clone());
+        let charter = founder
+            .engine
+            .charter(&mut founder.conn, &founder.ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut parent = charter.hash();
+        for (revision, index) in [(1, 22), (2, 23), (3, 24)] {
+            let record = AuthorizationRecord {
+                epoch: 0,
+                revision,
+                previous_entry_hash: parent,
+                anchor_device_id: ANCHOR_DEVICE_ID.to_owned(),
+                proposal: proposal(
+                    founder.ctx.space,
+                    &anchor_admin(&person()),
+                    founder.now_ms + revision,
+                    admin_entry(index),
+                ),
+                sequencing: Sequencing::Empty,
+            };
+            parent = record.hash();
+            previous = seal_after(
+                &previous,
+                &fresh.key,
+                Content::Authorization(Box::new(record)),
+                revision - 1,
+                founder.now_ms,
+            );
+            envelopes.push(previous.clone());
+        }
+
+        let (selected, selected_head, stored) = admitted_in_every_order(&envelopes, salt).await;
+        assert_eq!(selected_head, removal);
+        assert_ne!(selected_head, taken);
+        assert_eq!(selected.anchor_device_id, device_id(20));
+        assert_eq!(selected.frozen_at, None);
+        assert!(selected.devices.iter().any(
+            |device| device.device_id == ANCHOR_DEVICE_ID && device.removed_revision.is_some()
+        ));
+        assert_eq!(selected, view(&mut admin).await);
+        assert!(!stored.is_empty());
+        let mut member = Replica::new(31, salt).await;
+        admit_bytes(&mut member, &envelopes).await;
+        let founder_certificates: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sync_auth_envelopes WHERE role = 'certificate' AND writer_id = ?",
+        )
+        .bind(founder_writer.as_bytes().as_slice())
+        .fetch_one(&mut member.conn)
+        .await
+        .unwrap();
+        assert_eq!(founder_certificates, 2);
+    });
+}
+
+/// R7.6 test 48: an honest installation re-seals its genesis, and a member's take and later
+/// records descend from its entries. Nothing loses its authority: every arrival order selects
+/// the head and view of the run without the second genesis, unfrozen, and the twin shows as a
+/// forked writer.
+#[test]
+fn an_honest_second_genesis_changes_no_selection() {
+    block_on(async {
+        let salt = 87;
+        let (mut anchor, mut admin) = anchor_and_admin(salt).await;
+        take(&mut admin, 20).await;
+        let signed = proposal(
+            admin.ctx.space,
+            &device_admin(20),
+            admin.now_ms,
+            enroll_entry(&person(), 21, DeviceRole::Member),
+        );
+        admin.sequence_signed(&signed).await.unwrap().unwrap();
+        let later = head(&mut admin).await.2;
+        let single = page_bytes(&mut admin).await;
+        let anchor_writer = anchor.writer();
+        let genesis = genesis_of_writer(&mut anchor, anchor_writer).await;
+        let mut twinned = single.clone();
+        twinned.push(resealed_genesis(
+            &genesis,
+            &anchor.identity.key,
+            &anchor_device_key(&person()),
+        ));
+
+        let (single_view, single_head, _) = admitted_in_every_order(&single, salt).await;
+        let (twinned_view, twinned_head, _) = admitted_in_every_order(&twinned, salt).await;
+        assert_eq!(single_head, later);
+        assert_eq!(twinned_head, single_head);
+        assert_eq!(twinned_view, single_view);
+        assert_eq!(twinned_view.frozen_at, None);
+
+        let mut member = Replica::new(31, salt).await;
+        admit_bytes(&mut member, &twinned).await;
+        member.apply_all().await.unwrap();
+        let storage = member
+            .engine
+            .authorization_storage(&mut member.conn, &member.ctx)
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .forked_writers
+                .iter()
+                .any(|forked| forked.writer == anchor.writer())
+        );
+        assert!(member.evidence().await.is_empty());
+    });
+}
+
+async fn admit_bytes(into: &mut Replica, envelopes: &[Vec<u8>]) -> crate::RecordAdmission {
+    let now_ms = into.now_ms;
+    into.engine
+        .admit_records(&mut into.conn, &into.ctx, envelopes, now_ms)
+        .await
+        .unwrap()
+}
+
+/// R7.6 test 49: a record of a writer with a bad writer-key signature, stored as pending before
+/// the writer's certificate on one replica and offered after it on another, is purged on the
+/// first and refused on the second, so both hold the same set, in every arrival order.
+#[test]
+fn a_pending_record_with_a_bad_signature_is_purged_when_its_certificate_arrives() {
+    block_on(async {
+        let salt = 88;
+        let (_, mut admin) = anchor_and_admin(salt).await;
+        take(&mut admin, 20).await;
+        let honest = page_bytes(&mut admin).await;
+        let admin_writer = admin.writer();
+        let certificate = genesis_of_writer(&mut admin, admin_writer).await;
+        let (epoch, revision, parent) = head(&mut admin).await;
+        let record = AuthorizationRecord {
+            epoch,
+            revision: revision + 1,
+            previous_entry_hash: parent,
+            anchor_device_id: device_id(20),
+            proposal: proposal(
+                admin.ctx.space,
+                &device_admin(20),
+                admin.now_ms,
+                enroll_entry(&person(), 21, DeviceRole::Member),
+            ),
+            sequencing: Sequencing::Empty,
+        };
+        let last = admin.own_ops().await.pop().unwrap();
+        let mut bad = seal_after(
+            &last,
+            &admin.identity.key,
+            Content::Authorization(Box::new(record)),
+            revision,
+            admin.now_ms,
+        );
+        *bad.last_mut().unwrap() ^= 1;
+        let bad_hash = Envelope::decode(&bad).unwrap().hash();
+
+        // Replica A stores the record pending, then purges it with the certificate; replica B
+        // refuses it once the certificate is stored.
+        let mut first = Replica::new(31, salt).await;
+        admit_bytes(&mut first, std::slice::from_ref(&bad)).await;
+        assert!(
+            store_set(&mut first)
+                .await
+                .iter()
+                .any(|(_, hash, verified)| *hash == bad_hash.to_vec() && *verified == 0)
+        );
+        admit_bytes(&mut first, std::slice::from_ref(&certificate)).await;
+        let mut second = Replica::new(32, salt).await;
+        admit_bytes(&mut second, std::slice::from_ref(&certificate)).await;
+        admit_bytes(&mut second, std::slice::from_ref(&bad)).await;
+        let first_set = store_set(&mut first).await;
+        assert_eq!(first_set, store_set(&mut second).await);
+        assert!(
+            first_set
+                .iter()
+                .all(|(_, hash, _)| *hash != bad_hash.to_vec())
+        );
+
+        let mut envelopes = honest;
+        envelopes.push(bad);
+        let (_, _, stored) = admitted_in_every_order(&envelopes, salt).await;
+        assert!(
+            stored
+                .iter()
+                .all(|(_, hash, verified)| *hash != bad_hash.to_vec() && *verified == 1)
+        );
+    });
+}
+
+/// R7.6 tests 21, 25, 26, and 38 at the store: the anchor's writer seals three twins at one
+/// sequence above a shared prefix, and an admin's take descends from below them. Every arrival
+/// order, including twins before their prefix, stores every twin and agrees: frozen at the last
+/// record below the twins without the take, and the take selected and unfrozen with it.
+#[test]
+fn twins_above_a_take_store_alike_and_freeze_or_select_the_same_in_every_order() {
+    block_on(async {
+        let salt = 89;
+        let (mut anchor, mut admin) = anchor_and_admin(salt).await;
+        let (_, below_revision, below_hash) = head(&mut anchor).await;
+        let below = anchor.own_ops().await.pop().unwrap();
+        let taken = take(&mut admin, 20).await;
+        for index in [21, 22] {
+            anchor
+                .sequence(enroll_entry(&person(), index, DeviceRole::Member))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let twins: Vec<Vec<u8>> = [23_usize, 24]
+            .into_iter()
+            .map(|index| {
+                let record = AuthorizationRecord {
+                    epoch: 0,
+                    revision: below_revision + 1,
+                    previous_entry_hash: below_hash,
+                    anchor_device_id: ANCHOR_DEVICE_ID.to_owned(),
+                    proposal: proposal(
+                        anchor.ctx.space,
+                        &anchor_admin(&person()),
+                        anchor.now_ms + u64::try_from(index).unwrap(),
+                        enroll_entry(&person(), index, DeviceRole::Member),
+                    ),
+                    sequencing: Sequencing::Empty,
+                };
+                seal_after(
+                    &below,
+                    &anchor.identity.key,
+                    Content::Authorization(Box::new(record)),
+                    below_revision,
+                    anchor.now_ms,
+                )
+            })
+            .collect();
+        let twin_hashes: Vec<Vec<u8>> = twins
+            .iter()
+            .map(|bytes| Envelope::decode(bytes).unwrap().hash().to_vec())
+            .collect();
+
+        let mut without_take = page_bytes(&mut anchor).await;
+        without_take.extend(twins.iter().cloned());
+        let (frozen, _, stored) = admitted_in_every_order(&without_take, salt).await;
+        assert_eq!(frozen.frozen_at, Some(below_revision));
+        assert!(
+            twin_hashes
+                .iter()
+                .all(|hash| stored.iter().any(|(_, stored, _)| stored == hash))
+        );
+        for index in [21, 22, 23, 24] {
+            assert!(
+                !frozen
+                    .devices
+                    .iter()
+                    .any(|device| device.device_id == device_id(index))
+            );
+        }
+
+        let mut with_take = without_take.clone();
+        for bytes in page_bytes(&mut admin).await {
+            if !with_take.contains(&bytes) {
+                with_take.push(bytes);
+            }
+        }
+        let (selected, selected_head, stored) = admitted_in_every_order(&with_take, salt).await;
+        assert_eq!(selected_head, taken);
+        assert_eq!(selected.anchor_device_id, device_id(20));
+        assert_eq!(selected.frozen_at, None);
+        assert!(
+            twin_hashes
+                .iter()
+                .all(|hash| stored.iter().any(|(_, stored, _)| stored == hash))
+        );
+
+        let one_twin: Vec<Vec<u8>> = with_take
+            .iter()
+            .filter(|bytes| Envelope::decode(bytes).unwrap().hash().to_vec() != twin_hashes[1])
+            .cloned()
+            .collect();
+        let (fewer, fewer_head, _) = admitted_in_every_order(&one_twin, salt).await;
+        assert_eq!(fewer_head, selected_head);
+        assert_eq!(fewer, selected);
     });
 }

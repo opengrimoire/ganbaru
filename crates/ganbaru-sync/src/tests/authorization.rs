@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKind, DeviceRole, Digest32, Enroll, Entry,
     Envelope, Handover, Header, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
-    SetRole, SignedProposal, Yield,
+    SetRole, SignedProposal, WriterKeyPair, Yield,
 };
 
 use super::block_on;
@@ -94,7 +94,25 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
         .await
         .pop()
         .expect("the replica has sealed");
-    let envelope = Envelope::decode(&last).unwrap();
+    seal_after(
+        &last,
+        &replica.identity.key,
+        content,
+        authorization_revision,
+        replica.now_ms,
+    )
+}
+
+/// The operation `key` seals with `content` right after `previous`, under the same writer and
+/// space, outside the engine.
+pub(super) fn seal_after(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    content: Content,
+    authorization_revision: u64,
+    now_ms: u64,
+) -> Vec<u8> {
+    let envelope = Envelope::decode(previous).unwrap();
     let previous = envelope.operation().unwrap();
     Operation {
         space: previous.space,
@@ -102,7 +120,7 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
         seq: previous.seq + 1,
         previous_hash: envelope.hash(),
         header: Header {
-            clock: HlcClock::new(previous.header.clock).tick(replica.now_ms),
+            clock: HlcClock::new(previous.header.clock).tick(now_ms),
             manifest_version: previous.header.manifest_version,
             authorization_revision,
             key_epoch: 0,
@@ -111,7 +129,7 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
         },
         content,
     }
-    .seal(&replica.identity.key)
+    .seal(key)
     .unwrap()
     .into_bytes()
 }

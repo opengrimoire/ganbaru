@@ -50,7 +50,7 @@ use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
-use ganbaru_sync_replica::records::{RecordExchange, RecordLink};
+use ganbaru_sync_replica::records::{FreeSpace, RecordExchange, RecordLink};
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
 use ganbaru_sync_replica::writer::SequencedCheck;
@@ -59,7 +59,7 @@ use std::collections::BTreeSet;
 #[cfg(any(mobile, test))]
 use std::future::Future;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
@@ -122,6 +122,9 @@ pub(crate) struct RuntimeState {
     /// Record exchange windows, cursors, and backstop that this device's hubs and sessions
     /// share.
     records: RecordExchange,
+    /// The root of the vault the service last ran for, whose volume the record backstop reads
+    /// free space from.
+    vault_root: Arc<Mutex<Option<PathBuf>>>,
     /// Stability the coordinator pass last computed, reported in every sync state.
     #[cfg(desktop)]
     stability: HubStability,
@@ -158,10 +161,17 @@ pub(crate) struct RuntimeState {
 
 impl Default for RuntimeState {
     fn default() -> Self {
+        let vault_root: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+        let root = Arc::clone(&vault_root);
+        let free_space: FreeSpace = Arc::new(move || {
+            let root = root.lock().ok()?.clone()?;
+            volume_free_bytes(&root)
+        });
         Self {
             now: Arc::default(),
             changes: watch::Sender::new(0),
-            records: RecordExchange::default(),
+            records: RecordExchange::default().with_free_space(free_space),
+            vault_root,
             #[cfg(desktop)]
             stability: HubStability::default(),
             #[cfg(desktop)]
@@ -185,6 +195,22 @@ impl Default for RuntimeState {
     }
 }
 
+/// Bytes an unprivileged process may still write on the volume holding `path`, or `None` when
+/// the volume cannot be read. The record backstop then applies its byte and envelope bounds
+/// alone.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn volume_free_bytes(path: &Path) -> Option<u64> {
+    let stat = rustix::fs::statvfs(path).ok()?;
+    Some(stat.f_bavail.saturating_mul(stat.f_frsize))
+}
+
+/// Free space is read on Linux and Android only; elsewhere the record backstop applies its
+/// byte and envelope bounds alone.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn volume_free_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
 impl RuntimeState {
     /// The latest status of the active vault.
     pub(crate) fn status(&self) -> Result<SyncStatusView, String> {
@@ -202,6 +228,13 @@ impl RuntimeState {
     /// The authorization record exchange every pass shares, with its storage backstop.
     pub(crate) fn records(&self) -> &RecordExchange {
         &self.records
+    }
+
+    /// Points the record backstop's free space reading at the volume of `root`.
+    fn set_vault_root(&self, root: PathBuf) {
+        if let Ok(mut current) = self.vault_root.lock() {
+            *current = Some(root);
+        }
     }
 
     /// Records whether the app is in the foreground. A pass serves the member listener only
@@ -1211,8 +1244,9 @@ impl ServiceState {
         if self.vault_id.as_deref() != Some(vault_id.as_str()) {
             *self = Self {
                 vault_id: Some(vault_id.clone()),
-                ..Self::default()
+                ..Self::for_runtime(runtime)
             };
+            runtime.set_vault_root(host.active_vault_path()?);
             #[cfg(desktop)]
             runtime.stability.clear();
         }
@@ -3211,6 +3245,21 @@ mod headless_tests;
 mod tests {
     use super::*;
     use ganbaru_sync_contracts::WriterId;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_record_backstop_reads_free_space_of_the_vault_volume() {
+        let dir = std::env::temp_dir();
+        assert!(volume_free_bytes(dir.as_path()).is_some_and(|free| free > 0));
+        assert_eq!(
+            volume_free_bytes(&dir.as_path().join("ganbaru-absent-volume-probe")),
+            None
+        );
+        let runtime = RuntimeState::default();
+        assert_eq!(runtime.records().free_space(), None);
+        runtime.set_vault_root(dir.clone());
+        assert!(runtime.records().free_space().is_some());
+    }
 
     fn vector(seq: u64) -> VersionVector {
         let mut vector = VersionVector::new();

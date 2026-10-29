@@ -3485,6 +3485,7 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
 
 mod calendar_conflicts;
 mod calendar_recovery;
+mod flood;
 mod handover;
 mod notes_conflicts;
 mod projects_conflicts;

@@ -15,6 +15,7 @@ use ganbaru_sync_contracts::{
     Remove, Sequencing, SetRole, SignedCharter, SpaceId, WriterId, Yield,
 };
 
+use super::arrival_orders;
 use super::authorization::admin_entry;
 use super::replica::{
     ANCHOR_DEVICE_ID, START_MS, anchor_admin, anchor_device_key, device_admin, device_id,
@@ -286,23 +287,8 @@ impl Log {
     /// Asserts that every arrival order of [`Self::assert_selected`] selects the same head and
     /// derives the same state, whichever head that is. Returns what they select.
     fn assert_agreed(&self) -> SelectedHead {
-        let count = self.records.len();
-        let forward: Vec<usize> = (0..count).collect();
-        let mut orders = vec![forward.clone(), forward.iter().rev().copied().collect()];
-        let mut state = 0x9e37_79b9_7f4a_7c15_u64 ^ u64::try_from(count).unwrap();
-        for _ in 0..16 {
-            let mut order = forward.clone();
-            for index in (1..count).rev() {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                let other = usize::try_from(state % (u64::try_from(index).unwrap() + 1)).unwrap();
-                order.swap(index, other);
-            }
-            orders.push(order);
-        }
         let mut selected: Option<SelectedHead> = None;
-        for order in orders {
+        for order in arrival_orders(self.records.len()) {
             let head = self.select(&order);
             let first = selected.get_or_insert_with(|| head.clone());
             assert_eq!(*first, head, "arrival order {order:?}");
@@ -1377,4 +1363,32 @@ fn a_removed_admin_is_never_re_enrolled_and_takes_nothing_past_its_removal() {
         let selected = log.assert_selects(&dropped);
         assert!(removed(&selected, &device_id(FIRST)));
     }
+}
+
+/// R7.6 test 37: the anchor's writer carries records in the charter instance and, past a self
+/// handover, in its own next instance, and forks inside the second. The second instance freezes
+/// at the writer's last record there below the fork, never at a record of the first.
+#[test]
+fn a_writer_fork_in_a_later_instance_freezes_it_at_its_own_last_record_below_the_fork() {
+    let (mut log, base) = Log::new();
+    let anchor = anchor_admin(&person());
+    let next = log.self_handover(&base);
+    let point = log.append(
+        &next,
+        &anchor,
+        enroll_entry(&person(), 5, DeviceRole::Member),
+    );
+    log.fork_anchor(&point);
+    for index in [6, 7] {
+        log.append(
+            &point,
+            &anchor,
+            enroll_entry(&person(), index, DeviceRole::Member),
+        );
+    }
+    let selected = log.assert_frozen(&point);
+    assert_eq!(selected.anchor, ANCHOR_DEVICE_ID);
+    assert!(live(&selected, &device_id(5)));
+    assert!(!selected.devices.contains_key(&device_id(6)));
+    assert!(!selected.devices.contains_key(&device_id(7)));
 }

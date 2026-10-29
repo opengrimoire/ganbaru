@@ -265,7 +265,7 @@ pub(crate) async fn read<R: Runtime>(
     Ok(Some(contests_dto(
         &view,
         records.backstop_state(),
-        &growth_alerts(&storage),
+        &growth_alerts(&storage, records.limits()),
         &names,
         cfg!(desktop),
     )))

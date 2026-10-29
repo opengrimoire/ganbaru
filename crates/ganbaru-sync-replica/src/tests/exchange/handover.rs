@@ -22,9 +22,9 @@ use ganbaru_sync_contracts::{
 use std::sync::Arc;
 use tokio::sync::watch;
 
-const LAPTOP_DEVICE: &str = "device-laptop";
+pub(super) const LAPTOP_DEVICE: &str = "device-laptop";
 
-fn laptop_ids() -> PeerIds {
+pub(super) fn laptop_ids() -> PeerIds {
     PeerIds {
         vault_id: VAULT_ID.to_string(),
         device_id: LAPTOP_DEVICE.to_string(),
@@ -60,7 +60,7 @@ fn forwarding_hub(replica: &Replica) -> DirectTransport {
 
 /// Sequences a proposal through the writer of `replica`, which must anchor, and records the
 /// commit.
-async fn sequence_here(replica: &mut Replica, proposal: &SignedProposal) -> u64 {
+pub(super) async fn sequence_here(replica: &mut Replica, proposal: &SignedProposal) -> u64 {
     let mut conn = acquire(&replica.pool).await;
     let revision = authority::sequence(
         &replica.engine,
@@ -84,7 +84,12 @@ async fn commit_sequenced(replica: &mut Replica) {
     replica.writer.committed(seq).expect("record commit");
 }
 
-fn enroll_mobile(space: SpaceId, charter: Digest32, device_id: &str, seed: u8) -> SignedProposal {
+pub(super) fn enroll_mobile(
+    space: SpaceId,
+    charter: Digest32,
+    device_id: &str,
+    seed: u8,
+) -> SignedProposal {
     authority::propose(
         space,
         charter,

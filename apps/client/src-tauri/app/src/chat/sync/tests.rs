@@ -107,7 +107,7 @@ fn the_settle_approval_order_is_the_sync_grant_ranking() {
 }
 
 /// The engine refuses a hook that settles a group it cannot write back, so building the vault
-/// engine with the Chat hooks proves the folder grant settle is admissible.
+/// engine with the Chat hooks proves the folder grant and channel access settles are admissible.
 #[test]
 fn the_vault_engine_accepts_the_chat_folder_grant_settle() {
     let hooks = with_hooks(Hooks::new());
@@ -123,11 +123,109 @@ fn the_vault_engine_accepts_the_chat_folder_grant_settle() {
         ChatApplyHook.settled_groups(&chat::FOLDER_GRANTS),
         &[folder_grant_group::GRANT]
     );
-    assert!(
-        ChatApplyHook
-            .settled_groups(&chat::CHANNEL_MEMBERSHIPS)
-            .is_empty()
+    assert_eq!(
+        ChatApplyHook.settled_groups(&chat::CHANNEL_MEMBERSHIPS),
+        &[channel_membership_group::ACCESS]
     );
+}
+
+const NARROW_PROFILE: &str = "access-profile:chat-sync-narrow";
+const WIDE_PROFILE: &str = "access-profile:chat-sync-wide";
+
+/// Seeds a read-only profile and a publishing one, each with an effective revision granting
+/// history and participation.
+async fn seed_access_profiles(pool: &SqlitePool) {
+    for (profile, capability) in [(NARROW_PROFILE, "read"), (WIDE_PROFILE, "publish")] {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
+             VALUES ('{profile}', 'Profile', '{NOW}', '{NOW}');
+             INSERT INTO chat_access_profile_revisions
+                (id, access_profile_id, default_read_history, default_participate,
+                 default_history_boundary, maximum_folder_capability, created_at)
+             VALUES ('{profile}:1', '{profile}', 1, 1, 'entire', '{capability}', '{NOW}');"
+        )))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+/// A channel access version under `profile` inheriting its capabilities and boundary.
+fn access_version(
+    writer: u8,
+    profile: &str,
+    channel: Option<&str>,
+    scratch: Option<&str>,
+    removed: bool,
+    won: bool,
+) -> ConcurrentVersion {
+    let optional = |policy: Option<&str>| policy.map_or(Field::Null, |p| Field::Text(p.into()));
+    ConcurrentVersion {
+        writer: ganbaru_sync_contracts::WriterId::from_bytes([writer; 16]),
+        clock: ganbaru_sync_contracts::Hlc::new(u64::from(writer), 0),
+        value: Value::new(vec![
+            Field::Text(profile.to_string()),
+            Field::Integer(1),
+            Field::Integer(1),
+            Field::Integer(1),
+            Field::Integer(1),
+            Field::Text("entire".to_string()),
+            Field::Integer(1),
+            Field::Null,
+            optional(channel),
+            optional(scratch),
+            if removed {
+                Field::Text(NOW.to_string())
+            } else {
+                Field::Null
+            },
+        ])
+        .unwrap(),
+        won,
+    }
+}
+
+/// A switch to a narrower profile concurrent with an "ask" edit the priority kept settles onto
+/// both, a removal stands, and an access value round-trips through its codec.
+#[tokio::test]
+async fn a_channel_access_settle_keeps_a_narrower_profile_and_a_removal() {
+    let pool = migrated_pool().await;
+    seed_access_profiles(&pool).await;
+    let mut connection = pool.acquire().await.unwrap();
+
+    let narrowing = [
+        access_version(1, NARROW_PROFILE, None, None, false, false),
+        access_version(2, WIDE_PROFILE, Some("ask"), None, false, true),
+    ];
+    let settled = settle_channel_access(&mut connection, &narrowing)
+        .await
+        .unwrap();
+    assert_eq!(
+        settled,
+        Some(access_version(3, NARROW_PROFILE, Some("ask"), None, false, true).value)
+    );
+
+    let removed = [
+        access_version(1, NARROW_PROFILE, None, None, false, false),
+        access_version(2, WIDE_PROFILE, Some("ask"), None, true, true),
+    ];
+    assert_eq!(
+        settle_channel_access(&mut connection, &removed)
+            .await
+            .unwrap(),
+        None
+    );
+
+    let live = access_version(
+        1,
+        WIDE_PROFILE,
+        Some("ask"),
+        Some("unattended"),
+        false,
+        true,
+    );
+    let decoded = channel_access(&live.value).expect("a live access value");
+    assert_eq!(channel_access_value(decoded), Some(live.value));
 }
 
 fn grant_version(

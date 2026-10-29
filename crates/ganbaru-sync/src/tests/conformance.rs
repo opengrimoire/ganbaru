@@ -620,10 +620,18 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
                 reference.on_delete.sql_name().to_string(),
             ));
         }
+        if let Some(parent) = table.key_parent {
+            let parent = manifest.table(parent).unwrap();
+            expected.insert((
+                table.key_column.to_string(),
+                parent.name.to_string(),
+                parent.key_column.to_string(),
+                OnDelete::Cascade.sql_name().to_string(),
+            ));
+        }
         let actual = foreign_keys(&pool, table.name)
             .await
             .into_iter()
-            .filter(|foreign_key| !is_key_foreign_key(manifest, table, foreign_key))
             .collect::<BTreeSet<_>>();
         assert_eq!(actual, expected, "{} foreign keys", table.name);
 
@@ -636,28 +644,6 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
             }
         }
     }
-}
-
-/// Whether a foreign key ties a row to an earlier replicated row of the same key: a table keyed
-/// by its parent's key holds at most one row per parent, and that row cascades with it. The key
-/// is not a group column, so no reference declares it, and the parent materializes first.
-fn is_key_foreign_key(
-    manifest: &Manifest,
-    table: &TableSpec,
-    (from, target, to, on_delete): &(String, String, String, String),
-) -> bool {
-    let Some(parent) = manifest.tables.iter().position(|spec| spec.name == *target) else {
-        return false;
-    };
-    let child = manifest
-        .tables
-        .iter()
-        .position(|spec| spec.name == table.name);
-    from == table.key_column
-        && !table.has_composite_key()
-        && *to == manifest.tables[parent].key_column
-        && on_delete == "CASCADE"
-        && child.is_some_and(|child| parent < child)
 }
 
 /// An owned table cascades from its owner row, or from its parent owned row through the parent
@@ -1439,6 +1425,7 @@ fn a_row_keyed_by_its_parent_cascades_and_unique_sets_holding_the_key_need_no_re
         }],
         local_columns: &[],
         triggers: &[],
+        key_parent: Some(ITEMS_TABLE),
         ..ITEMS
     };
     const PARENT_FIRST: DomainManifest = DomainManifest {
@@ -1462,28 +1449,11 @@ fn a_row_keyed_by_its_parent_cascades_and_unique_sets_holding_the_key_need_no_re
         .await
         .unwrap();
         let parent_first = leaked(&[&PARENT_FIRST]);
+        parent_first.validate().unwrap();
         assert_foreign_keys(parent_first, &pool).await;
         assert_resolutions(&ITEM_NOTES, &pool).await;
-
-        let key_foreign_key = foreign_keys(&pool, ITEM_NOTES.name).await.remove(0);
-        assert!(is_key_foreign_key(
-            parent_first,
-            &ITEM_NOTES,
-            &key_foreign_key
-        ));
-        // The parent must materialize first, and the child must leave with it.
-        let child_first = leaked(&[&CHILD_FIRST]);
-        assert!(!is_key_foreign_key(
-            child_first,
-            &ITEM_NOTES,
-            &key_foreign_key
-        ));
-        let (from, target, to, _) = key_foreign_key.clone();
-        let clearing = (from, target, to, "SET NULL".to_string());
-        assert!(!is_key_foreign_key(parent_first, &ITEM_NOTES, &clearing));
-        let (_, target, to, on_delete) = key_foreign_key;
-        let from_other = ("note".to_string(), target, to, on_delete);
-        assert!(!is_key_foreign_key(parent_first, &ITEM_NOTES, &from_other));
+        // The parent must materialize first.
+        assert!(validation_error(&[&CHILD_FIRST]).contains("fixture_item_notes"));
 
         let binary = || Collation::Binary.sql_name().to_string();
         let with_key = BTreeSet::from([
@@ -2076,6 +2046,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (19, include_str!("fixtures/vault_manifest_v19.txt")),
     (20, include_str!("fixtures/vault_manifest_v20.txt")),
     (21, include_str!("fixtures/vault_manifest_v21.txt")),
+    (22, include_str!("fixtures/vault_manifest_v22.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

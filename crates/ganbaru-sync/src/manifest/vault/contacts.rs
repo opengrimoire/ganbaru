@@ -206,6 +206,7 @@ pub const CONTACTS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -289,6 +290,7 @@ pub const REQUESTS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -343,6 +345,7 @@ pub const CARD: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 

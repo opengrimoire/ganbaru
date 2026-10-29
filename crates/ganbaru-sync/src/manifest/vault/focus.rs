@@ -344,6 +344,7 @@ const BASE: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 

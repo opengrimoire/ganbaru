@@ -66,6 +66,9 @@ impl Manifest {
                 }
                 text.push('\n');
             }
+            if let Some(parent) = table.key_parent {
+                let _ = writeln!(text, "  key parent {}", parent.0);
+            }
             for group in table.groups {
                 let mut line = format!("  group {} {}", group.id.get(), kind(group.kind));
                 if group.surfaced {

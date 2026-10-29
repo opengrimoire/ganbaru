@@ -236,8 +236,28 @@ pub(crate) fn keepers(contested: &Contested, excluded: &BTreeSet<RowRef>) -> Dup
 }
 
 /// Rows whose references in any retained version name a row, directly or through a tombstone
-/// redirecting to it, and rows whose tombstones name it as their cause.
+/// redirecting to it, rows whose tombstones name it as their cause, and rows of its key-child
+/// tables under the same key.
 pub(crate) async fn referrers(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    target: TableId,
+    key: &str,
+) -> SyncResult<BTreeSet<RowRef>> {
+    let mut found = BTreeSet::new();
+    for child in engine.manifest().tables {
+        if child.key_parent == Some(target)
+            && merge::row_state(conn, child.id, key).await?.is_some()
+        {
+            found.insert((child.id, key.to_string()));
+        }
+    }
+    found.extend(reference_referrers(engine, conn, target, key).await?);
+    Ok(found)
+}
+
+/// The referrers of a row through reference columns, owned references, and tombstone causes.
+async fn reference_referrers(
     engine: &Engine,
     conn: &mut SqliteConnection,
     target: TableId,

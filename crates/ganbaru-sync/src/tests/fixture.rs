@@ -108,6 +108,7 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -177,6 +178,7 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -316,6 +318,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -436,6 +439,7 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -523,6 +527,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     acyclic: None,
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -619,6 +624,7 @@ pub(super) const EDGES: TableSpec = TableSpec {
     }),
     publish_when: None,
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -684,6 +690,7 @@ pub(super) const DRAFTS: TableSpec = TableSpec {
     acyclic: None,
     publish_when: Some("published = 1"),
     published_with: None,
+    key_parent: None,
     holds_deletes: false,
 };
 
@@ -1581,6 +1588,19 @@ pub(super) fn test_engine_with(overrides: OverrideHook) -> Engine {
         super::notes::with_notes_hooks(vault_hooks())
             .with(LISTS_TABLE, Box::new(FixtureHook))
             .with(OVERRIDES_TABLE, Box::new(overrides)),
+    )
+    .expect("the test manifest, adapters, and hooks should agree")
+}
+
+/// The engine of [`test_engine`] with `hook` on `table` as well.
+pub(super) fn test_engine_hooking(table: TableId, hook: Box<dyn MaterializeHook>) -> Engine {
+    Engine::with(
+        &TEST_MANIFEST,
+        test_adapters(),
+        super::notes::with_notes_hooks(vault_hooks())
+            .with(LISTS_TABLE, Box::new(FixtureHook))
+            .with(OVERRIDES_TABLE, Box::new(OverrideHook::default()))
+            .with(table, hook),
     )
     .expect("the test manifest, adapters, and hooks should agree")
 }

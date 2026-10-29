@@ -11,8 +11,8 @@ use super::block_on;
 use super::replica::{Replica, converge, device_id, pair, quoted, rank};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
-    DEPENDENCIES, DEPENDENCIES_TABLE, GROUPS_TABLE, PROJECTS, PROJECTS_TABLE, TASKS, VALUES,
-    dependency_group, value_group,
+    DEPENDENCIES, DEPENDENCIES_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE, PROJECTS,
+    PROJECTS_TABLE, TASKS, VALUES, dependency_group, value_group,
 };
 use crate::{ChangeNotice, ConflictRow};
 
@@ -629,6 +629,62 @@ fn projects_a_project_deleted_while_a_task_is_added_to_it_is_offered_for_recover
                 (PROJECTS_TABLE, PROJECT)
             );
             assert_eq!(entries[0].presentation.title, "Launch");
+        }
+    });
+}
+
+#[test]
+fn projects_a_primary_folder_set_in_a_concurrently_deleted_project_leaves_with_it() {
+    block_on(async {
+        let mut replicas = shared(2, "").await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "INSERT INTO project_primary_working_folders
+                     (project_id, working_folder_id, created_at, updated_at)
+                 VALUES ({}, 'folder-external', {created}, {created})",
+                quoted(PROJECT),
+                created = quoted(CREATED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            // The binding is deleted with the project it is keyed by, naming it as the cause.
+            let causes: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(
+                "SELECT cause_table, cause_row FROM sync_tombstones
+                 WHERE table_id = ? AND row_key = ?",
+            )
+            .bind(i64::from(PRIMARY_FOLDERS_TABLE.0))
+            .bind(PROJECT)
+            .fetch_all(&mut replica.conn)
+            .await
+            .unwrap();
+            assert_eq!(
+                causes,
+                vec![(Some(i64::from(PROJECTS_TABLE.0)), Some(PROJECT.to_string()))]
+            );
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM project_primary_working_folders WHERE project_id = {}",
+                        quoted(PROJECT)
+                    ))
+                    .await,
+                0
+            );
+            // A binding holds no recoverable group, so the deletion offers nothing to recover.
+            let entries = replica
+                .engine
+                .recovery_entries(&mut replica.conn, &replica.ctx)
+                .await
+                .unwrap();
+            assert!(entries.is_empty(), "{entries:?}");
         }
     });
 }

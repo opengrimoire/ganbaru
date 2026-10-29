@@ -16,11 +16,11 @@ use crate::client::{ClientSession, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncT
 use crate::hub::SyncHub;
 use crate::records::{
     self, BackstopState, RecordBudget, RecordClock, RecordExchange, RecordLimits, RecordSession,
-    RecordsExchanged, WANTED_ROUNDS,
+    RecordsExchanged,
 };
 use crate::tests::{NOW_MS, VAULT_ID, acquire};
 use crate::wire::ops_to_wire;
-use ganbaru_handoff::protocol::{ControlMessage, MAX_SYNC_RECORDS, PROTOCOL_VERSION};
+use ganbaru_handoff::protocol::{ControlMessage, PROTOCOL_VERSION};
 use ganbaru_sync::{Engine, RecordClass, SyncError};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, Digest32, Entry,
@@ -905,13 +905,18 @@ fn rewraps_of_kit_records_by_a_removed_peer_never_take_kit_class() {
     });
 }
 
+/// Wanted requests a member with planted wants sends one peer per session.
+const PLANTED_ROUNDS: usize = 4;
+/// Wanted keys one request of a member with planted wants asks for, half of them at most
+/// priority keys.
+const PLANTED_PER_REQUEST: usize = 16;
 /// Wanted entries a planted chain names that no peer holds: more than one session asks, so the
 /// rotation through the wanted set carries over sessions.
-const PLANTED: usize = WANTED_ROUNDS * MAX_SYNC_RECORDS + 512;
+const PLANTED: usize = (PLANTED_ROUNDS + 2) * PLANTED_PER_REQUEST;
 /// Refetch hashes no peer holds that a member keeps beside the planted wants.
-const PLANTED_REFETCH: usize = 512;
-/// Yields a key that is no admin signs at the selected head.
-const PLANTED_YIELDS: usize = 1024;
+const PLANTED_REFETCH: usize = 2 * PLANTED_PER_REQUEST;
+/// Yields a key that is no admin signs at the selected head, more than a request asks for.
+const PLANTED_YIELDS: usize = 4 * PLANTED_PER_REQUEST;
 /// Bytes a member with planted wants serves one peer per window, so each session pushes it a
 /// page of the planted chain at most and spends its time asking.
 const PLANTED_SERVE_BYTES: usize = 64 * 1024;
@@ -1092,11 +1097,12 @@ impl Replica {
 /// The D-M1 amendment to R7.7: a member holds a chain naming [`PLANTED`] parent entries no peer
 /// holds, more than one session asks for, [`PLANTED_REFETCH`] refetch hashes no peer holds, and
 /// [`PLANTED_YIELDS`] yields a key that is no admin signs, all sorting below every real key. It
-/// loses an envelope of the anchor's chain and holds the hash of another for refetch. Before
-/// each session with the anchor it dials a peer that answers every request busy, which resets
-/// that peer's backoff only. Without a restart, the sessions with the anchor ask for both and
-/// store them within the sessions the rotation bounds: the wanted rows over the hashes a
-/// session asks for at least, plus one.
+/// loses an envelope of the anchor's chain and holds the hash of another for refetch. An
+/// admission window passes before each round, in which it dials a peer that answers every
+/// request busy, which resets that peer's backoff only, and then the anchor. Without a restart,
+/// the sessions with the anchor ask for both and store them within the sessions the rotation
+/// bounds: the wanted rows over the hashes a session asks for at least, plus one. The request
+/// size and count come from the limits, scaled down with the planted counts.
 #[test]
 fn planted_wants_do_not_starve_an_honest_want_or_a_refetch_hash() {
     block_on(async {
@@ -1121,9 +1127,14 @@ fn planted_wants_do_not_starve_an_honest_want_or_a_refetch_hash() {
                 bytes: PLANTED_SERVE_BYTES,
                 ..RecordLimits::default().normal
             },
+            wanted_rounds: PLANTED_ROUNDS,
+            wants_per_request: PLANTED_PER_REQUEST,
             ..RecordLimits::default()
         };
-        let state = RecordExchange::default().with_limits(limits);
+        let clock = ManualClock::new();
+        let state = RecordExchange::default()
+            .with_limits(limits)
+            .with_clock(clock.clock());
         phone
             .records_with(&transport, &phone_ids(), HUB_DEVICE, &state)
             .await;
@@ -1160,13 +1171,14 @@ fn planted_wants_do_not_starve_an_honest_want_or_a_refetch_hash() {
         assert_eq!(phone.wanted_hashes().await, wanted + 3);
         assert!(phone.wants_hash(&refetched).await);
 
-        let per_session = WANTED_ROUNDS * (MAX_SYNC_RECORDS / 2);
+        let per_session = PLANTED_ROUNDS * (PLANTED_PER_REQUEST / 2);
         let bound = phone.wanted_rows().await.div_ceil(per_session) + 1;
         assert!(bound > 2, "the wanted set fits in {bound} sessions");
         let mut sessions = 0;
         while !(phone.holds_verified(&lost).await && phone.holds_verified(&refetched).await) {
             assert!(sessions < bound, "still wanted after {sessions} sessions");
             sessions += 1;
+            clock.advance(limits.window);
             phone
                 .records_with(&BusyTransport, &phone_ids(), "device-busy", &state)
                 .await;

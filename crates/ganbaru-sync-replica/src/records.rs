@@ -57,7 +57,7 @@ pub const ALERT_DEVICE_BYTES: u64 = 64 * 1024 * 1024;
 /// Stored envelope bytes past which Settings > Sync alerts.
 pub const ALERT_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// Rounds of wanted lookups one session makes, each following chains one step further.
-pub(crate) const WANTED_ROUNDS: usize = 64;
+const WANTED_ROUNDS: usize = 64;
 /// Sessions a wanted entry every peer answered unknown waits at most before it is asked again,
 /// doubling from one; with sessions every few seconds to minutes, about an hour.
 const MAX_BACKOFF_SESSIONS: u32 = 256;
@@ -97,6 +97,10 @@ pub struct RecordLimits {
     pub alert_device_bytes: u64,
     /// Stored envelope bytes past which Settings > Sync alerts.
     pub alert_total_bytes: u64,
+    /// Wanted requests one session sends a peer at most.
+    pub wanted_rounds: usize,
+    /// Wanted keys one request asks for at most.
+    pub wants_per_request: usize,
 }
 
 impl Default for RecordLimits {
@@ -114,6 +118,8 @@ impl Default for RecordLimits {
             hard_stop_free_bytes: HARD_STOP_FREE_BYTES,
             alert_device_bytes: ALERT_DEVICE_BYTES,
             alert_total_bytes: ALERT_TOTAL_BYTES,
+            wanted_rounds: WANTED_ROUNDS,
+            wants_per_request: MAX_SYNC_RECORDS,
         }
     }
 }
@@ -1148,7 +1154,9 @@ impl<T: SyncTransport> RecordSession<'_, T> {
     /// request that stored records, so the record store is walked for them only when it changed.
     async fn fetch_wanted(&self, exchanged: &mut RecordsExchanged) -> Result<(), String> {
         let mut lead = true;
-        for _ in 0..WANTED_ROUNDS {
+        let limits = self.state.limits();
+        let per_request = limits.wants_per_request.clamp(1, MAX_SYNC_RECORDS);
+        for _ in 0..limits.wanted_rounds {
             // An answer cannot be limited, so asking stops once an ingress window is spent; what an
             // answer takes past it is debt the later windows carry.
             if self.ingress_page().is_none() {
@@ -1166,7 +1174,7 @@ impl<T: SyncTransport> RecordSession<'_, T> {
             let (wants, next) = {
                 let mut conn = self.conn().await?;
                 self.engine
-                    .record_wants_after(&mut conn, self.ctx, MAX_SYNC_RECORDS, &skip, &after, lead)
+                    .record_wants_after(&mut conn, self.ctx, per_request, &skip, &after, lead)
                     .await
                     .map_err(|error| format!("read wanted records: {error}"))?
             };

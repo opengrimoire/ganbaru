@@ -36,8 +36,8 @@ use ganbaru_sync::codec;
 use ganbaru_sync::guards::is_guard_abort;
 use ganbaru_sync::manifest::vault::notes::{
     ASSETS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE,
-    DATABASES_TABLE, DOMAIN, FOLDERS_TABLE, LOCAL_USERS_TABLE, OPTIONS_TABLE,
-    PAGE_TEMPLATES_TABLE, PAGES_TABLE, RELATION_EDGES_TABLE, THREADS_TABLE, VALUES_TABLE,
+    DATABASES_TABLE, DOMAIN, FOLDERS_TABLE, LOCAL_USERS_TABLE, OPTIONS_TABLE, PAGE_TEMPLATES_TABLE,
+    PAGES_TABLE, RELATION_EDGES_TABLE, THREADS_TABLE, VALUES_TABLE,
 };
 use ganbaru_sync::manifest::{OnDelete, OwnedOrder, OwnedTable, TableSpec};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
@@ -168,9 +168,9 @@ impl RestoredRow {
 
 /// Whether a retained derived-key row records the removal of its identity rather than a row.
 fn is_removal(spec: &TableSpec, values: &[(GroupId, Value)]) -> bool {
-    values.iter().any(|(group, value)| {
-        spec.is_exists_group(*group) && value.fields() == [Field::Integer(0)]
-    })
+    values
+        .iter()
+        .any(|(group, value)| spec.is_exists_group(*group) && value.fields() == [Field::Integer(0)])
 }
 
 fn spec_of(table: TableId) -> Result<&'static TableSpec, String> {
@@ -285,7 +285,10 @@ async fn restore(
     descendants: &[RecoveryDescendant],
 ) -> Result<String, String> {
     if !ROOT_TABLES.contains(&table) {
-        return Err(format!("table {} cannot root a Notes recovery offer", table.0));
+        return Err(format!(
+            "table {} cannot root a Notes recovery offer",
+            table.0
+        ));
     }
     if table == DATABASES_TABLE {
         return Err(DATABASE_REFUSAL.to_string());
@@ -350,16 +353,18 @@ async fn restore(
                         .begin()
                         .await
                         .map_err(|error| format!("begin restore descendant: {error}"))?;
-                    match state.insert(&mut savepoint, ready, &key, patches, false).await {
+                    match state
+                        .insert(&mut savepoint, ready, &key, patches, false)
+                        .await
+                    {
                         Ok(()) => savepoint
                             .commit()
                             .await
                             .map_err(|error| format!("commit restore descendant: {error}"))?,
                         Err(_) => {
-                            savepoint
-                                .rollback()
-                                .await
-                                .map_err(|error| format!("roll back restore descendant: {error}"))?;
+                            savepoint.rollback().await.map_err(|error| {
+                                format!("roll back restore descendant: {error}")
+                            })?;
                             state.leave_out(&row);
                         }
                     }
@@ -497,7 +502,10 @@ impl Restore {
         }
 
         match table {
-            PAGES_TABLE => self.place_page(conn, original, &mut row, key.as_deref()).await?,
+            PAGES_TABLE => {
+                self.place_page(conn, original, &mut row, key.as_deref())
+                    .await?
+            }
             BLOCKS_TABLE => {
                 let parent_type = if row.text("parent_page_id").is_some() {
                     "page_id"
@@ -527,7 +535,9 @@ impl Restore {
                     .iter()
                     .any(|column| self.detached.contains(original.text(column).unwrap_or("")));
                 if detached {
-                    return Ok(Step::Skip("the relation's page left its data source".to_string()));
+                    return Ok(Step::Skip(
+                        "the relation's page left its data source".to_string(),
+                    ));
                 }
             }
             COMMENTS_TABLE if root => row.set("deleted_at", Field::Null),

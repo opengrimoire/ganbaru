@@ -1067,7 +1067,7 @@ fn a_forged_genesis_for_another_writer_settles_and_purges_nothing() {
 /// served on record pages; once a record of the same writer at the same sequence is stored, it
 /// is kept as evidence.
 #[test]
-fn a_lone_data_envelope_is_refused_and_a_twin_of_a_stored_record_is_kept() {
+fn a_lone_data_envelope_is_refused_and_a_twin_of_a_stored_record_or_a_data_pair_is_kept() {
     block_on(async {
         let salt = 92;
         let (mut anchor, _) = anchor_and_admin(salt).await;
@@ -1100,13 +1100,11 @@ fn a_lone_data_envelope_is_refused_and_a_twin_of_a_stored_record_is_kept() {
 
         let mut member = Replica::new(31, salt).await;
         let before = store_set(&mut member).await;
-        for batch in [vec![data.clone()], vec![data.clone(), data_twin.clone()]] {
-            let admission = admit_bytes(&mut member, &batch).await;
-            assert_eq!(admission.admitted, 0);
-            assert_eq!(store_set(&mut member).await, before);
-            let served = page_bytes(&mut member).await;
-            assert!(!served.contains(&data) && !served.contains(&data_twin));
-        }
+        let admission = admit_bytes(&mut member, std::slice::from_ref(&data)).await;
+        assert_eq!(admission.admitted, 0);
+        assert_eq!(store_set(&mut member).await, before);
+        let served = page_bytes(&mut member).await;
+        assert!(!served.contains(&data));
 
         admit_bytes(&mut member, std::slice::from_ref(&record_twin)).await;
         let admission = admit_bytes(&mut member, std::slice::from_ref(&data)).await;
@@ -1117,6 +1115,118 @@ fn a_lone_data_envelope_is_refused_and_a_twin_of_a_stored_record_is_kept() {
                 .await
                 .iter()
                 .any(|(role, hash, _)| role == "evidence" && *hash == data_hash)
+        );
+
+        // Two data envelopes at one sequence number that verify under the writer's certified
+        // key prove a fork alone, so one page carrying both keeps both.
+        let mut held = Replica::new(32, salt).await;
+        let admission = admit_bytes(&mut held, &[data.clone(), data_twin.clone()]).await;
+        assert_eq!(admission.admitted, 2);
+        let twin_hash = Envelope::decode(&data_twin).unwrap().hash().to_vec();
+        let stored = store_set(&mut held).await;
+        for hash in [&data_hash, &twin_hash] {
+            assert!(
+                stored
+                    .iter()
+                    .any(|(role, stored, _)| role == "evidence" && stored == hash)
+            );
+        }
+    });
+}
+
+/// A pending envelope is no twin: a writer's data operation offered beside a forged pending
+/// record at its sequence number is refused, and once the certificate purges the forgery the
+/// store holds neither, as on a replica that had the certificate first.
+#[test]
+fn a_data_operation_beside_a_pending_forgery_is_not_kept_as_fork_evidence() {
+    block_on(async {
+        let salt = 93;
+        let (_, mut admin) = anchor_and_admin(salt).await;
+        take(&mut admin, 20).await;
+        let admin_writer = admin.writer();
+        let certificate = genesis_of_writer(&mut admin, admin_writer).await;
+        let (_, revision, _) = head(&mut admin).await;
+        let (_, bad) = honest_and_bad_copy(&mut admin).await;
+        let last = admin.own_ops().await.pop().unwrap();
+        let data = seal_after(
+            &last,
+            &admin.identity.key,
+            Content::Changes(Vec::new()),
+            revision,
+            admin.now_ms,
+        );
+        let data_hash = Envelope::decode(&data).unwrap().hash().to_vec();
+        let bad_hash = Envelope::decode(&bad).unwrap().hash().to_vec();
+
+        let mut first = Replica::new(31, salt).await;
+        admit_bytes(&mut first, std::slice::from_ref(&bad)).await;
+        let admission = admit_bytes(&mut first, std::slice::from_ref(&data)).await;
+        assert_eq!(admission.admitted, 0);
+        admit_bytes(&mut first, std::slice::from_ref(&certificate)).await;
+        let mut second = Replica::new(32, salt).await;
+        admit_bytes(&mut second, std::slice::from_ref(&certificate)).await;
+        admit_bytes(&mut second, &[bad, data]).await;
+        let first_set = store_set(&mut first).await;
+        assert_eq!(first_set, store_set(&mut second).await);
+        assert!(
+            first_set
+                .iter()
+                .all(|(_, hash, _)| *hash != data_hash && *hash != bad_hash)
+        );
+    });
+}
+
+/// Fork evidence whose only twin a certificate purges is purged with it when the writer's
+/// pending envelopes settle.
+#[test]
+fn evidence_whose_twin_is_purged_is_purged_when_the_writer_settles() {
+    block_on(async {
+        let salt = 94;
+        let (_, mut admin) = anchor_and_admin(salt).await;
+        take(&mut admin, 20).await;
+        let admin_writer = admin.writer();
+        let certificate = genesis_of_writer(&mut admin, admin_writer).await;
+        let (_, revision, _) = head(&mut admin).await;
+        let (_, bad) = honest_and_bad_copy(&mut admin).await;
+        let last = admin.own_ops().await.pop().unwrap();
+        let data = seal_after(
+            &last,
+            &admin.identity.key,
+            Content::Changes(Vec::new()),
+            revision,
+            admin.now_ms,
+        );
+        let data_hash = Envelope::decode(&data).unwrap().hash().to_vec();
+
+        let mut member = Replica::new(31, salt).await;
+        admit_bytes(&mut member, std::slice::from_ref(&bad)).await;
+        // Evidence whose only twin is the pending forgery.
+        sqlx::query(
+            "INSERT INTO sync_auth_envelopes
+                 (space_id, role, envelope_hash, writer_id, seq, previous_hash, stamp, envelope,
+                  verified, stored_order, stored_at_ms)
+             SELECT space_id, 'evidence', ?, writer_id, seq, previous_hash, stamp, ?, 1,
+                    (SELECT max(stored_order) + 1 FROM sync_auth_envelopes), stored_at_ms
+             FROM sync_auth_envelopes WHERE envelope_hash = ?",
+        )
+        .bind(data_hash.as_slice())
+        .bind(data.as_slice())
+        .bind(Envelope::decode(&bad).unwrap().hash().as_slice())
+        .execute(&mut member.conn)
+        .await
+        .unwrap();
+        assert!(
+            store_set(&mut member)
+                .await
+                .iter()
+                .any(|(_, hash, _)| *hash == data_hash)
+        );
+        admit_bytes(&mut member, std::slice::from_ref(&certificate)).await;
+        assert!(
+            store_set(&mut member)
+                .await
+                .iter()
+                .all(|(_, hash, _)| *hash != data_hash)
         );
     });
 }

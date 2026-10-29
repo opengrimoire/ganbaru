@@ -735,6 +735,9 @@ struct Stored {
     provable: BTreeMap<WriterId, Seq>,
     /// Highest revision of any verified stored record.
     max_revision: u64,
+    /// Verified record bodies that are not nodes, see [`records::Loaded::others`]. The walk
+    /// never reads them; only the record exchange does.
+    others: Vec<Node>,
     /// Whether a node needs a certificate of a carrier that names its anchor device and key.
     /// Only the selection rule's tests, which have no certificates, leave it unset.
     check_binding: bool,
@@ -753,6 +756,7 @@ impl Stored {
             certificates: loaded.certificates,
             provable: loaded.provable,
             max_revision: loaded.max_revision,
+            others: loaded.others,
             check_binding: true,
         }))
     }
@@ -1712,6 +1716,7 @@ pub(crate) fn select_records(
         certificates: certificates.unwrap_or_default(),
         provable: forks,
         max_revision,
+        others: Vec::new(),
     };
     let selection = Resolution::new(&stored).selected();
     let state = &selection.state;

@@ -82,6 +82,9 @@ pub(crate) struct Loaded {
     pub(crate) provable: BTreeMap<WriterId, Seq>,
     /// Highest revision of any verified record.
     pub(crate) max_revision: u64,
+    /// Verified record bodies that are not nodes, by revision and entry hash: those above every
+    /// carrier's horizon or without a complete chain. The walk never reads them.
+    pub(crate) others: Vec<Node>,
 }
 
 /// What an envelope adds to the store, decided from its bytes alone.
@@ -358,7 +361,51 @@ async fn settle_pending(
             .await?;
         }
     }
-    Ok(())
+    prune_evidence(conn, space, writer).await
+}
+
+/// Deletes the evidence envelopes of `writer` that no longer show a fork: those without another
+/// stored envelope at their sequence and that are not the envelope a stored pair at the next
+/// sequence continues from. A purge in [`settle_pending`] can leave such envelopes behind, and
+/// each one deleted can orphan the envelope it continues from, so it repeats until none is left.
+async fn prune_evidence(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+) -> SyncResult<()> {
+    loop {
+        let orphans: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT e.envelope_hash FROM sync_auth_envelopes e
+             WHERE e.space_id = ?1 AND e.writer_id = ?2 AND e.role = 'evidence'
+               AND NOT EXISTS (SELECT 1 FROM sync_auth_envelopes t
+                 WHERE t.space_id = e.space_id AND t.writer_id = e.writer_id AND t.seq = e.seq
+                   AND t.envelope_hash <> e.envelope_hash)
+               AND NOT (
+                 (SELECT count(DISTINCT n.envelope_hash) FROM sync_auth_envelopes n
+                   WHERE n.space_id = e.space_id AND n.writer_id = e.writer_id
+                     AND n.seq = e.seq + 1) >= 2
+                 AND EXISTS (SELECT 1 FROM sync_auth_envelopes n
+                   WHERE n.space_id = e.space_id AND n.writer_id = e.writer_id
+                     AND n.seq = e.seq + 1 AND n.previous_hash = e.envelope_hash))",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_all(&mut *conn)
+        .await?;
+        if orphans.is_empty() {
+            return Ok(());
+        }
+        for hash in &orphans {
+            sqlx::query(
+                "DELETE FROM sync_auth_envelopes
+                 WHERE space_id = ? AND role = 'evidence' AND envelope_hash = ?",
+            )
+            .bind(space.as_bytes().as_slice())
+            .bind(hash.as_slice())
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
 }
 
 /// Whether envelopes were stored since the last walk read the store.
@@ -559,8 +606,19 @@ pub(crate) async fn load(
             });
         }
     }
+    for (hash, (record, mut carriers)) in bodies {
+        carriers.sort_by_key(|carrier| carrier.envelope_hash);
+        loaded.others.push(Node {
+            hash,
+            record,
+            carriers,
+        });
+    }
     loaded
         .nodes
+        .sort_by_key(|node| (node.record.revision, node.hash));
+    loaded
+        .others
         .sort_by_key(|node| (node.record.revision, node.hash));
     Ok(loaded)
 }

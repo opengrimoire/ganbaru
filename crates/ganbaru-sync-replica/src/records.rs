@@ -57,7 +57,7 @@ pub const ALERT_DEVICE_BYTES: u64 = 64 * 1024 * 1024;
 /// Stored envelope bytes past which Settings > Sync alerts.
 pub const ALERT_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// Rounds of wanted lookups one session makes, each following chains one step further.
-const WANTED_ROUNDS: usize = 64;
+pub(crate) const WANTED_ROUNDS: usize = 64;
 /// Sessions a wanted entry every peer answered unknown waits at most before it is asked again,
 /// doubling from one; with sessions every few seconds to minutes, about an hour.
 const MAX_BACKOFF_SESSIONS: u32 = 256;
@@ -353,8 +353,11 @@ struct Inner {
     served: HashMap<String, Window>,
     /// What each peer sent, by normal and by low budget, in the current window.
     received: HashMap<String, (Window, Window)>,
-    /// Retry timing of wanted entries every peer answered unknown.
-    backoff: BTreeMap<Vec<u8>, Backoff>,
+    /// Retry timing of wanted entries each peer answered unknown, by peer.
+    backoff: HashMap<String, BTreeMap<Vec<u8>, Backoff>>,
+    /// The wanted key each peer's next lookup continues after, so a session resumes the
+    /// rotation through the wanted set where the last answered request left it.
+    wanted_after: HashMap<String, Vec<u8>>,
     /// Sessions run, for backoff.
     sessions: u64,
     /// The backstop once it started.
@@ -456,8 +459,8 @@ impl RecordExchange {
         };
     }
 
-    /// Whether this exchange holds state of a vault: a cursor, a window, wanted retry timing,
-    /// a session count, the backstop, the kit lineage, or a peer marked away.
+    /// Whether this exchange holds state of a vault: a cursor, a window, wanted retry timing or
+    /// rotation, a session count, the backstop, the kit lineage, or a peer marked away.
     pub fn holds_vault_state(&self) -> bool {
         let inner = self.lock();
         !(inner.pulled.is_empty()
@@ -465,6 +468,7 @@ impl RecordExchange {
             && inner.served.is_empty()
             && inner.received.is_empty()
             && inner.backoff.is_empty()
+            && inner.wanted_after.is_empty()
             && inner.sessions == 0
             && inner.backstop.is_none()
             && inner.kit_lineage.is_empty()
@@ -472,7 +476,8 @@ impl RecordExchange {
     }
 
     /// Forgets a peer's cursors, as when it connects anew, and lets every wanted entry be asked
-    /// of it again.
+    /// of it again. The rotation through the wanted set continues where it was, and the retry
+    /// timing other peers set stays.
     pub fn connected(&self, peer: &str) {
         let mut inner = self.lock();
         Self::connect(&mut inner, peer);
@@ -481,7 +486,7 @@ impl RecordExchange {
     fn connect(inner: &mut Inner, peer: &str) {
         inner.pulled.remove(peer);
         inner.pushed.remove(peer);
-        inner.backoff.clear();
+        inner.backoff.remove(peer);
         inner.away.remove(peer);
     }
 
@@ -493,23 +498,26 @@ impl RecordExchange {
 
     /// Counts a session with `peer`. A peer whose last session failed connects anew, see
     /// [`Self::connected`]; for a peer this device has no pull cursor for, every wanted entry may
-    /// be asked again, see the R7.3 A4 rule.
+    /// be asked of it again, see the R7.3 A4 rule.
     fn start_session(&self, peer: &str) {
         let mut inner = self.lock();
         inner.sessions += 1;
         if inner.away.contains(peer) {
             Self::connect(&mut inner, peer);
         } else if !inner.pulled.contains_key(peer) {
-            inner.backoff.clear();
+            inner.backoff.remove(peer);
         }
     }
 
-    /// Wanted keys whose backoff has not ended, which a lookup leaves out before its limit.
-    fn backed_off(&self) -> BTreeSet<Vec<u8>> {
+    /// Wanted keys whose backoff with `peer` has not ended, which a lookup leaves out before
+    /// its limit.
+    pub(crate) fn backed_off(&self, peer: &str) -> BTreeSet<Vec<u8>> {
         let inner = self.lock();
         inner
             .backoff
-            .iter()
+            .get(peer)
+            .into_iter()
+            .flatten()
             .filter(|(_, backoff)| backoff.next > inner.sessions)
             .map(|(key, _)| key.clone())
             .collect()
@@ -1039,6 +1047,9 @@ impl<T: SyncTransport> RecordSession<'_, T> {
     /// Classes and admits `envelopes` from the peer, charging the ingress windows and the
     /// backstop. Returns how many the store did not hold.
     async fn take(&self, envelopes: Vec<Vec<u8>>) -> Result<usize, String> {
+        if envelopes.is_empty() {
+            return Ok(0);
+        }
         let mut conn = self.conn().await?;
         let classes = self
             .engine
@@ -1057,11 +1068,13 @@ impl<T: SyncTransport> RecordSession<'_, T> {
             .map_err(|error| format!("store authorization records: {error}"))?;
         // Wanted entries a newly stored envelope references are asked for again right away.
         let mut inner = self.state.lock();
-        for hash in &missing.hashes {
-            inner.backoff.remove(hash.as_slice());
-        }
-        for writer in &missing.writers {
-            inner.backoff.remove(writer.as_bytes().as_slice());
+        for backoff in inner.backoff.values_mut() {
+            for hash in &missing.hashes {
+                backoff.remove(hash.as_slice());
+            }
+            for writer in &missing.writers {
+                backoff.remove(writer.as_bytes().as_slice());
+            }
         }
         Ok(admitted)
     }
@@ -1127,9 +1140,14 @@ impl<T: SyncTransport> RecordSession<'_, T> {
         }
     }
     /// Asks the peer for what the store wants, following each chain until the peer has
-    /// nothing more of it. Keys the peer answered unknown back off and leave room for the next
-    /// ones in the same session.
+    /// nothing more of it. Keys the peer answered unknown back off with this peer and leave
+    /// room for the next ones in the same session. Each answered request moves this peer's
+    /// rotation through the wanted set on, and the next session resumes it, so every wanted key
+    /// is asked within a number of answered requests bounded by the wanted set's size.
+    /// Ancestors of kit records and admin yields lead the first request and each one after a
+    /// request that stored records, so the record store is walked for them only when it changed.
     async fn fetch_wanted(&self, exchanged: &mut RecordsExchanged) -> Result<(), String> {
+        let mut lead = true;
         for _ in 0..WANTED_ROUNDS {
             // An answer cannot be limited, so asking stops once an ingress window is spent; what an
             // answer takes past it is debt the later windows carry.
@@ -1137,15 +1155,21 @@ impl<T: SyncTransport> RecordSession<'_, T> {
                 exchanged.more = true;
                 return Ok(());
             }
-            let skip = self.state.backed_off();
-            let wants = {
+            let skip = self.state.backed_off(self.peer);
+            let after = self
+                .state
+                .lock()
+                .wanted_after
+                .get(self.peer)
+                .cloned()
+                .unwrap_or_default();
+            let (wants, next) = {
                 let mut conn = self.conn().await?;
                 self.engine
-                    .record_wants(&mut conn, self.ctx, MAX_SYNC_RECORDS, &skip)
+                    .record_wants_after(&mut conn, self.ctx, MAX_SYNC_RECORDS, &skip, &after, lead)
                     .await
                     .map_err(|error| format!("read wanted records: {error}"))?
             };
-            let wants = self.due(wants);
             if wants.is_empty() {
                 return Ok(());
             }
@@ -1166,9 +1190,14 @@ impl<T: SyncTransport> RecordSession<'_, T> {
                 ControlMessage::SyncRecordFound { records } => Some(records),
                 _ => None,
             })?;
+            self.state
+                .lock()
+                .wanted_after
+                .insert(self.peer.to_string(), next);
             let records = ops_from_wire(&records)?;
             let stored = self.take(records).await?;
             exchanged.stored += stored;
+            lead = stored > 0;
             if stored == 0 {
                 self.back_off(&wants);
             }
@@ -1176,30 +1205,7 @@ impl<T: SyncTransport> RecordSession<'_, T> {
         Ok(())
     }
 
-    /// The part of `wants` due to be asked in this session.
-    fn due(&self, wants: RecordWants) -> RecordWants {
-        let inner = self.state.lock();
-        let due = |key: &[u8]| {
-            inner
-                .backoff
-                .get(key)
-                .is_none_or(|backoff| backoff.next <= inner.sessions)
-        };
-        RecordWants {
-            hashes: wants
-                .hashes
-                .into_iter()
-                .filter(|hash| due(hash.as_slice()))
-                .collect(),
-            writers: wants
-                .writers
-                .into_iter()
-                .filter(|writer| due(writer.as_bytes().as_slice()))
-                .collect(),
-        }
-    }
-
-    /// Doubles the wait of entries the peer answered unknown.
+    /// Doubles the wait with this peer of entries it answered unknown.
     fn back_off(&self, wants: &RecordWants) {
         let mut inner = self.state.lock();
         let sessions = inner.sessions;
@@ -1209,8 +1215,9 @@ impl<T: SyncTransport> RecordSession<'_, T> {
                 .iter()
                 .map(|writer| writer.as_bytes().to_vec()),
         );
+        let peer = inner.backoff.entry(self.peer.to_string()).or_default();
         for key in keys {
-            let backoff = inner.backoff.entry(key).or_default();
+            let backoff = peer.entry(key).or_default();
             backoff.wait = (backoff.wait.max(1) * 2).min(MAX_BACKOFF_SESSIONS);
             backoff.next = sessions + u64::from(backoff.wait);
         }
@@ -1539,22 +1546,29 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_a_new_peer_lets_every_wanted_entry_be_asked_again() {
+    fn a_session_with_a_new_peer_lets_every_wanted_entry_be_asked_of_it_again() {
         let state = RecordExchange::default();
-        state.lock().backoff.insert(
-            vec![1],
-            Backoff {
-                next: 100,
-                wait: 64,
-            },
-        );
+        let waiting = Backoff {
+            next: 100,
+            wait: 64,
+        };
+        for peer in ["hub", "laptop"] {
+            state
+                .lock()
+                .backoff
+                .insert(peer.to_string(), BTreeMap::from([(vec![1], waiting)]));
+        }
         state
             .lock()
             .pulled
             .insert("hub".to_string(), RecordCursor::default());
         state.start_session("hub");
-        assert_eq!(state.lock().backoff.len(), 1);
+        assert_eq!(state.backed_off("hub"), BTreeSet::from([vec![1]]));
         state.start_session("laptop");
-        assert!(state.lock().backoff.is_empty());
+        assert!(state.backed_off("laptop").is_empty());
+        assert_eq!(state.backed_off("hub"), BTreeSet::from([vec![1]]));
+        state.disconnected("hub");
+        state.start_session("hub");
+        assert!(state.backed_off("hub").is_empty());
     }
 }

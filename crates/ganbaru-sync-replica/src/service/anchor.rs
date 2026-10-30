@@ -8,25 +8,25 @@
 //! through forward requests and sequences it with its own writer.
 
 use super::{Session, SyncHost, acquire, blocking};
-use crate::vault::handoff::pairing::PairingManager;
+use crate::authority::{self, ForcedHandover, ensure_admin_key};
+use crate::client::{self, PeerIds, SyncTransport};
+use crate::now_ms;
+use crate::outbox::Outbox;
+use crate::writer::ActiveWriter;
+use ganbaru_handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKind, Digest32, Entry, LateResolution, LateRow, ProposalRejection,
     ResolveLate, RowKey, SignedProposal, TableId, VersionVector,
 };
-use ganbaru_sync_replica::authority::{self, ForcedHandover, ensure_admin_key};
-use ganbaru_sync_replica::client::{self, PeerIds, SyncTransport};
-use ganbaru_sync_replica::now_ms;
-use ganbaru_sync_replica::outbox::Outbox;
-use ganbaru_sync_replica::writer::ActiveWriter;
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 
 /// Authority work a person asks this desktop for, run by the next pass. Its debug form never
 /// shows a recovery kit code.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum AuthorityAction {
+pub enum AuthorityAction {
     /// Seal a handover that makes this linked desktop the anchor.
     TakeAnchor,
     /// Propose making a linked desktop an admin with the admin key it sent at pairing.
@@ -56,13 +56,13 @@ pub(crate) enum AuthorityAction {
 
 /// A forced handover a person asks for. Its debug form never shows the kit code.
 #[derive(Clone, PartialEq, Eq, Default)]
-pub(crate) struct ForceRequest {
+pub struct ForceRequest {
     /// The kit code whose recovery admin key signs, or `None` for this desktop's admin key.
-    pub(crate) kit: Option<String>,
+    pub kit: Option<String>,
     /// The kit point to continue from, `None` for the default one.
-    pub(crate) point: Option<ContestEntry>,
+    pub point: Option<ContestEntry>,
     /// Devices the person marked in the device review of a kit recovery.
-    pub(crate) removals: Vec<String>,
+    pub removals: Vec<String>,
 }
 
 impl std::fmt::Debug for ForceRequest {
@@ -95,15 +95,15 @@ impl ContestStep {
 
 /// An admin's decision on one late change.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LateDecision {
+pub struct LateDecision {
     /// Revision of the removal that excluded the change.
-    pub(crate) removal_revision: u64,
+    pub removal_revision: u64,
     /// Table of the row.
-    pub(crate) table: TableId,
+    pub table: TableId,
     /// Row key.
-    pub(crate) row_key: String,
+    pub row_key: String,
     /// Whether the late change is applied or dropped.
-    pub(crate) resolution: LateResolution,
+    pub resolution: LateResolution,
 }
 
 impl std::fmt::Debug for AuthorityAction {
@@ -133,7 +133,7 @@ impl std::fmt::Debug for AuthorityAction {
 
 /// What an authority action produced. Its debug form never shows a recovery kit code.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum AuthorityAnswer {
+pub enum AuthorityAnswer {
     /// The proposal waits in the outbox for the anchor, or the action needed none.
     Proposed,
     /// The authorization revision of the handover this desktop sealed.
@@ -169,14 +169,14 @@ impl std::fmt::Debug for AuthorityAnswer {
 }
 
 /// An authority action with where its answer goes, if anyone waits for it.
-pub(crate) struct AuthorityRequest {
-    pub(crate) action: AuthorityAction,
-    pub(crate) reply: Option<oneshot::Sender<Result<AuthorityAnswer, String>>>,
+pub struct AuthorityRequest {
+    pub action: AuthorityAction,
+    pub reply: Option<oneshot::Sender<Result<AuthorityAnswer, String>>>,
 }
 
 impl AuthorityRequest {
     /// Sends the answer, or reports a failure nobody waits for.
-    pub(crate) fn answer(self, outcome: Result<AuthorityAnswer, String>) {
+    pub fn answer(self, outcome: Result<AuthorityAnswer, String>) {
         match self.reply {
             Some(reply) => {
                 let _ = reply.send(outcome);
@@ -191,10 +191,10 @@ impl AuthorityRequest {
 }
 
 /// A forward request of a linked device, with where the proposals it collects go.
-pub(crate) struct ForwardRequest {
-    pub(crate) device_id: String,
-    pub(crate) settled: Vec<(Digest32, ProposalRejection)>,
-    pub(crate) reply: oneshot::Sender<Result<Vec<SignedProposal>, String>>,
+pub struct ForwardRequest {
+    pub device_id: String,
+    pub settled: Vec<(Digest32, ProposalRejection)>,
+    pub reply: oneshot::Sender<Result<Vec<SignedProposal>, String>>,
 }
 
 /// The selected authorization view with this installation's device id and admin key.
@@ -216,7 +216,7 @@ impl AdminContext {
 
 impl<H: SyncHost> Session<'_, H> {
     /// This installation's admin key, created once.
-    pub(super) async fn admin_key(&self) -> Result<AdminKeyPair, String> {
+    pub async fn admin_key(&self) -> Result<AdminKeyPair, String> {
         let keys = self.keys.clone();
         let vault_id = self.files.vault_id.clone();
         blocking(move || ensure_admin_key(keys.as_ref(), &vault_id)).await
@@ -264,7 +264,7 @@ impl<H: SyncHost> Session<'_, H> {
     /// Runs every proposal action and answers it. Returns the requests to take the anchor, which
     /// wait for the exchange of the pass, and the names of the tables restored late changes
     /// wrote.
-    pub(super) async fn run_proposal_actions(
+    pub async fn run_proposal_actions(
         &self,
         manager: &PairingManager,
         vault_id: &str,
@@ -363,7 +363,7 @@ impl<H: SyncHost> Session<'_, H> {
     /// Runs one proposal action. `vault_id` names the vault whose linked devices the
     /// coordinator holds; a promotion needs the admin key a linked desktop sent at pairing, so
     /// only the coordinator promotes.
-    pub(super) async fn propose_action(
+    pub async fn propose_action(
         &self,
         manager: &PairingManager,
         vault_id: &str,
@@ -519,7 +519,7 @@ impl<H: SyncHost> Session<'_, H> {
     /// quarantined, so the new anchor refuses removals until it knows every writer either
     /// stored. Proposals the coordinator sequenced after the exchange are
     /// superseded by the handover and return from the outboxes that hold them.
-    pub(super) async fn take_anchor(
+    pub async fn take_anchor(
         &self,
         manager: &PairingManager,
         writer: &mut Option<ActiveWriter>,
@@ -701,7 +701,7 @@ impl<H: SyncHost> Session<'_, H> {
     /// on the next exchange. The rejections live in memory only: after a restart the
     /// coordinator forwards the proposals again and they are rejected again. Removal cutoffs
     /// cover at least `covered`, the coordinator's last reported stored vector.
-    pub(super) async fn anchor_as_member<T: SyncTransport>(
+    pub async fn anchor_as_member<T: SyncTransport>(
         &self,
         transport: &T,
         ids: &PeerIds,
@@ -738,7 +738,7 @@ impl<H: SyncHost> Session<'_, H> {
     /// Sequences this anchoring desktop's own waiting proposals, also while the coordinator is
     /// away, as after a forced handover that proposes removing the lost anchor. Returns whether
     /// it sealed anything. Removal cutoffs cover at least `covered`.
-    pub(super) async fn sequence_own_outbox(
+    pub async fn sequence_own_outbox(
         &self,
         active: &mut ActiveWriter,
         covered: &VersionVector,
@@ -770,7 +770,7 @@ impl<H: SyncHost> Session<'_, H> {
 
     /// On a coordinator that does not anchor, answers each forward request with the proposals
     /// it holds for the anchor; any other requester receives none.
-    pub(super) async fn answer_forwards(&self, requests: Vec<ForwardRequest>) {
+    pub async fn answer_forwards(&self, requests: Vec<ForwardRequest>) {
         if requests.is_empty() {
             return;
         }
@@ -811,7 +811,7 @@ impl<H: SyncHost> Session<'_, H> {
 
     /// Records the head the writer sealed through sequencing, so its record matches the log,
     /// and returns it.
-    pub(super) async fn record_commit(&self, active: &mut ActiveWriter) -> Result<u64, String> {
+    pub async fn record_commit(&self, active: &mut ActiveWriter) -> Result<u64, String> {
         let seq = self.stored_head(active).await?;
         active.committed(seq)?;
         Ok(seq)

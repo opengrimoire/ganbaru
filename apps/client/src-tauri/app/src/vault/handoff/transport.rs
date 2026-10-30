@@ -1,31 +1,34 @@
 //! Pinned client transport and shared resumable archive streaming.
 
-mod dial_report;
 mod server;
-pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
-use dial_report::{DialOutcome, record_dial};
-pub(crate) use server::{
-    CoordinatorListener, LanAdmission, MemberAdmissionSource, MemberServices, serve_member_listener,
-};
+#[cfg(all(test, desktop))]
+use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
+pub(crate) use ganbaru_sync_replica::service::dial_report::CoordinatorDialReport;
+use ganbaru_sync_replica::service::dial_report::{DialOutcome, record_dial};
+pub(crate) use ganbaru_sync_replica::service::peers::BundleSource;
+#[cfg(test)]
+use ganbaru_sync_replica::service::sync_peer;
+pub(crate) use server::{CoordinatorListener, LanAdmission, MemberServices, serve_member_listener};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorServices, EnrollmentSealer, MemberBundles, PreparedSnapshot, QuarantinedDevices,
-    SnapshotPreparer, SnapshotRequest, serve_with_coordinator,
+    CoordinatorServices, EnrollmentSealer, MemberBundles, PreparedSnapshot, SnapshotPreparer,
+    SnapshotRequest, serve_with_coordinator,
 };
 
 use super::pairing::{
-    CoordinatorPin, PairingManager, PinnedCharter, TlsIdentity, certificate_fingerprint,
-    encode_certificate,
+    CoordinatorPin, PairingManager, PinnedCharter, TlsIdentity, encode_certificate,
 };
 use super::protocol::{
     BundleMetadata, ControlMessage, PROTOCOL_VERSION, PairingInvitation, TRANSFER_CHUNK_BYTES,
     read_control, unix_time_ms, write_control,
 };
 use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use ganbaru_handoff::tls::PinnedServerVerifier;
+pub(crate) use ganbaru_sync_replica::serve::load_tls_identity;
+use ganbaru_sync_replica::serve::{
+    CONTROL_TIMEOUT, MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, timeout_control,
+};
+use rustls::pki_types::ServerName;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,15 +38,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
 /// How long the coordinator holds an enrollment for its user before refusing it. The enrolling
 /// device waits longer, so it never gives up on a request the coordinator could still link.
 pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
 /// Stable code of the retryable rejection a device receives while the coordinator serves a
 /// vault copy to another device.
 pub(crate) const BUNDLE_BUSY_CODE: &str = "bundle_busy";
@@ -60,64 +60,6 @@ impl TransferCancellation {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
-    }
-}
-
-#[derive(Debug)]
-struct PinnedServerVerifier {
-    fingerprint: String,
-    algorithms: WebPkiSupportedAlgorithms,
-}
-
-impl PinnedServerVerifier {
-    fn new(fingerprint: String) -> Self {
-        let provider = rustls::crypto::ring::default_provider();
-        Self {
-            fingerprint,
-            algorithms: provider.signature_verification_algorithms,
-        }
-    }
-}
-
-impl ServerCertVerifier for PinnedServerVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        if !intermediates.is_empty()
-            || certificate_fingerprint(end_entity.as_ref()) != self.fingerprint
-        {
-            return Err(rustls::Error::General(
-                "coordinator certificate does not match the pinned identity".to_string(),
-            ));
-        }
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls12_signature(message, certificate, signature, &self.algorithms)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls13_signature(message, certificate, signature, &self.algorithms)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.algorithms.supported_schemes()
     }
 }
 
@@ -156,17 +98,6 @@ where
         .flush()
         .await
         .map_err(|error| format!("flush transfer bundle: {error}"))
-}
-
-/// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
-/// the operating-system keyring.
-pub(crate) async fn load_tls_identity(
-    manager: &PairingManager,
-) -> Result<(String, TlsIdentity), String> {
-    let manager = manager.clone();
-    tokio::task::spawn_blocking(move || manager.identity())
-        .await
-        .map_err(|error| format!("load device linking key: {error}"))?
 }
 
 pub(crate) async fn enroll(
@@ -238,28 +169,6 @@ pub(crate) async fn enroll(
         }
         ControlMessage::Error { message, .. } => Err(message),
         _ => Err("coordinator returned an invalid enrollment response".to_string()),
-    }
-}
-
-/// The device a vault copy comes from: the coordinator this device is pinned to, or a member
-/// listener pinned to the certificate fingerprint its enrollment recorded in the selected log.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BundleSource {
-    Coordinator,
-    Member {
-        device_id: String,
-        endpoints: Vec<String>,
-        fingerprint: String,
-    },
-}
-
-impl BundleSource {
-    /// A short name for logs and error messages.
-    pub(crate) fn describe(&self) -> String {
-        match self {
-            Self::Coordinator => "the coordinator".to_string(),
-            Self::Member { device_id, .. } => format!("member {device_id}"),
-        }
     }
 }
 
@@ -450,16 +359,6 @@ pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<Contr
         },
     )
     .await
-}
-
-/// The vault and device ids a sync exchange presents, or `None` on a device that is not linked
-/// to a coordinator.
-pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, String)>, String> {
-    let Some(coordinator) = manager.coordinator_pin()? else {
-        return Ok(None);
-    };
-    let device_id = manager.device_id()?;
-    Ok(Some((coordinator.vault_id, device_id)))
 }
 
 /// Sends one sync message to the coordinator over the linked-device identity. A sync state
@@ -928,7 +827,7 @@ const MAX_CONCURRENT_COORDINATOR_DIALS: usize = 4;
 ///
 /// When every candidate fails, it awaits `discover` once and dials the endpoints it returns that
 /// were not tried yet. `discover` does nothing until then. How the dial ended is recorded for
-/// [`coordinator_dial_report`].
+/// [`coordinator_dial_report`](ganbaru_sync_replica::service::dial_report::coordinator_dial_report).
 async fn connect_coordinator(
     manager: &PairingManager,
     coordinator: &CoordinatorPin,
@@ -1171,14 +1070,6 @@ fn coordinator_dial_error(mut failures: Vec<DialFailure>) -> String {
             format!("could not connect to the coordinator at any known endpoint: {details}")
         }
     }
-}
-
-async fn timeout_control<T>(
-    future: impl std::future::Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    tokio::time::timeout(CONTROL_TIMEOUT, future)
-        .await
-        .map_err(|_| "handoff control message timed out".to_string())?
 }
 
 fn fs_rename(source: &Path, target: &Path) -> Result<(), String> {

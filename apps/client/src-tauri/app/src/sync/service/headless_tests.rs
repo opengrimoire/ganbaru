@@ -1,25 +1,41 @@
-use super::*;
-use crate::sync::host::HeadlessHost;
-use crate::sync::hub::{HubContact, HubVault};
+use super::SyncRuntime;
+use crate::sync::host::{HeadlessHost, SyncHost};
+use crate::sync::hub::{HubContact, HubStability, HubVault, OpenHubVault, SyncHub};
+use crate::sync::status::{SyncErrorCode, SyncState};
 use crate::vault::handoff::pairing::CoordinatorContact;
+use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 use crate::vault::handoff::transport::tests::{LocalPair, TestDirectory};
 use crate::vault::process_managers::ProcessManagers;
 use ganbaru_contacts::PersonKeyPair;
+use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
 use ganbaru_sync::{Engine, Hooks};
+use ganbaru_sync::{SpaceContext, local};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKeyPair, DeviceKind, RecoverySeed, SignedCharter,
 };
+use ganbaru_sync_contracts::{DevicePublicKey, VersionVector};
+use ganbaru_sync_replica::assets::AssetStore;
 use ganbaru_sync_replica::assets::ContentAddressedStore;
 use ganbaru_sync_replica::authority::Enrollment;
+use ganbaru_sync_replica::authority::{self, AnchorKeys, Founding, ensure_charter};
+use ganbaru_sync_replica::now_ms;
+use ganbaru_sync_replica::service::headless_pass_with;
+use ganbaru_sync_replica::service::test_support::{live_runtime, passes_started, registered};
 use ganbaru_sync_replica::writer::{
     ActiveWriter, FileKeyStore, SuccessorPlan, SyncFiles, create_writer,
 };
 use sqlx::SqliteConnection;
+use sqlx::SqlitePool;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
+use tokio::sync::watch;
 
 const VAULT_ID: &str = "vault-1";
 const COORDINATOR_DEVICE: &str = "device-desktop";
@@ -120,7 +136,7 @@ impl HubSpace {
 
     /// Enrolls the device `enrollment` names through the anchor's writer.
     async fn enroll(&mut self, pool: &SqlitePool, enrollment: Enrollment) {
-        let mut conn = acquire(pool).await.expect("hub connection");
+        let mut conn = pool.acquire().await.expect("hub connection");
         authority::enroll(
             &Engine::vault(),
             &mut conn,
@@ -166,7 +182,7 @@ async fn hub_vault(
         .expect("convert hub chat attachments");
     insert_identity(&pool, person).await;
     let now = now_ms().expect("clock");
-    let mut conn = acquire(&pool).await.expect("hub connection");
+    let mut conn = pool.acquire().await.expect("hub connection");
     let engine = Engine::vault();
     engine
         .init_space(&mut conn, VAULT_ID, now)
@@ -201,7 +217,7 @@ async fn hub_vault(
     .expect("create hub writer");
     drop(conn);
     insert_note(&pool, "note-hub").await;
-    let mut conn = acquire(&pool).await.expect("hub connection");
+    let mut conn = pool.acquire().await.expect("hub connection");
     let seq = engine
         .seal(&mut conn, &ctx, &mut writer.local(), now)
         .await
@@ -288,7 +304,7 @@ async fn phone_vault(
     insert_identity(&pool, person).await;
     insert_note(&pool, "note-phone").await;
     let engine = Engine::vault();
-    let mut conn = acquire(&pool).await.expect("phone connection");
+    let mut conn = pool.acquire().await.expect("phone connection");
     engine
         .init_space(&mut conn, VAULT_ID, now_ms().expect("clock"))
         .await
@@ -313,29 +329,6 @@ async fn phone_vault(
     )
     .expect("store person key");
     database
-}
-
-/// A live runtime whose task finishes each requested pass, or ignores requests when `answer`
-/// is false.
-fn live_runtime(answer: bool) -> SyncRuntime {
-    let runtime = SyncRuntime::default();
-    let worker = runtime.clone();
-    let stop = Arc::new(Notify::new());
-    let stopped = Arc::clone(&stop);
-    let handle = tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::select! {
-                () = stopped.notified() => return,
-                () = worker.now.notified() => {}
-            }
-            if answer {
-                let number = worker.pass_started();
-                worker.pass_done(number);
-            }
-        }
-    });
-    *runtime.task.lock().expect("task lock") = Some(ServiceTask { stop, handle });
-    runtime
 }
 
 /// A host that must never be opened, for passes the live runtime runs.
@@ -375,7 +368,7 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
             })
     };
     let host = open_host();
-    let phone_key = crate::sync::ensure_device_key(&host, VAULT_ID)
+    let phone_key = ganbaru_sync_replica::service::ensure_device_key(&host, VAULT_ID)
         .await
         .expect("phone device key");
     hub_space.enroll_phone(&hub_pool, phone_key).await;
@@ -534,7 +527,7 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
             .expect("open headless host")
     };
     let host = open_host();
-    let phone_key = crate::sync::ensure_device_key(&host, VAULT_ID)
+    let phone_key = ganbaru_sync_replica::service::ensure_device_key(&host, VAULT_ID)
         .await
         .expect("phone device key");
     hub_space.enroll_phone(&hub_pool, phone_key).await;
@@ -575,7 +568,7 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
         .connect_path(&phone_database)
         .await
         .expect("open phone vault");
-    let mut conn = acquire(&phone_pool).await.expect("phone connection");
+    let mut conn = phone_pool.acquire().await.expect("phone connection");
     let engine = Engine::vault();
     let phone_ctx = local::space_context(&mut conn, VAULT_ID)
         .await
@@ -708,7 +701,7 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
     );
     // The stable vector comes only in the answer to the hello that opens the operation lanes,
     // so keeping the old one also shows the phone never offered the coordinator a push.
-    let mut conn = acquire(&phone_pool).await.expect("phone connection");
+    let mut conn = phone_pool.acquire().await.expect("phone connection");
     assert_eq!(
         engine
             .stable_vector(&mut conn, &phone_ctx)
@@ -860,7 +853,7 @@ async fn the_headless_host_never_resurrects_a_pin_the_runtime_unlinked() {
 #[tokio::test]
 async fn headless_pass_hands_its_work_to_the_live_runtime() {
     let runtime = live_runtime(true);
-    let live = Mutex::new(Arc::downgrade(&runtime.0));
+    let live = Mutex::new(registered(&runtime));
     let gate = tokio::sync::Mutex::new(());
     let held = gate.lock().await;
     let pass = tokio::time::timeout(
@@ -874,7 +867,7 @@ async fn headless_pass_hands_its_work_to_the_live_runtime() {
     assert!(pass.delegated);
     assert!(!pass.more);
     assert_eq!(
-        runtime.passes_started.load(Ordering::SeqCst),
+        passes_started(&runtime),
         1,
         "only the live runtime ran a pass"
     );
@@ -883,18 +876,18 @@ async fn headless_pass_hands_its_work_to_the_live_runtime() {
 #[tokio::test]
 async fn a_live_runtime_that_does_not_answer_fails_without_a_second_pass() {
     let runtime = live_runtime(false);
-    let live = Mutex::new(Arc::downgrade(&runtime.0));
+    let live = Mutex::new(registered(&runtime));
     let gate = tokio::sync::Mutex::new(());
     let result = headless_pass_with(unopened(), &live, &gate, BLOCKED_WAIT).await;
     assert!(result.is_err(), "a timed out delegation is an error");
     assert!(gate.try_lock().is_ok(), "no pass took the gate");
-    assert_eq!(runtime.passes_started.load(Ordering::SeqCst), 0);
+    assert_eq!(passes_started(&runtime), 0);
 }
 
 #[tokio::test]
 async fn a_stopped_live_runtime_fails_the_delegation() {
     let runtime = SyncRuntime::default();
-    let live = Mutex::new(Arc::downgrade(&runtime.0));
+    let live = Mutex::new(registered(&runtime));
     let gate = tokio::sync::Mutex::new(());
     let result = headless_pass_with(unopened(), &live, &gate, PASS_WAIT).await;
     assert!(
@@ -962,7 +955,7 @@ async fn a_failed_pass_without_a_recorded_key_loss_keeps_the_phone_linked() {
         VAULT_ID,
         &format!("device-key:{VAULT_ID}"),
     );
-    recover_if_key_protection_lost(&host).await;
+    host.recover_lost_keys().await;
     assert!(host.pairing().has_links().expect("links"));
     assert!(device_key.exists());
 }
@@ -1018,7 +1011,7 @@ async fn a_recorded_vault_key_loss_unlinks_and_removes_only_that_vaults_keys() {
     assert!(is_key_protection_lost(&read()));
 
     wrapper.set_unavailable(true);
-    recover_if_key_protection_lost(&host).await;
+    host.recover_lost_keys().await;
     assert!(
         host.pairing().has_links().expect("links"),
         "an unavailable key store is retried later"
@@ -1027,7 +1020,7 @@ async fn a_recorded_vault_key_loss_unlinks_and_removes_only_that_vaults_keys() {
     wrapper.set_unavailable(false);
 
     read();
-    recover_if_key_protection_lost(&host).await;
+    host.recover_lost_keys().await;
     assert!(!host.pairing().has_links().expect("links"));
     assert_eq!(
         host.pairing().unlink_reason().expect("reason"),
@@ -1049,7 +1042,7 @@ async fn a_replaced_linking_key_on_a_relinked_phone_keeps_it_linked_after_a_fail
     // a key the platform store generated again; the phone linked anew afterwards.
     open(protection.as_ref(), &alias, "linking-key", b"lost").expect_err("lost key");
     seal(protection.as_ref(), &alias, "linking-key", b"fresh key").expect("seal");
-    recover_if_key_protection_lost(&host).await;
+    host.recover_lost_keys().await;
     assert!(host.pairing().has_links().expect("links"));
     assert_eq!(host.pairing().unlink_reason().expect("reason"), None);
 }
@@ -1085,7 +1078,7 @@ async fn a_lost_key_of_a_vault_without_links_removes_only_its_keys_and_keeps_the
     )
     .expect_err("lost key");
 
-    recover_if_key_protection_lost(&host).await;
+    host.recover_lost_keys().await;
     assert!(host.pairing().has_links().expect("links"));
     assert_eq!(host.pairing().unlink_reason().expect("reason"), None);
     assert!(!inactive_key.exists());

@@ -18,7 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 const LISTEN_BACKLOG: i32 = 1024;
 
 /// The coordinator's listening sockets: IPv4 always, IPv6 when the host supports it.
-pub(crate) struct CoordinatorListener {
+pub struct CoordinatorListener {
     ipv4: TcpListener,
     ipv6: Option<TcpListener>,
 }
@@ -37,7 +37,7 @@ impl CoordinatorListener {
     /// Binds the IPv4 and IPv6 wildcard addresses on `port`. The listener runs on IPv4 alone
     /// when the IPv6 socket cannot be bound, for example when IPv6 is disabled; it fails only
     /// when IPv4 fails.
-    pub(crate) fn bind(port: u16) -> io::Result<Self> {
+    pub fn bind(port: u16) -> io::Result<Self> {
         Self::bind_with(port, bind_wildcard)
     }
 
@@ -61,19 +61,19 @@ impl CoordinatorListener {
     }
 
     /// The port both sockets listen on.
-    pub(crate) fn port(&self) -> io::Result<u16> {
+    pub fn port(&self) -> io::Result<u16> {
         Ok(self.ipv4.local_addr()?.port())
     }
 
     /// Whether an IPv6 socket is listening.
     #[cfg(test)]
-    pub(crate) fn has_ipv6(&self) -> bool {
+    pub fn has_ipv6(&self) -> bool {
         self.ipv6.is_some()
     }
 
     /// Accepts the next connection from either socket. Both accept futures are cancel safe, so
     /// the one that loses the race drops nothing.
-    pub(crate) async fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
+    pub async fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
         let Some(ipv6) = &self.ipv6 else {
             return self.ipv4.accept().await;
         };

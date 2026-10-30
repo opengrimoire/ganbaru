@@ -15,21 +15,21 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Connections still in the handshake or without a linked certificate, across all sources.
-pub(in super::super) const MAX_PENDING_CONNECTIONS: usize = 32;
+pub const MAX_PENDING_CONNECTIONS: usize = 32;
 /// Pending connections from one IPv4 address or one IPv6 /64 prefix.
-pub(in super::super) const MAX_PENDING_CONNECTIONS_PER_SOURCE: usize = 8;
+pub const MAX_PENDING_CONNECTIONS_PER_SOURCE: usize = 8;
 /// Concurrent connections from linked devices, which are capped at 32 per vault.
-pub(in super::super) const MAX_AUTHENTICATED_CONNECTIONS: usize = 64;
+pub const MAX_AUTHENTICATED_CONNECTIONS: usize = 64;
 /// Authenticated connections from one IPv4 address or one IPv6 /64 prefix, so one linked device
 /// cannot hold the whole authenticated budget. A device needs only a few at once.
-pub(in super::super) const MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE: usize = 16;
+pub const MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE: usize = 16;
 /// Contact messages one source may send at once. A requester sends one request and then polls
 /// about once a minute, so even a household behind one address stays far below it.
 #[cfg(desktop)]
-pub(in super::super) const CONTACT_MESSAGE_BURST: u32 = 16;
+pub const CONTACT_MESSAGE_BURST: u32 = 16;
 /// Time in which one source earns another contact message.
 #[cfg(desktop)]
-pub(in super::super) const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
+pub const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
 /// Sources whose contact budget is tracked at once. Sources with a full budget are forgotten
 /// first, so the map only fills when that many sources are sending at the same time.
 #[cfg(desktop)]
@@ -110,7 +110,7 @@ struct Counts {
 
 /// Shared admission state for one listener.
 #[derive(Clone)]
-pub(in super::super) struct ConnectionLimits {
+pub struct ConnectionLimits {
     counts: Arc<Mutex<Counts>>,
     max_pending: usize,
     max_pending_per_source: usize,
@@ -130,7 +130,7 @@ impl Default for ConnectionLimits {
 }
 
 impl ConnectionLimits {
-    pub(in super::super) fn new(
+    pub fn new(
         max_pending: usize,
         max_pending_per_source: usize,
         max_authenticated: usize,
@@ -147,7 +147,7 @@ impl ConnectionLimits {
 
     /// Admits a newly accepted connection as pending, or returns `None` when the global or
     /// per-source pending budget is full and the socket should be closed.
-    pub(in super::super) fn admit(&self, source: IpAddr) -> Option<PendingPermit> {
+    pub fn admit(&self, source: IpAddr) -> Option<PendingPermit> {
         let source = SourceKey::from_address(source);
         let mut counts = self.lock();
         let from_source = counts.pending_by_source.get(&source).copied().unwrap_or(0);
@@ -166,7 +166,7 @@ impl ConnectionLimits {
     /// sent too many recently, or when too many sources are sending at once, and the requester
     /// should be told to retry later.
     #[cfg(desktop)]
-    pub(in super::super) fn take_contact_message(&self, source: IpAddr, now: Instant) -> bool {
+    pub fn take_contact_message(&self, source: IpAddr, now: Instant) -> bool {
         let source = SourceKey::from_address(source);
         let mut counts = self.lock();
         let budgets = &mut counts.contact_budgets;
@@ -199,7 +199,7 @@ impl ConnectionLimits {
 }
 
 /// Holds a pending slot until dropped or exchanged for an authenticated slot.
-pub(in super::super) struct PendingPermit {
+pub struct PendingPermit {
     limits: ConnectionLimits,
     source: SourceKey,
 }
@@ -208,7 +208,7 @@ impl PendingPermit {
     /// Moves the connection to the authenticated budget and releases its pending slot. Returns
     /// `None` when the global or per-source authenticated budget is full; the pending slot is
     /// released either way.
-    pub(in super::super) fn authenticate(self) -> Option<AuthenticatedPermit> {
+    pub fn authenticate(self) -> Option<AuthenticatedPermit> {
         let limits = self.limits.clone();
         let source = self.source;
         let mut counts = limits.lock();
@@ -250,7 +250,7 @@ impl Drop for PendingPermit {
 }
 
 /// Holds an authenticated slot until dropped.
-pub(in super::super) struct AuthenticatedPermit {
+pub struct AuthenticatedPermit {
     limits: ConnectionLimits,
     source: SourceKey,
 }

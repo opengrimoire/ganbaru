@@ -1,7 +1,7 @@
 //! What the coordinator dials of this app run found, so the sync status can name the network
 //! it reached the coordinator over and why it could not. Kept in memory only.
 
-use super::super::pairing::CoordinatorPin;
+use ganbaru_handoff::pairing::CoordinatorPin;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Mutex;
@@ -11,19 +11,19 @@ static DIAL_REPORTS: Mutex<DialReports> = Mutex::new(DialReports::new());
 
 /// What the dials of one coordinator found in this run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CoordinatorDialReport {
+pub struct CoordinatorDialReport {
     /// The endpoint the latest successful dial reached.
-    pub(crate) reached: Option<SocketAddr>,
+    pub reached: Option<SocketAddr>,
     /// The latest dial reached no endpoint, and the system refused at least one connection
     /// with a permission error, as Android does when local network access is denied.
-    pub(crate) local_network_denied: bool,
+    pub local_network_denied: bool,
     /// The latest dial reached no endpoint after a browse of the local network found none.
-    pub(crate) discovery_found_nothing: bool,
+    pub discovery_found_nothing: bool,
 }
 
 /// How one dial ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DialOutcome {
+pub enum DialOutcome {
     Reached(SocketAddr),
     Failed {
         local_network_denied: bool,
@@ -36,7 +36,7 @@ type DialTarget = (String, String);
 
 /// Reports by coordinator vault and certificate fingerprint.
 #[derive(Debug)]
-pub(super) struct DialReports(BTreeMap<DialTarget, CoordinatorDialReport>);
+pub struct DialReports(BTreeMap<DialTarget, CoordinatorDialReport>);
 
 impl DialReports {
     const fn new() -> Self {
@@ -45,7 +45,7 @@ impl DialReports {
 
     /// Folds `outcome` into the report of the coordinator of `vault_id` with `fingerprint`. A
     /// failure keeps the endpoint an earlier dial reached.
-    pub(super) fn record(&mut self, vault_id: &str, fingerprint: &str, outcome: DialOutcome) {
+    pub fn record(&mut self, vault_id: &str, fingerprint: &str, outcome: DialOutcome) {
         let report = self
             .0
             .entry((vault_id.to_string(), fingerprint.to_string()))
@@ -68,7 +68,7 @@ impl DialReports {
     }
 
     /// The report of the coordinator of `vault_id` with `fingerprint`, empty before any dial.
-    pub(super) fn report(&self, vault_id: &str, fingerprint: &str) -> CoordinatorDialReport {
+    pub fn report(&self, vault_id: &str, fingerprint: &str) -> CoordinatorDialReport {
         self.0
             .get(&(vault_id.to_string(), fingerprint.to_string()))
             .cloned()
@@ -77,7 +77,7 @@ impl DialReports {
 }
 
 /// Records how a dial of `coordinator` ended.
-pub(super) fn record_dial(coordinator: &CoordinatorPin, outcome: DialOutcome) {
+pub fn record_dial(coordinator: &CoordinatorPin, outcome: DialOutcome) {
     match DIAL_REPORTS.lock() {
         Ok(mut reports) => reports.record(
             &coordinator.vault_id,
@@ -89,7 +89,7 @@ pub(super) fn record_dial(coordinator: &CoordinatorPin, outcome: DialOutcome) {
 }
 
 /// What the dials of `coordinator` found in this run.
-pub(crate) fn coordinator_dial_report(coordinator: &CoordinatorPin) -> CoordinatorDialReport {
+pub fn coordinator_dial_report(coordinator: &CoordinatorPin) -> CoordinatorDialReport {
     DIAL_REPORTS
         .lock()
         .map(|reports| reports.report(&coordinator.vault_id, &coordinator.certificate_fingerprint))

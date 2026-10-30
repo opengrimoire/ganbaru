@@ -1,13 +1,10 @@
-//! The desktop coordinator listener: authenticated dispatch of pairing, handoff, contact, and
-//! sync requests, and archive serving.
+//! The desktop coordinator listener's routes: pairing, handoff, and contact requests, and
+//! archive serving. The listener itself, with TLS, admission, and sync dispatch, is
+//! [`ganbaru_sync_replica::serve::coordinator`].
 
-use super::super::{MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, stream_file, timeout_control};
-use super::client_verifier::PinnedClientVerifier;
-use super::limits::{ConnectionLimits, PendingPermit};
-use super::{
-    COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, MemberAdmissionSource,
-    accept_connections, admitted_local_address, send_error,
-};
+use super::super::stream_file;
+use super::limits::ConnectionLimits;
+use super::{CoordinatorListener, LanAdmission, MemberAdmissionSource, send_error};
 use crate::contacts::requests::PeerReply;
 use crate::sync::hub::SyncHub;
 use crate::vault::handoff::contact_requests::{
@@ -17,57 +14,20 @@ use crate::vault::handoff::enrollment_approval::{
     ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_NO_CHARTER_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE,
     EnrollmentApprovals, EnrollmentDecision,
 };
-use crate::vault::handoff::pairing::{Enrollment, PairingManager, PinnedCharter, TlsIdentity};
+use crate::vault::handoff::pairing::{Enrollment, PairingManager, PinnedCharter};
 use crate::vault::handoff::protocol::{
-    BundleMetadata, ControlMessage, PROTOCOL_VERSION, read_control, read_control_limited,
-    unix_time_ms, write_control,
+    BundleMetadata, ControlMessage, PROTOCOL_VERSION, read_control, unix_time_ms, write_control,
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use ganbaru_handoff::dial::LoopbackPolicy;
-use ganbaru_sync_replica::peers::admission::MemberRefusal;
-use rustls::pki_types::CertificateDer;
-use std::collections::BTreeSet;
+pub(crate) use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
+use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream, timeout_control};
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
-use tokio_rustls::TlsAcceptor;
-
-/// TLS server configuration built once per set of trusted device certificates, so connections
-/// reuse it until enrollment or revocation changes the set.
-#[derive(Clone, Default)]
-struct ServerConfigCache(Arc<Mutex<Option<CachedServerConfig>>>);
-
-struct CachedServerConfig {
-    client_certificates: Vec<CertificateDer<'static>>,
-    config: Arc<rustls::ServerConfig>,
-}
-
-impl ServerConfigCache {
-    async fn current(&self, manager: &PairingManager) -> Result<Arc<rustls::ServerConfig>, String> {
-        let client_certificates = manager.client_auth_certificates()?;
-        if let Some(cached) = self.lock()?.as_ref()
-            && cached.client_certificates == client_certificates
-        {
-            return Ok(cached.config.clone());
-        }
-        let (_, identity) = super::super::load_tls_identity(manager).await?;
-        let config = Arc::new(server_config(identity, client_certificates.clone())?);
-        *self.lock()? = Some(CachedServerConfig {
-            client_certificates,
-            config: config.clone(),
-        });
-        Ok(config)
-    }
-
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<CachedServerConfig>>, String> {
-        self.0
-            .lock()
-            .map_err(|_| "coordinator TLS configuration lock is unavailable".to_string())
-    }
-}
 
 /// Seals the sync enrollment of linked devices. The listener runs it after linking an approved
 /// device and before replying, so the vault bundle the device downloads next already enrolls it.
@@ -75,14 +35,6 @@ impl ServerConfigCache {
 /// it was told about. A failure leaves the enrollment to the next sync pass.
 pub(crate) type EnrollmentSealer = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Result<Option<PinnedCharter>, String>> + Send>>
-        + Send
-        + Sync,
->;
-
-/// The device ids this installation quarantined in the active vault. The listener turns their
-/// connections away right after the TLS handshake.
-pub(crate) type QuarantinedDevices = Arc<
-    dyn Fn() -> Pin<Box<dyn Future<Output = Result<BTreeSet<String>, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -131,365 +83,285 @@ pub(in super::super) async fn serve_with_limits(
     services: CoordinatorServices,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let configs = ServerConfigCache::default();
-    accept_connections(
-        || listener.accept(),
-        shutdown,
-        |socket, source: SocketAddr| {
-            let Some(local) = admitted_local_address(&socket, source.ip(), loopback) else {
-                // Refused before the pending budget so a host outside the local networks never
-                // costs a slot, a task, or a read.
-                drop(socket);
-                return;
-            };
-            let Some(permit) = limits.admit(source.ip()) else {
-                // Closing at once keeps a flood from holding descriptors or handshakes.
-                drop(socket);
-                return;
-            };
-            let configs = configs.clone();
-            let connection = Services {
-                manager: manager.clone(),
-                features: services.clone(),
-                limits: limits.clone(),
-            };
-            tokio::spawn(async move {
-                if !connection.features.admission.admits(local).await {
-                    return;
-                }
-                if let Err(error) =
-                    handle_connection(socket, source.ip(), permit, configs, connection).await
-                {
-                    eprintln!("vault handoff connection failed: {error}");
-                }
-            });
+    let CoordinatorServices {
+        coordinator,
+        contacts,
+        hub,
+        enrollment_sealer,
+        approvals,
+        admission,
+        quarantined,
+        log_admission,
+    } = services;
+    let services = ganbaru_sync_replica::serve::coordinator::CoordinatorServices {
+        hub,
+        admission,
+        quarantined,
+        log_admission,
+        routes: CoordinatorRoutes {
+            coordinator,
+            contacts,
+            enrollment_sealer,
+            approvals,
         },
+    };
+    ganbaru_sync_replica::serve::coordinator::serve_coordinator(
+        listener, limits, loopback, manager, services, shutdown,
     )
     .await;
 }
 
-/// What one connection may reach on the coordinator.
-struct Services {
-    manager: PairingManager,
-    features: CoordinatorServices,
-    limits: ConnectionLimits,
+/// The coordinator requests outside sync: enrollment, contacts, the person key, and vault
+/// copies with their activation.
+#[derive(Clone)]
+struct CoordinatorRoutes {
+    coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
+    enrollment_sealer: Option<EnrollmentSealer>,
+    approvals: EnrollmentApprovals,
 }
 
-async fn handle_connection(
-    socket: TcpStream,
-    source: IpAddr,
-    permit: PendingPermit,
-    configs: ServerConfigCache,
-    services: Services,
-) -> Result<(), String> {
-    let Services {
-        manager,
-        features:
-            CoordinatorServices {
-                coordinator,
-                contacts,
-                hub,
-                enrollment_sealer,
-                approvals,
-                admission: _,
-                quarantined,
-                log_admission,
-            },
-        limits,
-    } = services;
-    let config = configs.current(&manager).await?;
-    let mut stream = tokio::time::timeout(
-        TLS_HANDSHAKE_TIMEOUT,
-        TlsAcceptor::from(config).accept(socket),
-    )
-    .await
-    .map_err(|_| "TLS handshake timed out".to_string())?
-    .map_err(|error| format!("accept TLS connection: {error}"))?;
-    let peer_certificate = stream
-        .get_ref()
-        .1
-        .peer_certificates()
-        .and_then(|certificates| certificates.first())
-        .cloned();
-    if let Some(quarantined) = quarantined.as_ref()
-        && peer_certificate.is_some()
-        && let Ok(peer) = manager.authenticated_peer(peer_certificate.as_ref())
-        && refuses_quarantined(quarantined().await, &peer.device_id)
-    {
-        return Err(format!("refused quarantined device {}", peer.device_id));
-    }
-    let revoked = manager.is_revoked_certificate(peer_certificate.as_ref())?;
-    // A linked certificate moves the connection to the authenticated budget; anything else keeps
-    // its pending slot and the small frame bound until it closes.
-    let (_pending, authenticated) = if peer_certificate.is_some() && !revoked {
-        let Some(authenticated) = permit.authenticate() else {
-            return send_error(
-                &mut stream,
-                COORDINATOR_BUSY_CODE,
-                "the coordinator is handling too many connections; retry shortly",
-                true,
-            )
-            .await;
-        };
-        (None, Some(authenticated))
-    } else {
-        (Some(permit), None)
-    };
-    let control_limit = if authenticated.is_some() {
-        protocol::MAX_CONTROL_BYTES
-    } else {
-        protocol::MAX_UNAUTHENTICATED_CONTROL_BYTES
-    };
-    let request = match timeout_control(read_control_limited(&mut stream, control_limit)).await {
-        Ok(request) => request,
-        Err(error) => {
-            return send_error(&mut stream, "malformed_control", &error, false).await;
-        }
-    };
-
-    if revoked {
-        return send_error(
-            &mut stream,
-            MEMBERSHIP_REVOKED_CODE,
-            "this device was unlinked by the coordinator",
-            false,
+impl Routes for CoordinatorRoutes {
+    fn handles(&self, request: &ControlMessage) -> bool {
+        matches!(
+            request,
+            ControlMessage::Enroll { .. }
+                | ControlMessage::ContactRequest { .. }
+                | ControlMessage::ContactRequestStatus { .. }
+                | ControlMessage::PersonKeyRequest { .. }
+                | ControlMessage::DownloadBundle { .. }
+                | ControlMessage::RequestBundle { .. }
+                | ControlMessage::ActivationComplete { .. }
+                | ControlMessage::CancelTransfer { .. }
         )
-        .await;
     }
 
-    if let (Some(source), Some(certificate)) = (log_admission.as_ref(), peer_certificate.as_ref())
-        && let Some(refusal) = log_refusal(source().await, certificate, &request)
-    {
-        let retryable = refusal == MemberRefusal::Unavailable;
-        return send_error(&mut stream, refusal.code(), refusal.describe(), retryable).await;
-    }
-
-    if let Some((vault_id, device_id)) = request.sync_peer() {
-        manager.verify_authenticated_peer(device_id, peer_certificate.as_ref(), vault_id)?;
-        let Some(hub) = hub.as_ref() else {
-            return send_error(
-                &mut stream,
-                "sync_unsupported",
-                "this coordinator does not serve sync",
-                false,
-            )
-            .await;
-        };
-        let response = hub.respond(request).await;
-        return timeout_control(write_control(&mut stream, &response)).await;
-    }
-
-    match request {
-        ControlMessage::Enroll {
-            invitation_id,
-            secret,
-            vault_id,
-            device_id,
-            device_label,
-            device_kind,
-            device_certificate,
-            sync_device_key,
-            sync_admin_key,
+    async fn serve(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+    ) -> Result<(), String> {
+        let Peer {
+            manager,
+            source,
+            certificate: peer_certificate,
+            limits,
             ..
-        } => {
-            if peer_certificate.is_some() {
-                return send_error(
-                    &mut stream,
-                    "enrollment_identity",
-                    "enrollment must use the invitation identity",
-                    false,
-                )
-                .await;
-            }
-            let enrollment = Enrollment {
-                invitation_id: &invitation_id,
-                secret: &secret,
-                vault_id: &vault_id,
-                device_id: &device_id,
-                device_label: &device_label,
+        } = peer;
+        let CoordinatorRoutes {
+            coordinator,
+            contacts,
+            enrollment_sealer,
+            approvals,
+        } = self;
+        match request {
+            ControlMessage::Enroll {
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
                 device_kind,
-                certificate_b64: &device_certificate,
-                sync_device_key: &sync_device_key,
-                sync_admin_key: sync_admin_key.as_deref(),
-            };
-            // The invitation is checked when the request arrives, so time spent waiting for the
-            // user does not expire it.
-            let requested_at_ms = unix_time_ms();
-            let code = match manager.verify_enrollment(&enrollment, requested_at_ms) {
-                Ok(code) => code,
-                Err(error) => {
-                    return send_error(&mut stream, "enrollment_rejected", &error, false).await;
-                }
-            };
-            let decision = await_enrollment_approval(
-                &mut stream,
-                &approvals,
-                &device_label,
-                device_kind,
-                code,
-            )
-            .await;
-            match decision {
-                Ok(EnrollmentDecision::Approved) => {}
-                Ok(EnrollmentDecision::Declined) => {
-                    // A declined device presented a leaked invitation, so nobody may use it again.
-                    manager.discard_invitation(&invitation_id)?;
+                device_certificate,
+                sync_device_key,
+                sync_admin_key,
+                ..
+            } => {
+                if peer_certificate.is_some() {
                     return send_error(
-                        &mut stream,
-                        "enrollment_rejected",
-                        ENROLLMENT_DECLINED_MESSAGE,
+                        stream,
+                        "enrollment_identity",
+                        "enrollment must use the invitation identity",
                         false,
                     )
                     .await;
                 }
-                Err(error) => {
-                    return send_error(&mut stream, "enrollment_rejected", &error, false).await;
+                let enrollment = Enrollment {
+                    invitation_id: &invitation_id,
+                    secret: &secret,
+                    vault_id: &vault_id,
+                    device_id: &device_id,
+                    device_label: &device_label,
+                    device_kind,
+                    certificate_b64: &device_certificate,
+                    sync_device_key: &sync_device_key,
+                    sync_admin_key: sync_admin_key.as_deref(),
+                };
+                // The invitation is checked when the request arrives, so time spent waiting for the
+                // user does not expire it.
+                let requested_at_ms = unix_time_ms();
+                let code = match manager.verify_enrollment(&enrollment, requested_at_ms) {
+                    Ok(code) => code,
+                    Err(error) => {
+                        return send_error(stream, "enrollment_rejected", &error, false).await;
+                    }
+                };
+                let decision =
+                    await_enrollment_approval(stream, approvals, &device_label, device_kind, code)
+                        .await;
+                match decision {
+                    Ok(EnrollmentDecision::Approved) => {}
+                    Ok(EnrollmentDecision::Declined) => {
+                        // A declined device presented a leaked invitation, so nobody may use it again.
+                        manager.discard_invitation(&invitation_id)?;
+                        return send_error(
+                            stream,
+                            "enrollment_rejected",
+                            ENROLLMENT_DECLINED_MESSAGE,
+                            false,
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        return send_error(stream, "enrollment_rejected", &error, false).await;
+                    }
                 }
+                if let Err(error) = manager.enroll_peer(enrollment, requested_at_ms) {
+                    return send_error(stream, "enrollment_rejected", &error, false).await;
+                }
+                let charter = match enrollment_sealer.as_ref() {
+                    Some(seal) => seal().await.unwrap_or_else(|error| {
+                        eprintln!("sync: enroll the linked device: {error}");
+                        None
+                    }),
+                    None => None,
+                };
+                // A device told nothing about the anchor could not pin it, so it is refused. The link
+                // stays: unlinking would make the anchor remove a device it may already have
+                // enrolled, and a removed device id never enrolls again. Pairing the same device
+                // again reuses the link.
+                let Some(PinnedCharter {
+                    charter,
+                    person_key,
+                }) = charter
+                else {
+                    return send_error(
+                        stream,
+                        "enrollment_rejected",
+                        ENROLLMENT_NO_CHARTER_MESSAGE,
+                        true,
+                    )
+                    .await;
+                };
+                let coordinator_device_id = manager.device_id()?;
+                let coordinator_device_label = suggested_device_label();
+                timeout_control(write_control(
+                    stream,
+                    &ControlMessage::Enrolled {
+                        protocol_version: PROTOCOL_VERSION,
+                        coordinator_device_id,
+                        coordinator_device_label: Some(coordinator_device_label),
+                        charter: Some(charter),
+                        person_key: Some(person_key),
+                    },
+                ))
+                .await
             }
-            if let Err(error) = manager.enroll_peer(enrollment, requested_at_ms) {
-                return send_error(&mut stream, "enrollment_rejected", &error, false).await;
-            }
-            let charter = match enrollment_sealer.as_ref() {
-                Some(seal) => seal().await.unwrap_or_else(|error| {
-                    eprintln!("sync: enroll the linked device: {error}");
-                    None
-                }),
-                None => None,
-            };
-            // A device told nothing about the anchor could not pin it, so it is refused. The link
-            // stays: unlinking would make the anchor remove a device it may already have
-            // enrolled, and a removed device id never enrolls again. Pairing the same device
-            // again reuses the link.
-            let Some(PinnedCharter {
-                charter,
-                person_key,
-            }) = charter
-            else {
-                return send_error(
-                    &mut stream,
-                    "enrollment_rejected",
-                    ENROLLMENT_NO_CHARTER_MESSAGE,
-                    true,
-                )
-                .await;
-            };
-            let coordinator_device_id = manager.device_id()?;
-            let coordinator_device_label = suggested_device_label();
-            timeout_control(write_control(
-                &mut stream,
-                &ControlMessage::Enrolled {
-                    protocol_version: PROTOCOL_VERSION,
-                    coordinator_device_id,
-                    coordinator_device_label: Some(coordinator_device_label),
-                    charter: Some(charter),
-                    person_key: Some(person_key),
-                },
-            ))
-            .await
-        }
-        ControlMessage::ContactRequest {
-            recipient_card_nonce,
-            requester_card,
-            request_id,
-            signature,
-            ..
-        } => {
-            let operation = ContactOperation::Request {
+            ControlMessage::ContactRequest {
                 recipient_card_nonce,
                 requester_card,
                 request_id,
                 signature,
-            };
-            send_contact_response(&mut stream, contacts.as_ref(), &limits, source, operation).await
-        }
-        ControlMessage::ContactRequestStatus {
-            request_id,
-            requester_public_key,
-            issued_at_ms,
-            signature,
-            ..
-        } => {
-            let operation = ContactOperation::Status {
+                ..
+            } => {
+                let operation = ContactOperation::Request {
+                    recipient_card_nonce,
+                    requester_card,
+                    request_id,
+                    signature,
+                };
+                send_contact_response(stream, contacts.as_ref(), limits, source, operation).await
+            }
+            ControlMessage::ContactRequestStatus {
                 request_id,
                 requester_public_key,
                 issued_at_ms,
                 signature,
-            };
-            send_contact_response(&mut stream, contacts.as_ref(), &limits, source, operation).await
-        }
-        ControlMessage::PersonKeyRequest {
-            vault_id,
-            device_id,
-            ..
-        } => {
-            manager.verify_authenticated_peer(&device_id, peer_certificate.as_ref(), &vault_id)?;
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ReleasePersonKey {
-                    vault_id,
-                    device_id,
-                },
-            )
-            .await
-        }
-        ControlMessage::DownloadBundle { metadata } => {
-            manager.verify_authenticated_peer(
-                &metadata.device_id,
-                peer_certificate.as_ref(),
-                &metadata.vault_id,
-            )?;
-            serve_download(&mut stream, &manager, metadata).await
-        }
-        ControlMessage::RequestBundle {
-            compatibility,
-            vault_id,
-            device_id,
-            ..
-        } => {
-            manager.verify_authenticated_peer(&device_id, peer_certificate.as_ref(), &vault_id)?;
-            let operation = coordinator::CoordinatorOperation::Prepare {
+                ..
+            } => {
+                let operation = ContactOperation::Status {
+                    request_id,
+                    requester_public_key,
+                    issued_at_ms,
+                    signature,
+                };
+                send_contact_response(stream, contacts.as_ref(), limits, source, operation).await
+            }
+            ControlMessage::PersonKeyRequest {
+                vault_id,
+                device_id,
+                ..
+            } => {
+                manager.verify_authenticated_peer(&device_id, peer_certificate, &vault_id)?;
+                send_coordinator_response(
+                    stream,
+                    coordinator.as_ref(),
+                    coordinator::CoordinatorOperation::ReleasePersonKey {
+                        vault_id,
+                        device_id,
+                    },
+                )
+                .await
+            }
+            ControlMessage::DownloadBundle { metadata } => {
+                manager.verify_authenticated_peer(
+                    &metadata.device_id,
+                    peer_certificate,
+                    &metadata.vault_id,
+                )?;
+                serve_download(stream, manager, metadata).await
+            }
+            ControlMessage::RequestBundle {
                 compatibility,
                 vault_id,
                 device_id,
-            };
-            send_coordinator_response(&mut stream, coordinator.as_ref(), operation).await
-        }
-        ControlMessage::ActivationComplete {
-            vault_id,
-            device_id,
-            transfer_id,
-            ..
-        } => {
-            manager.verify_authenticated_peer(&device_id, peer_certificate.as_ref(), &vault_id)?;
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::Activated {
+                ..
+            } => {
+                manager.verify_authenticated_peer(&device_id, peer_certificate, &vault_id)?;
+                let operation = coordinator::CoordinatorOperation::Prepare {
+                    compatibility,
                     vault_id,
                     device_id,
-                    transfer_id,
-                },
-            )
-            .await
-        }
-        ControlMessage::CancelTransfer { transfer_id } => {
-            manager.authenticated_peer(peer_certificate.as_ref())?;
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::Cancel { transfer_id },
-            )
-            .await
-        }
-        _ => {
-            send_error(
-                &mut stream,
-                "unsupported_message",
-                "the coordinator does not accept this message in the current state",
-                false,
-            )
-            .await
+                };
+                send_coordinator_response(stream, coordinator.as_ref(), operation).await
+            }
+            ControlMessage::ActivationComplete {
+                vault_id,
+                device_id,
+                transfer_id,
+                ..
+            } => {
+                manager.verify_authenticated_peer(&device_id, peer_certificate, &vault_id)?;
+                send_coordinator_response(
+                    stream,
+                    coordinator.as_ref(),
+                    coordinator::CoordinatorOperation::Activated {
+                        vault_id,
+                        device_id,
+                        transfer_id,
+                    },
+                )
+                .await
+            }
+            ControlMessage::CancelTransfer { transfer_id } => {
+                manager.authenticated_peer(peer_certificate)?;
+                send_coordinator_response(
+                    stream,
+                    coordinator.as_ref(),
+                    coordinator::CoordinatorOperation::Cancel { transfer_id },
+                )
+                .await
+            }
+            _ => {
+                send_error(
+                    stream,
+                    "unsupported_message",
+                    "the coordinator does not accept this message in the current state",
+                    false,
+                )
+                .await
+            }
         }
     }
 }
@@ -697,72 +569,5 @@ pub(super) async fn serve_download(
             Ok(())
         }
         _ => Err("receiver did not acknowledge the completed transfer".to_string()),
-    }
-}
-
-/// Coordinator TLS: version 1.3 only, and client certificates checked against the exact pinned
-/// certificates of linked and revoked devices, so a revoked device still reaches its stale-link
-/// cleanup while an unknown certificate never completes the handshake.
-fn server_config(
-    identity: TlsIdentity,
-    client_certificates: Vec<CertificateDer<'static>>,
-) -> Result<rustls::ServerConfig, String> {
-    let builder = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
-    let config = if !client_certificates.is_empty() {
-        builder.with_client_cert_verifier(Arc::new(PinnedClientVerifier::new(&client_certificates)))
-    } else {
-        builder.with_no_client_auth()
-    }
-    .with_single_cert(vec![identity.certificate], identity.private_key.clone_key())
-    .map_err(|error| format!("configure coordinator TLS identity: {error}"))?;
-    Ok(config)
-}
-
-/// Why the selected log turns away `request` from the device whose certificate is
-/// `certificate`: a device the log removed reaches no coordinator service but record exchange,
-/// pairing still linking it or not, and any other sync request needs a device the log enrolled.
-/// Record exchange is served to every paired device, so an authorization branch the local log
-/// does not select still reaches it. A request from a certificate
-/// the log does not know, such as a device linked before its enrollment was sequenced, keeps
-/// every other service. Without a log pairing alone decides, and a log that cannot be read
-/// refuses every request until it can be, since it may hold the removal.
-pub(crate) fn log_refusal(
-    admission: Result<Option<ganbaru_sync_replica::peers::admission::MemberAdmission>, String>,
-    certificate: &CertificateDer<'_>,
-    request: &ControlMessage,
-) -> Option<MemberRefusal> {
-    let admission = match admission {
-        Ok(Some(admission)) => admission,
-        Ok(None) => return None,
-        Err(error) => {
-            eprintln!("sync: read the log admission: {error}");
-            return Some(MemberRefusal::Unavailable);
-        }
-    };
-    let fingerprint = crate::vault::handoff::pairing::certificate_fingerprint(certificate.as_ref());
-    match admission.certificate(&fingerprint) {
-        Ok(_) | Err(MemberRefusal::Quarantined) => None,
-        Err(MemberRefusal::Removed | MemberRefusal::Unknown) if request.is_record_exchange() => {
-            None
-        }
-        Err(MemberRefusal::Removed) => Some(MemberRefusal::Removed),
-        Err(refusal) if request.sync_peer().is_some() => Some(refusal),
-        Err(_) => None,
-    }
-}
-
-/// Whether the listener turns a linked device away as quarantined. A quarantine list that
-/// cannot be read is reported and refuses no one, so a damaged file never locks every linked
-/// device out, handoff recovery included.
-pub(crate) fn refuses_quarantined(
-    quarantined: Result<BTreeSet<String>, String>,
-    device_id: &str,
-) -> bool {
-    match quarantined {
-        Ok(devices) => devices.contains(device_id),
-        Err(error) => {
-            eprintln!("sync: read the quarantine list: {error}");
-            false
-        }
     }
 }

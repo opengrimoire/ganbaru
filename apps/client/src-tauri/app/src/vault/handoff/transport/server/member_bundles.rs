@@ -7,16 +7,16 @@
 use super::dispatch::serve_download;
 use super::send_error;
 use crate::vault::handoff::coordinator::{BUNDLE_PREPARATION_LIMIT, BundlePreparationWindows};
-use crate::vault::handoff::pairing::PairingManager;
+use crate::vault::handoff::pairing::{PairingManager, certificate_fingerprint};
 use crate::vault::handoff::protocol::{BundleMetadata, ControlMessage, write_control};
 use crate::vault::handoff::transport::timeout_control;
 use ganbaru_sync_replica::peers::admission::{MemberAdmission, MemberRefusal};
+use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
 
 /// Error code for a copy refused because this member already holds one for another device.
 const MEMBER_BUSY_CODE: &str = "member_busy";
@@ -65,8 +65,6 @@ pub(crate) struct MemberBundles {
     preparer: SnapshotPreparer,
     state: Arc<tokio::sync::Mutex<BundleState>>,
 }
-
-type ServerStream = tokio_rustls::server::TlsStream<TcpStream>;
 
 impl MemberBundles {
     pub(crate) fn new(preparer: SnapshotPreparer) -> Self {
@@ -274,6 +272,25 @@ impl MemberBundles {
             return true;
         }
         activated && state.acknowledged.as_deref() == Some(transfer_id)
+    }
+}
+
+impl Routes for MemberBundles {
+    fn handles(&self, request: &ControlMessage) -> bool {
+        MemberBundles::handles(request)
+    }
+
+    async fn serve(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+    ) -> Result<(), String> {
+        let (Some(admission), Some(certificate)) = (peer.admission, peer.certificate) else {
+            return Err("a snapshot copy needs an admitted peer".to_string());
+        };
+        let fingerprint = certificate_fingerprint(certificate.as_ref());
+        MemberBundles::serve(self, stream, peer.manager, admission, &fingerprint, request).await
     }
 }
 

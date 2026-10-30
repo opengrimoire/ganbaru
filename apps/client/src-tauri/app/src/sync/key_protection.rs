@@ -28,6 +28,7 @@ const KEY_DIRECTORIES: [&str; 3] = [
 
 /// Directories under the app config directory that hold the key files a vault's platform key
 /// seals: the sync keys and the person key.
+#[cfg(any(mobile, test))]
 const VAULT_KEY_DIRECTORIES: [&str; 2] = [
     super::host::SYNC_DIRECTORY,
     crate::contacts::identity::KEY_DIRECTORY,
@@ -36,6 +37,7 @@ const VAULT_KEY_DIRECTORIES: [&str; 2] = [
 /// Platform key alias the health probe seals with and forgets again.
 const PROBE_ALIAS: &str = "ganbaru-key-probe";
 /// Key reference the health probe binds its envelope to.
+#[cfg(any(mobile, test))]
 const PROBE_REFERENCE: &str = "key-probe";
 
 /// The platform key wrapper of this build: the Android Keystore on Android, a shared in-memory
@@ -218,6 +220,7 @@ pub(crate) fn remove_unprotected_keys(config_dir: &Path, pairing: &PairingManage
 
 /// Whether the platform key store seals and opens again right now, checked with a throwaway
 /// key. A store that fails the probe is unavailable, which is no proof of a lost key.
+#[cfg(any(mobile, test))]
 fn key_store_is_healthy(wrapper: &dyn KeyWrapper) -> bool {
     let probe = b"key protection probe";
     let healthy = key_wrap::seal(wrapper, PROBE_ALIAS, PROBE_REFERENCE, probe)
@@ -233,6 +236,7 @@ fn key_store_is_healthy(wrapper: &dyn KeyWrapper) -> bool {
 /// writer key stem is `writer-key-{vault}-{writer}` with a hexadecimal writer ID, so the part
 /// after the vault ID must be hexadecimal alone: the key of a vault whose ID extends `vault_id`
 /// with `-...` never matches. A vault ID the identifier rules refuse matches nothing.
+#[cfg(any(mobile, test))]
 fn is_vault_key_file(stem: &str, vault_id: &str) -> bool {
     if ganbaru_handoff::protocol::validate_identifier("vault id", vault_id).is_err() {
         return false;
@@ -251,6 +255,7 @@ fn is_vault_key_file(stem: &str, vault_id: &str) -> bool {
 /// Whether a lost alias in `lost` held keys the device's links depend on: its own linking key,
 /// or the keys of a vault it is linked for. The keys of a vault no link uses go without
 /// unlinking.
+#[cfg(any(mobile, test))]
 fn loses_link(
     pairing: &PairingManager,
     lost: &[String],
@@ -279,6 +284,7 @@ fn loses_link(
 /// an unlinked device replaces its linking identity on the next read instead. Key files of other
 /// vaults stay. An active handoff keeps the device linked and its keys in place until it
 /// finishes; the next pass that fails to open a key tries again.
+#[cfg(any(mobile, test))]
 pub(crate) fn recover_after_key_loss(
     config_dir: &Path,
     pairing: &PairingManager,

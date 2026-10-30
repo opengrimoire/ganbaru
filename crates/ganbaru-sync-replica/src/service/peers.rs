@@ -1,26 +1,25 @@
 //! LAN peer exchange glue for the active vault: admission of member listeners from the selected
 //! log, and the device-local peer book of member endpoints that hubs report and dials use.
 
+use super::blocking;
 use super::host::SyncHost;
-use super::service::blocking;
 use super::transport::MemberTransport;
-use crate::vault::handoff::pairing::PairingManager;
-use crate::vault::handoff::transport::BundleSource;
+use crate::client::{ClientSession, Exchange, Exchanged, PeerIds};
+use crate::peers::admission::MemberAdmission;
+use crate::peers::admission::fingerprint_hex;
+use crate::peers::anchor_pin::AnchorPin;
+use crate::peers::book::{PeerBook, PeerEndpoints};
+use crate::peers::plan::{PlanInput, PlannedPeer, plan_pass};
+use crate::quarantine::PullSkips;
+use crate::quarantine::Quarantine;
+use crate::records::{RecordExchange, RecordLink};
+use crate::writer::SyncFiles;
+use ganbaru_handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::MAX_MEMBER_ENDPOINTS;
 use ganbaru_handoff::protocol::MemberEndpoint;
 use ganbaru_sync::local;
 use ganbaru_sync::{AuthorizationView, Engine, SpaceContext};
 use ganbaru_sync_contracts::{DeviceKind, VersionVector, WriterId};
-use ganbaru_sync_replica::client::{ClientSession, Exchange, Exchanged, PeerIds};
-use ganbaru_sync_replica::peers::admission::MemberAdmission;
-use ganbaru_sync_replica::peers::admission::fingerprint_hex;
-use ganbaru_sync_replica::peers::anchor_pin::AnchorPin;
-use ganbaru_sync_replica::peers::book::{PeerBook, PeerEndpoints};
-use ganbaru_sync_replica::peers::plan::{PlanInput, PlannedPeer, plan_pass};
-use ganbaru_sync_replica::quarantine::PullSkips;
-use ganbaru_sync_replica::quarantine::Quarantine;
-use ganbaru_sync_replica::records::{RecordExchange, RecordLink};
-use ganbaru_sync_replica::writer::SyncFiles;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -34,7 +33,7 @@ static PEER_BOOK_LOCK: Mutex<()> = Mutex::new(());
 
 /// Records the member endpoints a hub reported and rebuilds the peer book against the selected
 /// log: only devices enrolled, not removed, and not quarantined keep endpoints.
-pub(super) async fn record_reported_peers(
+pub async fn record_reported_peers(
     path: PathBuf,
     engine: &Engine,
     pool: &SqlitePool,
@@ -52,7 +51,7 @@ pub(super) async fn record_reported_peers(
         .map_err(|error| format!("read sync authorization: {error}"))?;
     drop(conn);
     let members = view.map(|view| live_members(&view, quarantined));
-    let received_ms = super::now_ms()?;
+    let received_ms = crate::now_ms()?;
     blocking(move || {
         update_peer_book(&path, |book| {
             // Without a selected log no device is known to be a member, so reports wait.
@@ -68,7 +67,7 @@ pub(super) async fn record_reported_peers(
 
 /// The selected authorization state of the active vault, or `None` while sync does not run
 /// there or the space is not known yet.
-pub(super) async fn selected_authorization<H: SyncHost>(
+pub async fn selected_authorization<H: SyncHost>(
     host: &H,
 ) -> Result<Option<(String, AuthorizationView)>, String> {
     if !host.sync_enabled()? {
@@ -94,10 +93,7 @@ pub(super) async fn selected_authorization<H: SyncHost>(
 }
 
 /// The devices of `view` that are enrolled and not removed, minus quarantined ones.
-pub(super) fn live_members(
-    view: &AuthorizationView,
-    quarantined: &BTreeSet<String>,
-) -> BTreeSet<String> {
+pub fn live_members(view: &AuthorizationView, quarantined: &BTreeSet<String>) -> BTreeSet<String> {
     view.devices
         .iter()
         .filter(|device| {
@@ -110,8 +106,8 @@ pub(super) fn live_members(
 /// Endpoints of `members` that answered LAN discovery, found by the certificate fingerprints
 /// their enrollments recorded. Only desktops browse; a phone plans from the anchor and the peer
 /// book alone.
-#[cfg(desktop)]
-async fn discovered_members(
+async fn discovered_members<H: SyncHost>(
+    host: &H,
     vault_id: &str,
     own_device_id: &str,
     view: &AuthorizationView,
@@ -126,31 +122,12 @@ async fn discovered_members(
     if fingerprints.is_empty() {
         return BTreeMap::new();
     }
-    crate::vault::handoff::discovery::discover_members(vault_id, &fingerprints)
-        .await
-        .into_iter()
-        .map(|(device_id, endpoints)| {
-            let endpoints = endpoints.iter().map(ToString::to_string).collect();
-            (device_id, endpoints)
-        })
-        .collect()
-}
-
-#[cfg(mobile)]
-async fn discovered_members(
-    _vault_id: &str,
-    _own_device_id: &str,
-    _view: &AuthorizationView,
-    _members: &BTreeSet<String>,
-) -> BTreeMap<String, Vec<String>> {
-    BTreeMap::new()
+    host.discover_members(vault_id, &fingerprints).await
 }
 
 /// Admission of the active vault's member listener: the selected log and this installation's
 /// quarantine. `None` while sync does not run there.
-pub(crate) async fn member_admission<H: SyncHost>(
-    host: &H,
-) -> Result<Option<MemberAdmission>, String> {
+pub async fn member_admission<H: SyncHost>(host: &H) -> Result<Option<MemberAdmission>, String> {
     let Some((vault_id, view)) = selected_authorization(host).await? else {
         return Ok(None);
     };
@@ -166,9 +143,7 @@ pub(crate) async fn member_admission<H: SyncHost>(
 /// Admission from the selected log alone, for the coordinator listener, which applies the
 /// quarantine through its own list with a last-known fallback. `None` while sync does not run
 /// there.
-pub(crate) async fn log_admission<H: SyncHost>(
-    host: &H,
-) -> Result<Option<MemberAdmission>, String> {
+pub async fn log_admission<H: SyncHost>(host: &H) -> Result<Option<MemberAdmission>, String> {
     let Some((vault_id, view)) = selected_authorization(host).await? else {
         return Ok(None);
     };
@@ -180,7 +155,7 @@ pub(crate) async fn log_admission<H: SyncHost>(
 }
 
 /// Applies `change` to the peer book at `path` and writes it when it changed.
-pub(super) fn update_peer_book(
+pub fn update_peer_book(
     path: &Path,
     change: impl FnOnce(&mut PeerEndpoints),
 ) -> Result<PeerEndpoints, String> {
@@ -205,7 +180,7 @@ pub(super) fn update_peer_book(
 }
 
 /// The peer book of `vault_id`, empty when it cannot be read.
-pub(crate) fn read_peer_book<H: SyncHost>(host: &H, vault_id: &str) -> PeerEndpoints {
+pub fn read_peer_book<H: SyncHost>(host: &H, vault_id: &str) -> PeerEndpoints {
     host.sync_files(vault_id)
         .and_then(|files| PeerBook::load(&files.peers_path()))
         .map(|book| book.endpoints().clone())
@@ -214,7 +189,7 @@ pub(crate) fn read_peer_book<H: SyncHost>(host: &H, vault_id: &str) -> PeerEndpo
 
 /// What a hub reports as member endpoints: its own listener endpoints first, then the peer
 /// book's newest entries for other devices, at most [`MAX_MEMBER_ENDPOINTS`].
-pub(crate) fn reported_members(
+pub fn reported_members(
     own_device_id: &str,
     own: Vec<MemberEndpoint>,
     book: &PeerEndpoints,
@@ -233,7 +208,8 @@ pub(crate) fn reported_members(
 }
 
 /// What one pass needs to exchange with other members besides its coordinator exchange.
-pub(super) struct MemberPass<'a> {
+pub struct MemberPass<'a, H> {
+    pub host: &'a H,
     pub manager: &'a PairingManager,
     pub ids: &'a PeerIds,
     pub engine: &'a Engine,
@@ -251,7 +227,7 @@ pub(super) struct MemberPass<'a> {
 
 /// What the member exchanges of a pass moved.
 #[derive(Default)]
-pub(super) struct MemberPassOutcome {
+pub struct MemberPassOutcome {
     /// Operations pulled from members.
     pub pulled: usize,
     /// A link to the anchor when it is not the coordinator and answered this pass, pinned to
@@ -273,8 +249,8 @@ pub(super) struct MemberPassOutcome {
 /// and never receives proposals. What a member refuses, such as an operation of a writer it
 /// does not know yet, is logged and retried on the next pass instead of becoming this device's
 /// status.
-pub(super) async fn exchange_with_members(
-    pass: MemberPass<'_>,
+pub async fn exchange_with_members<H: SyncHost>(
+    pass: MemberPass<'_, H>,
     coordinator_reachable: bool,
 ) -> Result<MemberPassOutcome, String> {
     let Some(pin) = pass.manager.coordinator_pin()? else {
@@ -322,8 +298,14 @@ pub(super) async fn exchange_with_members(
     if direct_anchor.is_none() {
         members.remove(&pin.device_id);
     }
-    let discovered =
-        discovered_members(&pass.ids.vault_id, &pass.ids.device_id, &view, &members).await;
+    let discovered = discovered_members(
+        pass.host,
+        &pass.ids.vault_id,
+        &pass.ids.device_id,
+        &view,
+        &members,
+    )
+    .await;
     let plan = plan_pass(&PlanInput {
         kind,
         own_device_id: &pass.ids.device_id,
@@ -349,11 +331,13 @@ pub(super) async fn exchange_with_members(
             Some((peer, fingerprint))
         })
         .collect();
+    let dialer = pass.host.dialer();
     let transport = |peer: &PlannedPeer, fingerprint: &str| MemberTransport {
         manager: pass.manager.clone(),
         device_id: peer.device_id.clone(),
         endpoints: peer.endpoints.clone(),
         fingerprint: fingerprint.to_string(),
+        dialer: dialer.clone(),
     };
     let exchanges = targets.iter().map(|(peer, fingerprint)| {
         let pass = &pass;
@@ -369,7 +353,7 @@ pub(super) async fn exchange_with_members(
                 own_writers: pass.own_writers,
                 quarantined: pass.quarantined,
                 pull_skips: Some(pass.pull_skips),
-                max_bytes: super::client::MAX_EXCHANGE_BYTES,
+                max_bytes: crate::client::MAX_EXCHANGE_BYTES,
                 listening: pass.listening,
                 records: Some(RecordLink {
                     state: pass.records,
@@ -507,7 +491,7 @@ async fn join_all<F: Future>(futures: Vec<F>) -> Vec<F::Output> {
 
 /// Records in the peer book the listener endpoints an authenticated member reports in its
 /// hello, off the async runtime.
-pub(crate) fn peer_hints<H>(host: H) -> super::hub::HubPeerHints
+pub fn peer_hints<H>(host: H) -> crate::hub::HubPeerHints
 where
     H: SyncHost + Clone + Send + Sync + 'static,
 {
@@ -525,8 +509,8 @@ where
             };
             let device_id = device_id.to_string();
             let listening = listening.to_vec();
-            tauri::async_runtime::spawn_blocking(move || {
-                let observed = super::now_ms().unwrap_or_default();
+            tokio::task::spawn_blocking(move || {
+                let observed = crate::now_ms().unwrap_or_default();
                 if let Err(error) = update_peer_book(&path, |book| {
                     book.observe(&device_id, &listening, observed);
                 }) {
@@ -541,7 +525,7 @@ where
 /// with, from the selected log of the active vault `vault_id`. Empty while the active vault is
 /// another one or sync does not run there, as on a first link: without the log no other
 /// device's certificate is known, so the coordinator is the only source.
-pub(crate) async fn bootstrap_members<H: SyncHost>(
+pub async fn bootstrap_members<H: SyncHost>(
     host: &H,
     vault_id: &str,
     coordinator_device_id: &str,
@@ -562,7 +546,7 @@ pub(crate) async fn bootstrap_members<H: SyncHost>(
         quarantined.devices(),
     );
     let known = read_peer_book(host, vault_id);
-    let discovered = discovered_members(vault_id, &own_device_id, &view, &members).await;
+    let discovered = discovered_members(host, vault_id, &own_device_id, &view, &members).await;
     Ok(bootstrap_sources(&view, &members, &discovered, &known))
 }
 
@@ -619,17 +603,39 @@ fn bootstrap_sources(
         .collect()
 }
 
+/// The device a vault copy comes from: the coordinator this device is pinned to, or a member
+/// listener pinned to the certificate fingerprint its enrollment recorded in the selected log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BundleSource {
+    Coordinator,
+    Member {
+        device_id: String,
+        endpoints: Vec<String>,
+        fingerprint: String,
+    },
+}
+
+impl BundleSource {
+    /// A short name for logs and error messages.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Coordinator => "the coordinator".to_string(),
+            Self::Member { device_id, .. } => format!("member {device_id}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AnchorDial, AuthorizationView, BTreeMap, BTreeSet, BundleSource, DeviceKind, anchor_dial,
         bootstrap_sources, fingerprint_hex, serving_members,
     };
+    use crate::peers::anchor_pin::AnchorPin;
+    use crate::peers::book::PeerEndpoints;
     use ganbaru_handoff::pairing::CoordinatorPin;
     use ganbaru_sync::EnrolledDevice;
     use ganbaru_sync_contracts::{AdminPublicKey, DevicePublicKey, DeviceRole};
-    use ganbaru_sync_replica::peers::anchor_pin::AnchorPin;
-    use ganbaru_sync_replica::peers::book::PeerEndpoints;
 
     fn anchor(device_id: &str, fingerprint: char) -> AnchorPin {
         AnchorPin {

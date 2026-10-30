@@ -11,7 +11,7 @@ use sqlx::SqliteConnection;
 use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
 
-use super::host::SyncHost;
+use super::host::{AppHost, SyncHost};
 use super::service::blocking;
 
 /// The space of a vault and how many devices other than this one its log enrolled.
@@ -98,7 +98,8 @@ pub(crate) async fn backup_seal_keys<R: Runtime>(
     };
     let epoch_key = match &state {
         Some((ctx, _)) => {
-            let space_keys = opened_space_keys(conn, app.key_store()?, vault_id, ctx).await?;
+            let space_keys =
+                opened_space_keys(conn, AppHost::of(app).key_store()?, vault_id, ctx).await?;
             space_keys
                 .newest_epoch()
                 .and_then(|epoch| space_keys.epoch_key(epoch))
@@ -128,6 +129,6 @@ pub(crate) async fn active_epoch_key<R: Runtime>(
     let Some((ctx, _)) = space_state(conn, vault_id).await? else {
         return Ok(None);
     };
-    let space_keys = opened_space_keys(conn, app.key_store()?, vault_id, &ctx).await?;
+    let space_keys = opened_space_keys(conn, AppHost::of(app).key_store()?, vault_id, &ctx).await?;
     Ok(space_keys.epoch_key(epoch))
 }

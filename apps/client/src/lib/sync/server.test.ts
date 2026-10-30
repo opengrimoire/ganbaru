@@ -35,6 +35,14 @@ describe("server lines", () => {
     expect(lines.slice(2)).toEqual(["Reachable, but it uses protocol version 2. Update Ganbaru or the relay."]);
   });
 
+  it("calls a relay incompatible when it refuses the protocol without naming a version", () => {
+    const lines = syncServerLines(t, {
+      ...relay,
+      probe: { protocolVersion: null, compatible: false, problem: "incompatible" },
+    });
+    expect(lines.slice(2)).toEqual(["The relay uses another protocol version. Update Ganbaru or the relay."]);
+  });
+
   it("adds the localized reason when the relay did not answer", () => {
     const lines = syncServerLines(t, {
       ...relay,

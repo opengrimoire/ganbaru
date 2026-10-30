@@ -27,7 +27,9 @@ export function syncServerLines(t: Translate, server: SyncServerView): string[] 
   const probe = server.probe;
   if (probe === null) return lines;
   if (probe.protocolVersion === null) {
-    lines.push(t("sync.server.unreachable"));
+    lines.push(
+      probe.problem === "incompatible" ? syncRelayProblemLabel(t, probe.problem) : t("sync.server.unreachable"),
+    );
   } else if (probe.compatible) {
     lines.push(t("sync.server.reachable", probe.protocolVersion));
   } else {

@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn carriers_past_a_fork_rank_after_every_other_carrier() {
         let horizons = BTreeMap::from([(WriterId::from_bytes([1; 16]), 3)]);
-        let mut carriers = vec![
+        let mut carriers = [
             carrier(1, 4, 0x10),
             carrier(2, 4, 0x90),
             carrier(1, 2, 0x50),
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn carriers_all_past_a_fork_rank_by_lowest_hash() {
         let horizons = BTreeMap::from([(WriterId::from_bytes([1; 16]), 3)]);
-        let mut carriers = vec![carrier(1, 5, 0x80), carrier(1, 3, 0x30)];
+        let mut carriers = [carrier(1, 5, 0x80), carrier(1, 3, 0x30)];
         carriers.sort_by_key(|carrier| carrier_rank(carrier, &horizons));
         assert_eq!(carriers, [carrier(1, 3, 0x30), carrier(1, 5, 0x80)]);
     }

@@ -603,7 +603,7 @@ fn writable_connections_accept_every_domain_and_signal_commits() {
             Some(DatabaseAccessMode::ReadWrite)
         );
 
-        sqlx::query("INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'User')")
+        sqlx::query("INSERT INTO notes_local_users (id) VALUES ('user-1')")
             .execute(&pool)
             .await
             .expect("every device writes Notes tables");

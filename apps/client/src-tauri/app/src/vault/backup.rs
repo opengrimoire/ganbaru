@@ -14,7 +14,6 @@ use ganbaru_sync_replica::backup::{
     BACKUP_MAX_ENTRIES, DIFFERENT_VAULT_ERROR, is_bundle_layout_entry, is_database_sidecar,
 };
 pub(super) use ganbaru_sync_replica::backup::{SkippedEntries, extract_backup_archive};
-use sqlx::Row;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Runtime;
@@ -92,36 +91,7 @@ pub(crate) async fn stage_handoff_archive(
 
 pub(crate) async fn validate_restored_vault(path: &Path) -> Result<VaultInfo, String> {
     let info = vault_info_from_path(path)?;
-    let restored_database = database_path(path);
-    let metadata = fs::metadata(&restored_database)
-        .map_err(|error| format!("backup is missing its database: {error}"))?;
-    if !metadata.is_file() || metadata.len() == 0 {
-        return Err("backup database is empty".to_string());
-    }
-    let registry = ganbaru_db::DatabasePoolRegistry::default();
-    let pool = registry.connect_path_read_only(&restored_database).await?;
-    let validation = async {
-        // The catalog check runs first so that integrity checking never reaches virtual table
-        // modules, such as FTS5, that the restored file defines or reshapes.
-        ganbaru_db::validate_current_schema(&pool).await?;
-        let row = sqlx::query("PRAGMA integrity_check")
-            .fetch_one(&pool)
-            .await
-            .map_err(|error| format!("check restored database: {error}"))?;
-        let result: String = row
-            .try_get(0)
-            .map_err(|error| format!("read restored database check: {error}"))?;
-        if result != "ok" {
-            return Err(format!(
-                "restored database failed its integrity check: {result}"
-            ));
-        }
-        Ok(())
-    }
-    .await;
-    let close_result = registry.close_all().await;
-    validation?;
-    close_result?;
+    ganbaru_sync_replica::backup::validate_vault_database(&database_path(path)).await?;
     Ok(info)
 }
 

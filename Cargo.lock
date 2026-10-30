@@ -2182,10 +2182,16 @@ name = "ganbaru-sync-relay"
 version = "0.1.0"
 dependencies = [
  "ganbaru-atomic-files",
+ "ganbaru-contacts",
+ "ganbaru-db",
  "ganbaru-handoff",
+ "ganbaru-sync",
  "ganbaru-sync-contracts",
+ "ganbaru-sync-replica",
  "rcgen",
  "rustls",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "tokio",

@@ -7,7 +7,10 @@
 //! shared by the whole space for one epoch.
 //!
 //! The wire contract lives in `ganbaru_handoff::protocol::relay` so devices share it.
+//!
+//! In [`anchor`] mode the same binary instead runs a headless enrolled replica of one vault.
 
+pub mod anchor;
 pub mod config;
 pub mod identity;
 pub mod limits;
@@ -69,7 +72,7 @@ pub async fn setup(config: SetupConfig) -> Result<String, String> {
     setup::describe(&issued?, &identity)
 }
 
-/// File in the data directory that a serving relay holds an exclusive lock on.
+/// File in the data directory that a serving relay or anchor holds an exclusive lock on.
 pub const SERVE_LOCK_FILE: &str = "relay.lock";
 
 /// An exclusive lock on a data directory, released when dropped.
@@ -78,7 +81,7 @@ pub struct DataDirLock {
     _file: std::fs::File,
 }
 
-/// Takes the exclusive serve lock of `data_dir`, or explains that a relay holds it already.
+/// Takes the exclusive serve lock of `data_dir`, or explains that a server holds it already.
 pub fn lock_data_dir(data_dir: &Path) -> Result<DataDirLock, String> {
     let path = data_dir.join(SERVE_LOCK_FILE);
     let file = std::fs::OpenOptions::new()
@@ -90,7 +93,7 @@ pub fn lock_data_dir(data_dir: &Path) -> Result<DataDirLock, String> {
     match file.try_lock() {
         Ok(()) => Ok(DataDirLock { _file: file }),
         Err(std::fs::TryLockError::WouldBlock) => Err(format!(
-            "a relay is serving from {}; stop it first",
+            "a server is running from {}; stop it first",
             data_dir.display()
         )),
         Err(std::fs::TryLockError::Error(error)) => {

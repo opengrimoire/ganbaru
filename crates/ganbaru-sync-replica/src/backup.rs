@@ -9,6 +9,7 @@
 //! directory, and the encrypted file is streamed in fixed chunks, so memory stays constant.
 
 mod extract;
+pub mod seal_keys;
 
 pub use extract::{
     DIFFERENT_VAULT_ERROR, MAX_VAULT_MANIFEST_BYTES, SkippedEntries, VAULT_APP_MARKER,
@@ -141,6 +142,33 @@ pub async fn create_backup_archive(
     let _gate = gate.lock().await;
     vacuum_database(pool, database_snapshot).await?;
     write_archive(vault_root, database_snapshot, destination)
+}
+
+/// Checks an extracted vault database against the current schema and for damage, then closes it.
+pub async fn validate_vault_database(database: &Path) -> Result<(), String> {
+    let metadata =
+        fs::metadata(database).map_err(|error| format!("vault has no database: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err("vault database is empty".to_string());
+    }
+    let registry = DatabasePoolRegistry::default();
+    let pool = registry.connect_path_read_only(database).await?;
+    let validation = async {
+        // The catalog check runs first so that integrity checking never reaches virtual table
+        // modules, such as FTS5, that the file defines or reshapes.
+        ganbaru_db::validate_current_schema(&pool).await?;
+        let (result,): (String,) = sqlx::query_as("PRAGMA integrity_check")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| format!("check vault database: {error}"))?;
+        if result != "ok" {
+            return Err(format!("vault database failed its integrity check: {result}"));
+        }
+        Ok(())
+    }
+    .await;
+    let closed = registry.close_all().await;
+    validation.and(closed)
 }
 
 /// Archives the vault at `vault_root` to `archive_path` as the snapshot another installation

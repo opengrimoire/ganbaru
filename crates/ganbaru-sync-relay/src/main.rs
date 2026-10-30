@@ -40,6 +40,13 @@ fn main() -> ExitCode {
             Command::RevokeSetup(config) => ganbaru_sync_relay::revoke_setup(config)
                 .await
                 .map(|text| print!("{text}")),
+            Command::Anchor(config) => ganbaru_sync_relay::anchor::run(config).await,
+            Command::AnchorSetup(config) => {
+                ganbaru_sync_relay::anchor::setup(&config).map(|text| print!("{text}"))
+            }
+            Command::AnchorBackup(config) => ganbaru_sync_relay::anchor::backup(config)
+                .await
+                .map(|text| print!("{text}")),
             Command::Help => Ok(()),
         }
     });

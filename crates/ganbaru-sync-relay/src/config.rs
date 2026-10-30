@@ -24,13 +24,19 @@ usage:
   ganbaru-sync-relay spaces --data-dir <path>
   ganbaru-sync-relay remove-space --data-dir <path> --space <space id>
   ganbaru-sync-relay revoke-setup --data-dir <path> [--code <setup code>]
+  ganbaru-sync-relay anchor --data-dir <path> [--listen <address:port>]
+  ganbaru-sync-relay anchor setup --data-dir <path> --endpoint <host:port> [--endpoint <host:port> ...]
+  ganbaru-sync-relay anchor backup --data-dir <path> --out <file>
   ganbaru-sync-relay help
 
 serve         runs the relay. The quota applies to each space.
 setup         prints a one-time setup code that lets one device claim a space on this relay.
 spaces        lists the claimed spaces with their epoch and stored bytes.
 remove-space  deletes a space and everything stored for it. Stop the relay first.
-revoke-setup  revokes one unused setup code, or every unused one when --code is omitted.";
+revoke-setup  revokes one unused setup code, or every unused one when --code is omitted.
+anchor        runs an always-on replica of one vault in a data directory of its own.
+anchor setup  prints a fresh one-time secret that lets one desktop enroll, or recover through, this server.
+anchor backup writes an encrypted backup that opens with the recovery kit. Stop the anchor first.";
 
 /// Settings of the `serve` subcommand.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,9 +76,42 @@ pub struct RevokeSetupConfig {
     pub token: Option<RelaySetupToken>,
 }
 
+/// Settings of the `anchor` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchorConfig {
+    /// Directory holding the replica, its keys, and its identity.
+    pub data_dir: PathBuf,
+    /// Address the anchor listens on.
+    pub listen: SocketAddr,
+}
+
+/// Settings of the `anchor setup` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchorSetupConfig {
+    /// Directory of the anchor.
+    pub data_dir: PathBuf,
+    /// Addresses devices use to reach the anchor, as `host:port`.
+    pub endpoints: Vec<String>,
+}
+
+/// Settings of the `anchor backup` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnchorBackupConfig {
+    /// Directory of the anchor.
+    pub data_dir: PathBuf,
+    /// File the backup is written to.
+    pub out: PathBuf,
+}
+
 /// A parsed command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Runs an anchor.
+    Anchor(AnchorConfig),
+    /// Prints an anchor setup code.
+    AnchorSetup(AnchorSetupConfig),
+    /// Writes an encrypted backup of an anchor's vault.
+    AnchorBackup(AnchorBackupConfig),
     /// Runs the relay.
     Serve(ServeConfig),
     /// Prints a setup code.
@@ -97,10 +136,25 @@ pub fn parse<I>(arguments: I) -> Result<Command, String>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut arguments = arguments.into_iter();
+    let mut arguments = arguments.into_iter().peekable();
     let Some(subcommand) = arguments.next() else {
         return Ok(Command::Help);
     };
+    if subcommand == "anchor" {
+        let action = arguments.next_if(|word| !word.starts_with("--"));
+        let flags = parse_flags(arguments)?;
+        return match action.as_deref() {
+            None => parse_anchor(flags).map(Command::Anchor),
+            Some("setup") => parse_setup(flags)
+                .map(|setup| AnchorSetupConfig {
+                    data_dir: setup.data_dir,
+                    endpoints: setup.endpoints,
+                })
+                .map(Command::AnchorSetup),
+            Some("backup") => parse_anchor_backup(flags).map(Command::AnchorBackup),
+            Some(other) => Err(format!("unknown anchor action {other:?}")),
+        };
+    }
     let flags = parse_flags(arguments)?;
     match subcommand.as_str() {
         "serve" => parse_serve(flags).map(Command::Serve),
@@ -163,17 +217,40 @@ fn parse_count(name: &str, value: &str) -> Result<u64, String> {
         .map_err(|_| format!("{name} must be a whole number"))
 }
 
+fn parse_listen(flags: &[(String, String)]) -> Result<SocketAddr, String> {
+    match single(flags, "--listen")? {
+        Some(value) => value
+            .parse::<SocketAddr>()
+            .map_err(|_| "--listen must be an address and port, such as 0.0.0.0:43823".to_string()),
+        None => Ok(default_listen()),
+    }
+}
+
+fn parse_anchor(flags: Vec<(String, String)>) -> Result<AnchorConfig, String> {
+    reject_unknown(&flags, &["--data-dir", "--listen"])?;
+    Ok(AnchorConfig {
+        data_dir: data_dir(&flags)?,
+        listen: parse_listen(&flags)?,
+    })
+}
+
+fn parse_anchor_backup(flags: Vec<(String, String)>) -> Result<AnchorBackupConfig, String> {
+    reject_unknown(&flags, &["--data-dir", "--out"])?;
+    match single(&flags, "--out")? {
+        Some(out) if !out.is_empty() => Ok(AnchorBackupConfig {
+            data_dir: data_dir(&flags)?,
+            out: PathBuf::from(out),
+        }),
+        _ => Err("--out is required".to_string()),
+    }
+}
+
 fn parse_serve(flags: Vec<(String, String)>) -> Result<ServeConfig, String> {
     reject_unknown(
         &flags,
         &["--data-dir", "--listen", "--quota-mib", "--max-age-days"],
     )?;
-    let listen = match single(&flags, "--listen")? {
-        Some(value) => value.parse::<SocketAddr>().map_err(|_| {
-            "--listen must be an address and port, such as 0.0.0.0:43823".to_string()
-        })?,
-        None => default_listen(),
-    };
+    let listen = parse_listen(&flags)?;
     let quota_bytes = match single(&flags, "--quota-mib")? {
         Some(value) => parse_count("--quota-mib", &value)?
             .checked_mul(MIB)
@@ -358,6 +435,29 @@ mod tests {
             " --endpoint a.example:1".repeat(MAX_SERVER_ENDPOINTS + 1)
         );
         assert!(parse(args(&many)).is_err());
+    }
+
+    #[test]
+    fn anchor_actions_parse_their_own_flags() {
+        let Command::Anchor(config) = parse(args("anchor --data-dir d")).unwrap() else {
+            panic!("expected anchor");
+        };
+        assert_eq!(config.listen, default_listen());
+        assert!(matches!(
+            parse(args("anchor setup --data-dir d --endpoint a.example:1")).unwrap(),
+            Command::AnchorSetup(_)
+        ));
+        let Command::AnchorBackup(config) =
+            parse(args("anchor backup --data-dir d --out f.ganbaru-backup")).unwrap()
+        else {
+            panic!("expected anchor backup");
+        };
+        assert_eq!(config.out, PathBuf::from("f.ganbaru-backup"));
+        assert!(parse(args("anchor")).is_err());
+        assert!(parse(args("anchor setup --data-dir d")).is_err());
+        assert!(parse(args("anchor backup --data-dir d")).is_err());
+        assert!(parse(args("anchor restore --data-dir d")).is_err());
+        assert!(parse(args("anchor --data-dir d --quota-mib 100")).is_err());
     }
 
     #[test]

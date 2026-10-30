@@ -61,3 +61,4 @@ pub use relay::{
     RelayRecord, RelayRecordHeader, relay_asset_chunk_count, seal_relay_asset,
 };
 pub use signing::{Digest32, WriterKeyError, WriterKeyPair, WriterPublicKey};
+pub use vector::VersionVector;

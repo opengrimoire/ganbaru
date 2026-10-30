@@ -1709,6 +1709,216 @@ fn fork_evidence_travels_between_members_through_the_hub() {
     });
 }
 
+/// A hub, the phone that owns a forked writer, and a tablet, all holding one branch of that
+/// writer through a sequence past the fork, with both operations at the fork in hand.
+struct ForkedVault {
+    hub: Replica,
+    phone: Replica,
+    tablet: Replica,
+    transport: DirectTransport,
+    writer: WriterId,
+    fork_seq: u64,
+    pair: [Vec<u8>; 2],
+}
+
+impl ForkedVault {
+    async fn new(name: &str) -> Self {
+        let mut hub_replica = Replica::new(&format!("hub-{name}"), HUB_DEVICE).await;
+        let mut phone = Replica::new(&format!("phone-{name}"), PHONE_DEVICE).await;
+        let mut tablet = Replica::new(&format!("tablet-{name}"), TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        phone.seal_note("note-shared").await;
+
+        let phone_path = phone.directory.path().join("vault.sqlite");
+        drop(phone.pool);
+        phone.registry.close_all().await.expect("close phone");
+        let clone_directory = TestDirectory::new(&format!("phone-{name}-clone"));
+        let clone_path = clone_directory.path().join("vault.sqlite");
+        copy_database(&phone_path, &clone_path);
+        phone.pool = phone
+            .registry
+            .connect_path(&phone_path)
+            .await
+            .expect("reopen phone");
+        let clone_registry = DatabasePoolRegistry::default();
+        let clone_pool = clone_registry
+            .connect_path(&clone_path)
+            .await
+            .expect("open clone");
+        let fork_seq = phone.seal_note("note-a").await;
+        let mut clone_conn = acquire(&clone_pool).await;
+        add_note(&mut clone_conn, "note-b").await;
+        Engine::vault()
+            .seal(
+                &mut clone_conn,
+                &phone.ctx,
+                &mut phone.writer.local(),
+                NOW_MS,
+            )
+            .await
+            .expect("seal clone");
+        let writer = phone.writer.id();
+        let first = Engine::vault()
+            .operation_at(
+                &mut *acquire(&phone.pool).await,
+                &phone.ctx,
+                writer,
+                fork_seq,
+            )
+            .await
+            .expect("read operation")
+            .expect("phone operation");
+        let second = Engine::vault()
+            .operation_at(&mut clone_conn, &phone.ctx, writer, fork_seq)
+            .await
+            .expect("read operation")
+            .expect("clone operation");
+        drop(clone_conn);
+        clone_pool.close().await;
+        clone_registry.close_all().await.expect("close clone");
+
+        phone.seal_note("note-c").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.apply().await;
+        phone.apply().await;
+        tablet.apply().await;
+        Self {
+            hub: hub_replica,
+            phone,
+            tablet,
+            transport,
+            writer,
+            fork_seq,
+            pair: [first, second],
+        }
+    }
+
+    /// Offers the pair to `replica`, as evidence arriving from a peer.
+    async fn offer(&self, replica: &Replica) -> EvidenceOutcome {
+        Engine::vault()
+            .store_fork_evidence(
+                &mut *acquire(&replica.pool).await,
+                &replica.ctx,
+                &self.pair[0],
+                &self.pair[1],
+                NOW_MS,
+            )
+            .await
+            .expect("store evidence")
+    }
+
+    async fn forked(&self, replica: &Replica) -> Vec<(WriterId, u64)> {
+        Engine::vault()
+            .forked_writers(&mut *acquire(&replica.pool).await, &replica.ctx)
+            .await
+            .expect("forked writers")
+    }
+
+    async fn close(self) {
+        self.hub.close().await;
+        self.phone.close().await;
+        self.tablet.close().await;
+    }
+}
+
+#[test]
+fn evidence_the_compacted_hub_refuses_sends_its_holder_to_a_fresh_copy() {
+    block_on(async {
+        let mut vault = ForkedVault::new("compacted-hub").await;
+        assert!(vault.hub.compact().await > 0);
+        assert_eq!(
+            vault.offer(&vault.tablet).await,
+            EvidenceOutcome::Stored,
+            "the tablet still holds both bodies"
+        );
+
+        let offered = done(
+            vault
+                .tablet
+                .exchange(&vault.transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(offered.problem, None);
+        assert!(vault.forked(&vault.hub).await.is_empty());
+
+        vault.tablet.apply().await;
+        let cut = done(
+            vault
+                .tablet
+                .exchange(&vault.transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(cut.problem, None);
+        assert!(cut.bootstrap_required);
+        assert_eq!(cut.pulled, 0);
+        vault.hub.apply().await;
+        assert!(vault.hub.has_note("note-a").await);
+        vault.close().await;
+    });
+}
+
+#[test]
+fn a_member_that_compacted_past_the_hubs_cut_takes_a_fresh_copy() {
+    block_on(async {
+        let mut vault = ForkedVault::new("compacted-member").await;
+        assert!(vault.tablet.compact().await > 0);
+        assert_eq!(vault.offer(&vault.hub).await, EvidenceOutcome::Stored);
+        vault.hub.apply().await;
+
+        let exchanged = done(
+            vault
+                .tablet
+                .exchange(&vault.transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(exchanged.bootstrap_required);
+        assert_eq!(exchanged.problem, None);
+        assert!(vault.forked(&vault.tablet).await.is_empty());
+        vault.tablet.apply().await;
+        assert!(vault.tablet.has_note("note-a").await);
+        vault.close().await;
+    });
+}
+
+#[test]
+fn a_writers_device_that_compacted_past_the_hubs_cut_takes_a_fresh_copy() {
+    block_on(async {
+        let mut vault = ForkedVault::new("compacted-own").await;
+        assert!(vault.phone.compact().await > 0);
+        assert_eq!(vault.offer(&vault.hub).await, EvidenceOutcome::Stored);
+        vault.hub.apply().await;
+        assert_eq!(
+            vault.forked(&vault.hub).await,
+            vec![(vault.writer, vault.fork_seq)]
+        );
+
+        let exchanged = done(
+            vault
+                .phone
+                .exchange(&vault.transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(exchanged.bootstrap_required);
+        assert!(vault.forked(&vault.phone).await.is_empty());
+        vault.close().await;
+    });
+}
+
 /// The hub of a member listener on `replica`: it serves exchanges but sequences no proposal and
 /// forwards none, and it reports the anchor's remembered contact.
 fn member_hub(replica: &Replica) -> DirectTransport {

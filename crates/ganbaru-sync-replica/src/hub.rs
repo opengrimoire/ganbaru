@@ -18,7 +18,8 @@ use ganbaru_handoff::protocol::{
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
 use ganbaru_sync::{
-    Engine, EvidenceOutcome, SpaceContext, StoreOutcome, StoreRefusal, SyncError, local,
+    Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal, SyncError,
+    local,
 };
 use ganbaru_sync_contracts::{
     Digest32, Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
@@ -892,7 +893,10 @@ impl HubSession {
                 .map_err(failed)?;
             match outcome {
                 EvidenceOutcome::Stored => stored = true,
-                EvidenceOutcome::Known => {}
+                // The compacted branch stands here. A member that cut it falls behind the
+                // compacted vector and its next `SyncState` asks for a fresh copy.
+                EvidenceOutcome::Known
+                | EvidenceOutcome::Refused(EvidenceRefusal::InsideCompactedRange) => {}
                 EvidenceOutcome::Refused(refusal) => {
                     return Err(invalid(format!(
                         "the fork evidence is refused: {refusal:?}"

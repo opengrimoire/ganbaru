@@ -29,7 +29,7 @@ use ganbaru_sync_contracts::{
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::log::{self, seq_i64, stored_u64};
+use crate::log::{self, WriterState, seq_i64, stored_u64};
 use crate::merge::table_param;
 use crate::{Engine, SpaceContext};
 
@@ -211,10 +211,14 @@ async fn lanes(
 ) -> SyncResult<Vec<Lane>> {
     let mut lanes = Vec::new();
     for writer in log::writers(conn, space).await? {
-        let through = limit
+        let mut through = limit
             .get(&writer.id)
             .min(writer.applied)
             .min(writer.stored.saturating_sub(1));
+        // Bodies past a recorded fork stay until its exclusion has settled.
+        if writer.state == WriterState::Forked {
+            through = through.min(writer.cutoff.unwrap_or(0));
+        }
         if through > writer.compacted {
             lanes.push(Lane {
                 writer: writer.id,

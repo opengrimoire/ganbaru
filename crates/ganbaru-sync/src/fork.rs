@@ -317,10 +317,11 @@ async fn store_evidence(
 }
 
 /// Settles fork evidence stored since the last engine write, inside one: both branches of every
-/// forked writer of another device are excluded, which removes the merge effects of its applied
-/// operations past the shared prefix, restores the versions they superseded, and drops the
-/// operations, as if this replica had never stored them. The chain is then selected again, since
-/// the dropped operations may carry entries and a fork of an anchor's writer freezes its epoch.
+/// forked writer are excluded, except a branch its own device applied, which stays for re-seal.
+/// Exclusion removes the merge effects of the applied operations past the shared prefix, restores
+/// the versions they superseded, and drops the operations, as if this replica had never stored
+/// them. The chain is then selected again, since the dropped operations may carry entries and a
+/// fork of an anchor's writer freezes its epoch.
 pub(crate) async fn reconcile(
     engine: &Engine,
     conn: &mut SqliteConnection,

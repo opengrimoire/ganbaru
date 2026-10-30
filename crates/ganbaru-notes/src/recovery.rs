@@ -745,9 +745,13 @@ fn remap_mention_text(text: &str, restored: &HashMap<&str, &str>) -> Option<Stri
 /// Replaces mention ids in place and returns whether any changed.
 fn remap_mention_value(value: &mut serde_json::Value, restored: &HashMap<&str, &str>) -> bool {
     match value {
-        serde_json::Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
-            remap_mention_value(item, restored) || changed
-        }),
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= remap_mention_value(item, restored);
+            }
+            changed
+        }
         serde_json::Value::Object(object) => {
             let mut changed = false;
             if object.get("type").and_then(serde_json::Value::as_str) == Some("mention")

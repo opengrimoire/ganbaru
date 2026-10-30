@@ -262,7 +262,9 @@
         >
           {#if switching}
             <LoaderCircle size={17} strokeWidth={2} class="animate-spin" aria-hidden="true" />
-            {t("vaultOwnershipPrompt.switching")}
+            {status?.replicaReady === false
+              ? t("vaultOwnershipPrompt.copying")
+              : t("vaultOwnershipPrompt.switching")}
           {:else}
             {platform === "desktop"
               ? `${primaryLabel} (${t("common.enterKey")})`

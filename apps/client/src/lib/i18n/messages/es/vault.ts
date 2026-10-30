@@ -82,6 +82,7 @@ export const vaultOwnershipPrompt = {
   ownerRequiredDescription: "Este cambio también afecta datos que solo el dispositivo principal puede cambiar. Usa este dispositivo como principal para hacerlo.",
   continueReadOnly: "Continuar en solo lectura",
   switching: "Cambiando a este dispositivo...",
+  copying: "Copiando la bóveda a este dispositivo...",
   replacementTitle: "¿Copiar la bóveda vinculada a este dispositivo?",
   replacementAndroid:
     "La bóveda vinculada reemplaza la bóveda de este teléfono, cuyos datos no se pueden combinar con ella. Ganbaru guarda una copia de la bóveda reemplazada en este teléfono, que puedes exportar o eliminar en Ajustes > Datos.",

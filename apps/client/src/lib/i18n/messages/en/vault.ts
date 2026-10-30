@@ -72,6 +72,7 @@ export const vaultOwnershipPrompt = {
   ownerRequiredDescription: "This change also affects data that only the main device can change. Use this device as the main device to make it.",
   continueReadOnly: "Continue in read-only",
   switching: "Switching to this device...",
+  copying: "Copying the vault to this device...",
   replacementTitle: "Copy the linked vault to this device?",
   replacementAndroid:
     "The linked vault replaces this phone's vault, whose data cannot be merged with it. Ganbaru keeps a backup of the replaced vault on this phone, which you can export or delete in Settings > Data.",

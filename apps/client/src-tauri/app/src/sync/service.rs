@@ -54,8 +54,8 @@ use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
 use ganbaru_sync_replica::records::{FreeSpace, RecordExchange, RecordLink};
 use ganbaru_sync_replica::relay::{
-    METERED_MAX_ASSET_BYTES, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession, RelayTarget,
-    UNMETERED_MAX_ASSET_BYTES,
+    METERED_MAX_ASSET_BYTES, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession,
+    RelayTarget, UNMETERED_MAX_ASSET_BYTES,
 };
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
@@ -1899,7 +1899,9 @@ impl ServiceState {
             .writer
             .as_ref()
             .and_then(ActiveWriter::space_keys)
-            .ok_or_else(|| RelayError::new(RelayProblem::NoKeys, "this device holds no space keys yet"))?;
+            .ok_or_else(|| {
+                RelayError::new(RelayProblem::NoKeys, "this device holds no space keys yet")
+            })?;
         let keys = session.keys.clone();
         let vault_id = session.host.active_vault_id()?;
         let admin_vault = vault_id.clone();

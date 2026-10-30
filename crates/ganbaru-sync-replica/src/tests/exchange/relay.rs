@@ -15,8 +15,7 @@ use crate::keys::SpaceKeys;
 use crate::outbox::Outbox;
 use crate::relay::{
     Connection, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession, RelayTarget,
-    UNMETERED_MAX_ASSET_BYTES,
-    claim_space,
+    UNMETERED_MAX_ASSET_BYTES, claim_space,
 };
 use crate::tests::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note};
 use ganbaru_handoff::dial::LoopbackPolicy;
@@ -213,7 +212,11 @@ impl Keyed {
             .expect("relay pass")
     }
 
-    async fn try_pass(&self, relay: &TestRelay, max_asset_bytes: u32) -> Result<RelayPass, RelayError> {
+    async fn try_pass(
+        &self,
+        relay: &TestRelay,
+        max_asset_bytes: u32,
+    ) -> Result<RelayPass, RelayError> {
         let admin = self.replica.device_id == HUB_DEVICE;
         self.pass_as(relay, admin, MAX_EXCHANGE_BYTES, max_asset_bytes)
             .await
@@ -951,6 +954,7 @@ fn a_loopback_relay_is_refused_when_loopback_dialing_is_off() {
         )
         .await
         .expect_err("loopback is refused");
-        assert!(error.contains("not allowed"), "{error}");
+        assert_eq!(error.problem, RelayProblem::Unreachable, "{error}");
+        assert!(error.detail.contains("not allowed"), "{error}");
     });
 }

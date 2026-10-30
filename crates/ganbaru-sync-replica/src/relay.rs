@@ -17,9 +17,8 @@ use ganbaru_handoff::protocol::relay::{
     RELAY_EXPORTER_BYTES, RELAY_EXPORTER_LABEL, RELAY_PAGE_BYTES, RELAY_PROTOCOL_VERSION,
     RELAY_WAIT_TIMEOUT, RelayAdminAction, RelayAdminCommand, RelayAssetOutcome, RelayBinding,
     RelayPushOutcome, RelayRefusalCode, RelayRequest, RelayResponse, RelaySetupToken,
-    RelayWriterRange,
-    decode_relay_admin_key, decode_relay_asset, decode_relay_bytes, encode_relay_asset,
-    encode_relay_bytes,
+    RelayWriterRange, decode_relay_admin_key, decode_relay_asset, decode_relay_bytes,
+    encode_relay_asset, encode_relay_bytes,
 };
 use ganbaru_handoff::protocol::{MAX_CONTROL_BYTES, SyncSeq, read_frame, write_frame};
 use ganbaru_sync::assets::AssetRef;
@@ -365,9 +364,12 @@ impl RelaySession<'_> {
                         continue;
                     }
                     pass.epoch = epoch;
-                    pass.note(RelayProblem::EpochAhead, format!(
-                        "the relay is at epoch {current}, which this device cannot open yet"
-                    ));
+                    pass.note(
+                        RelayProblem::EpochAhead,
+                        format!(
+                            "the relay is at epoch {current}, which this device cannot open yet"
+                        ),
+                    );
                     return Ok(pass);
                 }
                 Authenticated::UnknownEpoch => {
@@ -380,10 +382,13 @@ impl RelaySession<'_> {
                 }
                 Authenticated::KeyMismatch => {
                     if !self.is_live_admin().await? {
-                        return Err(RelayError::new(RelayProblem::AccessRefused, format!(
-                            "the relay holds another access key for epoch {epoch}; an admin \
+                        return Err(RelayError::new(
+                            RelayProblem::AccessRefused,
+                            format!(
+                                "the relay holds another access key for epoch {epoch}; an admin \
                              device repairs it on its next pass"
-                        )));
+                            ),
+                        ));
                     }
                     self.repair(target, &keys, epoch, &mut pass).await?;
                 }
@@ -488,7 +493,11 @@ impl RelaySession<'_> {
     /// against the stored verified envelope set. Only the anchor's device and writer keys make
     /// one that authenticates, so a record that does means this device lags behind a real
     /// rotation and repairing would roll the relay back below it.
-    async fn repairs_squat(&self, connection: &mut Connection, held: u32) -> Result<bool, RelayError> {
+    async fn repairs_squat(
+        &self,
+        connection: &mut Connection,
+        held: u32,
+    ) -> Result<bool, RelayError> {
         if !self.is_live_admin().await? || self.view().await?.key_epoch > held {
             return Ok(false);
         }
@@ -548,7 +557,12 @@ impl RelaySession<'_> {
         compacted: &VersionVector,
     ) -> Result<u64, RelayError> {
         let stored = self.stored().await?;
-        Ok(undelivered_count(self.own_writers, &stored, reached, compacted))
+        Ok(undelivered_count(
+            self.own_writers,
+            &stored,
+            reached,
+            compacted,
+        ))
     }
 
     /// Connects and authenticates at `epoch` on a fresh connection.
@@ -724,11 +738,14 @@ impl RelaySession<'_> {
             if stalled || cursor.get(&envelope.writer) >= envelope.seq || !page.more {
                 let delivered = connection.ranges().await?.get(&envelope.writer) >= envelope.seq;
                 if !delivered {
-                    pass.note(RelayProblem::RelayBehind, format!(
-                        "the relay does not hold the records before epoch {next}, so this \
+                    pass.note(
+                        RelayProblem::RelayBehind,
+                        format!(
+                            "the relay does not hold the records before epoch {next}, so this \
                          device does not register it; members still at epoch {epoch} wait for \
                          a direct connection"
-                    ));
+                        ),
+                    );
                 }
                 return Ok(delivered);
             }
@@ -741,7 +758,9 @@ impl RelaySession<'_> {
             .key_epoch_entry(&mut conn, self.ctx, epoch)
             .await
             .map_err(|error| format!("read key epoch record: {error}"))?
-            .ok_or_else(|| RelayError::from(format!("this device holds no record of key epoch {epoch}")))
+            .ok_or_else(|| {
+                RelayError::from(format!("this device holds no record of key epoch {epoch}"))
+            })
     }
 
     /// Registers `next` with its access key and the record that introduced it, on a connection
@@ -854,9 +873,10 @@ impl RelaySession<'_> {
                     .await
             };
             if let Err(error) = admitted {
-                pass.note(RelayProblem::RecordRefused, format!(
-                    "this device refused a relay key epoch record: {error}"
-                ));
+                pass.note(
+                    RelayProblem::RecordRefused,
+                    format!("this device refused a relay key epoch record: {error}"),
+                );
             }
             if !more {
                 return Ok(());
@@ -891,7 +911,10 @@ impl RelaySession<'_> {
         };
         for key in wanted.difference(&held) {
             if held.len() + 1 > MAX_RELAY_ADMIN_KEYS {
-                pass.note(RelayProblem::AdminSetFull, "the relay's admin set is full".to_string());
+                pass.note(
+                    RelayProblem::AdminSetFull,
+                    "the relay's admin set is full".to_string(),
+                );
                 break;
             }
             counter = connection
@@ -1103,7 +1126,8 @@ impl RelaySession<'_> {
             };
             if !behind_floor.is_empty() {
                 trimmed = true;
-                pass.note(RelayProblem::Trimmed, 
+                pass.note(
+                    RelayProblem::Trimmed,
                     "the relay trimmed operations this device lacks; link directly with a \
                      device that holds them"
                         .to_string(),
@@ -1119,7 +1143,10 @@ impl RelaySession<'_> {
                 match keys.open_record(&bytes) {
                     Ok(record) => opened.push((record.operation, record.certificate)),
                     Err(error) => {
-                        pass.note(RelayProblem::RecordRefused, format!("this device refused a relay record: {error}"));
+                        pass.note(
+                            RelayProblem::RecordRefused,
+                            format!("this device refused a relay record: {error}"),
+                        );
                         return Ok(false);
                     }
                 }
@@ -1157,19 +1184,22 @@ impl RelaySession<'_> {
                         } else {
                             RelayProblem::RecordRefused
                         };
-                        pass.note(problem, if own {
-                            format!(
-                                "the relay holds a fork of this device's writer {}; link \
+                        pass.note(
+                            problem,
+                            if own {
+                                format!(
+                                    "the relay holds a fork of this device's writer {}; link \
                                  directly so the device can re-seal it",
-                                writer.to_hex()
-                            )
-                        } else {
-                            format!(
-                                "this device refused a relay operation of writer {}: \
+                                    writer.to_hex()
+                                )
+                            } else {
+                                format!(
+                                    "this device refused a relay operation of writer {}: \
                                  {refusal:?}",
-                                writer.to_hex()
-                            )
-                        });
+                                    writer.to_hex()
+                                )
+                            },
+                        );
                         return Ok(false);
                     }
                 }
@@ -1180,7 +1210,10 @@ impl RelaySession<'_> {
             let mut reached = self.stored().await?;
             reached.merge(&skipped);
             if known.dominates(&reached) {
-                pass.note(RelayProblem::NoProgress, "the relay sent no new operations".to_string());
+                pass.note(
+                    RelayProblem::NoProgress,
+                    "the relay sent no new operations".to_string(),
+                );
                 return Ok(false);
             }
             if moved >= self.limits.max_bytes {
@@ -1266,11 +1299,14 @@ impl RelaySession<'_> {
             {
                 Ok(true) => pass.uploaded += 1,
                 Ok(false) => {}
-                Err(message) => pass.note(RelayProblem::AssetRefused, format!(
-                    "the relay refused {} asset {}: {message}",
-                    asset.class().name,
-                    asset.sha256()
-                )),
+                Err(message) => pass.note(
+                    RelayProblem::AssetRefused,
+                    format!(
+                        "the relay refused {} asset {}: {message}",
+                        asset.class().name,
+                        asset.sha256()
+                    ),
+                ),
             }
         }
         Ok(())
@@ -1365,11 +1401,14 @@ impl RelaySession<'_> {
             {
                 Ok(true) => pass.downloaded += 1,
                 Ok(false) => {}
-                Err(message) => pass.note(RelayProblem::AssetRefused, format!(
-                    "this device refused {} asset {} from the relay: {message}",
-                    asset.class().name,
-                    asset.sha256()
-                )),
+                Err(message) => pass.note(
+                    RelayProblem::AssetRefused,
+                    format!(
+                        "this device refused {} asset {} from the relay: {message}",
+                        asset.class().name,
+                        asset.sha256()
+                    ),
+                ),
             }
         }
         Ok(())
@@ -1481,7 +1520,8 @@ fn keys_space(keys: &RelayKeys) -> SpaceId {
 }
 
 fn sha256_of(asset: &AssetRef) -> Result<[u8; 32], RelayError> {
-    parse_hex::<32>(asset.sha256()).ok_or_else(|| RelayError::from("an asset reference is malformed".to_string()))
+    parse_hex::<32>(asset.sha256())
+        .ok_or_else(|| RelayError::from("an asset reference is malformed".to_string()))
 }
 
 fn relay_asset_id(keys: &RelayKeys, asset: &AssetRef) -> Result<RelayAssetId, RelayError> {
@@ -1542,7 +1582,9 @@ fn relay_ranges(writers: &[RelayWriterRange]) -> Result<VersionVector, RelayErro
     Ok(ranges)
 }
 
-async fn acquire(pool: &SqlitePool) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, RelayError> {
+async fn acquire(
+    pool: &SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, RelayError> {
     pool.acquire()
         .await
         .map_err(|error| format!("acquire sync connection: {error}").into())
@@ -1629,7 +1671,12 @@ impl Connection {
         let timeout = REQUEST_TIMEOUT.max(RELAY_WAIT_TIMEOUT * 2);
         tokio::time::timeout(timeout, exchange)
             .await
-            .map_err(|_| RelayError::new(RelayProblem::Unreachable, "the relay did not answer in time"))?
+            .map_err(|_| {
+                RelayError::new(
+                    RelayProblem::Unreachable,
+                    "the relay did not answer in time",
+                )
+            })?
             .map_err(|error| RelayError::new(RelayProblem::Unreachable, error))
     }
 
@@ -1670,7 +1717,10 @@ impl Connection {
                 other => return Err(unexpected("AdminApplied", &other)),
             }
         }
-        Err(RelayError::new(RelayProblem::AdminRefused, "the relay kept refusing the admin counter"))
+        Err(RelayError::new(
+            RelayProblem::AdminRefused,
+            "the relay kept refusing the admin counter",
+        ))
     }
 
     fn admin_request(

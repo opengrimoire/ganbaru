@@ -69,7 +69,7 @@ export const sync = {
     saved: (count: number) =>
       `${count} ${count === 1 ? "change is" : "changes are"} saved on this device and not on the relay yet`,
     receivedByRelay: (count: number) =>
-      `${count} ${count === 1 ? "change was" : "changes were"} received by the relay and wait for the anchor to confirm ${count === 1 ? "it" : "them"}`,
+      `${count} ${count === 1 ? "change was" : "changes were"} received by the relay and ${count === 1 ? "waits" : "wait"} for the anchor to confirm ${count === 1 ? "it" : "them"}`,
     confirmed: "Every change from this device is confirmed",
   },
   server: {

@@ -3,7 +3,7 @@
 //! relay API; the server configuration entry runs through the service as an authority action.
 
 use ganbaru_handoff::protocol::relay::RELAY_PROTOCOL_VERSION;
-use ganbaru_sync::{Engine, local};
+use ganbaru_sync::local;
 use ganbaru_sync_contracts::ServerMode;
 use ganbaru_sync_contracts::ids::hex;
 use ganbaru_sync_replica::relay::{RelayError, RelayProblem, RelayTarget, probe};
@@ -20,6 +20,8 @@ use super::commands::run_authority;
 use super::service::{AuthorityAction, SyncRuntime, blocking};
 #[cfg(desktop)]
 use ganbaru_handoff::protocol::relay::{RELAY_SETUP_TEXT_PREFIX, RelaySetupCode};
+#[cfg(desktop)]
+use ganbaru_sync::Engine;
 #[cfg(desktop)]
 use ganbaru_sync_contracts::{AdminKeyPair, Server, SpaceId};
 #[cfg(desktop)]
@@ -39,6 +41,13 @@ const SETUP_CODE_PREFIX: &str = "ganbaru-";
 /// in the log.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "code", rename_all = "camelCase")]
+#[cfg_attr(
+    mobile,
+    allow(
+        dead_code,
+        reason = "Android only reads the server; the add and remove failures are desktop paths"
+    )
+)]
 pub enum SyncServerError {
     /// The user did not confirm that the server cryptography has had no external review.
     Unacknowledged,
@@ -145,6 +154,7 @@ pub struct SyncServerView {
 
 /// What removing the server did at the relay: the configuration removal always waits for the
 /// anchor, while the relay space removal is best effort.
+#[cfg(desktop)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncServerRemoval {
@@ -214,8 +224,13 @@ async fn admin_context<R: Runtime>(
 /// A connection to the active vault's database with its sync space.
 async fn space_connection<R: Runtime>(
     app: &AppHandle<R>,
-) -> Result<(sqlx::pool::PoolConnection<sqlx::Sqlite>, ganbaru_sync::SpaceContext), SyncServerError>
-{
+) -> Result<
+    (
+        sqlx::pool::PoolConnection<sqlx::Sqlite>,
+        ganbaru_sync::SpaceContext,
+    ),
+    SyncServerError,
+> {
     let pool = crate::db::connect_active_vault_for_sync(app).await?;
     let vault_id = app.active_vault_id()?;
     let mut conn = pool

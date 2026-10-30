@@ -170,6 +170,11 @@ export function canResolveSyncLateChanges(context: SyncAuthorityContext): boolea
   return adminHere(context);
 }
 
+/** Whether this admin desktop may add or remove the vault's server. */
+export function canManageSyncServer(context: SyncAuthorityContext): boolean {
+  return adminHere(context);
+}
+
 /** Whether this device may show, save, and replace the recovery kit. */
 export function canManageSyncRecoveryKit(context: SyncAuthorityContext): boolean {
   return adminHere(context);

@@ -101,6 +101,7 @@ fn stability_counts_a_writerless_member_as_holding_nothing() {
         assert!(result.stable.is_empty());
         assert_eq!(result.devices[2].acknowledged, VersionVector::new());
         assert_eq!(result.devices[2].last_stored_ms, None);
+        assert_eq!(result.devices[2].acknowledged_at_ms, None);
     });
 }
 
@@ -128,6 +129,7 @@ fn stability_ignores_a_dormant_device_until_it_returns() {
         let result = stability(&mut hub, &devices).await;
         assert_eq!(result.devices[2].standing, DeviceStanding::Counted);
         assert_eq!(result.devices[2].last_stored_ms, Some(hub.now_ms));
+        assert_eq!(result.devices[2].acknowledged_at_ms, Some(hub.now_ms));
         assert_eq!(result.stable, template_vector(&person()));
 
         // Devices whose newest operation is older than the limit are dormant too.

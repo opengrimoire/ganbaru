@@ -55,6 +55,8 @@ pub enum AuthorityAction {
     Object(Digest32),
     /// Propose enrolling an anchor server as an admin and naming it in the server configuration.
     EnrollServer(ServerEnrollment),
+    /// Propose the vault's server configuration: the server devices reach, or none.
+    SetServer(Option<Server>),
 }
 
 /// What an admin device learned from a server that proved its setup conversation.
@@ -145,6 +147,10 @@ impl std::fmt::Debug for AuthorityAction {
             Self::EnrollServer(enrollment) => formatter
                 .debug_tuple("EnrollServer")
                 .field(&enrollment.device_id)
+                .finish(),
+            Self::SetServer(server) => formatter
+                .debug_tuple("SetServer")
+                .field(&server.as_ref().map(|server| server.mode))
                 .finish(),
         }
     }
@@ -422,6 +428,13 @@ impl<H: SyncHost> Session<'_, H> {
             }
             AuthorityAction::Yield(_) | AuthorityAction::Object(_) => {
                 Err("a contest record runs with the sync writer".to_string())
+            }
+            AuthorityAction::SetServer(server) => {
+                let entry = Entry::ServerConfig(ServerConfig {
+                    server: server.clone(),
+                });
+                self.queue_proposal(&admin, entry).await?;
+                Ok(AuthorityAnswer::Proposed)
             }
             AuthorityAction::Remove(device_id) => {
                 if *device_id == admin.device_id {

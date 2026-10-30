@@ -448,6 +448,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_quarantine_device,
             crate::sync::commands::sync_quarantine_lift,
             crate::sync::commands::sync_authority,
+            crate::sync::server::sync_server_status,
             crate::sync::commands::sync_contests,
             crate::sync::commands::sync_records_resume,
             crate::sync::commands::sync_outbox_list,

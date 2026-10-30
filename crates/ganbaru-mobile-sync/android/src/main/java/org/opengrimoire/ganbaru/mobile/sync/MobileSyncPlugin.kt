@@ -38,9 +38,9 @@ internal class ConfigureArgs {
 
 /**
  * Schedules background sync through WorkManager: a periodic pass while linked, a one-time pass
- * when the default network changes or the app leaves the foreground with changes waiting, and a
- * periodic relay pass on any connected network while the sync space uses a relay. Work is never
- * run as a foreground service.
+ * when the default network changes or the app leaves the foreground with changes waiting, and
+ * the same periodic and one-time relay passes on any connected network while the sync space uses
+ * a relay. Work is never run as a foreground service.
  */
 @TauriPlugin
 class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
@@ -50,6 +50,9 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Volatile
   private var linked = preferences.read().linked
+
+  @Volatile
+  private var relay = preferences.read().let { RelayScheduling.shouldRun(it.relay, it.configDir) }
 
   @Volatile
   private var pending = false
@@ -66,8 +69,9 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
     val callback = object : ConnectivityManager.NetworkCallback() {
       override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
         val addresses = linkProperties.linkAddresses.map { it.toString() }.toSet()
-        if (observations.observe(network.networkHandle, addresses) && linked) {
-          enqueueOneTime(expedited = false)
+        if (observations.observe(network.networkHandle, addresses)) {
+          if (linked) enqueueOneTime(expedited = false)
+          if (relay) enqueueRelayNow(expedited = false)
         }
       }
 
@@ -85,6 +89,7 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
 
   override fun onStop() {
     if (linked && pending) enqueueOneTime(expedited = true)
+    if (relay && pending) enqueueRelayNow(expedited = true)
   }
 
   override fun onDestroy() {
@@ -107,8 +112,9 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
     preferences.write(SyncSettings(args.linked, args.relay, args.configDir))
     linked = args.linked
     pending = args.pending
+    relay = RelayScheduling.shouldRun(args.relay, args.configDir)
     val work = WorkManager.getInstance(context)
-    if (RelayScheduling.shouldRun(args.relay, args.configDir)) {
+    if (relay) {
       val request = PeriodicWorkRequestBuilder<RelayWorker>(
         RelayScheduling.PERIODIC_INTERVAL_MINUTES,
         TimeUnit.MINUTES,
@@ -116,6 +122,7 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
       work.enqueueUniquePeriodicWork(RelayScheduling.PERIODIC_WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
     } else {
       work.cancelUniqueWork(RelayScheduling.PERIODIC_WORK)
+      work.cancelUniqueWork(RelayScheduling.ONE_TIME_WORK)
     }
     if (args.linked) {
       val request = PeriodicWorkRequestBuilder<SyncWorker>(
@@ -164,6 +171,15 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
     }
     WorkManager.getInstance(context)
       .enqueueUniqueWork(SyncScheduling.ONE_TIME_WORK, ExistingWorkPolicy.KEEP, builder.build())
+  }
+
+  private fun enqueueRelayNow(expedited: Boolean) {
+    val builder = OneTimeWorkRequestBuilder<RelayWorker>().setConstraints(relayConstraints())
+    if (expedited && SyncScheduling.oneTimeRequest(Build.VERSION.SDK_INT) == OneTimeRequest.EXPEDITED) {
+      builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+    }
+    WorkManager.getInstance(context)
+      .enqueueUniqueWork(RelayScheduling.ONE_TIME_WORK, ExistingWorkPolicy.KEEP, builder.build())
   }
 
   private companion object {

@@ -1,6 +1,7 @@
 //! The sync status a device reports: its state, role, counts, connection, and degraded reasons,
 //! in the wire names the frontend reads.
 
+pub use crate::relay::RelayProblem;
 use ganbaru_handoff::dial::{DialAddressClass, validate_dial_endpoint};
 use ganbaru_sync::stability::{DeviceAcknowledgement, DeviceStanding};
 use ganbaru_sync::{ClockWarning, DeviceNames, DeviceRef, SyncStatus};
@@ -105,6 +106,16 @@ pub struct UncountedDevice {
     pub standing: DeviceStandingView,
 }
 
+/// When the coordinator last stored an acknowledgement from a linked device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceAcknowledgementView {
+    pub device: DeviceRef,
+    /// When the operation the device last acknowledged with was stored, in Unix milliseconds,
+    /// `None` when it has acknowledged nothing yet.
+    pub last_acknowledged_at_ms: Option<u64>,
+}
+
 /// The kind of network a linked device reached its coordinator over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -150,42 +161,68 @@ pub struct RelayDeliveryView {
     pub sent: usize,
     /// Sealed records the pass received from the relay.
     pub received: usize,
-    /// Operations of this installation's writers the relay does not hold yet.
-    pub undelivered: u64,
+    /// Operations of this installation's writers the relay does not hold yet. `None` when the
+    /// pass ended before the relay reported what it holds, so delivery is unknown.
+    pub undelivered: Option<u64>,
     pub uploaded_files: usize,
     pub downloaded_files: usize,
     /// Files left for a later pass on a metered network.
     pub deferred_files: usize,
+    /// The relay's stored bytes and quota as it last reported them.
     pub stored_bytes: u64,
     pub quota_bytes: u64,
+    /// When the relay last answered this device, in Unix milliseconds, `None` when it has not
+    /// answered during this app run.
+    pub last_contact_at_ms: Option<u64>,
     /// Why the pass stopped early or what the relay needs from an administrator.
-    pub problem: Option<String>,
+    pub problem: Option<RelayProblem>,
 }
 
 impl RelayDeliveryView {
-    /// The counts of `pass`, finished at `now_ms`.
-    pub fn of(pass: &crate::relay::RelayPass, now_ms: u64) -> Self {
+    /// The counts of `pass`, finished at `now_ms`, when the relay answered. A pass that stopped
+    /// before the relay reported its state keeps the storage figures of `previous`.
+    pub fn of(pass: &crate::relay::RelayPass, now_ms: u64, previous: Option<&Self>) -> Self {
+        let (stored_bytes, quota_bytes) = if pass.undelivered.is_some() {
+            (pass.stored_bytes, pass.quota_bytes)
+        } else {
+            Self::storage_of(previous)
+        };
         Self {
             last_pass_at_ms: now_ms,
+            last_contact_at_ms: Some(now_ms),
             sent: pass.pushed,
             received: pass.pulled,
             undelivered: pass.undelivered,
             uploaded_files: pass.uploaded,
             downloaded_files: pass.downloaded,
             deferred_files: pass.deferred_assets,
-            stored_bytes: pass.stored_bytes,
-            quota_bytes: pass.quota_bytes,
-            problem: pass.problem.clone(),
+            stored_bytes,
+            quota_bytes,
+            problem: pass.problem,
         }
     }
 
-    /// A pass that could not reach or use the relay at `now_ms`.
-    pub fn failed(problem: String, now_ms: u64) -> Self {
+    /// A pass that could not reach or use the relay at `now_ms`, which knows nothing about
+    /// delivery. The last contact moves to `now_ms` when the relay answered with the refusal,
+    /// and otherwise stays the one of `previous`, like the storage figures.
+    pub fn failed(problem: RelayProblem, now_ms: u64, previous: Option<&Self>) -> Self {
+        let (stored_bytes, quota_bytes) = Self::storage_of(previous);
         Self {
             last_pass_at_ms: now_ms,
+            last_contact_at_ms: if problem.relay_answered() {
+                Some(now_ms)
+            } else {
+                previous.and_then(|view| view.last_contact_at_ms)
+            },
+            stored_bytes,
+            quota_bytes,
             problem: Some(problem),
             ..Self::default()
         }
+    }
+
+    fn storage_of(previous: Option<&Self>) -> (u64, u64) {
+        previous.map_or((0, 0), |view| (view.stored_bytes, view.quota_bytes))
     }
 }
 
@@ -263,6 +300,9 @@ pub struct SyncStatusView {
     /// On the coordinator, linked devices it does not count toward stability, in device id
     /// order.
     pub uncounted_devices: Vec<UncountedDevice>,
+    /// On the coordinator, the last acknowledgement of every other linked device, in device id
+    /// order.
+    pub device_acknowledgements: Vec<DeviceAcknowledgementView>,
     /// How a linked device last reached its coordinator in this app run. It stays after a
     /// failed dial, so the interface pairs it with `state`.
     pub connection: Option<SyncConnectionView>,
@@ -289,8 +329,23 @@ impl SyncStatusView {
         self.displaced_versions = status.displaced;
     }
 
-    /// Names the linked devices the coordinator does not count, with why, in device id order.
+    /// Reports when each linked device last acknowledged, and names the ones the coordinator
+    /// does not count, with why, both in device id order.
     pub fn set_device_standings(&mut self, devices: &[DeviceAcknowledgement], names: &DeviceNames) {
+        let mut acknowledgements: Vec<(&str, Option<u64>)> = devices
+            .iter()
+            .map(|device| (device.device_id.as_str(), device.acknowledged_at_ms))
+            .collect();
+        acknowledgements.sort();
+        self.device_acknowledgements = acknowledgements
+            .into_iter()
+            .map(
+                |(device_id, last_acknowledged_at_ms)| DeviceAcknowledgementView {
+                    device: names.describe(device_id),
+                    last_acknowledged_at_ms,
+                },
+            )
+            .collect();
         let mut uncounted: Vec<(&str, DeviceStandingView)> = devices
             .iter()
             .filter_map(|device| {
@@ -393,6 +448,7 @@ mod tests {
         let device = |device_id: &str, standing| DeviceAcknowledgement {
             device_id: device_id.to_string(),
             acknowledged: ganbaru_sync_contracts::VersionVector::new(),
+            acknowledged_at_ms: (device_id == "laptop").then_some(700),
             last_stored_ms: None,
             standing,
         };
@@ -415,6 +471,17 @@ mod tests {
         assert_eq!(uncounted[0]["standing"], "dormant");
         assert_eq!(uncounted[0]["device"]["deviceLabel"], "Old phone");
         assert_eq!(uncounted[1]["standing"], "relinkRequired");
+        let acknowledgements = wire["deviceAcknowledgements"]
+            .as_array()
+            .expect("device acknowledgements");
+        assert_eq!(acknowledgements.len(), 3);
+        assert_eq!(acknowledgements[0]["device"]["deviceId"], "laptop");
+        assert_eq!(acknowledgements[0]["lastAcknowledgedAtMs"], 700);
+        assert_eq!(acknowledgements[1]["device"]["deviceLabel"], "Old phone");
+        assert_eq!(
+            acknowledgements[1]["lastAcknowledgedAtMs"],
+            serde_json::Value::Null
+        );
         assert_eq!(
             serde_json::to_value(SyncErrorCode::BootstrapRequired).expect("serialize code"),
             "bootstrapRequired"
@@ -468,7 +535,7 @@ mod tests {
         let pass = crate::relay::RelayPass {
             pushed: 4,
             pulled: 2,
-            undelivered: 1,
+            undelivered: Some(1),
             uploaded: 1,
             deferred_assets: 3,
             stored_bytes: 4_096,
@@ -476,7 +543,7 @@ mod tests {
             ..Default::default()
         };
         let view = SyncStatusView {
-            relay: Some(RelayDeliveryView::of(&pass, 900)),
+            relay: Some(RelayDeliveryView::of(&pass, 900, None)),
             ..SyncStatusView::default()
         };
         let wire = serde_json::to_value(&view).expect("serialize status");
@@ -492,12 +559,37 @@ mod tests {
                 "deferredFiles": 3,
                 "storedBytes": 4_096,
                 "quotaBytes": 1_048_576,
+                "lastContactAtMs": 900,
                 "problem": null,
             })
         );
-        let failed = RelayDeliveryView::failed("relay unreachable".to_string(), 7);
-        assert_eq!(failed.problem.as_deref(), Some("relay unreachable"));
+        let previous = RelayDeliveryView {
+            last_contact_at_ms: Some(3),
+            ..RelayDeliveryView::of(&pass, 3, None)
+        };
+        let failed = RelayDeliveryView::failed(RelayProblem::Unreachable, 7, Some(&previous));
+        assert_eq!(failed.problem, Some(RelayProblem::Unreachable));
         assert_eq!((failed.sent, failed.last_pass_at_ms), (0, 7));
+        assert_eq!(failed.last_contact_at_ms, Some(3));
+        assert_eq!(failed.undelivered, None);
+        assert_eq!(
+            (failed.stored_bytes, failed.quota_bytes),
+            (4_096, 1_048_576)
+        );
+        let wire = serde_json::to_value(&failed).expect("serialize relay");
+        assert_eq!(wire["problem"], "unreachable");
+        assert_eq!(wire["undelivered"], serde_json::Value::Null);
+        let refused = RelayDeliveryView::failed(RelayProblem::AccessRefused, 9, Some(&previous));
+        assert_eq!(refused.last_contact_at_ms, Some(9));
+        let wire = serde_json::to_value(&refused).expect("serialize relay");
+        assert_eq!(wire["problem"], "accessRefused");
+        let stopped =
+            RelayDeliveryView::of(&crate::relay::RelayPass::default(), 11, Some(&previous));
+        assert_eq!(stopped.undelivered, None);
+        assert_eq!(
+            (stopped.stored_bytes, stopped.quota_bytes),
+            (4_096, 1_048_576)
+        );
         let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
         assert_eq!(empty["relay"], serde_json::Value::Null);
     }

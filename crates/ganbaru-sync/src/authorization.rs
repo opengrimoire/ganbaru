@@ -824,8 +824,8 @@ impl AuthState {
     }
 }
 
-/// One entry of the selected chain, with the stored record envelope of lowest hash that carries
-/// it.
+/// One entry of the selected chain, with the first stored record envelope that carries it in
+/// carrier order: below its writer's horizon, then lowest hash.
 #[derive(Debug, Clone)]
 struct SelectedEntry {
     revision: u64,

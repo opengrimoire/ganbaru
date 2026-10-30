@@ -238,7 +238,7 @@ async fn load_outbox<R: Runtime>(app: &AppHandle<R>) -> Result<Outbox, String> {
 
 /// Whether this desktop's admin key is the one the log names for it.
 #[cfg(desktop)]
-async fn own_is_admin<R: Runtime>(
+pub(super) async fn own_is_admin<R: Runtime>(
     app: &AppHandle<R>,
     vault_id: &str,
     view: &AuthorizationView,
@@ -260,7 +260,7 @@ async fn own_is_admin<R: Runtime>(
 
 /// Mobile devices are never admins.
 #[cfg(mobile)]
-async fn own_is_admin<R: Runtime>(
+pub(super) async fn own_is_admin<R: Runtime>(
     _app: &AppHandle<R>,
     _vault_id: &str,
     _view: &AuthorizationView,

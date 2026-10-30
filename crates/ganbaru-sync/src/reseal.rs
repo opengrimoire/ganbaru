@@ -41,14 +41,16 @@ async fn replaced_ops(
     ctx: &SpaceContext,
     old: WriterId,
     keep_through: Seq,
+    applied: Seq,
 ) -> SyncResult<Vec<Replaced>> {
     let rows = sqlx::query(
         "SELECT seq, envelope, context, state FROM sync_ops
-         WHERE space_id = ? AND writer_id = ? AND seq > ? ORDER BY seq",
+         WHERE space_id = ? AND writer_id = ? AND seq > ? AND seq <= ? ORDER BY seq",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(old.as_bytes().as_slice())
     .bind(seq_i64(keep_through)?)
+    .bind(seq_i64(applied)?)
     .fetch_all(&mut *conn)
     .await?;
     rows.iter()
@@ -181,7 +183,9 @@ impl Engine {
     /// copies past it, so replaced operations may have left this replica and been seen by other
     /// writers: their operations stay, and only lose the effects of what they saw. Authorization
     /// entries past the kept sequence are dropped, not sealed again, since a fork of the anchor
-    /// freezes its epoch and only a handover continues the log.
+    /// freezes its epoch and only a handover continues the log. With evidence stored, operations
+    /// this installation stored but never applied are dropped too: they stop at the fork's cutoff
+    /// and never apply, so only the applied part of the branch is sealed again.
     ///
     /// Each installation that holds a copy of the forked chain re-seals its own copy this way;
     /// an installation destroyed before it does loses its copy, which no other replica keeps.
@@ -205,15 +209,15 @@ impl Engine {
         let Some(row) = log::writer(&mut tx, ctx.space, old).await? else {
             return Err(SyncError::InvalidReseal("the old writer is unknown"));
         };
-        if row.stored != row.applied {
+        let prefixes = fork::shared_prefixes(&mut tx, ctx.space).await?;
+        let proven = prefixes.get(&old).copied();
+        if row.stored != row.applied && proven.is_none() {
             return Err(SyncError::InvalidReseal(
                 "the old writer has operations that are not applied",
             ));
         }
-        let prefixes = fork::shared_prefixes(&mut tx, ctx.space).await?;
-        let proven = prefixes.get(&old).copied();
         let keep_through = proven.map_or(keep_through, |proven| keep_through.min(proven));
-        if (keep_through < 1 && proven != Some(0)) || keep_through > row.stored {
+        if (keep_through < 1 && proven != Some(0)) || keep_through > row.applied {
             return Err(SyncError::InvalidReseal(
                 "the kept sequence is outside the old chain",
             ));
@@ -227,10 +231,11 @@ impl Engine {
         }
         sql::begin_engine_write(&mut tx).await?;
         let mut batch = Batch::load(&mut tx, ctx.space).await?;
-        let replaced = replaced_ops(&mut tx, ctx, old, keep_through).await?;
-        let dropped_entries = replaced
-            .iter()
-            .any(|op| matches!(op.operation.content, Content::Authorization(_)));
+        let replaced = replaced_ops(&mut tx, ctx, old, keep_through, row.applied).await?;
+        let dropped_entries = row.stored > row.applied
+            || replaced
+                .iter()
+                .any(|op| matches!(op.operation.content, Content::Authorization(_)));
         remove_effects(&mut tx, &mut batch, old, keep_through).await?;
         fork::drop_branch(&mut tx, ctx.space, old, keep_through, row.applied).await?;
         batch.applied.set(old, keep_through);

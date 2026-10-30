@@ -6,11 +6,13 @@
 //! Peers exchange under partitions, crashes at failpoints, and anchor outages, while admins
 //! remove members that keep editing, remove each other, race handovers, hand the anchor over as
 //! planned or after its loss, restore the anchor from a backup, clone it, quarantine members,
-//! and resolve late changes. Admin proposals wait in a harness outbox until the selected chain
-//! holds them or the anchor finally rejects them. Quarantine is device-local and modelled in the
-//! harness: a quarantining installation neither stores nor forwards the writers of the device,
-//! and a quarantining admin proposes its removal. A restored anchor rotates its writer, pulls from
-//! its peers, and signs a self-handover when its head stays behind the revision it had recorded.
+//! and resolve late changes. Admin proposals wait in a harness outbox that follows the replica
+//! outbox: a proposal stays until a later epoch holds it or the anchor finally rejects it, and
+//! waits again when its entry leaves the selected chain. Quarantine is device-local and modelled
+//! in the harness: a quarantining installation neither stores nor forwards the writers of the
+//! device, and a quarantining admin proposes its removal. A restored anchor rotates its writer,
+//! pulls from its peers, and signs a self-handover when its head stays behind the revision it had
+//! recorded.
 //! At quiescence every installation still enrolled holds the same rows, conflicts, recovery
 //! entries, late changes, and authorization state.
 //!
@@ -47,6 +49,10 @@ const ADMINS: [usize; 2] = [0, 1];
 const PAGE_OPS: usize = 24;
 /// Rounds a quiescence may take before the run fails.
 const QUIESCE_ROUNDS: usize = 48;
+/// Wanted keys one record request names.
+const RECORD_PAGE: usize = 256;
+/// Record requests one exchange direction makes at most; each closes at least one parent.
+const RECORD_ROUNDS: usize = 64;
 /// Actions kept for the reproduction a failing run prints.
 const TRACE: usize = 24;
 
@@ -62,11 +68,15 @@ struct NodeState {
     quarantined: BTreeSet<String>,
 }
 
-/// An admin proposal waiting until the selected chain holds it or the anchor rejects it.
+/// An admin proposal kept until a later epoch of the author's selected chain holds it or the
+/// anchor rejects it.
 struct Pending {
     author: usize,
     signed: SignedProposal,
     what: &'static str,
+    /// Epoch of the selected entry that holds the proposal on the author's chain; a held
+    /// proposal is not sent again.
+    held: Option<u32>,
 }
 
 /// A copy of an installation's database taken earlier, restored later.
@@ -110,10 +120,6 @@ fn note(action: String) {
         }
         context.2.push(action);
     });
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Both installations of a pair of distinct node ids.
@@ -175,15 +181,15 @@ async fn carriers(replica: &mut Replica) -> BTreeSet<WriterId> {
     .collect()
 }
 
-/// Whether the selected chain of `replica` holds `signed`.
-async fn holds(replica: &mut Replica, signed: &SignedProposal) -> bool {
-    replica
-        .count(&format!(
-            "SELECT count(*) FROM sync_auth_selected WHERE proposal_hash = x'{}'",
-            hex(signed.hash().as_slice())
-        ))
+/// Where the outbox of `replica` keeps `signed`: the epoch of the selected entry that holds it,
+/// if one does, and the epoch of the selected chain.
+async fn held_at(replica: &mut Replica, signed: &SignedProposal) -> (Option<u32>, u32) {
+    let position = replica
+        .engine
+        .proposal_position(&mut replica.conn, &replica.ctx, &signed.hash())
         .await
-        > 0
+        .unwrap();
+    (position.map(|(epoch, _)| epoch), view(replica).await.epoch)
 }
 
 /// Whether `replica` is the anchor of its own selected chain.
@@ -249,6 +255,59 @@ async fn forward(
     }
     acknowledge(rng, to).await;
     stored || learned
+}
+
+/// Closes the record ancestry `to` lacks from what `from` stores, the way the replica's record
+/// exchange fetches its wanted set: entry hashes and writer certificates `to` wants, answered by
+/// `from`, until nothing more arrives. A forked writer's records past its fork reach other
+/// replicas only this way, since operation vectors stop at the fork. Draws nothing from the
+/// simulation's random source. Returns whether `to` stored anything new.
+async fn fetch_wanted_records(from: &mut Replica, to: &mut Replica) -> bool {
+    let mut stored = false;
+    for _ in 0..RECORD_ROUNDS {
+        let wants = to
+            .engine
+            .record_wants(&mut to.conn, &to.ctx, RECORD_PAGE, &BTreeSet::new())
+            .await
+            .unwrap();
+        if wants.is_empty() {
+            break;
+        }
+        let mut found = from
+            .engine
+            .records_by_hash(
+                &mut from.conn,
+                &from.ctx,
+                &wants.hashes,
+                usize::MAX,
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+        found.extend(
+            from.engine
+                .certificates_of(
+                    &mut from.conn,
+                    &from.ctx,
+                    &wants.writers,
+                    usize::MAX,
+                    usize::MAX,
+                )
+                .await
+                .unwrap(),
+        );
+        let envelopes: Vec<Vec<u8>> = found.into_iter().map(|envelope| envelope.bytes).collect();
+        let admission = to
+            .engine
+            .admit_records(&mut to.conn, &to.ctx, &envelopes, to.now_ms)
+            .await
+            .unwrap();
+        if admission.admitted == 0 {
+            break;
+        }
+        stored = true;
+    }
+    stored
 }
 
 /// Hash of `writer`'s operation at `seq` on `replica`.
@@ -512,6 +571,14 @@ impl PeerSim {
         let probed = probe_forks(x, y).await;
         let mut changed = forward(rng, x, y, &skipped, reliable).await;
         changed |= forward(rng, y, x, &skipped, reliable).await;
+        if fetch_wanted_records(x, y).await {
+            apply_all(rng, y).await;
+            changed = true;
+        }
+        if fetch_wanted_records(y, x).await {
+            apply_all(rng, x).await;
+            changed = true;
+        }
         if probed {
             apply_all(rng, x).await;
             apply_all(rng, y).await;
@@ -553,7 +620,7 @@ impl PeerSim {
         let mut sequenced = false;
         let mut index = 0;
         while index < self.outbox.len() {
-            if !authors.contains(&self.outbox[index].author) {
+            if !authors.contains(&self.outbox[index].author) || self.outbox[index].held.is_some() {
                 index += 1;
                 continue;
             }
@@ -611,16 +678,28 @@ impl PeerSim {
         sequenced
     }
 
-    /// Drops waiting proposals the author's chain holds or whose author left the run.
+    /// Follows each author's selected chain as the replica outbox does: a proposal the chain
+    /// holds is marked held at its entry's epoch and dropped once the chain is in a later epoch
+    /// that still holds it, and waits again when the chain no longer holds it, so an entry a
+    /// fork of the anchor's writer dropped is sequenced again. Proposals of authors that left
+    /// the run are dropped.
     async fn settle_outbox(&mut self) {
         let mut index = 0;
         while index < self.outbox.len() {
             let author = self.outbox[index].author;
-            let signed = self.outbox[index].signed.clone();
-            if self.states[&author].stopped || holds(self.node(author), &signed).await {
+            if self.states[&author].stopped {
                 self.outbox.remove(index);
-            } else {
-                index += 1;
+                continue;
+            }
+            let signed = self.outbox[index].signed.clone();
+            match held_at(self.node(author), &signed).await {
+                (Some(held), epoch) if epoch > held => {
+                    self.outbox.remove(index);
+                }
+                (held, _) => {
+                    self.outbox[index].held = held;
+                    index += 1;
+                }
             }
         }
     }
@@ -634,6 +713,7 @@ impl PeerSim {
             author,
             signed,
             what,
+            held: None,
         });
         note(format!("{} proposed {what}", node_name(author)));
         if is_anchor(self.node(author)).await {
@@ -1322,7 +1402,7 @@ impl PeerSim {
             self.settle_outbox().await;
             let expected_vector = self.node(anchor).stored_vector().await;
             let expected_head = head(self.node(anchor)).await;
-            let mut same = self.outbox.is_empty();
+            let mut same = self.outbox.iter().all(|pending| pending.held.is_some());
             for node in self.members(anchor).await {
                 let replica = self.node(node);
                 let status = replica
@@ -1359,6 +1439,7 @@ impl PeerSim {
         let waiting: Vec<String> = self
             .outbox
             .iter()
+            .filter(|pending| pending.held.is_none())
             .map(|pending| format!("{} by node {}", pending.what, pending.author))
             .collect();
         panic!(

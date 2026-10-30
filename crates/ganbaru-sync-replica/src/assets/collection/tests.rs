@@ -120,10 +120,14 @@ impl Vault {
             .connect("sqlite::memory:")
             .await
             .expect("pool");
-        sqlx::raw_sql("CREATE TABLE pins (id TEXT PRIMARY KEY, asset_id TEXT)")
-            .execute(&pool)
-            .await
-            .expect("schema");
+        sqlx::raw_sql(
+            "CREATE TABLE pins (id TEXT PRIMARY KEY, asset_id TEXT);
+             CREATE TABLE sync_late_changes (table_id INTEGER, groups BLOB, resolution TEXT);
+             CREATE TABLE sync_displaced_versions (table_id INTEGER, group_id INTEGER, value BLOB);",
+        )
+        .execute(&pool)
+        .await
+        .expect("schema");
         let digest: String = Sha256::digest(b"pinned")
             .iter()
             .map(|byte| format!("{byte:02x}"))

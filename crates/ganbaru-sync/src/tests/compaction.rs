@@ -9,7 +9,9 @@ use super::block_on;
 use super::replica::{Replica, converge};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
-use crate::{COMPACTION_BATCH_OPS, SyncError, compaction_limit, merge};
+use crate::{
+    COMPACTION_BATCH_OPS, EvidenceOutcome, EvidenceRefusal, SyncError, compaction_limit, merge,
+};
 
 /// Kinds of operations as stored.
 const CHANGES: i64 = 0;
@@ -646,5 +648,142 @@ fn compaction_of_a_full_batch_reports_its_time_and_freed_bytes() {
             freed / i64::try_from(report.compacted).unwrap()
         );
         server.check_compacted().await;
+    });
+}
+
+/// A writer's installation, `hub`, and a member that all hold the writer's chain, with `hub`
+/// compacted below its head. A clone resumed from before the last three operations sealed
+/// another one at the first of them, which reached only the member: it holds both bodies and
+/// stores the pair as fork evidence. Returns the installation, the member, and the writer.
+async fn fork_inside_compacted_range(hub: &mut Replica, salt: u64) -> (Replica, Replica, WriterId) {
+    let mut original = Replica::new(1, salt).await;
+    let mut member = Replica::new(2, salt).await;
+    note(&mut original, "note-1", "One").await;
+    retitle(&mut original, "note-1", "Two").await;
+    retitle(&mut original, "note-1", "Three").await;
+    let mut clone = original.clone_device().await;
+    let writer = original.writer();
+    retitle(&mut original, "note-1", "Four").await;
+    retitle(&mut original, "note-1", "Five").await;
+    retitle(&mut original, "note-1", "Six").await;
+    hub.pull(&mut original).await;
+    member.pull(&mut original).await;
+    let limit = all_of_writer(hub, writer).await;
+    hub.compact(&limit, COMPACTION_BATCH_OPS).await.unwrap();
+    let known = clone.stored_vector().await;
+    assert!(known.get(&writer) < compacted_seq(hub, writer).await);
+
+    retitle(&mut clone, "note-1", "Clone").await;
+    let twin = clone.ops_since(&known).await;
+    member.receive(&twin).await;
+    assert_eq!(member.evidence().await.len(), 1);
+    (original, member, writer)
+}
+
+const INSIDE_COMPACTED: EvidenceOutcome =
+    EvidenceOutcome::Refused(EvidenceRefusal::InsideCompactedRange);
+
+/// Asserts that `replica` keeps the whole chain of `writer` and its value, as a replica that
+/// never saw the fork does.
+async fn assert_chain_stands(replica: &mut Replica, writer: WriterId, stored: u64) {
+    assert!(replica.evidence().await.is_empty());
+    assert_eq!(replica.stored_vector().await.get(&writer), stored);
+    assert!(compacted_seq(replica, writer).await < stored);
+    assert_eq!(
+        replica
+            .scalar_text("SELECT title FROM quick_notes WHERE id = 'note-1'")
+            .await
+            .as_deref(),
+        Some("Six")
+    );
+    replica.check_compacted().await;
+}
+
+#[test]
+fn evidence_inside_the_compacted_range_leaves_the_anchor_applying() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 41).await;
+        let (_, mut member, writer) = fork_inside_compacted_range(&mut anchor, 41).await;
+        let stored = anchor.stored_vector().await.get(&writer);
+
+        assert_eq!(
+            anchor.take_evidence(&mut member).await,
+            vec![INSIDE_COMPACTED]
+        );
+        anchor.apply_once().await.unwrap();
+        assert_chain_stands(&mut anchor, writer, stored).await;
+    });
+}
+
+#[test]
+fn evidence_inside_the_compacted_range_leaves_a_non_anchor_hub_whole() {
+    block_on(async {
+        let mut hub = Replica::new(0, 42).await;
+        let (_, mut member, writer) = fork_inside_compacted_range(&mut hub, 42).await;
+        let stored = hub.stored_vector().await.get(&writer);
+
+        assert_eq!(hub.take_evidence(&mut member).await, vec![INSIDE_COMPACTED]);
+        hub.apply_once().await.unwrap();
+        assert_chain_stands(&mut hub, writer, stored).await;
+    });
+}
+
+#[test]
+fn evidence_inside_the_compacted_range_leaves_nothing_for_the_writers_device_to_reseal() {
+    block_on(async {
+        let mut hub = Replica::new(0, 43).await;
+        let (mut original, mut member, writer) = fork_inside_compacted_range(&mut hub, 43).await;
+        let stored = original.stored_vector().await.get(&writer);
+        let stable = hub.stored_vector().await;
+        let own = BTreeSet::from([writer]);
+        let limit = compaction_limit(&stable, &own, Some((writer, stored)));
+        original
+            .compact(&limit, COMPACTION_BATCH_OPS)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            original.take_evidence(&mut member).await,
+            vec![INSIDE_COMPACTED]
+        );
+        original.apply_once().await.unwrap();
+        let forks = original
+            .engine
+            .own_forks(&mut original.conn, &original.ctx)
+            .await
+            .unwrap();
+        assert!(forks.is_empty(), "{forks:?}");
+        assert_chain_stands(&mut original, writer, stored).await;
+    });
+}
+
+#[test]
+fn compaction_stops_at_a_recorded_fork_until_it_settles() {
+    block_on(async {
+        let mut original = Replica::new(1, 44).await;
+        let mut member = Replica::new(2, 44).await;
+        note(&mut original, "note-1", "One").await;
+        let mut clone = original.clone_device().await;
+        let writer = original.writer();
+        let known = clone.stored_vector().await;
+        retitle(&mut original, "note-1", "Two").await;
+        retitle(&mut original, "note-1", "Three").await;
+        retitle(&mut original, "note-1", "Four").await;
+        member.pull(&mut original).await;
+        retitle(&mut clone, "note-1", "Clone").await;
+        let twin = clone.ops_since(&known).await;
+        member.receive(&twin).await;
+        assert_eq!(member.evidence().await.len(), 1);
+
+        let limit = all_of_writer(&mut member, writer).await;
+        member.compact(&limit, COMPACTION_BATCH_OPS).await.unwrap();
+        assert!(compacted_seq(&mut member, writer).await <= known.get(&writer));
+
+        member.apply_once().await.unwrap();
+        assert_eq!(
+            member.stored_vector().await.get(&writer),
+            known.get(&writer)
+        );
+        assert_eq!(member.evidence().await.len(), 1);
     });
 }

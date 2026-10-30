@@ -51,8 +51,8 @@ use crate::quarantine::{PullSkips, Quarantine};
 use crate::records::{FreeSpace, RecordExchange, RecordLink};
 use crate::recovery::RecoveryChoice;
 use crate::relay::{
-    METERED_MAX_ASSET_BYTES, RelayLimits, RelayPass, RelaySession, RelayTarget,
-    UNMETERED_MAX_ASSET_BYTES,
+    METERED_MAX_ASSET_BYTES, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession,
+    RelayTarget, UNMETERED_MAX_ASSET_BYTES,
 };
 use crate::reset;
 use crate::serve::MemberAdmissionSource;
@@ -67,7 +67,6 @@ use crate::writer::{
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::pairing::{PairingManager, PinnedCharter};
 use ganbaru_handoff::protocol::SyncRefusalCode;
-use ganbaru_sync::stability::DeviceStanding;
 use ganbaru_sync::{
     ChangeNotice, Engine, SealReport, SpaceContext, SyncError, compaction_limit, hold, local,
 };
@@ -147,17 +146,27 @@ fn relay_asset_bound<H: SyncHost>(host: &H) -> u32 {
 }
 
 /// Records a relay pass outcome in `view`. A failure stays a present relay status, which keeps
-/// the Android relay worker scheduled while the space names a relay.
-fn record_relay_outcome(view: &mut SyncStatusView, outcome: Result<RelayPass, String>) {
+/// the Android relay worker scheduled while the space names a relay. `previous` is the status
+/// of the pass before this one.
+fn record_relay_outcome(
+    view: &mut SyncStatusView,
+    outcome: Result<RelayPass, RelayError>,
+    previous: Option<&RelayDeliveryView>,
+) {
     let (now, clock) = match now_ms() {
         Ok(now) => (now, None),
-        Err(error) => (0, Some(error)),
+        Err(error) => (0, Some(RelayError::from(error))),
     };
     view.relay = Some(match (outcome, clock) {
-        (Ok(pass), None) => RelayDeliveryView::of(&pass, now),
+        (Ok(pass), None) => {
+            if let Some(detail) = &pass.detail {
+                eprintln!("sync relay: {detail}");
+            }
+            RelayDeliveryView::of(&pass, now, previous)
+        }
         (Err(error), _) | (Ok(_), Some(error)) => {
-            eprintln!("sync relay: {error}");
-            RelayDeliveryView::failed(error, now)
+            eprintln!("sync relay: {}", error.detail);
+            RelayDeliveryView::failed(error.problem, now, previous)
         }
     });
 }
@@ -1907,16 +1916,8 @@ impl ServiceState {
             .stability(&mut conn, &session.ctx, &devices, now)
             .await
             .map_err(|error| format!("compute sync stability: {error}"))?;
-        if stability
-            .devices
-            .iter()
-            .all(|device| device.standing == DeviceStanding::Counted)
-        {
-            view.uncounted_devices.clear();
-        } else {
-            let names = devices::read_with(host.device_id()?, manager);
-            view.set_device_standings(&stability.devices, &names);
-        }
+        let names = devices::read_with(local_device_id, manager);
+        view.set_device_standings(&stability.devices, &names);
         Ok(stability.stable)
     }
 
@@ -1970,6 +1971,8 @@ impl ServiceState {
         session: &Session<'_, H>,
         view: &mut SyncStatusView,
     ) -> bool {
+        // `self.view` still holds the status the previous pass published.
+        let previous = self.view.relay.clone();
         let target = match Self::relay_target(session).await {
             Ok(Some(target)) => target,
             Ok(None) => {
@@ -1977,13 +1980,13 @@ impl ServiceState {
                 return false;
             }
             Err(error) => {
-                record_relay_outcome(view, Err(error));
+                record_relay_outcome(view, Err(error.into()), previous.as_ref());
                 return false;
             }
         };
         let outcome = self.run_relay(session, &target).await;
         let more = outcome.as_ref().is_ok_and(|pass| pass.more);
-        record_relay_outcome(view, outcome);
+        record_relay_outcome(view, outcome, previous.as_ref());
         more
     }
 
@@ -2005,12 +2008,14 @@ impl ServiceState {
         &self,
         session: &Session<'_, H>,
         target: &RelayTarget,
-    ) -> Result<RelayPass, String> {
+    ) -> Result<RelayPass, RelayError> {
         let holder = self
             .writer
             .as_ref()
             .and_then(ActiveWriter::space_keys)
-            .ok_or_else(|| "this device holds no space keys yet".to_string())?;
+            .ok_or_else(|| {
+                RelayError::new(RelayProblem::NoKeys, "this device holds no space keys yet")
+            })?;
         let keys = session.keys.clone();
         let vault_id = session.host.active_vault_id()?;
         let admin_vault = vault_id.clone();

@@ -13,8 +13,10 @@
 //! of applied operations past the prefix are removed, the versions they superseded come back
 //! from `sync_displaced_versions`, and the operations are dropped, which leaves the replica as if
 //! it never stored them. Unlike a removal, a fork leaves no late changes. Each installation of
-//! the writer's device keeps its own branch until it re-seals it with a new writer, see
-//! [`Engine::reseal_fork`]; an installation destroyed before that loses its branch.
+//! the writer's device keeps the branch it applied until it re-seals it with a new writer, see
+//! [`Engine::reseal_fork`]; an installation destroyed before that loses its branch. A copy past
+//! the prefix that an installation of the writer's device stored without applying is excluded
+//! as on any other replica.
 //!
 //! The anchor and members whose anchor marks passed a branch retain nothing it displaced, so
 //! excluding it can leave a group without a version on them, still showing the branch value,
@@ -92,6 +94,11 @@ pub enum EvidenceRefusal {
     /// An operation claims a revision below the one the operation before the fork was sealed
     /// against.
     UnprovableRevision,
+    /// The fork sits at or below what this replica compacted of the writer, so a stable branch
+    /// stands here. This is a device-local integrity guard, not an authority rule: the
+    /// authorization records of the pair are admitted first, and a replica that disagrees with
+    /// the hub takes a fresh copy.
+    InsideCompactedRange,
 }
 
 /// A forked writer as exclusion sees it.
@@ -174,7 +181,9 @@ pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> Syn
 /// sequence as its cutoff. Evidence of a fork at an earlier sequence replaces a later one, since
 /// the cutoff only falls. A revoked writer keeps its removal cutoff apart, so its cutoff becomes
 /// the fork's and the result does not depend on whether the removal or the evidence came first.
-/// The envelopes are stored ordered by hash, so every replica holds the same row.
+/// The envelopes are stored ordered by hash, so every replica holds the same row. A fork at or
+/// below the writer's compacted sequence is refused, since its bodies are gone here and that
+/// branch cannot be excluded.
 pub(crate) async fn record(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -194,6 +203,20 @@ pub(crate) async fn record(
         && stored_u64(existing, "fork sequence")? <= seq
     {
         return Ok(EvidenceOutcome::Known);
+    }
+    let compacted: Option<i64> = sqlx::query_scalar(
+        "SELECT compacted_seq FROM sync_writers WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(compacted) = compacted
+        && seq <= stored_u64(compacted, "compacted sequence")?
+    {
+        return Ok(EvidenceOutcome::Refused(
+            EvidenceRefusal::InsideCompactedRange,
+        ));
     }
     let [(first, first_hash), (second, second_hash)] = pair;
     let (first, second) = if first_hash <= second_hash {
@@ -315,10 +338,11 @@ async fn store_evidence(
 }
 
 /// Settles fork evidence stored since the last engine write, inside one: both branches of every
-/// forked writer of another device are excluded, which removes the merge effects of its applied
-/// operations past the shared prefix, restores the versions they superseded, and drops the
-/// operations, as if this replica had never stored them. The chain is then selected again, since
-/// the dropped operations may carry entries and a fork of an anchor's writer freezes its epoch.
+/// forked writer are excluded, except a branch its own device applied, which stays for re-seal.
+/// Exclusion removes the merge effects of the applied operations past the shared prefix, restores
+/// the versions they superseded, and drops the operations, as if this replica had never stored
+/// them. The chain is then selected again, since the dropped operations may carry entries and a
+/// fork of an anchor's writer freezes its epoch.
 pub(crate) async fn reconcile(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -341,7 +365,8 @@ pub(crate) async fn reconcile(
     Ok(())
 }
 
-/// Excludes both branches of every forked writer of another device that still holds them.
+/// Excludes both branches of every forked writer that still holds them, except a branch an
+/// installation of the writer's own device applied.
 async fn exclude_branches(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -351,13 +376,17 @@ async fn exclude_branches(
     let local = exclusion::local_device(conn, ctx.space).await?;
     let mut cut = Vec::new();
     for (writer, fork) in forked(conn, ctx.space).await? {
-        if local.as_deref() == Some(fork.device_id.as_str()) {
-            continue;
-        }
         let Some(row) = log::writer(conn, ctx.space, writer).await? else {
             continue;
         };
         let keep = fork.keep_through();
+        // An installation of the writer's own device keeps the branch it applied for
+        // [`Engine::reseal_fork`]. A copy it stored past the prefix without applying, such as one
+        // a restored installation pulled from a peer, is no branch of its own and nothing would
+        // ever re-seal or apply it, so it is excluded as on every other replica.
+        if local.as_deref() == Some(fork.device_id.as_str()) && row.applied > keep {
+            continue;
+        }
         if row.stored > keep.max(1) || row.applied > keep {
             cut.push((writer, keep, row.applied));
         }
@@ -506,7 +535,8 @@ pub(crate) async fn collect_republish(
 }
 
 /// Adds to `groups` every group that a stored operation of `writer` in
-/// `(keep, through]` writes.
+/// `(keep, through]` writes. A body compaction emptied is skipped: that operation is final and
+/// has nothing to write again. An empty body above the writer's compacted sequence is corrupt.
 async fn collect_written(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -521,7 +551,9 @@ async fn collect_written(
     }
     let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
         "SELECT envelope FROM sync_ops
-         WHERE space_id = ? AND writer_id = ? AND seq > ? AND seq <= ?",
+         WHERE space_id = ?1 AND writer_id = ?2 AND seq > ?3 AND seq <= ?4
+            AND NOT (length(envelope) = 0 AND seq <= (SELECT compacted_seq FROM sync_writers
+                WHERE space_id = ?1 AND writer_id = ?2))",
     )
     .bind(space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -754,7 +786,7 @@ pub(crate) async fn drop_branch(
     }
     sqlx::query(
         "UPDATE sync_writers SET stored_seq = ?1, applied_seq = ?2, head_hash = ?3,
-            head_clock = ?4
+            head_clock = ?4, compacted_seq = min(compacted_seq, ?1)
          WHERE space_id = ?5 AND writer_id = ?6",
     )
     .bind(seq_i64(stored)?)

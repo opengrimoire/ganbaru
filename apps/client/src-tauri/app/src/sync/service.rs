@@ -20,7 +20,9 @@ use ganbaru_sync_replica::service::{self as replica, QuiescedSync, ServiceStart}
 pub(crate) use ganbaru_sync_replica::service::{
     AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision,
 };
-pub(crate) use ganbaru_sync_replica::service::{SyncRuntime, blocking, release_runtime_handle};
+pub(crate) use ganbaru_sync_replica::service::{
+    RELAY_LOOPBACK, SyncRuntime, blocking, release_runtime_handle,
+};
 #[cfg(mobile)]
 use std::path::PathBuf;
 #[cfg(desktop)]

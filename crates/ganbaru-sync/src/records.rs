@@ -20,8 +20,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    AuthorizationRecord, Content, DevicePublicKey, Digest32, Envelope, OperationKind, Seq, SpaceId,
-    WriterId, WriterPublicKey,
+    AuthorizationRecord, Content, DevicePublicKey, DeviceRole, Digest32, Entry, Envelope,
+    OperationKind, Seq, SetRole, SignedCharter, SpaceId, WriterId, WriterPublicKey,
 };
 use sqlx::{Row, SqliteConnection};
 
@@ -407,6 +407,120 @@ async fn prune_evidence(
             .await?;
         }
     }
+}
+
+/// Whether `bytes` is an authorization record envelope of `space` that opens key epoch `epoch`
+/// and authenticates against the stored verified envelope set and `charter` alone, without the
+/// selected chain: the proposal signature verifies, the device that signed it is the anchor the
+/// record names, a stored certificate binds the envelope's writer to that device and its key
+/// signed the envelope, and some stored verified record or the charter makes that device an
+/// admin while no stored verified record removes it.
+pub(crate) async fn authentic_key_epoch(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    charter: &SignedCharter,
+    bytes: &[u8],
+    epoch: u32,
+) -> SyncResult<bool> {
+    let Ok(envelope) = Envelope::decode(bytes) else {
+        return Ok(false);
+    };
+    if envelope.space != space
+        || OperationKind::from_u8(envelope.kind) != Some(OperationKind::Authorization)
+    {
+        return Ok(false);
+    }
+    let Ok(operation) = envelope.operation() else {
+        return Ok(false);
+    };
+    let Content::Authorization(record) = &operation.content else {
+        return Ok(false);
+    };
+    let proposal = &record.proposal.proposal;
+    let Entry::KeyEpoch(key_epoch) = &proposal.entry else {
+        return Ok(false);
+    };
+    let Some(author) = proposal.device_author() else {
+        return Ok(false);
+    };
+    if key_epoch.key_epoch != epoch || proposal.space != space || proposal.charter != charter.hash()
+    {
+        return Ok(false);
+    }
+    let certified: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sync_auth_envelopes
+         WHERE space_id = ? AND role = 'certificate' AND verified = 1 AND writer_id = ?
+           AND device_id = ? AND device_key = ?
+         LIMIT 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(envelope.writer.as_bytes().as_slice())
+    .bind(record.anchor_device_id.as_str())
+    .bind(author.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if certified.is_none() {
+        return Ok(false);
+    }
+    let Some(writer_key) = writer_key(conn, space, envelope.writer).await? else {
+        return Ok(false);
+    };
+    if !envelope.verify(&writer_key) {
+        return Ok(false);
+    }
+    Ok(admin_device_keys(conn, space, charter)
+        .await?
+        .get(&record.anchor_device_id)
+        .is_some_and(|keys| keys.contains(&author)))
+}
+
+/// The device keys of every device the charter or a stored verified record makes an admin and
+/// no stored verified record removes, by device id, whatever chain the records belong to.
+async fn admin_device_keys(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    charter: &SignedCharter,
+) -> SyncResult<BTreeMap<String, BTreeSet<DevicePublicKey>>> {
+    let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT envelope FROM sync_auth_envelopes
+         WHERE space_id = ? AND role = 'record' AND verified = 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .fetch_all(&mut *conn)
+    .await?;
+    let body = &charter.charter;
+    let mut keys: BTreeMap<String, BTreeSet<DevicePublicKey>> = BTreeMap::new();
+    let mut admins = BTreeSet::from([body.anchor_device_id.clone()]);
+    let mut removed = BTreeSet::new();
+    keys.entry(body.anchor_device_id.clone())
+        .or_default()
+        .insert(body.anchor_device_key);
+    for bytes in &envelopes {
+        let record = crate::authorization::record_of(bytes)
+            .ok_or_else(|| corrupt("a stored authorization record does not decode"))?;
+        match record.proposal.proposal.entry {
+            Entry::Enroll(enroll) => {
+                if matches!(enroll.role, DeviceRole::Admin(_)) {
+                    admins.insert(enroll.device_id.clone());
+                }
+                keys.entry(enroll.device_id)
+                    .or_default()
+                    .insert(enroll.device_key);
+            }
+            Entry::SetRole(SetRole::Device {
+                device_id,
+                role: DeviceRole::Admin(_),
+            }) => {
+                admins.insert(device_id);
+            }
+            Entry::Remove(remove) => {
+                removed.insert(remove.device_id);
+            }
+            _ => {}
+        }
+    }
+    keys.retain(|device_id, _| admins.contains(device_id) && !removed.contains(device_id));
+    Ok(keys)
 }
 
 /// Whether envelopes were stored since the last walk read the store.

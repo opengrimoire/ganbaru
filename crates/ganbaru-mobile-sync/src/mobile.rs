@@ -37,14 +37,22 @@ pub(crate) fn init<R: Runtime, C: serde::de::DeserializeOwned>(
 
 impl<R: Runtime> MobileSync<R> {
     /// Schedules background passes while `linked`, asks for one soon while changes are
-    /// `pending`, and cancels all background work otherwise. `config_dir` is the app config
-    /// directory the worker passes to the headless pass.
-    pub fn configure(&self, linked: bool, pending: bool, config_dir: &Path) -> Result<(), String> {
+    /// `pending`, and cancels that work otherwise. While `relay`, it also schedules relay passes
+    /// on any connected network. `config_dir` is the app config directory the workers pass to
+    /// the headless pass.
+    pub fn configure(
+        &self,
+        linked: bool,
+        pending: bool,
+        relay: bool,
+        config_dir: &Path,
+    ) -> Result<(), String> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Request<'a> {
             linked: bool,
             pending: bool,
+            relay: bool,
             config_dir: &'a str,
         }
 
@@ -57,6 +65,7 @@ impl<R: Runtime> MobileSync<R> {
                 Request {
                     linked,
                     pending,
+                    relay,
                     config_dir,
                 },
             )

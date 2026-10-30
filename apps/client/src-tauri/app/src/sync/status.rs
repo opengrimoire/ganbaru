@@ -141,6 +141,55 @@ impl SyncConnectionView {
     }
 }
 
+/// What the last relay pass of this app run moved, and what still waits.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelayDeliveryView {
+    /// When the pass finished, in Unix milliseconds.
+    pub last_pass_at_ms: u64,
+    /// Sealed records the pass delivered to the relay.
+    pub sent: usize,
+    /// Sealed records the pass received from the relay.
+    pub received: usize,
+    /// Operations of this installation's writers the relay does not hold yet.
+    pub undelivered: u64,
+    pub uploaded_files: usize,
+    pub downloaded_files: usize,
+    /// Files left for a later pass on a metered network.
+    pub deferred_files: usize,
+    pub stored_bytes: u64,
+    pub quota_bytes: u64,
+    /// Why the pass stopped early or what the relay needs from an administrator.
+    pub problem: Option<String>,
+}
+
+impl RelayDeliveryView {
+    /// The counts of `pass`, finished at `now_ms`.
+    pub(crate) fn of(pass: &ganbaru_sync_replica::relay::RelayPass, now_ms: u64) -> Self {
+        Self {
+            last_pass_at_ms: now_ms,
+            sent: pass.pushed,
+            received: pass.pulled,
+            undelivered: pass.undelivered,
+            uploaded_files: pass.uploaded,
+            downloaded_files: pass.downloaded,
+            deferred_files: pass.deferred_assets,
+            stored_bytes: pass.stored_bytes,
+            quota_bytes: pass.quota_bytes,
+            problem: pass.problem.clone(),
+        }
+    }
+
+    /// A pass that could not reach or use the relay at `now_ms`.
+    pub(crate) fn failed(problem: String, now_ms: u64) -> Self {
+        Self {
+            last_pass_at_ms: now_ms,
+            problem: Some(problem),
+            ..Self::default()
+        }
+    }
+}
+
 /// Why this device may sync late or not at all, each with a recovery action the interface
 /// offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -220,6 +269,8 @@ pub(crate) struct SyncStatusView {
     pub connection: Option<SyncConnectionView>,
     /// Why connectivity is degraded, in a fixed order.
     pub degraded: Vec<SyncDegradedReason>,
+    /// The last relay pass of this app run, while the sync space uses a relay.
+    pub relay: Option<RelayDeliveryView>,
 }
 
 impl SyncStatusView {
@@ -519,6 +570,45 @@ mod tests {
                 .as_object()
                 .is_some_and(|fields| fields.contains_key("anchorUnreachableSinceMs"))
         );
+    }
+
+    #[test]
+    fn relay_delivery_counts_reach_the_frontend_in_its_wire_names() {
+        let pass = ganbaru_sync_replica::relay::RelayPass {
+            pushed: 4,
+            pulled: 2,
+            undelivered: 1,
+            uploaded: 1,
+            deferred_assets: 3,
+            stored_bytes: 4_096,
+            quota_bytes: 1_048_576,
+            ..Default::default()
+        };
+        let view = SyncStatusView {
+            relay: Some(RelayDeliveryView::of(&pass, 900)),
+            ..SyncStatusView::default()
+        };
+        let wire = serde_json::to_value(&view).expect("serialize status");
+        assert_eq!(
+            wire["relay"],
+            serde_json::json!({
+                "lastPassAtMs": 900,
+                "sent": 4,
+                "received": 2,
+                "undelivered": 1,
+                "uploadedFiles": 1,
+                "downloadedFiles": 0,
+                "deferredFiles": 3,
+                "storedBytes": 4_096,
+                "quotaBytes": 1_048_576,
+                "problem": null,
+            })
+        );
+        let failed = RelayDeliveryView::failed("relay unreachable".to_string(), 7);
+        assert_eq!(failed.problem.as_deref(), Some("relay unreachable"));
+        assert_eq!((failed.sent, failed.last_pass_at_ms), (0, 7));
+        let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
+        assert_eq!(empty["relay"], serde_json::Value::Null);
     }
 
     #[test]

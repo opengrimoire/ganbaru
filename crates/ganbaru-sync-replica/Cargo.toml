@@ -21,11 +21,13 @@ ganbaru-handoff = { workspace = true }
 ganbaru-contacts = { workspace = true }
 ganbaru-sync = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
+rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 zip = { workspace = true }
 zeroize = { workspace = true }
 
@@ -40,4 +42,5 @@ ganbaru-music-library = { workspace = true }
 ganbaru-notes = { workspace = true }
 ganbaru-projects = { workspace = true }
 ganbaru-quick-notes = { workspace = true }
+ganbaru-sync-relay = { workspace = true }
 ganbaru-themes = { workspace = true }

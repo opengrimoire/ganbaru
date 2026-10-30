@@ -431,6 +431,34 @@ fn truncated_reordered_repeated_and_moved_chunk_sets_are_refused() {
 }
 
 #[test]
+fn a_chunk_that_fails_authentication_records_no_chunk_count() {
+    let first = space_key(1, 0x41);
+    let space = SpaceId::from_bytes([0x5a; 16]);
+    let asset = vec![7u8; RELAY_ASSET_CHUNK_BYTES + 1];
+    let (_, chunks) = seal_relay_asset(&space, &first, &first, &asset).unwrap();
+    let mut bytes = chunks[0].encode();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    let tampered = RelayAssetChunk::decode(&bytes).unwrap();
+
+    let mut opener = RelayAssetOpener::new(&space, &first, sha256(&asset)).unwrap();
+    assert_eq!(
+        opener.open_chunk(&tampered, &first).unwrap_err(),
+        RelayError::Authentication
+    );
+    assert!(format!("{opener:?}").contains("count: None"));
+    assert_eq!(
+        opener.open_chunk(&chunks[0], &first).unwrap_err(),
+        RelayError::Order,
+        "an opener stays refused after a chunk it refused"
+    );
+
+    let mut opener = RelayAssetOpener::new(&space, &first, sha256(&asset)).unwrap();
+    opener.open_chunk(&chunks[0], &first).unwrap();
+    assert!(format!("{opener:?}").contains("count: Some(2)"));
+}
+
+#[test]
 fn relay_asset_chunk_lengths_and_counts_are_bounded() {
     let first = space_key(1, 0x41);
     let space = SpaceId::from_bytes([0x5a; 16]);

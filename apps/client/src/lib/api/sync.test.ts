@@ -67,6 +67,22 @@ function validStatus(): Record<string, unknown> {
     oldestUnconfirmedAtMs: 500,
     displacedVersions: 4,
     anchorUnreachableSinceMs: 700,
+    relay: validRelay(),
+  };
+}
+
+function validRelay(): Record<string, unknown> {
+  return {
+    lastPassAtMs: 900,
+    sent: 4,
+    received: 2,
+    undelivered: 1,
+    uploadedFiles: 1,
+    downloadedFiles: 0,
+    deferredFiles: 2,
+    storedBytes: 4_096,
+    quotaBytes: 1_048_576,
+    problem: null,
   };
 }
 
@@ -92,7 +108,16 @@ describe("sync API boundary", () => {
       oldestUnconfirmedAtMs: 500,
       displacedVersions: 4,
       anchorUnreachableSinceMs: 700,
+      relay: validRelay(),
     });
+  });
+
+  it("refuses relay delivery counts that are not counts", () => {
+    expect(() => mapSyncStatus({ ...validStatus(), relay: undefined })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), sent: -1 } })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), quotaBytes: 1.5 } })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), problem: 3 } })).toThrow();
+    expect(mapSyncStatus({ ...validStatus(), relay: null }).relay).toBeNull();
   });
 
   it("maps the off status of an unlinked vault", () => {

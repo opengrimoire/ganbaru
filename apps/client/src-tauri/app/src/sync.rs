@@ -16,6 +16,7 @@ mod host;
 pub(crate) mod key_protection;
 mod recovery;
 mod recovery_kit;
+pub(crate) mod server;
 mod service;
 mod status;
 mod transport;

@@ -17,8 +17,8 @@ use ganbaru_handoff::protocol::relay::{
     RELAY_EXPORTER_BYTES, RELAY_EXPORTER_LABEL, RELAY_PAGE_BYTES, RELAY_PROTOCOL_VERSION,
     RELAY_WAIT_TIMEOUT, RelayAdminAction, RelayAdminCommand, RelayAssetOutcome, RelayBinding,
     RelayPushOutcome, RelayRefusalCode, RelayRequest, RelayResponse, RelaySetupToken,
-    decode_relay_admin_key, decode_relay_asset, decode_relay_bytes, encode_relay_asset,
-    encode_relay_bytes,
+    RelayWriterRange, decode_relay_admin_key, decode_relay_asset, decode_relay_bytes,
+    encode_relay_asset, encode_relay_bytes,
 };
 use ganbaru_handoff::protocol::{MAX_CONTROL_BYTES, SyncSeq, read_frame, write_frame};
 use ganbaru_sync::assets::AssetRef;
@@ -37,6 +37,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,8 +125,9 @@ pub struct RelayPass {
     /// Operations this replica stored from the relay.
     pub pulled: usize,
     /// Operations this replica holds that the relay refused to take, which wait for a direct
-    /// connection or a later pass.
-    pub undelivered: u64,
+    /// connection or a later pass. `None` when the pass stopped before the relay reported what
+    /// it holds, so nothing is known about delivery.
+    pub undelivered: Option<u64>,
     /// Asset files the relay stored from this pass.
     pub uploaded: usize,
     /// Asset files this replica stored from the relay.
@@ -145,14 +147,146 @@ pub struct RelayPass {
     /// may reference assets that become downloadable only after they apply.
     pub more: bool,
     /// Why part of the pass stopped.
-    pub problem: Option<String>,
+    pub problem: Option<RelayProblem>,
+    /// The log text behind [`Self::problem`].
+    pub detail: Option<String>,
 }
 
 impl RelayPass {
-    fn note(&mut self, problem: String) {
-        self.problem.get_or_insert(problem);
+    fn note(&mut self, problem: RelayProblem, detail: String) {
+        if self.problem.is_none() {
+            self.problem = Some(problem);
+            self.detail = Some(detail);
+        }
     }
 }
+
+/// Why a relay pass, or part of it, stopped. The interface shows each as localized text; the
+/// detail behind it stays in the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RelayProblem {
+    /// No relay address answered, the pinned certificate did not match, or the relay did not
+    /// answer in time.
+    Unreachable,
+    /// The relay speaks another protocol version; one side needs an update.
+    Incompatible,
+    /// The relay holds no space with this id: it was never claimed or an admin removed it.
+    NotClaimed,
+    /// The relay already holds this space, so a setup code cannot claim it again.
+    AlreadyClaimed,
+    /// The setup code is unknown, expired, or already used.
+    SetupCodeRefused,
+    /// The relay refused this device's access key.
+    AccessRefused,
+    /// The relay refused an admin command of this device.
+    AdminRefused,
+    /// The relay is at its connection budget.
+    Busy,
+    /// The space holds the most writers the relay allows.
+    WriterLimit,
+    /// The relay refused a request for another reason.
+    Refused,
+    /// This device holds no key epoch of the space yet.
+    NoKeys,
+    /// The relay's epoch did not settle within one pass.
+    EpochUnsettled,
+    /// The relay is at a key epoch this device cannot open yet.
+    EpochAhead,
+    /// The relay lacks the records before a key epoch, so members behind it wait for a direct
+    /// connection.
+    RelayBehind,
+    /// The relay's admin set is full.
+    AdminSetFull,
+    /// The relay holds a gap before this device's operations.
+    Gap,
+    /// The relay trimmed operations this device lacks.
+    Trimmed,
+    /// This device refused a record or key epoch record the relay served.
+    RecordRefused,
+    /// The relay holds a fork of this device's writer.
+    Fork,
+    /// The relay reported more to pull but sent nothing new.
+    NoProgress,
+    /// The relay or this device refused an asset file.
+    AssetRefused,
+    /// A local fault on this device.
+    Failed,
+}
+
+impl RelayProblem {
+    /// The problem a relay refusal reports.
+    fn of_refusal(code: RelayRefusalCode) -> Self {
+        match code {
+            RelayRefusalCode::Version => Self::Incompatible,
+            RelayRefusalCode::UnknownSpace => Self::NotClaimed,
+            RelayRefusalCode::SpaceExists => Self::AlreadyClaimed,
+            RelayRefusalCode::Token => Self::SetupCodeRefused,
+            RelayRefusalCode::Unauthenticated
+            | RelayRefusalCode::StaleEpoch
+            | RelayRefusalCode::UnknownEpoch
+            | RelayRefusalCode::Authentication => Self::AccessRefused,
+            RelayRefusalCode::AdminSignature
+            | RelayRefusalCode::AdminCounter
+            | RelayRefusalCode::AdminSet => Self::AdminRefused,
+            RelayRefusalCode::Busy => Self::Busy,
+            RelayRefusalCode::WriterLimit => Self::WriterLimit,
+            RelayRefusalCode::BadRequest
+            | RelayRefusalCode::BadRecord
+            | RelayRefusalCode::NotFound
+            | RelayRefusalCode::AssetMismatch => Self::Refused,
+        }
+    }
+
+    /// Whether a fault reporting this problem means the relay answered, so it counts as
+    /// contact with the relay.
+    pub fn relay_answered(self) -> bool {
+        matches!(
+            self,
+            Self::Incompatible
+                | Self::NotClaimed
+                | Self::AlreadyClaimed
+                | Self::SetupCodeRefused
+                | Self::AccessRefused
+                | Self::AdminRefused
+                | Self::Busy
+                | Self::WriterLimit
+                | Self::Refused
+        )
+    }
+}
+
+/// A relay fault: the problem the interface reports and the detail the log keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelayError {
+    pub problem: RelayProblem,
+    pub detail: String,
+}
+
+impl RelayError {
+    /// A fault reporting `problem`.
+    pub fn new(problem: RelayProblem, detail: impl Into<String>) -> Self {
+        Self {
+            problem,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// A local fault, known only by its text.
+impl From<String> for RelayError {
+    fn from(detail: String) -> Self {
+        Self::new(RelayProblem::Failed, detail)
+    }
+}
+
+impl std::fmt::Display for RelayError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for RelayError {}
 
 /// One replica's view for a relay pass.
 pub struct RelaySession<'a> {
@@ -189,17 +323,23 @@ enum Authenticated {
 impl RelaySession<'_> {
     /// Runs one pass against `target`. Errors are transport or local faults; refusals of
     /// particular records or assets are reported in [`RelayPass::problem`].
-    pub async fn pass(&self, target: &RelayTarget) -> Result<RelayPass, String> {
+    pub async fn pass(&self, target: &RelayTarget) -> Result<RelayPass, RelayError> {
         let mut pass = RelayPass::default();
         let mut keys = self.open_keys().await?;
         let Some(mut epoch) = keys.newest_epoch() else {
-            return Err("this device holds no key epoch of the space yet".to_string());
+            return Err(RelayError::new(
+                RelayProblem::NoKeys,
+                "this device holds no key epoch of the space yet",
+            ));
         };
         let mut steps = 0usize;
         let (mut connection, current) = loop {
             steps += 1;
             if steps > MAX_EPOCH_STEPS {
-                return Err("the relay's epoch did not settle within one pass".to_string());
+                return Err(RelayError::new(
+                    RelayProblem::EpochUnsettled,
+                    "the relay's epoch did not settle within one pass",
+                ));
             }
             match self.authenticate(target, &keys, epoch).await? {
                 Authenticated::Session {
@@ -225,9 +365,12 @@ impl RelaySession<'_> {
                         continue;
                     }
                     pass.epoch = epoch;
-                    pass.note(format!(
-                        "the relay is at epoch {current}, which this device cannot open yet"
-                    ));
+                    pass.note(
+                        RelayProblem::EpochAhead,
+                        format!(
+                            "the relay is at epoch {current}, which this device cannot open yet"
+                        ),
+                    );
                     return Ok(pass);
                 }
                 Authenticated::UnknownEpoch => {
@@ -240,9 +383,12 @@ impl RelaySession<'_> {
                 }
                 Authenticated::KeyMismatch => {
                     if !self.is_live_admin().await? {
-                        return Err(format!(
-                            "the relay holds another access key for epoch {epoch}; an admin \
+                        return Err(RelayError::new(
+                            RelayProblem::AccessRefused,
+                            format!(
+                                "the relay holds another access key for epoch {epoch}; an admin \
                              device repairs it on its next pass"
+                            ),
                         ));
                     }
                     self.repair(target, &keys, epoch, &mut pass).await?;
@@ -254,7 +400,8 @@ impl RelaySession<'_> {
             self.upload_assets(&mut connection, &keys, store, current, &mut pass)
                 .await?;
         }
-        self.push(&mut connection, &keys, current, &mut pass)
+        let compacted = self
+            .push(&mut connection, &keys, current, &mut pass)
             .await?;
         let drained = self.pull(&mut connection, &keys, &mut pass).await?;
         if pass.pulled > 0 && self.assets.is_some() {
@@ -273,21 +420,26 @@ impl RelaySession<'_> {
             self.download_assets(&mut connection, &keys, store, &mut pass)
                 .await?;
         }
-        if let RelayResponse::State {
-            stored_bytes,
-            quota_bytes,
-            ..
-        } = connection.request(&RelayRequest::State).await?
-        {
-            pass.stored_bytes = stored_bytes;
-            pass.quota_bytes = quota_bytes;
+        match connection.request(&RelayRequest::State).await? {
+            RelayResponse::State {
+                writers,
+                stored_bytes,
+                quota_bytes,
+                ..
+            } => {
+                pass.stored_bytes = stored_bytes;
+                pass.quota_bytes = quota_bytes;
+                let reached = relay_ranges(&writers)?;
+                pass.undelivered = Some(self.undelivered(&reached, &compacted).await?);
+            }
+            other => return Err(unexpected("State", &other)),
         }
         Ok(pass)
     }
 
     /// Long poll after a pass: whether the relay holds records past this replica's log before
     /// its bounded wait ends. Authenticates at the newest epoch this replica holds.
-    pub async fn wait(&self, target: &RelayTarget) -> Result<bool, String> {
+    pub async fn wait(&self, target: &RelayTarget) -> Result<bool, RelayError> {
         let keys = self.open_keys().await?;
         let epoch = keys
             .newest_epoch()
@@ -304,7 +456,7 @@ impl RelaySession<'_> {
         }
     }
 
-    async fn open_keys(&self) -> Result<RelayKeys, String> {
+    async fn open_keys(&self) -> Result<RelayKeys, RelayError> {
         let mut conn = acquire(self.pool).await?;
         let stored = self
             .engine
@@ -314,18 +466,18 @@ impl RelaySession<'_> {
         Ok(RelayKeys::open(self.ctx.space, &stored, self.holder))
     }
 
-    async fn view(&self) -> Result<AuthorizationView, String> {
+    async fn view(&self) -> Result<AuthorizationView, RelayError> {
         let mut conn = acquire(self.pool).await?;
         self.engine
             .authorization(&mut conn, self.ctx)
             .await
             .map_err(|error| format!("read authorization state: {error}"))?
-            .ok_or_else(|| "the space has no authorization state".to_string())
+            .ok_or_else(|| RelayError::from("the space has no authorization state".to_string()))
     }
 
     /// Whether this installation's admin key belongs to an admin device the selected chain has
     /// not removed.
-    async fn is_live_admin(&self) -> Result<bool, String> {
+    async fn is_live_admin(&self) -> Result<bool, RelayError> {
         let Some(admin) = self.admin else {
             return Ok(false);
         };
@@ -342,7 +494,11 @@ impl RelaySession<'_> {
     /// against the stored verified envelope set. Only the anchor's device and writer keys make
     /// one that authenticates, so a record that does means this device lags behind a real
     /// rotation and repairing would roll the relay back below it.
-    async fn repairs_squat(&self, connection: &mut Connection, held: u32) -> Result<bool, String> {
+    async fn repairs_squat(
+        &self,
+        connection: &mut Connection,
+        held: u32,
+    ) -> Result<bool, RelayError> {
         if !self.is_live_admin().await? || self.view().await?.key_epoch > held {
             return Ok(false);
         }
@@ -366,7 +522,7 @@ impl RelaySession<'_> {
         &self,
         connection: &mut Connection,
         epoch: u32,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Vec<u8>>, RelayError> {
         let after = epoch.saturating_sub(1);
         let entries = match connection.request(&RelayRequest::Epochs { after }).await? {
             RelayResponse::Epochs { entries, .. } => entries,
@@ -383,14 +539,31 @@ impl RelaySession<'_> {
                 )
             })
             .transpose()
+            .map_err(RelayError::from)
     }
 
-    async fn stored(&self) -> Result<VersionVector, String> {
+    async fn stored(&self) -> Result<VersionVector, RelayError> {
         let mut conn = acquire(self.pool).await?;
         self.engine
             .stored_vector(&mut conn, self.ctx)
             .await
-            .map_err(|error| format!("read sync log: {error}"))
+            .map_err(|error| format!("read sync log: {error}").into())
+    }
+
+    /// Operations of this installation's own writers the relay does not hold: past what the
+    /// relay reached and past the floor the log compacted, which no relay can take any more.
+    async fn undelivered(
+        &self,
+        reached: &VersionVector,
+        compacted: &VersionVector,
+    ) -> Result<u64, RelayError> {
+        let stored = self.stored().await?;
+        Ok(undelivered_count(
+            self.own_writers,
+            &stored,
+            reached,
+            compacted,
+        ))
     }
 
     /// Connects and authenticates at `epoch` on a fresh connection.
@@ -399,7 +572,7 @@ impl RelaySession<'_> {
         target: &RelayTarget,
         keys: &RelayKeys,
         epoch: u32,
-    ) -> Result<Authenticated, String> {
+    ) -> Result<Authenticated, RelayError> {
         let access = access_key(keys, epoch)?;
         let mut connection = Connection::open(target, self.ctx.space, self.limits.loopback).await?;
         connection.hello().await?;
@@ -444,7 +617,7 @@ impl RelaySession<'_> {
         keys: &RelayKeys,
         newest: u32,
         pass: &mut RelayPass,
-    ) -> Result<Option<u32>, String> {
+    ) -> Result<Option<u32>, RelayError> {
         let mut probe = newest;
         let (mut connection, current) = loop {
             probe = probe
@@ -460,8 +633,9 @@ impl RelaySession<'_> {
                 } => break (connection, current),
                 Authenticated::UnknownEpoch => continue,
                 Authenticated::KeyMismatch => {
-                    return Err(format!(
-                        "the relay holds another access key for epoch {probe}"
+                    return Err(RelayError::new(
+                        RelayProblem::AccessRefused,
+                        format!("the relay holds another access key for epoch {probe}"),
                     ));
                 }
             }
@@ -514,7 +688,7 @@ impl RelaySession<'_> {
         epoch: u32,
         next: u32,
         pass: &mut RelayPass,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, RelayError> {
         let entry = self.epoch_entry(next).await?;
         let envelope = Envelope::decode(&entry)
             .map_err(|_| "this device holds a malformed key epoch record".to_string())?;
@@ -538,7 +712,7 @@ impl RelaySession<'_> {
                         cursor.set(writer, seq);
                         continue;
                     }
-                    Err(error) => return Err(format!("read sync operations: {error}")),
+                    Err(error) => return Err(format!("read sync operations: {error}").into()),
                 }
             };
             let ops: Vec<Vec<u8>> = page
@@ -565,24 +739,29 @@ impl RelaySession<'_> {
             if stalled || cursor.get(&envelope.writer) >= envelope.seq || !page.more {
                 let delivered = connection.ranges().await?.get(&envelope.writer) >= envelope.seq;
                 if !delivered {
-                    pass.note(format!(
-                        "the relay does not hold the records before epoch {next}, so this \
+                    pass.note(
+                        RelayProblem::RelayBehind,
+                        format!(
+                            "the relay does not hold the records before epoch {next}, so this \
                          device does not register it; members still at epoch {epoch} wait for \
                          a direct connection"
-                    ));
+                        ),
+                    );
                 }
                 return Ok(delivered);
             }
         }
     }
 
-    async fn epoch_entry(&self, epoch: u32) -> Result<Vec<u8>, String> {
+    async fn epoch_entry(&self, epoch: u32) -> Result<Vec<u8>, RelayError> {
         let mut conn = acquire(self.pool).await?;
         self.engine
             .key_epoch_entry(&mut conn, self.ctx, epoch)
             .await
             .map_err(|error| format!("read key epoch record: {error}"))?
-            .ok_or_else(|| format!("this device holds no record of key epoch {epoch}"))
+            .ok_or_else(|| {
+                RelayError::from(format!("this device holds no record of key epoch {epoch}"))
+            })
     }
 
     /// Registers `next` with its access key and the record that introduced it, on a connection
@@ -592,10 +771,10 @@ impl RelaySession<'_> {
         connection: &mut Connection,
         keys: &RelayKeys,
         next: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let entry = self.epoch_entry(next).await?;
         if entry.len() > MAX_RELAY_EPOCH_ENTRY_BYTES {
-            return Err(format!("the record of key epoch {next} is too large"));
+            return Err(format!("the record of key epoch {next} is too large").into());
         }
         let access = access_key(keys, next)?;
         let signature = access.sign(
@@ -623,13 +802,14 @@ impl RelaySession<'_> {
         keys: &RelayKeys,
         epoch: u32,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let Some(admin) = self.admin else {
-            return Err("this device holds no admin key".to_string());
+            return Err("this device holds no admin key".to_string().into());
         };
         if pass.repaired.is_some() {
-            return Err(format!(
-                "the relay refused epoch {epoch} again after a repair in this pass"
+            return Err(RelayError::new(
+                RelayProblem::EpochUnsettled,
+                format!("the relay refused epoch {epoch} again after a repair in this pass"),
             ));
         }
         let access_key = access_key(keys, epoch)?.public_key();
@@ -663,7 +843,7 @@ impl RelaySession<'_> {
         connection: &mut Connection,
         epoch: u32,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let mut after = epoch;
         loop {
             let (entries, more) = match connection.request(&RelayRequest::Epochs { after }).await? {
@@ -674,7 +854,10 @@ impl RelaySession<'_> {
                 return Ok(());
             };
             if last <= after {
-                return Err("the relay sent key epochs out of order".to_string());
+                return Err(RelayError::new(
+                    RelayProblem::RecordRefused,
+                    "the relay sent key epochs out of order",
+                ));
             }
             let mut envelopes = Vec::with_capacity(entries.len());
             for entry in &entries {
@@ -691,9 +874,10 @@ impl RelaySession<'_> {
                     .await
             };
             if let Err(error) = admitted {
-                pass.note(format!(
-                    "this device refused a relay key epoch record: {error}"
-                ));
+                pass.note(
+                    RelayProblem::RecordRefused,
+                    format!("this device refused a relay key epoch record: {error}"),
+                );
             }
             if !more {
                 return Ok(());
@@ -709,10 +893,9 @@ impl RelaySession<'_> {
         connection: &mut Connection,
         admin: &AdminKeyPair,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let view = self.view().await?;
-        let mut wanted = live_admin_keys(&view);
-        wanted.insert(view.recovery_admin_key);
+        let wanted = relay_admin_set(&view);
         let (held, mut counter) = match connection.request(&RelayRequest::State).await? {
             RelayResponse::State {
                 admins,
@@ -729,7 +912,10 @@ impl RelaySession<'_> {
         };
         for key in wanted.difference(&held) {
             if held.len() + 1 > MAX_RELAY_ADMIN_KEYS {
-                pass.note("the relay's admin set is full".to_string());
+                pass.note(
+                    RelayProblem::AdminSetFull,
+                    "the relay's admin set is full".to_string(),
+                );
                 break;
             }
             counter = connection
@@ -751,7 +937,7 @@ impl RelaySession<'_> {
         epoch: u32,
         ops: &[Vec<u8>],
         certificates: &mut BTreeMap<WriterId, SignedCertificate>,
-    ) -> Result<Vec<(WriterId, String)>, String> {
+    ) -> Result<Vec<(WriterId, String)>, RelayError> {
         let mut sealed = Vec::with_capacity(ops.len());
         for op in ops {
             let envelope = Envelope::decode(op)
@@ -784,7 +970,7 @@ impl RelaySession<'_> {
         connection: &mut Connection,
         sealed: Vec<(WriterId, String)>,
         pass: &mut RelayPass,
-    ) -> Result<Sent, String> {
+    ) -> Result<Sent, RelayError> {
         let mut sent = Sent::default();
         let mut page: Vec<(WriterId, String)> = Vec::new();
         let mut text = 0usize;
@@ -812,7 +998,7 @@ impl RelaySession<'_> {
         page: Vec<(WriterId, String)>,
         sent: &mut Sent,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let (writers, records): (Vec<WriterId>, Vec<String>) = page
             .into_iter()
             .filter(|(writer, _)| !sent.stalled.contains(writer))
@@ -839,22 +1025,24 @@ impl RelaySession<'_> {
     }
 
     /// Pushes every operation the relay lacks under the current epoch, from the writer ranges
-    /// the relay reports.
+    /// the relay reports. Returns the floors the log compacted past the relay's ranges, whose
+    /// operations no relay can take any more.
     async fn push(
         &self,
         connection: &mut Connection,
         keys: &RelayKeys,
         epoch: u32,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<VersionVector, RelayError> {
+        let mut compacted = VersionVector::new();
         if keys.newest_epoch() != Some(epoch) {
-            return Ok(());
+            return Ok(compacted);
         }
         let ranges = connection.ranges().await?;
         let stored = self.stored().await?;
         let mut cursor = ranges.clone();
         let mut certificates = BTreeMap::new();
-        let mut stalled = BTreeSet::new();
+        let mut stalled = false;
         let mut moved = 0usize;
         loop {
             let page = {
@@ -867,9 +1055,10 @@ impl RelaySession<'_> {
                     Ok(page) => page,
                     Err(SyncError::Compacted { writer, seq }) => {
                         cursor.set(writer, seq);
+                        compacted.set(writer, seq);
                         continue;
                     }
-                    Err(error) => return Err(format!("read sync operations: {error}")),
+                    Err(error) => return Err(format!("read sync operations: {error}").into()),
                 }
             };
             if page.ops.is_empty() {
@@ -884,7 +1073,7 @@ impl RelaySession<'_> {
             }
             for writer in sent.stalled {
                 cursor.set(writer, stored.get(&writer).max(cursor.get(&writer)));
-                stalled.insert(writer);
+                stalled = true;
             }
             moved += page.ops.iter().map(Vec::len).sum::<usize>();
             if !page.more {
@@ -895,19 +1084,15 @@ impl RelaySession<'_> {
                 break;
             }
         }
-        if !stalled.is_empty() {
-            let reached = connection.ranges().await?;
-            pass.undelivered = stalled
-                .iter()
-                .map(|writer| stored.get(writer).saturating_sub(reached.get(writer)))
-                .sum();
+        if stalled {
             pass.note(
-                "the relay holds a gap before operations of this device; they wait for a \
+                RelayProblem::Gap,
+                "the relay holds a gap before operations this device holds; they wait for a \
                  direct connection"
                     .to_string(),
             );
         }
-        Ok(())
+        Ok(compacted)
     }
 
     /// Pulls the records the relay holds at or below the session's epoch that this replica
@@ -922,7 +1107,7 @@ impl RelaySession<'_> {
         connection: &mut Connection,
         keys: &RelayKeys,
         pass: &mut RelayPass,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, RelayError> {
         let mut skipped = VersionVector::new();
         let mut moved = 0usize;
         let mut trimmed = false;
@@ -943,6 +1128,7 @@ impl RelaySession<'_> {
             if !behind_floor.is_empty() {
                 trimmed = true;
                 pass.note(
+                    RelayProblem::Trimmed,
                     "the relay trimmed operations this device lacks; link directly with a \
                      device that holds them"
                         .to_string(),
@@ -958,7 +1144,10 @@ impl RelaySession<'_> {
                 match keys.open_record(&bytes) {
                     Ok(record) => opened.push((record.operation, record.certificate)),
                     Err(error) => {
-                        pass.note(format!("this device refused a relay record: {error}"));
+                        pass.note(
+                            RelayProblem::RecordRefused,
+                            format!("this device refused a relay record: {error}"),
+                        );
                         return Ok(false);
                     }
                 }
@@ -991,19 +1180,27 @@ impl RelaySession<'_> {
                             .map_err(|_| "the relay sent a malformed operation".to_string())?;
                         let own = matches!(refusal, StoreRefusal::Fork { .. })
                             && self.own_writers.contains(&writer);
-                        pass.note(if own {
-                            format!(
-                                "the relay holds a fork of this device's writer {}; link \
-                                 directly so the device can re-seal it",
-                                writer.to_hex()
-                            )
+                        let problem = if own {
+                            RelayProblem::Fork
                         } else {
-                            format!(
-                                "this device refused a relay operation of writer {}: \
+                            RelayProblem::RecordRefused
+                        };
+                        pass.note(
+                            problem,
+                            if own {
+                                format!(
+                                    "the relay holds a fork of this device's writer {}; link \
+                                 directly so the device can re-seal it",
+                                    writer.to_hex()
+                                )
+                            } else {
+                                format!(
+                                    "this device refused a relay operation of writer {}: \
                                  {refusal:?}",
-                                writer.to_hex()
-                            )
-                        });
+                                    writer.to_hex()
+                                )
+                            },
+                        );
                         return Ok(false);
                     }
                 }
@@ -1014,7 +1211,10 @@ impl RelaySession<'_> {
             let mut reached = self.stored().await?;
             reached.merge(&skipped);
             if known.dominates(&reached) {
-                pass.note("the relay sent no new operations".to_string());
+                pass.note(
+                    RelayProblem::NoProgress,
+                    "the relay sent no new operations".to_string(),
+                );
                 return Ok(false);
             }
             if moved >= self.limits.max_bytes {
@@ -1024,12 +1224,12 @@ impl RelaySession<'_> {
         }
     }
 
-    async fn referenced(&self) -> Result<Vec<AssetRef>, String> {
+    async fn referenced(&self) -> Result<Vec<AssetRef>, RelayError> {
         let mut conn = acquire(self.pool).await?;
         self.engine
             .referenced_assets(&mut conn)
             .await
-            .map_err(|error| format!("load asset references: {error}"))
+            .map_err(|error| format!("load asset references: {error}").into())
     }
 
     /// The relay ids of `assets` the relay holds completely.
@@ -1037,7 +1237,7 @@ impl RelaySession<'_> {
         connection: &mut Connection,
         keys: &RelayKeys,
         assets: &[AssetRef],
-    ) -> Result<BTreeSet<RelayAssetId>, String> {
+    ) -> Result<BTreeSet<RelayAssetId>, RelayError> {
         let mut present = BTreeSet::new();
         for batch in assets.chunks(MAX_RELAY_ASSET_QUERY) {
             let ids = batch
@@ -1072,7 +1272,7 @@ impl RelaySession<'_> {
         store: &Arc<dyn AssetStore>,
         epoch: u32,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         if keys.newest_epoch() != Some(epoch) {
             return Ok(());
         }
@@ -1100,11 +1300,14 @@ impl RelaySession<'_> {
             {
                 Ok(true) => pass.uploaded += 1,
                 Ok(false) => {}
-                Err(message) => pass.note(format!(
-                    "the relay refused {} asset {}: {message}",
-                    asset.class().name,
-                    asset.sha256()
-                )),
+                Err(message) => pass.note(
+                    RelayProblem::AssetRefused,
+                    format!(
+                        "the relay refused {} asset {}: {message}",
+                        asset.class().name,
+                        asset.sha256()
+                    ),
+                ),
             }
         }
         Ok(())
@@ -1120,7 +1323,7 @@ impl RelaySession<'_> {
         asset: &AssetRef,
         id: RelayAssetId,
         moved: &mut usize,
-    ) -> Result<Result<bool, String>, String> {
+    ) -> Result<Result<bool, String>, RelayError> {
         let size = asset.byte_size() as usize;
         let Some(count) = relay_asset_chunk_count(size) else {
             return Ok(Err(
@@ -1142,7 +1345,7 @@ impl RelaySession<'_> {
             let plaintext = match plaintext {
                 Ok(bytes) if !bytes.is_empty() => Zeroizing::new(bytes),
                 Ok(_) | Err(AssetStoreError::Unavailable) => return Ok(Ok(false)),
-                Err(error) => return Err(error.describe()),
+                Err(error) => return Err(error.describe().into()),
             };
             let chunk = keys
                 .seal_asset_chunk(id, index, count, &plaintext)
@@ -1174,7 +1377,7 @@ impl RelaySession<'_> {
         keys: &RelayKeys,
         store: &Arc<dyn AssetStore>,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let (_, missing) = partition_held(store, self.referenced().await?)
             .await
             .map_err(|error| error.describe())?;
@@ -1199,11 +1402,14 @@ impl RelaySession<'_> {
             {
                 Ok(true) => pass.downloaded += 1,
                 Ok(false) => {}
-                Err(message) => pass.note(format!(
-                    "this device refused {} asset {} from the relay: {message}",
-                    asset.class().name,
-                    asset.sha256()
-                )),
+                Err(message) => pass.note(
+                    RelayProblem::AssetRefused,
+                    format!(
+                        "this device refused {} asset {} from the relay: {message}",
+                        asset.class().name,
+                        asset.sha256()
+                    ),
+                ),
             }
         }
         Ok(())
@@ -1220,7 +1426,7 @@ impl RelaySession<'_> {
         asset: &AssetRef,
         id: RelayAssetId,
         moved: &mut usize,
-    ) -> Result<Result<bool, String>, String> {
+    ) -> Result<Result<bool, String>, RelayError> {
         let Some(expected) = relay_asset_chunk_count(asset.byte_size() as usize) else {
             return Ok(Err(
                 "the file is empty or too large for the relay".to_string()
@@ -1272,7 +1478,7 @@ impl RelaySession<'_> {
         match blocking(store, move |store| store.commit(staged)).await {
             Ok(()) => Ok(Ok(true)),
             Err(AssetStoreError::Mismatch(message)) => Ok(Err(message)),
-            Err(error) => Err(error.describe()),
+            Err(error) => Err(error.describe().into()),
         }
     }
 }
@@ -1283,8 +1489,16 @@ struct Sent {
     stalled: BTreeSet<WriterId>,
 }
 
+/// The admin set the relay keeps for the space: every live admin device's key and the recovery
+/// kit's admin key.
+pub fn relay_admin_set(view: &AuthorizationView) -> BTreeSet<AdminPublicKey> {
+    let mut keys = live_admin_keys(view);
+    keys.insert(view.recovery_admin_key);
+    keys
+}
+
 /// The admin keys of enrolled admin devices the selected chain has not removed.
-fn live_admin_keys(view: &AuthorizationView) -> BTreeSet<AdminPublicKey> {
+pub fn live_admin_keys(view: &AuthorizationView) -> BTreeSet<AdminPublicKey> {
     view.devices
         .iter()
         .filter(|device| device.removed_revision.is_none())
@@ -1295,24 +1509,25 @@ fn live_admin_keys(view: &AuthorizationView) -> BTreeSet<AdminPublicKey> {
         .collect()
 }
 
-fn access_key(keys: &RelayKeys, epoch: u32) -> Result<RelayAccessKeyPair, String> {
+fn access_key(keys: &RelayKeys, epoch: u32) -> Result<RelayAccessKeyPair, RelayError> {
     keys.key(epoch)
         .ok_or_else(|| format!("this device holds no key of epoch {epoch}"))?
         .relay_access_key(&keys_space(keys))
-        .map_err(|error| format!("derive relay access key: {error}"))
+        .map_err(|error| format!("derive relay access key: {error}").into())
 }
 
 fn keys_space(keys: &RelayKeys) -> SpaceId {
     keys.space()
 }
 
-fn sha256_of(asset: &AssetRef) -> Result<[u8; 32], String> {
-    parse_hex::<32>(asset.sha256()).ok_or_else(|| "an asset reference is malformed".to_string())
+fn sha256_of(asset: &AssetRef) -> Result<[u8; 32], RelayError> {
+    parse_hex::<32>(asset.sha256())
+        .ok_or_else(|| RelayError::from("an asset reference is malformed".to_string()))
 }
 
-fn relay_asset_id(keys: &RelayKeys, asset: &AssetRef) -> Result<RelayAssetId, String> {
+fn relay_asset_id(keys: &RelayKeys, asset: &AssetRef) -> Result<RelayAssetId, RelayError> {
     keys.asset_id(&sha256_of(asset)?)
-        .map_err(|error| format!("derive relay asset id: {error}"))
+        .map_err(|error| format!("derive relay asset id: {error}").into())
 }
 
 fn vector_to_relay(vector: &VersionVector) -> Vec<SyncSeq> {
@@ -1325,19 +1540,55 @@ fn vector_to_relay(vector: &VersionVector) -> Vec<SyncSeq> {
         .collect()
 }
 
-fn unexpected(expected: &str, response: &RelayResponse) -> String {
+fn unexpected(expected: &str, response: &RelayResponse) -> RelayError {
     match response {
-        RelayResponse::Refused { code, message, .. } => {
-            format!("the relay refused the request ({code:?}): {message}")
-        }
-        _ => format!("the relay did not answer with {expected}"),
+        RelayResponse::Refused { code, message, .. } => RelayError::new(
+            RelayProblem::of_refusal(*code),
+            format!("the relay refused the request ({code:?}): {message}"),
+        ),
+        _ => RelayError::new(
+            RelayProblem::Refused,
+            format!("the relay did not answer with {expected}"),
+        ),
     }
 }
 
-async fn acquire(pool: &SqlitePool) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, String> {
+/// Operations of `own_writers` this installation stores past both what the relay `reached` and
+/// the floor its log `compacted`, which no relay can take any more. Other writers' operations
+/// never count: they are not this device's to deliver.
+fn undelivered_count(
+    own_writers: &BTreeSet<WriterId>,
+    stored: &VersionVector,
+    reached: &VersionVector,
+    compacted: &VersionVector,
+) -> u64 {
+    own_writers
+        .iter()
+        .map(|writer| {
+            stored
+                .get(writer)
+                .saturating_sub(reached.get(writer).max(compacted.get(writer)))
+        })
+        .sum()
+}
+
+/// The last sequence of each writer in the relay's ranges.
+fn relay_ranges(writers: &[RelayWriterRange]) -> Result<VersionVector, RelayError> {
+    let mut ranges = VersionVector::new();
+    for range in writers {
+        let writer = WriterId::from_hex(&range.writer)
+            .ok_or_else(|| "the relay named an invalid writer".to_string())?;
+        ranges.set(writer, range.next.saturating_sub(1));
+    }
+    Ok(ranges)
+}
+
+async fn acquire(
+    pool: &SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, RelayError> {
     pool.acquire()
         .await
-        .map_err(|error| format!("acquire sync connection: {error}"))
+        .map_err(|error| format!("acquire sync connection: {error}").into())
 }
 
 /// One TLS connection to the relay, pinned to the configured certificate.
@@ -1363,7 +1614,7 @@ impl Connection {
         target: &RelayTarget,
         space: SpaceId,
         loopback: LoopbackPolicy,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, RelayError> {
         let config = client_config(&target.certificate_fingerprint)?;
         let mut last = "the relay has no reachable address".to_string();
         for endpoint in &target.endpoints {
@@ -1401,7 +1652,7 @@ impl Connection {
                 }
             }
         }
-        Err(last)
+        Err(RelayError::new(RelayProblem::Unreachable, last))
     }
 
     /// The signature context of this connection.
@@ -1413,7 +1664,7 @@ impl Connection {
     }
 
     /// Sends one request and reads its answer.
-    pub async fn request(&mut self, request: &RelayRequest) -> Result<RelayResponse, String> {
+    pub async fn request(&mut self, request: &RelayRequest) -> Result<RelayResponse, RelayError> {
         let exchange = async {
             write_frame(&mut self.stream, request).await?;
             read_frame(&mut self.stream, MAX_CONTROL_BYTES).await
@@ -1421,11 +1672,17 @@ impl Connection {
         let timeout = REQUEST_TIMEOUT.max(RELAY_WAIT_TIMEOUT * 2);
         tokio::time::timeout(timeout, exchange)
             .await
-            .map_err(|_| "the relay did not answer in time".to_string())?
+            .map_err(|_| {
+                RelayError::new(
+                    RelayProblem::Unreachable,
+                    "the relay did not answer in time",
+                )
+            })?
+            .map_err(|error| RelayError::new(RelayProblem::Unreachable, error))
     }
 
     /// Opens the exchange for the connection's space.
-    pub async fn hello(&mut self) -> Result<(), String> {
+    pub async fn hello(&mut self) -> Result<(), RelayError> {
         let request = RelayRequest::Hello {
             protocol_version: RELAY_PROTOCOL_VERSION,
             space: self.space.to_hex(),
@@ -1447,7 +1704,7 @@ impl Connection {
         admin: &AdminKeyPair,
         counter: u64,
         command: &RelayAdminCommand<'_>,
-    ) -> Result<u64, String> {
+    ) -> Result<u64, RelayError> {
         let mut counter = counter.max(1);
         for _ in 0..2 {
             let request = self.admin_request(admin, counter, command)?;
@@ -1461,7 +1718,10 @@ impl Connection {
                 other => return Err(unexpected("AdminApplied", &other)),
             }
         }
-        Err("the relay kept refusing the admin counter".to_string())
+        Err(RelayError::new(
+            RelayProblem::AdminRefused,
+            "the relay kept refusing the admin counter",
+        ))
     }
 
     fn admin_request(
@@ -1469,7 +1729,7 @@ impl Connection {
         admin: &AdminKeyPair,
         counter: u64,
         command: &RelayAdminCommand<'_>,
-    ) -> Result<RelayRequest, String> {
+    ) -> Result<RelayRequest, RelayError> {
         let action = match command {
             RelayAdminCommand::AddKey(key) => RelayAdminAction::AddKey {
                 key: encode_relay_bytes(key.as_bytes()),
@@ -1486,7 +1746,7 @@ impl Connection {
                 }
             }
             RelayAdminCommand::Claim { .. } => {
-                return Err("a claim is not an admin request".to_string());
+                return Err("a claim is not an admin request".to_string().into());
             }
         };
         let payload = self.binding().admin_payload(counter, command);
@@ -1507,7 +1767,7 @@ impl Connection {
         access: &RelayAccessKeyPair,
         admin: &AdminKeyPair,
         admins: &[AdminPublicKey],
-    ) -> Result<(), String> {
+    ) -> Result<(), RelayError> {
         let access_key = access.public_key();
         let payload = self.binding().admin_payload(
             1,
@@ -1536,17 +1796,9 @@ impl Connection {
     }
 
     /// The last sequence of each writer the relay holds.
-    async fn ranges(&mut self) -> Result<VersionVector, String> {
+    async fn ranges(&mut self) -> Result<VersionVector, RelayError> {
         match self.request(&RelayRequest::State).await? {
-            RelayResponse::State { writers, .. } => {
-                let mut ranges = VersionVector::new();
-                for range in writers {
-                    let writer = WriterId::from_hex(&range.writer)
-                        .ok_or_else(|| "the relay named an invalid writer".to_string())?;
-                    ranges.set(writer, range.next.saturating_sub(1));
-                }
-                Ok(ranges)
-            }
+            RelayResponse::State { writers, .. } => relay_ranges(&writers),
             other => Err(unexpected("State", &other)),
         }
     }
@@ -1561,7 +1813,7 @@ pub async fn claim_space(
     first: &ganbaru_sync_contracts::SpaceKey,
     admin: &AdminKeyPair,
     admins: &[AdminPublicKey],
-) -> Result<(), String> {
+) -> Result<(), RelayError> {
     let access = first
         .relay_access_key(&space)
         .map_err(|error| format!("derive relay access key: {error}"))?;
@@ -1570,6 +1822,40 @@ pub async fn claim_space(
     connection
         .claim(token, first.epoch(), &access, admin, admins)
         .await
+}
+
+/// Opens the exchange with the relay `target` names and returns the protocol version it
+/// answers with. Needs no key, so it tells whether the relay answers at all.
+pub async fn probe(
+    target: &RelayTarget,
+    space: SpaceId,
+    loopback: LoopbackPolicy,
+) -> Result<u16, RelayError> {
+    let mut connection = Connection::open(target, space, loopback).await?;
+    let request = RelayRequest::Hello {
+        protocol_version: RELAY_PROTOCOL_VERSION,
+        space: space.to_hex(),
+    };
+    match connection.request(&request).await? {
+        RelayResponse::Welcome { protocol_version } => Ok(protocol_version),
+        other => Err(unexpected("Welcome", &other)),
+    }
+}
+
+/// Asks the relay `target` names to drop `space` and everything it stores for it, signed by
+/// `admin`, which must be in the relay's admin set.
+pub async fn remove_space(
+    target: &RelayTarget,
+    space: SpaceId,
+    loopback: LoopbackPolicy,
+    admin: &AdminKeyPair,
+) -> Result<(), RelayError> {
+    let mut connection = Connection::open(target, space, loopback).await?;
+    connection.hello().await?;
+    connection
+        .admin(admin, 1, &RelayAdminCommand::RemoveSpace)
+        .await?;
+    Ok(())
 }
 
 async fn connect(
@@ -1661,5 +1947,71 @@ impl ServerCertVerifier for PinnedVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.algorithms.supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    fn writer(byte: u8) -> WriterId {
+        WriterId::from_bytes([byte; ganbaru_sync_contracts::ids::ID_BYTES])
+    }
+
+    fn vector(entries: &[(u8, u64)]) -> VersionVector {
+        let mut vector = VersionVector::new();
+        for &(byte, seq) in entries {
+            vector.set(writer(byte), seq);
+        }
+        vector
+    }
+
+    #[test]
+    fn undelivered_counts_only_own_operations_the_relay_lacks() {
+        let own = BTreeSet::from([writer(1), writer(2)]);
+        let stored = vector(&[(1, 10), (2, 4), (3, 50)]);
+        let reached = vector(&[(1, 7), (3, 1)]);
+        assert_eq!(
+            undelivered_count(&own, &stored, &reached, &VersionVector::new()),
+            3 + 4
+        );
+        let compacted = vector(&[(2, 4)]);
+        assert_eq!(undelivered_count(&own, &stored, &reached, &compacted), 3);
+        let ahead = vector(&[(1, 12), (2, 9)]);
+        assert_eq!(
+            undelivered_count(&own, &stored, &ahead, &VersionVector::new()),
+            0
+        );
+        assert_eq!(
+            undelivered_count(&BTreeSet::new(), &stored, &reached, &compacted),
+            0
+        );
+    }
+
+    #[test]
+    fn relay_refusals_map_to_problems_and_count_as_contact() {
+        assert_eq!(
+            RelayProblem::of_refusal(RelayRefusalCode::Version),
+            RelayProblem::Incompatible
+        );
+        assert_eq!(
+            RelayProblem::of_refusal(RelayRefusalCode::Token),
+            RelayProblem::SetupCodeRefused
+        );
+        assert_eq!(
+            RelayProblem::of_refusal(RelayRefusalCode::StaleEpoch),
+            RelayProblem::AccessRefused
+        );
+        assert_eq!(
+            RelayProblem::of_refusal(RelayRefusalCode::AdminCounter),
+            RelayProblem::AdminRefused
+        );
+        assert!(RelayProblem::of_refusal(RelayRefusalCode::Busy).relay_answered());
+        assert!(!RelayProblem::Unreachable.relay_answered());
+        assert!(!RelayProblem::Failed.relay_answered());
+        assert_eq!(
+            RelayError::from("disk full".to_string()).problem,
+            RelayProblem::Failed
+        );
     }
 }

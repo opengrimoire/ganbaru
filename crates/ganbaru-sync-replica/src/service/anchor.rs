@@ -18,7 +18,7 @@ use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKind, Digest32, Entry, LateResolution, LateRow, ProposalRejection,
-    ResolveLate, RowKey, SignedProposal, TableId, VersionVector,
+    ResolveLate, RowKey, Server, ServerConfig, SignedProposal, TableId, VersionVector,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -52,6 +52,8 @@ pub enum AuthorityAction {
     /// Seal, as the anchor of the instance the stored handover with this hash leaves, an
     /// objection to it.
     Object(Digest32),
+    /// Propose the vault's server configuration: the server devices reach, or none.
+    SetServer(Option<Server>),
 }
 
 /// A forced handover a person asks for. Its debug form never shows the kit code.
@@ -127,6 +129,10 @@ impl std::fmt::Debug for AuthorityAction {
             }
             Self::Yield(handover) => formatter.debug_tuple("Yield").field(handover).finish(),
             Self::Object(handover) => formatter.debug_tuple("Object").field(handover).finish(),
+            Self::SetServer(server) => formatter
+                .debug_tuple("SetServer")
+                .field(&server.as_ref().map(|server| server.mode))
+                .finish(),
         }
     }
 }
@@ -399,6 +405,13 @@ impl<H: SyncHost> Session<'_, H> {
             }
             AuthorityAction::Yield(_) | AuthorityAction::Object(_) => {
                 Err("a contest record runs with the sync writer".to_string())
+            }
+            AuthorityAction::SetServer(server) => {
+                let entry = Entry::ServerConfig(ServerConfig {
+                    server: server.clone(),
+                });
+                self.queue_proposal(&admin, entry).await?;
+                Ok(AuthorityAnswer::Proposed)
             }
             AuthorityAction::Remove(device_id) => {
                 if *device_id == admin.device_id {

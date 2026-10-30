@@ -16,6 +16,8 @@
     syncDescription,
     syncHeldLines,
     syncLastExchangeLabel,
+    syncDeliveryLines,
+    syncDeviceAcknowledgementLines,
     syncRecoveryTotal,
     syncRelayLines,
     syncRoleLabel,
@@ -29,6 +31,7 @@
   import SyncLateChanges from "./SyncLateChanges.svelte";
   import SyncOutboxList from "./SyncOutboxList.svelte";
   import SyncRecoveryKit from "./SyncRecoveryKit.svelte";
+  import SyncServer from "./SyncServer.svelte";
   import SyncContestCard from "./SyncContestCard.svelte";
   import { syncKitContested, syncStorageAlertLines } from "$lib/sync/contests";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -37,6 +40,7 @@
   import {
     canInstallSyncRecoveryKey,
     canManageSyncRecoveryKit,
+    canManageSyncServer,
     canResetSyncState,
     canResolveSyncLateChanges,
     canSuggestSyncHandover,
@@ -77,12 +81,14 @@
   const held = $derived(syncHeldLines(t, status));
   const clockAhead = $derived(syncClockAheadLines(t, status));
   const uncountedDevices = $derived(syncUncountedDeviceLines(t, status));
+  const acknowledgementLines = $derived(syncDeviceAcknowledgementLines(t, localization.locale, status, now));
   const conflictLines = $derived(syncConflictLines(t, syncPresentations, status));
   const recoveryTotal = $derived(syncRecoveryTotal(status));
   const description = $derived(syncDescription(t, localization.locale, syncPresentations));
   const stateLabel = $derived(syncStateLabel(t, status.state));
   const connectionLabel = $derived(syncConnectionLabel(t, status));
   const relayLines = $derived(syncRelayLines(t, localization.locale, status, now));
+  const deliveryLines = $derived(syncDeliveryLines(t, status));
   const degradedRows = $derived(syncDegradedRows(t, status));
   const authorityState = getSyncAuthorityState();
   let resetConfirming = $state(false);
@@ -244,8 +250,14 @@
       {#if status.waiting > 0}
         <div class="text-muted-foreground">{t("sync.waiting", status.waiting)}</div>
       {/if}
+      {#each deliveryLines as line (line)}
+        <div class="min-w-0 break-words text-muted-foreground">{line}</div>
+      {/each}
       {#each relayLines as line (line)}
         <div class="min-w-0 break-words text-muted-foreground">{line}</div>
+      {/each}
+      {#each acknowledgementLines as entry (entry.deviceId)}
+        <div class="min-w-0 break-words text-muted-foreground">{entry.line}</div>
       {/each}
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />
@@ -400,6 +412,10 @@
         />
       {/if}
     {/if}
+    <SyncServer
+      buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass}
+      canManage={authorityContext !== null && canManageSyncServer(authorityContext)}
+    />
   {/if}
 </div>
 

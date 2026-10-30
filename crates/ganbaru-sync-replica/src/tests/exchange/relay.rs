@@ -14,8 +14,8 @@ use crate::client::{MAX_EXCHANGE_BYTES, PeerIds};
 use crate::keys::SpaceKeys;
 use crate::outbox::Outbox;
 use crate::relay::{
-    Connection, RelayLimits, RelayPass, RelaySession, RelayTarget, UNMETERED_MAX_ASSET_BYTES,
-    claim_space,
+    Connection, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession, RelayTarget,
+    UNMETERED_MAX_ASSET_BYTES, claim_space,
 };
 use crate::tests::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note};
 use ganbaru_handoff::dial::LoopbackPolicy;
@@ -212,7 +212,11 @@ impl Keyed {
             .expect("relay pass")
     }
 
-    async fn try_pass(&self, relay: &TestRelay, max_asset_bytes: u32) -> Result<RelayPass, String> {
+    async fn try_pass(
+        &self,
+        relay: &TestRelay,
+        max_asset_bytes: u32,
+    ) -> Result<RelayPass, RelayError> {
         let admin = self.replica.device_id == HUB_DEVICE;
         self.pass_as(relay, admin, MAX_EXCHANGE_BYTES, max_asset_bytes)
             .await
@@ -232,7 +236,7 @@ impl Keyed {
         admin: bool,
         max_bytes: usize,
         max_asset_bytes: u32,
-    ) -> Result<RelayPass, String> {
+    ) -> Result<RelayPass, RelayError> {
         let admin_key = hub_keys().admin;
         let own_writers = self.replica.writer.own_writers();
         let quarantined = BTreeSet::new();
@@ -318,6 +322,7 @@ fn two_devices_converge_only_through_the_relay() {
         assert_eq!(pushed.epoch, 1);
         assert!(pushed.pushed > 0);
         assert!(pushed.stored_bytes > 0);
+        assert_eq!(pushed.undelivered, Some(0), "{pushed:?}");
 
         let pulled = phone.pass(&relay).await;
         assert_eq!(pulled.problem, None);
@@ -394,6 +399,33 @@ fn a_removed_device_pulls_nothing_sealed_after_its_removal() {
         assert!(
             tablet.replica.stored().await.get(&writer) < phone.replica.stored().await.get(&writer)
         );
+        hub_device.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_pass_stopped_by_a_newer_epoch_reports_delivery_as_unknown() {
+    block_on(async {
+        let relay = start_relay("relay-epoch-ahead").await;
+        let (mut hub_device, members) =
+            keyed_space("epoch-ahead", &[PHONE_DEVICE, TABLET_DEVICE]).await;
+        let mut members = members.into_iter();
+        let phone = members.next().expect("phone");
+        let mut tablet = members.next().expect("tablet");
+        hub_device.claim(&relay).await;
+        for keyed in [&hub_device, &phone, &tablet] {
+            assert_eq!(keyed.pass(&relay).await.problem, None);
+        }
+
+        remove_and_rotate(&mut hub_device, TABLET_DEVICE).await;
+        assert_eq!(hub_device.pass(&relay).await.epoch, 2);
+
+        tablet.replica.seal_note("note-the-relay-never-gets").await;
+        let stopped = tablet.pass(&relay).await;
+        assert_eq!(stopped.problem, Some(RelayProblem::EpochAhead));
+        assert_eq!(stopped.undelivered, None, "{stopped:?}");
         hub_device.close().await;
         phone.close().await;
         tablet.close().await;
@@ -719,13 +751,12 @@ fn a_device_whose_flush_stalls_does_not_register_the_next_epoch() {
         let stalled = hub_device.pass(&relay).await;
         assert!(stalled.registered.is_empty(), "{stalled:?}");
         assert_eq!(stalled.epoch, 1, "{stalled:?}");
-        assert!(
-            stalled
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("does not register")),
+        assert_eq!(
+            stalled.problem,
+            Some(RelayProblem::RelayBehind),
             "{stalled:?}"
         );
+        assert_eq!(stalled.undelivered, None, "{stalled:?}");
         let pool = relay_database(&relay).await;
         assert_eq!(relay_epoch(&pool).await, 1);
         pool.close().await;
@@ -876,11 +907,9 @@ fn asset_chunks_round_trip_and_a_tampered_chunk_is_refused() {
         tablet.replica.apply().await;
         let refused = tablet.pass(&relay).await;
         assert_eq!(refused.downloaded, 0);
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("refused")),
+        assert_eq!(
+            refused.problem,
+            Some(RelayProblem::AssetRefused),
             "{refused:?}"
         );
         assert_eq!(tablet.replica.asset_bytes(&image), None);
@@ -953,6 +982,7 @@ fn a_loopback_relay_is_refused_when_loopback_dialing_is_off() {
         )
         .await
         .expect_err("loopback is refused");
-        assert!(error.contains("not allowed"), "{error}");
+        assert_eq!(error.problem, RelayProblem::Unreachable, "{error}");
+        assert!(error.detail.contains("not allowed"), "{error}");
     });
 }

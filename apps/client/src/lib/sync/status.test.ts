@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OFF_SYNC_STATUS, type SyncStatusView } from "$lib/api/sync";
+import { OFF_SYNC_STATUS, SYNC_RELAY_PROBLEMS, type SyncStatusView } from "$lib/api/sync";
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import {
   canRequestSync,
@@ -10,11 +10,14 @@ import {
   formatSyncTime,
   syncConflictLines,
   syncDescription,
+  syncDeviceAcknowledgementLines,
   syncDeviceName,
   syncHeldLines,
   syncLastExchangeLabel,
   syncRecoveryTotal,
+  syncDeliveryLines,
   syncRelayLines,
+  syncRelayProblemLabel,
   syncRoleLabel,
   syncStateLabel,
   syncUncountedDeviceLines,
@@ -126,6 +129,20 @@ describe("sync status presentation", () => {
     expect(lines[1].line).toBe("Link another device again so it can sync.");
   });
 
+  it("reports each device's last acknowledgement and the ones with none yet", () => {
+    expect(syncDeviceAcknowledgementLines(t, "en", status({}), NOW)).toEqual([]);
+    const lines = syncDeviceAcknowledgementLines(t, "en", status({
+      deviceAcknowledgements: [
+        { device: { deviceId: "a", deviceLabel: "Laptop", ownDevice: false }, lastAcknowledgedAtMs: NOW - 5 * 60_000 },
+        { device: { deviceId: "b", deviceLabel: null, ownDevice: false }, lastAcknowledgedAtMs: null },
+      ],
+    }), NOW);
+    expect(lines).toEqual([
+      { deviceId: "a", line: "Last confirmation from Laptop: 5 min ago" },
+      { deviceId: "b", line: "No confirmation from another device yet" },
+    ]);
+  });
+
   it("names own, labeled, and unknown devices", () => {
     expect(syncDeviceName({ deviceId: "a", deviceLabel: "Laptop", ownDevice: true }, "This device", "Another device"))
       .toBe("This device");
@@ -205,6 +222,7 @@ describe("sync connectivity", () => {
 describe("relay delivery counts", () => {
   const relay = {
     lastPassAtMs: NOW - 2 * 60_000,
+    lastContactAtMs: null,
     sent: 0,
     received: 0,
     undelivered: 0,
@@ -233,19 +251,93 @@ describe("relay delivery counts", () => {
       "Relay checked 2 min ago",
       "1 change sent through the relay",
       "3 changes received through the relay",
-      "2 changes not on the relay yet",
       "1 file uploaded to the relay",
       "2 files downloaded from the relay",
       "1 large file waits for a network without data limits",
     ]);
   });
 
-  it("shows storage only when the relay reports a quota, and the problem last", () => {
+  it("shows storage only when the relay reports a quota, then the localized problem and last contact", () => {
     const lines = syncRelayLines(t, "en", status({
       state: "error",
-      relay: { ...relay, storedBytes: 1_500_000, quotaBytes: 100_000_000, problem: "the relay is full" },
+      relay: {
+        ...relay,
+        storedBytes: 1_500_000,
+        quotaBytes: 100_000_000,
+        problem: "busy",
+        lastContactAtMs: NOW - 5 * 60_000,
+      },
     }), NOW);
-    expect(lines.slice(1)).toEqual(["Relay storage: 1.5 MB of 100 MB", "Relay: the relay is full"]);
+    expect(lines.slice(1)).toEqual([
+      "Relay storage: 1.5 MB of 100 MB",
+      "Relay: The relay is busy. Sync tries again later.",
+      "Relay last answered 5 min ago",
+    ]);
     expect(syncRelayLines(t, "en", status({ state: "idle", relay: { ...relay, storedBytes: 9 } }), NOW)).toHaveLength(1);
+  });
+
+  it("says when the relay has not answered at all", () => {
+    const lines = syncRelayLines(t, "en", status({ state: "error", relay: { ...relay, problem: "unreachable" } }), NOW);
+    expect(lines.slice(1)).toEqual([
+      "Relay: The relay could not be reached, or its certificate did not match.",
+      "The relay has not answered since the app started",
+    ]);
+  });
+
+  it("localizes every relay problem code", () => {
+    for (const problem of SYNC_RELAY_PROBLEMS) {
+      const label = syncRelayProblemLabel(t, problem);
+      expect(label).not.toContain("sync.server.problems");
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("relay delivery stages", () => {
+  const relay = {
+    lastPassAtMs: NOW,
+    lastContactAtMs: NOW,
+    sent: 0,
+    received: 0,
+    undelivered: 0,
+    uploadedFiles: 0,
+    downloadedFiles: 0,
+    deferredFiles: 0,
+    storedBytes: 0,
+    quotaBytes: 0,
+    problem: null,
+  };
+
+  it("shows nothing without a relay pass", () => {
+    expect(syncDeliveryLines(t, status({ state: "idle", unconfirmed: 3 }))).toEqual([]);
+  });
+
+  it("splits unconfirmed changes into saved here and received by the relay", () => {
+    expect(syncDeliveryLines(t, status({ state: "idle", unconfirmed: 5, relay: { ...relay, undelivered: 2 } }))).toEqual([
+      "2 changes are saved on this device and not on the relay yet",
+      "3 changes were received by the relay and wait for the anchor to confirm them",
+    ]);
+    expect(syncDeliveryLines(t, status({ state: "idle", unconfirmed: 1, relay }))).toEqual([
+      "1 change was received by the relay and waits for the anchor to confirm it",
+    ]);
+  });
+
+  it("never reports a negative relay count when undelivered changes are not counted as unconfirmed yet", () => {
+    expect(syncDeliveryLines(t, status({ state: "idle", unconfirmed: 0, relay: { ...relay, undelivered: 1 } }))).toEqual([
+      "1 change is saved on this device and not on the relay yet",
+    ]);
+  });
+
+  it("never credits the relay after a pass that ended before it reported what it holds", () => {
+    const failed = { ...relay, undelivered: null, problem: "unreachable" as const };
+    expect(syncDeliveryLines(t, status({ state: "error", unconfirmed: 3, relay: failed }))).toEqual([
+      "3 changes are saved on this device and not on the relay yet",
+    ]);
+    expect(syncDeliveryLines(t, status({ state: "error", unconfirmed: 0, pendingLocalChanges: 1, relay: failed }))).toEqual([]);
+  });
+
+  it("reports everything confirmed only when nothing waits locally or at the anchor", () => {
+    expect(syncDeliveryLines(t, status({ state: "idle", relay }))).toEqual(["Every change from this device is confirmed"]);
+    expect(syncDeliveryLines(t, status({ state: "idle", pendingLocalChanges: 1, relay }))).toEqual([]);
   });
 });

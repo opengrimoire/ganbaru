@@ -58,8 +58,6 @@ import {
 import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
 import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-import { getVaultOwnership } from "$lib/vault/ownership.svelte";
-import { CHAT_SYNC_DOMAIN, canWriteSyncDomain } from "$lib/vault/state";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
@@ -210,11 +208,6 @@ export class ChatStore {
       setSettings: (settings) => { this.settings = settings; },
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
     });
-    if (this.owner && localExecutionAvailable) {
-      getVaultOwnership().onOwnerChange((status) => {
-        if (canWriteSyncDomain(status, CHAT_SYNC_DOMAIN)) this.recoverAssignments();
-      });
-    }
     paneStores.add(this);
   }
 

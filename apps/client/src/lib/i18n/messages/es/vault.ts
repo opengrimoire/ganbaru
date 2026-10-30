@@ -1,8 +1,6 @@
 import type {
   dataFolderError as enDataFolderError,
   language as enLanguage,
-  vaultOwnership as enVaultOwnership,
-  vaultOwnershipPrompt as enVaultOwnershipPrompt,
   vaultHandoff as enVaultHandoff,
   vaultSetup as enVaultSetup,
 } from "../en/vault";
@@ -71,26 +69,6 @@ export const language = {
   spanishOption: "Español",
 } as const satisfies MessageShape<typeof enLanguage>;
 
-export const vaultOwnership = {
-  recovery: "Esta bóveda necesita recuperar la transferencia antes de poder modificarse.",
-} as const satisfies MessageShape<typeof enVaultOwnership>;
-
-export const vaultOwnershipPrompt = {
-  title: (device: string) => `${device} es el dispositivo principal`,
-  description: "Solo el dispositivo principal puede hacer cambios.",
-  replicaDescription: "Las notas rápidas, las preferencias, los temas, los contactos, la biblioteca de música, los proyectos, el calendario y el chat siguen editables aquí y se sincronizan con tus dispositivos. Solo el dispositivo principal puede cambiar todo lo demás.",
-  ownerRequiredDescription: "Este cambio también afecta datos que solo el dispositivo principal puede cambiar. Usa este dispositivo como principal para hacerlo.",
-  continueReadOnly: "Continuar en solo lectura",
-  switching: "Cambiando a este dispositivo...",
-  copying: "Copiando la bóveda a este dispositivo...",
-  replacementTitle: "¿Copiar la bóveda vinculada a este dispositivo?",
-  replacementAndroid:
-    "La bóveda vinculada reemplaza la bóveda de este teléfono, cuyos datos no se pueden combinar con ella. Ganbaru guarda una copia de la bóveda reemplazada en este teléfono, que puedes exportar o eliminar en Ajustes > Datos.",
-  replacementDesktop:
-    "Ganbaru copia la bóveda vinculada en su propia carpeta de esta computadora. Tu bóveda actual no cambia y sigue en la lista de bóvedas.",
-  replacementConfirm: "Copiar bóveda",
-} as const satisfies MessageShape<typeof enVaultOwnershipPrompt>;
-
 export const vaultHandoff = {
   heading: "Dispositivos vinculados",
   description: "Administra tus dispositivos conectados",
@@ -130,7 +108,6 @@ export const vaultHandoff = {
   desktopDevice: "Computadora",
   androidDevice: "Teléfono",
   anotherDevice: "Otro dispositivo",
-  transferPending: "Hay una transferencia de la bóveda pendiente de terminar.",
   linkPhone: "Vincular teléfono",
   linkToDesktop: "Vincular con computadora",
   createQr: "Mostrar código QR de vinculación",
@@ -171,11 +148,16 @@ export const vaultHandoff = {
   notNow: "Ahora no",
   continue: "Continuar",
   deviceLabel: "Teléfono",
-  useHere: "Cambiar a este dispositivo",
-  refreshCopy: "Obtener los últimos cambios",
   copyHere: "Copiar la bóveda a este dispositivo",
   copyHereDescription: "Este dispositivo está vinculado. Copia aquí la bóveda vinculada para empezar a sincronizarla.",
   copied: "La bóveda vinculada ya está en este dispositivo.",
+  copyInProgress: "La bóveda vinculada ya se está copiando a este dispositivo.",
+  firstCopyTitle: "¿Copiar la bóveda vinculada a este dispositivo?",
+  firstCopyAndroid:
+    "La bóveda vinculada reemplaza la bóveda de este teléfono, cuyos datos no se pueden combinar con ella. Ganbaru guarda una copia de la bóveda reemplazada en este teléfono, que puedes exportar o eliminar en Ajustes > Datos.",
+  firstCopyDesktop:
+    "Ganbaru copia la bóveda vinculada en su propia carpeta de esta computadora. Tu bóveda actual no cambia y sigue en la lista de bóvedas.",
+  firstCopyConfirm: "Copiar bóveda",
   linkFolder: "Carpeta para la bóveda vinculada",
   linkFolderDefault: "Ubicación predeterminada",
   chooseLinkFolder: "Elegir carpeta",
@@ -185,23 +167,18 @@ export const vaultHandoff = {
   unlink: "Desvincular dispositivo",
   unlinkTitle: "¿Desvincular este dispositivo?",
   unlinkMessage:
-    "El propietario actual no cambiará. Una copia de solo lectura seguirá así hasta que la recuperes explícitamente.",
-  recover: "Recuperar esta copia local",
-  recoverTitle: "¿Usar esta copia como una bóveda separada?",
+    "El dispositivo deja de sincronizarse con esta bóveda. Cada dispositivo conserva los datos que ya tiene.",
+  recover: "Conservar esta copia como bóveda propia",
+  recoverTitle: "¿Conservar esta copia como bóveda propia?",
   recoverMessage:
-    "Usa esto solo si el dispositivo propietario ya no está disponible. Ambas copias se conservan, este dispositivo podrá escribir y los dispositivos se desvincularán. Los cambios posteriores no se combinarán automáticamente.",
-  workingOwnership: "Preparando este dispositivo...",
-  workingRefresh: "Obteniendo los últimos cambios...",
-  workingRequest: "Esperando al otro dispositivo...",
-  linked: "Dispositivo vinculado.",
+    "Usa esto solo si la computadora coordinadora ya no volverá a estar disponible. Este dispositivo olvida a su coordinador y a sus dispositivos vinculados, y conserva esta copia como su propia bóveda. Los cambios hechos en otros dispositivos ya no se sincronizarán con ella.",
+  workingCopy: "Copiando la bóveda vinculada a este dispositivo...",
   linkedSuccessfully: (device: string) => `${device} se vinculó correctamente.`,
   linkedLabel: "vinculado",
-  refreshed: "Se recibieron los últimos cambios.",
-  requestSent: "Se envió la solicitud. Mantén ambas apps abiertas en la misma red.",
   unlinked: "Dispositivo desvinculado.",
   revokedByCoordinator:
-    "Este dispositivo fue desvinculado por la computadora coordinadora. Su copia local seguirá siendo de solo lectura a menos que la recuperes como una bóveda separada.",
-  recovered: "Esta copia local ahora es una bóveda separada con escritura.",
+    "Este dispositivo fue desvinculado por la computadora coordinadora. Su copia de la bóveda se queda en este dispositivo, pero ya no se sincroniza.",
+  recovered: "Esta copia ahora es una bóveda propia en este dispositivo.",
   localBackup:
     "Cuando la bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda una copia de la reemplazada en Ajustes > Datos.",
   sameNetwork: "Mantén ambas apps abiertas en la misma red local.",
@@ -221,12 +198,10 @@ export const vaultHandoff = {
   replacedVaultBackupFailed:
     "La bóveda vinculada no se copió porque este dispositivo no tiene espacio para guardar una copia de su bóveda actual. Libera espacio y reintenta.",
   linkFolderNotEmpty: "La carpeta elegida no está vacía. Elige una carpeta vacía para la bóveda vinculada.",
-  firstLinkNeedsCopy: "Primero copia la bóveda vinculada a este dispositivo.",
-  ownerHoldsVault: "Este dispositivo ya tiene la bóveda vinculada como dispositivo principal.",
-  ownershipChurnLimit:
-    "La edición cambió de dispositivo demasiadas veces en la última hora. Espera un rato y vuelve a cambiar de dispositivo.",
+  linkFolderInsideVault:
+    "La carpeta elegida está dentro de otra bóveda. Elige una carpeta fuera de cualquier bóveda para la bóveda vinculada.",
   bundleRequestLimit:
-    "Este dispositivo pidió la bóveda demasiadas veces en la última hora. Espera un rato y vuelve a actualizar o a cambiar de dispositivo.",
+    "Este dispositivo pidió la bóveda demasiadas veces en la última hora. Espera un rato y vuelve a intentarlo.",
   deviceKeyMissing:
     "Falta la clave de vinculación de este dispositivo en el llavero del sistema. Desvincula este dispositivo y vuelve a vincularlo.",
   deviceKeyUnavailable:
@@ -237,7 +212,5 @@ export const vaultHandoff = {
     "La computadora coordinadora está atendiendo demasiadas conexiones en este momento. Espera un momento y reintenta.",
   unreachable:
     "Este dispositivo no pudo comunicarse con la computadora coordinadora. Mantén ambas aplicaciones abiertas en la misma red local y reintenta.",
-  ownerUnreachable:
-    "El dispositivo principal no está disponible. Mantenlo abierto en la misma red local y vuelve a intentarlo.",
   unknownError: "Error desconocido",
 } as const satisfies MessageShape<typeof enVaultHandoff>;

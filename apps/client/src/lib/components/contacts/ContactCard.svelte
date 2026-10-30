@@ -90,8 +90,7 @@
       case "key_unavailable":
         return t("contacts.card.keyPending");
       case "identity_unavailable":
-      case "read_only":
-        return t("contacts.card.readOnly");
+        return t("contacts.card.identityPending");
       default:
         return t("contacts.card.loadFailed");
     }

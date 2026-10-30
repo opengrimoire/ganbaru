@@ -32,8 +32,8 @@ describe("classifyLoadFailure", () => {
   });
 
   it("reads the message of a native command error object", () => {
-    expect(classifyLoadFailure({ code: "read_only", message: "This vault is read-only on this device" })).toEqual({
-      message: "This vault is read-only on this device",
+    expect(classifyLoadFailure({ code: "revision_conflict", message: "This row changed on another device" })).toEqual({
+      message: "This row changed on another device",
       requiresDocumentReload: false,
     });
   });

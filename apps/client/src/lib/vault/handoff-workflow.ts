@@ -75,8 +75,7 @@ function bootstrapRefusalMessage(
 ):
   | "vaultHandoff.replacedVaultBackupFailed"
   | "vaultHandoff.linkFolderNotEmpty"
-  | "vaultHandoff.firstLinkNeedsCopy"
-  | "vaultHandoff.ownerHoldsVault"
+  | "vaultHandoff.linkFolderInsideVault"
   | null {
   if (message.includes("vault this link replaces could not be backed up")) {
     return "vaultHandoff.replacedVaultBackupFailed";
@@ -84,11 +83,8 @@ function bootstrapRefusalMessage(
   if (message.includes("folder chosen for the linked vault is not empty")) {
     return "vaultHandoff.linkFolderNotEmpty";
   }
-  if (message.includes("linked vault must be copied to this device")) {
-    return "vaultHandoff.firstLinkNeedsCopy";
-  }
-  if (message.includes("this device owns the linked vault")) {
-    return "vaultHandoff.ownerHoldsVault";
+  if (message.includes("folder chosen for the linked vault is inside another vault")) {
+    return "vaultHandoff.linkFolderInsideVault";
   }
   return null;
 }
@@ -130,9 +126,6 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (lower.includes("linked vault is not active on this device")) {
     return t("vaultHandoff.linkedVaultInactive");
   }
-  if (lower.includes("vault ownership changed too often")) {
-    return t("vaultHandoff.ownershipChurnLimit");
-  }
   if (lower.includes("requested the vault too often")) {
     return t("vaultHandoff.bundleRequestLimit");
   }
@@ -156,20 +149,6 @@ export function formatPairingCodeError(cause: unknown, t: Translate): string {
   }
   if (lower.includes("pairing invitation")) {
     return t("vaultHandoff.codeInvalid");
-  }
-  return formatHandoffError(cause, t);
-}
-
-/** Converts ownership connectivity failures into main-device guidance. */
-export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
-  const lower = errorText(cause).toLowerCase();
-  if (
-    !isLinkingDisabled(lower)
-    && !isCoordinatorBusy(lower)
-    && !deviceKeyMessage(lower)
-    && isConnectivityFailure(lower)
-  ) {
-    return t("vaultHandoff.ownerUnreachable");
   }
   return formatHandoffError(cause, t);
 }

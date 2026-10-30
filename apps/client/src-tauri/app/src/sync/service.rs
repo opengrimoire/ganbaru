@@ -18,7 +18,9 @@ use super::host::SyncHost;
 use super::hub::{HubForwards, HubProposals, HubStability};
 use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
-use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
+use super::status::{
+    DegradedReasons, RelayDeliveryView, SyncErrorCode, SyncRole, SyncState, SyncStatusView,
+};
 use super::transport::PairedTransport;
 use super::vault_assets::ActiveVaultAssets;
 use super::writer::{
@@ -39,10 +41,11 @@ use ganbaru_sync::{
 use ganbaru_sync_contracts::{DevicePublicKey, Seq, VersionVector, WriterId};
 #[cfg(desktop)]
 use ganbaru_sync_contracts::{Digest32, ProposalRejection, SignedCharter, SignedProposal};
+use ganbaru_sync_replica::authority::read_admin_key;
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
-    ensure_charter, read_admin_key,
+    ensure_charter,
 };
 use ganbaru_sync_replica::keys::SpaceKeys;
 use ganbaru_sync_replica::now_ms;
@@ -50,6 +53,9 @@ use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
 use ganbaru_sync_replica::records::{FreeSpace, RecordExchange, RecordLink};
+use ganbaru_sync_replica::relay::{
+    METERED_MAX_ASSET_BYTES, RelayLimits, RelaySession, RelayTarget, UNMETERED_MAX_ASSET_BYTES,
+};
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
 use ganbaru_sync_replica::writer::SequencedCheck;
@@ -91,6 +97,29 @@ const MAX_FORK_RECOVERIES: usize = 3;
 /// to push back the entries it lost before it hands over to itself, which supersedes them.
 #[cfg(desktop)]
 const RESTORE_CATCH_UP_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// Whether relay passes dial a loopback relay: debug builds allow a relay on this computer for
+/// development, release builds refuse it.
+const RELAY_LOOPBACK: ganbaru_handoff::dial::LoopbackPolicy = if cfg!(debug_assertions) {
+    ganbaru_handoff::dial::LoopbackPolicy::Allow
+} else {
+    ganbaru_handoff::dial::LoopbackPolicy::Reject
+};
+
+/// The largest asset file a relay pass moves. Desktop connections count as unmetered. An
+/// Android pass moves large files only when the relay worker reported an unmetered network, so a
+/// foreground pass, whose network is not probed, keeps to the metered bound.
+fn relay_asset_bound() -> u32 {
+    #[cfg(target_os = "android")]
+    let metered = super::headless::relay_metered().unwrap_or(true);
+    #[cfg(not(target_os = "android"))]
+    let metered = false;
+    if metered {
+        METERED_MAX_ASSET_BYTES
+    } else {
+        UNMETERED_MAX_ASSET_BYTES
+    }
+}
 
 /// Lets one sync pass of this process run at a time, whether the app service, a headless pass,
 /// or the seal before a vault transition runs it.
@@ -1395,6 +1424,12 @@ impl ServiceState {
             }
         }
         let coordinator_answered = asset_peer.is_some() && view.state != SyncState::Offline;
+        if !view.paused
+            && self.relay_pass(&session, view).await?
+            && matches!(next, Next::Idle | Next::Online(_))
+        {
+            next = Next::Continue;
+        }
         self.apply_new(&session).await?;
         let anchor_link = self.anchor_link.take();
         if is_hub {
@@ -1785,6 +1820,73 @@ impl ServiceState {
             .map(ActiveWriter::own_writers)
             .unwrap_or_default();
         Ok(compaction_limit(&stable, &own_writers, self.confirmed))
+    }
+
+    /// Runs one relay pass while the space's server configuration names a relay and records
+    /// what it moved in `view`. A relay fault is reported in the status rather than failing the
+    /// pass, so LAN exchange continues. Returns whether the relay holds more to move.
+    async fn relay_pass<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+        view: &mut SyncStatusView,
+    ) -> Result<bool, String> {
+        let authorization = {
+            let mut conn = acquire(&session.pool).await?;
+            session
+                .engine
+                .authorization(&mut conn, &session.ctx)
+                .await
+                .map_err(|error| format!("read sync authorization: {error}"))?
+        };
+        let Some(target) = authorization.as_ref().and_then(RelayTarget::of) else {
+            view.relay = None;
+            return Ok(false);
+        };
+        let Some(holder) = self.writer.as_ref().and_then(ActiveWriter::space_keys) else {
+            return Ok(false);
+        };
+        let keys = session.keys.clone();
+        let vault_id = session.host.active_vault_id()?;
+        let admin_vault = vault_id.clone();
+        let admin = blocking(move || read_admin_key(keys.as_ref(), &admin_vault)).await?;
+        let path = session.files.quarantine_path();
+        let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        let assets: Arc<dyn AssetStore> =
+            Arc::new(ActiveVaultAssets::open(session.host, &vault_id)?);
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        let relay = RelaySession {
+            engine: &session.engine,
+            pool: &session.pool,
+            ctx: &session.ctx,
+            holder: holder.as_ref(),
+            admin: admin.as_ref(),
+            own_writers: &own_writers,
+            quarantined: quarantine.devices(),
+            assets: Some(&assets),
+            limits: RelayLimits {
+                max_bytes: super::client::MAX_EXCHANGE_BYTES,
+                max_asset_bytes: relay_asset_bound(),
+                loopback: RELAY_LOOPBACK,
+            },
+        };
+        let outcome = relay.pass(&target).await;
+        let now = now_ms()?;
+        Ok(match outcome {
+            Ok(pass) => {
+                let more = pass.more;
+                view.relay = Some(RelayDeliveryView::of(&pass, now));
+                more
+            }
+            Err(error) => {
+                eprintln!("sync relay: {error}");
+                view.relay = Some(RelayDeliveryView::failed(error, now));
+                false
+            }
+        })
     }
 
     /// Exchanges with the hub, re-sealing after a fork of this installation's chain.

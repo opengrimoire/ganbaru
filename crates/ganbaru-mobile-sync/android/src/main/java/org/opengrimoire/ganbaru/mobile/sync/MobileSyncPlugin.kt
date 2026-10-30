@@ -32,13 +32,15 @@ import java.util.concurrent.TimeUnit
 internal class ConfigureArgs {
   var linked: Boolean = false
   var pending: Boolean = false
+  var relay: Boolean = false
   lateinit var configDir: String
 }
 
 /**
- * Schedules background sync through WorkManager: a periodic pass while linked, and a one-time pass
- * when the default network changes or the app leaves the foreground with changes waiting. Work is
- * never run as a foreground service.
+ * Schedules background sync through WorkManager: a periodic pass while linked, a one-time pass
+ * when the default network changes or the app leaves the foreground with changes waiting, and a
+ * periodic relay pass on any connected network while the sync space uses a relay. Work is never
+ * run as a foreground service.
  */
 @TauriPlugin
 class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
@@ -102,10 +104,19 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.reject("The app config directory is required")
       return
     }
-    preferences.write(SyncSettings(args.linked, args.configDir))
+    preferences.write(SyncSettings(args.linked, args.relay, args.configDir))
     linked = args.linked
     pending = args.pending
     val work = WorkManager.getInstance(context)
+    if (RelayScheduling.shouldRun(args.relay, args.configDir)) {
+      val request = PeriodicWorkRequestBuilder<RelayWorker>(
+        RelayScheduling.PERIODIC_INTERVAL_MINUTES,
+        TimeUnit.MINUTES,
+      ).setConstraints(relayConstraints()).build()
+      work.enqueueUniquePeriodicWork(RelayScheduling.PERIODIC_WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
+    } else {
+      work.cancelUniqueWork(RelayScheduling.PERIODIC_WORK)
+    }
     if (args.linked) {
       val request = PeriodicWorkRequestBuilder<SyncWorker>(
         SyncScheduling.PERIODIC_INTERVAL_MINUTES,
@@ -133,6 +144,14 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
 
   private fun connected(): Constraints = Constraints.Builder()
     .setRequiredNetworkType(NetworkType.CONNECTED)
+    .build()
+
+  private fun relayConstraints(): Constraints = Constraints.Builder()
+    .setRequiredNetworkType(
+      when (RelayScheduling.requiredNetwork) {
+        RelayNetwork.CONNECTED -> NetworkType.CONNECTED
+      },
+    )
     .build()
 
   private fun enqueueOneTime(expedited: Boolean) {

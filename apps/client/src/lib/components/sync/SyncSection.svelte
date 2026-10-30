@@ -17,6 +17,7 @@
     syncHeldLines,
     syncLastExchangeLabel,
     syncRecoveryTotal,
+    syncRelayLines,
     syncRoleLabel,
     syncStateLabel,
     syncUncountedDeviceLines,
@@ -81,6 +82,7 @@
   const description = $derived(syncDescription(t, localization.locale, syncPresentations));
   const stateLabel = $derived(syncStateLabel(t, status.state));
   const connectionLabel = $derived(syncConnectionLabel(t, status));
+  const relayLines = $derived(syncRelayLines(t, localization.locale, status, now));
   const degradedRows = $derived(syncDegradedRows(t, status));
   const authorityState = getSyncAuthorityState();
   let resetConfirming = $state(false);
@@ -242,6 +244,9 @@
       {#if status.waiting > 0}
         <div class="text-muted-foreground">{t("sync.waiting", status.waiting)}</div>
       {/if}
+      {#each relayLines as line (line)}
+        <div class="min-w-0 break-words text-muted-foreground">{line}</div>
+      {/each}
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />
       {:else if status.state === "error" && status.lastErrorCode === "bootstrapRequired"}

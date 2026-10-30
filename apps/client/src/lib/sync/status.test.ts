@@ -14,6 +14,7 @@ import {
   syncHeldLines,
   syncLastExchangeLabel,
   syncRecoveryTotal,
+  syncRelayLines,
   syncRoleLabel,
   syncStateLabel,
   syncUncountedDeviceLines,
@@ -198,5 +199,53 @@ describe("sync connectivity", () => {
     ]);
     expect(syncDegradedActionLabel(t, "allowPeerConnections")).toBe("Allow peers to connect");
     expect(syncDegradedActionLabel(t, "allowNetworkAccess")).toBe("Allow network access");
+  });
+});
+
+describe("relay delivery counts", () => {
+  const relay = {
+    lastPassAtMs: NOW - 2 * 60_000,
+    sent: 0,
+    received: 0,
+    undelivered: 0,
+    uploadedFiles: 0,
+    downloadedFiles: 0,
+    deferredFiles: 0,
+    storedBytes: 0,
+    quotaBytes: 0,
+    problem: null,
+  };
+
+  it("shows nothing for a vault without a relay pass", () => {
+    expect(syncRelayLines(t, "en", status({ state: "idle" }), NOW)).toEqual([]);
+  });
+
+  it("shows only the pass time after a settled pass", () => {
+    expect(syncRelayLines(t, "en", status({ state: "idle", relay }), NOW)).toEqual(["Relay checked 2 min ago"]);
+  });
+
+  it("lists each nonzero count with plural wording", () => {
+    const lines = syncRelayLines(t, "en", status({
+      state: "idle",
+      relay: { ...relay, sent: 1, received: 3, undelivered: 2, uploadedFiles: 1, downloadedFiles: 2, deferredFiles: 1 },
+    }), NOW);
+    expect(lines).toEqual([
+      "Relay checked 2 min ago",
+      "1 change sent through the relay",
+      "3 changes received through the relay",
+      "2 changes not on the relay yet",
+      "1 file uploaded to the relay",
+      "2 files downloaded from the relay",
+      "1 large file waits for a network without data limits",
+    ]);
+  });
+
+  it("shows storage only when the relay reports a quota, and the problem last", () => {
+    const lines = syncRelayLines(t, "en", status({
+      state: "error",
+      relay: { ...relay, storedBytes: 1_500_000, quotaBytes: 100_000_000, problem: "the relay is full" },
+    }), NOW);
+    expect(lines.slice(1)).toEqual(["Relay storage: 1.5 MB of 100 MB", "Relay: the relay is full"]);
+    expect(syncRelayLines(t, "en", status({ state: "idle", relay: { ...relay, storedBytes: 9 } }), NOW)).toHaveLength(1);
   });
 });

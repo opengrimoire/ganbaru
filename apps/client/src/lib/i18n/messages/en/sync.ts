@@ -52,6 +52,18 @@ export const sync = {
     lan: (address: string) => `Connected over local network at ${address}`,
     overlay: (address: string) => `Connected over overlay network at ${address}`,
   },
+  relay: {
+    lastPass: (time: string) => `Relay checked ${time}`,
+    sent: (count: number) => `${count} ${count === 1 ? "change" : "changes"} sent through the relay`,
+    received: (count: number) => `${count} ${count === 1 ? "change" : "changes"} received through the relay`,
+    undelivered: (count: number) => `${count} ${count === 1 ? "change" : "changes"} not on the relay yet`,
+    uploadedFiles: (count: number) => `${count} ${count === 1 ? "file" : "files"} uploaded to the relay`,
+    downloadedFiles: (count: number) => `${count} ${count === 1 ? "file" : "files"} downloaded from the relay`,
+    deferredFiles: (count: number) =>
+      `${count} large ${count === 1 ? "file waits" : "files wait"} for a network without data limits`,
+    storage: (used: string, quota: string) => `Relay storage: ${used} of ${quota}`,
+    problem: (message: string) => `Relay: ${message}`,
+  },
   degraded: {
     backgroundRestricted: "Android restricts Ganbaru in the background, so sync waits until you open the app.",
     standbyRestricted: "Android rarely lets Ganbaru run in the background, so sync can be late.",

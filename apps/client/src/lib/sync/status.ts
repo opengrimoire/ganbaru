@@ -1,6 +1,6 @@
 import type { SyncDegradedReason, SyncDeviceRef, SyncRole, SyncState, SyncStatusView } from "$lib/api/sync";
 import type { AppLocale } from "$lib/i18n/locales";
-import { formatDateTime, formatList, formatRelativeMinutes } from "$lib/i18n/formatters";
+import { formatDateTime, formatList, formatNumber, formatRelativeMinutes } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { SyncPresentationRegistry } from "./presentation-registry";
 
@@ -191,6 +191,32 @@ export function syncDegradedRows(t: Translate, status: SyncStatusView): SyncDegr
         return { reason, label: t("sync.degraded.firewallPeers"), action: "allowPeerConnections" };
     }
   });
+}
+
+/** The unit relay storage is shown in, with one fraction digit. */
+const STORAGE_UNIT: Intl.NumberFormatOptions = { style: "unit", unit: "megabyte", maximumFractionDigits: 1 };
+const BYTES_PER_MEGABYTE = 1_000_000;
+
+/**
+ * Describes what the last relay pass moved and what still waits, one line per nonzero count,
+ * with the relay's storage use when it reports a quota. Empty without a relay pass.
+ */
+export function syncRelayLines(t: Translate, locale: AppLocale, status: SyncStatusView, nowMs: number): string[] {
+  const relay = status.relay;
+  if (relay === null) return [];
+  const lines = [t("sync.relay.lastPass", formatSyncTime(t, locale, relay.lastPassAtMs, nowMs))];
+  if (relay.sent > 0) lines.push(t("sync.relay.sent", relay.sent));
+  if (relay.received > 0) lines.push(t("sync.relay.received", relay.received));
+  if (relay.undelivered > 0) lines.push(t("sync.relay.undelivered", relay.undelivered));
+  if (relay.uploadedFiles > 0) lines.push(t("sync.relay.uploadedFiles", relay.uploadedFiles));
+  if (relay.downloadedFiles > 0) lines.push(t("sync.relay.downloadedFiles", relay.downloadedFiles));
+  if (relay.deferredFiles > 0) lines.push(t("sync.relay.deferredFiles", relay.deferredFiles));
+  if (relay.quotaBytes > 0) {
+    const megabytes = (bytes: number) => formatNumber(locale, bytes / BYTES_PER_MEGABYTE, STORAGE_UNIT);
+    lines.push(t("sync.relay.storage", megabytes(relay.storedBytes), megabytes(relay.quotaBytes)));
+  }
+  if (relay.problem !== null) lines.push(t("sync.relay.problem", relay.problem));
+  return lines;
 }
 
 /** Describes this device's place in the sync topology. */

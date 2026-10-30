@@ -1,6 +1,6 @@
 # Device linking and synchronization
 
-**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, closed Focus runs with device Focus activity, Chat organizational content (identity, policy, channels, conversations, memberships, folder grants, messages, scheduled messages, and work assignments), and the Notes structure and databases written on the vault owner (folders, pages, page aliases, blocks, databases, properties, values, views, templates, comments, suggestions, and assets) replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence); this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, and read-only refresh. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes writes on replicas and text merging, operation encryption, and delivery beyond the LAN are planned.
+**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, closed Focus runs with device Focus activity, Chat organizational content (identity, policy, channels, conversations, memberships, folder grants, messages, scheduled messages, and work assignments), and the Notes structure and databases written on the vault owner (folders, pages, page aliases, blocks, databases, properties, values, views, templates, comments, suggestions, and assets) replicate concurrently between linked devices as signed operations through the coordinator desktop and directly between members on the LAN, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence). Enrollment, removal, roles, and anchor handover follow an anchor-sequenced authorization log with admin keys, a recovery kit, removal cutoffs, and late changes; this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, and read-only refresh. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes writes on replicas and text merging, operation encryption, and delivery beyond the LAN are planned.
 
 This contract links one person's devices; multi-person sharing is later work. The phone must provide full offline access to portable Notes, Projects, Calendar, and other synchronized content. Each device runs its own Focus sessions with no controller ownership; execution and evidence rules live in [Focus authority](../algorithms/pomodoro/focus-authority.md).
 
@@ -195,17 +195,13 @@ Content merges without a leader and any path may deliver signed operations; only
 
 | Role | Meaning |
 | --- | --- |
-| Coordinator | The desktop that pairs devices and hosts the LAN listener. It is the personal space's first anchor. |
-| Hub | Any member installation that stores and serves operations. Every reachable member serves its LAN peers, authenticated by mutual TLS with the certificates its enrollment names. |
-| Anchor | The one member installation per space that sequences the hash-chained authorization log of enrollments, removals, roles, admin keys, and handovers. It holds the space keys and never gates content. |
-| Relay | A blind, self-hosted store-and-forward service for encrypted records. It is never an anchor. |
-| Always-on anchor | A self-hosted server running as an enrolled member that holds the keys, so it is also a hub reachable from every network and a backup. |
+| Coordinator | The desktop that pairs devices, owns the vault for whole-vault handoff, and runs the main hub. It founds the space and is its first anchor, and it stays coordinator after a handover moves the anchor. |
+| Hub | Any member installation that stores and serves operations. Every linked member desktop, and a phone while the app is in the foreground, serves its LAN peers, authenticated by mutual TLS with the certificates its enrollment names. |
+| Anchor | The one member desktop per space that sequences the hash-chained authorization log of enrollments, removals, roles, admin keys, and handovers. It never gates content. |
+| Relay | **Planned.** A blind, self-hosted store-and-forward service for encrypted records. It is never an anchor. |
+| Always-on anchor | **Planned.** A self-hosted server running as an enrolled member that holds the keys, so it is also a hub reachable from every network and a backup. |
 
-- Editing and delivery continue while the anchor is unreachable; only authorization proposals wait.
-- Proposals are signed with an admin key separate from the person key, held by the anchor and chosen admin devices.
-- A removal's cutoff is the anchor's stored vector. An anchor that is not the coordinator raises each cutoff to what the coordinator last reported storing, quarantined writers included, since members may already hold operations the anchor turned away; a writer of the removed device the anchor never stored still gets a cutoff of zero. Operations the anchor stored are final. Operations only peers had seen are provisional, and those beyond the cutoff are excluded on every replica and kept as late changes for an admin to restore or discard.
-- Any device can quarantine another locally while the anchor is unreachable. Quarantine never excludes operations by itself.
-- Anchor handover is signed with the admin key and starts a new anchor epoch. A restored or cloned anchor is detected the same way a restored or cloned writer is.
+Editing and delivery continue while the anchor is unreachable; only authorization proposals wait. The implemented rules for admin keys, removal cutoffs, late changes, quarantine, fork evidence, handover, contests, and the recovery kit are in [Writers](#writers), and member listeners and record exchange in [Exchange](#exchange); the pure selection and exclusion logic is in [Sync merge rules](../algorithms/sync/README.md#authorization-and-exclusion).
 
 ### Storage ownership
 
@@ -255,7 +251,7 @@ Both enrolling devices show a verification code, and the existing device confirm
 
 Mutual TLS with pinned device certificates is the confidentiality boundary for direct links over any allowed private or overlay range, and it is the only confidentiality protection operations have today; their signatures give integrity and authenticity, not secrecy. Record encryption, when it lands, gates only intermediaries that store records, such as the relay or an anchor, never a direct link.
 
-Enrollment and revocation follow the anchor-sequenced authorization log in [Topology and authority](#topology-and-authority). A separate owner recovery identity and recovery kit receive resource-key envelopes. Revocation rotates affected keys and rejects new operations from the removed device; it cannot erase copies that device already holds.
+Enrollment and removal follow the anchor-sequenced authorization log described in [Writers](#writers); a removal rejects new operations from the removed device but cannot erase copies that device already holds. **Planned:** resource-key envelopes for the recovery kit, and removal rotating the affected resource keys, arrive with operation encryption.
 
 ### Contacts and contact requests
 
@@ -279,7 +275,7 @@ Vault replacement must fence the generation across processes, not only within on
 
 Settings shows linked devices with their roles and the anchor, connection method, last successful sync, pending and unconfirmed changes, conflicts, recovery entries, late changes, and the recovery kit, with pause, retry, quarantine, removal, and reset. Unavailable assets, relay configuration, and the same controls during onboarding are planned.
 
-The sync status already carries the network class (local or overlay) and address of the coordinator a linked device last reached in this app run, and the degraded reasons the device can detect: Android background and standby restrictions, a connection refused because local network access is denied, and a Linux firewall that blocks the coordinator listener or, on a linked desktop whose browse found nothing, may block discovery. Settings shows each reason with its recovery action where the app has one.
+The sync status already carries the network class (local or overlay) and address of the coordinator a linked device last reached in this app run, and the degraded reasons the device can detect: Android background and standby restrictions, a connection refused because local network access is denied, and a Linux firewall that blocks the coordinator listener or a member listener until the person allows peers to connect, or, on a linked desktop whose browse found nothing, may block discovery. Settings shows each reason with its recovery action where the app has one.
 
 Android background sync uses WorkManager only and never a foreground service; the app manifest removes the WorkManager foreground service. Background passes dial and never listen; only the visible app serves other members. A background pass runs only while the vault is linked and the active network has a Wi-Fi, Ethernet, or VPN transport, because cellular alone cannot reach a LAN coordinator. Background restriction by the user and the restricted standby bucket surface as degraded connectivity with a link to battery settings; battery optimization alone does not, because WorkManager still runs in Doze maintenance windows. Background service availability never establishes focus or idle activity.
 
@@ -303,9 +299,10 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of the Notes structure, databases, comments, suggestions, and assets | Partial | Notes writes on replicas, and physical multi-device acceptance |
 | Concurrent replication of Chat organizational content | Implemented | Physical multi-device acceptance |
 | Concurrent replication of other domains | Planned | Retiring whole-vault handoff |
-| Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, and typed bootstrap |
+| Anchored authority and LAN peer exchange | Implemented | Physical multi-device acceptance |
+| Concurrent secure local linking | Planned | Operation encryption, key lifecycle, and typed bootstrap |
 | Delivery beyond the LAN | Planned | Encrypted relay or always-on anchor, encrypted backup, measurements, and physical acceptance |
 
 Required tests include reordered, duplicated, delayed, and interrupted delivery; text and tree convergence; deletion, undo, and history restore; crashes at persistence and acknowledgement boundaries; full disks, corrupt staging, and missing assets; invalid identity, signatures, invitation replay, revocation, key epochs, payload bounds, and protocol versions; controller handoff failure and expired commands; duplicate jobs; and long-offline replicas, compaction, restored backups, and cloned writers.
 
-Queues and caches stay bounded. Pairing, key lifecycle, native bridges, and remote capabilities require a separate security review, and physical Android and desktop acceptance covers sleep, force-stop, reboot, permissions, manufacturer restrictions, clock changes, and disconnected use.
+Queues and caches stay bounded. Pairing, key lifecycle, native bridges, and remote capabilities require a security review; the internal reviews of anchored authority and LAN peer exchange and their open follow-ups are summarized in [Network and privacy](security/network-and-privacy.md#sync-security-reviews). Physical Android and desktop acceptance covers sleep, force-stop, reboot, permissions, manufacturer restrictions, clock changes, and disconnected use.

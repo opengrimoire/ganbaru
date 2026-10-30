@@ -894,6 +894,9 @@
           && (networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired")
           ? () => setNetworkAccess(true)
           : undefined}
+        onRecoverLocalCopy={!status.canWrite && status.replicaReady && !status.pendingTransfer && busy === null
+          ? () => { confirmation = "recover"; }
+          : undefined}
         onFreshCopy={isCoordinatorClient && status.replicaReady && status.canWrite === false ? getFreshCopy : undefined}
       />
     {/if}

@@ -37,6 +37,7 @@ export const sync = {
   clockAhead: (device: string) =>
     `The clock on ${device} is ahead of this device. Its edits win conflicting changes until the clocks agree, so check its date and time.`,
   clockAheadOwn: "Some edits from this device were made while its clock was ahead. They win conflicting changes until that time passes.",
+  coordinatorRemoved: "The computer this device is linked to was removed from the vault, so this device no longer sends it changes. It still syncs with your other devices. To keep working with this copy, link this device to another computer or recover this local copy.",
   bootstrapRequired: "This device was away too long to catch up. Your changes here still reach your main device. To receive changes again, get a fresh copy of the vault.",
   bootstrapAction: "Get a fresh copy",
   bootstrapConfirmTitle: "Get a fresh copy of the vault?",

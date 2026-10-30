@@ -635,6 +635,7 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
         vault_id,
         assets,
         quarantined,
+        device_id: app.device_id()?,
     }))
 }
 
@@ -1325,12 +1326,24 @@ impl ServiceState {
         let mut next = Next::Idle;
         let is_hub = peer.is_none();
         let mut asset_peer = None;
+        // The coordinator ids of this pass, also when only record exchange reaches it.
+        let mut linked_ids = None;
         match peer {
             None => {}
             Some(_) if view.paused => view.state = SyncState::Paused,
             Some(_) if session.coordinator_quarantined(&manager).await? => {
                 view.state = SyncState::Offline;
                 view.last_error = Some("this device quarantined the coordinator".to_string());
+            }
+            Some((linked_vault, device_id)) if session.coordinator_removed(&manager).await? => {
+                let ids = PeerIds {
+                    vault_id: linked_vault,
+                    device_id,
+                };
+                linked_ids = Some(ids.clone());
+                next = self
+                    .removed_coordinator_pass(&session, &manager, ids, view)
+                    .await?;
             }
             Some((linked_vault, device_id)) => {
                 self.publish(
@@ -1378,6 +1391,7 @@ impl ServiceState {
                     }
                     Ok(()) => self.exchange(&session, wait, view).await?,
                 };
+                linked_ids = Some(assets.ids.clone());
                 asset_peer = Some((assets, transfer));
             }
         }
@@ -1495,10 +1509,8 @@ impl ServiceState {
         }
         // An anchor that is not the coordinator and answered this pass takes the proposals
         // directly, also while the coordinator is away.
-        if let (Some(link), Some((assets, _))) = (anchor_link.as_ref(), asset_peer.as_ref()) {
-            session
-                .replay_outbox(link, &assets.ids, &link.device_id)
-                .await;
+        if let (Some(link), Some(ids)) = (anchor_link.as_ref(), linked_ids.as_ref()) {
+            session.replay_outbox(link, ids, &link.device_id).await;
         }
         #[cfg(desktop)]
         for request in take_anchor {
@@ -1927,6 +1939,70 @@ impl ServiceState {
             .merge(&self.pull_skips.for_quarantine(quarantined));
         wait.poll = Some(anchor.clone());
         Next::Online(Box::new(wait))
+    }
+
+    /// The pass while the selected log removed the coordinator: record exchange only, so it
+    /// learns its removal, and then members exchange as while it is away. Nothing else reaches
+    /// it or comes from it: no operations or assets, no stable vector, and no anchor marks.
+    async fn removed_coordinator_pass<H: SyncHost>(
+        &mut self,
+        session: &Session<'_, H>,
+        manager: &PairingManager,
+        ids: PeerIds,
+        view: &mut SyncStatusView,
+    ) -> Result<Next, String> {
+        let path = session.files.quarantine_path();
+        let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        let listening = session.host.serve_members().await;
+        self.anchor_link = None;
+        let wait = OnlineWait {
+            transport: PairedTransport(manager.clone()),
+            ids,
+            known: VersionVector::new(),
+            #[cfg(desktop)]
+            hub: VersionVector::new(),
+            poll: None,
+        };
+        let coordinator = manager.coordinator_pin()?.map(|pin| pin.device_id);
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        let records = ClientSession {
+            transport: &wait.transport,
+            ids: &wait.ids,
+            engine: &session.engine,
+            pool: &session.pool,
+            ctx: &session.ctx,
+            writer: self.writer.as_ref().map(ActiveWriter::id),
+            own_writers: &own_writers,
+            quarantined: quarantine.devices(),
+            pull_skips: Some(&self.pull_skips),
+            max_bytes: super::client::MAX_EXCHANGE_BYTES,
+            listening: &listening,
+            records: coordinator.as_deref().map(|peer| RecordLink {
+                state: &self.records,
+                peer,
+            }),
+        }
+        .exchange_records_only()
+        .await;
+        if let Err(error) = records {
+            eprintln!("sync: record exchange with the removed coordinator: {error}");
+        }
+        let next = self
+            .coordinator_away(
+                session,
+                wait,
+                quarantine.devices(),
+                &listening,
+                view,
+                "the selected log removed the coordinator".to_string(),
+            )
+            .await;
+        view.last_error_code = Some(SyncErrorCode::CoordinatorRemoved);
+        Ok(next)
     }
 
     /// Exchanges with the other members the pass plan picks. A failure only delays what members
@@ -2763,6 +2839,23 @@ impl<'a, H: SyncHost> Session<'a, H> {
         let path = self.files.quarantine_path();
         let quarantine = blocking(move || Quarantine::load(&path)).await?;
         Ok(quarantine.contains(&pin.device_id))
+    }
+
+    /// Whether the selected log, derived from the stored record envelopes alone, removed the
+    /// coordinator this device pinned. Such a coordinator gets record exchange only, so it
+    /// learns its removal but no longer takes this device's operations or assets.
+    async fn coordinator_removed(&self, manager: &PairingManager) -> Result<bool, String> {
+        let Some(pin) = manager.coordinator_pin()? else {
+            return Ok(false);
+        };
+        let mut conn = acquire(&self.pool).await?;
+        let view = self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?;
+        Ok(view
+            .is_some_and(|view| ganbaru_sync_replica::hub::removes_device(&view, &pin.device_id)))
     }
 
     /// On a client, installs the charter pinned at pairing when the space has none yet, and

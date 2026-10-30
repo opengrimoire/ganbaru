@@ -43,6 +43,7 @@ export const sync = {
   clockAhead: (device: string) =>
     `El reloj de ${device} va adelantado respecto a este dispositivo. Sus ediciones ganan los cambios en conflicto hasta que los relojes coincidan, así que revisa su fecha y hora.`,
   clockAheadOwn: "Algunas ediciones de este dispositivo se hicieron con su reloj adelantado. Ganan los cambios en conflicto hasta que pase esa hora.",
+  coordinatorRemoved: "La computadora a la que está vinculado este dispositivo se quitó de la bóveda, así que este dispositivo ya no le envía cambios. Sigue sincronizándose con tus otros dispositivos. Para seguir trabajando con esta copia, vincula este dispositivo a otra computadora o recupera esta copia local.",
   bootstrapRequired: "Este dispositivo estuvo fuera demasiado tiempo para ponerse al día. Tus cambios aquí siguen llegando a tu dispositivo principal. Para volver a recibir cambios, obtén una copia nueva de la bóveda.",
   bootstrapAction: "Obtener una copia nueva",
   bootstrapConfirmTitle: "¿Obtener una copia nueva de la bóveda?",

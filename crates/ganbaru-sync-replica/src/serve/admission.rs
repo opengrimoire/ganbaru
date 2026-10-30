@@ -25,7 +25,7 @@ type Decide = dyn Fn(SocketAddr) -> bool + Send + Sync;
 /// Decides whether the listener serves LAN peers that reach it on a local address. The default
 /// admits every peer, for platforms without per-network firewall rules.
 #[derive(Clone, Default)]
-pub(crate) struct LanAdmission(Option<Arc<Gate>>);
+pub struct LanAdmission(Option<Arc<Gate>>);
 
 struct Gate {
     decide: Arc<Decide>,
@@ -73,24 +73,9 @@ impl DecisionCache {
 }
 
 impl LanAdmission {
-    /// Admits LAN peers only while the Linux firewall rules for the local address a peer
-    /// reached and `port` are allowed on the current network.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn linux_firewall(config_dir: std::path::PathBuf, port: u16) -> Self {
-        Self::deciding(move |local| {
-            ganbaru_handoff::network_access::admits_lan_peers(
-                &config_dir,
-                &crate::vault::handoff::local_addresses::firewall_interface_addresses(),
-                local.ip(),
-                port,
-            )
-        })
-    }
-
     /// Admits LAN peers while `decide` returns true for the local address they reached.
     /// `decide` may block; it runs off the async runtime.
-    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
-    pub(crate) fn deciding(decide: impl Fn(SocketAddr) -> bool + Send + Sync + 'static) -> Self {
+    pub fn deciding(decide: impl Fn(SocketAddr) -> bool + Send + Sync + 'static) -> Self {
         Self(Some(Arc::new(Gate {
             decide: Arc::new(decide),
             cached: Mutex::new(DecisionCache::default()),
@@ -100,7 +85,7 @@ impl LanAdmission {
     /// Whether a LAN peer that reached the listener on `local` may be served now. A decision
     /// that cannot be read admits the peer, because refusing would break linking with no action
     /// that lifts it.
-    pub(crate) async fn admits(&self, local: SocketAddr) -> bool {
+    pub async fn admits(&self, local: SocketAddr) -> bool {
         let Some(gate) = &self.0 else {
             return true;
         };

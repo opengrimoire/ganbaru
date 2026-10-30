@@ -486,7 +486,14 @@ fn lan_admission<R: Runtime>(
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    Ok(transport::LanAdmission::linux_firewall(config_dir, port))
+    Ok(transport::LanAdmission::deciding(move |local| {
+        ganbaru_handoff::network_access::admits_lan_peers(
+            &config_dir,
+            &local_addresses::firewall_interface_addresses(),
+            local.ip(),
+            port,
+        )
+    }))
 }
 
 /// What the sync hub of a desktop listening on `port` reports to linked devices: its current

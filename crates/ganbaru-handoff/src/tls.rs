@@ -1,9 +1,10 @@
-//! Client certificate verification pinned to the exact certificates of known devices.
+//! TLS certificate verification pinned to the exact certificates of known devices, on both
+//! sides of a linked-device connection.
 
-use crate::vault::handoff::pairing::certificate_fingerprint;
-use rustls::client::danger::HandshakeSignatureValid;
+use crate::pairing::certificate_fingerprint;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, UnixTime};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use std::collections::HashSet;
@@ -14,7 +15,7 @@ use std::collections::HashSet;
 /// coordinator a client may still connect without a certificate to enroll; it then stays on the
 /// unauthenticated budget. A member listener requires a certificate.
 #[derive(Debug)]
-pub(super) struct PinnedClientVerifier {
+pub struct PinnedClientVerifier {
     fingerprints: HashSet<String>,
     mandatory: bool,
     algorithms: WebPkiSupportedAlgorithms,
@@ -23,7 +24,7 @@ pub(super) struct PinnedClientVerifier {
 impl PinnedClientVerifier {
     /// The coordinator's verifier: pinned to linked device certificates, client auth optional.
     #[cfg(desktop)]
-    pub(super) fn new(certificates: &[CertificateDer<'_>]) -> Self {
+    pub fn new(certificates: &[CertificateDer<'_>]) -> Self {
         Self::pinned(
             certificates
                 .iter()
@@ -34,7 +35,7 @@ impl PinnedClientVerifier {
 
     /// A verifier pinned to lowercase hex SHA-256 `fingerprints`, requiring a client
     /// certificate when `mandatory`.
-    pub(super) fn pinned(fingerprints: impl IntoIterator<Item = String>, mandatory: bool) -> Self {
+    pub fn pinned(fingerprints: impl IntoIterator<Item = String>, mandatory: bool) -> Self {
         Self {
             fingerprints: fingerprints.into_iter().collect(),
             mandatory,
@@ -97,10 +98,72 @@ impl ClientCertVerifier for PinnedClientVerifier {
     }
 }
 
+/// Accepts a server certificate only when it is byte for byte the pinned device certificate
+/// with `fingerprint`, with no intermediates. The server name, subject, and validity dates never
+/// decide trust.
+#[derive(Debug)]
+pub struct PinnedServerVerifier {
+    fingerprint: String,
+    algorithms: WebPkiSupportedAlgorithms,
+}
+
+impl PinnedServerVerifier {
+    /// A verifier pinned to the lowercase hex SHA-256 `fingerprint`.
+    pub fn new(fingerprint: String) -> Self {
+        let provider = rustls::crypto::ring::default_provider();
+        Self {
+            fingerprint,
+            algorithms: provider.signature_verification_algorithms,
+        }
+    }
+}
+
+impl ServerCertVerifier for PinnedServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        if !intermediates.is_empty()
+            || certificate_fingerprint(end_entity.as_ref()) != self.fingerprint
+        {
+            return Err(rustls::Error::General(
+                "coordinator certificate does not match the pinned identity".to_string(),
+            ));
+        }
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(message, certificate, signature, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(message, certificate, signature, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::handoff::pairing::{PairingManager, random_token};
+    use crate::pairing::{PairingManager, random_token};
 
     fn device_certificate(label: &str) -> (std::path::PathBuf, CertificateDer<'static>) {
         let root = std::env::temp_dir().join(format!(

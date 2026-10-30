@@ -9,6 +9,7 @@ use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{DeviceKind, MAX_ARCHIVE_BYTES, PROTOCOL_VERSION};
 use crate::vault::handoff::sha256_file;
 use base64::Engine;
+use ganbaru_sync_replica::serve::member::MemberAdmissionSource;
 use std::fs;
 use tokio::net::TcpListener;
 

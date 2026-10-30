@@ -22,6 +22,10 @@ use super::protocol::{
 };
 use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
 use ganbaru_handoff::tls::PinnedServerVerifier;
+pub(crate) use ganbaru_sync_replica::serve::load_tls_identity;
+use ganbaru_sync_replica::serve::{
+    CONTROL_TIMEOUT, MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, timeout_control,
+};
 use rustls::pki_types::ServerName;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -32,15 +36,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
 /// How long the coordinator holds an enrollment for its user before refusing it. The enrolling
 /// device waits longer, so it never gives up on a request the coordinator could still link.
 pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
 /// Stable code of the retryable rejection a device receives while the coordinator serves a
 /// vault copy to another device.
 pub(crate) const BUNDLE_BUSY_CODE: &str = "bundle_busy";
@@ -95,17 +96,6 @@ where
         .flush()
         .await
         .map_err(|error| format!("flush transfer bundle: {error}"))
-}
-
-/// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
-/// the operating-system keyring.
-pub(crate) async fn load_tls_identity(
-    manager: &PairingManager,
-) -> Result<(String, TlsIdentity), String> {
-    let manager = manager.clone();
-    tokio::task::spawn_blocking(move || manager.identity())
-        .await
-        .map_err(|error| format!("load device linking key: {error}"))?
 }
 
 pub(crate) async fn enroll(
@@ -1110,14 +1100,6 @@ fn coordinator_dial_error(mut failures: Vec<DialFailure>) -> String {
             format!("could not connect to the coordinator at any known endpoint: {details}")
         }
     }
-}
-
-async fn timeout_control<T>(
-    future: impl std::future::Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    tokio::time::timeout(CONTROL_TIMEOUT, future)
-        .await
-        .map_err(|_| "handoff control message timed out".to_string())?
 }
 
 fn fs_rename(source: &Path, target: &Path) -> Result<(), String> {

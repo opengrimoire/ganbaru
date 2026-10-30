@@ -21,16 +21,19 @@ ganbaru-handoff = { workspace = true }
 ganbaru-contacts = { workspace = true }
 ganbaru-sync = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
+rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 zip = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 keyring = { workspace = true }
+socket2 = { workspace = true }
 
 [dev-dependencies]
 ganbaru-calendar = { workspace = true }

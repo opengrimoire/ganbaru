@@ -19,6 +19,7 @@ pub mod quarantine;
 pub mod records;
 pub mod recovery;
 pub mod reset;
+pub mod serve;
 mod wire;
 pub mod writer;
 

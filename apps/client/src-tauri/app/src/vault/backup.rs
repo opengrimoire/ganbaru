@@ -9,8 +9,10 @@ use super::{default_vault_path, path_to_string};
 use chrono::{SecondsFormat, Utc};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
+#[cfg(any(desktop, test))]
+use ganbaru_sync_replica::backup::ArchiveGate;
 use ganbaru_sync_replica::backup::{
-    ArchiveGate, BACKUP_MAX_BYTES, BACKUP_MAX_DEPTH, BACKUP_MAX_ENTRIES, COPY_BUFFER_BYTES,
+    BACKUP_MAX_BYTES, BACKUP_MAX_DEPTH, BACKUP_MAX_ENTRIES, COPY_BUFFER_BYTES,
     is_bundle_layout_entry, is_database_sidecar,
 };
 use sqlx::Row;

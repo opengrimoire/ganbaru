@@ -548,18 +548,18 @@ impl<H: SyncHost> Session<'_, H> {
         Ok(AuthorityAnswer::Proposed)
     }
 
-    /// Seals a handover that makes this linked desktop the anchor. Runs only after an exchange
-    /// that left this device current with the coordinator. The old anchor vector is the
-    /// per-writer maximum of this device's stored vector and `hub_stored`, what the coordinator
-    /// reported storing in that exchange without the writers of devices this desktop
-    /// quarantined, so the new anchor refuses removals until it knows every writer either
-    /// stored. Proposals the coordinator sequenced after the exchange are
+    /// Seals a handover that makes this desktop the anchor. Runs only after an exchange that
+    /// left this device current with the coordinator, or with the anchor server when one
+    /// anchors. The old anchor vector is the per-writer maximum of this device's stored vector
+    /// and `reported`, what that peer reported storing in the exchange without the writers of
+    /// devices this desktop quarantined, so the new anchor refuses removals until it knows every
+    /// writer either stored. Proposals the old anchor sequenced after the exchange are
     /// superseded by the handover and return from the outboxes that hold them.
     pub async fn take_anchor(
         &self,
         manager: &PairingManager,
         writer: &mut Option<ActiveWriter>,
-        hub_stored: &VersionVector,
+        reported: &VersionVector,
     ) -> Result<AuthorityAnswer, String> {
         let admin = self.admin_context(manager).await?;
         if admin.anchors() {
@@ -577,7 +577,7 @@ impl<H: SyncHost> Session<'_, H> {
             .stored_vector(&mut conn, &self.ctx)
             .await
             .map_err(|error| format!("read sync stored vector: {error}"))?;
-        stored.merge(hub_stored);
+        stored.merge(reported);
         let revision = authority::seal_handover_here(
             &self.engine,
             &mut conn,

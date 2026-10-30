@@ -1634,7 +1634,7 @@ impl ServiceState {
                             .await
                     } else {
                         Err(
-                            "taking the anchor needs a current exchange with the coordinator"
+                            "taking the anchor needs a current exchange with the coordinator or the anchor server"
                                 .to_string(),
                         )
                     };
@@ -1699,7 +1699,7 @@ impl ServiceState {
                     Err("the coordinating computer cannot take the anchor back yet".to_string())
                 }
                 None => Err(
-                    "taking the anchor needs a current exchange with the coordinator".to_string(),
+                    "taking the anchor needs a current exchange with the coordinator or the anchor server".to_string(),
                 ),
             };
             if outcome.is_ok() {

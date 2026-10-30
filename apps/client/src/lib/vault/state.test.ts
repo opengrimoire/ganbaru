@@ -319,3 +319,50 @@ describe("database rollbacks", () => {
     expect(invokeMock).toHaveBeenCalledWith("vault_restore_database_rollback", { id: rollback.id });
   });
 });
+
+describe("replaced vault backups", () => {
+  const backup = {
+    id: "replaced-1761700000000.ganbaru-backup",
+    displayName: "Ganbaru",
+    replacedAtMs: 1_761_700_000_000,
+    sizeBytes: 8192,
+  };
+
+  it("lists backups in the order Rust returned, with or without a vault name", async () => {
+    const { listReplacedVaultBackups } = await loadModule();
+    const unnamed = { ...backup, id: "replaced-1761600000000.ganbaru-backup", displayName: null };
+    invokeMock.mockResolvedValueOnce([backup, unnamed]);
+    await expect(listReplacedVaultBackups()).resolves.toEqual([backup, unnamed]);
+    expect(invokeMock).toHaveBeenCalledWith("vault_replaced_backups");
+  });
+
+  it("rejects malformed backup entries", async () => {
+    const { parseReplacedVaultBackups } = await loadModule();
+    expect(() => parseReplacedVaultBackups({})).toThrow("not a list");
+    expect(() => parseReplacedVaultBackups([7])).toThrow("not an object");
+    expect(() => parseReplacedVaultBackups([{ ...backup, id: " " }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, displayName: "" }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, displayName: 3 }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, replacedAtMs: -1 }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, sizeBytes: 0.5 }])).toThrow("incomplete");
+  });
+
+  it("exports a backup by its ID and validates the saved file", async () => {
+    const { exportReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ fileName: "replaced.ganbaru-backup", destination: "downloads" });
+    await expect(exportReplacedVaultBackup(backup.id)).resolves.toEqual({
+      fileName: "replaced.ganbaru-backup",
+      destination: "downloads",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_export_replaced_backup", { id: backup.id });
+    invokeMock.mockResolvedValueOnce({ fileName: "x", destination: "elsewhere" });
+    await expect(exportReplacedVaultBackup(backup.id)).rejects.toThrow("incomplete");
+  });
+
+  it("deletes a backup by its ID only", async () => {
+    const { deleteReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce(undefined);
+    await deleteReplacedVaultBackup(backup.id);
+    expect(invokeMock).toHaveBeenCalledWith("vault_delete_replaced_backup", { id: backup.id });
+  });
+});

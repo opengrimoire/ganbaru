@@ -20,7 +20,7 @@ The portable format is the recovery path after reinstall. Android system backup 
 
 ## Linked desktop handoff
 
-The handoff protocol is owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, ownership generation, transfer state, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before the first ownership activation replaces an independent vault, Android exports it to Downloads and also keeps a private rollback copy; backup failure aborts the transfer.
+The handoff protocol is owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, ownership generation, transfer state, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before a first link replaces an independent vault, Android writes it as a portable backup into application-private replaced-vault storage, keeping the two newest; Settings > Data lists them with Export to Downloads and Delete. Backup failure refuses the link with a storage message and leaves the vault in use. Replaced-vault backups are local only, so uninstalling the app removes them unless they were exported.
 
 After activation, startup reconciles Calendar notifications and anti-distraction projections. Device-local alarms, native enforcement, Media3 state, permissions, and document-tree grants are not replaced by the incoming vault.
 

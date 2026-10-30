@@ -31,6 +31,7 @@
   import SyncContestCard from "./SyncContestCard.svelte";
   import { syncKitContested, syncStorageAlertLines } from "$lib/sync/contests";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import { formatHandoffError } from "$lib/vault/handoff-workflow";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import {
     canInstallSyncRecoveryKey,
@@ -50,6 +51,7 @@
     mobileLayout = false,
     onAllowNetworkAccess,
     onRecoverLocalCopy,
+    onFreshCopy,
   }: {
     buttonClass: string;
     mobileLayout?: boolean;
@@ -57,6 +59,8 @@
     onAllowNetworkAccess?: () => void;
     /** Starts recovering this local copy as a separate vault, when this device can. */
     onRecoverLocalCopy?: () => void;
+    /** Copies the linked vault to this device again after sync reported that it must; absent where this device cannot receive one. */
+    onFreshCopy?: () => Promise<void>;
   } = $props();
 
   const CLOCK_TICK_MS = 30_000;
@@ -106,6 +110,24 @@
   const storageAlerts = $derived(contests ? syncStorageAlertLines(t, localization.locale, contests.storage) : []);
   let resuming = $state(false);
   const canReset = $derived(canResetSyncState(status.role, mobileLayout));
+  let freshCopyConfirming = $state(false);
+  let copyingFresh = $state(false);
+
+  async function getFreshCopy(): Promise<void> {
+    freshCopyConfirming = false;
+    if (copyingFresh || !onFreshCopy) return;
+    copyingFresh = true;
+    actionError = "";
+    resetMessage = "";
+    try {
+      await onFreshCopy();
+      resetMessage = t("sync.bootstrapCopied");
+    } catch (cause: unknown) {
+      actionError = formatHandoffError(cause, t);
+    } finally {
+      copyingFresh = false;
+    }
+  }
 
   async function resetSync(): Promise<void> {
     resetConfirming = false;
@@ -223,7 +245,20 @@
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />
       {:else if status.state === "error" && status.lastErrorCode === "bootstrapRequired"}
-        <Notice tone="warning" role="status" copy={false} message={t("sync.bootstrapRequired")} />
+        <Notice tone="warning" role="status" copy={false} message={t("sync.bootstrapRequired")}>
+          {#snippet actions()}
+            {#if onFreshCopy}
+              <button
+                type="button"
+                class="notice-action-text"
+                disabled={copyingFresh}
+                onclick={() => { freshCopyConfirming = true; }}
+              >
+                {t("sync.bootstrapAction")}
+              </button>
+            {/if}
+          {/snippet}
+        </Notice>
       {:else if status.lastErrorCode === "coordinatorRemoved" && onRecoverLocalCopy}
         <Notice tone="warning" role="status" copy={false} message={t("sync.coordinatorRemoved")}>
           {#snippet actions()}
@@ -362,6 +397,18 @@
     {/if}
   {/if}
 </div>
+
+{#if freshCopyConfirming}
+  <ConfirmDialog
+    title={t("sync.bootstrapConfirmTitle")}
+    message={t("sync.bootstrapConfirmMessage")}
+    confirmLabel={t("sync.bootstrapAction")}
+    cancelLabel={t("common.cancel")}
+    danger={false}
+    onConfirm={() => void getFreshCopy()}
+    onCancel={() => { freshCopyConfirming = false; }}
+  />
+{/if}
 
 {#if resetConfirming}
   <ConfirmDialog

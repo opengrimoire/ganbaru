@@ -82,12 +82,13 @@ export const vaultOwnershipPrompt = {
   ownerRequiredDescription: "Este cambio también afecta datos que solo el dispositivo principal puede cambiar. Usa este dispositivo como principal para hacerlo.",
   continueReadOnly: "Continuar en solo lectura",
   switching: "Cambiando a este dispositivo...",
-  replacementTitle: "¿Reemplazar los datos actuales de este dispositivo?",
+  copying: "Copiando la bóveda a este dispositivo...",
+  replacementTitle: "¿Copiar la bóveda vinculada a este dispositivo?",
   replacementAndroid:
-    "Este teléfono tiene una bóveda de Ganbaru separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru guardará una copia completa en Descargas antes de reemplazarla.",
+    "La bóveda vinculada reemplaza la bóveda de este teléfono, cuyos datos no se pueden combinar con ella. Ganbaru guarda una copia de la bóveda reemplazada en este teléfono, que puedes exportar o eliminar en Ajustes > Datos.",
   replacementDesktop:
-    "Esta computadora tiene una bóveda de Ganbaru separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru conservará una copia de recuperación junto a la carpeta actual de Ganbaru antes de reemplazarla.",
-  replacementConfirm: "Reemplazar con la bóveda vinculada",
+    "Ganbaru copia la bóveda vinculada en su propia carpeta de esta computadora. Tu bóveda actual no cambia y sigue en la lista de bóvedas.",
+  replacementConfirm: "Copiar bóveda",
 } as const satisfies MessageShape<typeof enVaultOwnershipPrompt>;
 
 export const vaultHandoff = {
@@ -172,6 +173,13 @@ export const vaultHandoff = {
   deviceLabel: "Teléfono",
   useHere: "Cambiar a este dispositivo",
   refreshCopy: "Obtener los últimos cambios",
+  copyHere: "Copiar la bóveda a este dispositivo",
+  copyHereDescription: "Este dispositivo está vinculado. Copia aquí la bóveda vinculada para empezar a sincronizarla.",
+  copied: "La bóveda vinculada ya está en este dispositivo.",
+  linkFolder: "Carpeta para la bóveda vinculada",
+  linkFolderDefault: "Ubicación predeterminada",
+  chooseLinkFolder: "Elegir carpeta",
+  useDefaultLinkFolder: "Usar predeterminada",
   retry: "Reintentar",
   cancel: "Cancelar transferencia",
   unlink: "Desvincular dispositivo",
@@ -195,7 +203,7 @@ export const vaultHandoff = {
     "Este dispositivo fue desvinculado por la computadora coordinadora. Su copia local seguirá siendo de solo lectura a menos que la recuperes como una bóveda separada.",
   recovered: "Esta copia local ahora es una bóveda separada con escritura.",
   localBackup:
-    "Antes de que la bóveda de la computadora reemplace datos de Android por primera vez, Ganbaru guarda una copia recuperable en Descargas.",
+    "Cuando la bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda una copia de la reemplazada en Ajustes > Datos.",
   sameNetwork: "Mantén ambas apps abiertas en la misma red local.",
   failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
@@ -210,6 +218,11 @@ export const vaultHandoff = {
     "Hay otra bóveda abierta en este dispositivo, así que la vinculación está en pausa. Vuelve a abrir la bóveda vinculada para reanudarla.",
   coordinatorVaultInactive:
     "La computadora coordinadora tiene otra bóveda abierta. Abre allí la bóveda vinculada y reintenta.",
+  replacedVaultBackupFailed:
+    "La bóveda vinculada no se copió porque este dispositivo no tiene espacio para guardar una copia de su bóveda actual. Libera espacio y reintenta.",
+  linkFolderNotEmpty: "La carpeta elegida no está vacía. Elige una carpeta vacía para la bóveda vinculada.",
+  firstLinkNeedsCopy: "Primero copia la bóveda vinculada a este dispositivo.",
+  ownerHoldsVault: "Este dispositivo ya tiene la bóveda vinculada como dispositivo principal.",
   ownershipChurnLimit:
     "La edición cambió de dispositivo demasiadas veces en la última hora. Espera un rato y vuelve a cambiar de dispositivo.",
   bundleRequestLimit:

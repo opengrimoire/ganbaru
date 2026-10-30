@@ -74,7 +74,7 @@ Several runtime domains have exactly one native owner per vault. The WebView pre
 - **Distraction blocker (desktop):** one native owner observes usage, persists interval evidence to a device-local spool before deriving budgets, and makes block and close decisions only from a fresh snapshot of persisted configuration for the current local date. The UI reads a projection and cannot submit usage or request closes. See [Distraction blocker](../features/distractions/README.md).
 - **Distraction blocker (Android):** the Guardian service keeps its own operating-system observation and enforcement. A serialized Rust publisher synchronizes its usage journal, derives budgets, and publishes rules; presentation can only supply localized copy. Guardian keeps the last accepted rules when the application process is absent.
 
-Configuration changes, vault selection, handoff, and shutdown revoke obsolete generations so stale work cannot publish effects.
+Configuration changes, vault selection, snapshot bootstrap, and shutdown revoke obsolete generations so stale work cannot publish effects.
 
 ## Other native services
 

@@ -279,7 +279,8 @@ Android background sync uses WorkManager only and never a foreground service; th
 | --- | --- | --- |
 | Focus correctness and contracts | Partial | Live companion status; each device owns its own runs, and remote Focus control is deferred |
 | Durable mutation and storage boundaries | Partial | Scoped preferences and capture coverage for the remaining domains |
-| Device linking and snapshot bootstrap | Partial | Physical multi-device acceptance |
+| Device linking and snapshot bootstrap, with every linked device writing every converted domain and no vault owner | Implemented | Physical multi-device acceptance; a typed snapshot with a causal checkpoint is planned |
+| Acknowledgements, stability, dormancy, operation body compaction, managed asset collection, and the vault lock | Implemented | Physical multi-device acceptance and release-profile budget measurements |
 | Concurrent replication of Quick notes | Implemented | Physical multi-device acceptance |
 | Concurrent replication of portable preferences and the profile picture | Implemented | Physical multi-device acceptance |
 | Concurrent replication of user themes | Implemented | Physical multi-device acceptance |

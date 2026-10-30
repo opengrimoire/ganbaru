@@ -490,10 +490,7 @@ impl Owner {
         if self.session.is_none() {
             self.session = Some(crate::distractions::spool::new_accounting_session()?);
         }
-        let binding = (
-            generation,
-            context.vault_id.clone(),
-        );
+        let binding = (generation, context.vault_id.clone());
         if self.binding.as_ref() != Some(&binding) {
             self.accounting.clear();
             self.attempts.clear();
@@ -544,11 +541,11 @@ impl Owner {
     async fn ingest_block_events(&self, context: &Context) -> Result<(), String> {
         let device_id = &context.device_id;
         if !crate::distractions::spool::has_pending_block_events(
-                &self.app,
-                &context.vault_id,
-                device_id,
-            )
-            .await?
+            &self.app,
+            &context.vault_id,
+            device_id,
+        )
+        .await?
         {
             return Ok(());
         }

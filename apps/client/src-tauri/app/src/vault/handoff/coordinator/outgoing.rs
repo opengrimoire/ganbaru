@@ -1,8 +1,6 @@
 //! Coordinator snapshot preparation and receiver acknowledgement.
 
-use super::{
-    CompletedActivation, CoordinatorResponse, CoordinatorState, PreparedTransfer,
-};
+use super::{CompletedActivation, CoordinatorResponse, CoordinatorState, PreparedTransfer};
 use crate::vault::handoff::pairing::{
     PendingAcknowledgement, StoredOutgoingTransfer, random_token,
 };
@@ -41,19 +39,14 @@ impl<R: Runtime> CoordinatorState<R> {
         let archived = archive_active_vault(&self.app, &self.pairing, &transfer_id).await;
         drop(snapshot_quiescence);
         let archive_path = archived?;
-        let metadata = match bundle_metadata(
-            &self.app,
-            vault_id,
-            device_id,
-            transfer_id,
-            &archive_path,
-        ) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                let _ = fs::remove_file(&archive_path);
-                return Err(error);
-            }
-        };
+        let metadata =
+            match bundle_metadata(&self.app, vault_id, device_id, transfer_id, &archive_path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    let _ = fs::remove_file(&archive_path);
+                    return Err(error);
+                }
+            };
         if let Err(error) = self
             .pairing
             .register_outgoing_bundle(metadata.clone(), archive_path.clone())

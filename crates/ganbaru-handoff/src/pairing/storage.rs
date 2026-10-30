@@ -2,9 +2,9 @@
 
 use super::{
     MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
-    PairingStateFile, PendingAcknowledgement, StoredOutgoingTransfer,
-    certificate_fingerprint, decode_certificate, decode_private_key, initialized_state,
-    random_token, validate_pinned_endpoint,
+    PairingStateFile, PendingAcknowledgement, StoredOutgoingTransfer, certificate_fingerprint,
+    decode_certificate, decode_private_key, initialized_state, random_token,
+    validate_pinned_endpoint,
 };
 use crate::protocol::{self, validate_device_label, validate_identifier};
 use std::fs;

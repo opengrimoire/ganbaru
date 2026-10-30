@@ -1255,7 +1255,11 @@ fn last_vault_change_ms(vault: &Path) -> Option<i64> {
         format!("{APP_SQLITE_FILE}-wal"),
     ]
     .iter()
-    .filter_map(|name| fs::metadata(vault.join(name)).and_then(|meta| meta.modified()).ok())
+    .filter_map(|name| {
+        fs::metadata(vault.join(name))
+            .and_then(|meta| meta.modified())
+            .ok()
+    })
     .filter_map(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
     .filter_map(|elapsed| i64::try_from(elapsed.as_millis()).ok())
     .max()

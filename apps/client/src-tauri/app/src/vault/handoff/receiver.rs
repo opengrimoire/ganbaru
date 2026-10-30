@@ -625,7 +625,10 @@ mod tests {
 
     #[test]
     fn bootstrap_is_required_only_on_a_pinned_device_without_its_copy() {
-        assert_eq!(bootstrap_state(true, false, false), BootstrapState::Required);
+        assert_eq!(
+            bootstrap_state(true, false, false),
+            BootstrapState::Required
+        );
         assert_eq!(bootstrap_state(true, true, false), BootstrapState::None);
         // A coordinator and an unlinked device have nothing to copy.
         assert_eq!(bootstrap_state(false, false, false), BootstrapState::None);

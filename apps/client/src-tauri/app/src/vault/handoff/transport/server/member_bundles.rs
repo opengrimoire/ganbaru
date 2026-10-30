@@ -8,9 +8,7 @@ use super::dispatch::serve_download;
 use super::send_error;
 use crate::vault::handoff::coordinator::{BUNDLE_PREPARATION_LIMIT, BundlePreparationWindows};
 use crate::vault::handoff::pairing::PairingManager;
-use crate::vault::handoff::protocol::{
-    BundleMetadata, ControlMessage, write_control,
-};
+use crate::vault::handoff::protocol::{BundleMetadata, ControlMessage, write_control};
 use crate::vault::handoff::transport::timeout_control;
 use ganbaru_sync_replica::peers::admission::{MemberAdmission, MemberRefusal};
 use std::future::Future;

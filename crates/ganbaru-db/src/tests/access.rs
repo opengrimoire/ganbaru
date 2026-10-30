@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use sqlx::SqlitePool;
 
 use super::{block_on, registry_test_directory};
-use crate::{ConnectionHook, DatabaseAccessMode, DatabasePoolRegistry, MigratedHook, connection_hook};
+use crate::{
+    ConnectionHook, DatabaseAccessMode, DatabasePoolRegistry, MigratedHook, connection_hook,
+};
 
 /// A hook that counts the connections it set up.
 fn counting_hook(calls: Arc<Mutex<usize>>) -> ConnectionHook {

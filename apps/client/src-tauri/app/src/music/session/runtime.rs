@@ -631,25 +631,22 @@ pub(super) fn native_observation(
 impl Owner {
     async fn ensure_context(&mut self) -> MusicLibraryResult<()> {
         let app = self.app.clone();
-        let (vault_id, device_id, roots) =
-            tauri::async_runtime::spawn_blocking(move || {
-                let vault_id = crate::vault::active_vault_id(&app)
-                    .map_err(|error| MusicLibraryError::runtime("resolve music vault", error))?;
-                let device_id = crate::vault::ensure_device_id(&app)
-                    .map_err(|error| MusicLibraryError::runtime("resolve music device", error))?;
-                Ok::<_, MusicLibraryError>((vault_id, device_id, root_bindings(&app)?))
-            })
-            .await
-            .map_err(|error| MusicLibraryError::runtime("read music device state", error))??;
+        let (vault_id, device_id, roots) = tauri::async_runtime::spawn_blocking(move || {
+            let vault_id = crate::vault::active_vault_id(&app)
+                .map_err(|error| MusicLibraryError::runtime("resolve music vault", error))?;
+            let device_id = crate::vault::ensure_device_id(&app)
+                .map_err(|error| MusicLibraryError::runtime("resolve music device", error))?;
+            Ok::<_, MusicLibraryError>((vault_id, device_id, root_bindings(&app)?))
+        })
+        .await
+        .map_err(|error| MusicLibraryError::runtime("read music device state", error))??;
         self.roots = roots;
         if self.frozen {
             return Err(MusicLibraryError::conflict(
                 "Music is quiesced while this vault is handed off",
             ));
         }
-        if self.vault_id.as_deref() == Some(&vault_id)
-            && self.pool.is_some()
-        {
+        if self.vault_id.as_deref() == Some(&vault_id) && self.pool.is_some() {
             return Ok(());
         }
         if self.state.current.is_some() {

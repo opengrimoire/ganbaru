@@ -101,9 +101,7 @@ async fn native_delivery_remains_single_flight_and_coalesces_while_a_platform_ca
     handle.publish(&projection(1, 1), None).unwrap();
     assert_eq!(starts.recv().await, Some(1));
     for revision in 2..=100 {
-        handle
-            .publish(&projection(1, revision), None)
-            .unwrap();
+        handle.publish(&projection(1, revision), None).unwrap();
     }
     tokio::time::timeout(
         Duration::from_millis(50),

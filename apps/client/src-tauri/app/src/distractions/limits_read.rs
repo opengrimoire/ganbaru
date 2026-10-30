@@ -72,8 +72,10 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
             return Err("native usage vault changed before its read".into());
         }
         let pool = crate::db::connect_vault(&app).await?;
-        crate::distractions::usage_totals::drain_and_flush(&app, &pool, &vault_id, &device_id, false)
-            .await?;
+        crate::distractions::usage_totals::drain_and_flush(
+            &app, &pool, &vault_id, &device_id, false,
+        )
+        .await?;
         let mut tx = pool
             .begin()
             .await

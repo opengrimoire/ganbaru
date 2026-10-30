@@ -1059,8 +1059,7 @@ impl Owner {
     ) -> Result<FocusExecutionSnapshot, FocusExecutionError> {
         self.verify_authority()?;
         self.refresh_foreground();
-        self
-            .projection
+        self.projection
             .vault_id
             .as_deref()
             .ok_or_else(|| error(FocusErrorCode::Unavailable, "Focus has no active vault"))?;
@@ -1201,8 +1200,7 @@ impl Owner {
         self.verify_authority()?;
         self.refresh_foreground();
         let now = self.logical_now(now);
-        self
-            .projection
+        self.projection
             .vault_id
             .as_deref()
             .ok_or_else(|| error(FocusErrorCode::Unavailable, "Focus has no active vault"))?;
@@ -1321,10 +1319,7 @@ impl Owner {
         if self.projection.snapshot.is_none() {
             return;
         }
-        if let Err(error) = self.effects.publish(
-            &self.projection,
-            self.pool.as_ref(),
-        ) {
+        if let Err(error) = self.effects.publish(&self.projection, self.pool.as_ref()) {
             self.projection.error = Some(error.to_string());
             self.subscriptions.publish(&self.projection, Instant::now());
         }
@@ -1352,12 +1347,7 @@ impl Owner {
             .authority
             .send_replace(
                 (!self.freeze_requested())
-                    .then(|| {
-                        effects::committed_effect(
-                            &self.projection,
-                            now_ms,
-                        )
-                    })
+                    .then(|| effects::committed_effect(&self.projection, now_ms))
                     .flatten()
                     .map(|effect| authority::EffectAuthority::new(effect, now_ms, Instant::now())),
             );

@@ -18,8 +18,8 @@ use super::pairing::{
     encode_certificate,
 };
 use super::protocol::{
-    BundleMetadata, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
-    TRANSFER_CHUNK_BYTES, read_control, unix_time_ms, write_control,
+    BundleMetadata, ControlMessage, PROTOCOL_VERSION, PairingInvitation, TRANSFER_CHUNK_BYTES,
+    read_control, unix_time_ms, write_control,
 };
 use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -617,14 +617,7 @@ pub(crate) async fn fetch_bundle(
         if cancellation.is_cancelled() {
             break;
         }
-        match fetch_from(
-            manager,
-            source,
-            compatibility.clone(),
-            cancellation,
-        )
-        .await
-        {
+        match fetch_from(manager, source, compatibility.clone(), cancellation).await {
             Ok(fetched) => return Ok(fetched),
             Err(error) => {
                 eprintln!("vault copy from {} failed: {error}", source.describe());
@@ -641,13 +634,7 @@ async fn fetch_from(
     compatibility: super::protocol::HandoffCompatibility,
     cancellation: &TransferCancellation,
 ) -> Result<FetchedBundle, String> {
-    let metadata = request_bundle(
-        manager,
-        source,
-        compatibility.clone(),
-        cancellation,
-    )
-    .await?;
+    let metadata = request_bundle(manager, source, compatibility.clone(), cancellation).await?;
     if let Err(error) = super::protocol::ensure_compatible(&compatibility, &metadata.compatibility)
     {
         let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;

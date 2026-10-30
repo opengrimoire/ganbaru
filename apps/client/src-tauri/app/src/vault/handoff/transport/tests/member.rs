@@ -513,9 +513,7 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
 
     // A handshake may reuse the admission read moments ago; the fresh read after it refuses.
     listener.admit(admission_quarantining(&listener.phone_fingerprint));
-    let quarantined = listener
-        .request(bundle_request())
-        .await;
+    let quarantined = listener.request(bundle_request()).await;
     assert!(
         quarantined
             .as_ref()
@@ -524,9 +522,7 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
     );
 
     listener.admit(admission_with(&"0".repeat(64), false));
-    let unknown = listener
-        .request(bundle_request())
-        .await;
+    let unknown = listener.request(bundle_request()).await;
     assert!(
         unknown
             .as_ref()
@@ -537,19 +533,13 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
     // Once the handshake admission is read again, neither completes a handshake.
     tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
-        listener
-            .request(bundle_request())
-            .await
-            .is_err(),
+        listener.request(bundle_request()).await.is_err(),
         "a device the log never enrolled completes no handshake"
     );
     listener.admit(admission_quarantining(&listener.phone_fingerprint));
     tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
-        listener
-            .request(bundle_request())
-            .await
-            .is_err(),
+        listener.request(bundle_request()).await.is_err(),
         "a quarantined device completes no handshake"
     );
 }

@@ -721,7 +721,12 @@ impl Restore {
             .bind(key)
             .execute(&mut *conn)
             .await
-            .map_err(|error| format!("point restored {} mentions at restored rows: {error}", spec.name))?;
+            .map_err(|error| {
+                format!(
+                    "point restored {} mentions at restored rows: {error}",
+                    spec.name
+                )
+            })?;
         }
         Ok(())
     }

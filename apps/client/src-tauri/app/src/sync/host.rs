@@ -9,9 +9,9 @@ use crate::db::DatabaseState;
 use crate::vault::WritableVaultPath;
 use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::handoff::transport::CoordinatorDialReport;
-use crate::vault::write_fence::VaultWriteFence;
 #[cfg(any(mobile, test))]
 use crate::vault::process_managers::ProcessManagers;
+use crate::vault::write_fence::VaultWriteFence;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks};

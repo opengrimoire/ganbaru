@@ -19,4 +19,3 @@ pub(crate) mod views;
 #[cfg(desktop)]
 pub(crate) mod working_folders;
 pub(crate) mod workspace;
-

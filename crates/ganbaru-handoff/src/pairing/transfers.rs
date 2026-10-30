@@ -1,5 +1,7 @@
 //! Transfer progress and resumable staging on the shared pairing state lock.
 
+#[cfg(desktop)]
+use super::RegisteredBundle;
 use super::storage::{
     validate_activation_record, validate_stored_outgoing, write_private_file_atomically,
 };
@@ -7,8 +9,6 @@ use super::{
     PairingManager, PendingAcknowledgement, StoredOutgoingTransfer, initialized_state,
     initialized_state_mut, persist_initialized_state,
 };
-#[cfg(desktop)]
-use super::RegisteredBundle;
 #[cfg(desktop)]
 use crate::protocol;
 use crate::protocol::{BundleMetadata, validate_identifier};
@@ -19,8 +19,7 @@ impl PairingManager {
     pub fn has_pending_transfer(&self) -> Result<bool, String> {
         let inner = self.lock()?;
         let state = initialized_state(&inner)?;
-        Ok(state.pending_acknowledgement.is_some()
-            || state.outgoing_transfer.is_some())
+        Ok(state.pending_acknowledgement.is_some() || state.outgoing_transfer.is_some())
     }
 
     pub fn replica_ready(&self) -> Result<bool, String> {

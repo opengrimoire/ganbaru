@@ -1,10 +1,7 @@
 //! The desktop coordinator listener: authenticated dispatch of pairing, handoff, contact, and
 //! sync requests, and archive serving.
 
-use super::super::{
-    MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, stream_file,
-    timeout_control,
-};
+use super::super::{MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, stream_file, timeout_control};
 use super::client_verifier::PinnedClientVerifier;
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::{
@@ -22,8 +19,8 @@ use crate::vault::handoff::enrollment_approval::{
 };
 use crate::vault::handoff::pairing::{Enrollment, PairingManager, PinnedCharter, TlsIdentity};
 use crate::vault::handoff::protocol::{
-    BundleMetadata, ControlMessage, PROTOCOL_VERSION,
-    read_control, read_control_limited, unix_time_ms, write_control,
+    BundleMetadata, ControlMessage, PROTOCOL_VERSION, read_control, read_control_limited,
+    unix_time_ms, write_control,
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use ganbaru_handoff::dial::LoopbackPolicy;

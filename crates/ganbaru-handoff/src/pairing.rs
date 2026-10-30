@@ -732,9 +732,7 @@ impl PairingManager {
     fn unlink_with(&self, reason: Option<UnlinkReason>) -> Result<(), String> {
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some()
-            || previous.outgoing_transfer.is_some()
-        {
+        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
             return Err("finish or retry the active handoff before unlinking".to_string());
         }
         let state = initialized_state_mut(&mut inner)?;
@@ -763,9 +761,7 @@ impl PairingManager {
         validate_identifier("peer device id", device_id)?;
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some()
-            || previous.outgoing_transfer.is_some()
-        {
+        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
             return Err("finish or retry the active handoff before unlinking".to_string());
         }
         let state = initialized_state_mut(&mut inner)?;

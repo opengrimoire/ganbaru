@@ -38,10 +38,7 @@ pub type ConnectionHook =
 /// Wraps a hook function, fixing the higher-ranked signature that closures cannot infer.
 pub fn connection_hook<F>(hook: F) -> ConnectionHook
 where
-    F: for<'c> Fn(&'c mut SqliteConnection) -> ConnectionHookFuture<'c>
-        + Send
-        + Sync
-        + 'static,
+    F: for<'c> Fn(&'c mut SqliteConnection) -> ConnectionHookFuture<'c> + Send + Sync + 'static,
 {
     Arc::new(hook)
 }

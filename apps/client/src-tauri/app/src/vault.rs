@@ -33,7 +33,6 @@ pub use documents::*;
 pub(crate) mod backup;
 pub(crate) mod database_rollback;
 pub(crate) mod handoff;
-pub(crate) mod write_fence;
 pub(crate) mod preferences;
 #[cfg(any(mobile, test))]
 pub(crate) mod process_managers;
@@ -41,6 +40,7 @@ pub(crate) mod quiescence;
 pub(crate) mod replaced_vaults;
 pub(crate) mod runtime_lifecycle;
 pub(crate) mod vault_lock;
+pub(crate) mod write_fence;
 
 pub const APP_SQLITE_FILE: &str = ganbaru_sync_replica::backup::DATABASE_FILE;
 const PRODUCTION_VAULT_NAME: &str = "Ganbaru";

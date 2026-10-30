@@ -255,13 +255,8 @@ async fn synchronize_locked<R: Runtime>(
         }
     };
     // Totals already in the journal flush even when this batch failed, so limits keep holding.
-    let flushed = crate::distractions::usage_totals::flush(
-        &pool,
-        &active_vault_id,
-        &device_id,
-        force,
-    )
-    .await;
+    let flushed =
+        crate::distractions::usage_totals::flush(&pool, &active_vault_id, &device_id, force).await;
     let imported = imported?;
     flushed?;
     Ok(MobileDistractionsSyncResult {

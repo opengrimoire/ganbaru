@@ -169,10 +169,7 @@ impl FocusEffects {
         #[cfg(mobile)]
         let _ = pool;
         #[cfg(target_os = "android")]
-        let presentation_result = self
-            .mobile
-            .apply(app, projection, now_ms)
-            .await;
+        let presentation_result = self.mobile.apply(app, projection, now_ms).await;
         #[cfg(target_os = "ios")]
         let presentation_result: Result<(), FocusExecutionError> = Ok(());
         consumers_result?;

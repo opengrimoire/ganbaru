@@ -676,7 +676,7 @@ pub fn recovery_promotion(
     )
 }
 
-/// The enrolled devices other than `own_device_id` and the anchor that are not removed and
+/// The enrolled devices other than `own_device_id`, the anchor, and servers that are not removed and
 /// for which `linked` is false. An admin hub proposes their removal, because the coordinator
 /// links every device of the space.
 pub fn unlinked_devices(
@@ -688,6 +688,7 @@ pub fn unlinked_devices(
         .iter()
         .filter(|device| {
             device.removed_revision.is_none()
+                && device.kind != DeviceKind::Server
                 && device.device_id != view.anchor_device_id
                 && device.device_id != own_device_id
                 && !linked(&device.device_id)

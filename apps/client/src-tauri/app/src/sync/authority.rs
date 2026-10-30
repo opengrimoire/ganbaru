@@ -55,6 +55,7 @@ pub(crate) struct AuthorityDeviceView {
 pub(crate) enum DeviceKindView {
     Desktop,
     Mobile,
+    Server,
 }
 
 /// Role of an enrolled device.
@@ -288,6 +289,7 @@ fn authority_view(
                 kind: match device.kind {
                     DeviceKind::Desktop => DeviceKindView::Desktop,
                     DeviceKind::Mobile => DeviceKindView::Mobile,
+                    DeviceKind::Server => DeviceKindView::Server,
                 },
                 role: match device.role {
                     DeviceRole::Admin(_) => DeviceRoleView::Admin,

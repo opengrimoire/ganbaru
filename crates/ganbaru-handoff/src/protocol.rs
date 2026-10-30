@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub mod anchor;
 pub mod relay;
 mod sync;
 
@@ -20,7 +21,7 @@ pub use sync::{
 };
 pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 16;
+pub const PROTOCOL_VERSION: u16 = 17;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -171,6 +172,9 @@ pub struct BundleMetadata {
     pub transfer_id: String,
     pub archive_bytes: u64,
     pub archive_sha256: String,
+    /// Whether the sender registers no post-apply hooks, so the receiver runs every hook in
+    /// full rebuild mode before the vault opens.
+    pub derived_state_stale: bool,
 }
 
 impl BundleMetadata {
@@ -479,6 +483,52 @@ pub enum ControlMessage {
         admitted: u32,
         missing_hashes: Vec<String>,
         missing_writers: Vec<String>,
+    },
+    /// Opens the setup of an always-on anchor, or asks its version. A device may send it
+    /// without a client certificate. Its shape and the challenge's stay stable across protocol
+    /// versions, so each side can say which one needs an update.
+    AnchorHello {
+        protocol_version: u16,
+        compatibility: HandoffCompatibility,
+        client_nonce: String,
+    },
+    /// The server's versions and its nonce for the setup proof.
+    AnchorChallenge {
+        protocol_version: u16,
+        compatibility: HandoffCompatibility,
+        server_nonce: String,
+    },
+    /// Proves the setup secret, see [`anchor::anchor_setup_proof`].
+    AnchorProof {
+        proof: String,
+        /// The vault the device sets up, or `None` when it recovers the vault the server runs.
+        vault_id: Option<String>,
+    },
+    /// What the server tells a device that proved the secret: the keys it enrolls with, and
+    /// the space it already serves, if any.
+    AnchorIdentity {
+        device_id: String,
+        device_label: String,
+        device_key: String,
+        admin_key: String,
+        space: Option<anchor::AnchorSpace>,
+    },
+    /// Uploads a snapshot of the vault over the setup connection. A [`Self::ResumeAt`] answer
+    /// asks for the archive bytes, then a [`Self::BundleComplete`] closes them.
+    AnchorUpload {
+        metadata: BundleMetadata,
+        charter: String,
+        person_key: String,
+        take_anchor: bool,
+    },
+    /// The server opened the uploaded snapshot and runs it.
+    AnchorActivated {
+        vault_id: String,
+    },
+    /// Asks the server's sequencer to take a proposal the recovery key signed, for a device
+    /// that lost every other device of the space. [`Self::SyncProposed`] answers it.
+    AnchorRecover {
+        proposal: String,
     },
     Error {
         code: String,
@@ -949,6 +999,51 @@ impl ControlMessage {
                     return Err("sync record admission count is invalid".to_string());
                 }
             }
+            Self::AnchorHello {
+                compatibility,
+                client_nonce: nonce,
+                ..
+            }
+            | Self::AnchorChallenge {
+                compatibility,
+                server_nonce: nonce,
+                ..
+            } => {
+                compatibility.validate()?;
+                anchor::decode_anchor_nonce(nonce)?;
+            }
+            Self::AnchorProof { proof, vault_id } => {
+                anchor::decode_anchor_proof(proof)?;
+                if let Some(vault_id) = vault_id {
+                    validate_identifier("vault id", vault_id)?;
+                }
+            }
+            Self::AnchorIdentity {
+                device_id,
+                device_label,
+                device_key,
+                admin_key,
+                space,
+            } => {
+                validate_identifier("server device id", device_id)?;
+                validate_device_label("server device label", device_label)?;
+                decode_sync_device_key(device_key)?;
+                decode_sync_admin_key(admin_key)?;
+                if let Some(space) = space {
+                    space.validate()?;
+                }
+            }
+            Self::AnchorUpload {
+                metadata,
+                charter,
+                person_key,
+                ..
+            } => {
+                metadata.validate()?;
+                decode_sync_charter(charter, person_key)?;
+            }
+            Self::AnchorActivated { vault_id } => validate_identifier("vault id", vault_id)?,
+            Self::AnchorRecover { proposal } => decode_sync_proposal(proposal).map(drop)?,
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -1767,6 +1862,7 @@ mod tests {
             transfer_id: "transfer-1".to_string(),
             archive_bytes: 10,
             archive_sha256: "a".repeat(64),
+            derived_state_stale: false,
         };
         metadata.archive_sha256 = "not-a-digest".to_string();
         assert!(metadata.validate().unwrap_err().contains("SHA-256"));

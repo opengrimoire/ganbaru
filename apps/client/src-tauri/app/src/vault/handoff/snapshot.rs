@@ -55,6 +55,7 @@ pub(crate) fn bundle_metadata<R: Runtime>(
             .map_err(|error| format!("inspect handoff archive: {error}"))?
             .len(),
         archive_sha256: sha256_file(archive_path)?,
+        derived_state_stale: false,
     })
 }
 

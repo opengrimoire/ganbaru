@@ -492,6 +492,15 @@ fn a_settle_stores_back_the_elided_winner_before_overwriting_its_row() {
 struct SettlesOwnedEntries;
 
 impl MaterializeHook for SettlesOwnedEntries {
+    fn rebuild_all<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
     fn after_materialize<'a>(
         &'a self,
         _conn: &'a mut SqliteConnection,
@@ -533,6 +542,15 @@ struct LinkEndsHook {
 }
 
 impl MaterializeHook for LinkEndsHook {
+    fn rebuild_all<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
     fn after_materialize<'a>(
         &'a self,
         _conn: &'a mut SqliteConnection,

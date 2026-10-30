@@ -343,6 +343,7 @@ mod tests {
             transfer_id: transfer_id.to_string(),
             archive_bytes: archive_path.metadata().unwrap().len(),
             archive_sha256: super::super::sha256_file(&archive_path).unwrap(),
+            derived_state_stale: false,
         };
         manager
             .store_outgoing_transfer(StoredOutgoingTransfer {

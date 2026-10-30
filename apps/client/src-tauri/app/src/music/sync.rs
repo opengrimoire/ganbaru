@@ -9,7 +9,9 @@
 use ganbaru_music_library::sync_apply;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::music;
-use ganbaru_sync::{ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
+use ganbaru_sync::{
+    ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, MaterializeHook, rebuild_every_key,
+};
 use sqlx::SqliteConnection;
 
 /// Change notice topic of a root that received new or changed locations; the key is the root id.
@@ -56,6 +58,15 @@ impl MaterializeHook for MusicApplyHook {
             }
             Ok(())
         })
+    }
+
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        rebuild_every_key(self, conn, table, changes)
     }
 }
 

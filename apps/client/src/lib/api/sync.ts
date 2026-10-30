@@ -191,7 +191,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   relay: null,
 };
 
-export const SYNC_DEVICE_KINDS = ["desktop", "mobile"] as const;
+export const SYNC_DEVICE_KINDS = ["desktop", "mobile", "server"] as const;
 export type SyncDeviceKind = (typeof SYNC_DEVICE_KINDS)[number];
 
 export const SYNC_AUTHORITY_ROLES = ["admin", "member"] as const;

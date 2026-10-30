@@ -19,9 +19,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 use ganbaru_sync_contracts::{GroupId, Hlc, TableId, Value, WriterId};
-use sqlx::SqliteConnection;
+use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::manifest::{MergeKind, Resolution, TableSpec};
+use crate::sql;
 
 /// Error a hook returns; it rolls the engine transaction back.
 pub type HookError = Box<dyn Error + Send + Sync>;
@@ -75,6 +76,18 @@ pub trait MaterializeHook: Send + Sync {
         changes: &'a mut dyn ChangeSink,
     ) -> HookFuture<'a>;
 
+    /// Recomputes everything the domain derives from all rows of `table`, for a vault whose
+    /// derived state was never computed, such as a snapshot from a server that registers no
+    /// hooks. It runs before the vault opens, under the same engine write as
+    /// [`MaterializeHook::after_materialize`]. A hook whose work follows the rows of the table
+    /// delegates to [`rebuild_every_key`]; one that only reports changes has nothing to do.
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a>;
+
     /// Groups of `table` whose concurrent versions [`MaterializeHook::settle`] decides. Each
     /// must be a `Register` or `Coupled` group of columns, without owned tables or
     /// duplicate-repaired columns; [`crate::Engine::with`] refuses others. Its reference columns
@@ -120,6 +133,34 @@ pub trait MaterializeHook: Send + Sync {
         let _ = (conn, table, key, group, versions);
         Box::pin(std::future::ready(Ok(None)))
     }
+}
+
+/// Keys one [`rebuild_every_key`] call passes to its hook at a time, so a keyed statement stays
+/// within SQLite's bound variable limit.
+const REBUILD_KEYS_PER_CALL: usize = 500;
+
+/// Runs [`MaterializeHook::after_materialize`] over every row of `table`, for a
+/// [`MaterializeHook::rebuild_all`] whose per-key work already recomputes all it derives.
+pub fn rebuild_every_key<'a>(
+    hook: &'a dyn MaterializeHook,
+    conn: &'a mut SqliteConnection,
+    table: &'static TableSpec,
+    changes: &'a mut dyn ChangeSink,
+) -> HookFuture<'a> {
+    Box::pin(async move {
+        let keys: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT {} FROM {}",
+            sql::ident(table.key_column),
+            sql::ident(table.name)
+        )))
+        .fetch_all(&mut *conn)
+        .await?;
+        for chunk in keys.chunks(REBUILD_KEYS_PER_CALL) {
+            hook.after_materialize(&mut *conn, table, chunk, &mut *changes)
+                .await?;
+        }
+        Ok(())
+    })
 }
 
 /// Hooks the engine runs inside its transactions, at most one per table.

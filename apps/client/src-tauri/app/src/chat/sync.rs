@@ -33,6 +33,7 @@ use ganbaru_sync::manifest::vault::chat;
 use ganbaru_sync::manifest::vault::chat::{channel_membership_group, folder_grant_group};
 use ganbaru_sync::{
     ChangeSink, ConcurrentVersion, HookError, HookFuture, Hooks, MaterializeHook, SettleFuture,
+    rebuild_every_key,
 };
 use ganbaru_sync_contracts::{Field, GroupId, Value};
 use sqlx::SqliteConnection;
@@ -136,6 +137,15 @@ impl MaterializeHook for ChatApplyHook {
             report_effects(effects, changes);
             Ok(())
         })
+    }
+
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        rebuild_every_key(self, conn, table, changes)
     }
 
     fn settled_groups(&self, table: &'static TableSpec) -> &'static [GroupId] {

@@ -33,6 +33,15 @@ pub(super) const BLOCK_B: &str = "block-b";
 struct NotesTestHook;
 
 impl MaterializeHook for NotesTestHook {
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        crate::hooks::rebuild_every_key(self, conn, table, changes)
+    }
+
     fn after_materialize<'a>(
         &'a self,
         conn: &'a mut SqliteConnection,

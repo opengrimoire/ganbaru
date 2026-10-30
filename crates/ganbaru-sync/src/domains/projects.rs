@@ -692,6 +692,16 @@ fn preview_text(text: &str) -> String {
 pub struct ProjectsHook;
 
 impl MaterializeHook for ProjectsHook {
+    /// Projects derive nothing: the hook only reports changes.
+    fn rebuild_all<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
     fn after_materialize<'a>(
         &'a self,
         _conn: &'a mut SqliteConnection,

@@ -960,6 +960,7 @@ fn transfer_metadata(transfer_id: &str) -> BundleMetadata {
         transfer_id: transfer_id.to_string(),
         archive_bytes: 42,
         archive_sha256: "a".repeat(64),
+        derived_state_stale: false,
     }
 }
 

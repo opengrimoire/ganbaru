@@ -166,6 +166,8 @@ pub enum DeviceKind {
     Desktop,
     /// A mobile installation.
     Mobile,
+    /// A self-hosted always-on server that holds a full replica.
+    Server,
 }
 
 impl DeviceKind {
@@ -174,6 +176,7 @@ impl DeviceKind {
         match self {
             Self::Desktop => 0,
             Self::Mobile => 1,
+            Self::Server => 2,
         }
     }
 
@@ -182,8 +185,14 @@ impl DeviceKind {
         match value {
             0 => Some(Self::Desktop),
             1 => Some(Self::Mobile),
+            2 => Some(Self::Server),
             _ => None,
         }
+    }
+
+    /// Whether a device of this kind may hold an admin key and anchor the space.
+    pub const fn may_be_admin(self) -> bool {
+        matches!(self, Self::Desktop | Self::Server)
     }
 }
 

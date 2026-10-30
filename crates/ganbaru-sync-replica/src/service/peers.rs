@@ -550,7 +550,7 @@ pub async fn bootstrap_members<H: SyncHost>(
     Ok(bootstrap_sources(&view, &members, &discovered, &known))
 }
 
-/// The live members of `view` that serve vault copies besides the coordinator: desktops other
+/// The live members of `view` that serve vault copies besides the coordinator: computers other
 /// than this device. Phones serve no copies.
 fn serving_members(
     view: &AuthorizationView,
@@ -565,7 +565,7 @@ fn serving_members(
             && view
                 .devices
                 .iter()
-                .any(|device| &device.device_id == device_id && device.kind == DeviceKind::Desktop)
+                .any(|device| &device.device_id == device_id && device.kind.may_be_admin())
     });
     members
 }

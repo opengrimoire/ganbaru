@@ -51,38 +51,27 @@ impl<R: Runtime> CoordinatorState<R> {
         if generation > status.generation {
             return Err("requesting replica is ahead of the coordinator".to_string());
         }
-        if !status.can_write {
-            if purpose == BundlePurpose::Refresh
-                && self.relay_refresh_generation == Some(status.generation)
-                && self.waiting_refresh_targets.remove(&device_id)
-            {
-                // The coordinator has just activated a fresh owner snapshot and can
-                // relay that immutable copy without becoming the writer.
-            } else {
-                if self.pairing.linked_peer(&status.owner_device_id)?.is_none() {
-                    return Err(
-                        "the current vault owner is not linked to this coordinator".to_string()
-                    );
-                }
-                self.ensure_owner_is_reachable(&status.owner_device_id, purpose)?;
-                // A waiting device polls here; only a new upload request makes the owner build
-                // another snapshot.
-                if self.pairing.requested_upload()? != Some(purpose) {
-                    self.bundle_preparations.admit(&device_id, Instant::now())?;
-                }
-                if purpose == BundlePurpose::Refresh {
-                    self.waiting_refresh_targets.insert(device_id.clone());
-                }
-                self.pairing.request_upload(purpose)?;
-                return Ok(CoordinatorResponse::BundlePending {
-                    owner_device_id: status.owner_device_id,
-                    generation: status.generation,
-                });
+        // A snapshot for a refresh or bootstrap is served from the coordinator's own copy, which
+        // holds every converted domain whichever device owns the vault. Only an ownership
+        // transfer needs the owner, which uploads it.
+        if !status.can_write && purpose == BundlePurpose::Ownership {
+            if self.pairing.linked_peer(&status.owner_device_id)?.is_none() {
+                return Err("the current vault owner is not linked to this coordinator".to_string());
             }
+            self.ensure_owner_is_reachable(&status.owner_device_id, purpose)?;
+            // A waiting device polls here; only a new upload request makes the owner build
+            // another snapshot.
+            if self.pairing.requested_upload()? != Some(purpose) {
+                self.bundle_preparations.admit(&device_id, Instant::now())?;
+            }
+            self.pairing.request_upload(purpose)?;
+            return Ok(CoordinatorResponse::BundlePending {
+                owner_device_id: status.owner_device_id,
+                generation: status.generation,
+            });
         }
+        self.bundle_preparations.admit(&device_id, Instant::now())?;
         if status.can_write {
-            // A relayed refresh was counted when its upload was requested.
-            self.bundle_preparations.admit(&device_id, Instant::now())?;
             crate::distractions::usage_totals::flush_active_vault(&self.app).await?;
         }
         let transfer_id = random_token("transfer")?;

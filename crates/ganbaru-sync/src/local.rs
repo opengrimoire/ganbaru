@@ -16,6 +16,7 @@ use ganbaru_sync_contracts::{
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
 use crate::error::{SyncError, SyncResult, corrupt};
+use crate::hooks::Notices;
 use crate::log::{self, WriterState};
 use crate::manifest::Manifest;
 use crate::{Engine, SpaceContext, StoreOutcome, hydrate, sql};
@@ -259,6 +260,30 @@ pub async fn prepare_snapshot_copy(
 }
 
 impl Engine {
+    /// Runs every registered hook in full rebuild mode in one engine write, so capture stays
+    /// quiet and a failure leaves the vault unchanged. Run on a closed vault whose derived
+    /// state was never computed; what the hooks report is dropped, because nothing is
+    /// listening yet.
+    pub async fn rebuild_derived_state(&self, conn: &mut SqliteConnection) -> SyncResult<()> {
+        let mut tx = conn.begin().await?;
+        sql::begin_engine_write(&mut tx).await?;
+        let mut notices = Notices::default();
+        for table in self.manifest.tables {
+            let Some(hook) = self.hooks.get(table.id) else {
+                continue;
+            };
+            hook.rebuild_all(&mut tx, table, &mut notices)
+                .await
+                .map_err(|error| SyncError::Hook {
+                    table: table.name,
+                    error,
+                })?;
+        }
+        sql::set_applying(&mut tx, false).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The stored state of the writer a key derives, verifying its head operation.
     pub async fn local_writer_head(
         &self,

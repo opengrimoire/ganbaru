@@ -20,11 +20,20 @@ workspace = true
 
 [dependencies]
 ganbaru-atomic-files = { workspace = true }
+ganbaru-contacts = { workspace = true }
+ganbaru-db = { workspace = true }
 ganbaru-handoff = { workspace = true }
+ganbaru-sync = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
+ganbaru-sync-replica = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+ganbaru-db = { workspace = true, features = ["test-support"] }

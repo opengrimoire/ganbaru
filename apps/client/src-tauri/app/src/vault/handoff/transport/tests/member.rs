@@ -137,6 +137,7 @@ fn snapshot_copies(root: PathBuf) -> server::MemberBundles {
                     transfer_id,
                     archive_bytes: MEMBER_COPY.len() as u64,
                     archive_sha256: sha256_file(&archive_path)?,
+                    derived_state_stale: false,
                 };
                 Ok(server::PreparedSnapshot {
                     metadata,

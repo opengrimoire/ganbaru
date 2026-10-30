@@ -1,22 +1,158 @@
-//! Snapshot copies a member desktop serves on its sync listener: the first copy of a device
-//! that links, or a fresh copy for a device that fell behind compaction.
+//! Snapshot copies a member desktop or anchor server serves on its sync listener: the first copy
+//! of a device that links, or a fresh copy for a device that fell behind compaction.
 //!
 //! Only a device the selected log enrolled and did not remove, and that this installation did
 //! not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
 
-use super::dispatch::serve_download;
-use super::send_error;
-use crate::vault::handoff::coordinator::{BUNDLE_PREPARATION_LIMIT, BundlePreparationWindows};
-use crate::vault::handoff::pairing::{PairingManager, certificate_fingerprint};
-use crate::vault::handoff::protocol::{BundleMetadata, ControlMessage, write_control};
-use crate::vault::handoff::transport::timeout_control;
-use ganbaru_sync_replica::peers::admission::{MemberAdmission, MemberRefusal};
-use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream};
+use super::{Peer, Routes, ServerStream, send_error, timeout_control};
+use crate::peers::admission::{MemberAdmission, MemberRefusal};
+use ganbaru_handoff::pairing::{PairingManager, certificate_fingerprint};
+use ganbaru_handoff::protocol::{
+    BundleMetadata, ControlMessage, TRANSFER_CHUNK_BYTES, read_control, write_control,
+};
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// How long one chunk of a copy may take to read or send.
+const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
+/// Span of the sliding window that bounds how often one linked device makes a vault snapshot.
+const BUNDLE_PREPARATION_WINDOW: Duration = Duration::from_secs(60 * 60);
+/// Most vault snapshots one linked device can start within [`BUNDLE_PREPARATION_WINDOW`]. Each
+/// one pauses writers and builds a full archive. First copies and fresh copies stay far below it;
+/// a device that keeps requesting and cancelling bundles does not.
+const MAX_BUNDLE_PREPARATIONS_PER_PEER: usize = 30;
+/// Error returned when one device requested too many snapshots; the frontend maps it to
+/// localized guidance.
+pub const BUNDLE_PREPARATION_LIMIT: &str =
+    "this device requested the vault too often; wait before requesting another copy";
+
+/// Drops events that left the sliding window ending at `now`.
+fn forget_expired(events: &mut VecDeque<Instant>, now: Instant, window: Duration) {
+    while events
+        .front()
+        .is_some_and(|event| now.saturating_duration_since(*event) >= window)
+    {
+        events.pop_front();
+    }
+}
+
+/// Recent vault snapshots started for each linked device, kept in memory for the per-device limit.
+#[derive(Debug, Default)]
+pub struct BundlePreparationWindows {
+    peers: BTreeMap<String, VecDeque<Instant>>,
+}
+
+impl BundlePreparationWindows {
+    /// Records a snapshot for the device, or refuses it while that device's window is full.
+    pub fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
+        self.peers.retain(|_, events| {
+            forget_expired(events, now, BUNDLE_PREPARATION_WINDOW);
+            !events.is_empty()
+        });
+        let events = self.peers.entry(device_id.to_string()).or_default();
+        if events.len() >= MAX_BUNDLE_PREPARATIONS_PER_PEER {
+            return Err(BUNDLE_PREPARATION_LIMIT.to_string());
+        }
+        events.push_back(now);
+        Ok(())
+    }
+}
+
+/// Streams a registered copy to a receiver from the offset it resumes at.
+pub async fn serve_download(
+    stream: &mut ServerStream,
+    manager: &PairingManager,
+    requested: BundleMetadata,
+) -> Result<(), String> {
+    let registered = manager.outgoing_bundle(&requested.transfer_id)?;
+    if registered.metadata != requested {
+        return send_error(
+            stream,
+            "transfer_metadata",
+            "requested transfer metadata does not match the registered bundle",
+            false,
+        )
+        .await;
+    }
+    timeout_control(write_control(
+        stream,
+        &ControlMessage::BundleMetadata {
+            metadata: registered.metadata.clone(),
+        },
+    ))
+    .await?;
+    let response = timeout_control(read_control(stream)).await?;
+    let offset = match response {
+        ControlMessage::ResumeAt { offset } if offset <= registered.metadata.archive_bytes => {
+            offset
+        }
+        _ => {
+            return send_error(
+                stream,
+                "resume_offset",
+                "transfer resume offset is invalid",
+                false,
+            )
+            .await;
+        }
+    };
+    stream_file(
+        stream,
+        &registered.path,
+        offset,
+        registered.metadata.archive_bytes,
+    )
+    .await?;
+    match timeout_control(read_control(stream)).await? {
+        ControlMessage::BundleComplete { transfer_id }
+            if transfer_id == registered.metadata.transfer_id =>
+        {
+            Ok(())
+        }
+        _ => Err("receiver did not acknowledge the completed transfer".to_string()),
+    }
+}
+
+async fn stream_file<W>(
+    writer: &mut W,
+    path: &Path,
+    offset: u64,
+    total_bytes: u64,
+) -> Result<(), String>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| format!("open transfer bundle: {error}"))?;
+    tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(offset))
+        .await
+        .map_err(|error| format!("seek transfer bundle: {error}"))?;
+    let mut remaining = total_bytes.saturating_sub(offset);
+    let mut buffer = vec![0_u8; TRANSFER_CHUNK_BYTES];
+    while remaining > 0 {
+        let chunk_bytes = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| "transfer chunk size overflow".to_string())?;
+        tokio::time::timeout(CHUNK_TIMEOUT, file.read_exact(&mut buffer[..chunk_bytes]))
+            .await
+            .map_err(|_| "reading the transfer bundle timed out".to_string())?
+            .map_err(|error| format!("read transfer bundle: {error}"))?;
+        tokio::time::timeout(CHUNK_TIMEOUT, writer.write_all(&buffer[..chunk_bytes]))
+            .await
+            .map_err(|_| "sending the transfer bundle timed out".to_string())?
+            .map_err(|error| format!("send transfer bundle: {error}"))?;
+        remaining -= chunk_bytes as u64;
+    }
+    writer
+        .flush()
+        .await
+        .map_err(|error| format!("flush transfer bundle: {error}"))
+}
 
 /// Error code for a copy refused because this member already holds one for another device.
 const MEMBER_BUSY_CODE: &str = "member_busy";
@@ -25,20 +161,20 @@ const PREPARED_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 
 /// The copy a device asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SnapshotRequest {
+pub struct SnapshotRequest {
     pub vault_id: String,
     pub device_id: String,
 }
 
 /// A prepared archive and the metadata the receiver checks it against.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PreparedSnapshot {
+pub struct PreparedSnapshot {
     pub metadata: BundleMetadata,
     pub archive_path: PathBuf,
 }
 
 /// Builds a snapshot copy of the active vault for one request.
-pub(crate) type SnapshotPreparer = Arc<
+pub type SnapshotPreparer = Arc<
     dyn Fn(
             SnapshotRequest,
         ) -> Pin<Box<dyn Future<Output = Result<PreparedSnapshot, String>> + Send>>
@@ -61,13 +197,13 @@ struct BundleState {
 
 /// The snapshot copies one member listener serves.
 #[derive(Clone)]
-pub(crate) struct MemberBundles {
+pub struct MemberBundles {
     preparer: SnapshotPreparer,
     state: Arc<tokio::sync::Mutex<BundleState>>,
 }
 
 impl MemberBundles {
-    pub(crate) fn new(preparer: SnapshotPreparer) -> Self {
+    pub fn new(preparer: SnapshotPreparer) -> Self {
         Self {
             preparer,
             state: Arc::default(),
@@ -75,7 +211,7 @@ impl MemberBundles {
     }
 
     /// Whether `request` is a snapshot copy request this module answers.
-    pub(super) fn handles(request: &ControlMessage) -> bool {
+    pub fn handles(request: &ControlMessage) -> bool {
         matches!(
             request,
             ControlMessage::RequestBundle { .. }
@@ -86,7 +222,7 @@ impl MemberBundles {
     }
 
     /// Answers one snapshot copy request from the peer whose certificate has `fingerprint`.
-    pub(super) async fn serve(
+    pub async fn serve(
         &self,
         stream: &mut ServerStream,
         manager: &PairingManager,
@@ -314,4 +450,35 @@ fn release(manager: &PairingManager, snapshot: &PreparedSnapshot) {
 async fn refuse(stream: &mut ServerStream, refusal: MemberRefusal) -> Result<(), String> {
     send_error(stream, refusal.code(), refusal.describe(), false).await?;
     Err(format!("refused: {}", refusal.code()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundle_preparations_are_limited_per_device_and_sliding_window() {
+        let start = Instant::now();
+        let mut windows = BundlePreparationWindows::default();
+        for _ in 0..MAX_BUNDLE_PREPARATIONS_PER_PEER {
+            windows.admit("phone-a", start).unwrap();
+        }
+        assert_eq!(
+            windows.admit("phone-a", start).unwrap_err(),
+            BUNDLE_PREPARATION_LIMIT
+        );
+        // Another linked device keeps its own budget.
+        windows.admit("phone-b", start).unwrap();
+        let almost = start + BUNDLE_PREPARATION_WINDOW - Duration::from_millis(1);
+        assert!(windows.admit("phone-a", almost).is_err());
+        windows
+            .admit("phone-a", start + BUNDLE_PREPARATION_WINDOW)
+            .unwrap();
+        // Refused requests do not extend the window.
+        assert_eq!(
+            windows.peers["phone-a"].len(),
+            1,
+            "only the admitted snapshot after expiry is kept"
+        );
+    }
 }

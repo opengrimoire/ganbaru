@@ -1416,6 +1416,15 @@ impl MaterializeHook for FixtureHook {
             Ok(())
         })
     }
+
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        crate::hooks::rebuild_every_key(self, conn, table, changes)
+    }
 }
 
 /// Topic of the change notices [`OverrideHook`] reports.
@@ -1443,6 +1452,15 @@ impl MaterializeHook for OverrideHook {
             }
             Ok(())
         })
+    }
+
+    fn rebuild_all<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
     }
 
     fn settled_groups(&self, _table: &'static TableSpec) -> &'static [GroupId] {

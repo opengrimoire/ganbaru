@@ -56,7 +56,7 @@ pub const RELAY_SETUP_TEXT_PREFIX: &str = "ganbaru-relay:";
 /// Longest refusal message on the wire.
 pub const MAX_RELAY_REFUSAL_MESSAGE_BYTES: usize = 256;
 
-const RELAY_SETUP_MAGIC: &[u8; 4] = b"GBRL";
+pub(super) const RELAY_SETUP_MAGIC: &[u8; 4] = b"GBRL";
 const RELAY_SETUP_VERSION: u8 = 1;
 const ADMIN_COMMAND_CLAIM: u8 = 1;
 const ADMIN_COMMAND_ADD_KEY: u8 = 2;

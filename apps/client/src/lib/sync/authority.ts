@@ -97,15 +97,21 @@ export function syncOwnDevice(authority: SyncAuthorityView): SyncAuthorityDevice
  *
  * Quarantine is local to this installation, so any device may use it on another live device
  * that is not the anchor. Removal and promotion are admin proposals, so they need an admin
- * desktop and a space that is not frozen. The coordinator removes devices by unlinking them
- * and is the only installation that promotes, since it holds the admin keys sent at pairing.
+ * desktop and a space that is not frozen. The coordinator removes linked devices by unlinking
+ * them, so it proposes removal only for a server, and it is the only installation that
+ * promotes, since it holds the admin keys sent at pairing.
  */
 export function syncDeviceActions(context: SyncAuthorityContext, device: SyncAuthorityDevice): SyncDeviceActions {
   const other = !device.device.ownDevice;
   const live = device.removedRevision === null;
   const proposing = adminHere(context) && !context.authority.frozen;
   return {
-    remove: proposing && context.statusRole !== "hub" && other && live && !device.anchor,
+    remove:
+      proposing
+      && (context.statusRole !== "hub" || device.kind === "server")
+      && other
+      && live
+      && !device.anchor,
     quarantine: other && live && !device.anchor && !device.quarantined,
     lift: other && device.quarantined,
     promote:
@@ -119,22 +125,31 @@ export function syncDeviceActions(context: SyncAuthorityContext, device: SyncAut
   };
 }
 
-/** Whether this is a linked desktop, enrolled and live, that does not hold the anchor. */
+/**
+ * Whether this installation deals with the anchor directly: a linked desktop, or a coordinator
+ * whose anchor is a server, which it reaches like any other device.
+ */
+function reachesAnchorDirectly(context: SyncAuthorityContext): boolean {
+  return context.statusRole === "client"
+    || (context.statusRole === "hub" && context.authority.devices.some((entry) => entry.anchor && entry.kind === "server"));
+}
+
+/** Whether this is a desktop beside the anchor, enrolled and live, that does not hold it. */
 function linkedDesktopBesideAnchor(context: SyncAuthorityContext): boolean {
   const own = syncOwnDevice(context.authority);
   return !context.mobileLayout
-    && context.statusRole === "client"
+    && reachesAnchorDirectly(context)
     && own !== null
     && own.kind === "desktop"
     && own.removedRevision === null
     && !own.anchor;
 }
 
-/** Whether this is a linked desktop, enrolled even if since removed, that does not hold the anchor. */
+/** Whether this is a desktop beside the anchor, enrolled even if since removed, that does not hold it. */
 function linkedDesktopInContest(context: SyncAuthorityContext): boolean {
   const own = syncOwnDevice(context.authority);
   return !context.mobileLayout
-    && context.statusRole === "client"
+    && reachesAnchorDirectly(context)
     && own !== null
     && own.kind === "desktop"
     && !own.anchor;
@@ -347,8 +362,8 @@ export function syncLateChangeKey(change: SyncLateChange): string {
 }
 
 /**
- * Says since when no pass reached the anchor, on a linked device, or returns null while it
- * answers or on the coordinator.
+ * Says since when no pass reached the anchor, or returns null while it answers. The status
+ * tracks this on linked devices and on a coordinator whose anchor is a server.
  */
 export function syncAnchorUnreachableLine(
   t: Translate,
@@ -356,7 +371,7 @@ export function syncAnchorUnreachableLine(
   status: SyncStatusView,
   nowMs: number,
 ): string | null {
-  if (status.role !== "client" || status.anchorUnreachableSinceMs === null) return null;
+  if (status.anchorUnreachableSinceMs === null) return null;
   return t("sync.authority.anchorUnreachable", formatSyncTime(t, locale, status.anchorUnreachableSinceMs, nowMs));
 }
 

@@ -4,6 +4,8 @@
 //! `ganbaru-sync-replica`. A pass runs through a host, so the app and a headless pass without a
 //! Tauri runtime share it.
 
+#[cfg(desktop)]
+pub(crate) mod anchor_server;
 mod authority;
 pub(crate) mod backup_keys;
 pub(crate) mod commands;
@@ -30,6 +32,7 @@ use ganbaru_sync_replica::{assets, writer};
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
+pub(crate) use host::rebuild_staged_vault;
 pub(crate) use peers::reported_members;
 pub(crate) use service::{
     SyncRuntime, bootstrap_members, ensure_device_key, member_admission_source, member_hub,

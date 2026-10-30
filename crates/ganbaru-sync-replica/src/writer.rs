@@ -164,7 +164,8 @@ pub trait SyncKeyStore: Send + Sync {
     fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String>;
 }
 
-fn key_reference(vault_id: &str, key: SyncKey<'_>) -> String {
+/// The name a sync secret is stored under.
+pub fn key_reference(vault_id: &str, key: SyncKey<'_>) -> String {
     match key {
         SyncKey::Writer(writer_id) => format!("writer-key:{vault_id}:{writer_id}"),
         SyncKey::Device => format!("device-key:{vault_id}"),
@@ -357,6 +358,12 @@ impl SyncFiles {
     /// Directory of the vault's other device-local sync files.
     pub fn vault_directory(&self) -> PathBuf {
         self.directory.join(&self.vault_id)
+    }
+
+    /// Marks a copy recovered through an anchor server after every device was lost. Such a device
+    /// has no link to the devices it inherited, so it never proposes removing them for that.
+    pub fn server_recovery_path(&self) -> PathBuf {
+        self.vault_directory().join("server-recovery")
     }
 
     /// The proposal outbox of this installation.

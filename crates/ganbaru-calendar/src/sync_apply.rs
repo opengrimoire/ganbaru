@@ -9,7 +9,7 @@
 
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::calendar::{COMPONENTS_TABLE, DOMAIN, EVENTS_TABLE};
-use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
+use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook, rebuild_every_key};
 use sqlx::SqliteConnection;
 
 /// Rebuilds projections and reports changed rows after sync materializes Calendar rows.
@@ -34,6 +34,15 @@ impl MaterializeHook for CalendarApplyHook {
             }
             Ok(())
         })
+    }
+
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        rebuild_every_key(self, conn, table, changes)
     }
 }
 

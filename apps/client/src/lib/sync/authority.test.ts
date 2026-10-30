@@ -132,6 +132,24 @@ describe("sync authority controls", () => {
     expect(canTakeSyncAnchor(context({}, { devices: [anchor] }))).toBe(false);
   });
 
+  it("treats a coordinator whose anchor is a server as a desktop beside the anchor", () => {
+    const server = device("server", { kind: "server", anchor: true });
+    const devices = [own, server, memberDesktop, phone];
+    const hub = context({ statusRole: "hub" }, { anchorDeviceId: "server", devices });
+    expect(canTakeSyncAnchor(hub)).toBe(true);
+    expect(canForceSyncAnchor(hub)).toBe(false);
+    expect(canForceSyncAnchor({ ...hub, anchorUnreachableSinceMs: NOW - 60_000 })).toBe(true);
+    expect(syncDeviceActions(hub, server).remove).toBe(false);
+    expect(syncDeviceActions(hub, memberDesktop).remove).toBe(false);
+  });
+
+  it("lets the coordinator remove a server only once the server stopped anchoring", () => {
+    const server = device("server", { kind: "server" });
+    const hub = context({ statusRole: "hub" }, { devices: [own, anchor, server] });
+    expect(syncDeviceActions(hub, server).remove).toBe(true);
+    expect(syncDeviceActions({ ...hub, authority: { ...hub.authority, frozen: true } }, server).remove).toBe(false);
+  });
+
   it("offers a forced handover only to a linked admin desktop whose anchor stopped answering", () => {
     const lost = { anchorUnreachableSinceMs: NOW - 60_000 };
     expect(canForceSyncAnchor(context(lost))).toBe(true);
@@ -342,7 +360,6 @@ describe("sync unconfirmed changes", () => {
     const since = NOW - 10 * 60_000;
     expect(syncAnchorUnreachableLine(t, "en", status({ role: "client", anchorUnreachableSinceMs: since }), NOW))
       .toBe("The anchor stopped answering 10 min ago.");
-    expect(syncAnchorUnreachableLine(t, "en", status({ role: "hub", anchorUnreachableSinceMs: since }), NOW)).toBeNull();
     expect(syncAnchorUnreachableLine(t, "en", status({ role: "client" }), NOW)).toBeNull();
   });
 });

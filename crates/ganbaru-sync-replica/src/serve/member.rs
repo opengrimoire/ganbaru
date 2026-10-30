@@ -55,13 +55,14 @@ type CachedConfig = Option<(BTreeSet<String>, Arc<rustls::ServerConfig>)>;
 /// TLS configuration built once per admitted certificate set, so connections reuse it until
 /// the log or the quarantine changes the set.
 #[derive(Clone, Default)]
-struct MemberConfigCache(Arc<Mutex<CachedConfig>>);
+pub(super) struct MemberConfigCache(Arc<Mutex<CachedConfig>>);
 
 impl MemberConfigCache {
-    async fn current(
+    pub(super) async fn current(
         &self,
         manager: &PairingManager,
         fingerprints: BTreeSet<String>,
+        mandatory: bool,
     ) -> Result<Arc<rustls::ServerConfig>, String> {
         if let Some((cached, config)) = self.lock()?.as_ref()
             && *cached == fingerprints
@@ -69,7 +70,7 @@ impl MemberConfigCache {
             return Ok(config.clone());
         }
         let (_, identity) = load_tls_identity(manager).await?;
-        let verifier = PinnedClientVerifier::pinned(fingerprints.iter().cloned(), true);
+        let verifier = PinnedClientVerifier::pinned(fingerprints.iter().cloned(), mandatory);
         let config = Arc::new(
             rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
                 .with_client_cert_verifier(Arc::new(verifier))
@@ -97,10 +98,10 @@ type CachedAdmission = Option<(Instant, Option<MemberAdmission>)>;
 
 /// The admission read for configuring handshakes, reused for [`HANDSHAKE_ADMISSION_TTL`].
 #[derive(Clone, Default)]
-struct HandshakeAdmission(Arc<tokio::sync::Mutex<CachedAdmission>>);
+pub(super) struct HandshakeAdmission(Arc<tokio::sync::Mutex<CachedAdmission>>);
 
 impl HandshakeAdmission {
-    async fn current(
+    pub(super) async fn current(
         &self,
         source: &MemberAdmissionSource,
     ) -> Result<Option<MemberAdmission>, String> {
@@ -193,7 +194,7 @@ async fn handle_member_connection<R: Routes>(
     }
     let config = connection
         .configs
-        .current(connection.manager, fingerprints)
+        .current(connection.manager, fingerprints, true)
         .await?;
     let mut stream = tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
@@ -259,7 +260,7 @@ async fn handle_member_connection<R: Routes>(
 
 /// Answers a refused request with its typed code and returns the refusal as the connection's
 /// error, so it is logged without keys or certificates.
-async fn refuse<W>(stream: &mut W, refusal: MemberRefusal) -> Result<(), String>
+pub(super) async fn refuse<W>(stream: &mut W, refusal: MemberRefusal) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {

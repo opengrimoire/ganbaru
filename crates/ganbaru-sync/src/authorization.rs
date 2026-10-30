@@ -484,12 +484,12 @@ impl AuthState {
                 return Err(ProposalRejection::DeviceRemoved);
             }
             // A handover is a take, signed by the admin key its target holds, unless the kit key
-            // or an admitted installed recovery key signed it: those name any live desktop,
-            // because the anchor that would sequence its promotion to admin may be lost.
+            // or an admitted installed recovery key signed it: those name any live desktop or
+            // server, because the anchor that would sequence its promotion to admin may be lost.
             if self.signer(record).is_none() {
                 return Err(ProposalRejection::NotAdmin);
             }
-            if device.kind != DeviceKind::Desktop {
+            if !device.kind.may_be_admin() {
                 return Err(ProposalRejection::AdminNotDesktop);
             }
             return Ok(());
@@ -520,8 +520,7 @@ impl AuthState {
                 {
                     return Err(ProposalRejection::AlreadyEnrolled);
                 }
-                if matches!(enroll.role, DeviceRole::Admin(_))
-                    && enroll.device_kind != DeviceKind::Desktop
+                if matches!(enroll.role, DeviceRole::Admin(_)) && !enroll.device_kind.may_be_admin()
                 {
                     return Err(ProposalRejection::AdminNotDesktop);
                 }
@@ -537,7 +536,7 @@ impl AuthState {
                 if *device_id == self.anchor_device_id && *role == DeviceRole::Member {
                     return Err(ProposalRejection::NamesAnchor);
                 }
-                if matches!(role, DeviceRole::Admin(_)) && device.kind != DeviceKind::Desktop {
+                if matches!(role, DeviceRole::Admin(_)) && !device.kind.may_be_admin() {
                     return Err(ProposalRejection::AdminNotDesktop);
                 }
             }
@@ -1045,6 +1044,7 @@ fn kind_text(kind: DeviceKind) -> &'static str {
     match kind {
         DeviceKind::Desktop => "desktop",
         DeviceKind::Mobile => "mobile",
+        DeviceKind::Server => "server",
     }
 }
 
@@ -1826,7 +1826,7 @@ impl<'a> Resolution<'a> {
         state.epoch < u32::MAX
             && state
                 .live_device(target)
-                .is_ok_and(|device| device.kind == DeviceKind::Desktop)
+                .is_ok_and(|device| device.kind.may_be_admin())
     }
 
     /// Visits a kit handover `signer` signs for the desktop `target` may continue from, the

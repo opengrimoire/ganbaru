@@ -666,6 +666,7 @@ commands.allow = [
   "sync_quarantine_lift",
   "sync_quarantine_list",
   "sync_records_resume",
+  "sync_recover_through_server",
   "sync_recovery_discard",
   "sync_recovery_kit_saved",
   "sync_recovery_kit_state",

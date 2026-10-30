@@ -12,6 +12,10 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use ganbaru_atomic_files::FileAccess;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
+use ganbaru_sync_replica::backup::{
+    MAX_VAULT_MANIFEST_BYTES, VAULT_APP_MARKER, VAULT_SCHEMA_VERSION, VaultManifest,
+    parse_vault_manifest,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,8 +52,6 @@ const PRODUCTION_VAULT_NAME: &str = "Ganbaru";
 const DEVELOPMENT_VAULT_NAME: &str = "Ganbaru Dev";
 const APP_STATE_FILE: &str = "app-state.json";
 const VAULT_MANIFEST_FILE: &str = ganbaru_sync_replica::backup::VAULT_MANIFEST_FILE;
-const VAULT_APP_MARKER: &str = "ganbaru";
-const VAULT_SCHEMA_VERSION: u32 = 1;
 const MAX_RECENT_VAULTS: usize = 8;
 #[cfg(target_os = "android")]
 const MOBILE_VAULT_IMPORT_MAX_FILES: u32 = 100_000;
@@ -154,16 +156,6 @@ pub(crate) fn ensure_device_id_in(config_dir: &Path) -> Result<String, String> {
         state.device_id = Some(candidate.clone());
         Ok(candidate)
     })
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultManifest {
-    app: String,
-    schema_version: u32,
-    vault_id: String,
-    display_name: String,
-    created_at: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -422,10 +414,6 @@ fn database_path(path: &Path) -> PathBuf {
     path.join(APP_SQLITE_FILE)
 }
 
-/// Largest `vault.json` accepted from an archive or a vault folder. The marker holds a few
-/// short fields.
-const MAX_VAULT_MANIFEST_BYTES: u64 = 64 * 1024;
-
 /// Largest device preference file any reader accepts. Writes that would exceed it are refused,
 /// so preferences the app saved always read back.
 pub(crate) const MAX_DEVICE_PREFERENCES_BYTES: u64 = 4 * 1024 * 1024;
@@ -438,24 +426,6 @@ fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
     )
     .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
     parse_vault_manifest(&contents)
-}
-
-fn parse_vault_manifest(contents: &[u8]) -> Result<VaultManifest, String> {
-    let manifest: VaultManifest = serde_json::from_slice(contents)
-        .map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
-    if manifest.app != VAULT_APP_MARKER {
-        return Err("selected folder is not a Ganbaru folder".to_string());
-    }
-    if manifest.schema_version != VAULT_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported Ganbaru folder schema version {}",
-            manifest.schema_version
-        ));
-    }
-    // The identity names key store accounts and key files, so it keeps to the wire identifier
-    // alphabet before anything uses it.
-    ganbaru_handoff::protocol::validate_identifier("Ganbaru folder id", &manifest.vault_id)?;
-    Ok(manifest)
 }
 
 fn vault_info_from_manifest(path: &Path, manifest: VaultManifest) -> Result<VaultInfo, String> {

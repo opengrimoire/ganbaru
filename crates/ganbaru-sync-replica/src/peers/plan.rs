@@ -21,6 +21,8 @@ pub fn max_exchanges(kind: DeviceKind) -> usize {
     match kind {
         DeviceKind::Desktop => DESKTOP_MAX_EXCHANGES,
         DeviceKind::Mobile => MOBILE_MAX_EXCHANGES,
+        // A server only answers: it never dials a member.
+        DeviceKind::Server => 0,
     }
 }
 

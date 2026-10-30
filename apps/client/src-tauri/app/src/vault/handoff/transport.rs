@@ -63,43 +63,6 @@ impl TransferCancellation {
     }
 }
 
-#[cfg(desktop)]
-async fn stream_file<W>(
-    writer: &mut W,
-    path: &Path,
-    offset: u64,
-    total_bytes: u64,
-) -> Result<(), String>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|error| format!("open transfer bundle: {error}"))?;
-    tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(offset))
-        .await
-        .map_err(|error| format!("seek transfer bundle: {error}"))?;
-    let mut remaining = total_bytes.saturating_sub(offset);
-    let mut buffer = vec![0_u8; TRANSFER_CHUNK_BYTES];
-    while remaining > 0 {
-        let chunk_bytes = usize::try_from(remaining.min(buffer.len() as u64))
-            .map_err(|_| "transfer chunk size overflow".to_string())?;
-        tokio::time::timeout(CHUNK_TIMEOUT, file.read_exact(&mut buffer[..chunk_bytes]))
-            .await
-            .map_err(|_| "reading the transfer bundle timed out".to_string())?
-            .map_err(|error| format!("read transfer bundle: {error}"))?;
-        tokio::time::timeout(CHUNK_TIMEOUT, writer.write_all(&buffer[..chunk_bytes]))
-            .await
-            .map_err(|_| "sending the transfer bundle timed out".to_string())?
-            .map_err(|error| format!("send transfer bundle: {error}"))?;
-        remaining -= chunk_bytes as u64;
-    }
-    writer
-        .flush()
-        .await
-        .map_err(|error| format!("flush transfer bundle: {error}"))
-}
-
 pub(crate) async fn enroll(
     manager: &PairingManager,
     invitation: &PairingInvitation,
@@ -195,7 +158,29 @@ async fn open_source(
             connect_member_endpoints(manager, endpoints, fingerprint).await?,
             None,
         )),
+        BundleSource::Server(target) | BundleSource::Recovery { target, .. } => {
+            let (_, identity) = load_tls_identity(manager).await?;
+            let stream = ganbaru_sync_replica::anchor_link::dial_server(
+                target,
+                Some(identity),
+                ganbaru_sync_replica::service::RELAY_LOOPBACK,
+            )
+            .await?;
+            Ok((stream, None))
+        }
     }
+}
+
+/// The vault a copy from `source` belongs to: the one this device is pinned to, or the one a
+/// recovery names, since a recovering desktop has no pin.
+fn bundle_vault_id(manager: &PairingManager, source: &BundleSource) -> Result<String, String> {
+    if let BundleSource::Recovery { vault_id, .. } = source {
+        return Ok(vault_id.clone());
+    }
+    manager
+        .coordinator_pin()?
+        .map(|pin| pin.vault_id)
+        .ok_or_else(|| "this device is not linked to a coordinator".to_string())
 }
 
 async fn read_source_response<R>(
@@ -230,9 +215,7 @@ pub(crate) async fn request_bundle(
     compatibility: super::protocol::HandoffCompatibility,
     cancellation: &TransferCancellation,
 ) -> Result<BundleMetadata, String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+    let vault_id = bundle_vault_id(manager, source)?;
     let device_id = manager.device_id()?;
     let started = tokio::time::Instant::now();
     loop {
@@ -245,14 +228,14 @@ pub(crate) async fn request_bundle(
             ControlMessage::RequestBundle {
                 protocol_version: PROTOCOL_VERSION,
                 compatibility: compatibility.clone(),
-                vault_id: coordinator.vault_id.clone(),
+                vault_id: vault_id.clone(),
                 device_id: device_id.clone(),
             },
         )
         .await?
         {
             ControlMessage::BundlePrepared { metadata }
-                if metadata.vault_id == coordinator.vault_id && metadata.device_id == device_id =>
+                if metadata.vault_id == vault_id && metadata.device_id == device_id =>
             {
                 return Ok(metadata);
             }
@@ -547,9 +530,9 @@ async fn fetch_from(
             archive,
         }),
         Err(error) => {
-            // The coordinator keeps a copy it prepared so the download can resume; a member
-            // holds one copy at a time and is released for the next device.
-            if matches!(source, BundleSource::Member { .. }) {
+            // The coordinator keeps a copy it prepared so the download can resume; a member or
+            // server holds one copy at a time and is released for the next device.
+            if !matches!(source, BundleSource::Coordinator) {
                 let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;
             }
             Err(error)
@@ -568,10 +551,7 @@ async fn download_bundle_inner(
     stop_after_bytes: Option<u64>,
 ) -> Result<PathBuf, String> {
     metadata.validate()?;
-    let pinned = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    if pinned.vault_id != metadata.vault_id {
+    if bundle_vault_id(manager, source)? != metadata.vault_id {
         return Err("transfer belongs to a different vault".to_string());
     }
     let (mut stream, coordinator) = open_source(manager, source).await?;

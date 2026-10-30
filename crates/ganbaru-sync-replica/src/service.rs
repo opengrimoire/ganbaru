@@ -17,11 +17,12 @@ pub mod dial_report;
 pub mod discovery_keys;
 pub mod host;
 pub mod peers;
+mod server;
 pub mod status;
 pub mod transport;
 
 #[cfg(desktop)]
-pub use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
+pub use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, ServerEnrollment};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 pub use host::{SYNC_DIRECTORY, SyncHost};
@@ -126,7 +127,7 @@ const MAX_FORK_RECOVERIES: usize = 3;
 #[cfg(desktop)]
 const RESTORE_CATCH_UP_WINDOW: Duration = Duration::from_secs(10 * 60);
 
-/// Whether relay passes dial a loopback relay: debug builds allow a relay on this computer for
+/// Whether relay and server dials reach loopback: debug builds allow a server on this computer for
 /// development, release builds refuse it.
 pub const RELAY_LOOPBACK: ganbaru_handoff::dial::LoopbackPolicy = if cfg!(debug_assertions) {
     ganbaru_handoff::dial::LoopbackPolicy::Allow
@@ -615,9 +616,18 @@ pub fn sync_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime) -> SyncHub {
         let host = opener.clone();
         Box::pin(async move { open_hub_vault(&host).await })
     });
-    let proposals = hub_proposals(runtime);
+    SyncHub::new(open, runtime.changes.clone())
+        .with_records(runtime.records.clone())
+        .with_stability(runtime.stability.clone())
+        .with_proposals(hub_proposals(runtime))
+        .with_forwards(hub_forwards(runtime))
+}
+
+/// Hands an anchor's forward request to the pass, which answers it from this device's outbox.
+#[cfg(desktop)]
+fn hub_forwards(runtime: &SyncRuntime) -> HubForwards {
     let queue = runtime.clone();
-    let forwards: HubForwards = Arc::new(move |device_id, settled| {
+    Arc::new(move |device_id, settled| {
         let runtime = queue.clone();
         Box::pin(async move {
             let receiver = runtime.request_forward(device_id, settled)?;
@@ -626,12 +636,7 @@ pub fn sync_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime) -> SyncHub {
                 .map_err(|_| "the coordinator did not collect proposals in time".to_string())?
                 .map_err(|_| "the coordinator stopped before it collected proposals".to_string())?
         })
-    });
-    SyncHub::new(open, runtime.changes.clone())
-        .with_records(runtime.records.clone())
-        .with_stability(runtime.stability.clone())
-        .with_proposals(proposals)
-        .with_forwards(forwards)
+    })
 }
 
 /// Hands a proposal a listener received to the pass, which sequences it when this desktop
@@ -669,6 +674,13 @@ pub fn member_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime) -> SyncHub {
             .with_records(runtime.records.clone()),
         runtime,
     )
+}
+
+/// The hub an always-on server runs: a member hub that also answers an anchor's forward request,
+/// because a server dials nobody and its own proposals leave only that way.
+#[cfg(desktop)]
+pub fn server_hub<H: SyncHost>(host: &H, runtime: &SyncRuntime) -> SyncHub {
+    member_hub(host, runtime).with_forwards(hub_forwards(runtime))
 }
 
 /// Adds the stability report and proposal sequencing a desktop member serves once it anchors.
@@ -1094,6 +1106,10 @@ struct ServiceState {
     applied: ApplyMark,
     /// Which managed assets the hub holds or lacks, so passes do not ask again.
     assets: AssetMemory,
+    /// Which managed assets an anchor server holds or lacks.
+    server_assets: AssetMemory,
+    /// Whether the anchor server's protocol was checked since it last failed to answer.
+    server_version_checked: bool,
     /// The head of the active writer the hub last confirmed holding with the same hash, which
     /// bounds compaction of this installation's own writers.
     confirmed: Option<(WriterId, Seq)>,
@@ -1106,6 +1122,10 @@ struct ServiceState {
     /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
     #[cfg(desktop)]
     restored_since: Option<u64>,
+    /// Final rejections this desktop gave proposals an anchor server forwarded, which the next
+    /// forward request reports to the server.
+    #[cfg(desktop)]
+    server_settled: Vec<(Digest32, ProposalRejection)>,
     /// Final rejections this desktop, anchoring as a linked device, gave forwarded proposals,
     /// which the next forward request reports to the coordinator.
     #[cfg(desktop)]
@@ -1529,9 +1549,24 @@ impl ServiceState {
         {
             next = Next::Continue;
         }
+        let server_link = if view.paused {
+            None
+        } else {
+            self.server_exchange(&session, &manager, &vault_id, view)
+                .await
+        };
+        if let Some(link) = &server_link {
+            if view.state == SyncState::Offline {
+                view.state = SyncState::Idle;
+                view.last_error = None;
+            }
+            if link.more && matches!(next, Next::Idle | Next::Online(_) | Next::Retry) {
+                next = Next::Continue;
+            }
+        }
         self.apply_new(&session).await?;
         let anchor_link = self.anchor_link.take();
-        if is_hub {
+        if is_hub && !session.anchored_by_server().await? {
             view.anchor_unreachable_since_ms = None;
         } else if !view.paused {
             let reachable = anchor_reachable(
@@ -1542,7 +1577,7 @@ impl ServiceState {
                     .map(|pin| pin.device_id)
                     .as_deref(),
                 coordinator_answered,
-                anchor_link.is_some(),
+                anchor_link.is_some() || server_link.as_ref().is_some_and(|link| link.anchors),
             );
             view.anchor_unreachable_since_ms = if reachable {
                 None
@@ -1572,6 +1607,13 @@ impl ServiceState {
             }
             take_anchor
         };
+        // What an anchor server that answered this pass stores, which is what the handover away
+        // from it must cover.
+        #[cfg(desktop)]
+        let anchor_server_stored = server_link
+            .as_ref()
+            .filter(|link| link.anchors)
+            .map(|link| link.stored.clone());
         if let Some((assets, _)) = asset_peer.as_ref()
             && view.state != SyncState::Offline
         {
@@ -1581,18 +1623,18 @@ impl ServiceState {
                 .unwrap_or_default();
             #[cfg(desktop)]
             {
-                let hub_stored = match &next {
+                let old_anchor_stored = anchor_server_stored.clone().or_else(|| match &next {
                     Next::Online(wait) if view.state == SyncState::Idle => Some(wait.hub.clone()),
                     _ => None,
-                };
+                });
                 for request in take_anchor.drain(..) {
-                    let outcome = if let Some(hub_stored) = hub_stored.as_ref() {
+                    let outcome = if let Some(stored) = old_anchor_stored.as_ref() {
                         session
-                            .take_anchor(&manager, &mut self.writer, hub_stored)
+                            .take_anchor(&manager, &mut self.writer, stored)
                             .await
                     } else {
                         Err(
-                            "taking the anchor needs a current exchange with the coordinator"
+                            "taking the anchor needs a current exchange with the coordinator or the anchor server"
                                 .to_string(),
                         )
                     };
@@ -1647,16 +1689,41 @@ impl ServiceState {
         }
         #[cfg(desktop)]
         for request in take_anchor {
-            request.answer(Err(if is_hub {
-                "the coordinating computer cannot take the anchor back yet".to_string()
-            } else {
-                "taking the anchor needs a current exchange with the coordinator".to_string()
-            }));
+            let outcome = match anchor_server_stored.as_ref() {
+                Some(stored) => {
+                    session
+                        .take_anchor(&manager, &mut self.writer, stored)
+                        .await
+                }
+                None if is_hub => {
+                    Err("the coordinating computer cannot take the anchor back yet".to_string())
+                }
+                None => Err(
+                    "taking the anchor needs a current exchange with the coordinator or the anchor server".to_string(),
+                ),
+            };
+            if outcome.is_ok() {
+                next = Next::Continue;
+            }
+            request.answer(outcome);
         }
         if let Some((assets, mut transfer)) = asset_peer {
             next = self
                 .download_assets(&session, &assets, &mut transfer, next, view)
                 .await;
+        }
+        if let Some(link) = server_link {
+            match self.settle_server(&session, &manager, link).await {
+                Ok(true) if matches!(next, Next::Idle | Next::Online(_)) => next = Next::Continue,
+                Ok(_) => {}
+                Err(error) => eprintln!("sync: finish the anchor server exchange: {error}"),
+            }
+        }
+        #[cfg(desktop)]
+        if host.wants_anchor()?
+            && let Err(error) = session.take_wanted_anchor(&manager, &mut self.writer).await
+        {
+            eprintln!("sync: take the anchor: {error}");
         }
         if !recovery.is_empty() && self.writer.is_some() {
             let mut restored = BTreeSet::new();
@@ -1678,7 +1745,8 @@ impl ServiceState {
             session.unlink_removed_devices(&manager, &vault_id).await?;
             #[cfg(desktop)]
             let anchor_ready = {
-                let members_reachable = !manager.linked_peers_for(&vault_id)?.is_empty();
+                let members_reachable =
+                    host.is_server() || !manager.linked_peers_for(&vault_id)?.is_empty();
                 self.anchor_ready(&session, &manager, members_reachable)
                     .await?
             };
@@ -3361,9 +3429,17 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         .any(|device| device.device_id == peer.device_id)
                 })
                 .collect();
-            let remove = authority::unlinked_devices(&view, &own_device_id, |device_id| {
-                peers.iter().any(|peer| peer.device_id == device_id)
-            });
+            // Pairing records describe a coordinator's links. A server links nobody, and a device
+            // recovered through a server starts with none, so neither reads an absent link as
+            // a removal.
+            let recovered = self.files.server_recovery_path().exists();
+            let remove = if self.host.is_server() || recovered {
+                Vec::new()
+            } else {
+                authority::unlinked_devices(&view, &own_device_id, |device_id| {
+                    peers.iter().any(|peer| peer.device_id == device_id)
+                })
+            };
             let mut changes = authority::Reconciliation {
                 remove,
                 ..Default::default()
@@ -3517,6 +3593,18 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .await
             .map_err(|error| format!("read sync authorization: {error}"))?
             .map(|view| view.anchor_device_id))
+    }
+
+    /// Whether the selected log names a server as the anchor.
+    async fn anchored_by_server(&self) -> Result<bool, String> {
+        let mut conn = acquire(&self.pool).await?;
+        Ok(self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .as_ref()
+            .is_some_and(peers::anchored_by_server))
     }
 
     /// On a client, drops outbox proposals the applied chain holds and sends the rest to the

@@ -115,6 +115,39 @@ fn a_remote_list_edit_recomputes_the_hook_column_and_reports_it() {
 }
 
 #[test]
+fn a_full_rebuild_recomputes_derived_state_a_hookless_server_left_stale_and_captures_nothing() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        edit(
+            &mut replicas[0],
+            &format!(
+                "INSERT INTO fixture_lists (id, created_at, title) VALUES ('list-1', {CREATED}, 'L');
+                 INSERT INTO fixture_list_entries (list_id, ordinal, entry_id, body)
+                     VALUES ('list-1', 0, 'e-1', 'one'), ('list-1', 1, 'e-2', 'two');"
+            ),
+        )
+        .await;
+        replicas[0].seal().await.unwrap();
+        replicas[0]
+            .exec(
+                "UPDATE fixture_lists SET entry_count = 0;
+                 DELETE FROM fixture_list_counts;",
+            )
+            .await;
+
+        let replica = &mut replicas[0];
+        replica
+            .engine
+            .rebuild_derived_state(&mut replica.conn)
+            .await
+            .unwrap();
+
+        assert_eq!(list_counts(replica).await, (2, 2));
+        assert_eq!(replica.seal().await.unwrap().sealed_ops, 0);
+    });
+}
+
+#[test]
 fn an_owned_entry_is_skipped_while_its_membership_is_deleted_and_returns_with_it() {
     block_on(async {
         let mut replicas = replicas(2).await;

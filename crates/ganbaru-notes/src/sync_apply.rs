@@ -24,7 +24,7 @@ use ganbaru_sync::manifest::vault::notes::{
     DOMAIN, OPTIONS_TABLE, PAGES_TABLE, PROPERTIES_TABLE, REACTIONS_TABLE, RELATION_EDGES_TABLE,
     SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, property_group, reaction_group, value_group,
 };
-use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
+use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook, rebuild_every_key};
 use serde_json::Value;
 use sqlx::{Connection, SqliteConnection};
 use std::collections::BTreeSet;
@@ -60,6 +60,15 @@ impl MaterializeHook for NotesHook {
             }
             Ok(())
         })
+    }
+
+    fn rebuild_all<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        rebuild_every_key(self, conn, table, changes)
     }
 }
 

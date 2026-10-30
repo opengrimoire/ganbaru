@@ -318,6 +318,7 @@ impl LocalPair {
             transfer_id: transfer_id.to_string(),
             archive_bytes: bytes.len() as u64,
             archive_sha256: sha256_file(&path).expect("bundle digest"),
+            derived_state_stale: false,
         };
         self.desktop
             .register_outgoing_bundle(metadata.clone(), path)
@@ -1137,6 +1138,7 @@ fn oversized_bundle_metadata_is_rejected_before_network_work() {
         transfer_id: "transfer-oversize".to_string(),
         archive_bytes: MAX_ARCHIVE_BYTES + 1,
         archive_sha256: "a".repeat(64),
+        derived_state_stale: false,
     };
     assert!(metadata.validate().unwrap_err().contains("bundle size"));
 }

@@ -853,6 +853,9 @@ async fn stage_restored_vault(
     if expected_space.is_some_and(|space| SpaceId::personal(&info.vault_id) != *space) {
         return Err(RestoreError::Refused(BackupRefusal::Damaged));
     }
+    // A backup does not say whether a server wrote it, and rebuilding repeats what a desktop
+    // already computed.
+    crate::sync::rebuild_staged_vault(staging).await?;
     Ok(info)
 }
 

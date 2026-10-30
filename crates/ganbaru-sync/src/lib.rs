@@ -100,7 +100,7 @@ pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 use domains::{vault_adapters, vault_hooks};
 pub use hooks::{
     ChangeNotice, ChangeSink, ConcurrentVersion, HookError, HookFuture, Hooks, MaterializeHook,
-    SettleFuture,
+    SettleFuture, rebuild_every_key,
 };
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;

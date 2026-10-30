@@ -1128,6 +1128,15 @@ fn chat_simulated_revoke_against_widen_on_a_grant_and_a_membership_keeps_revocat
 struct RemovedConversations(Arc<Mutex<Vec<String>>>);
 
 impl MaterializeHook for RemovedConversations {
+    fn rebuild_all<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
     fn after_materialize<'a>(
         &'a self,
         conn: &'a mut SqliteConnection,
@@ -1530,6 +1539,15 @@ fn chat_read_cursors_only_move_forward_and_unchanged_reads_capture_nothing() {
 struct RecordingHook(Arc<Mutex<Vec<String>>>);
 
 impl MaterializeHook for RecordingHook {
+    fn rebuild_all<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
     fn after_materialize<'a>(
         &'a self,
         _conn: &'a mut SqliteConnection,

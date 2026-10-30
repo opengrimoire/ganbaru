@@ -84,6 +84,7 @@ pub struct MemberAdmission {
     quarantined: BTreeSet<String>,
     anchor_device_id: String,
     takes_proposals: bool,
+    answers_forwards: bool,
 }
 
 impl MemberAdmission {
@@ -110,6 +111,7 @@ impl MemberAdmission {
             quarantined: quarantined.clone(),
             anchor_device_id: view.anchor_device_id.clone(),
             takes_proposals: false,
+            answers_forwards: false,
         }
     }
 
@@ -118,6 +120,14 @@ impl MemberAdmission {
     #[must_use]
     pub fn served_by(mut self, own_device_id: &str) -> Self {
         self.takes_proposals = self.anchor_device_id == own_device_id;
+        self
+    }
+
+    /// The admission of a server listener, which hands the proposals it holds to the anchor
+    /// because the anchor cannot reach them anywhere else: a server dials no one.
+    #[must_use]
+    pub fn answering_forwards(mut self) -> Self {
+        self.answers_forwards = true;
         self
     }
 
@@ -202,7 +212,9 @@ impl MemberAdmission {
             ControlMessage::SyncPropose { .. } if !self.takes_proposals => {
                 return Err(MemberRefusal::Proposal);
             }
-            ControlMessage::SyncForward { .. } => return Err(MemberRefusal::Forward),
+            ControlMessage::SyncForward { .. } if !self.answers_forwards => {
+                return Err(MemberRefusal::Forward);
+            }
             _ => {}
         }
         if vault_id != self.vault_id {

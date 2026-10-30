@@ -830,7 +830,7 @@ fn only_the_recovery_key_forces_a_handover_to_a_member_desktop() {
             member.seal_handover(&by_admin, None).await.unwrap(),
             Err(ProposalRejection::NotAdmin)
         );
-        // The recovery key can, but only to a live desktop.
+        // The recovery key can, but only to a live desktop or server.
         let to_phone = phone.handover_proposal(&recovery).await;
         assert_eq!(
             phone.seal_handover(&to_phone, None).await.unwrap(),
@@ -1465,7 +1465,18 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
             Err(ProposalRejection::NamesAnchor)
         );
 
-        // Only desktops can be admins.
+        // Only desktops and servers can be admins.
+        hub.sequence(Entry::Enroll(Enroll {
+            device_id: device_id(23),
+            device_key: device_key(&person(), 23).public_key(),
+            tls_fingerprint: tls_fingerprint(23),
+            label: "Server".to_owned(),
+            device_kind: DeviceKind::Server,
+            role: DeviceRole::Admin(device_admin(23).public_key()),
+        }))
+        .await
+        .unwrap()
+        .unwrap();
         let mobile = |role: DeviceRole| {
             Entry::Enroll(Enroll {
                 device_id: device_id(22),

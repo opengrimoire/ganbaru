@@ -22,45 +22,28 @@ fn unique_test_path(name: &str) -> PathBuf {
 #[test]
 fn restore_outcome_matrix() {
     use RestorePlacement::{InPlace, IndependentCopy};
-    use RestorePlatform::{Android, Desktop};
-    let unlinked = summary("vault-a", 0);
-    let linked = summary("vault-a", 2);
+    let alone = summary("vault-a", 0);
+    let enrolled = summary("vault-a", 2);
     let other = summary("vault-b", 0);
     let cases = [
-        // Same space, neither linked: the only restore in place.
-        (Desktop, Some(&unlinked), &unlinked, Ok(InPlace)),
-        (Android, Some(&unlinked), &unlinked, Ok(InPlace)),
+        // Same space, no other device ever enrolled: the only restore in place.
+        (Some(&alone), &alone, InPlace),
         // Another space always becomes an independent copy.
-        (Desktop, Some(&unlinked), &other, Ok(IndependentCopy)),
-        (Android, Some(&unlinked), &other, Ok(IndependentCopy)),
-        // A linked desktop keeps its vault and opens a copy beside it.
-        (Desktop, Some(&linked), &unlinked, Ok(IndependentCopy)),
-        (Desktop, Some(&linked), &other, Ok(IndependentCopy)),
+        (Some(&alone), &other, IndependentCopy),
+        // A vault whose log enrolled other devices keeps its space and gets a copy.
+        (Some(&enrolled), &alone, IndependentCopy),
+        (Some(&enrolled), &other, IndependentCopy),
         // A backup taken while linked never rewinds the space it came from.
-        (Desktop, Some(&unlinked), &linked, Ok(IndependentCopy)),
-        (Android, Some(&unlinked), &linked, Ok(IndependentCopy)),
-        // A linked Android device refuses, whatever the backup.
-        (
-            Android,
-            Some(&linked),
-            &unlinked,
-            Err(BackupRefusal::LinkedAndroid),
-        ),
-        (
-            Android,
-            Some(&linked),
-            &other,
-            Err(BackupRefusal::LinkedAndroid),
-        ),
+        (Some(&alone), &enrolled, IndependentCopy),
         // Nothing active: a copy.
-        (Desktop, None, &unlinked, Ok(IndependentCopy)),
-        (Android, None, &linked, Ok(IndependentCopy)),
+        (None, &alone, IndependentCopy),
+        (None, &enrolled, IndependentCopy),
     ];
-    for (platform, active, backup, expected) in cases {
+    for (active, backup, expected) in cases {
         assert_eq!(
-            plan_restore(platform, active, backup),
+            plan_restore(active, backup),
             expected,
-            "{platform:?} {active:?} {backup:?}"
+            "{active:?} {backup:?}"
         );
     }
 }
@@ -339,19 +322,38 @@ fn a_replaced_vault_restore_reads_only_known_copies_in_the_private_folder() {
 }
 
 #[test]
-fn a_linked_android_phone_refuses_to_restore_another_vault() {
+fn a_linked_android_phone_refuses_to_restore_another_vault_until_it_unlinks() {
+    use crate::vault::handoff::receiver::{is_linked, test_linked_phone};
     use RestorePlatform::{Android, Desktop};
-    let linked = summary("vault-a", 1);
-    let unlinked = summary("vault-a", 0);
+    let root = unique_test_path("linked-phone");
+    let phone = test_linked_phone(&root);
+    let linked = is_linked(&phone).unwrap();
+    assert!(linked);
     assert_eq!(
-        refuse_linked(Android, Some(&linked)),
+        refuse_linked(Android, linked),
         Err(BackupRefusal::LinkedAndroid)
     );
-    assert_eq!(refuse_linked(Android, Some(&unlinked)), Ok(()));
-    assert_eq!(refuse_linked(Android, None), Ok(()));
-    assert_eq!(refuse_linked(Desktop, Some(&linked)), Ok(()));
+    assert_eq!(refuse_linked(Desktop, linked), Ok(()));
     assert_eq!(
-        refuse_other_vault_while_linked(Android, Some(&linked)),
+        refuse_other_vault_while_linked(Android, linked),
         Err(LINKED_ANDROID_RESTORE_ERROR.to_string())
     );
+
+    // Unlinking clears the coordinator pin. The log still lists the devices it once
+    // enrolled, which only decides that the restored copy detaches into a new space.
+    phone.unlink().unwrap();
+    let linked = is_linked(&phone).unwrap();
+    assert!(!linked);
+    assert_eq!(refuse_linked(Android, linked), Ok(()));
+    assert_eq!(refuse_other_vault_while_linked(Android, linked), Ok(()));
+    let once_linked = summary("vault-a", 2);
+    assert_eq!(
+        plan_restore(Some(&once_linked), &summary("vault-b", 0)),
+        RestorePlacement::IndependentCopy
+    );
+    assert_eq!(
+        plan_restore(Some(&once_linked), &summary("vault-a", 0)),
+        RestorePlacement::IndependentCopy
+    );
+    fs::remove_dir_all(root).unwrap();
 }

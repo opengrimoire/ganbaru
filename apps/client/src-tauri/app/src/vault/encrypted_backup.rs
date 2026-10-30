@@ -165,23 +165,19 @@ pub(super) const PLATFORM: RestorePlatform = RestorePlatform::Desktop;
 #[cfg(mobile)]
 pub(super) const PLATFORM: RestorePlatform = RestorePlatform::Android;
 
-/// Refuses a restore on an Android device whose vault enrolled another device.
-fn refuse_linked_android(
-    platform: RestorePlatform,
-    active: &LinkSummary,
-) -> Result<(), BackupRefusal> {
-    if platform == RestorePlatform::Android && active.other_devices > 0 {
+/// Refuses a restore on an Android device that is `linked` now, as the link status reports it.
+/// Devices a sync log once enrolled and later removed do not count, so a phone that unlinked
+/// can restore.
+fn refuse_linked(platform: RestorePlatform, linked: bool) -> Result<(), BackupRefusal> {
+    if platform == RestorePlatform::Android && linked {
         return Err(BackupRefusal::LinkedAndroid);
     }
     Ok(())
 }
 
-/// Refuses a restore on an Android device whose active vault, if any, enrolled another device.
-fn refuse_linked(
-    platform: RestorePlatform,
-    active: Option<&LinkSummary>,
-) -> Result<(), BackupRefusal> {
-    active.map_or(Ok(()), |active| refuse_linked_android(platform, active))
+/// Whether this device is linked now: it pins a coordinator or coordinates linked peers.
+pub(super) fn device_linked(app: &tauri::AppHandle) -> Result<bool, String> {
+    super::handoff::receiver::is_linked(&app.state::<super::handoff::pairing::PairingManager>())
 }
 
 /// Error of a restore that would put another vault in place of one linked on Android. The
@@ -189,30 +185,29 @@ fn refuse_linked(
 pub(super) const LINKED_ANDROID_RESTORE_ERROR: &str =
     "this phone is linked to other devices; unlink it before restoring another vault";
 
-/// Refuses restoring another vault over the vault summarized by `active` while it is linked on
-/// Android, with [`LINKED_ANDROID_RESTORE_ERROR`].
+/// Refuses restoring another vault while this Android device is `linked`, with
+/// [`LINKED_ANDROID_RESTORE_ERROR`].
 pub(super) fn refuse_other_vault_while_linked(
     platform: RestorePlatform,
-    active: Option<&LinkSummary>,
+    linked: bool,
 ) -> Result<(), String> {
-    refuse_linked(platform, active).map_err(|_| LINKED_ANDROID_RESTORE_ERROR.to_string())
+    refuse_linked(platform, linked).map_err(|_| LINKED_ANDROID_RESTORE_ERROR.to_string())
 }
 
 /// Chooses how a backup whose staged vault is summarized by `backup` restores over the active
-/// vault `active`, or `None` when nothing is active.
-fn plan_restore(
-    platform: RestorePlatform,
-    active: Option<&LinkSummary>,
-    backup: &LinkSummary,
-) -> Result<RestorePlacement, BackupRefusal> {
-    let Some(active) = active else {
-        return Ok(RestorePlacement::IndependentCopy);
-    };
-    refuse_linked_android(platform, active)?;
-    if active.space == backup.space && active.other_devices == 0 && backup.other_devices == 0 {
-        Ok(RestorePlacement::InPlace)
-    } else {
-        Ok(RestorePlacement::IndependentCopy)
+/// vault `active`, or `None` when nothing is active. Any device a log ever enrolled, removed
+/// ones included, makes an independent copy, so a restore never rewinds a space another device
+/// may have acknowledged. A device that is linked now is refused before this.
+fn plan_restore(active: Option<&LinkSummary>, backup: &LinkSummary) -> RestorePlacement {
+    match active {
+        Some(active)
+            if active.space == backup.space
+                && active.other_devices == 0
+                && backup.other_devices == 0 =>
+        {
+            RestorePlacement::InPlace
+        }
+        _ => RestorePlacement::IndependentCopy,
     }
 }
 
@@ -431,6 +426,8 @@ async fn blocking<T: Send + 'static>(
 struct ActiveVault {
     root: PathBuf,
     summary: LinkSummary,
+    /// Whether this device is linked now, as the link status reports it.
+    linked: bool,
     /// The active space's key of the backup's epoch, when this installation holds it.
     epoch_key: Option<SpaceKey>,
 }
@@ -442,15 +439,6 @@ async fn active_vault_for(
     header: &BackupHeader,
 ) -> Result<Option<ActiveVault>, String> {
     active_vault_with(app, Some(header)).await
-}
-
-/// The active vault's link summary, `None` when no vault is selected yet.
-pub(super) async fn active_link_summary(
-    app: &tauri::AppHandle,
-) -> Result<Option<LinkSummary>, String> {
-    Ok(active_vault_with(app, None)
-        .await?
-        .map(|active| active.summary))
 }
 
 /// Reads the active vault and, when `header` names a backup, the epoch key that may open it.
@@ -480,13 +468,14 @@ async fn active_vault_with(
     Ok(Some(ActiveVault {
         root,
         summary,
+        linked: device_linked(app)?,
         epoch_key,
     }))
 }
 
-/// Refuses a restore on an Android device whose active vault enrolled another device.
+/// Refuses a restore on an Android device that is linked now while a vault is active.
 fn refuse_linked_active(active: Option<&ActiveVault>) -> Result<(), BackupRefusal> {
-    refuse_linked(PLATFORM, active.map(|active| &active.summary))
+    refuse_linked(PLATFORM, active.is_some_and(|active| active.linked))
 }
 
 /// The keys a backup of the active vault is sealed to, `None` without a recovery kit.
@@ -1058,7 +1047,7 @@ async fn place_restored_backup(
         let staged = StagedFolder::new(&staging);
         let info = stage_restored_vault(archive, &staging, expected_space).await?;
         let backup = staged_summary(app, &staging, &info.vault_id).await?;
-        if plan_restore(PLATFORM, Some(&active.summary), &backup)? == RestorePlacement::InPlace {
+        if plan_restore(Some(&active.summary), &backup) == RestorePlacement::InPlace {
             let restored = replace_active_vault(
                 app,
                 transition,
@@ -1145,7 +1134,7 @@ async fn place_restored_backup(
     let staged = StagedFolder::new(&staging);
     let info = stage_restored_vault(archive, &staging, expected_space).await?;
     let backup = staged_summary(app, &staging, &info.vault_id).await?;
-    let placement = plan_restore(PLATFORM, active.map(|active| &active.summary), &backup)?;
+    let placement = plan_restore(active.map(|active| &active.summary), &backup);
     let other_vault = placement == RestorePlacement::IndependentCopy;
     if other_vault {
         detach_restored_copy(&staging).await?;

@@ -104,6 +104,26 @@ fn bootstrap_state(pinned: bool, replica_ready: bool, running: bool) -> Bootstra
     }
 }
 
+/// The coordinator of this device's current link: the pinned coordinator, or this device when
+/// it coordinates linked peers. `None` when it is not linked now, whatever devices a sync log
+/// once enrolled, and when pairing state is not loaded.
+fn link_coordinator(pairing: &PairingManager) -> Result<Option<String>, String> {
+    if !pairing.is_loaded()? {
+        return Ok(None);
+    }
+    Ok(match pairing.coordinator_pin()? {
+        Some(pin) => Some(pin.device_id),
+        None if !pairing.linked_peers()?.is_empty() => Some(pairing.device_id()?),
+        None => None,
+    })
+}
+
+/// Whether this device is linked now, as [`vault_link_status`] reports it: it pins a
+/// coordinator or coordinates linked peers.
+pub(crate) fn is_linked(pairing: &PairingManager) -> Result<bool, String> {
+    Ok(link_coordinator(pairing)?.is_some())
+}
+
 /// Reports whether this device is linked, which device coordinates the link, and whether a
 /// snapshot bootstrap is required or running.
 #[tauri::command]
@@ -117,11 +137,7 @@ pub(crate) fn vault_link_status(app: tauri::AppHandle) -> Result<VaultLinkStatus
             bootstrap: bootstrap_state(false, false, running),
         });
     }
-    let coordinator_device_id = match pairing.coordinator_pin()? {
-        Some(pin) => Some(pin.device_id),
-        None if !pairing.linked_peers()?.is_empty() => Some(pairing.device_id()?),
-        None => None,
-    };
+    let coordinator_device_id = link_coordinator(&pairing)?;
     let pinned = pairing.coordinator_pin()?.is_some();
     Ok(VaultLinkStatus {
         linked: coordinator_device_id.is_some(),
@@ -589,6 +605,32 @@ fn resolve_staged_link_folder(
         eprintln!("failed to clean the staged linked vault: {error}");
     }
     resolved
+}
+
+/// A phone pairing state under `root` that pins a coordinator desktop, as after linking.
+#[cfg(all(test, desktop))]
+pub(crate) fn test_linked_phone(root: &std::path::Path) -> PairingManager {
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(root.join("desktop"), "device-desktop".to_string())
+        .unwrap();
+    let invitation = desktop
+        .create_invitation(
+            "127.0.0.1:9".parse().unwrap(),
+            "vault-1".to_string(),
+            super::protocol::test_compatibility(),
+            super::protocol::unix_time_ms(),
+        )
+        .unwrap();
+    let phone = PairingManager::default();
+    phone
+        .initialize(root.join("phone"), "device-phone".to_string())
+        .unwrap();
+    let (_, identity) = desktop.identity().unwrap();
+    phone
+        .record_coordinator(&invitation, identity.certificate.as_ref(), None)
+        .unwrap();
+    phone
 }
 
 #[cfg(test)]

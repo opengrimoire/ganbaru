@@ -68,6 +68,7 @@ struct Replica {
     writer: ActiveWriter,
     engine: Engine,
     assets: Arc<dyn AssetStore>,
+    device_id: String,
 }
 
 /// The device key of a test device, derived from its id.
@@ -230,6 +231,7 @@ impl Replica {
             pool,
             ctx,
             writer,
+            device_id: device_id.to_string(),
         }
     }
 
@@ -502,16 +504,19 @@ fn open_hub(replica: &Replica) -> OpenHubVault {
 fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
     let pool = replica.pool.clone();
     let assets = Arc::clone(&replica.assets);
+    let device_id = replica.device_id.clone();
     Arc::new(move || {
         let pool = pool.clone();
         let assets = Arc::clone(&assets);
         let quarantined = quarantined.clone();
+        let device_id = device_id.clone();
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 assets,
                 quarantined,
+                device_id,
             }))
         })
     })

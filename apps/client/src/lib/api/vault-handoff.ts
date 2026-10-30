@@ -322,6 +322,20 @@ export async function receiveDesktopBundle(
   );
 }
 
+/**
+ * Opens the native folder picker for the first link on a computer. The chosen folder is kept by
+ * the native side for the next bootstrap; the result only names it for display, and `null` means
+ * the picker was closed and the earlier choice stays.
+ */
+export async function pickLinkFolder(): Promise<string | null> {
+  return nullableString(await invoke<unknown>("handoff_pick_link_folder"), "linked vault folder");
+}
+
+/** Forgets the chosen folder, so the next first link uses the default location. */
+export function resetLinkFolder(): Promise<void> {
+  return invoke("handoff_reset_link_folder");
+}
+
 /** Records that the user entered the app with the starter vault, so linking keeps a backup of it. */
 export function releaseStarterVault(): Promise<void> {
   return invoke("vault_release_starter");

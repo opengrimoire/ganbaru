@@ -638,9 +638,14 @@ async fn fresh_phone_enrolls_and_stages_authenticated_bundle() {
     let bytes = b"authenticated whole-vault test bundle";
     let metadata = pair.register_bundle(bytes, "transfer-fresh");
 
-    let staged = download_bundle(&pair.phone, metadata, &TransferCancellation::default())
-        .await
-        .expect("download bundle");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("download bundle");
 
     assert_eq!(fs::read(staged).expect("read staged bundle"), bytes);
 }
@@ -741,6 +746,7 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
 
     let prepared = request_bundle(
         &pair.phone,
+        &BundleSource::Coordinator,
         super::super::protocol::test_compatibility(),
         0,
         BundlePurpose::Ownership,
@@ -751,6 +757,7 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
     assert_eq!(prepared, metadata);
     let staged = download_bundle(
         &pair.phone,
+        &BundleSource::Coordinator,
         prepared.clone(),
         &TransferCancellation::default(),
     )
@@ -768,6 +775,7 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
     );
     acknowledge_activation(
         &pair.phone,
+        &BundleSource::Coordinator,
         &PendingAcknowledgement {
             vault_id: prepared.vault_id,
             device_id: prepared.device_id,
@@ -982,9 +990,14 @@ async fn invalid_device_identity_cannot_download_bundle() {
     let mut forged = metadata;
     forged.device_id = "device-phone".to_string();
 
-    let error = download_bundle(&attacker, forged, &TransferCancellation::default())
-        .await
-        .unwrap_err();
+    let error = download_bundle(
+        &attacker,
+        &BundleSource::Coordinator,
+        forged,
+        &TransferCancellation::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         error.contains("TLS")
             || error.contains("certificate")
@@ -1216,6 +1229,7 @@ async fn interrupted_download_retries_same_transfer_from_partial_file() {
 
     let error = download_bundle_inner(
         &pair.phone,
+        &BundleSource::Coordinator,
         metadata.clone(),
         &cancellation,
         Some(TRANSFER_CHUNK_BYTES as u64),
@@ -1230,9 +1244,14 @@ async fn interrupted_download_retries_same_transfer_from_partial_file() {
     let partial_bytes = partial.metadata().expect("partial bundle").len();
     assert!(partial_bytes > 0 && partial_bytes < metadata.archive_bytes);
 
-    let staged = download_bundle(&pair.phone, metadata, &cancellation)
-        .await
-        .expect("resume bundle");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &cancellation,
+    )
+    .await
+    .expect("resume bundle");
     assert_eq!(fs::read(staged).expect("read resumed bundle"), bytes);
 }
 
@@ -1245,14 +1264,24 @@ async fn cancelled_download_keeps_a_retryable_transfer_identity() {
     let cancellation = TransferCancellation::default();
     cancellation.cancel();
 
-    let error = download_bundle(&pair.phone, metadata.clone(), &cancellation)
-        .await
-        .unwrap_err();
+    let error = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata.clone(),
+        &cancellation,
+    )
+    .await
+    .unwrap_err();
     assert!(error.contains("cancelled"));
 
-    let staged = download_bundle(&pair.phone, metadata, &TransferCancellation::default())
-        .await
-        .expect("retry cancelled transfer");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("retry cancelled transfer");
     assert_eq!(fs::read(staged).expect("read retried bundle"), bytes);
 }
 
@@ -1270,6 +1299,7 @@ async fn digest_mismatch_removes_corrupt_staging() {
 
     let error = download_bundle(
         &pair.phone,
+        &BundleSource::Coordinator,
         metadata.clone(),
         &TransferCancellation::default(),
     )

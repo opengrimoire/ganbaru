@@ -974,6 +974,7 @@ pub(crate) fn active_vault_id_in(config_dir: &Path) -> Result<String, String> {
     active_vault_in(config_dir).map(|(_, manifest)| manifest.vault_id)
 }
 
+#[cfg(desktop)]
 pub fn active_database_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     Ok(database_path(&active_vault_path(app)?))
 }

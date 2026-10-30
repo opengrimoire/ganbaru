@@ -573,6 +573,7 @@ where
 }
 
 /// The newest received request a person stored under the id they chose, in any state.
+#[cfg(any(desktop, test))]
 pub(crate) async fn received_request_by_peer<'e, E>(
     executor: E,
     public_key: &str,

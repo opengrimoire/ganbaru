@@ -7,11 +7,11 @@
 //! reported root that is bound on this device, so the availability it observes catches up.
 
 use ganbaru_music_library::sync_apply;
+#[cfg(desktop)]
+use ganbaru_sync::ChangeNotice;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::music;
-use ganbaru_sync::{
-    ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, MaterializeHook, rebuild_every_key,
-};
+use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook, rebuild_every_key};
 use sqlx::SqliteConnection;
 
 /// Change notice topic of a root that received new or changed locations; the key is the root id.
@@ -78,6 +78,7 @@ pub(crate) fn with_hooks(hooks: Hooks) -> Hooks {
 }
 
 /// The distinct root ids among sync change notices.
+#[cfg(desktop)]
 fn reported_roots<'a>(
     notices: impl Iterator<Item = &'a ChangeNotice>,
 ) -> std::collections::BTreeSet<String> {

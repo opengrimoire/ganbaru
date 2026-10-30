@@ -26,6 +26,7 @@ pub(crate) fn key_after(last: Option<&str>) -> MusicLibraryResult<OrderKey> {
 }
 
 /// Keys for `count` rows appended after `last`, in order.
+#[cfg(any(desktop, test))]
 pub(crate) fn keys_after(last: Option<&str>, count: usize) -> MusicLibraryResult<Vec<OrderKey>> {
     let mut keys = Vec::with_capacity(count);
     let mut current = last.map(OrderKey::parse).transpose().map_err(key_error)?;

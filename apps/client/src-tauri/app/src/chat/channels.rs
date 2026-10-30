@@ -657,6 +657,7 @@ pub(crate) enum ChatDefaultsScope<'a> {
     /// One project.
     Project(&'a str),
     /// The project that owns a working folder.
+    #[cfg(desktop)]
     WorkingFolder(&'a str),
     /// Every project.
     AllProjects,
@@ -673,6 +674,7 @@ pub(crate) async fn ensure_chat_defaults(
         ChatDefaultsScope::Project(project_id) => {
             project_defaults::ensure_project_chat_defaults(&mut transaction, project_id, &now).await
         }
+        #[cfg(desktop)]
         ChatDefaultsScope::WorkingFolder(working_folder_id) => {
             project_defaults::ensure_working_folder_chat_defaults(
                 &mut transaction,

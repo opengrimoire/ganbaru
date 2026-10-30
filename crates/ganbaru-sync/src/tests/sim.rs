@@ -15,6 +15,7 @@
 //! that seed alone in the shard that owns it.
 
 mod peer;
+mod relay;
 
 use std::collections::{BTreeMap, BTreeSet};
 

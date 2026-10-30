@@ -11,4 +11,5 @@ mod key_entries;
 mod mutation;
 mod order_keys;
 mod recovery;
+mod relay;
 mod vectors;

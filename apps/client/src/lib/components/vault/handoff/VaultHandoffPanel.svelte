@@ -790,7 +790,7 @@
     {/if}
 
     </fieldset>
-    {#if presentation === "settings" && !status.linked && platform === "desktop" && status.canWrite !== false}
+    {#if presentation === "settings" && !status.linked && platform === "desktop"}
       <SyncRecoveryKitSetup {buttonClass} />
     {/if}
     {#if presentation === "settings" && status.linked}

@@ -15,7 +15,10 @@
 use std::io;
 
 use ganbaru_contacts::PersonPublicKey;
-use ganbaru_sync_contracts::{Digest32, SignedCertificate, SpaceId, WriterId, WriterKeyPair};
+use ganbaru_sync_contracts::{
+    DeviceKeyPair, Digest32, EncryptionPublicKey, KeyEnvelope, SignedCertificate, SpaceId,
+    SpaceKey, WriterId, WriterKeyPair,
+};
 use sqlx::SqliteConnection;
 
 pub mod acknowledge;
@@ -68,7 +71,7 @@ pub use authorization::{
     ContestCause, ContestEntry, ContestInstance, ContestObjection, ContestRejection, ContestRole,
     ContestView, ContestYield, ContestsView, EnrolledDevice, ForkedWriter, HandoverPoint, KitPoint,
     KitPointPlace, LosingRemoval, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
-    RecordEnvelope, RecordPage, RecordRole, RecordWants,
+    RecordEnvelope, RecordPage, RecordRole, RecordWants, StoredSpaceKey,
 };
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
@@ -141,6 +144,25 @@ pub struct LocalWriter<'a> {
     pub certificate: &'a SignedCertificate,
     /// Durable sequence reservation of the writer record.
     pub reservation: &'a mut dyn SequenceReservation,
+    /// The keys an anchor seals key epochs and key envelopes with, `None` on an installation
+    /// that holds no encryption key. An anchor without them refuses removals, recovery changes,
+    /// and device keys once the space has a key epoch.
+    pub keys: Option<&'a dyn SpaceKeyHolder>,
+}
+
+/// The keys of the local installation that an anchor needs to rotate the space key. Plaintext
+/// space keys opened with them stay in memory and are dropped after the call that needed them.
+pub trait SpaceKeyHolder: Send + Sync {
+    /// The device signing key of the installation, which signs the key epochs it seals.
+    fn device_key(&self) -> &DeviceKeyPair;
+
+    /// The encryption key the installation publishes in its device key entry.
+    fn encryption_key(&self) -> EncryptionPublicKey;
+
+    /// Opens `envelope` as the key of epoch `epoch` of `space` with an encryption key the
+    /// installation holds, its device encryption key or a recovery key, or `None` when none
+    /// opens it.
+    fn open(&self, space: &SpaceId, epoch: u32, envelope: &KeyEnvelope) -> Option<SpaceKey>;
 }
 
 impl LocalWriter<'_> {

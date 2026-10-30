@@ -29,9 +29,10 @@ pub const MAX_OUTBOX_PROPOSALS: usize = 256;
 pub const MAX_OUTBOX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Whether the anchor's rejection ends a proposal. A proposal waits while the receiver is not
-/// the anchor of the selected chain, while its epoch is frozen, after a handover won, or while
-/// a new anchor waits for writers the old one stored, because each of these settles once the
-/// chain moves on.
+/// the anchor of the selected chain, while its epoch is frozen, after a handover won, while a
+/// new anchor waits for writers the old one stored, while the anchor holds the signer apart,
+/// while the anchor cannot open the current key epoch, or while a key rotation is pending,
+/// because each of these settles once the chain or the anchor moves on.
 pub fn is_final(rejection: ProposalRejection) -> bool {
     !matches!(
         rejection,
@@ -39,6 +40,9 @@ pub fn is_final(rejection: ProposalRejection) -> bool {
             | ProposalRejection::EpochFrozen
             | ProposalRejection::HandoverConflict
             | ProposalRejection::CatchingUp
+            | ProposalRejection::DeviceQuarantined
+            | ProposalRejection::KeyUnavailable
+            | ProposalRejection::RotationPending
     )
 }
 

@@ -28,6 +28,7 @@ fn device(id: &str, kind: DeviceKind, role: DeviceRole, removed: Option<u64>) ->
         role,
         enrolled_revision: 1,
         removed_revision: removed,
+        encryption_key: None,
     }
 }
 
@@ -45,6 +46,10 @@ fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
         devices,
         discovery_key: [4; 32],
         previous_discovery_key: None,
+        key_epoch: 0,
+        recovery_encryption_key: None,
+        pending_removal: None,
+        server: None,
     }
 }
 

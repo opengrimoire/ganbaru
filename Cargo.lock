@@ -2200,6 +2200,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tokio",
+ "zeroize",
  "zip",
 ]
 

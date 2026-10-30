@@ -273,6 +273,10 @@ export const sync = {
       handover_conflict: "Otro traspaso ocurrió antes.",
       epoch_frozen: "Los cambios de dispositivos estaban en pausa por un traspaso.",
       catching_up: "El ancla aún se estaba poniendo al día.",
+      device_quarantined: "El ancla mantiene el dispositivo apartado.",
+      key_unavailable: "El ancla no pudo abrir la clave de cifrado actual de la bóveda.",
+      anchor_only: "Solo el ancla hace este cambio.",
+      rotation_pending: "El ancla aún estaba terminando un cambio de clave de cifrado.",
     },
   },
   late: {

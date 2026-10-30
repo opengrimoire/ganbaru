@@ -14,7 +14,7 @@ use ganbaru_sync_contracts::{
 };
 use sqlx::{Connection, SqliteConnection};
 
-use super::{AuthState, Outcome, Resolution, Stored, removal_cutoffs};
+use super::{AuthState, Outcome, Resolution, Stored, follow_with_rotation, removal_cutoffs};
 use crate::error::{SyncError, SyncResult, failpoint};
 use crate::{Engine, LocalWriter, SpaceContext, log, sql};
 
@@ -333,7 +333,15 @@ impl Engine {
             return Ok(Err(ContestRejection::Rejected(rejection)));
         }
         let revision = record.revision;
-        self.seal_record(&mut tx, ctx, state.charter, record, writer, now_ms)
+        // An objection's removal in a space with a key epoch seals with its key epoch.
+        let mut records = vec![record];
+        let key_epochs = stored.key_epochs(&state.entry_hash);
+        if let Err(rejection) =
+            follow_with_rotation(&state, &mut records, &key_epochs, None, writer.keys, now_ms)?
+        {
+            return Ok(Err(ContestRejection::Rejected(rejection)));
+        }
+        self.seal_records(&mut tx, ctx, state.charter, records, writer, now_ms)
             .await?;
         failpoint!("contest.before_commit");
         sql::set_applying(&mut tx, false).await?;

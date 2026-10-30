@@ -27,6 +27,7 @@ sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 zip = { workspace = true }
+zeroize = { workspace = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 keyring = { workspace = true }

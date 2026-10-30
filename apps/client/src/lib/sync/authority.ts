@@ -302,6 +302,10 @@ export function syncRejectionLabel(t: Translate, rejection: SyncProposalRejectio
     case "handover_conflict": return t("sync.outbox.rejection.handover_conflict");
     case "epoch_frozen": return t("sync.outbox.rejection.epoch_frozen");
     case "catching_up": return t("sync.outbox.rejection.catching_up");
+    case "device_quarantined": return t("sync.outbox.rejection.device_quarantined");
+    case "key_unavailable": return t("sync.outbox.rejection.key_unavailable");
+    case "anchor_only": return t("sync.outbox.rejection.anchor_only");
+    case "rotation_pending": return t("sync.outbox.rejection.rotation_pending");
   }
 }
 

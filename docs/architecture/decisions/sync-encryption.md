@@ -1,6 +1,6 @@
 # Sync encryption
 
-Status: Planned. Space keys, relay encryption, and encrypted backups build on the primitives below.
+Status: Partial. Device encryption keys, key epochs, and their envelopes and chain links are implemented; encrypting records with them, relay encryption, and encrypted backups are planned.
 
 ## Primitives
 

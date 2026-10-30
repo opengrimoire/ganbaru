@@ -338,7 +338,12 @@ fn outbox_views(entries: &[OutboxEntry], names: &DeviceNames) -> Vec<OutboxEntry
                     ProposalChangeView::Handover,
                     Some(&handover.new_anchor_device_id),
                 ),
-                Entry::Yield(_) | Entry::Unknown { .. } => (ProposalChangeView::Unknown, None),
+                Entry::Yield(_)
+                | Entry::DeviceKey(_)
+                | Entry::KeyEpoch(_)
+                | Entry::RecoveryKey(_)
+                | Entry::ServerConfig(_)
+                | Entry::Unknown { .. } => (ProposalChangeView::Unknown, None),
             };
             let state = if entry.rejection.is_some() {
                 OutboxStateView::Rejected

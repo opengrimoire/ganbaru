@@ -1,11 +1,14 @@
 //! The local writer: its signing key, its device-local record, and the high-water check that
 //! detects a restored or copied database.
 
+use super::keys::SpaceKeys;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_handoff::key_wrap::{self, KeyWrapper};
 use ganbaru_sync::local::LocalWriterHead;
-use ganbaru_sync::{Engine, LocalWriter, SequenceReservation, SpaceContext, WriterState};
+use ganbaru_sync::{
+    Engine, LocalWriter, SequenceReservation, SpaceContext, SpaceKeyHolder, WriterState,
+};
 use ganbaru_sync_contracts::{
     DeviceKeyPair, DevicePublicKey, Digest32, SignedCertificate, WriterCertificate, WriterId,
     WriterKeyPair, sign_certificate,
@@ -149,6 +152,9 @@ pub enum SyncKey<'a> {
     Admin,
     /// The recovery seed, kept until the user saves the recovery kit.
     RecoverySeed,
+    /// The installation's static X25519 device encryption key, which space key envelopes
+    /// name.
+    DeviceEncryption,
 }
 
 /// Storage of sync secrets outside the vault.
@@ -164,6 +170,7 @@ fn key_reference(vault_id: &str, key: SyncKey<'_>) -> String {
         SyncKey::Device => format!("device-key:{vault_id}"),
         SyncKey::Admin => format!("admin-key:{vault_id}"),
         SyncKey::RecoverySeed => format!("recovery-seed:{vault_id}"),
+        SyncKey::DeviceEncryption => format!("device-encryption-key:{vault_id}"),
     }
 }
 
@@ -436,11 +443,17 @@ pub struct ActiveWriter {
     key: WriterKeyPair,
     certificate: SignedCertificate,
     reservation: RecordReservation,
+    keys: Option<Arc<SpaceKeys>>,
 }
 
 impl ActiveWriter {
     pub fn id(&self) -> WriterId {
         self.certificate.certificate.writer_id()
+    }
+
+    /// The device whose device key certified this writer.
+    pub fn device_id(&self) -> &str {
+        &self.certificate.certificate.device_id
     }
 
     pub fn record(&self) -> &WriterRecord {
@@ -453,7 +466,19 @@ impl ActiveWriter {
             key: &self.key,
             certificate: &self.certificate,
             reservation: &mut self.reservation,
+            keys: self.keys.as_deref().map(|keys| keys as &dyn SpaceKeyHolder),
         }
+    }
+
+    /// Gives the writer the installation's space keys, which an anchor seals key epochs and
+    /// key envelopes with.
+    pub fn attach_keys(&mut self, keys: Arc<SpaceKeys>) {
+        self.keys = Some(keys);
+    }
+
+    /// The installation's space keys, once attached.
+    pub fn space_keys(&self) -> Option<&Arc<SpaceKeys>> {
+        self.keys.as_ref()
     }
 
     /// Records the highest committed sequence after a seal commits.
@@ -720,6 +745,7 @@ pub async fn check_writer(
             path: files.record_path(),
             record,
         },
+        keys: None,
     })))
 }
 
@@ -765,6 +791,7 @@ pub fn create_writer(
         key,
         certificate,
         reservation: RecordReservation { path, record },
+        keys: None,
     };
     remove_retired_keys(&mut writer, files, keys)?;
     Ok(writer)

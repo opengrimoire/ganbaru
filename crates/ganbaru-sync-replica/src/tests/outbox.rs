@@ -191,6 +191,9 @@ fn only_a_moved_chain_ends_a_waiting_proposal() {
         ProposalRejection::EpochFrozen,
         ProposalRejection::HandoverConflict,
         ProposalRejection::CatchingUp,
+        ProposalRejection::DeviceQuarantined,
+        ProposalRejection::KeyUnavailable,
+        ProposalRejection::RotationPending,
     ];
     for rejection in ProposalRejection::ALL {
         assert_eq!(
@@ -244,6 +247,7 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
             &ctx,
             &mut writer.local(),
             &mut outbox,
+            &Default::default(),
             &Default::default(),
             NOW_MS,
         )

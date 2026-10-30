@@ -54,7 +54,8 @@ use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
 use ganbaru_sync_replica::records::{FreeSpace, RecordExchange, RecordLink};
 use ganbaru_sync_replica::relay::{
-    METERED_MAX_ASSET_BYTES, RelayLimits, RelaySession, RelayTarget, UNMETERED_MAX_ASSET_BYTES,
+    METERED_MAX_ASSET_BYTES, RelayLimits, RelayPass, RelaySession, RelayTarget,
+    UNMETERED_MAX_ASSET_BYTES,
 };
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
@@ -119,6 +120,22 @@ fn relay_asset_bound() -> u32 {
     } else {
         UNMETERED_MAX_ASSET_BYTES
     }
+}
+
+/// Records a relay pass outcome in `view`. A failure stays a present relay status, which keeps
+/// the Android relay worker scheduled while the space names a relay.
+fn record_relay_outcome(view: &mut SyncStatusView, outcome: Result<RelayPass, String>) {
+    let (now, clock) = match now_ms() {
+        Ok(now) => (now, None),
+        Err(error) => (0, Some(error)),
+    };
+    view.relay = Some(match (outcome, clock) {
+        (Ok(pass), None) => RelayDeliveryView::of(&pass, now),
+        (Err(error), _) | (Ok(_), Some(error)) => {
+            eprintln!("sync relay: {error}");
+            RelayDeliveryView::failed(error, now)
+        }
+    });
 }
 
 /// Lets one sync pass of this process run at a time, whether the app service, a headless pass,
@@ -1420,7 +1437,7 @@ impl ServiceState {
         }
         let coordinator_answered = asset_peer.is_some() && view.state != SyncState::Offline;
         if !view.paused
-            && self.relay_pass(&session, view).await?
+            && self.relay_pass(&session, view).await
             && matches!(next, Next::Idle | Next::Online(_))
         {
             next = Next::Continue;
@@ -1818,28 +1835,55 @@ impl ServiceState {
     }
 
     /// Runs one relay pass while the space's server configuration names a relay and records
-    /// what it moved in `view`. A relay fault is reported in the status rather than failing the
-    /// pass, so LAN exchange continues. Returns whether the relay holds more to move.
+    /// what it moved in `view`. Every relay fault, local or remote, is reported in the status
+    /// rather than failing the pass, so LAN exchange continues and the relay status stays
+    /// present while a relay is configured. Returns whether the relay holds more to move.
     async fn relay_pass<H: SyncHost>(
         &self,
         session: &Session<'_, H>,
         view: &mut SyncStatusView,
-    ) -> Result<bool, String> {
-        let authorization = {
-            let mut conn = acquire(&session.pool).await?;
-            session
-                .engine
-                .authorization(&mut conn, &session.ctx)
-                .await
-                .map_err(|error| format!("read sync authorization: {error}"))?
+    ) -> bool {
+        let target = match Self::relay_target(session).await {
+            Ok(Some(target)) => target,
+            Ok(None) => {
+                view.relay = None;
+                return false;
+            }
+            Err(error) => {
+                record_relay_outcome(view, Err(error));
+                return false;
+            }
         };
-        let Some(target) = authorization.as_ref().and_then(RelayTarget::of) else {
-            view.relay = None;
-            return Ok(false);
-        };
-        let Some(holder) = self.writer.as_ref().and_then(ActiveWriter::space_keys) else {
-            return Ok(false);
-        };
+        let outcome = self.run_relay(session, &target).await;
+        let more = outcome.as_ref().is_ok_and(|pass| pass.more);
+        record_relay_outcome(view, outcome);
+        more
+    }
+
+    /// The relay the selected chain names, `None` when the space has no relay.
+    async fn relay_target<H: SyncHost>(
+        session: &Session<'_, H>,
+    ) -> Result<Option<RelayTarget>, String> {
+        let mut conn = acquire(&session.pool).await?;
+        let authorization = session
+            .engine
+            .authorization(&mut conn, &session.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?;
+        Ok(authorization.as_ref().and_then(RelayTarget::of))
+    }
+
+    /// Prepares this installation's relay session and runs one pass against `target`.
+    async fn run_relay<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+        target: &RelayTarget,
+    ) -> Result<RelayPass, String> {
+        let holder = self
+            .writer
+            .as_ref()
+            .and_then(ActiveWriter::space_keys)
+            .ok_or_else(|| "this device holds no space keys yet".to_string())?;
         let keys = session.keys.clone();
         let vault_id = session.host.active_vault_id()?;
         let admin_vault = vault_id.clone();
@@ -1868,20 +1912,7 @@ impl ServiceState {
                 loopback: RELAY_LOOPBACK,
             },
         };
-        let outcome = relay.pass(&target).await;
-        let now = now_ms()?;
-        Ok(match outcome {
-            Ok(pass) => {
-                let more = pass.more;
-                view.relay = Some(RelayDeliveryView::of(&pass, now));
-                more
-            }
-            Err(error) => {
-                eprintln!("sync relay: {error}");
-                view.relay = Some(RelayDeliveryView::failed(error, now));
-                false
-            }
-        })
+        relay.pass(target).await
     }
 
     /// Exchanges with the hub, re-sealing after a fork of this installation's chain.

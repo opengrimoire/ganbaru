@@ -212,14 +212,14 @@ impl RelaySession<'_> {
                 } => {
                     // The relay is at a newer epoch than any key this replica holds.
                     self.admit_epochs(&mut connection, epoch, &mut pass).await?;
-                    self.pull(&mut connection, &keys, &mut pass).await?;
+                    let drained = self.pull(&mut connection, &keys, &mut pass).await?;
                     keys = self.open_keys().await?;
                     let newest = keys.newest_epoch().unwrap_or(epoch);
                     if newest > epoch {
                         epoch = newest;
                         continue;
                     }
-                    if self.repairs_lag(epoch, current).await? {
+                    if drained && self.repairs_squat(&mut connection, epoch).await? {
                         drop(connection);
                         self.repair(target, &keys, epoch, &mut pass).await?;
                         continue;
@@ -231,7 +231,12 @@ impl RelaySession<'_> {
                     return Ok(pass);
                 }
                 Authenticated::UnknownEpoch => {
-                    self.catch_up_relay(target, &keys, epoch, &mut pass).await?;
+                    if let Some(stalled) =
+                        self.catch_up_relay(target, &keys, epoch, &mut pass).await?
+                    {
+                        pass.epoch = stalled;
+                        return Ok(pass);
+                    }
                 }
                 Authenticated::KeyMismatch => {
                     if !self.is_live_admin().await? {
@@ -245,21 +250,24 @@ impl RelaySession<'_> {
             }
         };
         pass.epoch = current;
-        if let Some(admin) = self.admin
-            && self.is_live_admin().await?
-        {
-            self.keep_admin_set(&mut connection, admin, &mut pass)
-                .await?;
-        }
         if let Some(store) = self.assets {
             self.upload_assets(&mut connection, &keys, store, current, &mut pass)
                 .await?;
         }
         self.push(&mut connection, &keys, current, &mut pass)
             .await?;
-        self.pull(&mut connection, &keys, &mut pass).await?;
+        let drained = self.pull(&mut connection, &keys, &mut pass).await?;
         if pass.pulled > 0 && self.assets.is_some() {
             pass.more = true;
+        }
+        // The admin set follows the chain only once this replica holds everything the relay
+        // holds for it, so an admin that lags behind a demotion never restores the demoted key.
+        if drained
+            && let Some(admin) = self.admin
+            && self.is_live_admin().await?
+        {
+            self.keep_admin_set(&mut connection, admin, &mut pass)
+                .await?;
         }
         if let Some(store) = self.assets {
             self.download_assets(&mut connection, &keys, store, &mut pass)
@@ -326,13 +334,55 @@ impl RelaySession<'_> {
         Ok(live_admin_keys(&view).contains(&key))
     }
 
-    /// Whether a relay epoch above `held` is one this admin device repairs: the verified chain
-    /// names no key epoch past `held`, so nothing registered there came from it.
-    async fn repairs_lag(&self, held: u32, current: u32) -> Result<bool, String> {
-        if current <= held || !self.is_live_admin().await? {
+    /// Whether the relay's registration of `held + 1` is a squat this admin device repairs, on
+    /// a connection authenticated at `held` whose pull just drained the relay. Fails closed:
+    /// the caller asks only after a drained pull, this device must be a live admin, the chain
+    /// it selected after that pull still names no key epoch past `held`, and the record the
+    /// relay serves for `held + 1` must fail to authenticate as that epoch's key epoch record
+    /// against the stored verified envelope set. Only the anchor's device and writer keys make
+    /// one that authenticates, so a record that does means this device lags behind a real
+    /// rotation and repairing would roll the relay back below it.
+    async fn repairs_squat(&self, connection: &mut Connection, held: u32) -> Result<bool, String> {
+        if !self.is_live_admin().await? || self.view().await?.key_epoch > held {
             return Ok(false);
         }
-        Ok(self.view().await?.key_epoch <= held)
+        let next = held
+            .checked_add(1)
+            .ok_or_else(|| "the key epoch is at its limit".to_string())?;
+        let Some(entry) = self.relay_epoch_entry(connection, next).await? else {
+            return Ok(true);
+        };
+        let mut conn = acquire(self.pool).await?;
+        let authentic = self
+            .engine
+            .authenticates_key_epoch(&mut conn, self.ctx, &entry, next)
+            .await
+            .map_err(|error| format!("check the relay's key epoch record: {error}"))?;
+        Ok(!authentic)
+    }
+
+    /// The record the relay serves for `epoch`, bounded before it is decoded.
+    async fn relay_epoch_entry(
+        &self,
+        connection: &mut Connection,
+        epoch: u32,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let after = epoch.saturating_sub(1);
+        let entries = match connection.request(&RelayRequest::Epochs { after }).await? {
+            RelayResponse::Epochs { entries, .. } => entries,
+            other => return Err(unexpected("Epochs", &other)),
+        };
+        entries
+            .iter()
+            .find(|entry| entry.epoch == epoch)
+            .map(|entry| {
+                decode_relay_bytes(
+                    "relay epoch entry",
+                    &entry.entry,
+                    MAX_RELAY_EPOCH_ENTRY_BYTES,
+                )
+            })
+            .transpose()
     }
 
     async fn stored(&self) -> Result<VersionVector, String> {
@@ -384,13 +434,17 @@ impl RelaySession<'_> {
     /// Brings a relay that lags behind `newest` up to it: finds the relay's current epoch, then
     /// for each following epoch delivers the record that introduced it under the epoch before
     /// and registers it.
+    ///
+    /// Returns the epoch the relay stays at when the relay does not hold the chain through the
+    /// record that opens the next epoch, so this pass ends there instead of retrying; `None`
+    /// when the caller authenticates again.
     async fn catch_up_relay(
         &self,
         target: &RelayTarget,
         keys: &RelayKeys,
         newest: u32,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<Option<u32>, String> {
         let mut probe = newest;
         let (mut connection, current) = loop {
             probe = probe
@@ -415,27 +469,33 @@ impl RelaySession<'_> {
         if current != probe {
             if current >= newest || keys.key(current).is_none() {
                 // Another device moved the relay meanwhile; the next attempt starts over.
-                return Ok(());
+                return Ok(None);
             }
             connection = match self.authenticate(target, keys, current).await? {
                 Authenticated::Session { connection, .. } => connection,
-                _ => return Ok(()),
+                _ => return Ok(None),
             };
         }
         let mut at = current;
         while at < newest {
             let next = at + 1;
-            self.flush_before(&mut connection, keys, at, next, pass)
-                .await?;
+            // Registering before the relay holds the chain through the record that opens
+            // `next` would leave members at `at` unable to reach it through the relay.
+            if !self
+                .flush_before(&mut connection, keys, at, next, pass)
+                .await?
+            {
+                return Ok(Some(at));
+            }
             self.register(&mut connection, keys, next).await?;
             pass.registered.push(next);
             connection = match self.authenticate(target, keys, next).await? {
                 Authenticated::Session { connection, .. } => connection,
-                _ => return Ok(()),
+                _ => return Ok(None),
             };
             at = next;
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Delivers, under the key of `epoch`, the operations of the writer whose record introduced
@@ -443,6 +503,10 @@ impl RelaySession<'_> {
     /// from these and open their envelope of `next` before they can open anything sealed under
     /// it. The writer sealed these operations no later than the rotation itself, so a device the
     /// rotation removed learns only its removal and the rotation from them.
+    ///
+    /// Returns whether the relay holds the writer's operations through that record afterwards,
+    /// read back from the relay's ranges; a stall, a gap, or a missing operation means it does
+    /// not.
     async fn flush_before(
         &self,
         connection: &mut Connection,
@@ -450,7 +514,7 @@ impl RelaySession<'_> {
         epoch: u32,
         next: u32,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let entry = self.epoch_entry(next).await?;
         let envelope = Envelope::decode(&entry)
             .map_err(|_| "this device holds a malformed key epoch record".to_string())?;
@@ -458,7 +522,7 @@ impl RelaySession<'_> {
         let mut cursor = self.stored().await?;
         cursor.set(envelope.writer, ranges.get(&envelope.writer));
         if cursor.get(&envelope.writer) >= envelope.seq {
-            return Ok(());
+            return Ok(true);
         }
         let mut certificates = BTreeMap::new();
         loop {
@@ -486,25 +550,28 @@ impl RelaySession<'_> {
                     })
                 })
                 .collect();
-            if ops.is_empty() {
-                return Ok(());
-            }
-            let sealed = self.seal(keys, epoch, &ops, &mut certificates).await?;
-            let outcome = self.send_records(connection, sealed, pass).await?;
-            if outcome.stalled.contains(&envelope.writer) {
-                pass.note(format!(
-                    "the relay refused the records before epoch {next}; members still at \
-                     epoch {epoch} wait for a direct connection"
-                ));
-                return Ok(());
-            }
-            for op in &ops {
-                if let Ok(decoded) = Envelope::decode(op) {
-                    cursor.advance(decoded.writer, decoded.seq);
+            let stalled = if ops.is_empty() {
+                true
+            } else {
+                let sealed = self.seal(keys, epoch, &ops, &mut certificates).await?;
+                let outcome = self.send_records(connection, sealed, pass).await?;
+                for op in &ops {
+                    if let Ok(decoded) = Envelope::decode(op) {
+                        cursor.advance(decoded.writer, decoded.seq);
+                    }
                 }
-            }
-            if cursor.get(&envelope.writer) >= envelope.seq || !page.more {
-                return Ok(());
+                outcome.stalled.contains(&envelope.writer)
+            };
+            if stalled || cursor.get(&envelope.writer) >= envelope.seq || !page.more {
+                let delivered = connection.ranges().await?.get(&envelope.writer) >= envelope.seq;
+                if !delivered {
+                    pass.note(format!(
+                        "the relay does not hold the records before epoch {next}, so this \
+                         device does not register it; members still at epoch {epoch} wait for \
+                         a direct connection"
+                    ));
+                }
+                return Ok(delivered);
             }
         }
     }
@@ -845,14 +912,20 @@ impl RelaySession<'_> {
 
     /// Pulls the records the relay holds at or below the session's epoch that this replica
     /// lacks, and stores the operations they carry through the verified operation path.
+    ///
+    /// Returns whether the pull drained the relay: the relay reported nothing more to pull,
+    /// never reported operations trimmed below its floor, and this replica refused no record.
+    /// A stop at the byte bound, a refusal, or a trimmed range means this replica cannot know
+    /// what the relay still holds for it.
     async fn pull(
         &self,
         connection: &mut Connection,
         keys: &RelayKeys,
         pass: &mut RelayPass,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut skipped = VersionVector::new();
         let mut moved = 0usize;
+        let mut trimmed = false;
         loop {
             let mut known = self.stored().await?;
             known.merge(&skipped);
@@ -868,6 +941,7 @@ impl RelaySession<'_> {
                 other => return Err(unexpected("Records", &other)),
             };
             if !behind_floor.is_empty() {
+                trimmed = true;
                 pass.note(
                     "the relay trimmed operations this device lacks; link directly with a \
                      device that holds them"
@@ -875,7 +949,7 @@ impl RelaySession<'_> {
                 );
             }
             if records.is_empty() {
-                return Ok(());
+                return Ok(!more && !trimmed);
             }
             let mut opened = Vec::with_capacity(records.len());
             for text in &records {
@@ -885,7 +959,7 @@ impl RelaySession<'_> {
                     Ok(record) => opened.push((record.operation, record.certificate)),
                     Err(error) => {
                         pass.note(format!("this device refused a relay record: {error}"));
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
             }
@@ -930,22 +1004,22 @@ impl RelaySession<'_> {
                                 writer.to_hex()
                             )
                         });
-                        return Ok(());
+                        return Ok(false);
                     }
                 }
             }
             if !more {
-                return Ok(());
+                return Ok(!trimmed);
             }
             let mut reached = self.stored().await?;
             reached.merge(&skipped);
             if known.dominates(&reached) {
                 pass.note("the relay sent no new operations".to_string());
-                return Ok(());
+                return Ok(false);
             }
             if moved >= self.limits.max_bytes {
                 pass.more = true;
-                return Ok(());
+                return Ok(false);
             }
         }
     }

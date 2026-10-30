@@ -769,6 +769,25 @@ impl Engine {
         .await?)
     }
 
+    /// Whether `bytes`, a key epoch record some untrusted source such as a relay serves for
+    /// `epoch`, authenticates against this replica's stored verified envelope set and charter
+    /// alone, without reading the selected chain. A record a device without the anchor's device
+    /// and writer keys made never passes, so a relay holding one for an epoch the selected chain
+    /// does not name yet means this replica lags behind a real rotation.
+    pub async fn authenticates_key_epoch(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        bytes: &[u8],
+        epoch: u32,
+    ) -> SyncResult<bool> {
+        log::ensure_space(conn, ctx.space).await?;
+        let Some(charter) = authorization::load_charter(conn, ctx.space).await? else {
+            return Ok(false);
+        };
+        records::authentic_key_epoch(conn, ctx.space, &charter, bytes, epoch).await
+    }
+
     async fn store_page(
         &self,
         conn: &mut SqliteConnection,

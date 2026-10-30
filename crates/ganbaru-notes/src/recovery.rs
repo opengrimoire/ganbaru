@@ -24,16 +24,13 @@
 //! The root leaves the trash, together with the rows that the same trash operation moved there,
 //! and a restored comment is no longer marked deleted. A descendant that can no longer be
 //! inserted, such as one whose referenced row is gone or an alias whose name is now taken, is
-//! left out. Mentions inside rich text keep the ids they were written with.
-//!
-//! Notes rows are written only by the device that writes Notes, so on a replica the restore is
-//! refused and the offer can only be discarded there.
+//! left out. Page and database mentions inside restored rich text follow the rows the same
+//! restore brings back to their new ids; other mentions keep the ids they were written with.
 
 use std::collections::{HashMap, HashSet};
 
 use ganbaru_sync::RecoveryDescendant;
 use ganbaru_sync::codec;
-use ganbaru_sync::guards::is_guard_abort;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::manifest::vault::notes::{
     ASSETS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE,
@@ -71,10 +68,6 @@ pub const ROOT_TABLES: &[TableId] = &[
     THREADS_TABLE,
     COMMENTS_TABLE,
 ];
-
-/// Refusal of a restore on a device that does not write Notes.
-pub const REPLICA_REFUSAL: &str =
-    "deleted Notes rows can be restored only on the device that writes Notes";
 
 /// Refusal of a database root, which shares its id with the block that holds it.
 const DATABASE_REFUSAL: &str =
@@ -256,29 +249,13 @@ struct Restore {
     trash_owner: Option<String>,
     /// Set-null references to fill in once their rows are inserted, by table and new key.
     patches: Vec<(&'static TableSpec, String, Patch)>,
+    /// Inserted text columns that may hold mentions, by table, new key, and column.
+    mentions: Vec<(&'static TableSpec, String, &'static str, String)>,
 }
 
 /// Restores a deleted Notes row and its deleted Notes descendants on a connection inside the
 /// caller's transaction, and returns the id of the new root row.
 pub async fn restore_recovered_row(
-    conn: &mut SqliteConnection,
-    table: TableId,
-    row_key: &str,
-    values: &[(GroupId, Value)],
-    descendants: &[RecoveryDescendant],
-) -> Result<String, String> {
-    restore(conn, table, row_key, values, descendants)
-        .await
-        .map_err(|error| {
-            if is_guard_abort(&error) {
-                REPLICA_REFUSAL.to_string()
-            } else {
-                error
-            }
-        })
-}
-
-async fn restore(
     conn: &mut SqliteConnection,
     table: TableId,
     row_key: &str,
@@ -390,6 +367,7 @@ async fn restore(
     }
 
     state.apply_patches(conn).await?;
+    state.remap_mentions(conn).await?;
     for spec in DOMAIN.tables {
         let keys: Vec<String> = state
             .inserted
@@ -667,6 +645,14 @@ impl Restore {
         for (owned, bytes) in &row.owned {
             insert_owned(conn, owned, key, bytes).await?;
         }
+        for (column, field) in &row.columns {
+            if let Field::Text(text) = field
+                && text.contains(MENTION_MARKER)
+            {
+                self.mentions
+                    .push((row.spec, key.to_string(), column, text.clone()));
+            }
+        }
         let id = row.id();
         self.pending.remove(&id);
         self.inserted.insert(id, key.to_string());
@@ -709,6 +695,79 @@ impl Restore {
             }
         }
         Ok(())
+    }
+
+    /// Points page and database mentions inside restored rich text at the new ids of the rows
+    /// the same restore brought back. Mentions of rows outside the restore keep their ids.
+    async fn remap_mentions(&self, conn: &mut SqliteConnection) -> Result<(), String> {
+        let restored: HashMap<&str, &str> = self
+            .inserted
+            .iter()
+            .filter(|((table, _), _)| matches!(*table, PAGES_TABLE | DATABASES_TABLE))
+            .map(|((_, old), new)| (old.as_str(), new.as_str()))
+            .collect();
+        if restored.is_empty() {
+            return Ok(());
+        }
+        for (spec, key, column, text) in &self.mentions {
+            let Some(remapped) = remap_mention_text(text, &restored) else {
+                continue;
+            };
+            sqlx::query(AssertSqlSafe(format!(
+                "UPDATE {} SET {column} = ? WHERE {} = ?",
+                spec.name, spec.key_column
+            )))
+            .bind(remapped)
+            .bind(key)
+            .execute(&mut *conn)
+            .await
+            .map_err(|error| format!("point restored {} mentions at restored rows: {error}", spec.name))?;
+        }
+        Ok(())
+    }
+}
+
+/// Text every serialized rich text mention contains, used to skip columns without mentions.
+const MENTION_MARKER: &str = "\"mention\"";
+
+/// `text` with page and database mention ids replaced through `restored`, or `None` when it is
+/// not JSON or names none of them.
+fn remap_mention_text(text: &str, restored: &HashMap<&str, &str>) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
+    remap_mention_value(&mut value, restored).then(|| value.to_string())
+}
+
+/// Replaces mention ids in place and returns whether any changed.
+fn remap_mention_value(value: &mut serde_json::Value, restored: &HashMap<&str, &str>) -> bool {
+    match value {
+        serde_json::Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
+            remap_mention_value(item, restored) || changed
+        }),
+        serde_json::Value::Object(object) => {
+            let mut changed = false;
+            if object.get("type").and_then(serde_json::Value::as_str) == Some("mention")
+                && let Some(mention) = object
+                    .get_mut("mention")
+                    .and_then(serde_json::Value::as_object_mut)
+            {
+                for kind in ["page", "database"] {
+                    let id = mention
+                        .get_mut(kind)
+                        .and_then(|target| target.get_mut("id"));
+                    if let Some(id) = id
+                        && let Some(new) = id.as_str().and_then(|old| restored.get(old))
+                    {
+                        *id = serde_json::Value::String((*new).to_string());
+                        changed = true;
+                    }
+                }
+            }
+            for nested in object.values_mut() {
+                changed |= remap_mention_value(nested, restored);
+            }
+            changed
+        }
+        _ => false,
     }
 }
 
@@ -856,7 +915,7 @@ enum InsertError {
 
 impl InsertError {
     /// Classifies an insert error: constraint failures are unfit rows, and everything else,
-    /// such as I/O, a busy database, or the replica guard, fails the restore.
+    /// such as I/O or a busy database, fails the restore.
     fn from_sqlx(table: &str, error: &sqlx::Error) -> Self {
         let message = format!("restore {table} row: {error}");
         let constraint = error
@@ -864,7 +923,7 @@ impl InsertError {
             .and_then(|database| database.code())
             .and_then(|code| code.parse::<i32>().ok())
             .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT);
-        if constraint && !is_guard_abort(&message) {
+        if constraint {
             Self::Unfit(message)
         } else {
             Self::Failed(message)
@@ -880,22 +939,20 @@ impl InsertError {
 
 #[cfg(test)]
 mod tests {
-    use ganbaru_sync::guards::READ_ONLY_MESSAGE;
-    use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
+    use sqlx::{Connection, SqliteConnection};
 
-    use super::InsertError;
+    use std::collections::HashMap;
+
+    use super::{InsertError, remap_mention_text};
 
     async fn insert_error(sql: &str) -> InsertError {
         let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-        sqlx::raw_sql(AssertSqlSafe(format!(
+        sqlx::raw_sql(
             "CREATE TABLE rows (id TEXT PRIMARY KEY, size INTEGER CHECK (size > 0));
-             CREATE TABLE guarded (id TEXT PRIMARY KEY);
              CREATE TRIGGER rows_nesting BEFORE INSERT ON rows WHEN NEW.id = 'nested'
                BEGIN SELECT RAISE(ABORT, 'nested rows are not allowed'); END;
-             CREATE TRIGGER guarded_read_only BEFORE INSERT ON guarded
-               BEGIN SELECT RAISE(ABORT, '{READ_ONLY_MESSAGE}'); END;
-             INSERT INTO rows (id, size) VALUES ('taken', 1);"
-        )))
+             INSERT INTO rows (id, size) VALUES ('taken', 1);",
+        )
         .execute(&mut conn)
         .await
         .unwrap();
@@ -922,14 +979,45 @@ mod tests {
 
     #[tokio::test]
     async fn other_failures_fail_the_restore() {
-        for sql in [
-            "INSERT INTO missing (id) VALUES ('row')",
-            "INSERT INTO guarded (id) VALUES ('row')",
-        ] {
-            assert!(
-                matches!(insert_error(sql).await, InsertError::Failed(_)),
-                "{sql}"
-            );
-        }
+        assert!(matches!(
+            insert_error("INSERT INTO missing (id) VALUES ('row')").await,
+            InsertError::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn restored_page_and_database_mentions_follow_their_new_ids() {
+        let restored = HashMap::from([("old-page", "new-page"), ("old-database", "new-database")]);
+        let text = serde_json::json!([
+            {"type": "text", "text": {"content": "see "}, "plain_text": "see "},
+            {"type": "mention", "mention": {"type": "page", "page": {"id": "old-page"}}},
+            {"type": "mention", "mention": {"type": "page", "page": {"id": "kept-page"}}},
+            {"rich_text": [
+                {"type": "mention", "mention": {"type": "database", "database": {"id": "old-database"}}}
+            ]},
+            {"type": "mention", "mention": {"type": "user", "user": {"id": "old-page"}}}
+        ])
+        .to_string();
+
+        let remapped: serde_json::Value =
+            serde_json::from_str(&remap_mention_text(&text, &restored).unwrap()).unwrap();
+        assert_eq!(remapped[1]["mention"]["page"]["id"], "new-page");
+        assert_eq!(remapped[2]["mention"]["page"]["id"], "kept-page");
+        assert_eq!(
+            remapped[3]["rich_text"][0]["mention"]["database"]["id"],
+            "new-database"
+        );
+        assert_eq!(remapped[4]["mention"]["user"]["id"], "old-page");
+    }
+
+    #[test]
+    fn text_without_restored_mentions_is_left_alone() {
+        let restored = HashMap::from([("old-page", "new-page")]);
+        let other = serde_json::json!([
+            {"type": "mention", "mention": {"type": "page", "page": {"id": "kept-page"}}}
+        ])
+        .to_string();
+        assert_eq!(remap_mention_text(&other, &restored), None);
+        assert_eq!(remap_mention_text("not \"mention\" json", &restored), None);
     }
 }

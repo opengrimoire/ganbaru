@@ -328,7 +328,6 @@ impl AndroidPresentation {
         app: &tauri::AppHandle,
         projection: &super::FocusProjection,
         now: i64,
-        ownership_generation: u64,
     ) -> Result<(), FocusExecutionError> {
         use ganbaru_mobile_notifications::MobileNotificationsExt;
         use tauri::Manager;
@@ -432,14 +431,8 @@ impl AndroidPresentation {
             if !super::presentation_is_current(&app, generation, revision) {
                 return Err("Native Focus phase delivery was superseded or expired".to_owned());
             }
-            let status = app
-                .state::<crate::vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?;
-            if !crate::pomodoro::focus_writable(&status)
-                || status.generation != ownership_generation
-                || crate::vault::active_vault_id(&app)? != vault_id
-            {
-                return Err("Focus notification belongs to an obsolete vault owner".to_owned());
+            if crate::vault::active_vault_id(&app)? != vault_id {
+                return Err("Focus notification belongs to an inactive vault".to_owned());
             }
             let completed = completion.is_some();
             if let Some(completion) = completion {

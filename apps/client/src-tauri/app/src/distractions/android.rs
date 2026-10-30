@@ -1,9 +1,7 @@
 #[cfg(target_os = "android")]
-use crate::vault::{self, ownership::VaultOwnershipManager};
+use crate::vault;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_distractions::{MobileDistractionsExt, PendingEvent};
-#[cfg(target_os = "android")]
-use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOMAIN;
 #[cfg(not(target_os = "android"))]
 use serde::Deserialize;
 use serde::Serialize;
@@ -213,23 +211,15 @@ pub(crate) async fn drain_and_flush_usage<R: Runtime>(
 }
 
 /// Imports one Guardian journal batch into the vault, then flushes this device's due usage
-/// totals; `force` flushes every stale total. A device that may not write Distractions leaves
-/// the journal pending. Usage and block history both replicate, so every writer imports both.
+/// totals; `force` flushes every stale total. Usage and block history both replicate, so every
+/// linked device imports both.
 #[cfg(target_os = "android")]
 async fn synchronize_locked<R: Runtime>(
     app: tauri::AppHandle<R>,
     force: bool,
 ) -> Result<MobileDistractionsSyncResult, String> {
     let active_vault_id = vault::active_vault_id(&app)?;
-    let ownership = app
-        .state::<VaultOwnershipManager>()
-        .status(&active_vault_id)?;
-    if !ownership.can_write_domain(DISTRACTIONS_DOMAIN) {
-        return Ok(MobileDistractionsSyncResult {
-            imported: 0,
-            full_batch: false,
-        });
-    }
+    let device_id = vault::ensure_device_id(&app)?;
     let pending_app = app.clone();
     let pending_vault = active_vault_id.clone();
     let events = tauri::async_runtime::spawn_blocking(move || {
@@ -244,8 +234,8 @@ async fn synchronize_locked<R: Runtime>(
     }
     let full_batch = events.len() == MAX_BATCH;
     let _permit = app
-        .state::<VaultOwnershipManager>()
-        .acquire_replicated_write(&active_vault_id, DISTRACTIONS_DOMAIN)?;
+        .state::<vault::write_fence::VaultWriteFence>()
+        .acquire_managed_write()?;
     if vault::active_vault_id(&app)? != active_vault_id {
         return Err("mobile Distractions vault changed before import".into());
     }
@@ -268,7 +258,7 @@ async fn synchronize_locked<R: Runtime>(
     let flushed = crate::distractions::usage_totals::flush(
         &pool,
         &active_vault_id,
-        &ownership.device_id,
+        &device_id,
         force,
     )
     .await;

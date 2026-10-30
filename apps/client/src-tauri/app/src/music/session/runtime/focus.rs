@@ -38,7 +38,7 @@ impl Owner {
         if self
             .vault_id
             .as_deref()
-            .is_none_or(|vault_id| !effect.matches_vault_authority(vault_id, self.vault_generation))
+            .is_none_or(|vault_id| effect.vault_id != *vault_id)
         {
             return Ok(());
         }

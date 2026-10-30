@@ -6,7 +6,6 @@ use super::authorization::configured_close_authorization;
 use super::catalog::{DesktopCatalogIndex, desktop_catalog_index};
 use super::*;
 use ganbaru_distractions::accounting;
-use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOMAIN;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -62,7 +61,7 @@ struct Context {
     generation: u64,
     vault_id: String,
     root_path: PathBuf,
-    ownership: vault::ownership::VaultOwnershipStatus,
+    device_id: String,
     rules_revision: u64,
     config: Value,
     limits: limits::LimitsConfig,
@@ -77,10 +76,6 @@ impl Context {
     fn validate_binding(&self, app: &tauri::AppHandle) -> Result<(), String> {
         if vault::active_vault_id(app)? != self.vault_id
             || vault::active_vault_path(app)? != self.root_path
-            || app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&self.vault_id)?
-                != self.ownership
         {
             return Err("Distractions vault context changed".into());
         }
@@ -357,7 +352,7 @@ struct Owner {
     control: Arc<Control>,
     foreground: Arc<Mutex<(Instant, DistractionsForegroundDesktopAppStatus)>>,
     accounting: accounting::Accounting,
-    binding: Option<(u64, String, u64)>,
+    binding: Option<(u64, String)>,
     session: Option<String>,
     pending: Option<Pending>,
     attempts: HashMap<String, Instant>,
@@ -423,9 +418,7 @@ impl Owner {
             if vault_id != rules.vault_id {
                 return Err("Distractions vault changed while its rules were read".into());
             }
-            let ownership = app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?;
+            let device_id = vault::ensure_device_id(&app)?;
             let config = rules.root;
             let limits = limits::parse_config(&config)?;
             let phase = read_fresh_runtime_state(&state_path(&app)?, now_utc());
@@ -469,7 +462,7 @@ impl Owner {
                 generation,
                 vault_id,
                 root_path,
-                ownership,
+                device_id,
                 rules_revision: rules.revision,
                 config,
                 limits,
@@ -500,7 +493,6 @@ impl Owner {
         let binding = (
             generation,
             context.vault_id.clone(),
-            context.ownership.generation,
         );
         if self.binding.as_ref() != Some(&binding) {
             self.accounting.clear();
@@ -510,7 +502,7 @@ impl Owner {
         let identity = format!(
             "{}|{}|{}",
             context.vault_id,
-            context.ownership.device_id,
+            context.device_id,
             self.session
                 .as_deref()
                 .ok_or("desktop interval session is unavailable")?
@@ -524,7 +516,7 @@ impl Owner {
         if !rows.is_empty() {
             self.pending = Some(Pending {
                 vault_id: context.vault_id.clone(),
-                device_id: context.ownership.device_id.clone(),
+                device_id: context.device_id.clone(),
                 rows,
             });
             self.flush_pending().await?;
@@ -547,12 +539,11 @@ impl Owner {
         self.enforce(context, projection.totals).await
     }
 
-    /// Moves the block events the browser host spooled into the vault when this device may write
-    /// Distractions. A failure leaves them spooled for the next observation.
+    /// Moves the block events the browser host spooled into the vault. A failure leaves them
+    /// spooled for the next observation.
     async fn ingest_block_events(&self, context: &Context) -> Result<(), String> {
-        let device_id = &context.ownership.device_id;
-        if !context.ownership.can_write_domain(DISTRACTIONS_DOMAIN)
-            || !crate::distractions::spool::has_pending_block_events(
+        let device_id = &context.device_id;
+        if !crate::distractions::spool::has_pending_block_events(
                 &self.app,
                 &context.vault_id,
                 device_id,
@@ -563,8 +554,8 @@ impl Owner {
         }
         let _permit = self
             .app
-            .state::<vault::ownership::VaultOwnershipManager>()
-            .acquire_replicated_write(&context.vault_id, DISTRACTIONS_DOMAIN)?;
+            .state::<vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         context.validate_binding(&self.app)?;
         let pool = crate::db::connect_vault(&self.app).await?;
         context.validate_binding(&self.app)?;
@@ -709,28 +700,25 @@ impl Owner {
             }
         }
         for (observed, limit_name) in closed {
-            if context.ownership.can_write_domain(DISTRACTIONS_DOMAIN) {
-                let _permit = self
-                    .app
-                    .state::<vault::ownership::VaultOwnershipManager>()
-                    .acquire_replicated_write(&context.vault_id, DISTRACTIONS_DOMAIN)?;
-                context.validate_binding(&self.app)?;
-                let pool = crate::db::connect_vault(&self.app).await?;
-                context.validate_binding(&self.app)?;
-                let event =
-                    usage::normalize_desktop_block_event(DistractionsDesktopBlockEventInput {
-                        app_name: observed.app_name.clone(),
-                        process_name: Some(observed.process_name),
-                        process_id: Some(observed.process_id),
-                    })?;
-                usage::insert_desktop_block_event(
-                    &pool,
-                    event,
-                    context.phase.as_ref(),
-                    &now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-                )
-                .await?;
-            }
+            let _permit = self
+                .app
+                .state::<vault::write_fence::VaultWriteFence>()
+                .acquire_managed_write()?;
+            context.validate_binding(&self.app)?;
+            let pool = crate::db::connect_vault(&self.app).await?;
+            context.validate_binding(&self.app)?;
+            let event = usage::normalize_desktop_block_event(DistractionsDesktopBlockEventInput {
+                app_name: observed.app_name.clone(),
+                process_name: Some(observed.process_name),
+                process_id: Some(observed.process_id),
+            })?;
+            usage::insert_desktop_block_event(
+                &pool,
+                event,
+                context.phase.as_ref(),
+                &now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
+            )
+            .await?;
             self.notify(observed.app_name, limit_name);
         }
         Ok(())

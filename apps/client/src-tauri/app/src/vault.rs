@@ -33,7 +33,7 @@ pub use documents::*;
 pub(crate) mod backup;
 pub(crate) mod database_rollback;
 pub(crate) mod handoff;
-pub(crate) mod ownership;
+pub(crate) mod write_fence;
 pub(crate) mod preferences;
 #[cfg(any(mobile, test))]
 pub(crate) mod process_managers;
@@ -947,7 +947,7 @@ fn available_vault_path(path: Option<PathBuf>) -> Result<Option<PathBuf>, String
 
 pub(crate) struct WritableVaultPath {
     path: PathBuf,
-    _permit: ownership::ManagedVaultWritePermit,
+    _permit: write_fence::ManagedVaultWritePermit,
 }
 
 impl WritableVaultPath {
@@ -974,39 +974,20 @@ impl AsRef<Path> for WritableVaultPath {
 pub(crate) fn active_writable_vault_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<WritableVaultPath, String> {
-    let (path, manifest) = active_vault(app)?;
-    let vault_id = manifest.vault_id;
-    let permit = app
-        .state::<ownership::VaultOwnershipManager>()
-        .acquire_managed_write(&vault_id)?;
-    Ok(WritableVaultPath {
-        path,
-        _permit: permit,
-    })
-}
-
-/// The active vault root for writing assets of the replicated sync `domain`, which a linked
-/// stable replica may write as well as the owner when the domain allows replica writes.
-pub(crate) fn active_replicated_asset_path<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    domain: &str,
-) -> Result<WritableVaultPath, String> {
-    replicated_asset_path_in(
+    writable_vault_path_in(
         &app_config_dir(app)?,
-        app.state::<ownership::VaultOwnershipManager>().inner(),
-        domain,
+        app.state::<write_fence::VaultWriteFence>().inner(),
     )
 }
 
-/// [`active_replicated_asset_path`] for the app config directory `config_dir`, with the permit
-/// taken from `ownership`.
-pub(crate) fn replicated_asset_path_in(
+/// [`active_writable_vault_path`] for the app config directory `config_dir`, with the permit
+/// taken from `fence`.
+pub(crate) fn writable_vault_path_in(
     config_dir: &Path,
-    ownership: &ownership::VaultOwnershipManager,
-    domain: &str,
+    fence: &write_fence::VaultWriteFence,
 ) -> Result<WritableVaultPath, String> {
-    let (path, manifest) = active_vault_in(config_dir)?;
-    let permit = ownership.acquire_replicated_write(&manifest.vault_id, domain)?;
+    let permit = fence.acquire_managed_write()?;
+    let (path, _) = active_vault_in(config_dir)?;
     Ok(WritableVaultPath {
         path,
         _permit: permit,

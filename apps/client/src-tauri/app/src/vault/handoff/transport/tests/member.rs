@@ -135,7 +135,6 @@ fn snapshot_copies(root: PathBuf) -> server::MemberBundles {
                     vault_id: request.vault_id,
                     device_id: request.device_id,
                     transfer_id,
-                    generation: request.generation,
                     archive_bytes: MEMBER_COPY.len() as u64,
                     archive_sha256: sha256_file(&archive_path)?,
                 };
@@ -148,14 +147,12 @@ fn snapshot_copies(root: PathBuf) -> server::MemberBundles {
     ))
 }
 
-fn bundle_request(purpose: BundlePurpose) -> ControlMessage {
+fn bundle_request() -> ControlMessage {
     ControlMessage::RequestBundle {
         protocol_version: PROTOCOL_VERSION,
         compatibility: super::super::super::protocol::test_compatibility(),
         vault_id: VAULT.to_string(),
         device_id: PHONE.to_string(),
-        generation: 0,
-        purpose,
     }
 }
 
@@ -305,15 +302,11 @@ async fn a_member_listener_rechecks_the_log_after_the_handshake() {
 #[tokio::test]
 async fn a_member_listener_refuses_pairing_handoff_contact_and_foreign_device_frames() {
     let listener = MemberListener::start().await;
-    let refresh = ControlMessage::RefreshRequest {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: super::super::super::protocol::test_compatibility(),
-        vault_id: VAULT.to_string(),
-        device_id: PHONE.to_string(),
-        generation: 0,
+    let acknowledgement = ControlMessage::ActivationAcknowledged {
+        transfer_id: "transfer-1".to_string(),
     };
     for (message, code) in [
-        (refresh, "sync_only"),
+        (acknowledgement, "sync_only"),
         (super::contact_request_message("request-1"), "sync_only"),
         (hello("device-other"), "member_device_mismatch"),
     ] {
@@ -466,8 +459,6 @@ fn acknowledgement_of(metadata: &BundleMetadata) -> PendingAcknowledgement {
         vault_id: metadata.vault_id.clone(),
         device_id: metadata.device_id.clone(),
         transfer_id: metadata.transfer_id.clone(),
-        generation: metadata.generation,
-        purpose: BundlePurpose::Refresh,
     }
 }
 
@@ -479,18 +470,12 @@ async fn a_member_listener_serves_a_vault_copy_to_an_enrolled_device() {
         &pair.phone,
         std::slice::from_ref(&source),
         super::super::super::protocol::test_compatibility(),
-        4,
-        BundlePurpose::Refresh,
         &TransferCancellation::default(),
     )
     .await
     .expect("copy from the member");
     assert_eq!(fetched.source, source);
     assert_eq!(fetched.metadata.device_id, PHONE);
-    assert_eq!(
-        fetched.metadata.generation, 4,
-        "a member's copy keeps the ownership generation the device holds"
-    );
     assert_eq!(fs::read(&fetched.archive).expect("read copy"), MEMBER_COPY);
 
     let pending = acknowledgement_of(&fetched.metadata);
@@ -504,8 +489,6 @@ async fn a_member_listener_serves_a_vault_copy_to_an_enrolled_device() {
         &pair.phone,
         std::slice::from_ref(&source),
         super::super::super::protocol::test_compatibility(),
-        4,
-        BundlePurpose::Refresh,
         &TransferCancellation::default(),
     )
     .await
@@ -514,21 +497,11 @@ async fn a_member_listener_serves_a_vault_copy_to_an_enrolled_device() {
 }
 
 #[tokio::test]
-async fn a_member_listener_serves_no_ownership_transfer() {
-    let listener = MemberListener::start_serving(None, true).await;
-    let response = listener
-        .request(bundle_request(BundlePurpose::Ownership))
-        .await
-        .expect("answered refusal");
-    assert!(refused_with(&response, "bootstrap_only"), "{response:?}");
-}
-
-#[tokio::test]
 async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_device() {
     let listener = MemberListener::start_serving(None, true).await;
     listener.admit(admission_with(&listener.phone_fingerprint, true));
     let removed = listener
-        .request(bundle_request(BundlePurpose::Refresh))
+        .request(bundle_request())
         .await
         .expect("answered refusal");
     assert!(refused_with(&removed, "member_removed"), "{removed:?}");
@@ -536,7 +509,7 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
     // A handshake may reuse the admission read moments ago; the fresh read after it refuses.
     listener.admit(admission_quarantining(&listener.phone_fingerprint));
     let quarantined = listener
-        .request(bundle_request(BundlePurpose::Refresh))
+        .request(bundle_request())
         .await;
     assert!(
         quarantined
@@ -547,7 +520,7 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
 
     listener.admit(admission_with(&"0".repeat(64), false));
     let unknown = listener
-        .request(bundle_request(BundlePurpose::Refresh))
+        .request(bundle_request())
         .await;
     assert!(
         unknown
@@ -560,7 +533,7 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
     tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
         listener
-            .request(bundle_request(BundlePurpose::Refresh))
+            .request(bundle_request())
             .await
             .is_err(),
         "a device the log never enrolled completes no handshake"
@@ -569,7 +542,7 @@ async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_dev
     tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
         listener
-            .request(bundle_request(BundlePurpose::Refresh))
+            .request(bundle_request())
             .await
             .is_err(),
         "a quarantined device completes no handshake"
@@ -588,8 +561,6 @@ async fn a_device_falls_back_from_an_unreachable_coordinator_to_a_member() {
         &pair.phone,
         &[BundleSource::Coordinator, member.source()],
         super::super::super::protocol::test_compatibility(),
-        0,
-        BundlePurpose::Refresh,
         &TransferCancellation::default(),
     )
     .await
@@ -610,8 +581,6 @@ async fn a_failed_copy_reports_the_coordinator_error_first() {
         &pair.phone,
         &[BundleSource::Coordinator, member.source()],
         super::super::super::protocol::test_compatibility(),
-        0,
-        BundlePurpose::Refresh,
         &TransferCancellation::default(),
     )
     .await

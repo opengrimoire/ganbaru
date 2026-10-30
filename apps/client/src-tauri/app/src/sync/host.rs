@@ -9,7 +9,7 @@ use crate::db::DatabaseState;
 use crate::vault::WritableVaultPath;
 use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::handoff::transport::CoordinatorDialReport;
-use crate::vault::ownership::VaultOwnershipManager;
+use crate::vault::write_fence::VaultWriteFence;
 #[cfg(any(mobile, test))]
 use crate::vault::process_managers::ProcessManagers;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
@@ -47,8 +47,8 @@ fn vault_engine(hooks: Hooks) -> Result<Engine, String> {
     .map_err(|error| format!("build sync engine: {error}"))
 }
 
-/// The process a sync pass runs in: where device state lives, the shared pools, pairing and
-/// ownership state, key stores, and where status and change notices go.
+/// The process a sync pass runs in: where device state lives, the shared pools, pairing state,
+/// the managed write fence, key stores, and where status and change notices go.
 pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
     /// The app config directory, which holds device-local state.
     fn config_dir(&self) -> Result<PathBuf, String>;
@@ -59,8 +59,8 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
     /// The process pool registry.
     fn pools(&self) -> &DatabaseState;
 
-    /// Durable vault ownership of this device.
-    fn ownership(&self) -> &VaultOwnershipManager;
+    /// The fence managed vault writes pass while the vault is not being replaced.
+    fn write_fence(&self) -> &VaultWriteFence;
 
     /// Where writer keys are kept.
     fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String>;
@@ -170,27 +170,22 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
         SyncFiles::new(self.sync_directory()?, vault_id)
     }
 
-    /// Whether this device seals for the active vault: a linked owner, or a guarded replica.
+    /// Whether this device seals for the active vault, which it does while it is linked in it.
     fn sync_enabled(&self) -> Result<bool, String> {
-        let status =
-            crate::vault::ownership::active_status_in(&self.config_dir()?, self.ownership())?;
-        if status.linked_replica {
-            return Ok(true);
-        }
-        Ok(status.can_write && self.ownership().is_linked(&status.vault_id))
+        self.pairing().is_linked_for(&self.active_vault_id()?)
     }
 
-    /// Opens the active vault for sync work, or `None` while the pool cannot write.
-    fn connect_for_sync(&self) -> impl Future<Output = Result<Option<SqlitePool>, String>> + Send {
+    /// Opens the active vault read-write for sync work.
+    fn connect_for_sync(&self) -> impl Future<Output = Result<SqlitePool, String>> + Send {
         async move {
             let config_dir = self.config_dir()?;
-            crate::db::connect_vault_for_sync_in(self.pools(), self.ownership(), &config_dir).await
+            crate::db::connect_vault_for_sync_in(self.pools(), &config_dir).await
         }
     }
 
-    /// The active vault root with the replicated asset permit of the sync `domain`.
-    fn replicated_asset_path(&self, domain: &str) -> Result<WritableVaultPath, String> {
-        crate::vault::replicated_asset_path_in(&self.config_dir()?, self.ownership(), domain)
+    /// The active vault root with a managed write permit, for replicated asset files.
+    fn replicated_asset_path(&self) -> Result<WritableVaultPath, String> {
+        crate::vault::writable_vault_path_in(&self.config_dir()?, self.write_fence())
     }
 }
 
@@ -209,8 +204,8 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
         self.state::<DatabaseState>().inner()
     }
 
-    fn ownership(&self) -> &VaultOwnershipManager {
-        self.state::<VaultOwnershipManager>().inner()
+    fn write_fence(&self) -> &VaultWriteFence {
+        self.state::<VaultWriteFence>().inner()
     }
 
     #[cfg(desktop)]
@@ -337,7 +332,7 @@ pub(crate) struct HeadlessHost(Arc<HeadlessParts>);
 struct HeadlessParts {
     config_dir: PathBuf,
     pairing: PairingManager,
-    ownership: VaultOwnershipManager,
+    write_fence: VaultWriteFence,
     pools: DatabaseState,
     key_protection: Arc<KeyProtection>,
     hooks: Box<dyn Fn() -> Hooks + Send + Sync>,
@@ -354,34 +349,16 @@ impl HeadlessHost {
         )
     }
 
-    /// Opens a host on `managers`, loading their state from `config_dir` as app startup does
-    /// unless the process already loaded it. A vault handoff this device started is left to
-    /// the app, which reconciles it at startup, so the host refuses to open while one is
-    /// recorded.
+    /// Opens a host on `managers`, loading pairing state from `config_dir` as app startup does
+    /// unless the process already loaded it. The host reads only the app config directory and
+    /// the active vault it points at.
     pub(crate) fn open_with(config_dir: &Path, managers: &ProcessManagers) -> Result<Self, String> {
         let device_id = crate::vault::ensure_device_id_in(config_dir)?;
         managers.load_pairing(config_dir, device_id)?;
-        let pairing = managers.pairing().clone();
-        if pairing.outgoing_transfer()?.is_some() {
-            return Err("a vault handoff is in progress; the app finishes it".to_string());
-        }
-        managers.load_ownership(config_dir)?;
-        let ownership = managers.ownership().clone();
-        if let Some(coordinator) = pairing.coordinator_pin()? {
-            ownership.register_remote_owner_if_missing(
-                &coordinator.vault_id,
-                coordinator.device_id,
-                coordinator.generation,
-            )?;
-        }
-        let probe = pairing.clone();
-        ownership.set_link_probe(Some(Arc::new(move |vault_id: &str| {
-            probe.is_linked_for(vault_id).unwrap_or(false)
-        })))?;
         Ok(Self(Arc::new(HeadlessParts {
             config_dir: config_dir.to_path_buf(),
-            pairing,
-            ownership,
+            pairing: managers.pairing().clone(),
+            write_fence: managers.write_fence().clone(),
             pools: crate::db::vault_pools().clone(),
             key_protection: managers.key_protection(),
             hooks: Box::new(vault_hooks),
@@ -414,8 +391,8 @@ impl SyncHost for HeadlessHost {
         &self.0.pools
     }
 
-    fn ownership(&self) -> &VaultOwnershipManager {
-        &self.0.ownership
+    fn write_fence(&self) -> &VaultWriteFence {
+        &self.0.write_fence
     }
 
     fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String> {

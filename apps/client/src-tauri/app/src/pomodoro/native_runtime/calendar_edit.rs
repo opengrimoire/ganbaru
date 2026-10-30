@@ -225,21 +225,6 @@ pub(crate) async fn commit_calendar_edit(
     request: CommitRequest,
 ) -> Result<CommitReply, CommitFailure> {
     request.validate()?;
-    let ownership = app
-        .try_state::<crate::vault::ownership::VaultOwnershipManager>()
-        .ok_or_else(|| CommitFailure::unknown("Calendar vault authorization is unavailable"))?;
-    if ownership
-        .cached_status(&request.vault_id)
-        .map_err(CommitFailure::unknown)?
-        .is_some_and(|status| !crate::pomodoro::calendar_edit_writable(&status))
-    {
-        return read_only_calendar_retry(app, &request)
-            .await
-            .map(|receipt| CommitReply {
-                receipt,
-                undo_available_for_ms: None,
-            });
-    }
     let state = app
         .try_state::<FocusRuntimeState>()
         .ok_or_else(|| CommitFailure::unknown("Native Focus owner is unavailable"))?;
@@ -258,76 +243,6 @@ pub(crate) async fn commit_calendar_edit(
         })?;
     receive.await.map_err(|_| {
         CommitFailure::unknown("Native Calendar owner stopped before returning its receipt")
-    })?
-}
-
-/// Confirm an existing result independently of execution or mutation authority.
-async fn read_only_calendar_retry(
-    app: &tauri::AppHandle,
-    request: &CommitRequest,
-) -> Result<CommitReceipt, CommitFailure> {
-    let _transition =
-        crate::vault::quiescence::reserve_vault_transition().map_err(CommitFailure::unknown)?;
-    let expected = receipt_read_authority(app, &request.vault_id).await?;
-    if expected.1 {
-        return Err(CommitFailure::unknown(
-            "Calendar write ownership changed; retry this Save",
-        ));
-    }
-    let receipt = tokio::time::timeout(
-        ganbaru_calendar::events::scope::SCOPE_WORKER_TIMEOUT,
-        async {
-            let permit = receipt_worker_permit()?;
-            let pool = crate::db::connect_active_vault_read_only(app, permit)
-                .await
-                .map_err(CommitFailure::unknown)?;
-            request.read_only_retry(&pool).await
-        },
-    )
-    .await
-    .map_err(|_| CommitFailure::unknown("Calendar receipt lookup timed out; retry this Save"))??;
-    if receipt_read_authority(app, &request.vault_id).await? != expected {
-        return Err(CommitFailure::unknown(
-            "Calendar read authority changed during retry",
-        ));
-    }
-    receipt
-        .ok_or_else(|| "This vault is read-only and has no accepted receipt for this Save".into())
-}
-
-/// Filesystem identity and ledger refresh stay off the execution/runtime threads.
-async fn receipt_read_authority(
-    app: &tauri::AppHandle,
-    expected_vault_id: &str,
-) -> Result<(u64, bool), CommitFailure> {
-    let app = app.clone();
-    let expected_vault_id = expected_vault_id.to_owned();
-    let permit = receipt_worker_permit()?;
-    let worker = tauri::async_runtime::spawn_blocking(move || {
-        let _permit = permit;
-        let vault_id = crate::vault::active_vault_id(&app).map_err(CommitFailure::unknown)?;
-        if vault_id != expected_vault_id {
-            return Err(CommitFailure::unknown(
-                "Calendar receipt belongs to a different vault",
-            ));
-        }
-        let status = app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .status(&vault_id)
-            .map_err(CommitFailure::unknown)?;
-        Ok((
-            status.generation,
-            crate::pomodoro::calendar_edit_writable(&status),
-        ))
-    });
-    tokio::time::timeout(
-        ganbaru_calendar::events::scope::SCOPE_WORKER_TIMEOUT,
-        worker,
-    )
-    .await
-    .map_err(|_| CommitFailure::unknown("Calendar receipt authority timed out; retry this Save"))?
-    .map_err(|error| {
-        CommitFailure::unknown(format!("Calendar receipt authority worker: {error}"))
     })?
 }
 
@@ -426,8 +341,8 @@ impl Owner {
         }
         let _permit = self
             .app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_replicated_write(&request.vault_id, crate::pomodoro::CALENDAR_DOMAIN)?;
+            .state::<crate::vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         let pool = self
             .pool
             .as_ref()

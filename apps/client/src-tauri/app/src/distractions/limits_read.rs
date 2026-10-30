@@ -2,7 +2,6 @@
 
 use super::{limits::*, *};
 pub(crate) use crate::distractions::limits::store::read_source_days;
-use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOMAIN;
 use serde::Serialize;
 use std::sync::LazyLock;
 
@@ -58,60 +57,31 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         .await
         .map_err(|error| format!("native usage configuration worker: {error}"))??;
     let week = week_start(&local_date)?;
-    let status = app
-        .state::<vault::ownership::VaultOwnershipManager>()
-        .status(&vault_id)?;
+    let device_id = vault::ensure_device_id(&app)?;
     // Without budgets there is nothing to total. Spooled samples stay bounded and drain on the
     // first read after a budget exists, on exit, or before a vault snapshot.
     let sources = if config.items.is_empty() {
         Vec::new()
     } else {
-        let writable = status.can_write_domain(DISTRACTIONS_DOMAIN);
-        let _write_permit = if writable {
-            Some(
-                app.state::<vault::ownership::VaultOwnershipManager>()
-                    .acquire_replicated_write(&vault_id, DISTRACTIONS_DOMAIN)?,
-            )
-        } else {
-            None
-        };
+        let _write_permit = app
+            .state::<vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         if vault::active_vault_id(&app)? != vault_id
             || vault::active_database_path(&app)? != database_path
         {
             return Err("native usage vault changed before its read".into());
         }
         let pool = crate::db::connect_vault(&app).await?;
-        if writable {
-            crate::distractions::usage_totals::drain_and_flush(
-                &app,
-                &pool,
-                &vault_id,
-                &status.device_id,
-                false,
-            )
+        crate::distractions::usage_totals::drain_and_flush(&app, &pool, &vault_id, &device_id, false)
             .await?;
-        }
         let mut tx = pool
             .begin()
             .await
             .map_err(|error| format!("begin native usage snapshot: {error}"))?;
-        let mut sources = read_source_days(&mut tx, &status.device_id, &week, &local_date).await?;
+        let sources = read_source_days(&mut tx, &device_id, &week, &local_date).await?;
         tx.commit()
             .await
             .map_err(|error| format!("finish native usage snapshot: {error}"))?;
-        if !writable {
-            // Usage this device may not journal yet still counts against its own budgets.
-            sources.extend(
-                crate::distractions::spool::pending_source_days(
-                    &app,
-                    &vault_id,
-                    &status.device_id,
-                    &week,
-                    &local_date,
-                )
-                .await?,
-            );
-        }
         sources
     };
     let publication_app = app.clone();
@@ -119,10 +89,6 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         let totals = totals(&config, &sources, &local_date)?;
         if vault::active_vault_id(&publication_app)? != vault_id
             || vault::active_database_path(&publication_app)? != database_path
-            || publication_app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?
-                != status
             || !rule_store::is_current(rules_revision)
         {
             return Err("native usage context changed during the read".into());

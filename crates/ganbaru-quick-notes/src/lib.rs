@@ -438,18 +438,8 @@ pub async fn load_note_from_pool(pool: &SqlitePool, id: &str) -> Result<QuickNot
 #[serde(rename_all = "camelCase")]
 pub struct QuickNotesTrashPurge {
     purged: u64,
-    /// When the oldest remaining trashed note expires, if this device may purge it.
+    /// When the oldest remaining trashed note expires.
     next_purge_at: Option<String>,
-}
-
-impl QuickNotesTrashPurge {
-    /// The pass of a device that may not write Quick notes: nothing purged and no deadline.
-    pub fn skipped() -> Self {
-        Self {
-            purged: 0,
-            next_purge_at: None,
-        }
-    }
 }
 
 /// Deletes trash past its retention and reports when the oldest remaining trash expires.

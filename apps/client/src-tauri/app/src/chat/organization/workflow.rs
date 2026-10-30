@@ -146,8 +146,8 @@ pub(super) async fn resolve_invoked_teammate(
 }
 
 /// The devices that can write Chat. An assignment writes its states, messages, and runs into
-/// Chat, so only these devices execute assignments. While Chat is owner-only that is the vault
-/// owner, which a whole-vault handoff moves.
+/// Chat, so only these devices execute assignments: this device and the linked devices that
+/// hold an active sync writer.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct ChatWriters {
     devices: std::collections::BTreeSet<String>,

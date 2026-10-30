@@ -491,7 +491,6 @@ async fn the_headless_host_never_resurrects_a_pin_the_runtime_unlinked() {
     managers
         .load_pairing(config_dir, PHONE_DEVICE.to_string())
         .expect("load pairing");
-    managers.load_ownership(config_dir).expect("load ownership");
     let host = HeadlessHost::open_with(config_dir, &managers).expect("open headless host");
     let pin = host
         .pairing()
@@ -612,7 +611,6 @@ async fn linked_phone_host(
     managers
         .load_pairing(config_dir, PHONE_DEVICE.to_string())
         .expect("load pairing");
-    managers.load_ownership(config_dir).expect("load ownership");
     let host = HeadlessHost::open_with(config_dir, &managers).expect("open headless host");
     assert!(host.pairing().has_links().expect("links"));
     (pair, managers, host)

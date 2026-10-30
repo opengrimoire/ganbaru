@@ -10,7 +10,6 @@ use super::{
 };
 use crate::vault::runtime_lifecycle::{LifecycleControl, LifecycleIntent};
 use ganbaru_music_library::{MusicLibraryError, MusicLibraryResult};
-use ganbaru_sync::manifest::vault::music::DOMAIN_NAME as MUSIC_DOMAIN;
 use sqlx::SqlitePool;
 use std::{
     collections::BTreeMap,
@@ -107,7 +106,6 @@ struct Owner {
     state: SessionPolicy,
     pool: Option<SqlitePool>,
     vault_id: Option<String>,
-    vault_generation: u64,
     device_id: String,
     roots: BTreeMap<String, String>,
     subscriptions: Subscriptions,
@@ -205,7 +203,6 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             state: new_policy(),
             pool: None,
             vault_id: None,
-            vault_generation: 0,
             device_id: String::new(),
             roots: BTreeMap::new(),
             subscriptions: Subscriptions::new(primary_window),
@@ -634,27 +631,13 @@ pub(super) fn native_observation(
 impl Owner {
     async fn ensure_context(&mut self) -> MusicLibraryResult<()> {
         let app = self.app.clone();
-        let (vault_id, vault_generation, device_id, roots) =
+        let (vault_id, device_id, roots) =
             tauri::async_runtime::spawn_blocking(move || {
                 let vault_id = crate::vault::active_vault_id(&app)
                     .map_err(|error| MusicLibraryError::runtime("resolve music vault", error))?;
                 let device_id = crate::vault::ensure_device_id(&app)
                     .map_err(|error| MusicLibraryError::runtime("resolve music device", error))?;
-                let ownership = app.state::<crate::vault::ownership::VaultOwnershipManager>();
-                let status = ownership.status(&vault_id).map_err(|error| {
-                    MusicLibraryError::runtime("read music vault ownership", error)
-                })?;
-                if !status.can_write_domain(MUSIC_DOMAIN) {
-                    return Err(MusicLibraryError::conflict(
-                        "Music playback requires the active writable vault",
-                    ));
-                }
-                Ok::<_, MusicLibraryError>((
-                    vault_id,
-                    status.generation,
-                    device_id,
-                    root_bindings(&app)?,
-                ))
+                Ok::<_, MusicLibraryError>((vault_id, device_id, root_bindings(&app)?))
             })
             .await
             .map_err(|error| MusicLibraryError::runtime("read music device state", error))??;
@@ -665,7 +648,6 @@ impl Owner {
             ));
         }
         if self.vault_id.as_deref() == Some(&vault_id)
-            && self.vault_generation == vault_generation
             && self.pool.is_some()
         {
             return Ok(());
@@ -691,7 +673,6 @@ impl Owner {
                 .map_err(|error| MusicLibraryError::runtime("connect music session", error))?,
         );
         self.vault_id = Some(vault_id);
-        self.vault_generation = vault_generation;
         self.device_id = device_id;
         self.frozen = false;
         let generation = self.state.generation.saturating_add(1);
@@ -1355,26 +1336,22 @@ impl Owner {
 
     async fn write_permit(
         &self,
-    ) -> MusicLibraryResult<crate::vault::ownership::ManagedVaultWritePermit> {
+    ) -> MusicLibraryResult<crate::vault::write_fence::ManagedVaultWritePermit> {
         let app = self.app.clone();
         let vault_id = self
             .vault_id
             .clone()
             .ok_or_else(|| MusicLibraryError::conflict("Music vault is not active"))?;
-        let generation = self.vault_generation;
         tauri::async_runtime::spawn_blocking(move || {
-            let ownership = app.state::<crate::vault::ownership::VaultOwnershipManager>();
-            let permit = ownership
-                .acquire_replicated_write(&vault_id, MUSIC_DOMAIN)
+            let permit = app
+                .state::<crate::vault::write_fence::VaultWriteFence>()
+                .acquire_managed_write()
                 .map_err(|error| MusicLibraryError::runtime("authorize music transition", error))?;
             let active_id = crate::vault::active_vault_id(&app)
                 .map_err(|error| MusicLibraryError::runtime("verify music vault", error))?;
-            let status = ownership
-                .status(&vault_id)
-                .map_err(|error| MusicLibraryError::runtime("verify music generation", error))?;
-            if active_id != vault_id || status.generation != generation {
+            if active_id != vault_id {
                 return Err(MusicLibraryError::conflict(
-                    "Music vault ownership changed before the transition",
+                    "Music vault changed before the transition",
                 ));
             }
             Ok(permit)
@@ -1488,7 +1465,6 @@ impl Owner {
         let admitted = lifecycle.current();
         let app = self.app.clone();
         let vault_id = self.vault_id.clone();
-        let generation = self.vault_generation;
         let focus = if !draining && self.state.owner == SessionOwner::Pomodoro {
             let (proof, deadline) = crate::pomodoro::native_runtime::capture_music_delivery(&app)
                 .ok_or("Committed Focus music authority is unavailable")?;
@@ -1519,21 +1495,8 @@ impl Owner {
             if draining {
                 return true;
             }
-            let Some(vault_id) = &vault_id else {
-                return false;
-            };
-            let Some(ownership) = app.try_state::<crate::vault::ownership::VaultOwnershipManager>()
-            else {
-                return false;
-            };
-            let owner_current = ownership
-                .cached_status(vault_id)
-                .ok()
-                .flatten()
-                .is_some_and(|status| {
-                    status.can_write_domain(MUSIC_DOMAIN) && status.generation == generation
-                });
-            owner_current
+            // A vault replacement freezes Music first, which revokes this lifecycle.
+            vault_id.is_some()
                 && focus.as_ref().is_none_or(|(proof, deadline)| {
                     crate::pomodoro::native_runtime::music_delivery_is_current(
                         &app, proof, *deadline,

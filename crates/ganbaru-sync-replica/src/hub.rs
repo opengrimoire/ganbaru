@@ -428,7 +428,7 @@ impl SyncHub {
                 data,
                 ..
             } => {
-                let asset = upload_from_wire(&asset, manifest)?;
+                let asset = asset_from_wire(&asset, manifest).map_err(invalid)?;
                 let data = bytes_from_wire(&data).map_err(invalid)?;
                 self.receive(&assets, &device_id, &asset, offset, data)
                     .await
@@ -700,18 +700,6 @@ impl SyncHub {
         };
         drop(replaced);
         Ok(())
-    }
-}
-
-/// Reads an uploaded asset reference. Only classes of domains a linked replica may write are
-/// accepted, since no other device can reference the rest.
-fn upload_from_wire(asset: &SyncAsset, manifest: &Manifest) -> Result<AssetRef, HubError> {
-    match manifest.asset_class(&asset.class) {
-        Some((domain, _)) if !domain.replica_writable => Err(invalid(format!(
-            "sync asset class {} is not replica writable",
-            asset.class
-        ))),
-        _ => asset_from_wire(asset, manifest).map_err(invalid),
     }
 }
 

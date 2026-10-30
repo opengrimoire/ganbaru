@@ -9,7 +9,6 @@ use ganbaru_quick_notes::{
     QuickNoteTagWrite, QuickNoteUpdate, QuickNoteWrite, QuickNoteWriteError, QuickNotesListRequest,
     QuickNotesTrashPurge, QuickNotesWindow, tags,
 };
-use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES_DOMAIN;
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
@@ -38,17 +37,12 @@ pub async fn quick_notes_load<R: Runtime>(
     ganbaru_quick_notes::load_note_from_pool(&pool, &id).await
 }
 
-/// Deletes trash past its retention. Devices that cannot write Quick notes, neither as owner
-/// nor as a linked replica, skip the pass and report no deadline.
+/// Deletes trash past its retention.
 #[tauri::command]
 pub async fn quick_notes_purge_expired_trash<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
 ) -> Result<QuickNotesTrashPurge, String> {
-    let status = crate::vault::ownership::active_status(&app)?;
-    if !status.can_write_domain(QUICK_NOTES_DOMAIN) {
-        return Ok(QuickNotesTrashPurge::skipped());
-    }
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_quick_notes::purge_expired_trash(&pool).await
 }

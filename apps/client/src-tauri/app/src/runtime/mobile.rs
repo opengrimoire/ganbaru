@@ -26,7 +26,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(db::vault_pools().clone())
         .manage(
             vault::process_managers::process_managers()
-                .ownership()
+                .write_fence()
                 .clone(),
         )
         .manage(vault::preferences::PreferencesState::default())
@@ -37,7 +37,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         )
         .manage(vault::handoff::MemberListenerLifecycle::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
-        .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
         .manage(crate::sync::SyncSubscribers::default())
         .manage(notes::notion_api_import::NotionApiImportCancellations::default())
@@ -46,7 +45,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_use_default,
             vault::vault_release_starter,
             vault::vault_active_info,
-            vault::ownership::vault_ownership_status,
             vault::vault_lock::vault_lock_status,
             vault::handoff::handoff_decode_pairing_qr,
             vault::handoff::handoff_enroll,
@@ -54,8 +52,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::handoff_suggested_device_label,
             vault::handoff::handoff_pairing_status,
             vault::handoff::handoff_unlink,
+            vault::handoff::receiver::handoff_request_bootstrap,
             vault::handoff::handoff_recover_local_copy,
-            vault::handoff::receiver::handoff_receive_desktop_bundle,
+            vault::handoff::receiver::vault_link_status,
             vault::handoff::receiver::handoff_cancel_receive,
             vault::vault_pick_open,
             vault::vault_pick_and_read_ics_import,
@@ -484,7 +483,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             themes::themes_resolve_conflict,
         ])
         .setup(|app| {
-            vault::ownership::initialize(app.handle())?;
             vault::handoff::initialize(app.handle());
             #[cfg(target_os = "android")]
             vault::backup::recover_interrupted_restore_for_app(app.handle())?;
@@ -497,7 +495,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             #[cfg(target_os = "android")]
             crate::distractions::android::runtime::setup(app.handle());
             #[cfg(target_os = "android")]
-            vault::handoff::receiver::start_reconnect_refresh(app.handle().clone());
+            vault::handoff::receiver::start_link_reconciliation(app.handle().clone());
             contacts::requests::start_request_polling(app.handle().clone());
             Ok(())
         })

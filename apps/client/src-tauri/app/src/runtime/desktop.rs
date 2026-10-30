@@ -226,14 +226,13 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(navigation_guard::init())
         .manage(db::vault_pools().clone())
         .manage(updates::PendingUpdate::default())
-        .manage(vault::ownership::VaultOwnershipManager::default())
+        .manage(vault::write_fence::VaultWriteFence::default())
         .manage(vault::preferences::PreferencesState::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::CoordinatorLifecycle::default())
         .manage(vault::handoff::MemberListenerLifecycle::default())
         .manage(vault::handoff::enrollment_approval::EnrollmentApprovals::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
-        .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
         .manage(crate::sync::SyncSubscribers::default())
         .manage(notes::notion_api_import::NotionApiImportCancellations::default())
@@ -610,7 +609,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::database_rollback::vault_database_rollbacks,
             vault::database_rollback::vault_restore_database_rollback,
             vault::database_rollback::vault_dismiss_database_rollback,
-            vault::ownership::vault_ownership_status,
             vault::vault_lock::vault_lock_status,
             vault::handoff::handoff_create_pairing_invitation,
             #[cfg(target_os = "linux")]
@@ -623,10 +621,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::handoff_suggested_device_label,
             vault::handoff::handoff_pairing_status,
             vault::handoff::handoff_unlink,
-            vault::handoff::handoff_recover_local_copy,
             vault::handoff::handoff_respond_enrollment,
-            vault::handoff::handoff_request_owner_bundle,
-            vault::handoff::receiver::handoff_receive_desktop_bundle,
+            vault::handoff::receiver::handoff_request_bootstrap,
+            vault::handoff::handoff_recover_local_copy,
+            vault::handoff::receiver::vault_link_status,
             vault::handoff::receiver::handoff_cancel_receive,
             vault::handoff::receiver::handoff_pick_link_folder,
             vault::handoff::receiver::handoff_reset_link_folder,
@@ -983,7 +981,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             if let Err(error) = vault::secure_app_config_dir(app.handle()) {
                 eprintln!("app config directory permissions are unchanged: {error}");
             }
-            vault::ownership::initialize(app.handle())?;
             vault::handoff::initialize(app.handle());
             crate::sync::setup(app.handle());
             if let Err(error) = vault::handoff::start_desktop(app.handle()) {

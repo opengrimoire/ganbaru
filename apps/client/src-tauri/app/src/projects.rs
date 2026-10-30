@@ -20,5 +20,3 @@ pub(crate) mod views;
 pub(crate) mod working_folders;
 pub(crate) mod workspace;
 
-/// Sync domain of the Projects tables; linked replicas write it, and its icon files, as well as the owner.
-pub(crate) use ganbaru_sync::manifest::vault::projects::DOMAIN_NAME as PROJECTS_DOMAIN;

@@ -1,4 +1,4 @@
-//! Secure, LAN-only pairing and whole-vault bundle transport.
+//! Secure, LAN-only device linking and the snapshot bootstrap transport.
 
 #[cfg(desktop)]
 pub(crate) mod contact_requests;
@@ -14,7 +14,6 @@ mod local_addresses;
 pub(crate) mod receiver;
 #[cfg(desktop)]
 pub(crate) mod snapshot;
-pub(crate) mod source;
 pub(crate) mod transport;
 
 #[cfg(target_os = "linux")]
@@ -76,7 +75,6 @@ pub(crate) struct PairingInvitationView {
 pub(crate) struct LinkedDeviceView {
     device_id: String,
     label: Option<String>,
-    is_owner: bool,
     is_coordinator: bool,
     kind: protocol::DeviceKind,
 }
@@ -91,11 +89,8 @@ pub(crate) struct PairingStatus {
     peer_label: Option<String>,
     coordinator_endpoint: Option<String>,
     vault_id: Option<String>,
-    can_write: Option<bool>,
-    recovery_required: bool,
     revoked_by_coordinator: bool,
     replica_ready: bool,
-    pending_transfer: bool,
     can_invite: bool,
     untouched_starter_vault: bool,
     /// A device waiting for this coordinator to approve its enrollment.
@@ -213,30 +208,15 @@ impl CoordinatorLifecycle {
             .ok()
             .map(|address| SocketAddr::new(address, port)))
     }
-
-    pub(crate) fn request_sender(&self) -> Result<coordinator::CoordinatorSender, String> {
-        let runtime = self
-            .runtime
-            .lock()
-            .map_err(|_| "coordinator lifecycle lock is unavailable".to_string())?;
-        runtime
-            .as_ref()
-            .map(|runtime| runtime.requests.clone())
-            .ok_or_else(|| "vault handoff coordinator is not running".to_string())
-    }
 }
 
-/// Loads pairing state and reconciles it with durable ownership. A failure disables linking for
-/// this run instead of aborting startup: the link probe stays unset, so a replica keeps its
-/// durable read-only authority and replicated writes stay off, and pairing commands report why.
+/// Loads pairing state. A failure disables linking for this run instead of aborting startup, and
+/// pairing commands report why.
 pub(crate) fn initialize<R: Runtime>(app: &tauri::AppHandle<R>) {
     let Err(error) = initialize_linking(app) else {
         return;
     };
     eprintln!("vault linking is disabled: {error}");
-    let _ = app
-        .state::<super::ownership::VaultOwnershipManager>()
-        .set_link_probe(None);
     if let Err(disable_error) = app.state::<PairingManager>().disable(error) {
         eprintln!("disable vault linking: {disable_error}");
     }
@@ -257,93 +237,27 @@ fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
     super::process_managers::process_managers().load_pairing(&config_dir, device_id)?;
     #[cfg(desktop)]
     pairing.initialize(config_dir, device_id)?;
-    if let Some(coordinator) = pairing.coordinator_pin()? {
-        app.state::<super::ownership::VaultOwnershipManager>()
-            .register_remote_owner_if_missing(
-                &coordinator.vault_id,
-                coordinator.device_id,
-                coordinator.generation,
-            )?;
-    }
-    restore_outgoing_ownership(app, &pairing)?;
-    let probe_pairing = pairing.inner().clone();
-    app.state::<super::ownership::VaultOwnershipManager>()
-        .set_link_probe(Some(std::sync::Arc::new(move |vault_id: &str| {
-            probe_pairing.is_linked_for(vault_id).unwrap_or(false)
-        })))?;
-    Ok(())
+    discard_unusable_outgoing_copy(&pairing)
 }
 
-fn restore_outgoing_ownership<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    pairing: &PairingManager,
-) -> Result<(), String> {
+/// Forgets a prepared vault copy whose archive did not survive a restart, so the coordinator does
+/// not offer it again.
+fn discard_unusable_outgoing_copy(pairing: &PairingManager) -> Result<(), String> {
     let Some(transfer) = pairing.outgoing_transfer()? else {
         return Ok(());
     };
     let (_, archive_path) = pairing.outgoing_snapshot_paths(&transfer.metadata.transfer_id)?;
-    if let Err(error) = protocol::validate_staging_file(&archive_path, &transfer.metadata) {
-        if transfer.committed {
-            return Err(format!(
-                "committed handoff snapshot is unavailable: {error}"
-            ));
-        }
+    if protocol::validate_staging_file(&archive_path, &transfer.metadata).is_err() {
         pairing.clear_outgoing_transfer(&transfer.metadata.transfer_id)?;
         let _ = std::fs::remove_file(archive_path);
-        return Ok(());
     }
-    if transfer.purpose != protocol::BundlePurpose::Ownership {
-        return Ok(());
-    }
-    let previous_generation = transfer
-        .metadata
-        .generation
-        .checked_sub(1)
-        .ok_or_else(|| "persisted ownership transfer generation is invalid".to_string())?;
-    let ownership = app.state::<super::ownership::VaultOwnershipManager>();
-    let status = ownership.status(&transfer.metadata.vault_id)?;
-    if transfer.committed {
-        return if status.transfer_phase
-            == (super::ownership::TransferPhase::OutgoingCommitted {
-                transfer_id: transfer.metadata.transfer_id,
-                receiver_device_id: transfer.metadata.device_id,
-                committed_generation: transfer.metadata.generation,
-            }) {
-            Ok(())
-        } else {
-            Err("committed handoff conflicts with durable ownership state".to_string())
-        };
-    }
-    if status.transfer_phase
-        == (super::ownership::TransferPhase::PreparingOutgoing {
-            transfer_id: transfer.metadata.transfer_id.clone(),
-            receiver_device_id: transfer.metadata.device_id.clone(),
-            next_generation: transfer.metadata.generation,
-        })
-    {
-        return Ok(());
-    }
-    if status.transfer_phase
-        == (super::ownership::TransferPhase::OutgoingCommitted {
-            transfer_id: transfer.metadata.transfer_id.clone(),
-            receiver_device_id: transfer.metadata.device_id.clone(),
-            committed_generation: transfer.metadata.generation,
-        })
-    {
-        return pairing.mark_outgoing_committed(&transfer.metadata.transfer_id);
-    }
-    ownership.begin_outgoing(
-        &transfer.metadata.vault_id,
-        previous_generation,
-        transfer.metadata.transfer_id,
-        transfer.metadata.device_id,
-    )
+    Ok(())
 }
 
 #[cfg(desktop)]
 pub(crate) fn start_desktop(app: &tauri::AppHandle) -> Result<(), String> {
     if app.state::<PairingManager>().coordinator_pin()?.is_some() {
-        receiver::start_reconnect_refresh(app.clone());
+        receiver::start_link_reconciliation(app.clone());
         return Ok(());
     }
     tauri::async_runtime::block_on(start_desktop_when_reachable(app))
@@ -540,14 +454,12 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
         return Err("a linked client device cannot coordinate additional devices".to_string());
     };
     let endpoint = SocketAddr::new(local_addresses::preferred_invitation_address()?, port);
-    let ownership = super::ownership::active_status(&app)?;
     // A device waiting with the replaced invitation can no longer be approved.
     app.state::<enrollment_approval::EnrollmentApprovals>()
         .cancel();
     let invitation = manager.create_invitation(
         endpoint,
-        ownership.vault_id,
-        ownership.generation,
+        super::active_vault_id(&app)?,
         current_compatibility(&app),
         protocol::unix_time_ms(),
     )?;
@@ -696,16 +608,10 @@ pub(crate) async fn handoff_enroll(
         sync_admin_key.as_ref(),
     )
     .await?;
-    app.state::<super::ownership::VaultOwnershipManager>()
-        .register_remote_owner(
-            &invitation.vault_id,
-            invitation.coordinator_device_id,
-            invitation.generation,
-        )?;
     #[cfg(desktop)]
     {
         app.state::<CoordinatorLifecycle>().stop();
-        receiver::start_reconnect_refresh(app.clone());
+        receiver::start_link_reconciliation(app.clone());
     }
     Ok(())
 }
@@ -793,29 +699,12 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
         Some(vault_id) => manager.linked_peers_for(vault_id)?,
         None => Vec::new(),
     };
-    let ownership = vault_id
-        .as_deref()
-        .map(|vault_id| {
-            app.state::<super::ownership::VaultOwnershipManager>()
-                .status(vault_id)
-        })
-        .transpose()?;
-    let peer = ownership
-        .as_ref()
-        .and_then(|ownership| {
-            peers
-                .iter()
-                .find(|peer| peer.device_id == ownership.owner_device_id)
-        })
-        .or_else(|| peers.first());
+    let peer = peers.first();
     let mut devices = peers
         .iter()
         .map(|peer| LinkedDeviceView {
             device_id: peer.device_id.clone(),
             label: Some(peer.device_label.clone()),
-            is_owner: ownership
-                .as_ref()
-                .is_some_and(|ownership| ownership.owner_device_id == peer.device_id),
             is_coordinator: false,
             kind: peer.device_kind,
         })
@@ -828,9 +717,6 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
             devices.push(LinkedDeviceView {
                 device_id: coordinator.device_id.clone(),
                 label: coordinator.device_label.clone(),
-                is_owner: ownership
-                    .as_ref()
-                    .is_some_and(|ownership| ownership.owner_device_id == coordinator.device_id),
                 is_coordinator: true,
                 kind: protocol::DeviceKind::Computer,
             });
@@ -856,13 +742,8 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
             .as_ref()
             .map(|coordinator| coordinator.current_endpoint().to_string()),
         vault_id,
-        can_write: ownership.as_ref().map(|status| status.can_write),
-        recovery_required: ownership
-            .as_ref()
-            .is_some_and(|status| status.role == "recovery"),
         revoked_by_coordinator: manager.revoked_by_coordinator()?,
         replica_ready: manager.replica_ready()? || !peers.is_empty(),
-        pending_transfer: manager.has_pending_transfer()?,
         can_invite: cfg!(desktop) && coordinator.is_none(),
         untouched_starter_vault: super::untouched_starter_vault(&app)?,
         #[cfg(desktop)]
@@ -953,38 +834,11 @@ pub(crate) fn handoff_unlink<R: Runtime>(
 ) -> Result<(), String> {
     let manager = app.state::<PairingManager>();
     manager.ensure_can_unlink()?;
-    let coordinator = manager.coordinator_pin()?;
-    let vault_id = if let Some(peer) = manager.linked_peer(&device_id)? {
-        peer.vault_id
-    } else if let Some(coordinator) = coordinator
-        .as_ref()
-        .filter(|coordinator| coordinator.device_id == device_id)
-    {
-        coordinator.vault_id.clone()
-    } else {
+    let is_coordinator = manager
+        .coordinator_pin()?
+        .is_some_and(|coordinator| coordinator.device_id == device_id);
+    if !is_coordinator && manager.linked_peer(&device_id)?.is_none() {
         return Err("linked device was not found".to_string());
-    };
-    let ownership = app
-        .state::<super::ownership::VaultOwnershipManager>()
-        .status(&vault_id)?;
-    if !matches!(
-        ownership.transfer_phase,
-        super::ownership::TransferPhase::Stable
-    ) {
-        return Err("finish or retry the active handoff before unlinking".to_string());
-    }
-    if ownership.owner_device_id == device_id
-        && ownership.device_id != device_id
-        && manager.replica_ready()?
-    {
-        return Err("switch ownership away from this device before unlinking it".to_string());
-    }
-    if ownership.can_write
-        && coordinator.is_some_and(|coordinator| coordinator.device_id == device_id)
-    {
-        return Err(
-            "switch ownership to the coordinating computer before unlinking it".to_string(),
-        );
     }
     manager.unlink_device(&device_id)?;
     // The next pass removes the device from the vault's sync space.
@@ -992,38 +846,19 @@ pub(crate) fn handoff_unlink<R: Runtime>(
     Ok(())
 }
 
+/// Keeps this device's copy of the linked vault as a vault of its own, for when its coordinator
+/// is gone for good: it forgets the coordinator and every linked peer, and its copy stays as it
+/// is, writable like any vault.
 #[tauri::command]
 pub(crate) fn handoff_recover_local_copy<R: Runtime>(
     app: tauri::AppHandle<R>,
-) -> Result<u64, String> {
+) -> Result<(), String> {
     let manager = app.state::<PairingManager>();
     manager.ensure_can_unlink()?;
-    let vault_id = super::active_vault_id(&app)?;
-    let ownership = app.state::<super::ownership::VaultOwnershipManager>();
-    ownership.ensure_can_recover_local_copy(&vault_id)?;
-    manager.unlink()?;
-    ownership.recover_local_copy(&vault_id)
-}
-
-#[cfg(desktop)]
-#[tauri::command]
-pub(crate) async fn handoff_request_owner_bundle<R: Runtime>(
-    app: tauri::AppHandle<R>,
-    purpose: protocol::BundlePurpose,
-) -> Result<(), String> {
-    let response = coordinator::request(
-        &app.state::<CoordinatorLifecycle>().request_sender()?,
-        coordinator::CoordinatorOperation::RequestUpload { purpose },
-    )
-    .await?;
-    match response {
-        coordinator::CoordinatorResponse::UploadRequested { purpose: requested }
-            if requested == purpose =>
-        {
-            Ok(())
-        }
-        _ => Err("coordinator returned an invalid upload request result".to_string()),
+    if manager.coordinator_pin()?.is_none() {
+        return Err("this device is not linked to a coordinator".to_string());
     }
+    manager.unlink()
 }
 
 #[cfg(all(test, desktop))]
@@ -1037,7 +872,6 @@ mod tests {
             device_label: None,
             endpoint: "192.168.10.4:43821".to_string(),
             vault_id: "vault-coordinated".to_string(),
-            generation: 3,
             certificate_fingerprint: "fingerprint".to_string(),
             last_endpoint: None,
             reported_endpoints: Vec::new(),

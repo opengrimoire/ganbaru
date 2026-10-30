@@ -25,9 +25,6 @@ mod vault_assets;
 pub(crate) use ganbaru_sync_replica::hub;
 use ganbaru_sync_replica::{assets, carry_forward, client, writer};
 
-#[cfg(test)]
-mod tests;
-
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;

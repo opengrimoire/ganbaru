@@ -1,4 +1,4 @@
-//! A vault replica's part in concurrent sync, independent of Tauri: guarded database access that
+//! A vault replica's part in concurrent sync, independent of Tauri: database access that
 //! signals commits, the anchor's founding keys, charter, and proposal sequencing, the admin
 //! proposal outbox, the installation writer with its keys and device-local record, carry-forward of local operations
 //! across whole-vault replacement, recovery offers, Reset sync state, both sides of the LAN exchange of operations

@@ -277,7 +277,6 @@ export const general = {
     rollbacksDescription: "Al reiniciar los datos locales, restaurar una copia o recibir una bóveda de otro dispositivo se guarda una copia aquí. Restaurar una reemplaza los datos actuales y los guarda como otra copia.",
     rollbackOriginReset: "Guardada al reiniciar o restaurar",
     rollbackOriginReplacement: "Guardada cuando otro dispositivo reemplazó la bóveda",
-    rollbackNeedsOwnership: "Otro dispositivo está editando esta bóveda. Edítala primero en este dispositivo para restaurar una copia.",
     rollbackFlagged: (copy: string) => `La bóveda recibida de otro dispositivo tiene muchos menos datos que la copia del ${copy}. Restaura esa copia si los datos se eliminaron por error.`,
     rollbackFlaggedToast: "Una transferencia eliminó la mayoría de los datos de la bóveda",
     rollbackReview: "Revisar",

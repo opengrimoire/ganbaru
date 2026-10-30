@@ -33,8 +33,8 @@
 //!
 //! The hook-derived `page_id` of a block in a cycle is the value it held before the cycle
 //! formed, so devices that received the operations in a different order can derive different
-//! pages for the same cycle. Repair runs only where Notes is writable, which keeps one device
-//! deciding while Notes has a single writer.
+//! pages for the same cycle. Repair runs on every device that writes Notes, so two devices can
+//! repair the same cycle differently.
 
 use crate::writes::MAX_BLOCK_DEPTH;
 use ganbaru_sync_contracts::OrderKey;

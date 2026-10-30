@@ -4,7 +4,6 @@ import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, 
 import { createProjectStoreActions } from "./actions";
 import { createProjectStoreSelectors } from "./selectors";
 import actionSource from "./actions.ts?raw";
-import { isOwnerRequiredError, onVaultOwnershipPromptRequest } from "$lib/vault/owner-required";
 import type {
   Project,
   ProjectGroup,
@@ -69,7 +68,7 @@ describe("createProjectStoreActions", () => {
     expect(actionSource).not.toMatch(/\breload\s*\(/u);
   });
 
-  function setup(canWrite?: () => Promise<boolean>) {
+  function setup() {
     let snapshot = { ...emptySnapshot(), tasks: [task] };
     let loadGeneration = 0;
     const reloaded = { ...emptySnapshot(), tasks: [{ ...task, title: "Forced", updatedAt: "forced" }] };
@@ -101,7 +100,6 @@ describe("createProjectStoreActions", () => {
       }),
       refreshTaskDetail,
       onCommitted,
-      canWrite,
     });
     return { actions, readSnapshot: () => snapshot, reload, applyCalendarEventProjectAssignments, refreshTaskDetail, onCommitted };
   }
@@ -256,36 +254,6 @@ describe("createProjectStoreActions", () => {
     await requests[1];
     await vi.waitFor(() => expect(idle).toHaveBeenCalledOnce());
     expect(context.actions.readMutationActivity()).toEqual({ pending: 0, committed: 2 });
-  });
-
-  it("refuses a write Projects does not accept here with the ownership prompt and sends nothing", async () => {
-    const prompt = vi.fn();
-    const stopPrompt = onVaultOwnershipPromptRequest(prompt);
-    const context = setup(async () => false);
-
-    const refused = context.actions.updateTask(task, { title: "After" });
-
-    await expect(refused).rejects.toSatisfy(isOwnerRequiredError);
-    expect(prompt).toHaveBeenCalledOnce();
-    expect(updateProjectTask).not.toHaveBeenCalled();
-    expect(context.readSnapshot().tasks[0]).toEqual(task);
-    stopPrompt();
-  });
-
-  it("sends a write once the Projects domain accepts it on this device", async () => {
-    vi.mocked(updateProjectTask).mockImplementation(async (update: ProjectTaskUpdate) =>
-      taskMutation({ ...task, title: update.title, updatedAt: "server" }));
-    const prompt = vi.fn();
-    const stopPrompt = onVaultOwnershipPromptRequest(prompt);
-    const canWrite = vi.fn(async () => true);
-    const context = setup(canWrite);
-
-    await context.actions.updateTask(task, { title: "After" });
-
-    expect(canWrite).toHaveBeenCalledOnce();
-    expect(prompt).not.toHaveBeenCalled();
-    expect(context.readSnapshot().tasks[0]).toMatchObject({ title: "After" });
-    stopPrompt();
   });
 
   it("keeps the snapshot unchanged when the command transaction fails", async () => {

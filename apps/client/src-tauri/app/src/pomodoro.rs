@@ -10,8 +10,6 @@ pub(crate) mod native_runtime;
 #[cfg(desktop)]
 pub(crate) mod overlay;
 pub(crate) mod sync;
-pub(crate) use ganbaru_sync::manifest::vault::calendar::DOMAIN_NAME as CALENDAR_DOMAIN;
-pub(crate) use ganbaru_sync::manifest::vault::focus::DOMAIN_NAME as FOCUS_DOMAIN;
 #[cfg(desktop)]
 pub(crate) use native_runtime::{
     FocusNativeContext, capture_native_context, native_control_in_context,
@@ -19,20 +17,6 @@ pub(crate) use native_runtime::{
 pub(crate) use native_runtime::{
     invalidate_calendar, resume_after_vault_handoff, setup, stop_for_vault_handoff,
 };
-
-/// Whether this device may run Focus: as the owner, or as a linked replica, since each device
-/// owns its own runs and closed runs replicate.
-pub(crate) fn focus_writable(status: &crate::vault::ownership::VaultOwnershipStatus) -> bool {
-    status.can_write_domain(FOCUS_DOMAIN)
-}
-
-/// Whether this device may save a Calendar edit through the native Focus owner, which writes
-/// Calendar rows and the Focus references to them in one transaction.
-pub(crate) fn calendar_edit_writable(
-    status: &crate::vault::ownership::VaultOwnershipStatus,
-) -> bool {
-    status.can_write_domain(CALENDAR_DOMAIN) && focus_writable(status)
-}
 
 /// A fresh Focus activity row of another linked device, named from the linked-device records.
 #[derive(Debug, serde::Serialize)]

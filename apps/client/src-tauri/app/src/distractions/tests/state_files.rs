@@ -51,7 +51,6 @@ fn native_phase_rules_are_bounded_by_accepted_phase_event_and_owner_validity() {
     let mut effect = CommittedFocusEffect {
         vault_id: "vault".into(),
         vault_generation: 47,
-        ownership_generation: 3,
         execution_revision: 6,
         run_id: Some("run".into()),
         segment_id: Some("segment".into()),

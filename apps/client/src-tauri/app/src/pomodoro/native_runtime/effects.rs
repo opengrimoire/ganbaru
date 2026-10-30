@@ -3,18 +3,16 @@ use std::time::{Duration, Instant};
 
 use super::FocusProjection;
 
-/// Derive all consumer facts from one accepted snapshot and shared ownership fence.
+/// Derive all consumer facts from one accepted snapshot of the attached vault.
 pub(super) fn committed_effect(
     projection: &FocusProjection,
     now_ms: i64,
-    ownership_generation: Option<u64>,
 ) -> Option<CommittedFocusEffect> {
     let snapshot = projection.snapshot.as_ref()?;
     let vault_id = projection.vault_id.as_ref()?;
     Some(CommittedFocusEffect {
         vault_id: vault_id.clone(),
         vault_generation: projection.vault_generation,
-        ownership_generation: ownership_generation?,
         execution_revision: snapshot.revision,
         run_id: snapshot.run.as_ref().map(|run| run.id.clone()),
         segment_id: snapshot.segment.as_ref().map(|segment| segment.id.clone()),
@@ -113,7 +111,6 @@ impl FocusEffects {
         projection: &FocusProjection,
         now_ms: i64,
         lease_ms: i64,
-        ownership_generation: Option<u64>,
         pool: Option<&sqlx::SqlitePool>,
     ) -> Result<(), FocusExecutionError> {
         let Some(snapshot) = &projection.snapshot else {
@@ -122,9 +119,6 @@ impl FocusEffects {
         let Some(vault_id) = &projection.vault_id else {
             return Ok(());
         };
-        let ownership_generation = ownership_generation.ok_or_else(|| {
-            FocusExecutionError::from("Focus effects have no vault ownership fence".to_owned())
-        })?;
         if !super::presentation_is_current(app, projection.vault_generation, snapshot.revision) {
             return Err("Native Focus delivery was superseded or expired"
                 .to_owned()
@@ -134,7 +128,7 @@ impl FocusEffects {
         // or enqueueing the same Music state on every visual second.
         let fresh = !self.pending
             && self.last.as_ref().is_some_and(|last| {
-                last.matches_vault_authority(vault_id, ownership_generation)
+                last.vault_id == *vault_id
                     && last.vault_generation == projection.vault_generation
                     && last.execution_revision == snapshot.revision
                     && last.valid_until_ms > now_ms.saturating_add(lease_ms.saturating_mul(2) / 3)
@@ -142,7 +136,7 @@ impl FocusEffects {
         let consumers_result: Result<(), FocusExecutionError> = if fresh {
             Ok(())
         } else {
-            let effect = committed_effect(projection, now_ms, Some(ownership_generation))
+            let effect = committed_effect(projection, now_ms)
                 .ok_or_else(|| "Focus effects have no canonical execution snapshot".to_owned())?;
             let music_result =
                 crate::music::session::reconcile_committed_focus(app, effect.clone());
@@ -175,10 +169,7 @@ impl FocusEffects {
         #[cfg(mobile)]
         let _ = pool;
         #[cfg(target_os = "android")]
-        let presentation_result = self
-            .mobile
-            .apply(app, projection, now_ms, ownership_generation)
-            .await;
+        let presentation_result = self.mobile.apply(app, projection, now_ms).await;
         #[cfg(target_os = "ios")]
         let presentation_result: Result<(), FocusExecutionError> = Ok(());
         consumers_result?;

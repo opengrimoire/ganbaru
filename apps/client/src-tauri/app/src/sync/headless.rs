@@ -596,7 +596,6 @@ mod tests {
             device_label: None,
             endpoint: "192.168.1.20:43821".to_string(),
             vault_id: "vault".to_string(),
-            generation: 1,
             certificate_fingerprint: "ab".repeat(32),
             last_endpoint: None,
             reported_endpoints: Vec::new(),

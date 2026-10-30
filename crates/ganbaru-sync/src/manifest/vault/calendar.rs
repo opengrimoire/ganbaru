@@ -1409,7 +1409,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         assets: &[],
     }],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[],
 };

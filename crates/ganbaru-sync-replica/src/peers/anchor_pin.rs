@@ -1,8 +1,8 @@
 //! The device-local anchor pin: which device anchors the vault's authorization log and the
 //! certificate its enrollment recorded.
 //!
-//! The pin is separate from the handoff coordinator pin, whose generation counts whole-vault
-//! ownership transfers and never moves on a handover. A member follows a handover by rewriting
+//! The pin is separate from the coordinator pin, which names the device that linked this one
+//! and never moves on a handover. A member follows a handover by rewriting
 //! this pin from the selected log, and dials the anchor at the endpoints the peer book holds for
 //! it, so no device links again. The selected log always wins: the pin only stands in while the
 //! log cannot be read, and a pin the log contradicts is replaced.

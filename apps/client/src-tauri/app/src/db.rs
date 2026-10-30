@@ -1,6 +1,4 @@
 use crate::vault;
-use crate::vault::ownership::{VaultDatabaseAccess, VaultOwnershipManager};
-use ganbaru_db::DatabaseAccessMode;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, OnceLock};
 use tauri::{AppHandle, Manager, Runtime};
@@ -42,8 +40,8 @@ async fn convert_migrated_keys(pool: sqlx::SqlitePool) -> Result<(), String> {
         .map_err(|error| format!("convert music row keys: {error}"))
 }
 
-/// The process pool registry. Its connection hook, which installs replica guards and signals
-/// commits, and its post-migration key conversion are in place before the first pool opens.
+/// The process pool registry. Its connection hook, which signals commits, and its
+/// post-migration key conversion are in place before the first pool opens.
 pub(crate) fn vault_pools() -> &'static DatabaseState {
     &VAULT_POOLS
 }
@@ -216,48 +214,25 @@ async fn connect_database<R: Runtime>(
     let is_vault_database = db_url == format!("sqlite:{}", vault::APP_SQLITE_FILE);
     let path = resolve_sqlite_path(&app, &db_url)?;
     let registry = app.state::<DatabaseState>().inner().clone();
-    let access = if is_vault_database {
+    if is_vault_database {
         hold_vault_lock(&path)?;
-        let vault_id = vault::active_vault_id(&app)?;
-        app.state::<VaultOwnershipManager>()
-            .database_access(&vault_id)?
-    } else {
-        VaultDatabaseAccess::ReadWrite
-    };
+    }
     drop(app);
     drop(db_url);
-    connect_with_access(&registry, path, access).await
+    connect_read_write(&registry, path).await
 }
 
-/// Opens `path` in `registry` with the access ownership grants.
-async fn connect_with_access(
+/// Opens `path` read-write in `registry`, converting placeholder keys on the first open.
+async fn connect_read_write(
     registry: &DatabaseState,
     path: PathBuf,
-    access: VaultDatabaseAccess,
 ) -> Result<sqlx::SqlitePool, String> {
-    match access {
-        VaultDatabaseAccess::ReadOnly => registry.connect_path_read_only(path).await,
-        VaultDatabaseAccess::ReadWrite => {
-            let opening = registry.access(&path).await.is_none();
-            let pool = registry.connect_path(&path).await?;
-            if opening {
-                convert_sync_keys(&pool, &path).await?;
-            }
-            Ok(pool)
-        }
-        // A pool opened read-only before the replica was linked stays read-only until the next
-        // vault replacement or restart closes it, so readers are never cut off mid-session.
-        VaultDatabaseAccess::Guarded => {
-            if registry.access(&path).await == Some(DatabaseAccessMode::ReadOnly) {
-                registry.connect_path_read_only(path).await
-            } else {
-                registry
-                    .connect_path_guarded(path)
-                    .await
-                    .map(|(pool, _)| pool)
-            }
-        }
+    let opening = registry.access(&path).await.is_none();
+    let pool = registry.connect_path(&path).await?;
+    if opening {
+        convert_sync_keys(&pool, &path).await?;
     }
+    Ok(pool)
 }
 
 /// Runs the Projects, Calendar, Notes, and Chat conversion passes on a writable database the registry just opened, so placeholder
@@ -280,67 +255,27 @@ async fn convert_sync_keys(pool: &sqlx::SqlitePool, database_path: &Path) -> Res
     ganbaru_chat::attachment_files::assert_converted(pool).await
 }
 
-/// Opens the active vault for sync work and returns the pool only when this device may write
-/// replicated rows: an owner opens it read-write, a linked replica opens it guarded. A replica
-/// whose schema differs from the embedded migrations gets a read-only pool and no sync access.
+/// Opens the active vault read-write for sync work.
 pub(crate) async fn connect_active_vault_for_sync<R: Runtime>(
     app: &AppHandle<R>,
-) -> Result<Option<sqlx::SqlitePool>, String> {
+) -> Result<sqlx::SqlitePool, String> {
     let config_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    connect_vault_for_sync_in(
-        app.state::<DatabaseState>().inner(),
-        app.state::<VaultOwnershipManager>().inner(),
-        &config_dir,
-    )
-    .await
+    connect_vault_for_sync_in(app.state::<DatabaseState>().inner(), &config_dir).await
 }
 
-/// Opens the active vault of the app config directory `config_dir` for sync work through
-/// `registry`, with the access `ownership` grants, as [`connect_active_vault_for_sync`] does
-/// for the app.
+/// Opens the active vault of the app config directory `config_dir` read-write through
+/// `registry`, as [`connect_active_vault_for_sync`] does for the app.
 pub(crate) async fn connect_vault_for_sync_in(
     registry: &DatabaseState,
-    ownership: &VaultOwnershipManager,
     config_dir: &Path,
-) -> Result<Option<sqlx::SqlitePool>, String> {
+) -> Result<sqlx::SqlitePool, String> {
     let _connection_guard = VAULT_CONNECTION_GATE.read().await;
     let path = vault::active_database_path_in(config_dir)?;
     hold_vault_lock(&path)?;
-    let access = ownership.database_access(&vault::active_vault_id_in(config_dir)?)?;
-    let pool = connect_with_access(registry, path.clone(), access).await?;
-    let writable = matches!(
-        registry.access(path).await,
-        Some(DatabaseAccessMode::ReadWrite | DatabaseAccessMode::Guarded)
-    );
-    Ok(writable.then_some(pool))
-}
-
-/// Open the authorized active vault without creation, migrations, or write access.
-/// Callers that retain the pool across a replacement boundary must also reserve
-/// the vault transition until their read and identity checks finish.
-/// The supplied admission permit stays with path IO after an awaiting caller times out.
-pub(crate) async fn connect_active_vault_read_only<R: Runtime>(
-    app: &AppHandle<R>,
-    work_permit: tokio::sync::OwnedSemaphorePermit,
-) -> Result<sqlx::SqlitePool, String> {
-    let _connection_guard = VAULT_CONNECTION_GATE.read().await;
-    let path_app = app.clone();
-    let path = tauri::async_runtime::spawn_blocking(move || {
-        let _work_permit = work_permit;
-        let path = resolve_sqlite_path(&path_app, &format!("sqlite:{}", vault::APP_SQLITE_FILE))?;
-        hold_vault_lock(&path)?;
-        Ok::<_, String>(path)
-    })
-    .await
-    .map_err(|error| format!("Read-only vault database path worker: {error}"))??;
-    app.state::<DatabaseState>()
-        .inner()
-        .clone()
-        .connect_path_read_only(path)
-        .await
+    connect_read_write(registry, path).await
 }
 
 pub(crate) async fn close_all_sqlite_pools_for_restore<R: Runtime>(

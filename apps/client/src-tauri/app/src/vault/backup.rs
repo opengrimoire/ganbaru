@@ -11,7 +11,7 @@ use chrono::{SecondsFormat, Utc};
 use ganbaru_mobile_documents::MobileDocumentsExt;
 use ganbaru_sync_replica::backup::{
     ArchiveGate, BACKUP_MAX_BYTES, BACKUP_MAX_DEPTH, BACKUP_MAX_ENTRIES, COPY_BUFFER_BYTES,
-    create_snapshot_archive, is_bundle_layout_entry, is_database_sidecar,
+    is_bundle_layout_entry, is_database_sidecar,
 };
 use sqlx::Row;
 use std::fs;
@@ -82,12 +82,13 @@ fn backup_file_name() -> String {
 }
 
 /// Creates one consistent whole-vault archive after the caller excludes vault writers.
+#[cfg(desktop)]
 pub(crate) async fn create_handoff_archive(
     vault_root: &Path,
     database_snapshot: &Path,
     archive_path: &Path,
 ) -> Result<(), String> {
-    create_snapshot_archive(
+    ganbaru_sync_replica::backup::create_snapshot_archive(
         &ArchiveGate::process(),
         vault_root,
         database_snapshot,
@@ -647,6 +648,25 @@ pub(crate) fn handoff_staging_path_in(parent: &Path, transfer_id: &str) -> PathB
 pub(crate) const LINK_FOLDER_NOT_EMPTY: &str =
     "the folder chosen for the linked vault is not empty";
 
+/// Error returned when the folder chosen for a linked vault lies inside another vault. The
+/// webview maps it to a localized message, so the text is stable.
+#[cfg(any(test, desktop))]
+pub(crate) const LINK_FOLDER_INSIDE_VAULT: &str =
+    "the folder chosen for the linked vault is inside another vault";
+
+/// Whether `path`, or a folder that holds it, carries a vault marker. Symbolic links in the part
+/// of `path` that exists are resolved first.
+#[cfg(any(test, desktop))]
+fn lies_inside_vault(path: &Path) -> bool {
+    let Some(existing) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+        return false;
+    };
+    let resolved = fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    resolved
+        .ancestors()
+        .any(|folder| folder.join(VAULT_MANIFEST_FILE).is_file())
+}
+
 /// Most numbered siblings tried before a first link gives up on a free folder name.
 #[cfg(any(test, desktop))]
 const MAX_LINK_FOLDER_SUFFIX: u32 = 100;
@@ -682,9 +702,11 @@ pub(super) fn vault_folder_name(display_name: &str, fallback: &str) -> String {
 }
 
 /// Chooses the folder a first link on a computer activates the linked vault in. A folder the
-/// user chose must be missing or empty. Otherwise the default platform folder is used while it is
-/// missing or empty, and else an empty sibling named after the vault, numbered when that name is
-/// taken. The folder of the vault in use is never chosen, so it stays untouched.
+/// user chose must be missing or empty and must not lie inside another vault. Otherwise the
+/// default platform folder is used while it is missing or empty, and else an empty sibling named
+/// after the vault, numbered when that name is taken. The folder of the vault in use is never
+/// chosen, so it stays untouched. An empty folder holds no vault, so only the folders around it
+/// are checked.
 #[cfg(any(test, desktop))]
 pub(crate) fn resolve_link_folder(
     chosen: Option<&Path>,
@@ -692,10 +714,12 @@ pub(crate) fn resolve_link_folder(
     vault_display_name: &str,
 ) -> Result<PathBuf, String> {
     if let Some(chosen) = chosen {
-        return if is_free_folder(chosen) {
-            Ok(chosen.to_path_buf())
-        } else {
+        return if !is_free_folder(chosen) {
             Err(LINK_FOLDER_NOT_EMPTY.to_string())
+        } else if lies_inside_vault(chosen) {
+            Err(LINK_FOLDER_INSIDE_VAULT.to_string())
+        } else {
+            Ok(chosen.to_path_buf())
         };
     }
     if is_free_folder(default) {
@@ -730,12 +754,18 @@ pub(crate) enum ReplacedVault {
     #[cfg_attr(not(desktop), allow(dead_code))]
     KeepOther,
     /// Write a portable backup of another vault into this folder first, refusing the replacement
-    /// when the backup fails, then discard the replaced folder.
+    /// when the backup fails, then discard the replaced folder. A folder that is still the
+    /// untouched Android starter when the swap begins is discarded without a backup. The starter
+    /// is re-read inside snapshot quiescence, so a starter the user entered while the copy
+    /// downloaded is backed up.
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-    BackUpOther(PathBuf),
-    /// Discard another vault without a backup. Used only for the untouched Android starter.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-    DiscardStarter,
+    BackUpUnlessStarter(PathBuf),
+}
+
+/// Whether replacing the vault folder `target` needs a backup first. Only a readable vault that
+/// is still the untouched starter (`untouched_starter`) is discarded without one.
+fn replaced_vault_needs_backup(untouched_starter: bool, target: &Path) -> bool {
+    !(untouched_starter && vault_info_from_path(target).is_ok())
 }
 
 /// Where a received vault is activated.
@@ -818,30 +848,6 @@ pub(crate) async fn activate_handoff_in_new_folder<R: Runtime>(
     .await
 }
 
-/// Activates an ownership snapshot a linked owner uploaded to this coordinator. The coordinator's
-/// own copy of the linked vault is read-only while another device owns it, and its Quick notes
-/// changes carry forward.
-#[cfg(desktop)]
-pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    staging: &Path,
-    transfer_id: &str,
-    expected_vault_id: &str,
-) -> Result<VaultInfo, String> {
-    let target = super::active_vault_path(app)?;
-    activate_handoff_at_path(
-        app,
-        staging,
-        HandoffPlacement::Replace {
-            target,
-            previous: ReplacedVault::KeepOther,
-        },
-        transfer_id,
-        expected_vault_id,
-    )
-    .await
-}
-
 /// Whether the folder at `path` is the vault `vault_id`.
 pub(super) fn holds_vault(path: &Path, vault_id: &str) -> bool {
     vault_info_from_path(path).is_ok_and(|info| info.vault_id == vault_id)
@@ -914,7 +920,7 @@ async fn activate_handoff_at_path<R: Runtime>(
             ..
         } = &swap
             && rollback.exists()
-            && let Err(error) = fs::remove_dir_all(rollback)
+            && let Err(error) = discard_replaced_folder(&target, rollback)
         {
             eprintln!(
                 "Remove the replaced vault folder '{}': {error}",
@@ -925,6 +931,21 @@ async fn activate_handoff_at_path<R: Runtime>(
     })
     .await
     .map_err(|error| format!("handoff activation worker failed: {error}"))?
+}
+
+/// Deletes the replaced vault folder `replaced` only after the activated vault at `target` and
+/// the renames into their parent are on stable storage, so a crash never leaves neither vault.
+/// A failed flush keeps `replaced`.
+fn discard_replaced_folder(target: &Path, replaced: &Path) -> Result<(), String> {
+    let durable = |folder: &Path| {
+        ganbaru_atomic_files::sync_directory_entries(folder)
+            .map_err(|error| format!("flush '{}': {error}", folder.display()))
+    };
+    durable(target)?;
+    if let Some(parent) = target.parent() {
+        durable(parent)?;
+    }
+    fs::remove_dir_all(replaced).map_err(|error| error.to_string())
 }
 
 /// How the staged folder takes its place.
@@ -972,8 +993,7 @@ fn plan_swap(
     }
     let discard_preserved = replaces_other
         && match previous {
-            ReplacedVault::BackUpOther(_) => true,
-            ReplacedVault::DiscardStarter => vault_info_from_path(target).is_ok(),
+            ReplacedVault::BackUpUnlessStarter(_) => true,
             ReplacedVault::KeepOther => false,
         };
     Ok(Swap::Replace {
@@ -1010,7 +1030,14 @@ async fn prepare_replacement<R: Runtime>(
         return Ok(());
     };
     carry_forward_local_changes(app, staging, target, expected_vault_id).await?;
-    if let ReplacedVault::BackUpOther(root) = previous
+    let root = match previous {
+        ReplacedVault::BackUpUnlessStarter(root) => {
+            replaced_vault_needs_backup(super::untouched_starter_vault(app)?, target)
+                .then_some(root)
+        }
+        ReplacedVault::KeepOther => None,
+    };
+    if let Some(root) = root
         && staging.exists()
         && replaces_independent_vault(target, expected_vault_id)
     {
@@ -1189,7 +1216,79 @@ pub(crate) fn recover_interrupted_restore_for_app(app: &tauri::AppHandle) -> Res
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))
+    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))?;
+    let backups = super::replaced_vaults::replaced_vaults_root(app)?;
+    for leftover in superseded_handoff_leftovers(parent, &target, &backups) {
+        if let Err(error) = fs::remove_dir_all(&leftover) {
+            eprintln!(
+                "Remove the replaced vault folder '{}': {error}",
+                leftover.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Name prefix of the folder an Android handoff moves a replaced vault into.
+#[cfg(any(test, target_os = "android"))]
+const HANDOFF_PREVIOUS_PREFIX: &str = ".ganbaru.handoff-previous-";
+
+/// Replaced vault folders in `parent` that an interrupted Android handoff left behind and that
+/// are safe to delete: the vault at `target` is a different readable vault, so the swap
+/// finished, and `backups` keeps a backup of the replaced vault written after its last change.
+/// A folder that is unreadable, still the active vault, or without such a backup is kept.
+#[cfg(any(test, target_os = "android"))]
+fn superseded_handoff_leftovers(parent: &Path, target: &Path, backups: &Path) -> Vec<PathBuf> {
+    let Ok(active) = vault_info_from_path(target) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(HANDOFF_PREVIOUS_PREFIX))
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .map(|entry| entry.path())
+        .filter(|leftover| {
+            let Ok(replaced) = vault_info_from_path(leftover) else {
+                return false;
+            };
+            replaced.vault_id != active.vault_id
+                && last_vault_change_ms(leftover).is_some_and(|changed_ms| {
+                    super::replaced_vaults::has_backup_since(
+                        backups,
+                        &replaced.vault_id,
+                        changed_ms,
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Latest modification time, in Unix milliseconds, of the vault marker and database files in
+/// `vault`, or `None` when none of them can be read.
+#[cfg(any(test, target_os = "android"))]
+fn last_vault_change_ms(vault: &Path) -> Option<i64> {
+    [
+        VAULT_MANIFEST_FILE.to_string(),
+        APP_SQLITE_FILE.to_string(),
+        format!("{APP_SQLITE_FILE}-wal"),
+    ]
+    .iter()
+    .filter_map(|name| {
+        fs::metadata(vault.join(name))
+            .and_then(|meta| meta.modified())
+            .ok()
+    })
+    .filter_map(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+    .filter_map(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+    .max()
 }
 
 /// Saves the portable backup archive at `archive_path` to Android Downloads under a fresh
@@ -1333,6 +1432,32 @@ mod tests {
     }
 
     #[test]
+    fn chosen_link_folder_must_not_lie_inside_another_vault() {
+        let parent = unique_test_path("link-folder-inside-vault");
+        let default = parent.join("Ganbaru");
+        let vault = parent.join("Vault");
+        fs::create_dir_all(&vault).unwrap();
+        crate::vault::initialize_vault(&vault).unwrap();
+
+        let empty_inside = vault.join("projects").join("Linked");
+        fs::create_dir_all(&empty_inside).unwrap();
+        for chosen in [empty_inside, vault.join("missing").join("Linked")] {
+            assert_eq!(
+                resolve_link_folder(Some(&chosen), &default, "Home").unwrap_err(),
+                LINK_FOLDER_INSIDE_VAULT,
+                "{}",
+                chosen.display()
+            );
+        }
+        let beside = parent.join("Beside");
+        assert_eq!(
+            resolve_link_folder(Some(&beside), &default, "Home").unwrap(),
+            beside
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
     fn new_folder_placement_refuses_a_folder_that_gained_files() {
         let parent = unique_test_path("new-folder-swap");
         let target = parent.join("Linked");
@@ -1378,13 +1503,86 @@ mod tests {
 
         assert_eq!(discards(ReplacedVault::KeepOther), (true, false));
         assert_eq!(
-            discards(ReplacedVault::BackUpOther(parent.join("backups"))),
+            discards(ReplacedVault::BackUpUnlessStarter(parent.join("backups"))),
             (true, true)
         );
-        assert_eq!(discards(ReplacedVault::DiscardStarter), (true, true));
+        let _ = fs::remove_dir_all(parent);
+    }
 
+    #[test]
+    fn a_replaced_starter_skips_its_backup_only_while_untouched_and_readable() {
+        let parent = unique_test_path("replaced-starter");
+        let target = parent.join("Ganbaru");
+        fs::create_dir_all(&target).unwrap();
+        crate::vault::initialize_vault(&target).unwrap();
+
+        assert!(!replaced_vault_needs_backup(true, &target));
+        assert!(
+            replaced_vault_needs_backup(false, &target),
+            "a starter the user entered while the copy downloaded is backed up"
+        );
         fs::write(target.join("vault.json"), "invalid json").unwrap();
-        assert_eq!(discards(ReplacedVault::DiscardStarter), (true, false));
+        assert!(replaced_vault_needs_backup(true, &target));
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn handoff_leftovers_are_removed_only_when_superseded_and_backed_up() {
+        let parent = unique_test_path("handoff-leftovers");
+        let target = parent.join("Ganbaru");
+        let backed_up = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}backed-up"));
+        let without_backup = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}without-backup"));
+        let same_vault = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}same-vault"));
+        let unreadable = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}unreadable"));
+        let backups = parent.join("replaced-vaults");
+        for folder in [
+            &target,
+            &backed_up,
+            &without_backup,
+            &same_vault,
+            &unreadable,
+            &backups,
+        ] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        for folder in [&target, &backed_up, &without_backup] {
+            crate::vault::initialize_vault(folder).unwrap();
+        }
+        fs::write(unreadable.join("vault.json"), "invalid json").unwrap();
+        fs::copy(target.join("vault.json"), same_vault.join("vault.json")).unwrap();
+        let active = fs::read(target.join("vault.json")).unwrap();
+        write_test_archive(
+            &backups.join("replaced-9000000000000.ganbaru-backup"),
+            &[("vault.json", active.as_slice())],
+        );
+
+        let backed_up_id = vault_info_from_path(&backed_up).unwrap().vault_id;
+        let changed_ms = last_vault_change_ms(&backed_up).unwrap();
+        let manifest = fs::read(backed_up.join("vault.json")).unwrap();
+        write_test_archive(
+            &backups.join(format!("replaced-{}.ganbaru-backup", changed_ms + 1)),
+            &[("vault.json", manifest.as_slice())],
+        );
+        let stale = fs::read(without_backup.join("vault.json")).unwrap();
+        let stale_ms = last_vault_change_ms(&without_backup).unwrap();
+        write_test_archive(
+            &backups.join(format!("replaced-{}.ganbaru-backup", stale_ms - 1)),
+            &[("vault.json", stale.as_slice())],
+        );
+
+        assert_eq!(
+            superseded_handoff_leftovers(&parent, &target, &backups),
+            vec![backed_up.clone()]
+        );
+        assert!(
+            vault_info_from_path(&backed_up).unwrap().vault_id == backed_up_id,
+            "the decision itself deletes nothing"
+        );
+        fs::write(target.join("vault.json"), "invalid json").unwrap();
+        assert!(
+            superseded_handoff_leftovers(&parent, &target, &backups).is_empty(),
+            "an unreadable active vault keeps every leftover"
+        );
         let _ = fs::remove_dir_all(parent);
     }
 
@@ -1921,13 +2119,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn desktop_bundle_activates_an_owner_and_refreshes_a_read_only_replica() {
-        use crate::vault::ownership::VaultOwnershipManager;
-
+    async fn a_vault_copy_activates_and_a_fresh_copy_replaces_it() {
         let parent = unique_test_path("desktop-android-handoff");
         let source = parent.join("desktop");
-        let owner_staging = parent.join("owner-staging");
-        let owner_target = parent.join("owner-target");
+        let first_staging = parent.join("first-staging");
+        let first_target = parent.join("first-target");
         let refresh_staging = parent.join("refresh-staging");
         let refresh_target = parent.join("refresh-target");
         let snapshot = parent.join("snapshot.sqlite");
@@ -1950,84 +2146,21 @@ mod tests {
         create_handoff_archive(&source, &snapshot, &archive)
             .await
             .unwrap();
-        stage_handoff_archive(&archive, &owner_staging, &source_info.vault_id)
+        stage_handoff_archive(&archive, &first_staging, &source_info.vault_id)
             .await
             .unwrap();
 
-        let desktop_ownership = VaultOwnershipManager::default();
-        desktop_ownership
-            .initialize_from_path(parent.join("desktop-ownership.json"), "desktop".to_string())
-            .unwrap();
-        let phone_ownership = VaultOwnershipManager::default();
-        phone_ownership
-            .initialize_from_path(parent.join("phone-ownership.json"), "phone".to_string())
-            .unwrap();
-        phone_ownership
-            .register_remote_owner(&source_info.vault_id, "desktop".to_string(), 0)
-            .unwrap();
-        desktop_ownership
-            .begin_outgoing(
-                &source_info.vault_id,
-                0,
-                "ownership-transfer".to_string(),
-                "phone".to_string(),
-            )
-            .unwrap();
-        let generation = desktop_ownership
-            .commit_outgoing(&source_info.vault_id, "ownership-transfer")
-            .unwrap();
-        phone_ownership
-            .accept_incoming_grant(
-                &source_info.vault_id,
-                "ownership-transfer".to_string(),
-                "desktop".to_string(),
-                generation,
-            )
-            .unwrap();
         replace_vault(
-            &owner_staging,
-            &owner_target,
-            &parent.join("owner-rollback"),
+            &first_staging,
+            &first_target,
+            &parent.join("first-rollback"),
         )
         .unwrap();
-        phone_ownership
-            .finalize_incoming(&source_info.vault_id, "ownership-transfer", generation)
-            .unwrap();
-        desktop_ownership
-            .finish_outgoing_acknowledgement(
-                &source_info.vault_id,
-                "ownership-transfer",
-                generation,
-            )
-            .unwrap();
-        assert!(
-            !desktop_ownership
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
-        assert!(
-            phone_ownership
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
         assert_eq!(
-            fs::read(owner_target.join("assets/notes/files/h04.txt")).unwrap(),
+            fs::read(first_target.join("assets/notes/files/h04.txt")).unwrap(),
             b"desktop asset"
         );
 
-        let refresh_desktop = VaultOwnershipManager::default();
-        refresh_desktop
-            .initialize_from_path(parent.join("refresh-desktop.json"), "desktop".to_string())
-            .unwrap();
-        let refresh_phone = VaultOwnershipManager::default();
-        refresh_phone
-            .initialize_from_path(parent.join("refresh-phone.json"), "phone".to_string())
-            .unwrap();
-        refresh_phone
-            .register_remote_owner(&source_info.vault_id, "desktop".to_string(), 0)
-            .unwrap();
         let initial_staging = parent.join("initial-refresh-staging");
         stage_handoff_archive(&archive, &initial_staging, &source_info.vault_id)
             .await
@@ -2065,18 +2198,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            refresh_desktop
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
-        assert!(
-            !refresh_phone
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
         assert_eq!(
             fs::read(refresh_target.join("assets/notes/files/h04.txt")).unwrap(),
             b"refreshed asset"
@@ -2098,9 +2219,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn android_owner_refreshes_and_returns_the_whole_vault_to_desktop() {
-        use crate::vault::ownership::VaultOwnershipManager;
-
+    async fn a_copy_from_android_carries_the_whole_vault_to_a_desktop() {
         let parent = unique_test_path("android-desktop-return");
         let source = parent.join("android");
         let desktop = parent.join("desktop");
@@ -2119,18 +2238,6 @@ mod tests {
         fs::create_dir_all(asset.parent().unwrap()).unwrap();
         fs::write(&asset, b"Android managed asset").unwrap();
 
-        let phone = VaultOwnershipManager::default();
-        phone
-            .initialize_from_path(parent.join("phone-owner.json"), "phone".to_string())
-            .unwrap();
-        let desktop_owner = VaultOwnershipManager::default();
-        desktop_owner
-            .initialize_from_path(parent.join("desktop-owner.json"), "desktop".to_string())
-            .unwrap();
-        desktop_owner
-            .register_remote_owner(&info.vault_id, "phone".to_string(), 0)
-            .unwrap();
-
         let refresh_snapshot = parent.join("refresh.sqlite");
         let refresh_archive = parent.join("refresh.zip");
         create_handoff_archive(&source, &refresh_snapshot, &refresh_archive)
@@ -2140,8 +2247,6 @@ mod tests {
             .await
             .unwrap();
         replace_vault(&refresh_staging, &desktop, &parent.join("refresh-rollback")).unwrap();
-        assert!(phone.status(&info.vault_id).unwrap().can_write);
-        assert!(!desktop_owner.status(&info.vault_id).unwrap().can_write);
 
         let source_registry = ganbaru_db::DatabasePoolRegistry::default();
         let source_pool = source_registry
@@ -2162,35 +2267,7 @@ mod tests {
             .await
             .unwrap();
 
-        phone
-            .begin_outgoing(
-                &info.vault_id,
-                0,
-                "return-transfer".to_string(),
-                "desktop".to_string(),
-            )
-            .unwrap();
-        let generation = phone
-            .commit_outgoing(&info.vault_id, "return-transfer")
-            .unwrap();
-        desktop_owner
-            .accept_incoming_grant(
-                &info.vault_id,
-                "return-transfer".to_string(),
-                "phone".to_string(),
-                generation,
-            )
-            .unwrap();
         replace_vault(&return_staging, &desktop, &parent.join("return-rollback")).unwrap();
-        desktop_owner
-            .finalize_incoming(&info.vault_id, "return-transfer", generation)
-            .unwrap();
-        phone
-            .finish_outgoing_acknowledgement(&info.vault_id, "return-transfer", generation)
-            .unwrap();
-
-        assert!(!phone.status(&info.vault_id).unwrap().can_write);
-        assert!(desktop_owner.status(&info.vault_id).unwrap().can_write);
         assert_eq!(
             fs::read(desktop.join("assets/chat/attachments/android-return.txt")).unwrap(),
             b"Android managed asset"

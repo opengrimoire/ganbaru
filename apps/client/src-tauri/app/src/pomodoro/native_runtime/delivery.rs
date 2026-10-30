@@ -14,7 +14,6 @@ const QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 struct AcceptedDelivery {
     projection: FocusProjection,
-    ownership_generation: Option<u64>,
     pool: Option<sqlx::SqlitePool>,
 }
 
@@ -70,7 +69,6 @@ impl DeliveryHandle {
     pub fn publish(
         &self,
         projection: &FocusProjection,
-        ownership_generation: Option<u64>,
         pool: Option<&sqlx::SqlitePool>,
     ) -> Result<(), FocusExecutionError> {
         self.require_worker()?;
@@ -80,7 +78,6 @@ impl DeliveryHandle {
             desired.sequence = desired.sequence.saturating_add(1);
             desired.accepted = Some(AcceptedDelivery {
                 projection: projection.clone(),
-                ownership_generation,
                 pool: pool.cloned(),
             });
         });

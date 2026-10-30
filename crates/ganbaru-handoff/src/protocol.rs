@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub mod relay;
 mod sync;
 
 pub use sync::{
@@ -19,7 +20,7 @@ pub use sync::{
 };
 pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -33,7 +34,7 @@ pub const TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
 pub const COORDINATOR_PORT: u16 = 43_821;
 /// LAN port the coordinator of a development build listens on.
 pub const DEVELOPMENT_COORDINATOR_PORT: u16 = 43_822;
-const PAIRING_QR_MAGIC: &[u8; 4] = b"GBQ\x01";
+const PAIRING_QR_MAGIC: &[u8; 4] = b"GBQ\x02";
 /// Base64url text of a 64-byte Ed25519 signature.
 const SIGNATURE_TEXT_LENGTH: usize = 86;
 /// Base64url text of a 16-byte card nonce.
@@ -135,7 +136,6 @@ pub struct PairingInvitation {
     pub coordinator_fingerprint: String,
     pub coordinator_device_id: String,
     pub vault_id: String,
-    pub generation: u64,
     pub expires_at_ms: i64,
 }
 
@@ -169,16 +169,8 @@ pub struct BundleMetadata {
     pub vault_id: String,
     pub device_id: String,
     pub transfer_id: String,
-    pub generation: u64,
     pub archive_bytes: u64,
     pub archive_sha256: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BundlePurpose {
-    Ownership,
-    Refresh,
 }
 
 impl BundleMetadata {
@@ -236,25 +228,12 @@ pub enum ControlMessage {
         compatibility: HandoffCompatibility,
         vault_id: String,
         device_id: String,
-        generation: u64,
-        purpose: BundlePurpose,
     },
     BundlePrepared {
         metadata: BundleMetadata,
-        purpose: BundlePurpose,
-    },
-    BundlePending {
-        protocol_version: u16,
-        owner_device_id: String,
-        generation: u64,
     },
     DownloadBundle {
         metadata: BundleMetadata,
-    },
-    UploadBundle {
-        metadata: BundleMetadata,
-        source_device_id: String,
-        purpose: BundlePurpose,
     },
     BundleMetadata {
         metadata: BundleMetadata,
@@ -265,30 +244,11 @@ pub enum ControlMessage {
     BundleComplete {
         transfer_id: String,
     },
-    BundleStaged {
-        transfer_id: String,
-    },
-    CommitStagedOwnership {
-        metadata: BundleMetadata,
-    },
-    OwnershipGrant {
-        protocol_version: u16,
-        vault_id: String,
-        transfer_id: String,
-        owner_device_id: String,
-        generation: u64,
-    },
-    CommitUploadedOwnership {
-        metadata: BundleMetadata,
-        source_device_id: String,
-    },
     ActivationComplete {
         protocol_version: u16,
         vault_id: String,
         device_id: String,
         transfer_id: String,
-        generation: u64,
-        purpose: BundlePurpose,
     },
     ActivationAcknowledged {
         transfer_id: String,
@@ -298,19 +258,6 @@ pub enum ControlMessage {
     },
     TransferCancelled {
         transfer_id: String,
-    },
-    RefreshRequest {
-        protocol_version: u16,
-        compatibility: HandoffCompatibility,
-        vault_id: String,
-        device_id: String,
-        generation: u64,
-    },
-    RefreshStatus {
-        available: bool,
-        generation: u64,
-        transfer_id: Option<String>,
-        requested_upload: Option<BundlePurpose>,
     },
     /// Unauthenticated: a person asks the recipient (whose card they hold) to become a contact.
     ContactRequest {
@@ -684,101 +631,36 @@ impl ControlMessage {
                 compatibility,
                 vault_id,
                 device_id,
-                ..
             } => {
                 validate_protocol(*protocol_version)?;
                 compatibility.validate()?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
             }
-            Self::BundlePrepared { metadata, .. } | Self::CommitStagedOwnership { metadata } => {
-                metadata.validate()?
-            }
-            Self::BundlePending {
-                protocol_version,
-                owner_device_id,
-                ..
-            } => {
-                validate_protocol(*protocol_version)?;
-                validate_identifier("owner device id", owner_device_id)?;
-            }
-            Self::DownloadBundle { metadata } | Self::BundleMetadata { metadata } => {
-                metadata.validate()?
-            }
-            Self::UploadBundle {
-                metadata,
-                source_device_id,
-                ..
-            }
-            | Self::CommitUploadedOwnership {
-                metadata,
-                source_device_id,
-            } => {
-                metadata.validate()?;
-                validate_identifier("source device id", source_device_id)?;
-                if source_device_id == &metadata.device_id {
-                    return Err("bundle source and receiver must be different devices".to_string());
-                }
-            }
+            Self::BundlePrepared { metadata }
+            | Self::DownloadBundle { metadata }
+            | Self::BundleMetadata { metadata } => metadata.validate()?,
             Self::ResumeAt { offset } => {
                 if *offset > MAX_ARCHIVE_BYTES {
                     return Err("resume offset exceeds the archive limit".to_string());
                 }
             }
             Self::BundleComplete { transfer_id }
-            | Self::BundleStaged { transfer_id }
             | Self::ActivationAcknowledged { transfer_id }
             | Self::CancelTransfer { transfer_id }
             | Self::TransferCancelled { transfer_id } => {
                 validate_identifier("transfer id", transfer_id)?;
-            }
-            Self::OwnershipGrant {
-                protocol_version,
-                vault_id,
-                transfer_id,
-                owner_device_id,
-                generation,
-            } => {
-                validate_protocol(*protocol_version)?;
-                validate_identifier("vault id", vault_id)?;
-                validate_identifier("transfer id", transfer_id)?;
-                validate_identifier("owner device id", owner_device_id)?;
-                if *generation == 0 {
-                    return Err("ownership grant generation must be positive".to_string());
-                }
             }
             Self::ActivationComplete {
                 protocol_version,
                 vault_id,
                 device_id,
                 transfer_id,
-                generation,
-                purpose,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
                 validate_identifier("transfer id", transfer_id)?;
-                if *purpose == BundlePurpose::Ownership && *generation == 0 {
-                    return Err("activation generation must be positive".to_string());
-                }
-            }
-            Self::RefreshRequest {
-                protocol_version,
-                compatibility,
-                vault_id,
-                device_id,
-                ..
-            } => {
-                validate_protocol(*protocol_version)?;
-                compatibility.validate()?;
-                validate_identifier("vault id", vault_id)?;
-                validate_identifier("device id", device_id)?;
-            }
-            Self::RefreshStatus { transfer_id, .. } => {
-                if let Some(transfer_id) = transfer_id {
-                    validate_identifier("transfer id", transfer_id)?;
-                }
             }
             Self::ContactRequest {
                 protocol_version,
@@ -1101,28 +983,82 @@ fn validate_card_text(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn write_control<W>(writer: &mut W, message: &ControlMessage) -> Result<(), String>
+/// A message carried in one length-prefixed JSON frame. Every frame is validated before it is
+/// encoded and after it is decoded, so a peer never sends or acts on a message outside its bounds.
+pub trait Frame: Serialize + DeserializeOwned {
+    /// What the frame is called in errors.
+    const LABEL: &'static str;
+
+    /// Checks every bound and text form of the message.
+    fn validate(&self) -> Result<(), String>;
+}
+
+impl Frame for ControlMessage {
+    const LABEL: &'static str = "handoff control message";
+
+    fn validate(&self) -> Result<(), String> {
+        ControlMessage::validate(self)
+    }
+}
+
+/// Writes one frame: a big-endian u32 length, then the JSON encoding of a valid `message` no
+/// larger than [`MAX_CONTROL_BYTES`].
+pub async fn write_frame<W, T>(writer: &mut W, message: &T) -> Result<(), String>
 where
     W: AsyncWrite + Unpin,
+    T: Frame,
 {
     message.validate()?;
-    let encoded = serde_json::to_vec(message)
-        .map_err(|error| format!("encode handoff control message: {error}"))?;
+    let label = T::LABEL;
+    let encoded =
+        serde_json::to_vec(message).map_err(|error| format!("encode {label}: {error}"))?;
     if encoded.len() > MAX_CONTROL_BYTES {
-        return Err("handoff control message exceeds the size limit".to_string());
+        return Err(format!("{label} exceeds the size limit"));
     }
     writer
         .write_u32(encoded.len() as u32)
         .await
-        .map_err(|error| format!("write handoff message length: {error}"))?;
+        .map_err(|error| format!("write {label} length: {error}"))?;
     writer
         .write_all(&encoded)
         .await
-        .map_err(|error| format!("write handoff message: {error}"))?;
+        .map_err(|error| format!("write {label}: {error}"))?;
     writer
         .flush()
         .await
-        .map_err(|error| format!("flush handoff message: {error}"))
+        .map_err(|error| format!("flush {label}: {error}"))
+}
+
+/// Reads one frame no larger than `max_bytes`, which never exceeds [`MAX_CONTROL_BYTES`]. The
+/// length is checked before the frame is allocated, and the decoded message is validated.
+pub async fn read_frame<R, T>(reader: &mut R, max_bytes: usize) -> Result<T, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
+    let label = T::LABEL;
+    let length = reader
+        .read_u32()
+        .await
+        .map_err(|error| format!("read {label} length: {error}"))? as usize;
+    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
+        return Err(format!("{label} has an invalid size"));
+    }
+    let mut encoded = vec![0_u8; length];
+    reader
+        .read_exact(&mut encoded)
+        .await
+        .map_err(|error| format!("read {label}: {error}"))?;
+    let message: T = decode_bounded_json(&encoded, label)?;
+    message.validate()?;
+    Ok(message)
+}
+
+pub async fn write_control<W>(writer: &mut W, message: &ControlMessage) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_frame(writer, message).await
 }
 
 pub async fn read_control<R>(reader: &mut R) -> Result<ControlMessage, String>
@@ -1141,22 +1077,7 @@ pub async fn read_control_limited<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let length = reader
-        .read_u32()
-        .await
-        .map_err(|error| format!("read handoff message length: {error}"))?
-        as usize;
-    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
-        return Err("handoff control message has an invalid size".to_string());
-    }
-    let mut encoded = vec![0_u8; length];
-    reader
-        .read_exact(&mut encoded)
-        .await
-        .map_err(|error| format!("read handoff message: {error}"))?;
-    let message: ControlMessage = decode_bounded_json(&encoded, "handoff control message")?;
-    message.validate()?;
-    Ok(message)
+    read_frame(reader, max_bytes).await
 }
 
 fn decode_bounded_json<T: DeserializeOwned>(encoded: &[u8], label: &str) -> Result<T, String> {
@@ -1267,7 +1188,6 @@ fn encode_pairing_qr_payload(invitation: &PairingInvitation) -> Result<Vec<u8>, 
     )?);
     push_qr_string(&mut payload, &invitation.coordinator_device_id)?;
     push_qr_string(&mut payload, &invitation.vault_id)?;
-    payload.extend_from_slice(&invitation.generation.to_be_bytes());
     payload.extend_from_slice(&invitation.expires_at_ms.to_be_bytes());
     Ok(payload)
 }
@@ -1287,7 +1207,6 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
     let coordinator_fingerprint = encode_qr_digest(take_qr_array(payload, &mut position)?);
     let coordinator_device_id = take_qr_string(payload, &mut position)?;
     let vault_id = take_qr_string(payload, &mut position)?;
-    let generation = u64::from_be_bytes(take_qr_array(payload, &mut position)?);
     let expires_at_ms = i64::from_be_bytes(take_qr_array(payload, &mut position)?);
     if position != payload.len() {
         return Err("pairing QR code contains unexpected data".to_string());
@@ -1305,7 +1224,6 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
         coordinator_fingerprint,
         coordinator_device_id,
         vault_id,
-        generation,
         expires_at_ms,
     };
     invitation.validate(now_ms)?;
@@ -1504,7 +1422,6 @@ mod tests {
             coordinator_fingerprint: "b".repeat(64),
             coordinator_device_id: "device-abcdefghijklmnopqrstuv".to_string(),
             vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
-            generation: 7,
             expires_at_ms: i64::MAX,
         }
     }
@@ -1823,7 +1740,6 @@ mod tests {
             vault_id: "vault-1".to_string(),
             device_id: "device-1".to_string(),
             transfer_id: "transfer-1".to_string(),
-            generation: 1,
             archive_bytes: 10,
             archive_sha256: "a".repeat(64),
         };
@@ -2122,7 +2038,7 @@ mod tests {
         };
         let wire = serde_json::to_value(&hello).expect("serialize sync hello");
         assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
-        assert_eq!(wire["protocol_version"], serde_json::json!(15));
+        assert_eq!(wire["protocol_version"], serde_json::json!(16));
         assert_eq!(frame_round_trip(&hello), Ok(hello));
     }
 

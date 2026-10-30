@@ -232,7 +232,6 @@ struct Owner {
     app: tauri::AppHandle,
     pool: Option<SqlitePool>,
     projection: FocusProjection,
-    ownership_generation: Option<u64>,
     recovered_vault: Option<(String, u64)>,
     foreground: bool,
     /// Cached stable device id for the activity row.
@@ -344,7 +343,6 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
                 snapshot: None,
                 error: None,
             },
-            ownership_generation: None,
             recovered_vault: None,
             foreground: platform() == FocusPlatform::Desktop,
             device_id: None,
@@ -969,25 +967,12 @@ impl Owner {
             return Err(error(FocusErrorCode::Unavailable, "Focus vault is frozen"));
         }
         let app = self.app.clone();
-        let (vault_id, status) = tauri::async_runtime::spawn_blocking(move || {
-            let vault_id = crate::vault::active_vault_id(&app)?;
-            let status = app
-                .state::<crate::vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?;
-            Ok::<_, String>((vault_id, status))
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        if !crate::pomodoro::focus_writable(&status) {
-            return Err(error(
-                FocusErrorCode::ReadOnly,
-                "This vault is read-only on this device",
-            ));
-        }
-        let generation = status.generation;
-        let attached = self.projection.vault_id.as_deref() == Some(&vault_id)
-            && self.ownership_generation == Some(generation)
-            && self.pool.is_some();
+        let vault_id =
+            tauri::async_runtime::spawn_blocking(move || crate::vault::active_vault_id(&app))
+                .await
+                .map_err(|error| error.to_string())??;
+        let attached =
+            self.projection.vault_id.as_deref() == Some(&vault_id) && self.pool.is_some();
         if !attached {
             self.clear_effect_authority();
             self.recovered_vault = None;
@@ -1004,10 +989,10 @@ impl Owner {
                 .send_replace(None);
             self.projection.error = None;
             self.subscriptions.publish(&self.projection, Instant::now());
-            self.ownership_generation = Some(generation);
             self.pool = Some(crate::db::connect_vault(&self.app).await?);
             self.verify_authority()?;
         }
+        let generation = self.projection.vault_generation;
         if recover && self.recovered_vault.as_ref() != Some(&(vault_id.clone(), generation)) {
             let now = now_ms()?;
             let pool = self
@@ -1027,22 +1012,10 @@ impl Owner {
 
     fn verify_authority(&self) -> Result<(), FocusExecutionError> {
         let vault_id = crate::vault::active_vault_id(&self.app)?;
-        let status = self
-            .app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .status(&vault_id)?;
-        if self.projection.vault_id.as_deref() != Some(&vault_id)
-            || self.ownership_generation != Some(status.generation)
-        {
+        if self.projection.vault_id.as_deref() != Some(&vault_id) {
             return Err(error(
                 FocusErrorCode::StaleGeneration,
                 "Active vault changed during Focus execution",
-            ));
-        }
-        if !crate::pomodoro::focus_writable(&status) {
-            return Err(error(
-                FocusErrorCode::ReadOnly,
-                "This vault is read-only on this device",
             ));
         }
         Ok(())
@@ -1086,15 +1059,14 @@ impl Owner {
     ) -> Result<FocusExecutionSnapshot, FocusExecutionError> {
         self.verify_authority()?;
         self.refresh_foreground();
-        let vault_id = self
-            .projection
+        self.projection
             .vault_id
             .as_deref()
             .ok_or_else(|| error(FocusErrorCode::Unavailable, "Focus has no active vault"))?;
         let _permit = self
             .app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_replicated_write(vault_id, crate::pomodoro::FOCUS_DOMAIN)?;
+            .state::<crate::vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         let pool = self
             .pool
             .as_ref()
@@ -1130,7 +1102,7 @@ impl Owner {
             .as_ref()
             .is_some_and(|(id, generation)| {
                 self.projection.vault_id.as_ref() == Some(id)
-                    && self.ownership_generation == Some(*generation)
+                    && self.projection.vault_generation == *generation
             });
         if !recovered {
             let generation = self.projection.vault_generation;
@@ -1191,7 +1163,7 @@ impl Owner {
             .as_ref()
             .is_some_and(|(id, generation)| {
                 self.projection.vault_id.as_ref() == Some(id)
-                    && self.ownership_generation == Some(*generation)
+                    && self.projection.vault_generation == *generation
             });
         match current {
             Ok(snapshot) if recovered => {
@@ -1228,15 +1200,14 @@ impl Owner {
         self.verify_authority()?;
         self.refresh_foreground();
         let now = self.logical_now(now);
-        let vault_id = self
-            .projection
+        self.projection
             .vault_id
             .as_deref()
             .ok_or_else(|| error(FocusErrorCode::Unavailable, "Focus has no active vault"))?;
         let _permit = self
             .app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_replicated_write(vault_id, crate::pomodoro::FOCUS_DOMAIN)?;
+            .state::<crate::vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         let pool = self
             .pool
             .as_ref()
@@ -1348,11 +1319,7 @@ impl Owner {
         if self.projection.snapshot.is_none() {
             return;
         }
-        if let Err(error) = self.effects.publish(
-            &self.projection,
-            self.ownership_generation,
-            self.pool.as_ref(),
-        ) {
+        if let Err(error) = self.effects.publish(&self.projection, self.pool.as_ref()) {
             self.projection.error = Some(error.to_string());
             self.subscriptions.publish(&self.projection, Instant::now());
         }
@@ -1380,13 +1347,7 @@ impl Owner {
             .authority
             .send_replace(
                 (!self.freeze_requested())
-                    .then(|| {
-                        effects::committed_effect(
-                            &self.projection,
-                            now_ms,
-                            self.ownership_generation,
-                        )
-                    })
+                    .then(|| effects::committed_effect(&self.projection, now_ms))
                     .flatten()
                     .map(|effect| authority::EffectAuthority::new(effect, now_ms, Instant::now())),
             );

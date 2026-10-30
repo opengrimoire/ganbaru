@@ -178,9 +178,7 @@ pub(crate) async fn outbox<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<OutboxE
 pub(crate) async fn late_changes<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<LateChangesView, String> {
-    let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
-        return Ok(LateChangesView::default());
-    };
+    let pool = crate::db::connect_active_vault_for_sync(app).await?;
     let vault_id = app.active_vault_id()?;
     let engine = Engine::vault();
     let mut conn = pool
@@ -212,9 +210,7 @@ pub(crate) async fn late_changes<R: Runtime>(
 async fn authorization<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<AuthorizationView>, String> {
-    let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
-        return Ok(None);
-    };
+    let pool = crate::db::connect_active_vault_for_sync(app).await?;
     let vault_id = app.active_vault_id()?;
     let engine = Engine::vault();
     let mut conn = pool

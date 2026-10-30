@@ -2,16 +2,13 @@
 //! that links, or a fresh copy for a device that fell behind compaction.
 //!
 //! Only a device the selected log enrolled and did not remove, and that this installation did
-//! not quarantine, gets a copy, and only of itself in this vault. A member serves copies only;
-//! ownership transfers stay with the coordinator. One copy is held at a time.
+//! not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
 
 use super::dispatch::serve_download;
 use super::send_error;
 use crate::vault::handoff::coordinator::{BUNDLE_PREPARATION_LIMIT, BundlePreparationWindows};
 use crate::vault::handoff::pairing::PairingManager;
-use crate::vault::handoff::protocol::{
-    BundleMetadata, BundlePurpose, ControlMessage, write_control,
-};
+use crate::vault::handoff::protocol::{BundleMetadata, ControlMessage, write_control};
 use crate::vault::handoff::transport::timeout_control;
 use ganbaru_sync_replica::peers::admission::{MemberAdmission, MemberRefusal};
 use std::future::Future;
@@ -23,8 +20,6 @@ use tokio::net::TcpStream;
 
 /// Error code for a copy refused because this member already holds one for another device.
 const MEMBER_BUSY_CODE: &str = "member_busy";
-/// Error code for an ownership request, which only the coordinator serves.
-const BOOTSTRAP_ONLY_CODE: &str = "bootstrap_only";
 /// How long a prepared copy stays reserved for its device before another device may replace it.
 const PREPARED_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -33,8 +28,6 @@ const PREPARED_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 pub(crate) struct SnapshotRequest {
     pub vault_id: String,
     pub device_id: String,
-    /// The ownership generation the device holds, which a copy that changes no ownership keeps.
-    pub generation: u64,
 }
 
 /// A prepared archive and the metadata the receiver checks it against.
@@ -107,26 +100,14 @@ impl MemberBundles {
             ControlMessage::RequestBundle {
                 vault_id,
                 device_id,
-                generation,
-                purpose,
                 ..
             } => {
                 if let Err(refusal) = admission.bootstrap(fingerprint, &vault_id, &device_id) {
                     return refuse(stream, refusal).await;
                 }
-                if purpose != BundlePurpose::Refresh {
-                    return send_error(
-                        stream,
-                        BOOTSTRAP_ONLY_CODE,
-                        "a member serves vault copies only; ownership goes through the coordinator",
-                        false,
-                    )
-                    .await;
-                }
                 let request = SnapshotRequest {
                     vault_id,
                     device_id,
-                    generation,
                 };
                 let response = match self.prepare(manager, request).await {
                     Ok(response) => response,
@@ -297,10 +278,7 @@ impl MemberBundles {
 }
 
 fn prepared(metadata: BundleMetadata) -> ControlMessage {
-    ControlMessage::BundlePrepared {
-        metadata,
-        purpose: BundlePurpose::Refresh,
-    }
+    ControlMessage::BundlePrepared { metadata }
 }
 
 fn release(manager: &PairingManager, snapshot: &PreparedSnapshot) {

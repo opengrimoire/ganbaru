@@ -74,9 +74,7 @@ pub(super) async fn selected_authorization<H: SyncHost>(
     if !host.sync_enabled()? {
         return Ok(None);
     }
-    let Some(pool) = host.connect_for_sync().await? else {
-        return Ok(None);
-    };
+    let pool = host.connect_for_sync().await?;
     let vault_id = host.active_vault_id()?;
     let mut conn = pool
         .acquire()
@@ -464,8 +462,7 @@ struct AnchorDial {
 }
 
 /// Reaches the anchor through the coordinator pin while it is the anchor, and through the peer
-/// book after a handover. The coordinator pin is only read, so a handover never changes it or
-/// its ownership generation.
+/// book after a handover. The coordinator pin is only read, so a handover never changes it.
 fn anchor_dial(
     anchor: &AnchorPin,
     pin: &ganbaru_handoff::pairing::CoordinatorPin,
@@ -649,7 +646,6 @@ mod tests {
             device_label: None,
             endpoint: "192.168.1.20:43821".to_string(),
             vault_id: "vault-1".to_string(),
-            generation: 3,
             certificate_fingerprint: "a".repeat(64),
             last_endpoint: None,
             reported_endpoints: vec!["192.168.1.20:43821".to_string()],
@@ -693,11 +689,8 @@ mod tests {
                 endpoints: vec!["192.168.1.30:43821".to_string()],
             }
         );
-        // The pin stays as linked: same coordinator and generation.
-        assert_eq!(
-            (pin.device_id.as_str(), pin.generation),
-            ("device-old-anchor", 3)
-        );
+        // The pin stays as linked: same coordinator.
+        assert_eq!(pin.device_id, "device-old-anchor");
         // Until a member reports the new anchor, it has no endpoints to dial.
         let unknown = anchor_dial(
             &anchor("device-new-anchor", 'b'),

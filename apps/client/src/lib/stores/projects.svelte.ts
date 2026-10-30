@@ -53,7 +53,6 @@ import { getPreferences } from "$lib/stores/preferences.svelte";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 import { sortSidebarItems, starredFirst, withStarredId } from "$lib/utils/sidebar-order";
-import { PROJECTS_SYNC_DOMAIN, canWriteSyncDomain, getVaultOwnershipStatus } from "$lib/vault/state";
 import type {
   Project,
   ProjectChecklistItem,
@@ -776,18 +775,7 @@ const actions = createProjectStoreActions({
     }
     publishProjectChanges(mutation, shownProjectIds());
   },
-  canWrite: canWriteProjects,
 });
-
-/** Whether this device may write Projects. An unreadable status leaves the decision to the command. */
-async function canWriteProjects(): Promise<boolean> {
-  try {
-    return canWriteSyncDomain(await getVaultOwnershipStatus(), PROJECTS_SYNC_DOMAIN);
-  } catch (cause) {
-    console.warn("Failed to read Projects write access:", cause);
-    return true;
-  }
-}
 
 function createProjectsStore(pane: ProjectsPane) {
   const {

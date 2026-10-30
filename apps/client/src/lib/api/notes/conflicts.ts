@@ -5,7 +5,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { mapSyncDeviceRef, type SyncDeviceRef } from "$lib/api/sync";
-import { withOwnerRequiredPrompt } from "$lib/vault/owner-required";
 import {
   readArray,
   readBoolean,
@@ -152,15 +151,14 @@ export async function previewNotesMismatchedValue(pageId: string, propertyId: st
  */
 export async function settleNotesMismatchedValue(pageId: string, propertyId: string, convert: boolean): Promise<void> {
   const dbUrl = await ensureDbUrl();
-  await withOwnerRequiredPrompt(() =>
-    invoke<null>("notes_settle_mismatched_value", { dbUrl, pageId, propertyId, convert }));
+  await invoke<null>("notes_settle_mismatched_value", { dbUrl, pageId, propertyId, convert });
 }
 
 /** Resolves a conflict on every linked device. */
 export async function resolveNotesConflict(resolution: NotesConflictResolution): Promise<void> {
   const dbUrl = await ensureDbUrl();
   try {
-    await withOwnerRequiredPrompt(() => invoke<null>("notes_resolve_conflict", { dbUrl, resolution }));
+    await invoke<null>("notes_resolve_conflict", { dbUrl, resolution });
   } catch (error: unknown) {
     throw toNotesConflictError(error);
   }

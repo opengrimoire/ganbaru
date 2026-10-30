@@ -1,8 +1,5 @@
-//! Theme command adapters. Persistence, validation, and conflicts live in `ganbaru-themes`;
-//! these commands admit writes from the owner and from linked replicas, since user themes
-//! replicate concurrently.
+//! Theme command adapters. Persistence, validation, and conflicts live in `ganbaru-themes`.
 
-use ganbaru_sync::manifest::vault::themes::DOMAIN_NAME as THEMES_DOMAIN;
 use ganbaru_themes::{
     DismissalRow, ThemeConflictError, ThemeConflictRead, ThemeConflictResolution, UserThemeRead,
     UserThemeWrite,
@@ -10,16 +7,6 @@ use ganbaru_themes::{
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
-use crate::vault::ownership::{READ_ONLY_ERROR, active_status};
-
-/// Admits the owner and linked replicas that may write themes.
-fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    if active_status(app)?.can_write_domain(THEMES_DOMAIN) {
-        Ok(())
-    } else {
-        Err(READ_ONLY_ERROR.to_string())
-    }
-}
 
 #[tauri::command]
 pub async fn themes_load_all<R: Runtime>(
@@ -36,7 +23,6 @@ pub async fn themes_insert<R: Runtime>(
     db_url: String,
     write: UserThemeWrite,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::insert(&pool, &write).await
 }
@@ -47,7 +33,6 @@ pub async fn themes_replace_content<R: Runtime>(
     db_url: String,
     write: UserThemeWrite,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::replace_content(&pool, &write).await
 }
@@ -58,7 +43,6 @@ pub async fn themes_delete<R: Runtime>(
     db_url: String,
     id: String,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::delete(&pool, &id).await
 }
@@ -70,7 +54,6 @@ pub async fn themes_record_dismissal<R: Runtime>(
     id: String,
     engine_version: i64,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::record_dismissal(&pool, &id, engine_version).await
 }
@@ -91,7 +74,6 @@ pub async fn themes_rename<R: Runtime>(
     id: String,
     display_name: String,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::rename(&pool, &id, &display_name).await
 }
@@ -104,7 +86,6 @@ pub async fn themes_reset_token_to_seed<R: Runtime>(
     kind: String,
     key: String,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::reset_token_to_seed(&pool, &id, &kind, &key).await
 }
@@ -115,7 +96,6 @@ pub async fn themes_reset_to_seed<R: Runtime>(
     db_url: String,
     id: String,
 ) -> Result<(), String> {
-    require_writable(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     ganbaru_themes::reset_to_seed(&pool, &id).await
 }
@@ -141,7 +121,6 @@ pub async fn themes_resolve_conflict<R: Runtime>(
     db_url: String,
     resolution: ThemeConflictResolution,
 ) -> Result<UserThemeRead, ThemeConflictError> {
-    require_writable(&app)?;
     let vault_id = crate::vault::active_vault_id(&app)?;
     let now_ms = crate::sync::now_ms()?;
     let pool = connect_sqlite(app, db_url).await?;

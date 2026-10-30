@@ -50,7 +50,7 @@ The future sleep flow can open morning or evening diary prompts. Diary data rema
 
 ### Sync and collaboration
 
-Local device linking moves a complete vault between one person's devices with a single writer at a time. Concurrent synchronization, implemented for several domains and planned for the rest, distributes authorized canonical data; neither replaces local storage with a hosted source of truth. Search, reports, mentions, exports, notifications, and AI context must enforce the same resource visibility as direct reads.
+Local device linking gives a newly linked device one complete copy of the vault, and concurrent synchronization, implemented for several domains and planned for the rest, then distributes authorized canonical data between every linked device; neither replaces local storage with a hosted source of truth. Search, reports, mentions, exports, notifications, and AI context must enforce the same resource visibility as direct reads.
 
 ## Integration rule
 

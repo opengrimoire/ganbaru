@@ -67,7 +67,8 @@ pub(crate) struct Node {
     pub(crate) hash: Digest32,
     /// The record.
     pub(crate) record: AuthorizationRecord,
-    /// Verified envelopes that carry the record, by envelope hash, lowest first.
+    /// Verified envelopes that carry the record, those below their writer's horizon first, then by
+    /// envelope hash, lowest first.
     pub(crate) carriers: Vec<Carrier>,
 }
 
@@ -598,7 +599,7 @@ pub(crate) async fn load(
     }
     for hash in included {
         if let Some((record, mut carriers)) = bodies.remove(&hash) {
-            carriers.sort_by_key(|carrier| carrier.envelope_hash);
+            carriers.sort_by_key(|carrier| carrier_rank(carrier, &horizons));
             loaded.nodes.push(Node {
                 hash,
                 record,
@@ -607,7 +608,7 @@ pub(crate) async fn load(
         }
     }
     for (hash, (record, mut carriers)) in bodies {
-        carriers.sort_by_key(|carrier| carrier.envelope_hash);
+        carriers.sort_by_key(|carrier| carrier_rank(carrier, &horizons));
         loaded.others.push(Node {
             hash,
             record,
@@ -621,6 +622,17 @@ pub(crate) async fn load(
         .others
         .sort_by_key(|node| (node.record.revision, node.hash));
     Ok(loaded)
+}
+
+/// Order of a node's carriers: those below their writer's horizon first, then lowest envelope
+/// hash. Envelopes of a forked writer past its fork do not reach every replica, so the selected
+/// chain names an envelope of one only when no other envelope carries the entry, and replicas
+/// that store different forked branches still name the same envelope.
+fn carrier_rank(carrier: &Carrier, horizons: &BTreeMap<WriterId, Seq>) -> (bool, Digest32) {
+    let past_horizon = horizons
+        .get(&carrier.writer)
+        .is_some_and(|horizon| carrier.seq >= *horizon);
+    (past_horizon, carrier.envelope_hash)
 }
 
 /// Whether two distinct envelopes of one sequence continue from one stored envelope and neither
@@ -714,5 +726,43 @@ impl crate::Engine {
         .fetch_one(&mut *conn)
         .await?;
         Ok(removed.then_some(WriterRetirement::Removed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn carrier(writer: u8, seq: Seq, hash: u8) -> Carrier {
+        Carrier {
+            writer: WriterId::from_bytes([writer; 16]),
+            seq,
+            envelope_hash: [hash; 32],
+        }
+    }
+
+    #[test]
+    fn carriers_past_a_fork_rank_after_every_other_carrier() {
+        let horizons = BTreeMap::from([(WriterId::from_bytes([1; 16]), 3)]);
+        let mut carriers = vec![
+            carrier(1, 4, 0x10),
+            carrier(2, 4, 0x90),
+            carrier(1, 2, 0x50),
+            carrier(3, 9, 0x40),
+        ];
+        carriers.sort_by_key(|carrier| carrier_rank(carrier, &horizons));
+        let order: Vec<u8> = carriers
+            .iter()
+            .map(|carrier| carrier.envelope_hash[0])
+            .collect();
+        assert_eq!(order, [0x40, 0x50, 0x90, 0x10]);
+    }
+
+    #[test]
+    fn carriers_all_past_a_fork_rank_by_lowest_hash() {
+        let horizons = BTreeMap::from([(WriterId::from_bytes([1; 16]), 3)]);
+        let mut carriers = vec![carrier(1, 5, 0x80), carrier(1, 3, 0x30)];
+        carriers.sort_by_key(|carrier| carrier_rank(carrier, &horizons));
+        assert_eq!(carriers, [carrier(1, 3, 0x30), carrier(1, 5, 0x80)]);
     }
 }

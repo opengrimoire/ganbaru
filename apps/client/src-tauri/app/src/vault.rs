@@ -32,6 +32,7 @@ pub use documents::*;
 
 pub(crate) mod backup;
 pub(crate) mod database_rollback;
+pub(crate) mod encrypted_backup;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
 pub(crate) mod preferences;

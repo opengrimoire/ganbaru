@@ -6,6 +6,7 @@
 
 mod asset_collection;
 mod authority;
+pub(crate) mod backup_keys;
 pub(crate) mod commands;
 mod connectivity;
 mod contests;
@@ -17,7 +18,6 @@ mod host;
 pub(crate) mod key_protection;
 mod peers;
 mod recovery;
-#[cfg(desktop)]
 mod recovery_kit;
 mod service;
 mod status;

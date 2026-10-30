@@ -60,7 +60,7 @@ Activated Notes hyperlinks use a feature-owned native command on desktop and And
 
 ## Local data encryption
 
-The vault and SQLite database are not application-encrypted. Ganbaru relies on operating-system account isolation and full-disk encryption such as LUKS, BitLocker, or FileVault.
+The vault and SQLite database are not application-encrypted. Ganbaru relies on operating-system account isolation and full-disk encryption such as LUKS, BitLocker, or FileVault. Backup files leave that protection, so they are encrypted and open only with the space key or the recovery kit (see [backups](../sync.md#bootstrap-assets-backup-and-compaction)).
 
 Why: this keeps user files accessible to ordinary backup and editing tools and avoids a second fragile key-recovery system. The cost is that malware running as the same user can read the vault, and documentation must state that limitation honestly.
 

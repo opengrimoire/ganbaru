@@ -388,18 +388,57 @@ impl KeyEnvelope {
         key: &SpaceKey,
         recipient: &EncryptionPublicKey,
     ) -> Result<Self, CryptoError> {
-        let id = recipient.key_id();
-        let info = envelope_info(space, key.epoch, &id);
+        let info = envelope_info(space, key.epoch, &recipient.key_id());
+        Self::seal_secret(&info, key.bytes(), recipient)
+    }
+
+    /// Seals 32 secret bytes to `recipient` with the HPKE info `info` and empty AAD.
+    pub(crate) fn seal_secret(
+        info: &[u8],
+        secret: &[u8; SPACE_KEY_BYTES],
+        recipient: &EncryptionPublicKey,
+    ) -> Result<Self, CryptoError> {
         let (encapsulated, sealed) =
             hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
                 &OpModeS::Base,
                 &recipient.hpke_key()?,
-                &info,
-                key.bytes(),
+                info,
+                secret,
                 &[],
             )
             .map_err(|_| CryptoError::Seal)?;
-        Self::from_parts(id, &encapsulated.to_bytes(), &sealed)
+        Self::from_parts(recipient.key_id(), &encapsulated.to_bytes(), &sealed)
+    }
+
+    /// Opens 32 secret bytes sealed to `pair` with the HPKE info `info`. It fails when the
+    /// envelope names another recipient or was sealed with another info.
+    pub(crate) fn open_secret(
+        &self,
+        info: &[u8],
+        pair: &EncryptionKeyPair,
+    ) -> Result<Zeroizing<[u8; SPACE_KEY_BYTES]>, CryptoError> {
+        if pair.public.key_id() != self.recipient {
+            return Err(CryptoError::Open);
+        }
+        let encapsulated = <X25519HkdfSha256 as Kem>::EncappedKey::from_bytes(&self.encapsulated)
+            .map_err(|_| CryptoError::Open)?;
+        let opened = Zeroizing::new(
+            hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
+                &OpModeR::Base,
+                &pair.hpke_key()?,
+                &encapsulated,
+                info,
+                &self.sealed,
+                &[],
+            )
+            .map_err(|_| CryptoError::Open)?,
+        );
+        let mut secret = Zeroizing::new([0u8; SPACE_KEY_BYTES]);
+        if opened.len() != SPACE_KEY_BYTES {
+            return Err(CryptoError::Open);
+        }
+        secret.copy_from_slice(&opened);
+        Ok(secret)
     }
 
     pub(crate) fn from_parts(
@@ -422,29 +461,8 @@ impl KeyEnvelope {
         epoch: u32,
         pair: &EncryptionKeyPair,
     ) -> Result<SpaceKey, CryptoError> {
-        if pair.public.key_id() != self.recipient {
-            return Err(CryptoError::Open);
-        }
         let info = envelope_info(space, epoch, &self.recipient);
-        let encapsulated = <X25519HkdfSha256 as Kem>::EncappedKey::from_bytes(&self.encapsulated)
-            .map_err(|_| CryptoError::Open)?;
-        let opened = Zeroizing::new(
-            hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
-                &OpModeR::Base,
-                &pair.hpke_key()?,
-                &encapsulated,
-                &info,
-                &self.sealed,
-                &[],
-            )
-            .map_err(|_| CryptoError::Open)?,
-        );
-        let mut key = Zeroizing::new([0u8; SPACE_KEY_BYTES]);
-        if opened.len() != SPACE_KEY_BYTES {
-            return Err(CryptoError::Open);
-        }
-        key.copy_from_slice(&opened);
-        SpaceKey::from_bytes(epoch, key)
+        SpaceKey::from_bytes(epoch, self.open_secret(&info, pair)?)
     }
 
     /// The encoding: key id, encapsulated key, and sealed key.

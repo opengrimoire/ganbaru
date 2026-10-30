@@ -5,7 +5,6 @@ use super::authority::{self, AuthorityView, LateChangesView, OutboxEntryView};
 use super::contests::{self, ContestsDto};
 use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
-#[cfg(desktop)]
 use super::recovery_kit::{self, KIT_LOCK, RecoveryKitState};
 #[cfg(desktop)]
 use super::service::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
@@ -255,8 +254,7 @@ pub async fn sync_regenerate_recovery_kit(runtime: State<'_, SyncRuntime>) -> Re
 }
 
 /// The recovery kit of the active vault: whether the vault keeps a kit, and the kit whose seed
-/// this desktop still holds because the user has not confirmed saving it.
-#[cfg(desktop)]
+/// this device still holds because the user has not confirmed saving it.
 #[tauri::command]
 pub async fn sync_recovery_kit_state<R: Runtime>(
     app: AppHandle<R>,
@@ -274,7 +272,6 @@ pub async fn sync_recovery_kit_state<R: Runtime>(
 
 /// Creates or replaces the recovery kit of an active vault that does not sync yet; its public
 /// keys found the charter when the vault first links.
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_create_recovery_kit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let _kit = KIT_LOCK.lock().await;
@@ -292,7 +289,6 @@ pub async fn sync_create_recovery_kit<R: Runtime>(app: AppHandle<R>) -> Result<(
 /// Confirms that the user saved the waiting recovery kit by typing back the last group of its
 /// code, then deletes its seed, so no device keeps it. Returns false when the group does not
 /// match.
-#[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_recovery_kit_saved<R: Runtime>(
     app: AppHandle<R>,
@@ -311,14 +307,12 @@ pub async fn sync_recovery_kit_saved<R: Runtime>(
 }
 
 /// The active vault opened for the recovery kit, when this device may write it.
-#[cfg(desktop)]
 async fn writable_kit_vault<R: Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
     crate::db::connect_active_vault_for_sync(app)
         .await?
         .ok_or_else(|| "this device cannot write the active vault".to_string())
 }
 
-#[cfg(desktop)]
 async fn acquire_kit_connection(
     pool: &sqlx::SqlitePool,
 ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, String> {

@@ -34,7 +34,7 @@ const DIFFERENT_VAULT_ERROR: &str = "received bundle belongs to a different vaul
 
 /// Entries left out of an extracted bundle or a vault replacement.
 #[derive(Debug, Default)]
-struct SkippedEntries {
+pub(super) struct SkippedEntries {
     count: usize,
     named: Vec<PathBuf>,
 }
@@ -49,7 +49,7 @@ impl SkippedEntries {
 
     /// Logs the skipped entries, naming the first few, so nothing is left out
     /// silently.
-    fn report(&self, operation: &str, reason: &str) {
+    pub(super) fn report(&self, operation: &str, reason: &str) {
         if self.count == 0 {
             return;
         }
@@ -185,7 +185,7 @@ fn admit_backup_archive<R: Read + std::io::Seek>(
 
 /// Extracts a bundle into a new `destination`, skipping entries outside the
 /// vault layout instead of failing the whole restore.
-fn extract_backup_archive(
+pub(super) fn extract_backup_archive(
     archive_path: &Path,
     destination: &Path,
     expected_vault_id: Option<&str>,
@@ -460,7 +460,7 @@ async fn vault_content_bytes(vault: &Path) -> Result<u64, String> {
 /// Whether activating `staging` over `target`, a copy of the same vault, removes most of its
 /// data. A measurement failure is logged and not flagged; the replaced database is kept either
 /// way.
-async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool {
+pub(super) async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool {
     match (
         vault_content_bytes(target).await,
         vault_content_bytes(staging).await,
@@ -473,15 +473,58 @@ async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool 
     }
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(test)]
 fn replace_vault(staging: &Path, target: &Path, rollback: &Path) -> Result<(), String> {
     replace_vault_flagging(staging, target, rollback, false)
+}
+
+/// Replaces `target` with `staging`, which holds another vault. The whole replaced vault is
+/// kept as a rollback copy inside the new folder, so it stays restorable from Settings > Data.
+pub(super) fn replace_with_other_vault(
+    staging: &Path,
+    target: &Path,
+    rollback: &Path,
+) -> Result<(), String> {
+    recover_interrupted_restore(target, rollback)?;
+    let had_target = target.exists();
+    if had_target {
+        fs::rename(target, rollback)
+            .map_err(|error| format!("prepare current data for restore: {error}"))?;
+    }
+    if let Err(error) = fs::rename(staging, target) {
+        if had_target {
+            let _ = fs::rename(rollback, target);
+        }
+        return Err(format!("activate restored data: {error}"));
+    }
+    if had_target && let Err(error) = finish_other_vault_replacement(target, rollback) {
+        eprintln!("Vault replacement cleanup: {error}");
+    }
+    Ok(())
+}
+
+/// Keeps `rollback`, a whole vault that another vault at `target` replaced, as a rollback copy
+/// of `target`. When it cannot be kept, the replaced folder stays as a visible sibling.
+fn finish_other_vault_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
+    let now = super::now_utc();
+    if let Err(error) = super::database_rollback::retain_other_vault(rollback, now) {
+        let kept = kept_previous_path(target)?;
+        fs::rename(rollback, &kept)
+            .map_err(|rename| format!("{error}; keep the replaced folder: {rename}"))?;
+        eprintln!(
+            "Vault replacement kept the replaced folder in '{}': {error}",
+            kept.display()
+        );
+        return Ok(());
+    }
+    finish_replacement(target, rollback)?;
+    super::database_rollback::prune_after_replacement(target, now)
 }
 
 /// Replaces `target` with `staging`. When both hold the same vault, the replaced data is kept as
 /// a rollback inside the new folder: the database, or the whole layout when `flagged` marks a
 /// drastic shrink.
-fn replace_vault_flagging(
+pub(super) fn replace_vault_flagging(
     staging: &Path,
     target: &Path,
     rollback: &Path,
@@ -635,7 +678,7 @@ pub(crate) const LINK_FOLDER_NOT_EMPTY: &str =
 const MAX_LINK_FOLDER_SUFFIX: u32 = 100;
 
 /// Whether `path` can receive a vault: it is missing or an empty folder.
-fn is_free_folder(path: &Path) -> bool {
+pub(super) fn is_free_folder(path: &Path) -> bool {
     match fs::symlink_metadata(path) {
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
         Ok(metadata) => metadata.is_dir() && super::folder_is_empty(path).unwrap_or(false),
@@ -645,7 +688,7 @@ fn is_free_folder(path: &Path) -> bool {
 /// Folder name for a vault display name: characters no supported file system accepts become
 /// spaces, and a name with nothing left falls back to the default folder name.
 #[cfg(any(test, desktop))]
-fn vault_folder_name(display_name: &str, fallback: &str) -> String {
+pub(super) fn vault_folder_name(display_name: &str, fallback: &str) -> String {
     let cleaned: String = display_name
         .chars()
         .map(|character| {
@@ -1005,7 +1048,7 @@ async fn prepare_replacement<R: Runtime>(
 }
 
 /// Moves `staging` into `target`, which is missing or an empty folder.
-fn move_into_new_folder(staging: &Path, target: &Path) -> Result<(), String> {
+pub(super) fn move_into_new_folder(staging: &Path, target: &Path) -> Result<(), String> {
     if target.exists() {
         fs::remove_dir(target)
             .map_err(|error| format!("prepare the linked vault folder: {error}"))?;
@@ -1143,12 +1186,23 @@ fn replace_vault_preserving_previous(
     Ok(())
 }
 
-fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), String> {
+/// Finishes a replacement an exit interrupted: puts `rollback` back when `target` is missing,
+/// and otherwise keeps it as a rollback copy of `target`, a whole copy when it holds another
+/// vault, so an interrupted restore of another vault never deletes the replaced one.
+pub(super) fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), String> {
     if !rollback.exists() {
         return Ok(());
     }
     if target.exists() {
-        finish_retained_replacement(target, rollback, false)
+        let other_vault = matches!(
+            (vault_info_from_path(target), vault_info_from_path(rollback)),
+            (Ok(current), Ok(replaced)) if current.vault_id != replaced.vault_id
+        );
+        if other_vault {
+            finish_other_vault_replacement(target, rollback)
+        } else {
+            finish_retained_replacement(target, rollback, false)
+        }
     } else {
         fs::rename(rollback, target)
             .map_err(|error| format!("recover interrupted data restore: {error}"))
@@ -1162,33 +1216,6 @@ pub(crate) fn recover_interrupted_restore_for_app(app: &tauri::AppHandle) -> Res
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
     recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-/// Save a consistent portable copy of the active vault to Android Downloads.
-pub async fn vault_backup_to_downloads(
-    app: tauri::AppHandle,
-) -> Result<VaultBackupOutcome, String> {
-    let transfer = unique_transfer_directory(&app, "backup")?;
-    let result = async {
-        let vault_root = active_vault_path(&app)?;
-        let database_snapshot = transfer.join("database.sqlite");
-        let archive_path = transfer.join("backup.ganbaru-backup");
-        let pool = crate::db::connect_vault(&app).await?;
-        ganbaru_sync_replica::backup::create_backup_archive(
-            &ArchiveGate::process(),
-            &pool,
-            &vault_root,
-            &database_snapshot,
-            &archive_path,
-        )
-        .await?;
-        save_backup_to_downloads(&app, &archive_path)
-    }
-    .await;
-    let _ = fs::remove_dir_all(&transfer);
-    result
 }
 
 /// Saves the portable backup archive at `archive_path` to Android Downloads under a fresh
@@ -1212,135 +1239,6 @@ pub(crate) fn save_backup_to_downloads(
         file_name: saved_name,
         destination: "downloads",
     })
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-/// Pick, validate, and transactionally restore a portable Android vault backup.
-pub async fn vault_pick_and_restore_backup(
-    app: tauri::AppHandle,
-) -> Result<Option<VaultInfo>, String> {
-    let transition = super::quiescence::reserve_vault_transition()?;
-    let expected_path = super::active_vault_path(&app)?;
-    let expected_vault_id = super::active_vault_id(&app)?;
-    let ownership_manager = app.state::<super::ownership::VaultOwnershipManager>();
-    ownership_manager.require_writable(&expected_vault_id)?;
-    let expected_ownership = ownership_manager.status(&expected_vault_id)?;
-    let transfer = unique_transfer_directory(&app, "restore")?;
-    let archive_path = transfer.join("selected.ganbaru-backup");
-    let result = async {
-        let target = default_vault_path(&app)?;
-        let preparation_app = app.clone();
-        let preparation_target = target.clone();
-        let preparation_transition = transition.clone();
-        let prepared = tauri::async_runtime::spawn_blocking(
-            move || -> Result<Option<(PathBuf, PathBuf)>, String> {
-                let _transition = preparation_transition;
-                let parent = preparation_target
-                    .parent()
-                    .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("create app data directory: {error}"))?;
-                let staging = parent.join(".ganbaru.restore");
-                let rollback = parent.join(".ganbaru.rollback");
-                recover_interrupted_restore(&preparation_target, &rollback)?;
-                if staging.exists() {
-                    fs::remove_dir_all(&staging)
-                        .map_err(|error| format!("remove stale restore staging: {error}"))?;
-                }
-                let archive_path_string = path_to_string(&archive_path, "selected backup")?;
-                let selected = preparation_app.mobile_documents().pick_document_to_path(
-                    &archive_path_string,
-                    BACKUP_MAX_BYTES,
-                    &[BACKUP_EXTENSION],
-                    &[BACKUP_MIME_TYPE, "application/octet-stream"],
-                    "Ganbaru backup",
-                )?;
-                if selected.is_none() {
-                    return Ok(None);
-                }
-                extract_backup_archive(&archive_path, &staging, None)?
-                    .report("Backup restore", "outside the vault layout");
-                Ok(Some((staging, rollback)))
-            },
-        )
-        .await
-        .map_err(|error| format!("backup preparation worker failed: {error}"))??;
-        let Some((staging, rollback)) = prepared else {
-            return Ok(None);
-        };
-        validate_restored_vault(&staging).await?;
-        let quiescence = super::quiescence::begin_reserved_quiescence(
-            &app,
-            transition.clone(),
-            super::quiescence::RunningTerminals::Block,
-        )
-        .await?;
-        let activation_app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let ownership_manager =
-                activation_app.state::<super::ownership::VaultOwnershipManager>();
-            ownership_manager.require_writable(&expected_vault_id)?;
-            let ownership = ownership_manager.status(&expected_vault_id)?;
-            if super::active_vault_path(&activation_app)? != expected_path
-                || super::active_vault_id(&activation_app)? != expected_vault_id
-                || ownership.generation != expected_ownership.generation
-            {
-                return Err(
-                    "active vault authority changed while preparing backup restore".to_string(),
-                );
-            }
-            ensure_vault_skeleton(&staging)?;
-            super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
-                replace_vault(&staging, &target, &rollback)
-            })?;
-            let info = vault_info_from_path(&target)?;
-            select_quiesced_vault(&activation_app, &info, &quiescence)?;
-            quiescence.finish()?;
-            Ok(Some(info))
-        })
-        .await
-        .map_err(|error| format!("backup activation worker failed: {error}"))?
-    }
-    .await;
-    let cleanup = tauri::async_runtime::spawn_blocking(move || {
-        let _transition = transition;
-        let target = default_vault_path(&app)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-        let staging = parent.join(".ganbaru.restore");
-        if staging.exists() {
-            fs::remove_dir_all(staging)
-                .map_err(|error| format!("remove backup restore staging: {error}"))?;
-        }
-        fs::remove_dir_all(transfer)
-            .map_err(|error| format!("remove backup restore transfer: {error}"))
-    })
-    .await
-    .map_err(|error| format!("backup cleanup worker failed: {error}"))
-    .and_then(|cleanup| cleanup);
-    match (result, cleanup) {
-        (Ok(info), Ok(())) => Ok(info),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => {
-            Err(format!("{error}; backup cleanup also failed: {cleanup}"))
-        }
-    }
-}
-
-#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
-#[tauri::command]
-/// Report that portable mobile backup is unavailable outside Android.
-pub async fn vault_backup_to_downloads() -> Result<VaultBackupOutcome, String> {
-    Err("portable mobile backups are only available on Android".to_string())
-}
-
-#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
-#[tauri::command]
-/// Report that portable mobile restore is unavailable outside Android.
-pub async fn vault_pick_and_restore_backup() -> Result<Option<VaultInfo>, String> {
-    Err("portable mobile backup restore is only available on Android".to_string())
 }
 
 #[cfg(test)]

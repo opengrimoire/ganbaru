@@ -886,8 +886,8 @@
     {/if}
 
     </fieldset>
-    {#if presentation === "settings" && !status.linked && platform === "desktop" && status.canWrite !== false}
-      <SyncRecoveryKitSetup {buttonClass} />
+    {#if presentation === "settings" && !status.linked && status.canWrite !== false}
+      <SyncRecoveryKitSetup {buttonClass} exportable={platform === "desktop"} />
     {/if}
     {#if presentation === "settings" && status.linked}
       <SyncSection

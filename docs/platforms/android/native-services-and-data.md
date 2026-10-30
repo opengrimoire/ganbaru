@@ -4,7 +4,7 @@
 
 Android creates the active vault in application-private storage. The user cannot choose another live-vault path because Android document providers do not offer a safe writable folder with desktop semantics. The displayed data location is informational; reveal-in-file-manager and live-folder switching are absent.
 
-First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of a portable Android backup.
+First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of an encrypted backup with its recovery kit.
 
 ## Folder import
 
@@ -12,11 +12,11 @@ Import uses the system directory-tree picker and streams the selected folder int
 
 ## Portable backup and restore
 
-Backup writes a consistent SQLite snapshot and bounded archive to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded.
+Backup writes an encrypted backup (see [backups](../../data/sync.md#bootstrap-assets-backup-and-compaction)) of a consistent SQLite snapshot to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded. The vault needs a recovery kit first, which Settings > Data creates; Android shows its code to copy by hand and offers no printable page or text file.
 
-Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure.
+Restore uses the system document picker without a file type filter, because providers report backup files under arbitrary types, and relies on the format's magic and authentication instead. The kit opens a backup on a fresh install. Restore decrypts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure. It replaces the active vault, keeping the replaced database in `.database-rollbacks/`; a phone linked to other devices refuses and asks the user to restore on a computer or unlink first.
 
-The portable format is the recovery path after reinstall. Android system backup and device transfer exclude the unencrypted live vault until a deliberate encrypted design exists.
+The encrypted backup is the recovery path after reinstall. Android system backup and device transfer exclude the live vault.
 
 ## Linked desktop handoff
 

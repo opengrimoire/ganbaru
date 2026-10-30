@@ -694,13 +694,103 @@ impl Engine {
         quarantined: &BTreeSet<String>,
         now_ms: u64,
     ) -> SyncResult<Vec<StoreOutcome>> {
+        let page: Vec<_> = operations
+            .iter()
+            .map(|bytes| (bytes.as_slice(), None))
+            .collect();
+        self.store_page(conn, ctx, &page, quarantined, now_ms).await
+    }
+
+    /// Stores the operations opened from relay records, in order, each with the writer
+    /// certificate its record carried, under the rules of [`Self::store_many_quarantined`].
+    /// A carried certificate never enrolls or introduces a writer: it must equal the one the
+    /// writer's genesis embeds or the stored writer holds, and an operation whose record carried
+    /// another certificate is refused as [`StoreRefusal::Untrusted`] and not stored.
+    pub async fn store_relay_records(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        records: &[(Vec<u8>, SignedCertificate)],
+        quarantined: &BTreeSet<String>,
+        now_ms: u64,
+    ) -> SyncResult<Vec<StoreOutcome>> {
+        let page: Vec<_> = records
+            .iter()
+            .map(|(bytes, certificate)| (bytes.as_slice(), Some(certificate)))
+            .collect();
+        self.store_page(conn, ctx, &page, quarantined, now_ms).await
+    }
+
+    /// The signed certificate of a stored writer, which a relay record carries beside each of
+    /// its operations.
+    pub async fn writer_certificate(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: WriterId,
+    ) -> SyncResult<Option<SignedCertificate>> {
+        let stored: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT certificate FROM sync_writers WHERE space_id = ? AND writer_id = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_optional(&mut *conn)
+        .await?;
+        stored
+            .map(|bytes| {
+                SignedCertificate::decode(&bytes)
+                    .map_err(|_| corrupt("a stored writer certificate does not decode"))
+            })
+            .transpose()
+    }
+
+    /// The operation bytes of the key epoch entry the selected chain holds for `epoch`, which a
+    /// device registers on a relay together with that epoch's access key, so members that lag
+    /// behind open their envelope before they can open records sealed under the epoch.
+    pub async fn key_epoch_entry(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        epoch: u32,
+    ) -> SyncResult<Option<Vec<u8>>> {
+        Ok(sqlx::query_scalar(
+            "SELECT e.envelope FROM sync_space_keys k
+             JOIN sync_auth_selected s
+               ON s.space_id = k.space_id AND s.revision = k.sequenced_revision
+             JOIN sync_auth_envelopes e
+               ON e.space_id = s.space_id AND e.envelope_hash = s.envelope_hash
+                  AND e.role = 'record'
+             WHERE k.space_id = ? AND k.epoch = ?
+             LIMIT 1",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(i64::from(epoch))
+        .fetch_optional(&mut *conn)
+        .await?)
+    }
+
+    async fn store_page(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        operations: &[(&[u8], Option<&SignedCertificate>)],
+        quarantined: &BTreeSet<String>,
+        now_ms: u64,
+    ) -> SyncResult<Vec<StoreOutcome>> {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
         let mut outcomes = Vec::with_capacity(operations.len());
         // Writers refused as quarantined in this page. A refused genesis stores no writer row,
         // so the writer's later operations would otherwise read as unknown.
         let mut refused_writers = BTreeSet::new();
-        for bytes in operations {
+        for &(bytes, carried) in operations {
+            // Checked inside the ordered loop, so a genesis stored earlier in the page counts.
+            if let Some(carried) = carried
+                && !carried_certificate_matches(&mut tx, ctx, bytes, carried).await?
+            {
+                outcomes.push(StoreOutcome::Refused(StoreRefusal::Untrusted));
+                continue;
+            }
             // The record store keeps every certificate and record that passes its intrinsic
             // checks, whatever the slot and transport rules below refuse.
             records::admit(&mut tx, ctx.space, bytes, now_ms).await?;
@@ -724,6 +814,40 @@ impl Engine {
         tx.commit().await?;
         Ok(outcomes)
     }
+}
+
+/// Whether the certificate a relay record carried for the operation `bytes` equals the one the
+/// writer's stored row holds or, for a writer not stored yet, the one its genesis embeds.
+/// Operations the store refuses on their own, malformed or of an unknown writer without a
+/// genesis, pass here and are refused by the store.
+async fn carried_certificate_matches(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    bytes: &[u8],
+    carried: &SignedCertificate,
+) -> SyncResult<bool> {
+    let Ok(envelope) = Envelope::decode(bytes) else {
+        return Ok(true);
+    };
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT certificate FROM sync_writers WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(envelope.writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(stored) = stored {
+        let stored = SignedCertificate::decode(&stored)
+            .map_err(|_| corrupt("a stored writer certificate does not decode"))?;
+        return Ok(stored == *carried);
+    }
+    Ok(match envelope.operation() {
+        Ok(Operation {
+            content: Content::Genesis(embedded),
+            ..
+        }) => embedded == *carried,
+        _ => true,
+    })
 }
 
 /// The highest writer id among the stored writers of the removed device `device_id` its removal

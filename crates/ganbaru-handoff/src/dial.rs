@@ -113,6 +113,24 @@ pub fn authorize_dial_target(
     }
 }
 
+/// Decides whether this device may connect to `endpoint` of the sync server that the space's
+/// sequenced, admin-signed server configuration names. It is the one exception to the LAN-only
+/// rule of [`authorize_dial_target`]: public addresses and global IPv6 off the local link are
+/// allowed, because the pinned certificate fingerprint decides the server's identity.
+/// Unspecified, multicast, broadcast, and documentation addresses stay refused, and loopback
+/// follows `loopback`. Callers pass only endpoints read from that configuration, never one
+/// from an invitation, contact card, or peer report.
+pub fn authorize_server_dial_target(
+    endpoint: SocketAddr,
+    loopback: LoopbackPolicy,
+) -> Result<(), DialTargetError> {
+    match validate_dial_endpoint(endpoint) {
+        Ok(DialAddressClass::Loopback) => allow_loopback(loopback),
+        Ok(_) | Err(DialTargetError::Public | DialTargetError::OffLinkIpv6) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Decides whether the listener may serve a connection from `peer` that arrived on `local`, the
 /// accepted socket's own address. It runs right after accept, before any byte is read.
 ///
@@ -531,6 +549,64 @@ mod tests {
         );
         assert_eq!(
             authorize_dial_target(endpoint("100.64.3.4:43821"), LoopbackPolicy::Reject, None),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn configured_server_dials_allow_public_addresses_that_peer_dials_refuse() {
+        for text in [
+            "203.0.114.7:43823",
+            "8.8.8.8:43823",
+            "[2606:4700::1111]:43823",
+            "192.168.1.20:43823",
+            "100.64.3.4:43823",
+            "[fd00::20]:43823",
+        ] {
+            assert_eq!(
+                authorize_server_dial_target(endpoint(text), LoopbackPolicy::Reject),
+                Ok(()),
+                "{text}"
+            );
+        }
+        // The same public targets stay refused for every other dial.
+        assert_eq!(
+            authorize_dial_target(endpoint("8.8.8.8:43823"), LoopbackPolicy::Allow, None),
+            Err(DialTargetError::Public)
+        );
+        assert_eq!(
+            authorize_dial_target(
+                endpoint("[2606:4700::1111]:43823"),
+                LoopbackPolicy::Allow,
+                None
+            ),
+            Err(DialTargetError::OffLinkIpv6)
+        );
+    }
+
+    #[test]
+    fn configured_server_dials_refuse_unroutable_targets_and_loopback_by_policy() {
+        for (text, error) in [
+            ("0.0.0.0:43823", DialTargetError::Unspecified),
+            ("[::]:43823", DialTargetError::Unspecified),
+            ("224.0.0.1:43823", DialTargetError::Multicast),
+            ("[ff02::1]:43823", DialTargetError::Multicast),
+            ("255.255.255.255:43823", DialTargetError::Broadcast),
+            ("192.0.2.1:43823", DialTargetError::Documentation),
+            ("[2001:db8::1]:43823", DialTargetError::Documentation),
+            ("8.8.8.8:0", DialTargetError::InvalidPort),
+            ("127.0.0.1:43823", DialTargetError::Loopback),
+            ("[::1]:43823", DialTargetError::Loopback),
+            ("[::ffff:127.0.0.1]:43823", DialTargetError::Loopback),
+        ] {
+            assert_eq!(
+                authorize_server_dial_target(endpoint(text), LoopbackPolicy::Reject),
+                Err(error),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            authorize_server_dial_target(endpoint("127.0.0.1:43823"), LoopbackPolicy::Allow),
             Ok(())
         );
     }

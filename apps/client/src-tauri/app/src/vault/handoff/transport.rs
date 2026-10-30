@@ -9,7 +9,8 @@ pub(crate) use server::{
 };
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorServices, EnrollmentSealer, QuarantinedDevices, serve_with_coordinator,
+    CoordinatorServices, EnrollmentSealer, MemberBundles, PreparedSnapshot, QuarantinedDevices,
+    SnapshotPreparer, SnapshotRequest, serve_with_coordinator,
 };
 
 use super::pairing::{
@@ -236,8 +237,81 @@ pub(crate) async fn enroll(
     }
 }
 
+/// The device a vault copy comes from: the coordinator this device is pinned to, or a member
+/// listener pinned to the certificate fingerprint its enrollment recorded in the selected log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BundleSource {
+    Coordinator,
+    Member {
+        device_id: String,
+        endpoints: Vec<String>,
+        fingerprint: String,
+    },
+}
+
+impl BundleSource {
+    /// A short name for logs and error messages.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Coordinator => "the coordinator".to_string(),
+            Self::Member { device_id, .. } => format!("member {device_id}"),
+        }
+    }
+}
+
+/// An open connection to `source`, and the coordinator pin whose revocation answers on it are
+/// honored. A member cannot revoke this device's link, so its answers are read plainly.
+async fn open_source(
+    manager: &PairingManager,
+    source: &BundleSource,
+) -> Result<(PinnedStream, Option<CoordinatorPin>), String> {
+    match source {
+        BundleSource::Coordinator => {
+            let coordinator = manager
+                .coordinator_pin()?
+                .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+            let (_, identity) = load_tls_identity(manager).await?;
+            let stream = dial_coordinator(manager, &coordinator, identity).await?;
+            Ok((stream, Some(coordinator)))
+        }
+        BundleSource::Member {
+            endpoints,
+            fingerprint,
+            ..
+        } => Ok((
+            connect_member_endpoints(manager, endpoints, fingerprint).await?,
+            None,
+        )),
+    }
+}
+
+async fn read_source_response<R>(
+    manager: &PairingManager,
+    coordinator: Option<&CoordinatorPin>,
+    reader: &mut R,
+) -> Result<ControlMessage, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    match coordinator {
+        Some(coordinator) => read_authenticated_response(manager, coordinator, reader).await,
+        None => timeout_control(read_control(reader)).await,
+    }
+}
+
+async fn source_exchange(
+    manager: &PairingManager,
+    source: &BundleSource,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    let (mut stream, coordinator) = open_source(manager, source).await?;
+    timeout_control(write_control(&mut stream, &message)).await?;
+    read_source_response(manager, coordinator.as_ref(), &mut stream).await
+}
+
 pub(crate) async fn request_bundle(
     manager: &PairingManager,
+    source: &BundleSource,
     compatibility: super::protocol::HandoffCompatibility,
     generation: u64,
     purpose: BundlePurpose,
@@ -252,8 +326,9 @@ pub(crate) async fn request_bundle(
         if cancellation.is_cancelled() {
             return Err("transfer was cancelled".to_string());
         }
-        match authenticated_exchange(
+        match source_exchange(
             manager,
+            source,
             ControlMessage::RequestBundle {
                 protocol_version: PROTOCOL_VERSION,
                 compatibility: compatibility.clone(),
@@ -285,7 +360,12 @@ pub(crate) async fn request_bundle(
                 return Err("the current owner did not return the vault in time".to_string());
             }
             ControlMessage::Error { message, .. } => return Err(message),
-            _ => return Err("coordinator returned an invalid prepared bundle".to_string()),
+            _ => {
+                return Err(format!(
+                    "{} returned an invalid prepared bundle",
+                    source.describe()
+                ));
+            }
         }
     }
 }
@@ -322,10 +402,12 @@ pub(crate) async fn commit_staged_ownership(
 
 pub(crate) async fn cancel_prepared_transfer(
     manager: &PairingManager,
+    source: &BundleSource,
     transfer_id: &str,
 ) -> Result<(), String> {
-    match authenticated_exchange(
+    match source_exchange(
         manager,
+        source,
         ControlMessage::CancelTransfer {
             transfer_id: transfer_id.to_string(),
         },
@@ -336,16 +418,21 @@ pub(crate) async fn cancel_prepared_transfer(
             transfer_id: cancelled,
         } if cancelled == transfer_id => Ok(()),
         ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid cancellation response".to_string()),
+        _ => Err(format!(
+            "{} returned an invalid cancellation response",
+            source.describe()
+        )),
     }
 }
 
 pub(crate) async fn acknowledge_activation(
     manager: &PairingManager,
+    source: &BundleSource,
     pending: &super::pairing::PendingAcknowledgement,
 ) -> Result<(), String> {
-    match authenticated_exchange(
+    match source_exchange(
         manager,
+        source,
         ControlMessage::ActivationComplete {
             protocol_version: PROTOCOL_VERSION,
             vault_id: pending.vault_id.clone(),
@@ -363,7 +450,10 @@ pub(crate) async fn acknowledge_activation(
             Ok(())
         }
         ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid activation acknowledgement".to_string()),
+        _ => Err(format!(
+            "{} returned an invalid activation acknowledgement",
+            source.describe()
+        )),
     }
 }
 
@@ -534,6 +624,18 @@ pub(crate) async fn member_sync_request(
     fingerprint: &str,
     message: ControlMessage,
 ) -> Result<ControlMessage, String> {
+    let mut stream = connect_member_endpoints(manager, endpoints, fingerprint).await?;
+    timeout_control(write_control(&mut stream, &message)).await?;
+    timeout_control(read_control(&mut stream)).await
+}
+
+/// Connects to the member listener whose certificate has `fingerprint`, trying `endpoints` in
+/// order until one completes the handshake.
+async fn connect_member_endpoints(
+    manager: &PairingManager,
+    endpoints: &[String],
+    fingerprint: &str,
+) -> Result<PinnedStream, String> {
     let (_, identity) = load_tls_identity(manager).await?;
     let mut failures = Vec::new();
     for endpoint in endpoints {
@@ -544,15 +646,10 @@ pub(crate) async fn member_sync_request(
                 continue;
             }
         };
-        let mut stream = match connect_member(address, fingerprint, identity.clone()).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                failures.push(format!("{endpoint}: {error}"));
-                continue;
-            }
-        };
-        timeout_control(write_control(&mut stream, &message)).await?;
-        return timeout_control(read_control(&mut stream)).await;
+        match connect_member(address, fingerprint, identity.clone()).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => failures.push(format!("{endpoint}: {error}")),
+        }
     }
     Err(if failures.is_empty() {
         "no endpoint is known for this member".to_string()
@@ -630,10 +727,95 @@ where
 
 pub(crate) async fn download_bundle(
     manager: &PairingManager,
+    source: &BundleSource,
     metadata: BundleMetadata,
     cancellation: &TransferCancellation,
 ) -> Result<PathBuf, String> {
-    download_bundle_inner(manager, metadata, cancellation, None).await
+    download_bundle_inner(manager, source, metadata, cancellation, None).await
+}
+
+/// A vault copy downloaded from one source.
+#[derive(Debug)]
+pub(crate) struct FetchedBundle {
+    pub source: BundleSource,
+    pub metadata: BundleMetadata,
+    pub archive: PathBuf,
+}
+
+/// Fetches a vault copy from the first of `sources` that serves one, trying them in order. A
+/// member that prepared a copy it could not deliver is asked to release it. When every source
+/// fails, the first source's error is returned, since the device this one enrolled with comes
+/// first. A cancelled transfer tries no further source.
+pub(crate) async fn fetch_bundle(
+    manager: &PairingManager,
+    sources: &[BundleSource],
+    compatibility: super::protocol::HandoffCompatibility,
+    generation: u64,
+    purpose: BundlePurpose,
+    cancellation: &TransferCancellation,
+) -> Result<FetchedBundle, String> {
+    let mut first_error = None;
+    for source in sources {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        match fetch_from(
+            manager,
+            source,
+            compatibility.clone(),
+            generation,
+            purpose,
+            cancellation,
+        )
+        .await
+        {
+            Ok(fetched) => return Ok(fetched),
+            Err(error) => {
+                eprintln!("vault copy from {} failed: {error}", source.describe());
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| "transfer was cancelled".to_string()))
+}
+
+async fn fetch_from(
+    manager: &PairingManager,
+    source: &BundleSource,
+    compatibility: super::protocol::HandoffCompatibility,
+    generation: u64,
+    purpose: BundlePurpose,
+    cancellation: &TransferCancellation,
+) -> Result<FetchedBundle, String> {
+    let metadata = request_bundle(
+        manager,
+        source,
+        compatibility.clone(),
+        generation,
+        purpose,
+        cancellation,
+    )
+    .await?;
+    if let Err(error) = super::protocol::ensure_compatible(&compatibility, &metadata.compatibility)
+    {
+        let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;
+        return Err(error);
+    }
+    match download_bundle(manager, source, metadata.clone(), cancellation).await {
+        Ok(archive) => Ok(FetchedBundle {
+            source: source.clone(),
+            metadata,
+            archive,
+        }),
+        Err(error) => {
+            // The coordinator keeps a copy it prepared so the download can resume; a member
+            // holds one copy at a time and is released for the next device.
+            if matches!(source, BundleSource::Member { .. }) {
+                let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;
+            }
+            Err(error)
+        }
+    }
 }
 
 #[cfg(all(test, desktop))]
@@ -641,19 +823,19 @@ pub(crate) mod tests;
 
 async fn download_bundle_inner(
     manager: &PairingManager,
+    source: &BundleSource,
     metadata: BundleMetadata,
     cancellation: &TransferCancellation,
     stop_after_bytes: Option<u64>,
 ) -> Result<PathBuf, String> {
     metadata.validate()?;
-    let coordinator = manager
+    let pinned = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    if coordinator.vault_id != metadata.vault_id {
+    if pinned.vault_id != metadata.vault_id {
         return Err("transfer belongs to a different vault".to_string());
     }
-    let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = dial_coordinator(manager, &coordinator, identity).await?;
+    let (mut stream, coordinator) = open_source(manager, source).await?;
     timeout_control(write_control(
         &mut stream,
         &ControlMessage::DownloadBundle {
@@ -661,10 +843,15 @@ async fn download_bundle_inner(
         },
     ))
     .await?;
-    match read_authenticated_response(manager, &coordinator, &mut stream).await? {
+    match read_source_response(manager, coordinator.as_ref(), &mut stream).await? {
         ControlMessage::BundleMetadata { metadata: offered } if offered == metadata => {}
         ControlMessage::Error { message, .. } => return Err(message),
-        _ => return Err("coordinator returned inconsistent transfer metadata".to_string()),
+        _ => {
+            return Err(format!(
+                "{} returned inconsistent transfer metadata",
+                source.describe()
+            ));
+        }
     }
 
     let (partial_path, metadata_path, complete_path) =

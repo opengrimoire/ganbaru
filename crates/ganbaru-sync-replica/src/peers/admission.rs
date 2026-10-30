@@ -152,6 +152,26 @@ impl MemberAdmission {
         Ok(&enrolled.device_id)
     }
 
+    /// Whether a connection whose certificate has `fingerprint` may receive a snapshot copy of
+    /// `vault_id` for `device_id`: only a device the selected log enrolled and did not remove,
+    /// that this installation did not quarantine, asking for itself in this vault. A removed
+    /// device gets no copy, unlike record exchange.
+    pub fn bootstrap(
+        &self,
+        fingerprint: &str,
+        vault_id: &str,
+        device_id: &str,
+    ) -> Result<(), MemberRefusal> {
+        let enrolled = self.certificate(fingerprint)?;
+        if vault_id != self.vault_id {
+            return Err(MemberRefusal::VaultMismatch);
+        }
+        if device_id != enrolled {
+            return Err(MemberRefusal::DeviceMismatch);
+        }
+        Ok(())
+    }
+
     /// Whether a connection whose certificate has `fingerprint` may have `request` answered:
     /// a sync request for this vault that names the device the certificate enrolled, and only
     /// record exchange when the selected log removed that device. A

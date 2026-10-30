@@ -38,6 +38,7 @@ pub(crate) mod preferences;
 #[cfg(any(mobile, test))]
 pub(crate) mod process_managers;
 pub(crate) mod quiescence;
+pub(crate) mod replaced_vaults;
 pub(crate) mod runtime_lifecycle;
 pub(crate) mod vault_lock;
 

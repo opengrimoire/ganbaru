@@ -815,7 +815,7 @@ async fn send_coordinator_response_value(
     timeout_control(write_control(stream, &message)).await
 }
 
-async fn serve_download(
+pub(super) async fn serve_download(
     stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
     manager: &PairingManager,
     requested: BundleMetadata,

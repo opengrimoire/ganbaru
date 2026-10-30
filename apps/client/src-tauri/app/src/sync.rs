@@ -31,7 +31,7 @@ mod tests;
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-pub(crate) use peers::{peer_hints, read_peer_book, reported_members};
+pub(crate) use peers::{bootstrap_members, peer_hints, read_peer_book, reported_members};
 pub(crate) use service::{
     SyncRuntime, ensure_device_key, member_admission_source, member_hub, quiesced_sync,
     release_runtime_handle, resume_after_vault_handoff, seal_quiesced, setup,

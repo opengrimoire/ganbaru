@@ -2,7 +2,8 @@
 
 use super::pairing::{PairingManager, PendingAcknowledgement};
 use super::protocol::BundlePurpose;
-use super::transport::TransferCancellation;
+use super::transport::{BundleSource, FetchedBundle, TransferCancellation};
+use crate::vault::backup::ReplacedVault;
 use crate::vault::ownership::{TransferPhase, VaultOwnershipManager};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,18 +61,68 @@ impl ReceiveMode {
     }
 }
 
-/// Error returned when bootstrap would replace a vault that is not the untouched starter.
-const BOOTSTRAP_REFUSED: &str =
-    "only an untouched Android starter vault can become a replica without a backup";
+/// Error returned when a refresh or an ownership transfer is asked of a device the coordinator
+/// does not own the vault for.
+const NOT_COORDINATOR_OWNED: &str = "desktop is not the current owner of this vault";
 
-/// Bootstrap skips the portable backup, so it is admitted only on Android while the native
-/// starter record names the active vault. Every other first link uses the ownership path,
-/// which preserves the replaced vault.
-fn admit_bootstrap(mobile: bool, untouched_starter: bool) -> Result<(), String> {
-    if mobile && untouched_starter {
-        Ok(())
+/// Error returned when a refresh or an ownership transfer is asked before the first link copied
+/// the vault to this device.
+const FIRST_LINK_NEEDS_BOOTSTRAP: &str =
+    "the linked vault must be copied to this device before it can refresh or take ownership";
+
+/// Error returned when the owner of the vault asks for a fresh copy of it.
+const OWNER_CANNOT_BOOTSTRAP: &str = "this device owns the linked vault, so it holds it already";
+
+/// Decides whether a receive may start. A bootstrap copies the vault from the coordinator for
+/// a first link or as a fresh copy, whichever device owns it, and is refused only on the owner.
+/// A refresh or an ownership transfer needs a device that already holds the vault and a
+/// coordinator that owns it.
+fn admit_receive(
+    mode: ReceiveMode,
+    replica_ready: bool,
+    can_write: bool,
+    coordinator_owns: bool,
+) -> Result<(), &'static str> {
+    match mode {
+        ReceiveMode::Bootstrap if can_write => Err(OWNER_CANNOT_BOOTSTRAP),
+        ReceiveMode::Bootstrap => Ok(()),
+        ReceiveMode::Ownership | ReceiveMode::Refresh if can_write || !coordinator_owns => {
+            Err(NOT_COORDINATOR_OWNED)
+        }
+        ReceiveMode::Ownership | ReceiveMode::Refresh if !replica_ready => {
+            Err(FIRST_LINK_NEEDS_BOOTSTRAP)
+        }
+        ReceiveMode::Ownership | ReceiveMode::Refresh => Ok(()),
+    }
+}
+
+/// Where a received vault is activated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Destination {
+    /// Replaces the vault in use, carrying this device's changes forward when it holds the same
+    /// vault.
+    ActiveVault,
+    /// A first link on a computer: a new folder, so the vault in use stays where it is.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    NewFolder,
+}
+
+/// A first link on a computer that holds another vault activates the linked vault in a new
+/// folder. Everything else, including every Android receive, replaces the vault in use.
+fn destination(
+    desktop: bool,
+    mode: ReceiveMode,
+    replica_ready: bool,
+    active_holds_linked_vault: bool,
+) -> Destination {
+    if desktop
+        && matches!(mode, ReceiveMode::Bootstrap)
+        && !replica_ready
+        && !active_holds_linked_vault
+    {
+        Destination::NewFolder
     } else {
-        Err(BOOTSTRAP_REFUSED.to_string())
+        Destination::ActiveVault
     }
 }
 
@@ -89,6 +140,58 @@ pub(crate) struct ReceiverLifecycle {
     operation: Arc<tokio::sync::Mutex<()>>,
     cancellation: Mutex<Option<TransferCancellation>>,
     connected: AtomicBool,
+    /// Folder the user chose for the first link on a computer. The webview never names it; it
+    /// only asks for the native folder picker.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    link_folder: Mutex<Option<std::path::PathBuf>>,
+}
+
+impl ReceiverLifecycle {
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    fn link_folder(&self) -> Result<Option<std::path::PathBuf>, String> {
+        self.link_folder
+            .lock()
+            .map(|folder| folder.clone())
+            .map_err(|_| "linked vault folder choice is unavailable".to_string())
+    }
+
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    fn set_link_folder(&self, folder: Option<std::path::PathBuf>) -> Result<(), String> {
+        *self
+            .link_folder
+            .lock()
+            .map_err(|_| "linked vault folder choice is unavailable".to_string())? = folder;
+        Ok(())
+    }
+}
+
+/// Opens the folder picker for the first link on a computer and keeps the chosen folder for
+/// the next bootstrap. Returns the chosen folder, or `None` when the picker was closed, which
+/// keeps the earlier choice. A folder that holds files is refused.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) async fn handoff_pick_link_folder(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let start = crate::vault::default_vault_path(&app)
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .filter(|path| path.is_dir());
+    let Some(folder) = crate::vault::pick_folder(&app, "Choose a folder", start).await? else {
+        return Ok(None);
+    };
+    crate::vault::backup::resolve_link_folder(Some(&folder), &folder, "")?;
+    let shown = crate::vault::path_to_string(&folder, "linked vault folder")?;
+    app.state::<ReceiverLifecycle>()
+        .set_link_folder(Some(folder))?;
+    Ok(Some(shown))
+}
+
+/// Forgets the chosen folder, so the next first link uses the default location.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) fn handoff_reset_link_folder(app: tauri::AppHandle) -> Result<(), String> {
+    app.state::<ReceiverLifecycle>().set_link_folder(None)
 }
 
 impl ReceiverLifecycle {
@@ -184,45 +287,56 @@ async fn receive(
         )
         .await;
     }
-    if status.can_write || status.owner_device_id != coordinator.device_id {
-        return Err("desktop is not the current owner of this vault".to_string());
-    }
-    if matches!(mode, ReceiveMode::Refresh) && !pairing.replica_ready()? {
-        return Err("the linked vault must be activated before it can refresh".to_string());
-    }
-    if matches!(mode, ReceiveMode::Bootstrap) {
-        admit_bootstrap(cfg!(mobile), crate::vault::untouched_starter_vault(app)?)?;
-        if pairing.replica_ready()? {
-            return Err("the linked vault is already active on this device".to_string());
-        }
-    }
+    let replica_ready = pairing.replica_ready()?;
+    let coordinator_owns = status.owner_device_id == coordinator.device_id;
+    admit_receive(mode, replica_ready, status.can_write, coordinator_owns)
+        .map_err(str::to_string)?;
+    let destination = destination(
+        cfg!(desktop),
+        mode,
+        replica_ready,
+        crate::vault::active_vault_id(app)? == coordinator.vault_id,
+    );
+    #[cfg(not(desktop))]
+    debug_assert_eq!(destination, Destination::ActiveVault);
+    let previous = replaced_vault_policy(app)?;
+    #[cfg(desktop)]
+    let link_folder = match destination {
+        Destination::NewFolder => Some(prepare_link_folder(app)?),
+        Destination::ActiveVault => None,
+    };
 
     let purpose = mode.purpose();
-    let metadata = super::transport::request_bundle(
+    let sources = bundle_sources(app, mode, &coordinator.vault_id, &coordinator.device_id).await;
+    let FetchedBundle {
+        source,
+        metadata,
+        archive,
+    } = super::transport::fetch_bundle(
         &pairing,
+        &sources,
         super::current_compatibility(app),
         status.generation,
         purpose,
         cancellation,
     )
     .await?;
-    if let Err(error) = super::protocol::ensure_compatible(
-        &super::current_compatibility(app),
-        &metadata.compatibility,
-    ) {
-        let _ = super::transport::cancel_prepared_transfer(&pairing, &metadata.transfer_id).await;
-        return Err(error);
-    }
-    let archive =
-        super::transport::download_bundle(&pairing, metadata.clone(), cancellation).await?;
+    let from_coordinator = source == BundleSource::Coordinator;
+    #[cfg(desktop)]
+    let staging = match &link_folder {
+        Some(folder) => {
+            crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id)
+        }
+        None => handoff_staging_path(app, &metadata.transfer_id)?,
+    };
+    #[cfg(not(desktop))]
     let staging = handoff_staging_path(app, &metadata.transfer_id)?;
     crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
-
-    let preserve_local_copy = purpose == BundlePurpose::Ownership && !pairing.replica_ready()?;
-    if preserve_local_copy && cfg!(target_os = "android") {
-        #[cfg(target_os = "android")]
-        crate::vault::backup::vault_backup_to_downloads(app.clone()).await?;
-    }
+    #[cfg(desktop)]
+    let new_folder = match &link_folder {
+        Some(folder) => Some(resolve_staged_link_folder(folder, &staging)?),
+        None => None,
+    };
 
     if purpose == BundlePurpose::Ownership {
         let (_, generation) =
@@ -233,7 +347,10 @@ async fn receive(
             coordinator.device_id,
             generation,
         )?;
-    } else {
+    } else if from_coordinator && coordinator_owns && metadata.generation >= status.generation {
+        // A bootstrap served while another device owns the vault leaves the ownership record
+        // as it is; the coordinator's copy carries no newer ownership than the record. A
+        // member's copy changes no ownership.
         ownership.advance_remote_coordinator(
             &metadata.vault_id,
             &coordinator.device_id,
@@ -241,12 +358,34 @@ async fn receive(
         )?;
     }
 
+    #[cfg(desktop)]
+    if let Some(target) = new_folder {
+        crate::vault::backup::activate_handoff_in_new_folder(
+            app,
+            &staging,
+            target,
+            &metadata.transfer_id,
+            &metadata.vault_id,
+        )
+        .await?;
+        app.state::<ReceiverLifecycle>().set_link_folder(None)?;
+    } else {
+        activate_handoff(
+            app,
+            &staging,
+            &metadata.transfer_id,
+            &metadata.vault_id,
+            previous,
+        )
+        .await?;
+    }
+    #[cfg(not(desktop))]
     activate_handoff(
         app,
         &staging,
         &metadata.transfer_id,
         &metadata.vault_id,
-        preserve_local_copy,
+        previous,
     )
     .await?;
     let device_id = pairing.device_id()?;
@@ -265,9 +404,27 @@ async fn receive(
             metadata.generation,
         )?;
     }
-    let acknowledgement = super::transport::acknowledge_activation(&pairing, &pending).await;
-    if acknowledgement.is_ok() {
+    let acknowledgement = if from_coordinator {
+        super::transport::acknowledge_activation(&pairing, &source, &pending).await
+    } else {
+        // A pending acknowledgement is only ever retried with the coordinator, so a member's
+        // copy is settled first and acknowledged once; a member releases an unacknowledged
+        // copy when its reservation expires.
         pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
+        if let Err(error) =
+            super::transport::acknowledge_activation(&pairing, &source, &pending).await
+        {
+            eprintln!(
+                "vault copy from {}: acknowledgement failed: {error}",
+                source.describe()
+            );
+        }
+        Ok(())
+    };
+    if acknowledgement.is_ok() {
+        if from_coordinator {
+            pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
+        }
         if let Err(error) = pairing.remove_staging(&pending.transfer_id) {
             eprintln!("failed to clean completed vault transfer: {error}");
         }
@@ -286,6 +443,26 @@ async fn receive(
     })
 }
 
+/// Where a vault copy is asked for, in order: the coordinator this device enrolled with, then
+/// for a fresh copy the member desktops the local selected log shows as live. Ownership and
+/// refreshes come from the coordinator alone, and so does a first copy, since the log that
+/// names the other members arrives with it.
+async fn bundle_sources(
+    app: &tauri::AppHandle,
+    mode: ReceiveMode,
+    vault_id: &str,
+    coordinator_device_id: &str,
+) -> Vec<BundleSource> {
+    let mut sources = vec![BundleSource::Coordinator];
+    if matches!(mode, ReceiveMode::Bootstrap) {
+        match crate::sync::bootstrap_members(app, vault_id, coordinator_device_id).await {
+            Ok(members) => sources.extend(members),
+            Err(error) => eprintln!("vault copy: member sources are unavailable: {error}"),
+        }
+    }
+    sources
+}
+
 async fn resume_committed_ownership(
     app: &tauri::AppHandle,
     pairing: &PairingManager,
@@ -299,7 +476,7 @@ async fn resume_committed_ownership(
         &staging,
         &transfer_id,
         vault_id,
-        !pairing.replica_ready()?,
+        replaced_vault_policy(app)?,
     )
     .await?;
     let device_id = pairing.device_id()?;
@@ -313,7 +490,9 @@ async fn resume_committed_ownership(
     pairing.record_activation(pending.clone())?;
     app.state::<VaultOwnershipManager>()
         .finalize_incoming(vault_id, &transfer_id, generation)?;
-    let acknowledgement = super::transport::acknowledge_activation(pairing, &pending).await;
+    let acknowledgement =
+        super::transport::acknowledge_activation(pairing, &BundleSource::Coordinator, &pending)
+            .await;
     if acknowledgement.is_ok() {
         pairing.clear_pending_acknowledgement(&transfer_id)?;
         if let Err(error) = pairing.remove_staging(&transfer_id) {
@@ -375,7 +554,8 @@ async fn flush_pending_acknowledgement(app: &tauri::AppHandle) -> Result<(), Str
             }
         }
     }
-    super::transport::acknowledge_activation(&pairing, &pending).await?;
+    super::transport::acknowledge_activation(&pairing, &BundleSource::Coordinator, &pending)
+        .await?;
     pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
     if let Err(error) = pairing.remove_staging(&pending.transfer_id) {
         eprintln!("failed to clean acknowledged vault transfer: {error}");
@@ -517,16 +697,10 @@ async fn activate_handoff(
     staging: &std::path::Path,
     transfer_id: &str,
     vault_id: &str,
-    preserve_previous: bool,
+    previous: ReplacedVault,
 ) -> Result<crate::vault::VaultInfo, String> {
-    crate::vault::backup::activate_android_handoff(
-        app,
-        staging,
-        transfer_id,
-        vault_id,
-        preserve_previous,
-    )
-    .await
+    crate::vault::backup::activate_android_handoff(app, staging, transfer_id, vault_id, previous)
+        .await
 }
 
 #[cfg(desktop)]
@@ -535,16 +709,10 @@ async fn activate_handoff(
     staging: &std::path::Path,
     transfer_id: &str,
     vault_id: &str,
-    preserve_previous: bool,
+    previous: ReplacedVault,
 ) -> Result<crate::vault::VaultInfo, String> {
-    crate::vault::backup::activate_active_handoff(
-        app,
-        staging,
-        transfer_id,
-        vault_id,
-        preserve_previous,
-    )
-    .await
+    crate::vault::backup::activate_active_handoff(app, staging, transfer_id, vault_id, previous)
+        .await
 }
 
 #[cfg(target_os = "ios")]
@@ -553,9 +721,83 @@ async fn activate_handoff(
     _staging: &std::path::Path,
     _transfer_id: &str,
     _vault_id: &str,
-    _preserve_previous: bool,
+    _previous: ReplacedVault,
 ) -> Result<crate::vault::VaultInfo, String> {
     Err("vault handoff is not available on iOS".to_string())
+}
+
+/// Android keeps one vault, so a receive that replaces another vault writes a portable backup
+/// of it first, except over the untouched starter, which holds nothing of the user's.
+#[cfg(target_os = "android")]
+fn replaced_vault_policy(app: &tauri::AppHandle) -> Result<ReplacedVault, String> {
+    if crate::vault::untouched_starter_vault(app)? {
+        Ok(ReplacedVault::DiscardStarter)
+    } else {
+        crate::vault::replaced_vaults::replaced_vaults_root(app).map(ReplacedVault::BackUpOther)
+    }
+}
+
+/// A computer keeps a replaced vault folder whole beside the linked vault.
+#[cfg(not(target_os = "android"))]
+fn replaced_vault_policy(_app: &tauri::AppHandle) -> Result<ReplacedVault, String> {
+    Ok(ReplacedVault::KeepOther)
+}
+
+/// Destination of a first link on a computer, decided before the download.
+#[cfg(desktop)]
+struct LinkFolder {
+    /// Folder the user chose, if any.
+    chosen: Option<std::path::PathBuf>,
+    /// Default vault folder of this platform.
+    default: std::path::PathBuf,
+    /// Folder that holds the staged vault and the folder it moves into.
+    parent: std::path::PathBuf,
+}
+
+/// Reads the folder choice for a first link and refuses a chosen folder that holds files
+/// before anything is downloaded.
+#[cfg(desktop)]
+fn prepare_link_folder(app: &tauri::AppHandle) -> Result<LinkFolder, String> {
+    let chosen = app.state::<ReceiverLifecycle>().link_folder()?;
+    let default = crate::vault::default_vault_path(app)?;
+    if let Some(chosen) = &chosen {
+        crate::vault::backup::resolve_link_folder(Some(chosen), &default, "")?;
+    }
+    let parent = chosen
+        .as_deref()
+        .unwrap_or(&default)
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent)
+        .map_err(|error| format!("create the linked vault parent folder: {error}"))?;
+    Ok(LinkFolder {
+        chosen,
+        default,
+        parent,
+    })
+}
+
+/// Picks the folder the staged vault moves into, named after the vault it holds. The staged
+/// copy is removed when no folder can take it.
+#[cfg(desktop)]
+fn resolve_staged_link_folder(
+    folder: &LinkFolder,
+    staging: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let resolved = crate::vault::vault_info_from_path(staging).and_then(|info| {
+        crate::vault::backup::resolve_link_folder(
+            folder.chosen.as_deref(),
+            &folder.default,
+            &info.display_name,
+        )
+    });
+    if resolved.is_err()
+        && let Err(error) = std::fs::remove_dir_all(staging)
+    {
+        eprintln!("failed to clean the staged linked vault: {error}");
+    }
+    resolved
 }
 
 #[cfg(test)]
@@ -570,12 +812,74 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_is_admitted_only_over_an_untouched_android_starter_vault() {
-        let refused = Err(BOOTSTRAP_REFUSED.to_string());
-        assert_eq!(admit_bootstrap(false, false), refused);
-        assert_eq!(admit_bootstrap(false, true), refused);
-        assert_eq!(admit_bootstrap(true, false), refused);
-        assert_eq!(admit_bootstrap(true, true), Ok(()));
+    fn bootstrap_is_admitted_for_every_first_link_and_fresh_copy_except_on_the_owner() {
+        for replica_ready in [false, true] {
+            for coordinator_owns in [false, true] {
+                assert_eq!(
+                    admit_receive(
+                        ReceiveMode::Bootstrap,
+                        replica_ready,
+                        false,
+                        coordinator_owns
+                    ),
+                    Ok(())
+                );
+                assert_eq!(
+                    admit_receive(
+                        ReceiveMode::Bootstrap,
+                        replica_ready,
+                        true,
+                        coordinator_owns
+                    ),
+                    Err(OWNER_CANNOT_BOOTSTRAP)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_and_ownership_need_a_linked_copy_and_a_coordinator_that_owns_the_vault() {
+        for mode in [ReceiveMode::Refresh, ReceiveMode::Ownership] {
+            assert_eq!(admit_receive(mode, true, false, true), Ok(()));
+            assert_eq!(
+                admit_receive(mode, false, false, true),
+                Err(FIRST_LINK_NEEDS_BOOTSTRAP)
+            );
+            assert_eq!(
+                admit_receive(mode, true, false, false),
+                Err(NOT_COORDINATOR_OWNED)
+            );
+            assert_eq!(
+                admit_receive(mode, true, true, true),
+                Err(NOT_COORDINATOR_OWNED)
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_first_link_on_a_computer_over_another_vault_uses_a_new_folder() {
+        assert_eq!(
+            destination(true, ReceiveMode::Bootstrap, false, false),
+            Destination::NewFolder
+        );
+        // A fresh copy, a computer that already holds the linked vault, and Android all
+        // replace the vault in use.
+        assert_eq!(
+            destination(true, ReceiveMode::Bootstrap, true, true),
+            Destination::ActiveVault
+        );
+        assert_eq!(
+            destination(true, ReceiveMode::Bootstrap, false, true),
+            Destination::ActiveVault
+        );
+        assert_eq!(
+            destination(false, ReceiveMode::Bootstrap, false, false),
+            Destination::ActiveVault
+        );
+        assert_eq!(
+            destination(true, ReceiveMode::Refresh, true, false),
+            Destination::ActiveVault
+        );
     }
 
     #[test]

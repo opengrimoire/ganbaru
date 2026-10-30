@@ -79,3 +79,18 @@ export async function requestVaultOwnership(
   }
   throw new Error("coordinator request timed out");
 }
+
+/**
+ * Copies the linked vault to this device for its first link. A device must hold a copy before it
+ * can become the main device, and the main device does not change.
+ *
+ * @param receive - Receives the bootstrap copy from the coordinator.
+ * @throws When another vault transfer is still running.
+ */
+export async function requestFirstVaultCopy(
+  receive: () => Promise<{ activated: boolean; inProgress: boolean }> = () =>
+    receiveDesktopBundle("bootstrap"),
+): Promise<void> {
+  const outcome = await receive();
+  if (outcome.inProgress) throw new Error("finish or retry the current vault transfer first");
+}

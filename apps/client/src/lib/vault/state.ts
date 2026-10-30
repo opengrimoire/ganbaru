@@ -478,6 +478,57 @@ export async function restoreDatabaseRollback(id: string): Promise<void> {
   await invoke("vault_restore_database_rollback", { id });
 }
 
+/** A backup of a vault that a first link replaced on this Android device. */
+export interface ReplacedVaultBackup {
+  id: string;
+  /** The replaced vault's name, when its marker could be read from the backup. */
+  displayName: string | null;
+  replacedAtMs: number;
+  sizeBytes: number;
+}
+
+/**
+ * Validates the native listing of replaced vault backups.
+ *
+ * @param value - Untrusted `vault_replaced_backups` response.
+ * @returns Backups newest first, as Rust ordered them.
+ */
+export function parseReplacedVaultBackups(value: unknown): ReplacedVaultBackup[] {
+  if (!Array.isArray(value)) throw new Error("replaced vault backup response is not a list");
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry)) throw new Error("replaced vault backup entry is not an object");
+    const id = readString(entry.id);
+    const rawDisplayName: unknown = entry.displayName ?? null;
+    const displayName = rawDisplayName === null ? null : readString(rawDisplayName);
+    const replacedAtMs = readNonNegativeInteger(entry.replacedAtMs);
+    const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
+    if (
+      !id
+      || (rawDisplayName !== null && displayName === null)
+      || replacedAtMs === null
+      || sizeBytes === null
+    ) {
+      throw new Error("replaced vault backup entry is incomplete");
+    }
+    return { id, displayName, replacedAtMs, sizeBytes };
+  });
+}
+
+/** Lists the backups Android keeps of vaults that a first link replaced. */
+export async function listReplacedVaultBackups(): Promise<ReplacedVaultBackup[]> {
+  return parseReplacedVaultBackups(await invoke<unknown>("vault_replaced_backups"));
+}
+
+/** Saves a copy of one replaced vault backup to Downloads. */
+export async function exportReplacedVaultBackup(id: string): Promise<VaultBackupOutcome> {
+  return parseVaultBackupOutcome(await invoke<unknown>("vault_export_replaced_backup", { id }));
+}
+
+/** Deletes one replaced vault backup from this device. */
+export async function deleteReplacedVaultBackup(id: string): Promise<void> {
+  await invoke("vault_delete_replaced_backup", { id });
+}
+
 /** Save a consistent, portable copy of the active Android vault to Downloads. */
 export async function backupActiveVault(): Promise<VaultBackupOutcome> {
   return parseVaultBackupOutcome(await invoke<unknown>("vault_backup_to_downloads"));

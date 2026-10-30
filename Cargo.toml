@@ -31,6 +31,7 @@ members = [
   "crates/ganbaru-sync",
   "crates/ganbaru-sync-contracts",
   "crates/ganbaru-sync-replica",
+  "crates/ganbaru-sync-relay",
   "crates/ganbaru-themes",
   "crates/ganbaru-working-folders",
 ]
@@ -86,6 +87,7 @@ ganbaru-quick-notes = { path = "crates/ganbaru-quick-notes" }
 ganbaru-sync = { path = "crates/ganbaru-sync" }
 ganbaru-sync-contracts = { path = "crates/ganbaru-sync-contracts" }
 ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
+ganbaru-sync-relay = { path = "crates/ganbaru-sync-relay" }
 ganbaru-themes = { path = "crates/ganbaru-themes" }
 ganbaru-working-folders = { path = "crates/ganbaru-working-folders" }
 gtk = "0.18"

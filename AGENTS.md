@@ -121,6 +121,7 @@ crates/
   ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, writer certificates, order keys, the signed operation format, and space key envelopes and chain links
   ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
   ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange of operations and managed assets, managed asset collection, and whole-vault archives
+  ganbaru-sync-relay/: self-hosted relay and always-on anchor server binary
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
   ganbaru-linking-firewall/: root-run Linux helper binary for the device linking firewall rules, installed under /usr/lib/ganbaru/ and named by the PolicyKit policy
@@ -129,7 +130,7 @@ extensions/chromium/: Chromium extension (manifest v3); chromium-dev/ is a gener
 Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, package.json: workspace configuration and root scripts
 ```
 
-Planned work without source directories yet includes the self-hosted sync relay, the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
+Planned work without source directories yet includes the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
 
 ## Ganbaru folder structure
 

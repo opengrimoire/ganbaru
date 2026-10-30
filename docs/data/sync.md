@@ -188,7 +188,7 @@ Between one person's devices, Notes text replicates per block as one value with 
 
 Local network linking works without an account or server. An optional user-hosted Rust relay stores opaque encrypted records for cross-network and asynchronous delivery. Hocuspocus was rejected as the relay because its normal persistence stores server-side Yjs documents, which breaks the encrypted record boundary.
 
-The `ganbaru-sync-contracts`, `ganbaru-sync`, and `ganbaru-sync-replica` crates exist; the optional `ganbaru-sync-relay` binary is planned. Domain adapters keep composite value codecs, intrinsic validation, and projection ownership; the sync engine owns delivery, causality, and merging. Durable replication, live presence, and executable commands are distinct protocols.
+The `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, and `ganbaru-sync-relay` crates exist. The optional `ganbaru-sync-relay` binary runs in relay mode: a `setup` command prints a one-time code (endpoints, pinned certificate fingerprint, and a token valid for 15 minutes that claims one space), and the server stores sealed records and asset chunks it cannot open, admits devices with the epoch relay access key signed over the TLS session, accepts only the next epoch from the holder of its key, takes admin commands signed by the space admin set with increasing counters, and trims each space by quota and age behind per-writer floors. Devices do not use it yet, and anchor mode is planned. Domain adapters keep composite value codecs, intrinsic validation, and projection ownership; the sync engine owns delivery, causality, and merging. Durable replication, live presence, and executable commands are distinct protocols.
 
 ### Topology and authority
 

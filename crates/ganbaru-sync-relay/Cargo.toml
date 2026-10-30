@@ -1,0 +1,30 @@
+[package]
+name = "ganbaru-sync-relay"
+version = "0.1.0"
+description = "Ganbaru self-hosted sync relay server that stores sealed records it cannot open"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+default-run = "ganbaru-sync-relay"
+
+[lib]
+doctest = false
+
+[[bin]]
+name = "ganbaru-sync-relay"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+ganbaru-atomic-files = { workspace = true }
+ganbaru-handoff = { workspace = true }
+ganbaru-sync-contracts = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }

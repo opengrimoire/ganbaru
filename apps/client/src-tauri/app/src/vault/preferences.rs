@@ -1,8 +1,8 @@
 //! Vault preferences, split by where each one belongs.
 //!
 //! The [registry](registry::REGISTRY) assigns every preference path a scope. Portable values
-//! are rows of `vault_preferences`, shared by every device of the vault and written by the owner
-//! and by linked replicas, since the preferences sync domain replicates concurrently. Device
+//! are rows of `vault_preferences`, shared by every device of the vault and written on every
+//! linked device, since the preferences sync domain replicates concurrently. Device
 //! values live in a file per vault in the app config directory and are written on every device.
 //! The device file also holds native-owned entries, such as [`CHAT_DEVICE_ENTRY`], that native
 //! commands validate and write and that the registry never routes a patch to.

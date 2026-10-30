@@ -118,7 +118,7 @@ impl SnapshotQuiescence {
     }
 }
 
-/// Briefly excludes central writers while a read-only replica snapshot is created.
+/// Briefly excludes central writers while a vault snapshot is created.
 pub(crate) async fn begin_snapshot_quiescence<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<SnapshotQuiescence, String> {

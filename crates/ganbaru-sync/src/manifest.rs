@@ -34,10 +34,10 @@ pub enum Classification {
     Derived,
     /// Engine state in `sync_*` tables, or a domain's engine-side table.
     Engine,
-    /// Device-bound rows that never replicate, are writable on replicas, and are emptied in
+    /// Device-bound rows that never replicate, are written on every device, and are emptied in
     /// snapshot copies.
     Local,
-    /// Rows that keep the owner-only whole-vault rules.
+    /// Rows of a table no domain declares, which never replicate.
     Unconverted,
 }
 

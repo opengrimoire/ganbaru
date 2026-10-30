@@ -322,7 +322,7 @@ fn two_devices_converge_only_through_the_relay() {
         assert_eq!(pushed.epoch, 1);
         assert!(pushed.pushed > 0);
         assert!(pushed.stored_bytes > 0);
-        assert_eq!(pushed.undelivered, 0, "{pushed:?}");
+        assert_eq!(pushed.undelivered, Some(0), "{pushed:?}");
 
         let pulled = phone.pass(&relay).await;
         assert_eq!(pulled.problem, None);
@@ -399,6 +399,33 @@ fn a_removed_device_pulls_nothing_sealed_after_its_removal() {
         assert!(
             tablet.replica.stored().await.get(&writer) < phone.replica.stored().await.get(&writer)
         );
+        hub_device.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_pass_stopped_by_a_newer_epoch_reports_delivery_as_unknown() {
+    block_on(async {
+        let relay = start_relay("relay-epoch-ahead").await;
+        let (mut hub_device, members) =
+            keyed_space("epoch-ahead", &[PHONE_DEVICE, TABLET_DEVICE]).await;
+        let mut members = members.into_iter();
+        let phone = members.next().expect("phone");
+        let mut tablet = members.next().expect("tablet");
+        hub_device.claim(&relay).await;
+        for keyed in [&hub_device, &phone, &tablet] {
+            assert_eq!(keyed.pass(&relay).await.problem, None);
+        }
+
+        remove_and_rotate(&mut hub_device, TABLET_DEVICE).await;
+        assert_eq!(hub_device.pass(&relay).await.epoch, 2);
+
+        tablet.replica.seal_note("note-the-relay-never-gets").await;
+        let stopped = tablet.pass(&relay).await;
+        assert_eq!(stopped.problem, Some(RelayProblem::EpochAhead));
+        assert_eq!(stopped.undelivered, None, "{stopped:?}");
         hub_device.close().await;
         phone.close().await;
         tablet.close().await;
@@ -729,6 +756,7 @@ fn a_device_whose_flush_stalls_does_not_register_the_next_epoch() {
             Some(RelayProblem::RelayBehind),
             "{stalled:?}"
         );
+        assert_eq!(stalled.undelivered, None, "{stalled:?}");
         let pool = relay_database(&relay).await;
         assert_eq!(relay_epoch(&pool).await, 1);
         pool.close().await;

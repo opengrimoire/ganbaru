@@ -241,14 +241,17 @@ export function syncRelayProblemLabel(t: Translate, problem: SyncRelayProblem): 
  * Describes where this device's own changes stand on the way through the relay: saved here and
  * not on the relay yet, received by the relay and waiting for the anchor, or all confirmed. The
  * relay count is the unconfirmed changes the relay already holds, so it is an upper bound when
- * the anchor has not reported on changes that moved directly. Empty without a relay pass.
+ * the anchor has not reported on changes that moved directly. A pass that ended before the
+ * relay reported what it holds proves nothing reached it, so every unconfirmed change counts as
+ * saved here. Empty without a relay pass.
  */
 export function syncDeliveryLines(t: Translate, status: SyncStatusView): string[] {
   const relay = status.relay;
   if (relay === null) return [];
   const lines: string[] = [];
-  if (relay.undelivered > 0) lines.push(t("sync.delivery.saved", relay.undelivered));
-  const atRelay = Math.max(0, status.unconfirmed - relay.undelivered);
+  const undelivered = relay.undelivered ?? status.unconfirmed;
+  if (undelivered > 0) lines.push(t("sync.delivery.saved", undelivered));
+  const atRelay = Math.max(0, status.unconfirmed - undelivered);
   if (atRelay > 0) lines.push(t("sync.delivery.receivedByRelay", atRelay));
   if (lines.length === 0 && status.unconfirmed === 0 && status.pendingLocalChanges === 0) {
     lines.push(t("sync.delivery.confirmed"));

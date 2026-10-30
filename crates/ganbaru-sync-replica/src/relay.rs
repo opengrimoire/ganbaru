@@ -125,8 +125,9 @@ pub struct RelayPass {
     /// Operations this replica stored from the relay.
     pub pulled: usize,
     /// Operations this replica holds that the relay refused to take, which wait for a direct
-    /// connection or a later pass.
-    pub undelivered: u64,
+    /// connection or a later pass. `None` when the pass stopped before the relay reported what
+    /// it holds, so nothing is known about delivery.
+    pub undelivered: Option<u64>,
     /// Asset files the relay stored from this pass.
     pub uploaded: usize,
     /// Asset files this replica stored from the relay.
@@ -429,7 +430,7 @@ impl RelaySession<'_> {
                 pass.stored_bytes = stored_bytes;
                 pass.quota_bytes = quota_bytes;
                 let reached = relay_ranges(&writers)?;
-                pass.undelivered = self.undelivered(&reached, &compacted).await?;
+                pass.undelivered = Some(self.undelivered(&reached, &compacted).await?);
             }
             other => return Err(unexpected("State", &other)),
         }

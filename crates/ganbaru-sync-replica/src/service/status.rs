@@ -149,12 +149,14 @@ pub struct RelayDeliveryView {
     pub sent: usize,
     /// Sealed records the pass received from the relay.
     pub received: usize,
-    /// Operations of this installation's writers the relay does not hold yet.
-    pub undelivered: u64,
+    /// Operations of this installation's writers the relay does not hold yet. `None` when the
+    /// pass ended before the relay reported what it holds, so delivery is unknown.
+    pub undelivered: Option<u64>,
     pub uploaded_files: usize,
     pub downloaded_files: usize,
     /// Files left for a later pass on a metered network.
     pub deferred_files: usize,
+    /// The relay's stored bytes and quota as it last reported them.
     pub stored_bytes: u64,
     pub quota_bytes: u64,
     /// When the relay last answered this device, in Unix milliseconds, `None` when it has not
@@ -165,8 +167,14 @@ pub struct RelayDeliveryView {
 }
 
 impl RelayDeliveryView {
-    /// The counts of `pass`, finished at `now_ms`, when the relay answered.
-    pub fn of(pass: &crate::relay::RelayPass, now_ms: u64) -> Self {
+    /// The counts of `pass`, finished at `now_ms`, when the relay answered. A pass that stopped
+    /// before the relay reported its state keeps the storage figures of `previous`.
+    pub fn of(pass: &crate::relay::RelayPass, now_ms: u64, previous: Option<&Self>) -> Self {
+        let (stored_bytes, quota_bytes) = if pass.undelivered.is_some() {
+            (pass.stored_bytes, pass.quota_bytes)
+        } else {
+            Self::storage_of(previous)
+        };
         Self {
             last_pass_at_ms: now_ms,
             last_contact_at_ms: Some(now_ms),
@@ -176,25 +184,33 @@ impl RelayDeliveryView {
             uploaded_files: pass.uploaded,
             downloaded_files: pass.downloaded,
             deferred_files: pass.deferred_assets,
-            stored_bytes: pass.stored_bytes,
-            quota_bytes: pass.quota_bytes,
+            stored_bytes,
+            quota_bytes,
             problem: pass.problem,
         }
     }
 
-    /// A pass that could not reach or use the relay at `now_ms`. The last contact moves to
-    /// `now_ms` when the relay answered with the refusal, and otherwise stays `last_contact_at_ms`.
-    pub fn failed(problem: RelayProblem, now_ms: u64, last_contact_at_ms: Option<u64>) -> Self {
+    /// A pass that could not reach or use the relay at `now_ms`, which knows nothing about
+    /// delivery. The last contact moves to `now_ms` when the relay answered with the refusal,
+    /// and otherwise stays the one of `previous`, like the storage figures.
+    pub fn failed(problem: RelayProblem, now_ms: u64, previous: Option<&Self>) -> Self {
+        let (stored_bytes, quota_bytes) = Self::storage_of(previous);
         Self {
             last_pass_at_ms: now_ms,
             last_contact_at_ms: if problem.relay_answered() {
                 Some(now_ms)
             } else {
-                last_contact_at_ms
+                previous.and_then(|view| view.last_contact_at_ms)
             },
+            stored_bytes,
+            quota_bytes,
             problem: Some(problem),
             ..Self::default()
         }
+    }
+
+    fn storage_of(previous: Option<&Self>) -> (u64, u64) {
+        previous.map_or((0, 0), |view| (view.stored_bytes, view.quota_bytes))
     }
 }
 
@@ -477,7 +493,7 @@ mod tests {
         let pass = crate::relay::RelayPass {
             pushed: 4,
             pulled: 2,
-            undelivered: 1,
+            undelivered: Some(1),
             uploaded: 1,
             deferred_assets: 3,
             stored_bytes: 4_096,
@@ -485,7 +501,7 @@ mod tests {
             ..Default::default()
         };
         let view = SyncStatusView {
-            relay: Some(RelayDeliveryView::of(&pass, 900)),
+            relay: Some(RelayDeliveryView::of(&pass, 900, None)),
             ..SyncStatusView::default()
         };
         let wire = serde_json::to_value(&view).expect("serialize status");
@@ -505,16 +521,26 @@ mod tests {
                 "problem": null,
             })
         );
-        let failed = RelayDeliveryView::failed(RelayProblem::Unreachable, 7, Some(3));
+        let previous = RelayDeliveryView {
+            last_contact_at_ms: Some(3),
+            ..RelayDeliveryView::of(&pass, 3, None)
+        };
+        let failed = RelayDeliveryView::failed(RelayProblem::Unreachable, 7, Some(&previous));
         assert_eq!(failed.problem, Some(RelayProblem::Unreachable));
         assert_eq!((failed.sent, failed.last_pass_at_ms), (0, 7));
         assert_eq!(failed.last_contact_at_ms, Some(3));
+        assert_eq!(failed.undelivered, None);
+        assert_eq!((failed.stored_bytes, failed.quota_bytes), (4_096, 1_048_576));
         let wire = serde_json::to_value(&failed).expect("serialize relay");
         assert_eq!(wire["problem"], "unreachable");
-        let refused = RelayDeliveryView::failed(RelayProblem::AccessRefused, 9, Some(3));
+        assert_eq!(wire["undelivered"], serde_json::Value::Null);
+        let refused = RelayDeliveryView::failed(RelayProblem::AccessRefused, 9, Some(&previous));
         assert_eq!(refused.last_contact_at_ms, Some(9));
         let wire = serde_json::to_value(&refused).expect("serialize relay");
         assert_eq!(wire["problem"], "accessRefused");
+        let stopped = RelayDeliveryView::of(&crate::relay::RelayPass::default(), 11, Some(&previous));
+        assert_eq!(stopped.undelivered, None);
+        assert_eq!((stopped.stored_bytes, stopped.quota_bytes), (4_096, 1_048_576));
         let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
         assert_eq!(empty["relay"], serde_json::Value::Null);
     }

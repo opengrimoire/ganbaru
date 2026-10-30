@@ -313,6 +313,14 @@ describe("relay delivery stages", () => {
     ]);
   });
 
+  it("never credits the relay after a pass that ended before it reported what it holds", () => {
+    const failed = { ...relay, undelivered: null, problem: "unreachable" as const };
+    expect(syncDeliveryLines(t, status({ state: "error", unconfirmed: 3, relay: failed }))).toEqual([
+      "3 changes are saved on this device and not on the relay yet",
+    ]);
+    expect(syncDeliveryLines(t, status({ state: "error", unconfirmed: 0, pendingLocalChanges: 1, relay: failed }))).toEqual([]);
+  });
+
   it("reports everything confirmed only when nothing waits locally or at the anchor", () => {
     expect(syncDeliveryLines(t, status({ state: "idle", relay }))).toEqual(["Every change from this device is confirmed"]);
     expect(syncDeliveryLines(t, status({ state: "idle", pendingLocalChanges: 1, relay }))).toEqual([]);

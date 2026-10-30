@@ -195,6 +195,13 @@ describe("sync API boundary", () => {
       .toBe("coordinatorRemoved");
   });
 
+  it("maps an unknown relay delivery count and rejects a malformed one", () => {
+    const withUndelivered = (undelivered: unknown) => ({ ...validStatus(), relay: { ...validRelay(), undelivered } });
+    expect(mapSyncStatus(withUndelivered(null)).relay?.undelivered).toBeNull();
+    expect(() => mapSyncStatus(withUndelivered(-1))).toThrow();
+    expect(() => mapSyncStatus(withUndelivered(undefined))).toThrow();
+  });
+
   it("maps every device standing and rejects malformed uncounted devices", () => {
     const device = { deviceId: "device-c", deviceLabel: null, ownDevice: false };
     const status = mapSyncStatus({

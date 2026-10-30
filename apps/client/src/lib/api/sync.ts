@@ -89,8 +89,8 @@ export interface SyncRelayDelivery {
   sent: number;
   /** Sealed changes the pass received from the relay. */
   received: number;
-  /** Changes of this device's writers the relay does not hold yet. */
-  undelivered: number;
+  /** Changes of this device's writers the relay does not hold yet; null when the pass ended before the relay reported what it holds. */
+  undelivered: number | null;
   /** Files the pass uploaded and downloaded. */
   uploadedFiles: number;
   downloadedFiles: number;
@@ -519,7 +519,7 @@ function readRelayDelivery(value: unknown, label: string): SyncRelayDelivery {
     lastPassAtMs: readNonNegativeSafeInteger(row.lastPassAtMs, `${label}.lastPassAtMs`),
     sent: readNonNegativeSafeInteger(row.sent, `${label}.sent`),
     received: readNonNegativeSafeInteger(row.received, `${label}.received`),
-    undelivered: readNonNegativeSafeInteger(row.undelivered, `${label}.undelivered`),
+    undelivered: readNullable(row.undelivered, `${label}.undelivered`, readNonNegativeSafeInteger),
     uploadedFiles: readNonNegativeSafeInteger(row.uploadedFiles, `${label}.uploadedFiles`),
     downloadedFiles: readNonNegativeSafeInteger(row.downloadedFiles, `${label}.downloadedFiles`),
     deferredFiles: readNonNegativeSafeInteger(row.deferredFiles, `${label}.deferredFiles`),

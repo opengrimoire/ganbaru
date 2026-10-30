@@ -146,12 +146,12 @@ fn relay_asset_bound<H: SyncHost>(host: &H) -> u32 {
 }
 
 /// Records a relay pass outcome in `view`. A failure stays a present relay status, which keeps
-/// the Android relay worker scheduled while the space names a relay. `last_contact_at_ms` is
-/// when the relay last answered before this pass.
+/// the Android relay worker scheduled while the space names a relay. `previous` is the status
+/// of the pass before this one.
 fn record_relay_outcome(
     view: &mut SyncStatusView,
     outcome: Result<RelayPass, RelayError>,
-    last_contact_at_ms: Option<u64>,
+    previous: Option<&RelayDeliveryView>,
 ) {
     let (now, clock) = match now_ms() {
         Ok(now) => (now, None),
@@ -162,11 +162,11 @@ fn record_relay_outcome(
             if let Some(detail) = &pass.detail {
                 eprintln!("sync relay: {detail}");
             }
-            RelayDeliveryView::of(&pass, now)
+            RelayDeliveryView::of(&pass, now, previous)
         }
         (Err(error), _) | (Ok(_), Some(error)) => {
             eprintln!("sync relay: {}", error.detail);
-            RelayDeliveryView::failed(error.problem, now, last_contact_at_ms)
+            RelayDeliveryView::failed(error.problem, now, previous)
         }
     });
 }
@@ -1932,11 +1932,7 @@ impl ServiceState {
         view: &mut SyncStatusView,
     ) -> bool {
         // `self.view` still holds the status the previous pass published.
-        let last_contact = self
-            .view
-            .relay
-            .as_ref()
-            .and_then(|relay| relay.last_contact_at_ms);
+        let previous = self.view.relay.clone();
         let target = match Self::relay_target(session).await {
             Ok(Some(target)) => target,
             Ok(None) => {
@@ -1944,13 +1940,13 @@ impl ServiceState {
                 return false;
             }
             Err(error) => {
-                record_relay_outcome(view, Err(error.into()), last_contact);
+                record_relay_outcome(view, Err(error.into()), previous.as_ref());
                 return false;
             }
         };
         let outcome = self.run_relay(session, &target).await;
         let more = outcome.as_ref().is_ok_and(|pass| pass.more);
-        record_relay_outcome(view, outcome, last_contact);
+        record_relay_outcome(view, outcome, previous.as_ref());
         more
     }
 

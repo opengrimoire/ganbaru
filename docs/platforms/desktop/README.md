@@ -8,7 +8,7 @@ Shared feature behavior lives under [features](../../features/README.md). Cross-
 
 ## First use and device linking
 
-The linking protocol, ownership rules, firewall authorization, and data protections are owned by [device linking and synchronization](../../data/sync.md). Desktop adds these interaction rules:
+The linking protocol, snapshot copies, firewall authorization, and data protections are owned by [device linking and synchronization](../../data/sync.md). Desktop adds these interaction rules:
 
 - With no active vault, setup starts with a localized welcome screen (license summary, source link, full AGPL 3.0 text, and acknowledgments) and continues to vault selection. A missing or invalid configured vault also leads to vault selection, with neutral inline recovery guidance.
 - The first desktop is the administration device and runs the embedded private-LAN coordinator. After vault selection, a linking screen shows a short-lived phone pairing QR invitation. **Not now** completes onboarding without linking; closing the screen without choosing leaves onboarding unfinished.

@@ -15,7 +15,7 @@ Use a disposable selected application and a separate protected application. Reco
 - Replace a selected process during a close attempt. The captured process identity does not authorize closing its replacement, and protected aliases are never closed.
 - Exit and restart with pending evidence. The device-local spool survives and drains; stale browser and phase snapshots do not authorize enforcement.
 - Start with no vault or a deleted development vault. Observation waits for a valid selection, and idle observation does not create a spool.
-- Run a linked read-only device offline, reconnect, and repeat an exchange after an uncertain response. Totals stay consistent without duplicate or lost usage.
+- Run a linked device offline, reconnect, and repeat an exchange after an uncertain response. Totals stay consistent without duplicate or lost usage.
 - With the WebView suspended, Pomodoro-dependent blocking follows native Focus phase entry, pause, resume, completion, and expiry. A delayed phase publication after a run or vault change does not authorize enforcement.
 
 ## Android
@@ -27,7 +27,7 @@ Also run the distraction blocker cases in [Android acceptance](android.md#distra
 - Disable or replace a rule, switch vaults, or complete or abort a snapshot bootstrap during publication. An old capture never reinstalls the earlier rule snapshot.
 - Delay Guardian IPC during configuration changes, vault selection, and exit. Busy changes return a retry error, and shutdown does not wait on the publisher.
 - Remove the application process while Guardian remains. Local counting and retained enforcement continue.
-- Interrupt linked read-only acknowledgement after the accepted cache commits. Totals stay consistent across retries and restart.
+- Interrupt a linked device's acknowledgement after the accepted cache commits. Totals stay consistent across retries and restart.
 - Cross local midnight during a capture and change the timezone. Old-window totals never authorize a new-window block.
 - Verify fresh journal creation, rejection of unsupported development journal schemas (which require an explicit app-data reset), checkpoint rollback, and cross-process acknowledgement on a real runtime. JVM and Rust tests do not execute Android's SQLite or ContentProvider lifecycle.
 

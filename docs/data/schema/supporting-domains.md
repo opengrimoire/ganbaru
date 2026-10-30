@@ -66,11 +66,11 @@ Native commands make each edit in one transaction and return the assembled rules
 Device-local state supports enforcement without replacing portable policy:
 
 - Runtime and budget snapshots are native derivatives of the persisted rules and accepted usage. Their configuration fingerprint, local day, week, and totals are admission checks, not policy.
-- The desktop native owner spools captured usage batches with retry receipts, and the spool drains into the usage journal whenever this device may write usage. A batch leaves the spool only after the journal committed it, and the journal ignores sample IDs it already holds.
+- The desktop native owner spools captured usage batches with retry receipts, and the spool drains into the usage journal. A batch leaves the spool only after the journal committed it, and the journal ignores sample IDs it already holds.
 - The browser host spools block events with the redacted host only. The app validates each spooled event, records it once, without its run when the vault no longer holds that run, and removes it from the spool only after the vault committed it. Each event records in its own savepoint, so an event the validation or the vault constraints refuse is dropped and logged while the rest of the batch imports; any other vault error keeps the whole batch for a later attempt. Spooled events never name a segment.
 - Android's Guardian journal records usage, totals, and its observation checkpoint in one transaction. A full journal rejects new evidence without advancing the checkpoint, and rows from another vault stay pending until that vault is active again.
 
-Combined accounting across devices follows [Sync](../sync.md#mixed-mode). Limits add other devices' totals to this device's journal and its pending spool or Guardian events, each counted once. A capture with inconsistent identities, vault attribution, dates, or oversized evidence fails explicitly instead of publishing a truncated total. Vault and configuration changes revoke the old native publication before the new one becomes visible.
+Combined accounting across devices follows [Sync](../sync.md#table-classes-and-domains). Limits add other devices' totals to this device's journal and its pending spool or Guardian events, each counted once. A capture with inconsistent identities, vault attribution, dates, or oversized evidence fails explicitly instead of publishing a truncated total. Vault and configuration changes revoke the old native publication before the new one becomes visible.
 
 ## Profile and managed icons
 

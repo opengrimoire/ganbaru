@@ -48,7 +48,7 @@ Mosaics read scaled copies of large images and the viewer reads the original, bo
 
 Active notes can be pinned, archived, or moved to Trash. Archive and Trash clear pin state. Trash remembers whether the note came from active or Archive so restore returns it appropriately.
 
-Trashed notes are read-only and are permanently deleted after seven days. Expired notes are hidden at once and purged by a background job on a device that can write them. Manual permanent deletion and Empty Trash require confirmation.
+Trashed notes are read-only and are permanently deleted after seven days. Expired notes are hidden at once and purged by a background job. Manual permanent deletion and Empty Trash require confirmation.
 
 ## Linked devices
 

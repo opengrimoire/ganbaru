@@ -847,6 +847,217 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
     });
 }
 
+/// A laptop desktop holding the log of a lost hub that started the key epochs with the founding
+/// kit and then regenerated the recovery key, with the laptop's encryption keys attached. With
+/// `publish_laptop_key`, the hub sequenced the laptop's device key before it was lost. Returns
+/// the laptop and the regenerated seed.
+async fn regenerated_space(label: &str, publish_laptop_key: bool) -> (Replica, RecoverySeed) {
+    let mut hub_replica = Replica::new(&format!("hub-{label}"), HUB_DEVICE).await;
+    let mut laptop = Replica::new(&format!("laptop-{label}"), LAPTOP_DEVICE).await;
+    let charter = hub_replica.charter().await;
+    let space = hub_replica.ctx.space;
+    let admin = hub_keys().admin;
+    let hub_space_keys = Arc::new(SpaceKeys::new(
+        device_key(HUB_DEVICE),
+        EncryptionKeyPair::generate().expect("encryption key"),
+    ));
+    hub_replica.writer.attach_keys(hub_space_keys.clone());
+    let outbox_path = hub_replica.directory.files().outbox_path();
+    {
+        let mut conn = acquire(&hub_replica.pool).await;
+        let mut outbox = Outbox::load(&outbox_path).expect("outbox");
+        authority::publish_device_key(
+            &hub_replica.engine,
+            &mut conn,
+            &hub_replica.ctx,
+            &mut hub_replica.writer.local(),
+            hub_space_keys.as_ref(),
+            &mut outbox,
+            NOW_MS,
+        )
+        .await
+        .expect("publish the device key");
+        authority::start_key_epochs(
+            &hub_replica.engine,
+            &mut conn,
+            &hub_replica.ctx,
+            &admin,
+            &mut hub_replica.writer.local(),
+            &hub_keys().recovery,
+            NOW_MS,
+        )
+        .await
+        .expect("start the key epochs")
+        .expect("the founding kit starts them")
+        .expect("a key epoch was sealed");
+    }
+    commit_sequenced(&mut hub_replica).await;
+
+    let keys = hub_replica.directory.keys();
+    let mut outbox = Outbox::load(&outbox_path).expect("outbox");
+    let view = view_of(&hub_replica).await;
+    let seed = authority::regenerate_recovery_kit(
+        &keys,
+        VAULT_ID,
+        &mut outbox,
+        &view,
+        space,
+        &admin,
+        NOW_MS,
+    )
+    .expect("regenerate");
+    {
+        let mut conn = acquire(&hub_replica.pool).await;
+        authority::sequence_outbox(
+            &hub_replica.engine,
+            &mut conn,
+            &hub_replica.ctx,
+            &mut hub_replica.writer.local(),
+            &mut outbox,
+            &Default::default(),
+            &Default::default(),
+            NOW_MS,
+        )
+        .await
+        .expect("sequence the regeneration");
+    }
+    commit_sequenced(&mut hub_replica).await;
+    let enroll = authority::propose(
+        space,
+        charter,
+        &admin,
+        authority::enroll_entry(Enrollment {
+            device_id: LAPTOP_DEVICE.to_string(),
+            device_key: device_key(LAPTOP_DEVICE).public_key(),
+            tls_fingerprint: [33; 32],
+            label: "Laptop".to_string(),
+            device_kind: DeviceKind::Desktop,
+        }),
+        NOW_MS,
+    )
+    .expect("sign enrollment");
+    sequence_here(&mut hub_replica, &enroll).await;
+    let laptop_keys = Arc::new(SpaceKeys::new(
+        device_key(LAPTOP_DEVICE),
+        EncryptionKeyPair::generate().expect("encryption key"),
+    ));
+    if publish_laptop_key {
+        let published = authority::device_key_proposal(
+            space,
+            charter,
+            LAPTOP_DEVICE,
+            laptop_keys.as_ref(),
+            NOW_MS,
+        )
+        .expect("sign the laptop's device key");
+        sequence_here(&mut hub_replica, &published).await;
+    }
+    let view = view_of(&hub_replica).await;
+    assert_eq!(
+        view.recovery_encryption_key,
+        Some(seed.public_keys().expect("kit keys").encryption),
+        "the regenerated kit receives every later envelope"
+    );
+    assert!(view.key_epoch > 1);
+    laptop
+        .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
+        .await
+        .expect("pull the log");
+    laptop.apply().await;
+    laptop.writer.attach_keys(laptop_keys);
+    // The anchor is lost from here on.
+    hub_replica.close().await;
+    (laptop, seed)
+}
+
+/// Forces the anchor to `laptop` with the recovery kit `code`, promoting it to admin.
+async fn force_with_kit(
+    laptop: &mut Replica,
+    code: &str,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let signer = authority::kit_admin(code).expect("kit admin key");
+    let recovery = authority::kit_encryption(code).expect("kit encryption key");
+    let laptop_admin = AdminKeyPair::from_seed(&[32; 32]).expect("admin seed");
+    let forced = authority::ForcedHandover {
+        signer: &signer,
+        promote: Some(laptop_admin.public_key()),
+        point: None,
+        removals: Vec::new(),
+        recovery: Some(&recovery),
+    };
+    let mut conn = acquire(&laptop.pool).await;
+    authority::force_handover_here(
+        &laptop.engine,
+        &mut conn,
+        &laptop.ctx,
+        &forced,
+        &mut laptop.writer.local(),
+        NOW_MS,
+    )
+    .await
+}
+
+#[test]
+fn a_regenerated_recovery_key_keeps_the_printed_kit_from_forcing_a_keyless_anchor() {
+    block_on(async {
+        let (mut laptop, seed) = regenerated_space("stale-kit", false).await;
+        let before = view_of(&laptop).await;
+        let stored = laptop.stored().await;
+
+        // The printed kit still signs a handover, but it opens no epoch after the regeneration
+        // and the log names no key of this desktop, so nothing is sealed.
+        assert_eq!(
+            force_with_kit(&mut laptop, &hub_recovery_seed().kit_code()).await,
+            Err(authority::KeylessAnchor::StaleKit.to_string())
+        );
+        assert_eq!(view_of(&laptop).await, before);
+        assert_eq!(laptop.stored().await, stored);
+        let outbox = Outbox::load(&laptop.directory.files().outbox_path()).expect("outbox");
+        assert!(outbox.entries().is_empty(), "nothing waits for an anchor");
+
+        // The regenerated kit opens the current recovery envelope, so it takes the anchor.
+        let revision = force_with_kit(&mut laptop, &seed.kit_code())
+            .await
+            .expect("force handover")
+            .expect("the regenerated kit hands the anchor to the laptop");
+        let view = view_of(&laptop).await;
+        assert_eq!(
+            (view.revision, view.anchor_device_id.as_str()),
+            (revision, LAPTOP_DEVICE)
+        );
+        assert!(
+            view.devices
+                .iter()
+                .any(|device| device.device_id == LAPTOP_DEVICE && device.encryption_key.is_some()),
+            "the new anchor publishes its own device key"
+        );
+        laptop.close().await;
+    });
+}
+
+#[test]
+fn a_printed_kit_forces_the_anchor_to_a_desktop_whose_key_the_log_names() {
+    block_on(async {
+        let (mut laptop, _seed) = regenerated_space("published-kit", true).await;
+        let revision = force_with_kit(&mut laptop, &hub_recovery_seed().kit_code())
+            .await
+            .expect("force handover")
+            .expect("the printed kit hands the anchor to a desktop that opens the epoch");
+        let view = view_of(&laptop).await;
+        assert_eq!(
+            (view.revision, view.anchor_device_id.as_str()),
+            (revision, LAPTOP_DEVICE)
+        );
+        assert!(
+            view.devices
+                .iter()
+                .any(|device| device.device_id == HUB_DEVICE && device.removed_revision.is_some()),
+            "the kit removes the lost anchor"
+        );
+        laptop.close().await;
+    });
+}
+
 /// A hub that sequenced two enrollments its database then lost to a backup restore, with a
 /// phone that pulled them before the restore. The hub runs the writer check on the restored
 /// database and continues with the successor it plans.

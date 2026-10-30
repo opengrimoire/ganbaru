@@ -2013,6 +2013,10 @@ pub struct HandoverPoint {
     pub anchor_device_id: String,
     /// Whether `signer` is the kit key there.
     pub by_kit: bool,
+    /// The authorization state after the entry, derived from verified stored records only, so a
+    /// handover can check what it continues from, such as its key epoch and the encryption keys
+    /// published there, rather than the selected head.
+    pub view: AuthorizationView,
 }
 
 impl HandoverPoint {
@@ -2023,6 +2027,7 @@ impl HandoverPoint {
             entry_hash: state.entry_hash,
             anchor_device_id: state.anchor_device_id.clone(),
             by_kit,
+            view: state.view(),
         }
     }
 }

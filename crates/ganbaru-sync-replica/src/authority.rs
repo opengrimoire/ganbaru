@@ -16,8 +16,8 @@ use ganbaru_handoff::protocol::{
     DeviceKind as HandoffDeviceKind, MAX_SYNC_FORWARDED_PROPOSALS, encode_sync_proposal,
 };
 use ganbaru_sync::{
-    AuthorizationView, ContestEntry, ContestRejection, Engine, LocalWriter, SpaceContext,
-    SpaceKeyHolder,
+    AuthorizationView, ContestEntry, ContestRejection, Engine, HandoverPoint, LocalWriter,
+    SpaceContext, SpaceKeyHolder,
 };
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
@@ -848,7 +848,7 @@ pub async fn seal_handover_here(
         &writer.certificate.certificate.device_id,
         writer.keys,
     ) {
-        return Err(KEYLESS_ANCHOR.to_string());
+        return Err(KeylessAnchor::Unpublished.to_string());
     }
     let epoch = view
         .epoch
@@ -887,7 +887,8 @@ pub struct ForcedHandover<'a> {
     pub removals: Vec<String>,
     /// The recovery encryption key the kit derives, set on a kit recovery. It opens the
     /// recovery envelope of the current key epoch, so this desktop can publish its own device
-    /// key and seal the rotations after the handover before an envelope to its own key exists.
+    /// key and seal the rotations after the handover before an envelope to its own key exists,
+    /// as long as no regeneration replaced it.
     pub recovery: Option<&'a EncryptionKeyPair>,
 }
 
@@ -914,7 +915,50 @@ pub fn opens_current_epoch(
     })
 }
 
-const KEYLESS_ANCHOR: &str = "this desktop's encryption key is not published yet; sync once with the anchor, or use the recovery kit";
+/// Why a desktop may not take the anchor: it could open no key epoch past the one it takes over,
+/// so it could seal neither its own device key nor any rotation and every removal would wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeylessAnchor {
+    /// Without the kit, the log names no encryption key for this desktop.
+    Unpublished,
+    /// With a kit, the log names neither this desktop's encryption key nor the kit's: a
+    /// regeneration replaced the recovery key the printed kit derives.
+    StaleKit,
+}
+
+impl std::fmt::Display for KeylessAnchor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Unpublished => {
+                "this desktop's encryption key is not published yet; sync once with the anchor, or use the recovery kit"
+            }
+            Self::StaleKit => {
+                "this recovery kit was replaced by a newer recovery key and cannot open the vault's current keys; use the newer recovery kit code, or sync this desktop with the anchor first"
+            }
+        })
+    }
+}
+
+impl std::error::Error for KeylessAnchor {}
+
+/// Whether a forced handover may continue from `point`: this desktop opens its key epoch, see
+/// [`opens_current_epoch`], or the kit's `recovery` encryption key is the one the point's latest
+/// recovery key entry published, so the kit opens the point's recovery envelope.
+fn forced_opens_epoch(
+    point: &HandoverPoint,
+    device_id: &str,
+    keys: Option<&dyn SpaceKeyHolder>,
+    recovery: Option<&EncryptionKeyPair>,
+) -> Result<(), KeylessAnchor> {
+    if opens_current_epoch(&point.view, device_id, keys) {
+        return Ok(());
+    }
+    match recovery {
+        Some(kit) if point.view.recovery_encryption_key == Some(kit.public_key()) => Ok(()),
+        Some(_) => Err(KeylessAnchor::StaleKit),
+        None => Err(KeylessAnchor::Unpublished),
+    }
+}
 
 /// Forces the anchor to this desktop after the anchor is lost or stolen: signs with the
 /// request's signer and seals a handover without an old anchor vector, so operations only the
@@ -925,9 +969,11 @@ const KEYLESS_ANCHOR: &str = "this desktop's encryption key is not published yet
 /// selected head. With a promotion, the new anchor then sequences the promotion of its own
 /// device to admin with that key, signed by the same signer. With the kit's recovery key, the
 /// new anchor publishes its own device key right after the handover, which seals any rotation
-/// the handover point waits for, and signs every later entry with that key at hand. Without it,
-/// a desktop that would open no key epoch is refused before anything is sealed. Returns the
-/// revision of the last entry, or why the engine rejected one.
+/// the handover point waits for, and signs every later entry with that key at hand. Before
+/// anything is sealed, a desktop that would open no key epoch at the point it continues from is
+/// refused with [`KeylessAnchor`]: the point needs no key epoch, names this desktop's encryption
+/// key, or, with the kit, names the kit's recovery encryption key, which a regeneration
+/// replaces. Returns the revision of the last entry, or why the engine rejected one.
 pub async fn force_handover_here(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -980,16 +1026,8 @@ async fn force_handover_with(
                 .to_string(),
         );
     }
-    if forced.recovery.is_none() {
-        let view = engine
-            .authorization(conn, ctx)
-            .await
-            .map_err(|error| format!("read sync authorization: {error}"))?
-            .ok_or_else(|| "the sync space has no charter".to_string())?;
-        if !opens_current_epoch(&view, &device_id, writer.keys) {
-            return Err(KEYLESS_ANCHOR.to_string());
-        }
-    }
+    forced_opens_epoch(&point, &device_id, writer.keys, forced.recovery)
+        .map_err(|refusal| refusal.to_string())?;
     let charter = engine
         .charter(conn, ctx)
         .await

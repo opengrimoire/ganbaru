@@ -646,6 +646,33 @@ fn a_replaced_recovery_key_opens_no_later_epoch() {
         assert_eq!(view(&mut anchor).await.key_epoch, 2);
 
         let mut recovered = synced_member(3, 13, &mut anchor).await;
+        // The point a handover the replaced kit signs continues from names neither the kit's
+        // recovery encryption key nor a key of this desktop, so the replica refuses that forced
+        // handover before sealing it. The engine itself seals it, which shows why.
+        let point = recovered
+            .engine
+            .handover_point(
+                &mut recovered.conn,
+                &recovered.ctx,
+                &recovery_admin(&person()).public_key(),
+                &device_id(3),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(point.by_kit);
+        assert_eq!(point.view.key_epoch, 2);
+        assert_eq!(
+            point.view.recovery_encryption_key,
+            Some(replacement.recovery_encryption_key().unwrap().public_key())
+        );
+        assert!(
+            point
+                .view
+                .devices
+                .iter()
+                .all(|device| device.device_id != device_id(3) || device.encryption_key.is_none())
+        );
         let forced = recovered
             .handover_proposal(&recovery_admin(&person()))
             .await;

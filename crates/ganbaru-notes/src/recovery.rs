@@ -944,7 +944,7 @@ impl InsertError {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::{Connection, SqliteConnection};
+    use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
     use std::collections::HashMap;
 

@@ -31,6 +31,8 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 const WRITE_CONTENTION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Rows retention examines per query.
 const RETENTION_BATCH: i64 = 256;
+/// Epoch entries one epoch page examines.
+const EPOCH_PAGE_ROWS: i64 = 256;
 
 /// Default storage quota of one space.
 pub const DEFAULT_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -64,6 +66,8 @@ impl Default for RetentionPolicy {
 pub enum StoreError {
     /// The request is refused for a reason the device can act on.
     Refused(RelayRefusalCode, &'static str),
+    /// The admin counter is not above the last accepted counter, which this carries.
+    StaleAdminCounter(u64),
     /// The database failed.
     Database(sqlx::Error),
 }
@@ -72,6 +76,12 @@ impl fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Refused(code, reason) => write!(formatter, "refused ({code:?}): {reason}"),
+            Self::StaleAdminCounter(last) => {
+                write!(
+                    formatter,
+                    "refused (AdminCounter): last accepted counter is {last}"
+                )
+            }
             Self::Database(error) => write!(formatter, "relay database: {error}"),
         }
     }
@@ -141,6 +151,13 @@ pub enum AdminChange {
     Wipe,
     /// Deletes the space.
     RemoveSpace,
+    /// Sets the current epoch and its access key and deletes what is stored above it.
+    RelayEpochRepair {
+        /// Epoch that becomes current, also below the current epoch.
+        epoch: u32,
+        /// Access key of that epoch.
+        access_key: RelayAccessPublicKey,
+    },
 }
 
 /// Stored range of one writer.
@@ -393,7 +410,14 @@ impl RelayStore {
         signer: &AdminPublicKey,
         counter: u64,
         change: AdminChange,
+        now_ms: i64,
     ) -> StoreResult<()> {
+        if let AdminChange::RelayEpochRepair { epoch: 0, .. } = change {
+            return refuse(
+                RelayRefusalCode::BadRequest,
+                "repaired epoch must be at least 1",
+            );
+        }
         let counter_sql = to_sql(counter, "admin counter is too large")?;
         let mut connection = self.pool.acquire().await?;
         let mut transaction = connection.begin().await?;
@@ -404,10 +428,7 @@ impl RelayStore {
             return refuse(RelayRefusalCode::AdminSignature, "signer is not an admin");
         }
         if counter <= row.admin_counter {
-            return refuse(
-                RelayRefusalCode::AdminCounter,
-                "admin counter was already used",
-            );
+            return Err(StoreError::StaleAdminCounter(row.admin_counter));
         }
         let space_bytes = space.as_bytes().as_slice();
         match change {
@@ -460,6 +481,18 @@ impl RelayStore {
                     .bind(space_bytes)
                     .execute(&mut *transaction)
                     .await?;
+            }
+            AdminChange::RelayEpochRepair { epoch, access_key } => {
+                repair_epoch(&mut transaction, space, epoch, &access_key, now_ms).await?;
+                sqlx::query(
+                    "UPDATE relay_spaces SET current_epoch = ?, admin_counter = ? \
+                     WHERE space_id = ?",
+                )
+                .bind(i64::from(epoch))
+                .bind(counter_sql)
+                .bind(space_bytes)
+                .execute(&mut *transaction)
+                .await?;
             }
         }
         transaction.commit().await?;
@@ -711,14 +744,16 @@ impl RelayStore {
         };
         let rows = sqlx::query(
             "SELECT epoch, length(entry) AS size FROM relay_epochs \
-             WHERE space_id = ? AND epoch > ? AND entry IS NOT NULL ORDER BY epoch",
+             WHERE space_id = ? AND epoch > ? AND entry IS NOT NULL ORDER BY epoch LIMIT ?",
         )
         .bind(space.as_bytes().as_slice())
         .bind(i64::from(after))
+        .bind(EPOCH_PAGE_ROWS)
         .fetch_all(&mut *connection)
         .await?;
         let mut page = EpochPage {
             current_epoch: row.current_epoch,
+            more: i64::try_from(rows.len()).unwrap_or(i64::MAX) >= EPOCH_PAGE_ROWS,
             ..EpochPage::default()
         };
         let mut total = 0usize;
@@ -775,6 +810,18 @@ impl RelayStore {
             .fetch_optional(&mut *transaction)
             .await?;
             if stored.as_deref() == Some(access_key.as_bytes().as_slice()) {
+                // An epoch an admin repaired has no entry until a holder of its key registers
+                // again.
+                sqlx::query(
+                    "UPDATE relay_epochs SET entry = ? \
+                     WHERE space_id = ? AND epoch = ? AND entry IS NULL",
+                )
+                .bind(entry)
+                .bind(space_bytes)
+                .bind(i64::from(new_epoch))
+                .execute(&mut *transaction)
+                .await?;
+                transaction.commit().await?;
                 return Ok(());
             }
         }
@@ -1164,6 +1211,94 @@ async fn set_admins(
         .execute(&mut *connection)
         .await?;
     Ok(())
+}
+
+/// Makes `epoch` with `access_key` the newest epoch of a space and deletes everything stored
+/// above it. When the stored key of `epoch` differs, its entry, records, and chunks were written
+/// by whoever registered that wrong key, so they go too and the entry is left empty.
+///
+/// A writer's records never move to a lower epoch as its sequence grows, so the deleted records
+/// of each writer are a suffix of its stored range: its next sequence becomes the first deleted
+/// one, and a writer with nothing left loses its range entirely.
+async fn repair_epoch(
+    connection: &mut SqliteConnection,
+    space: &SpaceId,
+    epoch: u32,
+    access_key: &RelayAccessPublicKey,
+    now_ms: i64,
+) -> StoreResult<()> {
+    let space_bytes = space.as_bytes().as_slice();
+    let stored_key: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT access_key FROM relay_epochs WHERE space_id = ? AND epoch = ?")
+            .bind(space_bytes)
+            .bind(i64::from(epoch))
+            .fetch_optional(&mut *connection)
+            .await?;
+    let key_kept = stored_key.as_deref() == Some(access_key.as_bytes().as_slice());
+    let last_kept = if key_kept {
+        i64::from(epoch)
+    } else {
+        i64::from(epoch) - 1
+    };
+    let cut: Vec<(Vec<u8>, i64)> = sqlx::query_as(
+        "SELECT writer_id, MIN(seq) FROM relay_records WHERE space_id = ? AND epoch > ? \
+         GROUP BY writer_id",
+    )
+    .bind(space_bytes)
+    .bind(last_kept)
+    .fetch_all(&mut *connection)
+    .await?;
+    let removed_bytes: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COALESCE(SUM(length(record)), 0) FROM relay_records \
+                 WHERE space_id = ?1 AND epoch > ?2) \
+              + (SELECT COALESCE(SUM(length(chunk)), 0) FROM relay_assets \
+                 WHERE space_id = ?1 AND epoch > ?2)",
+    )
+    .bind(space_bytes)
+    .bind(last_kept)
+    .fetch_one(&mut *connection)
+    .await?;
+    for statement in [
+        "DELETE FROM relay_records WHERE space_id = ? AND epoch > ?",
+        "DELETE FROM relay_assets WHERE space_id = ? AND epoch > ?",
+        "DELETE FROM relay_epochs WHERE space_id = ? AND epoch > ?",
+    ] {
+        sqlx::query(statement)
+            .bind(space_bytes)
+            .bind(last_kept)
+            .execute(&mut *connection)
+            .await?;
+    }
+    for (writer, first_cut) in cut {
+        sqlx::query("DELETE FROM relay_floors WHERE space_id = ? AND writer_id = ? AND floor >= ?")
+            .bind(space_bytes)
+            .bind(writer.as_slice())
+            .bind(first_cut)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query(
+            "UPDATE relay_floors SET next_seq = MIN(next_seq, ?) \
+             WHERE space_id = ? AND writer_id = ?",
+        )
+        .bind(first_cut)
+        .bind(space_bytes)
+        .bind(writer.as_slice())
+        .execute(&mut *connection)
+        .await?;
+    }
+    if !key_kept {
+        sqlx::query(
+            "INSERT INTO relay_epochs (space_id, epoch, access_key, entry, registered_at_ms) \
+             VALUES (?, ?, ?, NULL, ?)",
+        )
+        .bind(space_bytes)
+        .bind(i64::from(epoch))
+        .bind(access_key.as_bytes().as_slice())
+        .bind(now_ms)
+        .execute(&mut *connection)
+        .await?;
+    }
+    add_stored_bytes(connection, space, -removed_bytes).await
 }
 
 async fn add_stored_bytes(

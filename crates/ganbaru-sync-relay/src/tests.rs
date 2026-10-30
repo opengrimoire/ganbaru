@@ -130,6 +130,7 @@ fn chunk_header(bytes: &[u8]) -> RelayAssetHeader {
 fn code_of<T: std::fmt::Debug>(result: Result<T, StoreError>) -> RelayRefusalCode {
     match result {
         Err(StoreError::Refused(code, _)) => code,
+        Err(StoreError::StaleAdminCounter(_)) => RelayRefusalCode::AdminCounter,
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
@@ -230,13 +231,14 @@ async fn admin_counters_refuse_replays_and_the_admin_set_changes() {
             &owner.public_key(),
             1,
             AdminChange::AddKey(second.public_key()),
+            2,
         )
         .await
         .unwrap();
     assert_eq!(
         code_of(
             store
-                .apply_admin(&space, &owner.public_key(), 1, AdminChange::Wipe)
+                .apply_admin(&space, &owner.public_key(), 1, AdminChange::Wipe, 2)
                 .await
         ),
         RelayRefusalCode::AdminCounter
@@ -247,6 +249,7 @@ async fn admin_counters_refuse_replays_and_the_admin_set_changes() {
             &second.public_key(),
             5,
             AdminChange::RemoveKey(owner.public_key()),
+            2,
         )
         .await
         .unwrap();
@@ -257,7 +260,7 @@ async fn admin_counters_refuse_replays_and_the_admin_set_changes() {
     assert_eq!(
         code_of(
             store
-                .apply_admin(&space, &owner.public_key(), 6, AdminChange::Wipe)
+                .apply_admin(&space, &owner.public_key(), 6, AdminChange::Wipe, 2)
                 .await
         ),
         RelayRefusalCode::AdminSignature
@@ -269,14 +272,15 @@ async fn admin_counters_refuse_replays_and_the_admin_set_changes() {
                     &space,
                     &second.public_key(),
                     6,
-                    AdminChange::RemoveKey(second.public_key())
+                    AdminChange::RemoveKey(second.public_key()),
+                    2,
                 )
                 .await
         ),
         RelayRefusalCode::AdminSet
     );
     store
-        .apply_admin(&space, &second.public_key(), 7, AdminChange::RemoveSpace)
+        .apply_admin(&space, &second.public_key(), 7, AdminChange::RemoveSpace, 2)
         .await
         .unwrap();
     assert_eq!(
@@ -398,6 +402,211 @@ async fn epochs_register_only_as_the_next_epoch_from_the_current_one() {
     assert_eq!(
         code_of(store.credential(&space, 4).await),
         RelayRefusalCode::UnknownEpoch
+    );
+}
+
+fn ranges(state: &crate::store::SpaceState) -> Vec<(WriterId, u64, u64)> {
+    state
+        .writers
+        .iter()
+        .map(|range| (range.writer, range.floor, range.next))
+        .collect()
+}
+
+async fn push_one(store: &RelayStore, bytes: &[u8], now_ms: i64) -> RelayPushOutcome {
+    let header = header_of(bytes);
+    store
+        .push(
+            &header.space,
+            header.epoch,
+            &[(header, bytes.to_vec())],
+            now_ms,
+        )
+        .await
+        .unwrap()[0]
+}
+
+#[tokio::test]
+async fn an_epoch_repair_lowers_the_epoch_and_deletes_everything_above_it() {
+    let dir = TempDir::new();
+    let space = space_id(1);
+    let owner = admin();
+    let store = claimed_store(
+        &dir,
+        RetentionPolicy::default(),
+        space,
+        &owner,
+        &access(&space, 1),
+    )
+    .await;
+    let honest = writer_id(1);
+    let stray = writer_id(2);
+    let second = access(&space, 2).public_key();
+    let first_record = record(space, honest, 1, 1, 1, 32);
+    assert_eq!(
+        push_one(&store, &first_record, 1).await,
+        RelayPushOutcome::Stored
+    );
+    store
+        .register_epoch(&space, 1, 2, &second, b"entry two", 2)
+        .await
+        .unwrap();
+    let second_record = record(space, honest, 2, 2, 1, 32);
+    assert_eq!(
+        push_one(&store, &second_record, 3).await,
+        RelayPushOutcome::Stored
+    );
+    // A holder of epoch 2 climbs through keys of its own and fills slots above it.
+    store
+        .register_epoch(&space, 2, 3, &access(&space, 3).public_key(), b"x", 4)
+        .await
+        .unwrap();
+    store
+        .register_epoch(&space, 3, 4, &access(&space, 4).public_key(), b"y", 5)
+        .await
+        .unwrap();
+    assert_eq!(
+        push_one(&store, &record(space, honest, 3, 4, 9, 32), 6).await,
+        RelayPushOutcome::Stored
+    );
+    assert_eq!(
+        push_one(&store, &record(space, stray, 7, 4, 9, 32), 6).await,
+        RelayPushOutcome::Stored
+    );
+    let stray_chunk = chunk(space, [5; 32], 4, 0, 1, 3);
+    store
+        .put_asset_chunk(&space, 4, &chunk_header(&stray_chunk), &stray_chunk, 7)
+        .await
+        .unwrap();
+
+    let repair = AdminChange::RelayEpochRepair {
+        epoch: 2,
+        access_key: second,
+    };
+    assert_eq!(
+        code_of(
+            store
+                .apply_admin(
+                    &space,
+                    &owner.public_key(),
+                    1,
+                    AdminChange::RelayEpochRepair {
+                        epoch: 0,
+                        access_key: second,
+                    },
+                    8,
+                )
+                .await
+        ),
+        RelayRefusalCode::BadRequest
+    );
+    store
+        .apply_admin(&space, &owner.public_key(), 1, repair, 8)
+        .await
+        .unwrap();
+    // A replay of the same signed repair is refused by the counter, whatever the epoch.
+    assert!(matches!(
+        store
+            .apply_admin(&space, &owner.public_key(), 1, repair, 9)
+            .await,
+        Err(StoreError::StaleAdminCounter(1))
+    ));
+
+    let state = store.state(&space).await.unwrap();
+    assert_eq!(state.current_epoch, 2);
+    assert_eq!(state.admin_counter, 1);
+    // The honest writer keeps its records up to epoch 2, and the stray writer is gone.
+    assert_eq!(ranges(&state), vec![(honest, 1, 3)]);
+    assert_eq!(
+        state.stored_bytes,
+        u64::try_from(first_record.len() + second_record.len()).unwrap()
+    );
+    assert_eq!(
+        store.pull(&space, 2, &have(&[])).await.unwrap().records,
+        vec![first_record, second_record]
+    );
+    assert!(
+        store
+            .complete_assets(&space, 2, &[[5; 32]])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    // The repaired epoch kept its key, so it keeps its entry; nothing above it is known.
+    let page = store.epochs(&space, 0).await.unwrap();
+    assert_eq!(page.current_epoch, 2);
+    assert_eq!(page.entries, vec![(2, b"entry two".to_vec())]);
+    assert_eq!(
+        code_of(store.credential(&space, 3).await),
+        RelayRefusalCode::UnknownEpoch
+    );
+    assert_eq!(
+        store.credential(&space, 2).await.unwrap().access_key,
+        second
+    );
+    // The freed slot takes the honest writer's next record.
+    assert_eq!(
+        push_one(&store, &record(space, honest, 3, 2, 4, 32), 10).await,
+        RelayPushOutcome::Stored
+    );
+}
+
+#[tokio::test]
+async fn an_epoch_repair_with_another_key_drops_what_the_wrong_key_wrote() {
+    let dir = TempDir::new();
+    let space = space_id(1);
+    let owner = admin();
+    let store = claimed_store(
+        &dir,
+        RetentionPolicy::default(),
+        space,
+        &owner,
+        &access(&space, 1),
+    )
+    .await;
+    let writer = writer_id(1);
+    let kept = record(space, writer, 1, 1, 1, 32);
+    push_one(&store, &kept, 1).await;
+    store
+        .register_epoch(&space, 1, 2, &access(&space, 2).public_key(), b"fake", 2)
+        .await
+        .unwrap();
+    push_one(&store, &record(space, writer, 2, 2, 9, 32), 3).await;
+    let real = access(&space, 2).public_key();
+    store
+        .apply_admin(
+            &space,
+            &owner.public_key(),
+            4,
+            AdminChange::RelayEpochRepair {
+                epoch: 2,
+                access_key: real,
+            },
+            4,
+        )
+        .await
+        .unwrap();
+    let state = store.state(&space).await.unwrap();
+    assert_eq!(ranges(&state), vec![(writer, 1, 2)]);
+    assert_eq!(state.stored_bytes, u64::try_from(kept.len()).unwrap());
+    assert_eq!(store.credential(&space, 2).await.unwrap().access_key, real);
+    // The wrong entry is gone; the holder of the real key fills it in by registering again.
+    assert!(store.epochs(&space, 0).await.unwrap().entries.is_empty());
+    store
+        .register_epoch(&space, 1, 2, &real, b"real entry", 5)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.epochs(&space, 0).await.unwrap().entries,
+        vec![(2, b"real entry".to_vec())]
+    );
+    store
+        .register_epoch(&space, 1, 2, &real, b"other entry", 6)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.epochs(&space, 0).await.unwrap().entries,
+        vec![(2, b"real entry".to_vec())]
     );
 }
 
@@ -1086,6 +1295,210 @@ async fn stale_epoch_credentials_below_the_claim_epoch_are_refused() {
         RelayRefusalCode::UnknownEpoch
     );
     assert_eq!(store.credential(&space, 4).await.unwrap().current_epoch, 4);
+}
+
+impl Client {
+    async fn register(
+        &mut self,
+        space: SpaceId,
+        epoch: u32,
+        key: &RelayAccessKeyPair,
+    ) -> RelayResponse {
+        let signature = key.sign(
+            RELAY_EPOCH_DOMAIN,
+            &self.binding(space).epoch_payload(epoch),
+        );
+        self.send(&RelayRequest::RegisterEpoch {
+            epoch,
+            access_key: encode_relay_bytes(key.public_key().as_bytes()),
+            entry: encode_relay_bytes(format!("entry {epoch}").as_bytes()),
+            signature: encode_relay_bytes(&signature),
+        })
+        .await
+    }
+
+    async fn repair(
+        &mut self,
+        space: SpaceId,
+        signer: &AdminKeyPair,
+        counter: u64,
+        epoch: u32,
+        key: &RelayAccessKeyPair,
+    ) -> RelayResponse {
+        let access_key = key.public_key();
+        let payload = self.binding(space).admin_payload(
+            counter,
+            &RelayAdminCommand::RelayEpochRepair {
+                epoch,
+                access_key: &access_key,
+            },
+        );
+        self.send(&RelayRequest::Admin {
+            action: RelayAdminAction::RelayEpochRepair {
+                epoch,
+                access_key: encode_relay_bytes(access_key.as_bytes()),
+            },
+            counter,
+            signer: encode_relay_bytes(signer.public_key().as_bytes()),
+            signature: encode_relay_bytes(&signer.sign(RELAY_ADMIN_DOMAIN, &payload)),
+        })
+        .await
+    }
+
+    async fn push(&mut self, bytes: &[u8]) -> RelayResponse {
+        self.send(&RelayRequest::Push {
+            records: vec![encode_relay_bytes(bytes)],
+        })
+        .await
+    }
+}
+
+#[tokio::test]
+async fn an_admin_repairs_a_hijacked_epoch_registration_over_tls() {
+    let relay = start_relay(ConnectionLimits::default()).await;
+    let space = space_id(1);
+    let owner = admin();
+    let first = access(&space, 1);
+    let token = issue_token(&relay).await;
+    let stored = RelayResponse::Pushed {
+        outcomes: vec![RelayPushOutcome::Stored],
+    };
+
+    let mut honest = Client::connect(&relay).await;
+    honest.hello(space).await;
+    assert_eq!(
+        honest.claim(space, &token, &first, &owner).await,
+        RelayResponse::Claimed { epoch: 1 }
+    );
+    honest.auth(space, 1, &first).await;
+    let writer = writer_id(1);
+    assert_eq!(
+        honest.push(&record(space, writer, 1, 1, 1, 32)).await,
+        stored
+    );
+
+    // An attacker holding epoch 1 registers keys of its own for epochs 2 and 3 and writes there.
+    let mut attacker = Client::connect(&relay).await;
+    attacker.hello(space).await;
+    attacker.auth(space, 1, &first).await;
+    let fake_second = access(&space, 2);
+    let fake_third = access(&space, 3);
+    assert_eq!(
+        attacker.register(space, 2, &fake_second).await,
+        RelayResponse::EpochRegistered { epoch: 2 }
+    );
+    let mut attacker = Client::connect(&relay).await;
+    attacker.hello(space).await;
+    attacker.auth(space, 2, &fake_second).await;
+    assert_eq!(
+        attacker.push(&record(space, writer, 2, 2, 9, 32)).await,
+        stored
+    );
+    attacker.register(space, 3, &fake_third).await;
+    let mut squatter = Client::connect(&relay).await;
+    squatter.hello(space).await;
+    squatter.auth(space, 3, &fake_third).await;
+    assert_eq!(
+        squatter
+            .push(&record(space, writer_id(2), 1, 3, 9, 32))
+            .await,
+        stored
+    );
+
+    // The honest member's real epoch 2 key is locked out.
+    let second = access(&space, 2);
+    assert_eq!(
+        refusal(&honest.register(space, 2, &second).await),
+        Some(RelayRefusalCode::StaleEpoch)
+    );
+    let mut locked = Client::connect(&relay).await;
+    locked.hello(space).await;
+    assert_eq!(
+        refusal(&locked.auth(space, 2, &second).await),
+        Some(RelayRefusalCode::Authentication)
+    );
+
+    // An admin repairs without epoch authentication, learning the counter from a refusal.
+    let mut repair = Client::connect(&relay).await;
+    repair.hello(space).await;
+    let stale = repair.repair(space, &owner, 1, 2, &second).await;
+    let RelayResponse::Refused {
+        code: RelayRefusalCode::AdminCounter,
+        next_counter: Some(next),
+        ..
+    } = stale
+    else {
+        panic!("expected a stale counter refusal, got {stale:?}");
+    };
+    assert_eq!(next, 2);
+    assert_eq!(
+        repair.repair(space, &owner, next, 2, &second).await,
+        RelayResponse::AdminApplied { counter: next }
+    );
+    assert_eq!(
+        refusal(&repair.repair(space, &owner, next, 2, &second).await),
+        Some(RelayRefusalCode::AdminCounter)
+    );
+
+    // Sessions opened with the replaced keys must authenticate again.
+    assert_eq!(
+        refusal(
+            &squatter
+                .push(&record(space, writer_id(2), 2, 3, 9, 32))
+                .await
+        ),
+        Some(RelayRefusalCode::Authentication)
+    );
+
+    let mut honest = Client::connect(&relay).await;
+    honest.hello(space).await;
+    assert_eq!(
+        honest.auth(space, 2, &second).await,
+        RelayResponse::Authenticated {
+            epoch: 2,
+            current_epoch: 2,
+            stale: false
+        }
+    );
+    assert_eq!(
+        honest.push(&record(space, writer, 2, 2, 2, 32)).await,
+        stored
+    );
+
+    // The attacker's epoch 1 credential is stale, and its own keys are refused.
+    let mut attacker = Client::connect(&relay).await;
+    attacker.hello(space).await;
+    attacker.auth(space, 1, &first).await;
+    assert_eq!(
+        refusal(&attacker.push(&record(space, writer, 3, 1, 9, 32)).await),
+        Some(RelayRefusalCode::StaleEpoch)
+    );
+    for (epoch, key, code) in [
+        (2, &fake_second, RelayRefusalCode::Authentication),
+        (3, &fake_third, RelayRefusalCode::UnknownEpoch),
+    ] {
+        let mut attacker = Client::connect(&relay).await;
+        attacker.hello(space).await;
+        assert_eq!(refusal(&attacker.auth(space, epoch, key).await), Some(code));
+    }
+
+    // Nothing above epoch 2 remains.
+    let state = relay.store.state(&space).await.unwrap();
+    assert_eq!(state.current_epoch, 2);
+    assert_eq!(ranges(&state), vec![(writer, 1, 3)]);
+    assert_eq!(
+        code_of(relay.store.credential(&space, 3).await),
+        RelayRefusalCode::UnknownEpoch
+    );
+    assert!(
+        relay
+            .store
+            .epochs(&space, 0)
+            .await
+            .unwrap()
+            .entries
+            .is_empty()
+    );
 }
 
 #[tokio::test]

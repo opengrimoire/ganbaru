@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, RwLock};
 use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
@@ -77,11 +77,24 @@ impl Default for ConnectionLimits {
 struct Shared {
     store: RelayStore,
     waits: Mutex<HashMap<SpaceId, Arc<Notify>>>,
+    /// Per space, a counter of admin changes that replace epoch keys (an epoch repair or a space
+    /// removal). Authentication and every authenticated request hold it for reading, and those
+    /// changes hold it for writing while they commit and then advance it, so a connection that
+    /// verified against a replaced key can never act after the change.
+    generations: Mutex<HashMap<SpaceId, Arc<RwLock<u64>>>>,
     pending: ConnectionBudget,
     authenticated: ConnectionBudget,
 }
 
 impl Shared {
+    fn generation(&self, space: &SpaceId) -> Arc<RwLock<u64>> {
+        let mut generations = self
+            .generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(generations.entry(*space).or_default())
+    }
+
     fn notifier(&self, space: &SpaceId) -> Arc<Notify> {
         let mut waits = self
             .waits
@@ -122,6 +135,7 @@ impl RelayServer {
             shared: Arc::new(Shared {
                 store,
                 waits: Mutex::new(HashMap::new()),
+                generations: Mutex::new(HashMap::new()),
                 pending: ConnectionBudget::new(limits.pending, limits.pending_per_source),
                 authenticated: ConnectionBudget::new(
                     limits.authenticated,
@@ -197,7 +211,13 @@ impl RelayServer {
 enum Phase {
     Start,
     Space(SpaceId),
-    Authenticated { space: SpaceId, epoch: u32 },
+    /// `generation` is the space's epoch generation when the credential verified; see
+    /// [`Shared::generations`].
+    Authenticated {
+        space: SpaceId,
+        epoch: u32,
+        generation: u64,
+    },
 }
 
 /// Whether a session continues after a response.
@@ -230,6 +250,9 @@ fn refused(code: RelayRefusalCode, message: &str) -> (RelayResponse, Next) {
 fn store_failure(error: StoreError) -> (RelayResponse, Next) {
     match error {
         StoreError::Refused(code, reason) => refused(code, reason),
+        StoreError::StaleAdminCounter(last) => {
+            (RelayResponse::stale_admin_counter(last), Next::Continue)
+        }
         StoreError::Database(error) => {
             eprintln!("relay database error: {error}");
             (
@@ -377,9 +400,16 @@ impl Session {
                 self.admin(space, &action, counter, &signer, &signature)
                     .await
             }
-            (Phase::Authenticated { space, epoch }, request) => {
-                let (space, epoch) = (*space, *epoch);
-                self.authenticated(space, epoch, request).await
+            (
+                Phase::Authenticated {
+                    space,
+                    epoch,
+                    generation,
+                },
+                request,
+            ) => {
+                let (space, epoch, generation) = (*space, *epoch, *generation);
+                self.authenticated(space, epoch, generation, request).await
             }
             (Phase::Space(_), _) => refused(
                 RelayRefusalCode::Unauthenticated,
@@ -399,6 +429,8 @@ impl Session {
             Ok(signature) => signature,
             Err(error) => return bad_request(&error),
         };
+        let lock = self.shared.generation(&space);
+        let generation = lock.read().await;
         let credential = match self.shared.store.credential(&space, epoch).await {
             Ok(credential) => credential,
             Err(error) => return store_failure(error),
@@ -418,7 +450,11 @@ impl Session {
         };
         // Replacing the pending permit releases its slot.
         self.permit = permit;
-        self.phase = Phase::Authenticated { space, epoch };
+        self.phase = Phase::Authenticated {
+            space,
+            epoch,
+            generation: *generation,
+        };
         (
             RelayResponse::Authenticated {
                 epoch,
@@ -507,6 +543,12 @@ impl Session {
                 }
                 RelayAdminAction::Wipe => AdminChange::Wipe,
                 RelayAdminAction::RemoveSpace => AdminChange::RemoveSpace,
+                RelayAdminAction::RelayEpochRepair { epoch, access_key } => {
+                    AdminChange::RelayEpochRepair {
+                        epoch: *epoch,
+                        access_key: decode_relay_access_key(access_key)?,
+                    }
+                }
             };
             Ok((
                 change,
@@ -523,6 +565,12 @@ impl Session {
             AdminChange::RemoveKey(key) => RelayAdminCommand::RemoveKey(key),
             AdminChange::Wipe => RelayAdminCommand::Wipe,
             AdminChange::RemoveSpace => RelayAdminCommand::RemoveSpace,
+            AdminChange::RelayEpochRepair { epoch, access_key } => {
+                RelayAdminCommand::RelayEpochRepair {
+                    epoch: *epoch,
+                    access_key,
+                }
+            }
         };
         let payload = self.binding(space).admin_payload(counter, &command);
         if !signer.verify(RELAY_ADMIN_DOMAIN, &payload, &signature) {
@@ -531,13 +579,27 @@ impl Session {
                 "admin signature is invalid",
             );
         }
-        match self
+        let replaces_keys = matches!(
+            change,
+            AdminChange::RelayEpochRepair { .. } | AdminChange::RemoveSpace
+        );
+        let lock = self.shared.generation(&space);
+        let mut generation = if replaces_keys {
+            Some(lock.write().await)
+        } else {
+            None
+        };
+        let applied = self
             .shared
             .store
-            .apply_admin(&space, &signer, counter, change)
-            .await
-        {
+            .apply_admin(&space, &signer, counter, change, unix_time_ms())
+            .await;
+        match applied {
             Ok(()) => {
+                if let Some(generation) = generation.as_mut() {
+                    **generation = generation.wrapping_add(1);
+                }
+                drop(generation);
                 self.shared.wake(&space);
                 (RelayResponse::AdminApplied { counter }, Next::Continue)
             }
@@ -549,8 +611,19 @@ impl Session {
         &mut self,
         space: SpaceId,
         epoch: u32,
+        generation: u64,
         request: RelayRequest,
     ) -> (RelayResponse, Next) {
+        let lock = self.shared.generation(&space);
+        let current = lock.read().await;
+        if *current != generation {
+            return refused(
+                RelayRefusalCode::Authentication,
+                "an admin replaced the space's epoch keys; authenticate again",
+            );
+        }
+        // A wait only reads, so it must not hold off an admin change for its whole timeout.
+        let _generation = (!matches!(request, RelayRequest::Wait { .. })).then_some(current);
         let store = &self.shared.store;
         let result = match request {
             RelayRequest::State => store.state(&space).await.map(|state| RelayResponse::State {

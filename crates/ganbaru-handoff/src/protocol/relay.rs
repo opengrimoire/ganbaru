@@ -63,6 +63,7 @@ const ADMIN_COMMAND_ADD_KEY: u8 = 2;
 const ADMIN_COMMAND_REMOVE_KEY: u8 = 3;
 const ADMIN_COMMAND_WIPE: u8 = 4;
 const ADMIN_COMMAND_REMOVE_SPACE: u8 = 5;
+const ADMIN_COMMAND_EPOCH_REPAIR: u8 = 6;
 const SPACE_TEXT_LENGTH: usize = 32;
 const WRITER_TEXT_LENGTH: usize = 32;
 const ASSET_TEXT_LENGTH: usize = RELAY_ASSET_ID_BYTES * 2;
@@ -282,6 +283,11 @@ impl RelayBinding {
             }
             RelayAdminCommand::Wipe => payload.push(ADMIN_COMMAND_WIPE),
             RelayAdminCommand::RemoveSpace => payload.push(ADMIN_COMMAND_REMOVE_SPACE),
+            RelayAdminCommand::RelayEpochRepair { epoch, access_key } => {
+                payload.push(ADMIN_COMMAND_EPOCH_REPAIR);
+                payload.extend_from_slice(&epoch.to_be_bytes());
+                payload.extend_from_slice(access_key.as_bytes());
+            }
         }
         payload
     }
@@ -304,6 +310,14 @@ pub enum RelayAdminCommand<'a> {
     Wipe,
     /// Deletes the space and everything stored for it.
     RemoveSpace,
+    /// Sets the space's current epoch and its access key, also below the current epoch, and
+    /// deletes every epoch, record, and asset chunk stored above it. The relay cannot check that a
+    /// registered epoch key is the real one, so this is how an admin undoes a wrong registration;
+    /// the admin counter, not the epoch, keeps it from being replayed.
+    RelayEpochRepair {
+        epoch: u32,
+        access_key: &'a RelayAccessPublicKey,
+    },
 }
 
 /// An admin action on the wire.
@@ -318,6 +332,8 @@ pub enum RelayAdminAction {
     Wipe,
     /// See [`RelayAdminCommand::RemoveSpace`].
     RemoveSpace,
+    /// See [`RelayAdminCommand::RelayEpochRepair`].
+    RelayEpochRepair { epoch: u32, access_key: String },
 }
 
 /// A request a device sends to a relay.
@@ -420,6 +436,9 @@ impl Frame for RelayRequest {
                     action
                 {
                     check_fixed_text("relay admin key", key, KEY_TEXT_LENGTH)?;
+                }
+                if let RelayAdminAction::RelayEpochRepair { access_key, .. } = action {
+                    check_fixed_text("relay access key", access_key, KEY_TEXT_LENGTH)?;
                 }
                 check_fixed_text("relay admin key", signer, KEY_TEXT_LENGTH)?;
                 check_fixed_text("relay signature", signature, SIGNATURE_TEXT_LENGTH)
@@ -609,6 +628,10 @@ pub enum RelayResponse {
     Refused {
         code: RelayRefusalCode,
         message: String,
+        /// For [`RelayRefusalCode::AdminCounter`], the lowest counter the relay accepts next, so
+        /// an admin that lost track can sign again. It is replay state, not a secret.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_counter: Option<u64>,
     },
 }
 
@@ -622,6 +645,17 @@ impl RelayResponse {
         Self::Refused {
             code,
             message: message[..end].to_string(),
+            next_counter: None,
+        }
+    }
+
+    /// A refusal of an admin counter that is not above `last_counter`, naming the next counter
+    /// the relay accepts.
+    pub fn stale_admin_counter(last_counter: u64) -> Self {
+        Self::Refused {
+            code: RelayRefusalCode::AdminCounter,
+            message: "admin counter was already used".to_string(),
+            next_counter: Some(last_counter.saturating_add(1)),
         }
     }
 }
@@ -997,6 +1031,74 @@ mod tests {
         let later = binding().admin_payload(3, &RelayAdminCommand::AddKey(&added));
         assert_ne!(add, remove);
         assert_ne!(add, later);
+
+        let next = SpaceKey::generate(5)
+            .unwrap()
+            .relay_access_key(&space)
+            .unwrap()
+            .public_key();
+        let repair = |counter: u64, epoch: u32, access_key| {
+            binding().admin_payload(
+                counter,
+                &RelayAdminCommand::RelayEpochRepair { epoch, access_key },
+            )
+        };
+        let repaired = repair(2, 5, &next);
+        assert_ne!(repaired, repair(2, 4, &next));
+        assert_ne!(repaired, repair(2, 5, &public));
+        assert_ne!(repaired, repair(3, 5, &next));
+        assert_ne!(
+            repaired,
+            binding().admin_payload(2, &RelayAdminCommand::Wipe)
+        );
+        assert_ne!(
+            repaired,
+            other.admin_payload(
+                2,
+                &RelayAdminCommand::RelayEpochRepair {
+                    epoch: 5,
+                    access_key: &next,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn epoch_repairs_validate_their_access_key_and_stale_counters_name_the_next_one() {
+        let repair = |access_key: String| RelayRequest::Admin {
+            action: RelayAdminAction::RelayEpochRepair {
+                epoch: 3,
+                access_key,
+            },
+            counter: 7,
+            signer: encode_relay_bytes(&[1; PUBLIC_KEY_BYTES]),
+            signature: encode_relay_bytes(&[2; SIGNATURE_BYTES]),
+        };
+        assert!(
+            repair(encode_relay_bytes(&[3; PUBLIC_KEY_BYTES]))
+                .validate()
+                .is_ok()
+        );
+        assert!(repair(encode_relay_bytes(&[3; 31])).validate().is_err());
+        assert!(repair("!".repeat(KEY_TEXT_LENGTH)).validate().is_err());
+
+        let refusal = RelayResponse::stale_admin_counter(9);
+        let RelayResponse::Refused {
+            code, next_counter, ..
+        } = &refusal
+        else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(*code, RelayRefusalCode::AdminCounter);
+        assert_eq!(*next_counter, Some(10));
+        let json = serde_json::to_string(&refusal).unwrap();
+        assert_eq!(
+            serde_json::from_str::<RelayResponse>(&json).unwrap(),
+            refusal
+        );
+        let plain =
+            serde_json::to_string(&RelayResponse::refused(RelayRefusalCode::Busy, "busy")).unwrap();
+        assert!(!plain.contains("counter"), "{plain}");
     }
 
     #[test]

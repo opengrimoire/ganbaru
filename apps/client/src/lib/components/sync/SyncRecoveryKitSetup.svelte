@@ -13,10 +13,17 @@
   import SyncRecoveryKitSheet from "./SyncRecoveryKitSheet.svelte";
 
   /**
-   * Creates the recovery kit of a desktop vault that is not linked yet. The vault keeps the
-   * kit's public keys, and its first link starts the sync space with them.
+   * Creates the recovery kit of a vault that is not linked yet. The vault keeps the kit's public
+   * keys, its first link starts the sync space with them, and its encrypted backups open with it.
    */
-  let { buttonClass }: { buttonClass: string } = $props();
+  let {
+    buttonClass,
+    exportable = true,
+  }: {
+    buttonClass: string;
+    /** Whether the kit sheet offers its printable page and text file export. */
+    exportable?: boolean;
+  } = $props();
 
   const { t } = getLocalization();
   let kitState = $state<SyncRecoveryKitState | null>(null);
@@ -78,7 +85,7 @@
       <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("sync.kit.description")}</div>
     </div>
     {#if kitState.pending}
-      <SyncRecoveryKitSheet kit={kitState.pending} {buttonClass} onConfirm={confirmSaved} />
+      <SyncRecoveryKitSheet kit={kitState.pending} {buttonClass} {exportable} onConfirm={confirmSaved} />
     {:else}
       <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">
         {kitState.stored ? t("sync.kit.createStored") : t("sync.kit.createDescription")}

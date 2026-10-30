@@ -59,6 +59,8 @@ export const dataFolderError = {
     "No se encontró la carpeta. Elige otra o importa una existente.",
   openElsewhere:
     "Esta carpeta está abierta en otra app de Ganbaru. Cierra esa app o elige otra carpeta.",
+  linkedAndroid:
+    "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego restaura.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {

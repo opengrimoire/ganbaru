@@ -4,7 +4,7 @@
 
 Android creates the active vault in application-private storage. The user cannot choose another live-vault path because Android document providers do not offer a safe writable folder with desktop semantics. The displayed data location is informational; reveal-in-file-manager and live-folder switching are absent.
 
-First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of a portable Android backup.
+First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of an encrypted backup with its recovery kit.
 
 ## Folder import
 
@@ -12,15 +12,15 @@ Import uses the system directory-tree picker and streams the selected folder int
 
 ## Portable backup and restore
 
-Backup writes a consistent SQLite snapshot and bounded archive to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded.
+Backup writes an encrypted backup (see [backups](../../data/sync.md#bootstrap-assets-backup-and-compaction)) of a consistent SQLite snapshot to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded. The vault needs a recovery kit first, which Settings > Data creates; Android shows its code to copy by hand and offers no printable page or text file.
 
-Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure.
+Restore uses the system document picker without a file type filter, because providers report backup files under arbitrary types, and relies on the format's magic and authentication instead. The kit opens a backup on a fresh install. Restore decrypts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure. It replaces the active vault, keeping the replaced database in `.database-rollbacks/`; a phone linked to other devices refuses and asks the user to restore on a computer or unlink first.
 
-The portable format is the recovery path after reinstall. Android system backup and device transfer exclude the unencrypted live vault until a deliberate encrypted design exists.
+The encrypted backup is the recovery path after reinstall. Android system backup and device transfer exclude the live vault.
 
 ## Linked desktop copies
 
-Linking and snapshot bootstrap are owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, the pending copy, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before a first link replaces an independent vault, Android writes it as a portable backup into application-private replaced-vault storage, keeping the two newest; Settings > Data lists them with Export to Downloads and Delete. Backup failure refuses the link with a storage message and leaves the vault in use. Replaced-vault backups are local only, so uninstalling the app removes them unless they were exported.
+Linking and snapshot bootstrap are owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, the pending copy, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before a first link replaces an independent vault, Android writes it as a portable backup into application-private replaced-vault storage, keeping the two newest; Settings > Data lists them with Restore, Export to Downloads, and Delete. Restore reads the copy only from that private storage by its identifier, places it like a restored backup with the active vault kept as a rollback copy, and is refused while the phone is linked; devices its sync log enrolled earlier and removed do not count. Restoring a rollback copy of another vault is refused the same way. Backup failure refuses the link with a storage message and leaves the vault in use. Replaced-vault backups are local only, so uninstalling the app removes them unless they were exported.
 
 After activation, startup reconciles Calendar notifications and anti-distraction projections. Device-local alarms, native enforcement, Media3 state, permissions, and document-tree grants are not replaced by the incoming vault.
 

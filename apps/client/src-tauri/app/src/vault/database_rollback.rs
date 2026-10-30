@@ -5,6 +5,9 @@
 //! A reset keeps the database. A handoff replacement keeps the replaced database,
 //! and when the replacement holds drastically less data, the whole replaced vault
 //! layout, flagged for review on this device.
+//!
+//! A restore of another vault into the folder, as an Android backup restore does,
+//! keeps the whole replaced vault. Its own copies stay hidden until it is restored.
 
 use super::backup::holds_vault;
 use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, active_writable_vault_path};
@@ -29,6 +32,9 @@ pub(crate) const MAX_REPLACEMENT_ROLLBACKS: usize = 3;
 /// has not dismissed are kept first, so a later replacement never evicts the copy
 /// from before an unwanted one.
 pub(crate) const MAX_FLAGGED_REPLACEMENTS: usize = 2;
+/// Most whole copies of another vault that a restore replaced, counted apart so a routine
+/// copy never evicts one.
+pub(crate) const MAX_OTHER_VAULT_ROLLBACKS: usize = 2;
 /// Age after which a dismissed flagged copy is deleted.
 const DISMISSED_FLAGGED_RETENTION: TimeDelta = TimeDelta::days(30);
 /// File inside a rollback directory that records why the copy was kept. A copy
@@ -55,7 +61,7 @@ pub enum RollbackOrigin {
 }
 
 /// Retention record stored in [`RETENTION_FILE`].
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Retention {
     pub origin: RollbackOrigin,
@@ -65,6 +71,15 @@ pub(crate) struct Retention {
     pub dismissed: bool,
     /// The copy holds the whole vault layout, not only the database.
     pub full: bool,
+    /// The copy is a whole other vault that a restore replaced; restoring it brings that
+    /// vault back in this folder.
+    #[serde(default)]
+    pub other_vault: bool,
+    /// The vault this copy belongs to, recorded when another vault replaced it. A copy of
+    /// another vault than the one in the folder is hidden and never restored, until that
+    /// vault is back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<String>,
 }
 
 impl Retention {
@@ -73,9 +88,28 @@ impl Retention {
         Self {
             origin: RollbackOrigin::Replacement,
             flagged,
-            dismissed: false,
             full: flagged,
+            ..Self::default()
         }
+    }
+
+    /// Retention of the whole vault `vault_id` that a restore of another vault replaced.
+    fn other_vault(vault_id: &str) -> Self {
+        Self {
+            origin: RollbackOrigin::Replacement,
+            full: true,
+            other_vault: true,
+            vault: Some(vault_id.to_string()),
+            ..Self::default()
+        }
+    }
+}
+
+impl DatabaseRollback {
+    /// Whether the copy shows for the vault `current` in the folder: a whole other vault
+    /// always shows, and any other copy only while the vault it belongs to is there.
+    fn shows_for(&self, current: Option<&str>) -> bool {
+        self.other_vault || self.vault.is_none() || self.vault.as_deref() == current
     }
 }
 
@@ -89,8 +123,12 @@ pub struct DatabaseRollback {
     pub origin: RollbackOrigin,
     pub flagged: bool,
     pub dismissed: bool,
+    /// The copy is a whole other vault that a restore replaced.
+    pub other_vault: bool,
     #[serde(skip)]
     full: bool,
+    #[serde(skip)]
+    vault: Option<String>,
 }
 
 fn rollback_root(vault: &Path) -> PathBuf {
@@ -223,23 +261,100 @@ pub(crate) fn list_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, Stri
             origin: retention.origin,
             flagged: retention.flagged,
             dismissed: retention.dismissed,
+            other_vault: retention.other_vault,
             full: retention.full,
+            vault: retention.vault,
         });
     }
     rollbacks.sort_by(|left, right| right.id.cmp(&left.id));
     Ok(rollbacks)
 }
 
+/// The rollbacks of the vault in the folder `vault`, newest first, leaving out the copies of
+/// a vault that another one replaced there.
+pub(crate) fn visible_rollbacks(vault: &Path) -> Result<Vec<DatabaseRollback>, String> {
+    let vault_id = vault_id_at(vault)?;
+    Ok(list_rollbacks(vault)?
+        .into_iter()
+        .filter(|rollback| rollback.shows_for(Some(&vault_id)))
+        .collect())
+}
+
+/// Records `vault_id` on every copy in `vault` that is not a whole other vault and names no
+/// vault yet, before another vault replaces it there, so those copies stay with the vault
+/// they belong to.
+fn claim_rollbacks(vault: &Path, vault_id: &str) -> Result<(), String> {
+    let root = rollback_root(vault);
+    for rollback in list_rollbacks(vault)? {
+        if rollback.other_vault || rollback.vault.is_some() {
+            continue;
+        }
+        let directory = root.join(&rollback.id);
+        write_retention(
+            &directory,
+            Retention {
+                vault: Some(vault_id.to_string()),
+                ..read_retention(&directory)
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Selects the rollbacks retention no longer keeps, given every rollback newest first and
+/// the vault `current` in the folder, `None` when its marker is unreadable. Copies that show
+/// for it follow [`stale_rollbacks`]; a hidden copy stays while a kept whole copy of its
+/// vault could bring that vault back, or while the vault in the folder is unknown.
+fn pruned_rollbacks(
+    rollbacks: &[DatabaseRollback],
+    current: Option<&str>,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let (shown, hidden): (Vec<DatabaseRollback>, Vec<DatabaseRollback>) = rollbacks
+        .iter()
+        .cloned()
+        .partition(|rollback| rollback.shows_for(current));
+    let mut stale = stale_rollbacks(&shown, now);
+    if current.is_none() {
+        return stale;
+    }
+    let kept_vaults: Vec<&str> = shown
+        .iter()
+        .filter(|rollback| rollback.other_vault && !stale.contains(&rollback.id))
+        .filter_map(|rollback| rollback.vault.as_deref())
+        .collect();
+    stale.extend(
+        hidden
+            .iter()
+            .filter(|rollback| {
+                rollback
+                    .vault
+                    .as_deref()
+                    .is_none_or(|vault| !kept_vaults.contains(&vault))
+            })
+            .map(|rollback| rollback.id.clone()),
+    );
+    stale
+}
+
 /// Selects the rollbacks retention no longer keeps, given every rollback newest
-/// first: resets and unflagged replacements beyond their counts, dismissed flagged
-/// copies past their age, and flagged copies beyond their count, keeping the
-/// earliest undismissed ones first.
+/// first: whole other vaults, resets, and unflagged replacements beyond their counts,
+/// dismissed flagged copies past their age, and flagged copies beyond their count,
+/// keeping the earliest undismissed ones first.
 fn stale_rollbacks(rollbacks: &[DatabaseRollback], now: DateTime<Utc>) -> Vec<String> {
     let mut stale = Vec::new();
     let mut resets = 0;
     let mut replacements = 0;
+    let mut other_vaults = 0;
     let mut flagged: Vec<&DatabaseRollback> = Vec::new();
     for rollback in rollbacks {
+        if rollback.other_vault {
+            other_vaults += 1;
+            if other_vaults > MAX_OTHER_VAULT_ROLLBACKS {
+                stale.push(rollback.id.clone());
+            }
+            continue;
+        }
         let count = match (rollback.origin, rollback.flagged) {
             (_, true) => {
                 let expired = rollback.dismissed
@@ -284,7 +399,8 @@ fn stale_rollbacks(rollbacks: &[DatabaseRollback], now: DateTime<Utc>) -> Vec<St
 /// Deletes the rollbacks retention no longer keeps.
 fn prune_rollbacks(vault: &Path, now: DateTime<Utc>) -> Result<(), String> {
     let root = rollback_root(vault);
-    for stale in stale_rollbacks(&list_rollbacks(vault)?, now) {
+    let current = vault_id_at(vault).ok();
+    for stale in pruned_rollbacks(&list_rollbacks(vault)?, current.as_deref(), now) {
         fs::remove_dir_all(root.join(&stale))
             .map_err(|error| format!("remove old database rollback: {error}"))?;
     }
@@ -317,6 +433,18 @@ pub(crate) fn retain_replaced_vault(
         return Ok(None);
     }
     create_rollback(replaced, at, Retention::replacement(flagged))
+}
+
+/// Keeps the whole vault in `replaced`, which a restore of another vault is replacing, as a
+/// rollback inside it. Its own copies are recorded as belonging to it first, so they stay
+/// hidden while the other vault is there and come back when it is restored. Fails when
+/// `replaced` holds no readable vault or no database, so the caller keeps the folder some
+/// other way.
+pub(crate) fn retain_other_vault(replaced: &Path, at: DateTime<Utc>) -> Result<String, String> {
+    let vault_id = vault_id_at(replaced)?;
+    claim_rollbacks(replaced, &vault_id)?;
+    create_rollback(replaced, at, Retention::other_vault(&vault_id))?
+        .ok_or_else(|| "the replaced vault has no database".to_string())
 }
 
 /// Applies retention limits to the vault at `vault` after a replacement.
@@ -402,7 +530,8 @@ fn vault_id_at(vault: &Path) -> Result<String, String> {
 }
 
 /// Resolves rollback `id` to its directory and retention, and validates its
-/// database. A full copy must also hold the same vault as `vault`.
+/// database. A whole other vault must hold a readable vault marker; any other copy
+/// must belong to the vault in `vault`, and a full one must hold that same vault.
 async fn validate_rollback(vault: &Path, id: &str) -> Result<(PathBuf, Retention), String> {
     parse_rollback_id(id)?;
     let directory = rollback_root(vault).join(id);
@@ -413,29 +542,43 @@ async fn validate_rollback(vault: &Path, id: &str) -> Result<(PathBuf, Retention
         return Err("unknown database rollback".to_string());
     }
     let retention = read_retention(&directory);
-    if retention.full && !holds_vault(&directory, &vault_id_at(vault)?) {
-        return Err("database rollback belongs to a different vault".to_string());
+    if retention.other_vault {
+        if !retention.full {
+            return Err("unknown database rollback".to_string());
+        }
+        vault_id_at(&directory)?;
+    } else if retention.vault.is_some() || retention.full {
+        let current = vault_id_at(vault)?;
+        let belongs = retention.vault.as_deref().is_none_or(|id| id == current);
+        if !belongs || (retention.full && !holds_vault(&directory, &current)) {
+            return Err("database rollback belongs to a different vault".to_string());
+        }
     }
     validate_rollback_database(&database_file(&directory, "")).await?;
     Ok((directory, retention))
 }
 
 /// Restores rollback `id` as the vault data. The current data becomes a new
-/// rollback first, so a restore is itself reversible.
+/// rollback first, so a restore is itself reversible. Restoring a whole other vault
+/// keeps the current vault as a whole other vault in turn. Returns whether the folder
+/// now holds another vault.
 pub(crate) async fn restore_rollback(
     vault: &Path,
     id: &str,
     at: DateTime<Utc>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let (directory, retention) = validate_rollback(vault, id).await?;
-    let replaced = create_rollback(
-        vault,
-        at,
+    let replaced_retention = if retention.other_vault {
+        let current = vault_id_at(vault)?;
+        claim_rollbacks(vault, &current)?;
+        Retention::other_vault(&current)
+    } else {
         Retention {
             full: retention.full,
             ..Retention::default()
-        },
-    )?;
+        }
+    };
+    let replaced = create_rollback(vault, at, replaced_retention)?;
     if let Err(error) = move_entries(&directory, vault, &moved_entry_names(retention.full)) {
         if let Some(replaced) = &replaced {
             let _ = move_entries(
@@ -447,7 +590,8 @@ pub(crate) async fn restore_rollback(
         return Err(error);
     }
     fs::remove_dir_all(&directory).map_err(|error| format!("remove restored rollback: {error}"))?;
-    prune_rollbacks(vault, at)
+    prune_rollbacks(vault, at)?;
+    Ok(retention.other_vault)
 }
 
 /// Marks a flagged rollback as reviewed, so its notice no longer shows. The copy
@@ -477,7 +621,7 @@ pub async fn vault_database_rollbacks(
     app: tauri::AppHandle,
 ) -> Result<Vec<DatabaseRollback>, String> {
     let (vault, _) = super::active_vault(&app)?;
-    list_rollbacks(&vault)
+    visible_rollbacks(&vault)
 }
 
 /// Dismisses the review notice of a flagged rollback of the active vault. The
@@ -493,6 +637,19 @@ pub async fn vault_dismiss_database_rollback(
         .map_err(|error| format!("database rollback dismiss worker failed: {error}"))?
 }
 
+/// Refuses restoring the copy described by `retention` when it is another vault and this
+/// Android device is `linked` now, as a restored backup is refused there.
+fn refuse_other_vault_rollback(
+    platform: super::encrypted_backup::RestorePlatform,
+    retention: &Retention,
+    linked: bool,
+) -> Result<(), String> {
+    if !retention.other_vault {
+        return Ok(());
+    }
+    super::encrypted_backup::refuse_other_vault_while_linked(platform, linked)
+}
+
 /// Restores a database rollback of the active vault under the shared vault
 /// transition guard. The caller reloads the app afterwards so every runtime
 /// reopens the restored data from a clean state.
@@ -503,14 +660,28 @@ pub async fn vault_restore_database_rollback(
 ) -> Result<(), String> {
     let transition = super::quiescence::reserve_vault_transition()?;
     let writable_vault = active_writable_vault_path(&app)?;
-    validate_rollback(writable_vault.as_ref(), &id).await?;
+    let (_, retention) = validate_rollback(writable_vault.as_ref(), &id).await?;
+    if retention.other_vault {
+        refuse_other_vault_rollback(
+            super::encrypted_backup::PLATFORM,
+            &retention,
+            super::encrypted_backup::device_linked(&app)?,
+        )?;
+    }
     let quiescence = super::quiescence::begin_reserved_quiescence(
         &app,
         transition,
         super::quiescence::RunningTerminals::Block,
     )
     .await?;
-    let restored = restore_rollback(writable_vault.as_ref(), &id, super::now_utc()).await;
+    let vault: &Path = writable_vault.as_ref();
+    let restored = restore_rollback(vault, &id, super::now_utc())
+        .await
+        .and_then(|other_vault| match other_vault {
+            true => super::vault_info_from_path(vault)
+                .and_then(|info| super::select_quiesced_vault(&app, &info, &quiescence)),
+            false => Ok(()),
+        });
     let resumed = tauri::async_runtime::spawn_blocking(move || quiescence.finish())
         .await
         .map_err(|error| format!("database rollback resume worker failed: {error}"))
@@ -578,7 +749,9 @@ mod tests {
             origin: retention.origin,
             flagged: retention.flagged,
             dismissed: retention.dismissed,
+            other_vault: retention.other_vault,
             full: retention.full,
+            vault: retention.vault,
         }
     }
 
@@ -653,7 +826,11 @@ mod tests {
         for second in (0..10).rev() {
             rollbacks.push(rollback(
                 second,
-                if second < 2 { reset } else { replacement },
+                if second < 2 {
+                    reset.clone()
+                } else {
+                    replacement.clone()
+                },
             ));
         }
         let stale = stale_rollbacks(&rollbacks, at(20));
@@ -669,13 +846,13 @@ mod tests {
         let flagged = Retention::replacement(true);
         let dismissed = Retention {
             dismissed: true,
-            ..flagged
+            ..flagged.clone()
         };
         let rollbacks = vec![
-            rollback(9, flagged),
-            rollback(8, dismissed),
-            rollback(7, flagged),
-            rollback(6, flagged),
+            rollback(9, flagged.clone()),
+            rollback(8, dismissed.clone()),
+            rollback(7, flagged.clone()),
+            rollback(6, flagged.clone()),
         ];
         let stale = stale_rollbacks(&rollbacks, at(20));
         assert_eq!(stale, vec![rollback_id(at(9)), rollback_id(at(8))]);
@@ -759,5 +936,143 @@ mod tests {
         );
         assert_eq!(marker(&vault).await, 2);
         let _ = fs::remove_dir_all(vault);
+    }
+
+    fn write_manifest(vault: &Path, vault_id: &str) {
+        let manifest = format!(
+            r#"{{"app":"ganbaru","schemaVersion":1,"vaultId":"{vault_id}","displayName":"Vault","createdAt":"2026-10-20T00:00:00Z"}}"#
+        );
+        fs::write(vault.join(VAULT_MANIFEST_FILE), manifest).unwrap();
+    }
+
+    fn ids(rollbacks: &[DatabaseRollback]) -> Vec<String> {
+        rollbacks
+            .iter()
+            .map(|rollback| rollback.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn retention_keeps_hidden_copies_only_with_their_whole_vault() {
+        let other = |vault: &str| Retention::other_vault(vault);
+        let owned = |vault: &str| Retention {
+            vault: Some(vault.to_string()),
+            ..Retention::default()
+        };
+        let rollbacks = vec![
+            rollback(9, other("vault-c")),
+            rollback(8, other("vault-b")),
+            rollback(7, other("vault-a")),
+            rollback(6, owned("vault-b")),
+            rollback(5, owned("vault-a")),
+            rollback(4, owned("vault-current")),
+            rollback(3, Retention::default()),
+        ];
+        let stale = pruned_rollbacks(&rollbacks, Some("vault-current"), at(20));
+        assert_eq!(stale, vec![rollback_id(at(7)), rollback_id(at(5))]);
+        let unknown = pruned_rollbacks(&rollbacks, None, at(20));
+        assert_eq!(unknown, vec![rollback_id(at(7))]);
+    }
+
+    #[tokio::test]
+    async fn another_vault_replacement_keeps_and_restores_the_whole_replaced_vault() {
+        let vault = test_vault("other-vault");
+        write_manifest(&vault, "vault-a");
+        fs::create_dir_all(vault.join("notes")).unwrap();
+        fs::write(vault.join("notes").join("a.md"), b"a").unwrap();
+        create_database(&vault, BEFORE_RESET).await;
+        let reset_a = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
+        create_database(&vault, BEFORE_RESET).await;
+
+        let kept_a = retain_other_vault(&vault, at(2)).unwrap();
+        assert!(!vault.join(VAULT_MANIFEST_FILE).exists());
+        assert!(!vault.join("notes").exists());
+        write_manifest(&vault, "vault-b");
+        create_database(&vault, AFTER_RESET).await;
+
+        let shown = visible_rollbacks(&vault).unwrap();
+        assert_eq!(ids(&shown), vec![kept_a.clone()]);
+        assert!(shown[0].other_vault);
+        assert!(
+            restore_rollback(&vault, &reset_a, at(3)).await.is_err(),
+            "a copy of the replaced vault never restores into another vault"
+        );
+        assert_eq!(marker(&vault).await, 2);
+
+        assert!(restore_rollback(&vault, &kept_a, at(4)).await.unwrap());
+        assert_eq!(vault_id_at(&vault).unwrap(), "vault-a");
+        assert_eq!(fs::read(vault.join("notes").join("a.md")).unwrap(), b"a");
+        assert_eq!(marker(&vault).await, 1);
+        let shown = visible_rollbacks(&vault).unwrap();
+        assert_eq!(shown.len(), 2);
+        assert!(shown[0].other_vault);
+        assert_eq!(shown[0].vault.as_deref(), Some("vault-b"));
+        assert_eq!(shown[1].id, reset_a);
+
+        assert!(restore_rollback(&vault, &shown[0].id, at(5)).await.unwrap());
+        assert_eq!(vault_id_at(&vault).unwrap(), "vault-b");
+        assert_eq!(marker(&vault).await, 2);
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[tokio::test]
+    async fn another_vault_rollback_is_refused_while_linked_on_android() {
+        use super::super::encrypted_backup::{LINKED_ANDROID_RESTORE_ERROR, RestorePlatform};
+        use crate::vault::handoff::receiver::{is_linked, test_linked_phone};
+        let vault = test_vault("other-vault-linked");
+        write_manifest(&vault, "vault-a");
+        create_database(&vault, BEFORE_RESET).await;
+        let kept_a = retain_other_vault(&vault, at(2)).unwrap();
+        write_manifest(&vault, "vault-b");
+        create_database(&vault, AFTER_RESET).await;
+        let pairing_root = test_vault("other-vault-pairing");
+        let phone = test_linked_phone(&pairing_root);
+
+        let (_, other) = validate_rollback(&vault, &kept_a).await.unwrap();
+        assert!(other.other_vault);
+        let linked = is_linked(&phone).unwrap();
+        assert_eq!(
+            refuse_other_vault_rollback(RestorePlatform::Android, &other, linked),
+            Err(LINKED_ANDROID_RESTORE_ERROR.to_string())
+        );
+        assert_eq!(
+            refuse_other_vault_rollback(RestorePlatform::Desktop, &other, linked),
+            Ok(())
+        );
+        let same = Retention {
+            vault: Some("vault-b".to_string()),
+            ..Retention::default()
+        };
+        assert_eq!(
+            refuse_other_vault_rollback(RestorePlatform::Android, &same, linked),
+            Ok(()),
+            "a copy of the same vault is not another vault"
+        );
+        phone.unlink().unwrap();
+        assert_eq!(
+            refuse_other_vault_rollback(
+                RestorePlatform::Android,
+                &other,
+                is_linked(&phone).unwrap()
+            ),
+            Ok(()),
+            "a phone that unlinked restores another vault's copy"
+        );
+        let _ = fs::remove_dir_all(vault);
+        let _ = fs::remove_dir_all(pairing_root);
+    }
+
+    #[test]
+    fn another_vault_replacement_without_a_database_is_refused() {
+        let vault = test_vault("other-vault-empty");
+        write_manifest(&vault, "vault-a");
+        assert!(retain_other_vault(&vault, at(1)).is_err());
+        assert!(vault.join(VAULT_MANIFEST_FILE).exists());
+        let missing = test_vault("other-vault-unmarked");
+        fs::write(database_file(&missing, ""), b"db").unwrap();
+        assert!(retain_other_vault(&missing, at(1)).is_err());
+        assert!(database_file(&missing, "").exists());
+        let _ = fs::remove_dir_all(vault);
+        let _ = fs::remove_dir_all(missing);
     }
 }

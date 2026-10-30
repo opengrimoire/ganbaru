@@ -258,4 +258,104 @@ describe("replaced vault backups", () => {
     await deleteReplacedVaultBackup(backup.id);
     expect(invokeMock).toHaveBeenCalledWith("vault_delete_replaced_backup", { id: backup.id });
   });
+
+  it("restores a backup by its ID and returns a refusal for a linked phone", async () => {
+    const { restoreReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "linkedAndroid" });
+    await expect(restoreReplacedVaultBackup(backup.id)).resolves.toEqual({
+      kind: "refused",
+      reason: "linkedAndroid",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_replaced_backup", { id: backup.id });
+    invokeMock.mockResolvedValueOnce({ kind: "restored", placement: "elsewhere" });
+    await expect(restoreReplacedVaultBackup(backup.id)).rejects.toThrow("unknown");
+  });
+
+  it("asks to unlink when a linked phone restores another vault's rollback copy", async () => {
+    const { formatVaultError } = await loadModule();
+    expect(
+      formatVaultError(
+        "this phone is linked to other devices; unlink it before restoring another vault",
+      ),
+    ).toBe("This phone is linked to other devices. Unlink this phone first, then restore.");
+  });
+});
+
+describe("encrypted backups", () => {
+  const vault = {
+    path: "/home/user/Restored",
+    databasePath: "/home/user/Restored/ganbaru.sqlite",
+    vaultId: "vault-restored",
+    displayName: "Restored",
+  };
+
+  it("parses every save outcome and rejects unknown refusals", async () => {
+    const { parseBackupSaveOutcome } = await loadModule();
+    expect(parseBackupSaveOutcome({ kind: "cancelled" })).toEqual({ kind: "cancelled" });
+    expect(parseBackupSaveOutcome({ kind: "saved", fileName: "a.ganbaru-backup" })).toEqual({
+      kind: "saved",
+      fileName: "a.ganbaru-backup",
+    });
+    expect(parseBackupSaveOutcome({ kind: "refused", reason: "noRecoveryKit" })).toEqual({
+      kind: "refused",
+      reason: "noRecoveryKit",
+    });
+    expect(() => parseBackupSaveOutcome({ kind: "refused", reason: "other" })).toThrow("unknown");
+    expect(() => parseBackupSaveOutcome({ kind: "saved", fileName: " " })).toThrow("incomplete");
+    expect(() => parseBackupSaveOutcome({ kind: "written" })).toThrow("unknown");
+    expect(() => parseBackupSaveOutcome(null)).toThrow("not an object");
+  });
+
+  it("requires a token and a kit flag on a ready inspection", async () => {
+    const { parseBackupInspection } = await loadModule();
+    expect(parseBackupInspection({ kind: "ready", token: "t1", needsKit: true })).toEqual({
+      kind: "ready",
+      token: "t1",
+      needsKit: true,
+    });
+    expect(() => parseBackupInspection({ kind: "ready", token: "t1" })).toThrow("incomplete");
+    expect(() => parseBackupInspection({ kind: "ready", token: "", needsKit: false })).toThrow(
+      "incomplete",
+    );
+    expect(parseBackupInspection({ kind: "refused", reason: "notBackup" })).toEqual({
+      kind: "refused",
+      reason: "notBackup",
+    });
+  });
+
+  it("validates the restored vault and its placement", async () => {
+    const { parseBackupRestoreOutcome } = await loadModule();
+    expect(
+      parseBackupRestoreOutcome({ kind: "restored", vault, placement: "independentCopy" }),
+    ).toEqual({ kind: "restored", vault, placement: "independentCopy" });
+    expect(() =>
+      parseBackupRestoreOutcome({ kind: "restored", vault, placement: "merged" }),
+    ).toThrow("placement");
+    expect(() =>
+      parseBackupRestoreOutcome({ kind: "restored", vault: { ...vault, vaultId: "" }, placement: "inPlace" }),
+    ).toThrow("incomplete");
+  });
+
+  it("sends the inspected token and kit, and caches the restored vault as active", async () => {
+    const { getCachedActiveVaultInfo, restoreInspectedBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "restored", vault, placement: "inPlace" });
+    await expect(restoreInspectedBackup("t1", "KIT")).resolves.toEqual({
+      kind: "restored",
+      vault,
+      placement: "inPlace",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_backup", { token: "t1", kit: "KIT" });
+    expect(getCachedActiveVaultInfo()).toEqual(vault);
+  });
+
+  it("leaves the cached vault alone after a refused restore", async () => {
+    const { getCachedActiveVaultInfo, restoreInspectedBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "wrongKit" });
+    await expect(restoreInspectedBackup("t1", null)).resolves.toEqual({
+      kind: "refused",
+      reason: "wrongKit",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_backup", { token: "t1", kit: null });
+    expect(getCachedActiveVaultInfo()).toBeUndefined();
+  });
 });

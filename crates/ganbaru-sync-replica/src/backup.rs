@@ -3,12 +3,23 @@
 //!
 //! Archive creation and the managed asset sweep share an [`ArchiveGate`], so an archive never
 //! holds a database snapshot whose asset files the sweep removed while it was written.
+//!
+//! User backups are snapshot archives sealed into the `GBBK` format of
+//! [`ganbaru_sync_contracts::backup`]: the plaintext archive lives only in a private staging
+//! directory, and the encrypted file is streamed in fixed chunks, so memory stays constant.
 
+use ganbaru_atomic_files::{FileAccess, StagedFile};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
+use ganbaru_sync_contracts::backup::{
+    BACKUP_CHUNK_BYTES, BACKUP_MAGIC, BACKUP_NONCE_BYTES, BackupError, BackupHeader, ChunkOpener,
+    ChunkSealer, FileKey, HEADER_PREFIX_BYTES, MAX_CHUNK_CIPHERTEXT_BYTES,
+};
+use ganbaru_sync_contracts::{EncryptionPublicKey, SpaceId, SpaceKey};
 use sqlx::{Connection, SqliteConnection, SqlitePool};
+use std::fmt;
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use zip::CompressionMethod;
@@ -134,6 +145,15 @@ pub async fn create_snapshot_archive(
     archive_path: &Path,
 ) -> Result<(), String> {
     let _gate = gate.lock().await;
+    write_snapshot_archive(vault_root, database_snapshot, archive_path).await
+}
+
+/// Writes the snapshot archive of [`create_snapshot_archive`] while the caller holds the gate.
+async fn write_snapshot_archive(
+    vault_root: &Path,
+    database_snapshot: &Path,
+    archive_path: &Path,
+) -> Result<(), String> {
     for path in [database_snapshot, archive_path] {
         match fs::remove_file(path) {
             Ok(()) => {}
@@ -314,5 +334,292 @@ fn write_archive(
         .map_err(|error| format!("finish backup archive: {error}"))?
         .sync_all()
         .map_err(|error| format!("sync backup archive: {error}"))?;
+    Ok(())
+}
+
+/// Prefix of the private staging directory one encrypted backup is assembled in.
+const BACKUP_STAGING_PREFIX: &str = ".ganbaru-backup-";
+/// File name of the snapshot database inside a backup staging directory.
+const STAGED_DATABASE_FILE: &str = "snapshot.sqlite";
+/// File name of the plaintext archive inside a backup staging directory.
+const STAGED_ARCHIVE_FILE: &str = "archive.zip";
+
+/// The keys a new encrypted backup is sealed with.
+#[derive(Debug)]
+pub struct BackupSealKeys {
+    /// The space the vault belongs to.
+    pub space: SpaceId,
+    /// The newest epoch key this installation holds, or `None` for a vault never linked.
+    pub epoch_key: Option<SpaceKey>,
+    /// The recovery encryption key the recovery kit opens.
+    pub recovery: EncryptionPublicKey,
+}
+
+/// An encrypted backup that could not be written or read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupFileError {
+    /// The backup bytes break the format, or no offered key opens them.
+    Format(BackupError),
+    /// Reading, writing, or archiving failed, with context.
+    Io(String),
+}
+
+impl fmt::Display for BackupFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Format(error) => error.fmt(formatter),
+            Self::Io(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for BackupFileError {}
+
+impl From<BackupError> for BackupFileError {
+    fn from(error: BackupError) -> Self {
+        Self::Format(error)
+    }
+}
+
+/// Maps a read error, treating an early end of file as a truncated backup.
+fn read_error(context: &str, error: io::Error) -> BackupFileError {
+    if error.kind() == ErrorKind::UnexpectedEof {
+        BackupFileError::Format(BackupError::Truncated)
+    } else {
+        BackupFileError::Io(format!("{context}: {error}"))
+    }
+}
+
+/// A private staging directory removed with everything in it when dropped.
+struct StagingDirectory(PathBuf);
+
+impl StagingDirectory {
+    fn create(parent: &Path) -> Result<Self, BackupFileError> {
+        ganbaru_atomic_files::create_private_directories(parent)
+            .map_err(|error| BackupFileError::Io(format!("create backup staging: {error}")))?;
+        ganbaru_atomic_files::create_private_temporary_directory(parent, BACKUP_STAGING_PREFIX)
+            .map(Self)
+            .map_err(|error| BackupFileError::Io(format!("create backup staging: {error}")))
+    }
+}
+
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        // A leftover private directory holds nothing the vault does not, and the next backup
+        // uses a fresh name, so a failed removal is not an error.
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Writes an encrypted backup of the vault at `vault_root` to `destination`.
+///
+/// The archive is the snapshot another installation starts from, so a restore never carries
+/// installation-local sync state or device-local rows. It is assembled in a fresh private
+/// directory below `staging`, which is removed on every path. The gate stays held from the
+/// database snapshot until the encrypted file is synced and renamed over `destination`, so
+/// the asset sweep never removes a file the archive references while it is written. The
+/// caller excludes vault writers first. Returns the bytes written.
+pub async fn create_encrypted_backup(
+    gate: &ArchiveGate,
+    vault_root: &Path,
+    staging: &Path,
+    keys: &BackupSealKeys,
+    destination: &Path,
+) -> Result<u64, BackupFileError> {
+    let _gate = gate.lock().await;
+    let directory = StagingDirectory::create(staging)?;
+    let archive = directory.0.join(STAGED_ARCHIVE_FILE);
+    write_snapshot_archive(
+        vault_root,
+        &directory.0.join(STAGED_DATABASE_FILE),
+        &archive,
+    )
+    .await
+    .map_err(BackupFileError::Io)?;
+    seal_archive(&archive, keys, destination)
+}
+
+/// Streams the archive at `archive` into an encrypted backup at `destination`.
+pub(crate) fn seal_archive(
+    archive: &Path,
+    keys: &BackupSealKeys,
+    destination: &Path,
+) -> Result<u64, BackupFileError> {
+    let (header, file_key) =
+        BackupHeader::seal(&keys.space, keys.epoch_key.as_ref(), &keys.recovery)?;
+    let mut sealer = ChunkSealer::new(&header, file_key);
+    let mut input = io::BufReader::new(
+        fs::File::open(archive)
+            .map_err(|error| BackupFileError::Io(format!("open backup archive: {error}")))?,
+    );
+    let mut output = StagedFile::create(destination, FileAccess::OwnerOnly)
+        .map_err(|error| BackupFileError::Io(format!("create backup file: {error}")))?;
+    let write = |output: &mut StagedFile, bytes: &[u8]| {
+        output
+            .write_all(bytes)
+            .map_err(|error| BackupFileError::Io(format!("write backup file: {error}")))
+    };
+    write(&mut output, &header.to_bytes())?;
+
+    let mut current = Vec::with_capacity(MAX_CHUNK_CIPHERTEXT_BYTES);
+    let mut next = Vec::with_capacity(MAX_CHUNK_CIPHERTEXT_BYTES);
+    fill_chunk(&mut input, &mut current)?;
+    loop {
+        // A chunk is last when the archive has no byte after it, so a full chunk at the end of
+        // the archive is last and no empty chunk follows it.
+        let last = if current.len() < BACKUP_CHUNK_BYTES {
+            true
+        } else {
+            fill_chunk(&mut input, &mut next)?;
+            next.is_empty()
+        };
+        let nonce = sealer.seal_in_place(&mut current, last)?;
+        let length = u32::try_from(current.len()).map_err(|_| BackupError::Malformed)?;
+        write(&mut output, &length.to_be_bytes())?;
+        write(&mut output, &nonce)?;
+        write(&mut output, &current)?;
+        if last {
+            break;
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+    let written = output.written();
+    output
+        .commit()
+        .map_err(|error| BackupFileError::Io(format!("save backup file: {error}")))?;
+    Ok(written)
+}
+
+/// Replaces `buffer` with up to one chunk of plaintext from `input`.
+fn fill_chunk(input: &mut impl Read, buffer: &mut Vec<u8>) -> Result<(), BackupFileError> {
+    buffer.clear();
+    input
+        .take(BACKUP_CHUNK_BYTES as u64)
+        .read_to_end(buffer)
+        .map_err(|error| BackupFileError::Io(format!("read backup archive: {error}")))?;
+    Ok(())
+}
+
+/// Opens the backup at `source`, refusing anything that is not a regular file.
+fn open_backup(source: &Path) -> Result<io::BufReader<fs::File>, BackupFileError> {
+    let file = fs::File::open(source)
+        .map_err(|error| BackupFileError::Io(format!("open backup file: {error}")))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| BackupFileError::Io(format!("inspect backup file: {error}")))?;
+    if !metadata.is_file() {
+        return Err(BackupFileError::Format(BackupError::NotBackup));
+    }
+    Ok(io::BufReader::with_capacity(COPY_BUFFER_BYTES, file))
+}
+
+/// Reads and decodes the header at the start of `input`.
+fn read_header(input: &mut impl Read) -> Result<BackupHeader, BackupFileError> {
+    let mut prefix = [0u8; HEADER_PREFIX_BYTES];
+    let available = read_up_to(input, &mut prefix)?;
+    if available < HEADER_PREFIX_BYTES {
+        let magic = available.min(BACKUP_MAGIC.len());
+        return Err(BackupFileError::Format(
+            if prefix[..magic] == BACKUP_MAGIC[..magic] {
+                BackupError::Truncated
+            } else {
+                BackupError::NotBackup
+            },
+        ));
+    }
+    let length = BackupHeader::length(&prefix)?;
+    let mut bytes = vec![0u8; length];
+    bytes[..HEADER_PREFIX_BYTES].copy_from_slice(&prefix);
+    input
+        .read_exact(&mut bytes[HEADER_PREFIX_BYTES..])
+        .map_err(|error| read_error("read backup header", error))?;
+    Ok(BackupHeader::decode(&bytes)?)
+}
+
+/// Fills as much of `buffer` as `input` holds, returning the bytes read.
+fn read_up_to(input: &mut impl Read, buffer: &mut [u8]) -> Result<usize, BackupFileError> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match input.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(count) => filled += count,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(BackupFileError::Io(format!("read backup file: {error}"))),
+        }
+    }
+    Ok(filled)
+}
+
+/// Reads the next frame length, or `None` at the end of the file.
+fn read_frame_length(input: &mut impl Read) -> Result<Option<u32>, BackupFileError> {
+    let mut prefix = [0u8; 4];
+    match read_up_to(input, &mut prefix)? {
+        0 => Ok(None),
+        4 => Ok(Some(u32::from_be_bytes(prefix))),
+        _ => Err(BackupFileError::Format(BackupError::Truncated)),
+    }
+}
+
+/// Reads the clear header of the backup at `source` without opening it, so a caller can tell
+/// which space and epoch it belongs to and whether the recovery kit is needed.
+pub fn read_backup_header(source: &Path) -> Result<BackupHeader, BackupFileError> {
+    read_header(&mut open_backup(source)?)
+}
+
+/// Decrypts the backup at `source` into the new private file `archive`, with the file key
+/// `open` returns for its header. Every chunk is authenticated before its plaintext is
+/// written, and `archive` is removed when any check fails. Returns the header.
+pub fn decrypt_backup(
+    source: &Path,
+    open: impl FnOnce(&BackupHeader) -> Result<FileKey, BackupError>,
+    archive: &Path,
+) -> Result<BackupHeader, BackupFileError> {
+    let mut input = open_backup(source)?;
+    let header = read_header(&mut input)?;
+    let mut opener = ChunkOpener::new(&header, open(&header)?);
+    let file = ganbaru_atomic_files::create_private_file(archive)
+        .map_err(|error| BackupFileError::Io(format!("create restored archive: {error}")))?;
+    let result = decrypt_chunks(&mut input, &mut opener, file);
+    if result.is_err() {
+        // The partial plaintext is private and discarded either way.
+        let _ = fs::remove_file(archive);
+    }
+    result.map(|()| header)
+}
+
+/// Opens every chunk after the header and writes the plaintext to `file`.
+fn decrypt_chunks(
+    input: &mut impl Read,
+    opener: &mut ChunkOpener,
+    file: fs::File,
+) -> Result<(), BackupFileError> {
+    let mut output = io::BufWriter::with_capacity(COPY_BUFFER_BYTES, file);
+    let mut buffer = Vec::with_capacity(MAX_CHUNK_CIPHERTEXT_BYTES);
+    let mut length = read_frame_length(input)?.ok_or(BackupError::Truncated)?;
+    loop {
+        let size = opener.check_length(length)?;
+        let mut nonce = [0u8; BACKUP_NONCE_BYTES];
+        input
+            .read_exact(&mut nonce)
+            .map_err(|error| read_error("read backup chunk", error))?;
+        buffer.resize(size, 0);
+        input
+            .read_exact(&mut buffer)
+            .map_err(|error| read_error("read backup chunk", error))?;
+        let next = read_frame_length(input)?;
+        opener.open_in_place(&nonce, &mut buffer, next.is_none())?;
+        output
+            .write_all(&buffer)
+            .map_err(|error| BackupFileError::Io(format!("write restored archive: {error}")))?;
+        match next {
+            Some(value) => length = value,
+            None => break,
+        }
+    }
+    output
+        .into_inner()
+        .map_err(|error| BackupFileError::Io(format!("write restored archive: {error}")))?
+        .sync_all()
+        .map_err(|error| BackupFileError::Io(format!("sync restored archive: {error}")))?;
     Ok(())
 }

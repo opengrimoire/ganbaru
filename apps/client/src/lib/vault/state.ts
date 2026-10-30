@@ -33,6 +33,9 @@ const VAULT_LOCK_STATUSES: readonly VaultLockStatus[] = ["notHeld", "exclusive",
 /** Lowercase text of the native error raised when another Ganbaru app holds the vault lock. */
 const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app";
 
+/** Lowercase text of the native error raised when a linked phone restores another vault. */
+const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault";
+
 /**
  * Validates the native vault lock status.
  *
@@ -158,6 +161,10 @@ export function formatVaultError(
 
   if (lower.includes(VAULT_OPEN_ELSEWHERE_MESSAGE)) {
     return t("dataFolderError.openElsewhere");
+  }
+
+  if (lower.includes(LINKED_ANDROID_RESTORE_MESSAGE)) {
+    return t("dataFolderError.linkedAndroid");
   }
 
   if (
@@ -384,13 +391,173 @@ export async function deleteReplacedVaultBackup(id: string): Promise<void> {
   await invoke("vault_delete_replaced_backup", { id });
 }
 
-/** Save a consistent, portable copy of the active Android vault to Downloads. */
-export async function backupActiveVault(): Promise<VaultBackupOutcome> {
-  return parseVaultBackupOutcome(await invoke<unknown>("vault_backup_to_downloads"));
+/** Why the app did not write or restore an encrypted backup. */
+export type BackupRefusal =
+  | "noRecoveryKit"
+  | "notBackup"
+  | "unsupportedVersion"
+  | "damaged"
+  | "kitRequired"
+  | "wrongKit"
+  | "invalidKit"
+  | "linkedAndroid"
+  | "expired";
+
+const BACKUP_REFUSALS: readonly BackupRefusal[] = [
+  "noRecoveryKit",
+  "notBackup",
+  "unsupportedVersion",
+  "damaged",
+  "kitRequired",
+  "wrongKit",
+  "invalidKit",
+  "linkedAndroid",
+  "expired",
+];
+
+/** What writing an encrypted backup did. */
+export type BackupSaveOutcome =
+  | { kind: "cancelled" }
+  | { kind: "saved"; fileName: string }
+  | { kind: "refused"; reason: BackupRefusal };
+
+/** What inspecting a picked backup found. The file stays held behind `token`. */
+export type BackupInspection =
+  | { kind: "cancelled" }
+  | { kind: "refused"; reason: BackupRefusal }
+  | { kind: "ready"; token: string; needsKit: boolean };
+
+/** How a restore placed the backup: over the active vault, or as a new vault of its own. */
+export type RestorePlacement = "inPlace" | "independentCopy";
+
+/** What restoring an inspected backup did. */
+export type BackupRestoreOutcome =
+  | { kind: "cancelled" }
+  | { kind: "refused"; reason: BackupRefusal }
+  | { kind: "restored"; vault: VaultInfo; placement: RestorePlacement };
+
+function readBackupRefusal(value: unknown): BackupRefusal {
+  const reason = BACKUP_REFUSALS.find((candidate) => candidate === value);
+  if (!reason) throw new Error("backup refusal is unknown");
+  return reason;
 }
 
-/** Pick and transactionally restore a portable Android vault backup. */
-export async function restoreVaultBackup(): Promise<VaultInfo | null> {
-  const info = parseOptionalVaultInfo(await invoke<unknown>("vault_pick_and_restore_backup"));
-  return info ? activateVaultInfo(info) : null;
+/**
+ * Validates the native response of a backup save.
+ *
+ * @param value - Untrusted `vault_backup_to_file` or `vault_backup_to_downloads` response.
+ * @returns The typed outcome.
+ */
+export function parseBackupSaveOutcome(value: unknown): BackupSaveOutcome {
+  if (!isRecord(value)) throw new Error("backup response is not an object");
+  switch (value.kind) {
+    case "cancelled":
+      return { kind: "cancelled" };
+    case "refused":
+      return { kind: "refused", reason: readBackupRefusal(value.reason) };
+    case "saved": {
+      const fileName = readString(value.fileName);
+      if (!fileName) throw new Error("backup response is incomplete");
+      return { kind: "saved", fileName };
+    }
+    default:
+      throw new Error("backup response kind is unknown");
+  }
+}
+
+/**
+ * Validates the native response of a backup inspection.
+ *
+ * @param value - Untrusted `vault_inspect_backup` response.
+ * @returns The typed inspection.
+ */
+export function parseBackupInspection(value: unknown): BackupInspection {
+  if (!isRecord(value)) throw new Error("backup inspection is not an object");
+  switch (value.kind) {
+    case "cancelled":
+      return { kind: "cancelled" };
+    case "refused":
+      return { kind: "refused", reason: readBackupRefusal(value.reason) };
+    case "ready": {
+      const token = readString(value.token);
+      const needsKit = readBoolean(value.needsKit);
+      if (!token || needsKit === null) throw new Error("backup inspection is incomplete");
+      return { kind: "ready", token, needsKit };
+    }
+    default:
+      throw new Error("backup inspection kind is unknown");
+  }
+}
+
+/**
+ * Validates the native response of a backup restore.
+ *
+ * @param value - Untrusted `vault_restore_backup` response.
+ * @returns The typed outcome.
+ */
+export function parseBackupRestoreOutcome(value: unknown): BackupRestoreOutcome {
+  if (!isRecord(value)) throw new Error("backup restore response is not an object");
+  switch (value.kind) {
+    case "cancelled":
+      return { kind: "cancelled" };
+    case "refused":
+      return { kind: "refused", reason: readBackupRefusal(value.reason) };
+    case "restored": {
+      const placement = value.placement;
+      if (placement !== "inPlace" && placement !== "independentCopy") {
+        throw new Error("backup restore placement is unknown");
+      }
+      return { kind: "restored", vault: parseVaultInfo(value.vault), placement };
+    }
+    default:
+      throw new Error("backup restore response kind is unknown");
+  }
+}
+
+/** Writes an encrypted backup of the active vault to a file the user picks on a desktop. */
+export async function backupVaultToFile(): Promise<BackupSaveOutcome> {
+  return parseBackupSaveOutcome(await invoke<unknown>("vault_backup_to_file"));
+}
+
+/** Writes an encrypted backup of the active Android vault to Downloads. */
+export async function backupActiveVault(): Promise<BackupSaveOutcome> {
+  return parseBackupSaveOutcome(await invoke<unknown>("vault_backup_to_downloads"));
+}
+
+/** Lets the user pick a backup file and reports whether it can be restored here. */
+export async function inspectVaultBackup(): Promise<BackupInspection> {
+  return parseBackupInspection(await invoke<unknown>("vault_inspect_backup"));
+}
+
+/**
+ * Restores the inspected backup held behind `token`, activating the restored vault.
+ *
+ * @param token - Token from a ready inspection.
+ * @param kit - Recovery kit code, or `null` to open the backup with this device's keys.
+ * @returns The restore outcome.
+ */
+export async function restoreInspectedBackup(
+  token: string,
+  kit: string | null,
+): Promise<BackupRestoreOutcome> {
+  const outcome = parseBackupRestoreOutcome(
+    await invoke<unknown>("vault_restore_backup", { token, kit }),
+  );
+  if (outcome.kind !== "restored") return outcome;
+  return { ...outcome, vault: activateVaultInfo(outcome.vault) };
+}
+
+/**
+ * Restores one replaced vault kept on this Android phone in place of the active vault,
+ * activating the restored vault.
+ *
+ * @param id - Identifier from {@link listReplacedVaultBackups}.
+ * @returns The restore outcome; a phone linked to other devices is refused.
+ */
+export async function restoreReplacedVaultBackup(id: string): Promise<BackupRestoreOutcome> {
+  const outcome = parseBackupRestoreOutcome(
+    await invoke<unknown>("vault_restore_replaced_backup", { id }),
+  );
+  if (outcome.kind !== "restored") return outcome;
+  return { ...outcome, vault: activateVaultInfo(outcome.vault) };
 }

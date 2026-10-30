@@ -2,26 +2,26 @@
 //! authorization log into a device-local file and publishes them here, where the advertiser,
 //! coordinator discovery, and Android background passes read them without opening the database.
 
+use crate::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_handoff::discovery::DiscoveryKey;
-use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use std::sync::{Mutex, PoisonError};
 
 static PUBLISHED: Mutex<Option<DiscoveryKeys>> = Mutex::new(None);
 
 /// Publishes the keys the latest pass followed, or clears them while the vault has no sync space.
-pub(crate) fn publish(keys: Option<DiscoveryKeys>) {
+pub fn publish(keys: Option<DiscoveryKeys>) {
     *PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner) = keys;
 }
 
 /// The key this device advertises under for `vault_id`, or `None` before a pass published one.
 #[cfg(desktop)]
-pub(crate) fn advertised(vault_id: &str) -> Option<DiscoveryKey> {
+pub fn advertised(vault_id: &str) -> Option<DiscoveryKey> {
     published_in(&PUBLISHED, vault_id).map(|keys| keys.advertised())
 }
 
 /// The keys to browse for `vault_id` at `now_ms`: the current one, then the one a removal
 /// replaced during its first day. Empty before a pass published keys.
-pub(crate) fn browsed(vault_id: &str, now_ms: u64) -> Vec<DiscoveryKey> {
+pub fn browsed(vault_id: &str, now_ms: u64) -> Vec<DiscoveryKey> {
     published_in(&PUBLISHED, vault_id)
         .map(|keys| keys.browsed(now_ms))
         .unwrap_or_default()

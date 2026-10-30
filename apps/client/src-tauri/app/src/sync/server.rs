@@ -11,7 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Runtime};
 
 use super::authority::{authorization, own_is_admin};
-use super::host::SyncHost;
+use super::host::{AppHost, SyncHost};
 use super::service::RELAY_LOOPBACK;
 
 #[cfg(desktop)]
@@ -207,12 +207,12 @@ async fn admin_context<R: Runtime>(
     let view = authorization(app)
         .await?
         .ok_or(SyncServerError::NotSyncing)?;
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
     let own = super::devices::stable_device_id(app)?;
     if !own_is_admin(app, &vault_id, &view, &own).await? {
         return Err(SyncServerError::NotAdmin);
     }
-    let keys = app.key_store()?;
+    let keys = AppHost::of(app).key_store()?;
     let admin_vault = vault_id.clone();
     let admin = blocking(move || read_admin_key(keys.as_ref(), &admin_vault))
         .await?
@@ -232,7 +232,7 @@ async fn space_connection<R: Runtime>(
     SyncServerError,
 > {
     let pool = crate::db::connect_active_vault_for_sync(app).await?;
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
     let mut conn = pool
         .acquire()
         .await
@@ -256,8 +256,8 @@ async fn space_id<R: Runtime>(
 async fn newest_space_key<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<ganbaru_sync_contracts::SpaceKey, SyncServerError> {
-    let vault_id = app.active_vault_id()?;
-    let keys = app.key_store()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
+    let keys = AppHost::of(app).key_store()?;
     let holder = blocking(move || SpaceKeys::load(keys.as_ref(), &vault_id)).await?;
     let (mut conn, ctx) = space_connection(app).await?;
     let newest = holder
@@ -372,7 +372,7 @@ pub async fn sync_server_status<R: Runtime>(
     let Some(server) = &view.server else {
         return Ok(None);
     };
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(&app).active_vault_id()?;
     let own = super::devices::stable_device_id(&app)?;
     let can_manage = own_is_admin(&app, &vault_id, &view, &own).await?;
     let probe = match RelayTarget::of(&view) {

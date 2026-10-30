@@ -3,25 +3,24 @@
 //!
 //! It serves only sync requests from the devices the local selected authorization log enrolled
 //! and did not remove, and that this installation did not quarantine, and on a desktop the
-//! snapshot copies of the vault those devices bootstrap from. Pairing, other handoff,
-//! contact, and authorization proposal requests are refused with a typed code, so the anchor and
-//! the coordinator keep those roles.
+//! snapshot copies of the vault those devices bootstrap from, through the caller's routes.
+//! Pairing, other handoff, contact, and authorization proposal requests are refused with a typed
+//! code, so the anchor and the coordinator keep those roles.
 
-use super::client_verifier::PinnedClientVerifier;
 use super::limits::ConnectionLimits;
 use super::{
-    COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, accept_connections,
-    admitted_local_address, send_error,
+    COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, Peer, Routes, TLS_HANDSHAKE_TIMEOUT,
+    accept_connections, admitted_local_address, load_tls_identity, send_error, timeout_control,
 };
-use crate::sync::hub::SyncHub;
-use crate::vault::handoff::pairing::{PairingManager, certificate_fingerprint};
-use crate::vault::handoff::protocol::{self, read_control_limited, write_control};
-use crate::vault::handoff::transport::{TLS_HANDSHAKE_TIMEOUT, load_tls_identity, timeout_control};
+use crate::hub::SyncHub;
+use crate::peers::admission::{MemberAdmission, MemberRefusal};
 use ganbaru_handoff::dial::LoopbackPolicy;
-use ganbaru_sync_replica::peers::admission::{MemberAdmission, MemberRefusal};
+use ganbaru_handoff::pairing::{PairingManager, certificate_fingerprint};
+use ganbaru_handoff::protocol::{self, read_control_limited, write_control};
+use ganbaru_handoff::tls::PinnedClientVerifier;
 use std::collections::BTreeSet;
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -30,7 +29,7 @@ use tokio_rustls::TlsAcceptor;
 
 /// Reads the admission of the active vault from its selected log and quarantine, or `None`
 /// while sync does not run there.
-pub(crate) type MemberAdmissionSource = Arc<
+pub type MemberAdmissionSource = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Result<Option<MemberAdmission>, String>> + Send>>
         + Send
         + Sync,
@@ -38,16 +37,16 @@ pub(crate) type MemberAdmissionSource = Arc<
 
 /// What a member listener serves and whom it admits.
 #[derive(Clone)]
-pub(crate) struct MemberServices {
+pub struct MemberServices<R> {
     /// The hub that answers admitted sync requests.
     pub hub: SyncHub,
     /// Admission from the selected log, read for every authenticated connection.
     pub admission: MemberAdmissionSource,
     /// Whether the network behind each local address may reach the listener at all.
     pub lan: LanAdmission,
-    /// The snapshot copies a member desktop serves to enrolled devices. Phones serve none.
-    #[cfg(desktop)]
-    pub bundles: Option<super::MemberBundles>,
+    /// Requests answered before admission and the hub, such as the snapshot copies a member
+    /// desktop serves to enrolled devices.
+    pub routes: R,
 }
 
 /// A TLS configuration and the admitted certificate fingerprints it was built for.
@@ -118,12 +117,12 @@ impl HandshakeAdmission {
 }
 
 /// Serves `listener` as a member sync listener until shutdown.
-pub(crate) async fn serve_member(
+pub async fn serve_member<R: Routes>(
     listener: CoordinatorListener,
     limits: ConnectionLimits,
     loopback: LoopbackPolicy,
     manager: PairingManager,
-    services: MemberServices,
+    services: MemberServices<R>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     let configs = MemberConfigCache::default();
@@ -144,6 +143,7 @@ pub(crate) async fn serve_member(
             let handshakes = handshakes.clone();
             let manager = manager.clone();
             let services = services.clone();
+            let limits = limits.clone();
             tokio::spawn(async move {
                 if !services.lan.admits(local).await {
                     return;
@@ -153,6 +153,8 @@ pub(crate) async fn serve_member(
                     services: &services,
                     configs: &configs,
                     handshakes: &handshakes,
+                    limits: &limits,
+                    source: source.ip(),
                 };
                 if let Err(error) = handle_member_connection(socket, &connection, permit).await {
                     eprintln!("sync member listener: connection from {source} failed: {error}");
@@ -164,16 +166,18 @@ pub(crate) async fn serve_member(
 }
 
 /// What one accepted connection is served with.
-struct MemberConnection<'a> {
+struct MemberConnection<'a, R> {
     manager: &'a PairingManager,
-    services: &'a MemberServices,
+    services: &'a MemberServices<R>,
     configs: &'a MemberConfigCache,
     handshakes: &'a HandshakeAdmission,
+    limits: &'a ConnectionLimits,
+    source: IpAddr,
 }
 
-async fn handle_member_connection(
+async fn handle_member_connection<R: Routes>(
     socket: TcpStream,
-    connection: &MemberConnection<'_>,
+    connection: &MemberConnection<'_, R>,
     permit: super::limits::PendingPermit,
 ) -> Result<(), String> {
     let Some(admission) = connection
@@ -198,13 +202,14 @@ async fn handle_member_connection(
     .await
     .map_err(|_| "TLS handshake timed out".to_string())?
     .map_err(|error| format!("accept TLS connection: {error}"))?;
-    let fingerprint = stream
+    let certificate = stream
         .get_ref()
         .1
         .peer_certificates()
         .and_then(|certificates| certificates.first())
-        .map(|certificate| certificate_fingerprint(certificate.as_ref()))
+        .cloned()
         .ok_or_else(|| "the peer presented no certificate".to_string())?;
+    let fingerprint = certificate_fingerprint(certificate.as_ref());
     // The handshake may have used an admission read a few seconds ago; an authenticated peer
     // is checked against the log as it is now. The request is read before a refusal is sent,
     // so closing does not reset the connection under unread data and the peer sees the code.
@@ -231,18 +236,18 @@ async fn handle_member_connection(
             return send_error(&mut stream, "malformed_control", &error, false).await;
         }
     };
-    #[cfg(desktop)]
-    if let Some(bundles) = connection.services.bundles.as_ref()
-        && super::MemberBundles::handles(&request)
-    {
-        return bundles
-            .serve(
-                &mut stream,
-                connection.manager,
-                &admission,
-                &fingerprint,
-                request,
-            )
+    if connection.services.routes.handles(&request) {
+        let peer = Peer {
+            manager: connection.manager,
+            source: connection.source,
+            certificate: Some(&certificate),
+            limits: connection.limits,
+            admission: Some(&admission),
+        };
+        return connection
+            .services
+            .routes
+            .serve(&mut stream, peer, request)
             .await;
     }
     if let Err(refusal) = admission.request(&fingerprint, &request) {

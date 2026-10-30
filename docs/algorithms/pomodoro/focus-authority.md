@@ -49,7 +49,7 @@ Notifications, overlays, tray, sounds, Music, the distraction blocker, and Andro
 
 ## Vault lifecycle
 
-Vault selection, replacement, and handoff freeze the native owner before closing pools, using the shared [vault operation boundary](../../data/architecture.md). Freeze immediately revokes effect admission, waits up to ten seconds for the owner and five seconds for the delivery worker, and fails quiescence on timeout instead of abandoning work. Lifecycle revisions prevent an earlier freeze or resume from overriding a later one. After resume, idle warnings must be shown and acknowledged again.
+Vault selection, replacement, and snapshot bootstrap freeze the native owner before closing pools, using the shared [vault operation boundary](../../data/architecture.md). Freeze immediately revokes effect admission, waits up to ten seconds for the owner and five seconds for the delivery worker, and fails quiescence on timeout instead of abandoning work. Lifecycle revisions prevent an earlier freeze or resume from overriding a later one. After resume, idle warnings must be shown and acknowledged again.
 
 ## Idle grace
 

@@ -69,6 +69,17 @@ class SyncSchedulingTest {
   }
 
   @Test
+  fun aRelayRunNeverReplacesTheLocalOneTimeRun() {
+    val names = setOf(
+      RelayScheduling.PERIODIC_WORK,
+      RelayScheduling.ONE_TIME_WORK,
+      SyncScheduling.PERIODIC_WORK,
+      SyncScheduling.ONE_TIME_WORK,
+    )
+    assertEquals(4, names.size)
+  }
+
+  @Test
   fun aRelayRunTellsRustWhetherTheNetworkIsMetered() {
     assertEquals("""{"relay":{"metered":true}}""", RelayScheduling.passInput(metered = true))
     assertEquals("""{"relay":{"metered":false}}""", RelayScheduling.passInput(metered = false))

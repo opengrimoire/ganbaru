@@ -98,6 +98,7 @@ internal enum class RelayNetwork {
  */
 internal object RelayScheduling {
   const val PERIODIC_WORK = "ganbaru-sync-relay"
+  const val ONE_TIME_WORK = "ganbaru-sync-relay-now"
   const val PERIODIC_INTERVAL_MINUTES = 15L
 
   /** The network every relay run requires. */

@@ -1,11 +1,13 @@
 //! Sync identifiers, clocks, version vectors, order keys, writer certificates, space charters,
-//! authorization entries, recovery keys, and the signed operation format.
+//! authorization entries, recovery keys, the encrypted backup format, and the signed operation
+//! format.
 //!
 //! The crate has no database or Tauri dependency, so every replica and test decodes and verifies
 //! operations with the same code. Encodings are hand-written, bounded, and big endian, with one
 //! canonical form per value; golden vectors in the tests freeze them.
 
 pub mod authorization;
+pub mod backup;
 pub mod bounds;
 pub mod certificate;
 pub mod charter;

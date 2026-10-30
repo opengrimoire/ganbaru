@@ -152,7 +152,8 @@ impl<R: Runtime> MobileDocuments<R> {
             .map_err(|error| format!("pick {document_kind} document: {error}"))
     }
 
-    /// Stream one bounded Android document into an unused app-private file.
+    /// Stream one bounded Android document into an unused app-private file. An empty
+    /// `accepted_extensions` accepts any file name, for callers that check the bytes themselves.
     pub fn pick_document_to_path(
         &self,
         destination_path: &str,

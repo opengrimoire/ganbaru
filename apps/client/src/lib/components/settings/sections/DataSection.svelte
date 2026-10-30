@@ -4,6 +4,7 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import VaultBackupRows from "$lib/components/vault/VaultBackupRows.svelte";
   import VaultLockWarning from "$lib/components/vault/VaultLockWarning.svelte";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -173,6 +174,14 @@
         </button>
       </div>
     </div>
+  </section>
+
+  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+
+  <section class="flex flex-col gap-4">
+    <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.data.backupHeading")}</h2>
+
+    <VaultBackupRows platform="desktop" buttonClass={secondaryButtonClass} onRestored={restartApp} />
   </section>
 
   <DatabaseRollbacks onRestored={restartApp} />

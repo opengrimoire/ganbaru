@@ -16,7 +16,7 @@ The current source is substantially implemented but the Android product is not y
 
 | Capability | Current Android state |
 | --- | --- |
-| App-private vault, first use, import, portable backup, and restore | Implemented in source |
+| App-private vault, first use, import, encrypted backup, and restore | Implemented in source |
 | Calendar, Projects, Notes, Quick notes, Settings, Themes, and localization | Implemented through shared responsive surfaces |
 | Explicit Pomodoro starts, commitment reminders, accepted-phase service and recovery | Implemented in source |
 | Music library and selected-tree local audio through Media3 | Implemented in source |

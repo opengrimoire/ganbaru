@@ -22,13 +22,13 @@ use zeroize::Zeroizing;
 
 /// A test-only generator that replays fixed bytes, so HPKE encapsulation reproduces a known
 /// ephemeral key. It exists only in this test module.
-struct FixedRng {
+pub(super) struct FixedRng {
     bytes: Vec<u8>,
     position: usize,
 }
 
 impl FixedRng {
-    fn new(bytes: &[u8]) -> Self {
+    pub(super) fn new(bytes: &[u8]) -> Self {
         Self {
             bytes: bytes.to_vec(),
             position: 0,

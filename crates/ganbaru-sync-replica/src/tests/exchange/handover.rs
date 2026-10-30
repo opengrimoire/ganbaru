@@ -89,7 +89,7 @@ pub(super) async fn sequence_here(replica: &mut Replica, proposal: &SignedPropos
 }
 
 /// Records the stored head of the replica's writer after sequencing through it.
-async fn commit_sequenced(replica: &mut Replica) {
+pub(super) async fn commit_sequenced(replica: &mut Replica) {
     let seq = replica.stored().await.get(&replica.writer.id());
     replica.writer.committed(seq).expect("record commit");
 }

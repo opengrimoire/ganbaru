@@ -2208,6 +2208,7 @@ dependencies = [
  "ganbaru-quick-notes",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
+ "ganbaru-sync-relay",
  "ganbaru-themes",
  "keyring",
  "rustix",

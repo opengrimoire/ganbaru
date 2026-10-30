@@ -145,6 +145,12 @@ pub trait SyncHost: Clone + Send + Sync + 'static {
         async {}
     }
 
+    /// Whether a relay pass runs on a metered network, which keeps it to small asset files.
+    /// A host that cannot be on a metered network reports `false`.
+    fn relay_metered(&self) -> bool {
+        false
+    }
+
     /// This device's id.
     fn device_id(&self) -> Result<String, String>;
 

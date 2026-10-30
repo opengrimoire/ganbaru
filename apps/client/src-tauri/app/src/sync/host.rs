@@ -113,6 +113,13 @@ async fn discover_members(
         .collect()
 }
 
+/// Whether the network of the running pass is metered. Only a relay worker run probes its
+/// network, so a foreground pass or another background pass counts as metered.
+#[cfg(target_os = "android")]
+fn android_relay_metered() -> bool {
+    super::headless::relay_metered().unwrap_or(true)
+}
+
 /// Recovers after a failed pass when opening a sealed key file reported its platform key lost,
 /// so the device enrolls again with fresh keys instead of retrying a key it cannot recover; see
 /// [`super::key_protection::recover_after_key_loss`]. Only the losses the key wrapper recorded
@@ -309,6 +316,11 @@ impl<R: Runtime> SyncHost for AppHost<R> {
         .await;
     }
 
+    #[cfg(target_os = "android")]
+    fn relay_metered(&self) -> bool {
+        android_relay_metered()
+    }
+
     async fn note_platform_degraded(
         &self,
         role: SyncRole,
@@ -496,6 +508,11 @@ impl SyncHost for HeadlessHost {
 
     async fn recover_lost_keys(&self) {
         recover_if_key_protection_lost(self, self.0.key_protection.clone()).await;
+    }
+
+    #[cfg(target_os = "android")]
+    fn relay_metered(&self) -> bool {
+        android_relay_metered()
     }
 
     fn device_id(&self) -> Result<String, String> {

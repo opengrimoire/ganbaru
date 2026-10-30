@@ -49,4 +49,5 @@ ganbaru-music-library = { workspace = true }
 ganbaru-notes = { workspace = true }
 ganbaru-projects = { workspace = true }
 ganbaru-quick-notes = { workspace = true }
+ganbaru-sync-relay = { workspace = true }
 ganbaru-themes = { workspace = true }

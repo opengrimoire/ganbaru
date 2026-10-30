@@ -25,14 +25,17 @@ pub use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 pub use host::{SYNC_DIRECTORY, SyncHost};
-use status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
+use status::{
+    DegradedReasons, RelayDeliveryView, SyncErrorCode, SyncRole, SyncState, SyncStatusView,
+};
 use transport::PairedTransport;
 
 use crate::assets::{AssetMemory, AssetSession, AssetStore, AssetTransfer, MAX_ASSET_PASS_BYTES};
+use crate::authority::read_admin_key;
 #[cfg(desktop)]
 use crate::authority::{
     self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
-    ensure_charter, read_admin_key,
+    ensure_charter,
 };
 use crate::carry_forward;
 use crate::client::{ClientSession, Exchange, ForkPoint, PeerIds, SyncTransport};
@@ -46,6 +49,10 @@ use crate::peers::discovery_keys::DiscoveryKeys;
 use crate::quarantine::{PullSkips, Quarantine};
 use crate::records::{FreeSpace, RecordExchange, RecordLink};
 use crate::recovery::RecoveryChoice;
+use crate::relay::{
+    METERED_MAX_ASSET_BYTES, RelayLimits, RelayPass, RelaySession, RelayTarget,
+    UNMETERED_MAX_ASSET_BYTES,
+};
 use crate::reset;
 use crate::serve::MemberAdmissionSource;
 #[cfg(desktop)]
@@ -119,6 +126,40 @@ const MAX_FORK_RECOVERIES: usize = 3;
 /// to push back the entries it lost before it hands over to itself, which supersedes them.
 #[cfg(desktop)]
 const RESTORE_CATCH_UP_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+/// Whether relay passes dial a loopback relay: debug builds allow a relay on this computer for
+/// development, release builds refuse it.
+const RELAY_LOOPBACK: ganbaru_handoff::dial::LoopbackPolicy = if cfg!(debug_assertions) {
+    ganbaru_handoff::dial::LoopbackPolicy::Allow
+} else {
+    ganbaru_handoff::dial::LoopbackPolicy::Reject
+};
+
+/// The largest asset file a relay pass of `host` moves: large files only on a network the host
+/// does not report as metered.
+fn relay_asset_bound<H: SyncHost>(host: &H) -> u32 {
+    if host.relay_metered() {
+        METERED_MAX_ASSET_BYTES
+    } else {
+        UNMETERED_MAX_ASSET_BYTES
+    }
+}
+
+/// Records a relay pass outcome in `view`. A failure stays a present relay status, which keeps
+/// the Android relay worker scheduled while the space names a relay.
+fn record_relay_outcome(view: &mut SyncStatusView, outcome: Result<RelayPass, String>) {
+    let (now, clock) = match now_ms() {
+        Ok(now) => (now, None),
+        Err(error) => (0, Some(error)),
+    };
+    view.relay = Some(match (outcome, clock) {
+        (Ok(pass), None) => RelayDeliveryView::of(&pass, now),
+        (Err(error), _) | (Ok(_), Some(error)) => {
+            eprintln!("sync relay: {error}");
+            RelayDeliveryView::failed(error, now)
+        }
+    });
+}
 
 /// Lets one sync pass of this process run at a time, whether the app service, a headless pass,
 /// or the seal before a vault transition runs it.
@@ -1473,6 +1514,12 @@ impl ServiceState {
             }
         }
         let coordinator_answered = asset_peer.is_some() && view.state != SyncState::Offline;
+        if !view.paused
+            && self.relay_pass(&session, view).await
+            && matches!(next, Next::Idle | Next::Online(_))
+        {
+            next = Next::Continue;
+        }
         self.apply_new(&session).await?;
         let anchor_link = self.anchor_link.take();
         if is_hub {
@@ -1863,6 +1910,86 @@ impl ServiceState {
             .map(ActiveWriter::own_writers)
             .unwrap_or_default();
         Ok(compaction_limit(&stable, &own_writers, self.confirmed))
+    }
+
+    /// Runs one relay pass while the space's server configuration names a relay and records
+    /// what it moved in `view`. Every relay fault, local or remote, is reported in the status
+    /// rather than failing the pass, so LAN exchange continues and the relay status stays
+    /// present while a relay is configured. Returns whether the relay holds more to move.
+    async fn relay_pass<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+        view: &mut SyncStatusView,
+    ) -> bool {
+        let target = match Self::relay_target(session).await {
+            Ok(Some(target)) => target,
+            Ok(None) => {
+                view.relay = None;
+                return false;
+            }
+            Err(error) => {
+                record_relay_outcome(view, Err(error));
+                return false;
+            }
+        };
+        let outcome = self.run_relay(session, &target).await;
+        let more = outcome.as_ref().is_ok_and(|pass| pass.more);
+        record_relay_outcome(view, outcome);
+        more
+    }
+
+    /// The relay the selected chain names, `None` when the space has no relay.
+    async fn relay_target<H: SyncHost>(
+        session: &Session<'_, H>,
+    ) -> Result<Option<RelayTarget>, String> {
+        let mut conn = acquire(&session.pool).await?;
+        let authorization = session
+            .engine
+            .authorization(&mut conn, &session.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?;
+        Ok(authorization.as_ref().and_then(RelayTarget::of))
+    }
+
+    /// Prepares this installation's relay session and runs one pass against `target`.
+    async fn run_relay<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+        target: &RelayTarget,
+    ) -> Result<RelayPass, String> {
+        let holder = self
+            .writer
+            .as_ref()
+            .and_then(ActiveWriter::space_keys)
+            .ok_or_else(|| "this device holds no space keys yet".to_string())?;
+        let keys = session.keys.clone();
+        let vault_id = session.host.active_vault_id()?;
+        let admin_vault = vault_id.clone();
+        let admin = blocking(move || read_admin_key(keys.as_ref(), &admin_vault)).await?;
+        let path = session.files.quarantine_path();
+        let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        let assets: Arc<dyn AssetStore> = session.host.asset_store(&vault_id)?;
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        let relay = RelaySession {
+            engine: &session.engine,
+            pool: &session.pool,
+            ctx: &session.ctx,
+            holder: holder.as_ref(),
+            admin: admin.as_ref(),
+            own_writers: &own_writers,
+            quarantined: quarantine.devices(),
+            assets: Some(&assets),
+            limits: RelayLimits {
+                max_bytes: crate::client::MAX_EXCHANGE_BYTES,
+                max_asset_bytes: relay_asset_bound(session.host),
+                loopback: RELAY_LOOPBACK,
+            },
+        };
+        relay.pass(target).await
     }
 
     /// Exchanges with the hub, re-sealing after a fork of this installation's chain.

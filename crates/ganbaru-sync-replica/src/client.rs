@@ -140,6 +140,21 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         result
     }
 
+    /// Only the record exchange, with no operation lanes, for a peer this replica must not send
+    /// operations to or take operations and stability from, such as a coordinator the selected
+    /// log removed: the peer still learns the records, its own removal among them. Returns
+    /// `None` without a record link.
+    pub async fn exchange_records_only(&self) -> Result<Option<RecordsExchanged>, String> {
+        let Some(link) = &self.records else {
+            return Ok(None);
+        };
+        let result = self.exchange_records(link).await;
+        if result.is_err() {
+            link.state.disconnected(link.peer);
+        }
+        result.map(Some)
+    }
+
     async fn exchange_once(&self) -> Result<Exchange, String> {
         let records = match &self.records {
             Some(link) => Some(self.exchange_records(link).await?),

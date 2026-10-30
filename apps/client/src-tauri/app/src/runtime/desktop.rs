@@ -628,6 +628,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::handoff_request_owner_bundle,
             vault::handoff::receiver::handoff_receive_desktop_bundle,
             vault::handoff::receiver::handoff_cancel_receive,
+            vault::handoff::receiver::handoff_pick_link_folder,
+            vault::handoff::receiver::handoff_reset_link_folder,
             vault::vault_pick_create,
             vault::vault_pick_open,
             vault::vault_reveal_active,

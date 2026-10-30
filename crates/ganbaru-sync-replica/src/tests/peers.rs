@@ -109,6 +109,39 @@ fn member_admission_accepts_enrolled_unquarantined_certificates_and_removed_ones
     );
 }
 
+#[test]
+fn member_admission_gives_a_snapshot_copy_only_to_live_enrolled_devices_asking_for_themselves() {
+    let quarantined = BTreeSet::from(["device-3".to_string()]);
+    let admission = MemberAdmission::new(
+        VAULT,
+        &view(vec![device(1, false), device(2, true), device(3, false)]),
+        &quarantined,
+    );
+    let enrolled = fingerprint_hex(&[1; 32]);
+
+    assert_eq!(admission.bootstrap(&enrolled, VAULT, "device-1"), Ok(()));
+    assert_eq!(
+        admission.bootstrap(&fingerprint_hex(&[2; 32]), VAULT, "device-2"),
+        Err(MemberRefusal::Removed)
+    );
+    assert_eq!(
+        admission.bootstrap(&fingerprint_hex(&[3; 32]), VAULT, "device-3"),
+        Err(MemberRefusal::Quarantined)
+    );
+    assert_eq!(
+        admission.bootstrap(&fingerprint_hex(&[9; 32]), VAULT, "device-9"),
+        Err(MemberRefusal::Unknown)
+    );
+    assert_eq!(
+        admission.bootstrap(&enrolled, "vault-other", "device-1"),
+        Err(MemberRefusal::VaultMismatch)
+    );
+    assert_eq!(
+        admission.bootstrap(&enrolled, VAULT, "device-3"),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+}
+
 fn record_get(vault_id: &str, device_id: &str) -> ControlMessage {
     ControlMessage::SyncRecordGet {
         protocol_version: PROTOCOL_VERSION,

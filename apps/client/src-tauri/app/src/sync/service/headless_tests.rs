@@ -102,14 +102,22 @@ struct HubSpace {
 impl HubSpace {
     /// Enrolls the phone with `device_key` through the anchor's writer.
     async fn enroll_phone(&mut self, pool: &SqlitePool, device_key: DevicePublicKey) {
+        self.enroll(
+            pool,
+            Enrollment {
+                device_id: PHONE_DEVICE.to_string(),
+                device_key,
+                tls_fingerprint: [14; 32],
+                label: "Phone".to_string(),
+                device_kind: DeviceKind::Mobile,
+            },
+        )
+        .await;
+    }
+
+    /// Enrolls the device `enrollment` names through the anchor's writer.
+    async fn enroll(&mut self, pool: &SqlitePool, enrollment: Enrollment) {
         let mut conn = acquire(pool).await.expect("hub connection");
-        let enrollment = Enrollment {
-            device_id: PHONE_DEVICE.to_string(),
-            device_key,
-            tls_fingerprint: [14; 32],
-            label: "Phone".to_string(),
-            device_kind: DeviceKind::Mobile,
-        };
         authority::enroll(
             &Engine::vault(),
             &mut conn,
@@ -120,7 +128,7 @@ impl HubSpace {
             now_ms().expect("clock"),
         )
         .await
-        .expect("enroll the phone");
+        .expect("enroll the device");
     }
 }
 
@@ -208,8 +216,9 @@ async fn hub_vault(
     )
 }
 
-/// A hub serving `pool` over the coordinator listener, reporting a LAN contact.
-fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
+/// A hub serving `pool` over the coordinator listener as the device `device_id`, reporting a
+/// LAN contact.
+fn serving_hub(pool: SqlitePool, assets: PathBuf, device_id: &'static str) -> SyncHub {
     let assets: Arc<dyn AssetStore> = Arc::new(ContentAddressedStore::new(assets));
     let open: OpenHubVault = Arc::new(move || {
         let pool = pool.clone();
@@ -220,6 +229,7 @@ fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
                 vault_id: VAULT_ID.to_string(),
                 assets,
                 quarantined: std::collections::BTreeSet::new(),
+                device_id: device_id.to_string(),
             }))
         })
     });
@@ -340,6 +350,7 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
         Some(serving_hub(
             hub_pool.clone(),
             hub_directory.path().join("assets"),
+            COORDINATOR_DEVICE,
         )),
         PinnedCharter {
             charter: ganbaru_handoff::protocol::encode_sync_charter(&hub_space.charter),
@@ -440,6 +451,299 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
         .await
         .expect("count hub acknowledgements");
     assert_eq!(pushed, 1, "the hub holds the phone acknowledgement");
+    drop(phone_pool);
+    phone_registry
+        .close_all()
+        .await
+        .expect("close phone reader");
+    drop(hub_pool);
+    hub_registry.close_all().await.expect("close hub pools");
+}
+
+/// Whether a file under `directory`, at any depth, has `name_part` in its name.
+fn holds_file(directory: &Path, name_part: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            holds_file(&path, name_part)
+        } else {
+            entry.file_name().to_string_lossy().contains(name_part)
+        }
+    })
+}
+
+/// A minimal PNG header of 40 by 30 pixels, made unique by `seed`.
+fn png(seed: u8) -> Vec<u8> {
+    let mut bytes = vec![0; 34];
+    bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    bytes[8..12].copy_from_slice(&13u32.to_be_bytes());
+    bytes[12..16].copy_from_slice(b"IHDR");
+    bytes[16..20].copy_from_slice(&40u32.to_be_bytes());
+    bytes[20..24].copy_from_slice(&30u32.to_be_bytes());
+    bytes[24..29].copy_from_slice(&[8, 6, 0, 0, 0]);
+    bytes[33] = seed;
+    bytes.resize(64, seed);
+    bytes
+}
+
+async fn count_rows(pool: &SqlitePool, sql: &'static str) -> i64 {
+    sqlx::query_scalar(sql)
+        .fetch_one(pool)
+        .await
+        .expect("count rows")
+}
+
+#[tokio::test]
+async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
+    use sha2::{Digest, Sha256};
+    const LAPTOP_DEVICE: &str = "device-laptop";
+    let (person_pkcs8, person) = PersonKeyPair::generate().expect("person key");
+    let hub_directory = TestDirectory::new("headless-removed-hub");
+    let hub_registry = DatabasePoolRegistry::default();
+    let (hub_pool, mut hub_space) = hub_vault(hub_directory.path(), &hub_registry, &person).await;
+    let stability = HubStability::default();
+    let pair = LocalPair::start_with_hub_charter(
+        Some(
+            // Rooted at the vault folder as on a coordinator, so an upload would land, and
+            // serving under another device id, so the hub never refuses on its own and only
+            // the member's gate keeps the lanes closed.
+            serving_hub(
+                hub_pool.clone(),
+                hub_directory.path().to_path_buf(),
+                "device-unchecked",
+            )
+            .with_stability(stability.clone()),
+        ),
+        PinnedCharter {
+            charter: ganbaru_handoff::protocol::encode_sync_charter(&hub_space.charter),
+            person_key: person.public_key().to_text(),
+        },
+    )
+    .await;
+    pair.enroll().await;
+    let config_dir = pair.phone_config_dir().to_path_buf();
+    let phone_database = phone_vault(&config_dir, &person, &person_pkcs8, &hub_space.charter).await;
+    let open_host = || {
+        HeadlessHost::open_with(&config_dir, &ProcessManagers::default())
+            .expect("open headless host")
+    };
+    let host = open_host();
+    let phone_key = crate::sync::ensure_device_key(&host, VAULT_ID)
+        .await
+        .expect("phone device key");
+    hub_space.enroll_phone(&hub_pool, phone_key).await;
+    let laptop_key = DeviceKeyPair::from_seed(&[20; 32]).expect("laptop device key");
+    hub_space
+        .enroll(
+            &hub_pool,
+            Enrollment {
+                device_id: LAPTOP_DEVICE.to_string(),
+                device_key: laptop_key.public_key(),
+                tls_fingerprint: [21; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            },
+        )
+        .await;
+    let live = Mutex::new(Weak::new());
+    let gate = tokio::sync::Mutex::new(());
+    for label in ["the priming pass", "the linked pass"] {
+        let host = open_host();
+        let pass = tokio::time::timeout(
+            PASS_WAIT,
+            headless_pass_with(async { Ok(host) }, &live, &gate, PASS_WAIT),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{label} finishes"))
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_eq!(pass.status.state, SyncState::Idle, "{:?}", pass.status);
+    }
+    let hub_ops = count_rows(&hub_pool, "SELECT COUNT(*) FROM sync_ops").await;
+    assert!(hub_ops > 1, "the linked passes pushed the phone writer");
+
+    // The laptop forces the anchor to itself with the recovery kit, which removes the old
+    // anchor, and its records reach the phone before they reach the coordinator.
+    let laptop_directory = TestDirectory::new("headless-removed-laptop");
+    let phone_registry = DatabasePoolRegistry::default();
+    let phone_pool = phone_registry
+        .connect_path(&phone_database)
+        .await
+        .expect("open phone vault");
+    let mut conn = acquire(&phone_pool).await.expect("phone connection");
+    let engine = Engine::vault();
+    let phone_ctx = local::space_context(&mut conn, VAULT_ID)
+        .await
+        .expect("read phone space")
+        .expect("phone space context");
+    let view = engine
+        .authorization(&mut conn, &phone_ctx)
+        .await
+        .expect("read phone authorization")
+        .expect("phone charter");
+    let recovery = authority::recovery_admin(&view, &anchor_keys().recovery.kit_code())
+        .expect("the kit recovers the vault");
+    let mut laptop_writer = create_writer(
+        &SyncFiles::new(laptop_directory.path().join("sync"), VAULT_ID).expect("laptop files"),
+        &FileKeyStore::new(
+            laptop_directory.path().join("keys"),
+            crate::sync::key_protection::test_wrapper(),
+        ),
+        SuccessorPlan::default(),
+        &laptop_key,
+        LAPTOP_DEVICE,
+        now_ms().expect("clock"),
+    )
+    .expect("create laptop writer");
+    authority::force_handover_here(
+        &engine,
+        &mut conn,
+        &phone_ctx,
+        &authority::ForcedHandover {
+            signer: &recovery,
+            promote: None,
+            point: None,
+            removals: Vec::new(),
+        },
+        &mut laptop_writer.local(),
+        now_ms().expect("clock"),
+    )
+    .await
+    .expect("force handover")
+    .expect("the kit hands the anchor to the laptop");
+    let view = engine
+        .authorization(&mut conn, &phone_ctx)
+        .await
+        .expect("read phone authorization")
+        .expect("phone charter");
+    assert!(
+        ganbaru_sync_replica::hub::removes_device(&view, COORDINATOR_DEVICE),
+        "the phone's selected log removed the coordinator"
+    );
+    let stable_before = engine
+        .stable_vector(&mut conn, &phone_ctx)
+        .await
+        .expect("read phone stable vector");
+    drop(conn);
+    // An edit and an image the phone would push and upload to a coordinator it still follows.
+    insert_note(&phone_pool, "note-after-removal").await;
+    let image = png(5);
+    let sha256: String = Sha256::digest(&image)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    ganbaru_quick_notes::images::import_image(
+        phone_database.parent().expect("phone vault folder"),
+        &image,
+    )
+    .expect("import image");
+    sqlx::query(
+        "INSERT INTO quick_note_images
+            (note_id, sort_order, sha256, content_type, byte_size, width, height)
+         VALUES ('note-after-removal', 0, ?, 'image/png', ?, 40, 30)",
+    )
+    .bind(&sha256)
+    .bind(i64::try_from(image.len()).expect("image size"))
+    .execute(&phone_pool)
+    .await
+    .expect("add image");
+    drop(phone_pool);
+    phone_registry.close_all().await.expect("close phone pools");
+    let mut hub_stable = VersionVector::new();
+    hub_stable.set(hub_space.writer.id(), 1);
+    stability.publish(VAULT_ID, hub_stable);
+    let hub_envelopes = count_rows(&hub_pool, "SELECT COUNT(*) FROM sync_auth_envelopes").await;
+
+    let host = open_host();
+    let pass = tokio::time::timeout(
+        PASS_WAIT,
+        headless_pass_with(async { Ok(host) }, &live, &gate, PASS_WAIT),
+    )
+    .await
+    .expect("the pass finishes")
+    .expect("headless pass");
+
+    assert_eq!(
+        count_rows(&hub_pool, "SELECT COUNT(*) FROM sync_ops").await,
+        hub_ops,
+        "the phone pushed no operations to the removed coordinator"
+    );
+    assert!(
+        !holds_file(&hub_directory.path().join("assets"), &sha256),
+        "the phone uploaded no asset to the removed coordinator"
+    );
+    assert!(
+        count_rows(&hub_pool, "SELECT COUNT(*) FROM sync_auth_envelopes").await > hub_envelopes,
+        "record exchange still carried the removal to the coordinator"
+    );
+    let phone_registry = DatabasePoolRegistry::default();
+    let phone_pool = phone_registry
+        .connect_path_read_only(&phone_database)
+        .await
+        .expect("read phone vault");
+    let phone_ops = |pool: SqlitePool| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sync_ops JOIN sync_writers USING (space_id, writer_id)
+             WHERE sync_writers.device_id = ?",
+        )
+        .bind(PHONE_DEVICE)
+        .fetch_one(&pool)
+        .await
+        .expect("count phone operations")
+    };
+    let (sealed, pushed) = (
+        phone_ops(phone_pool.clone()).await,
+        phone_ops(hub_pool.clone()).await,
+    );
+    assert!(
+        sealed > pushed,
+        "the phone sealed operations ({sealed}) the removed coordinator never took ({pushed})"
+    );
+    // The stable vector comes only in the answer to the hello that opens the operation lanes,
+    // so keeping the old one also shows the phone never offered the coordinator a push.
+    let mut conn = acquire(&phone_pool).await.expect("phone connection");
+    assert_eq!(
+        engine
+            .stable_vector(&mut conn, &phone_ctx)
+            .await
+            .expect("read phone stable vector"),
+        stable_before,
+        "the phone took no stable vector from the removed coordinator"
+    );
+    assert_eq!(
+        pass.status.last_error_code,
+        Some(SyncErrorCode::CoordinatorRemoved),
+        "{:?}",
+        pass.status
+    );
+    // The coordinator, having learned its removal, answers record exchange only.
+    let removed_hub = serving_hub(
+        hub_pool.clone(),
+        hub_directory.path().to_path_buf(),
+        COORDINATOR_DEVICE,
+    );
+    let answer = removed_hub
+        .respond(ganbaru_handoff::protocol::ControlMessage::SyncHello {
+            protocol_version: ganbaru_handoff::protocol::PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            manifest_version: engine.manifest().version,
+            stored: Vec::new(),
+            probe: None,
+            listening: Vec::new(),
+        })
+        .await;
+    assert!(
+        matches!(
+            &answer,
+            ganbaru_handoff::protocol::ControlMessage::Error { code, .. }
+                if code == ganbaru_sync_replica::hub::HUB_REMOVED
+        ),
+        "{answer:?}"
+    );
+    drop(conn);
     drop(phone_pool);
     phone_registry
         .close_all()

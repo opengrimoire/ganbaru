@@ -27,6 +27,9 @@ function authority(ownIsAdmin: boolean): Record<string, unknown> {
   };
 }
 
+const NO_LATE_CHANGES = { changes: [], total: 0 };
+const NO_CONTESTS = { contests: [], losingRemovals: [], storage: { backstop: null, alerts: [] } };
+
 function answer(responses: Record<string, unknown>): void {
   vi.mocked(invoke).mockImplementation(async (command: string) => {
     if (command in responses) return responses[command];
@@ -52,7 +55,12 @@ describe("sync authority state", () => {
   });
 
   it("loads the pending kit only when this desktop is an admin", async () => {
-    answer({ sync_authority: authority(false), sync_contests: null, sync_outbox_list: [], sync_late_changes: { changes: [], total: 0 } });
+    answer({
+      sync_authority: authority(false),
+      sync_outbox_list: [],
+      sync_late_changes: NO_LATE_CHANGES,
+      sync_contests: NO_CONTESTS,
+    });
     const state = await load();
     await state.refresh();
     expect(state.authority?.ownIsAdmin).toBe(false);
@@ -61,9 +69,9 @@ describe("sync authority state", () => {
 
     answer({
       sync_authority: authority(true),
-      sync_contests: null,
       sync_outbox_list: [],
-      sync_late_changes: { changes: [], total: 0 },
+      sync_late_changes: NO_LATE_CHANGES,
+      sync_contests: NO_CONTESTS,
       sync_recovery_kit_state: { stored: true, pending: { code: "ABCD-EFGH", qr: { width: 1, modules: [true] }, active: true } },
     });
     await state.refresh();
@@ -72,10 +80,20 @@ describe("sync authority state", () => {
   });
 
   it("keeps the last state and reports a failure when a response is invalid", async () => {
-    answer({ sync_authority: authority(false), sync_contests: null, sync_outbox_list: [], sync_late_changes: { changes: [], total: 0 } });
+    answer({
+      sync_authority: authority(false),
+      sync_outbox_list: [],
+      sync_late_changes: NO_LATE_CHANGES,
+      sync_contests: NO_CONTESTS,
+    });
     const state = await load();
     await state.refresh();
-    answer({ sync_authority: authority(false), sync_contests: null, sync_outbox_list: [{ change: "remove" }], sync_late_changes: { changes: [], total: 0 } });
+    answer({
+      sync_authority: authority(false),
+      sync_outbox_list: [{ change: "remove" }],
+      sync_late_changes: NO_LATE_CHANGES,
+      sync_contests: NO_CONTESTS,
+    });
     await state.refresh();
     expect(state.loadFailed).toBe(true);
     expect(state.authority?.devices).toHaveLength(1);
@@ -97,7 +115,7 @@ describe("sync authority state", () => {
   });
 
   it("sends late decisions by removal, table, and row, then reloads", async () => {
-    answer({ sync_authority: null, sync_contests: null, sync_outbox_list: [], sync_late_changes: { changes: [], total: 0 } });
+    answer({ sync_authority: null, sync_outbox_list: [], sync_late_changes: NO_LATE_CHANGES, sync_contests: null });
     const state = await load();
     await state.discardLateChange({
       removalRevision: 4,

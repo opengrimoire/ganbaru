@@ -7,7 +7,7 @@ use super::pairing::{LinkedPeer, PairingManager};
 use super::protocol::{BundleMetadata, BundlePurpose, HandoffCompatibility};
 use crate::vault::ownership::VaultOwnershipManager;
 use crate::vault::quiescence::SourceQuiescence;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::time::{Duration, Instant};
 use tauri::{Manager, Runtime};
@@ -195,13 +195,13 @@ pub(crate) const BUNDLE_PREPARATION_LIMIT: &str =
 
 /// Recent vault snapshots started for each linked device, kept in memory for the per-device limit.
 #[derive(Debug, Default)]
-struct BundlePreparationWindows {
+pub(crate) struct BundlePreparationWindows {
     peers: BTreeMap<String, VecDeque<Instant>>,
 }
 
 impl BundlePreparationWindows {
     /// Records a snapshot for the device, or refuses it while that device's window is full.
-    fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
+    pub(crate) fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
         self.peers.retain(|_, events| {
             forget_expired(events, now, BUNDLE_PREPARATION_WINDOW);
             !events.is_empty()
@@ -221,8 +221,6 @@ struct CoordinatorState<R: Runtime> {
     prepared: Option<PreparedTransfer>,
     completed: Option<CompletedActivation>,
     last_owner_poll: Option<(String, Instant)>,
-    waiting_refresh_targets: BTreeSet<String>,
-    relay_refresh_generation: Option<u64>,
     ownership_grants: OwnershipGrantWindow,
     bundle_preparations: BundlePreparationWindows,
 }
@@ -266,8 +264,6 @@ pub(crate) async fn run<R: Runtime>(
         prepared,
         completed,
         last_owner_poll: None,
-        waiting_refresh_targets: BTreeSet::new(),
-        relay_refresh_generation: None,
         ownership_grants: OwnershipGrantWindow::default(),
         bundle_preparations: BundlePreparationWindows::default(),
     };
@@ -329,14 +325,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 metadata,
                 source_device_id,
                 purpose,
-            } => {
-                let generation = metadata.generation;
-                let response = self.uploaded(metadata, source_device_id, purpose).await;
-                if response.is_ok() && purpose == BundlePurpose::Refresh {
-                    self.relay_refresh_generation = Some(generation);
-                }
-                response
-            }
+            } => self.uploaded(metadata, source_device_id, purpose).await,
             CoordinatorOperation::AuthorizeUpload {
                 metadata,
                 source_device_id,

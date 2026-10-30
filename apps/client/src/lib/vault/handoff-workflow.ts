@@ -69,6 +69,30 @@ function enrollmentApprovalMessage(
   return null;
 }
 
+/** Guidance when copying the linked vault to this device is refused or cannot keep the replaced vault. */
+function bootstrapRefusalMessage(
+  message: string,
+):
+  | "vaultHandoff.replacedVaultBackupFailed"
+  | "vaultHandoff.linkFolderNotEmpty"
+  | "vaultHandoff.firstLinkNeedsCopy"
+  | "vaultHandoff.ownerHoldsVault"
+  | null {
+  if (message.includes("vault this link replaces could not be backed up")) {
+    return "vaultHandoff.replacedVaultBackupFailed";
+  }
+  if (message.includes("folder chosen for the linked vault is not empty")) {
+    return "vaultHandoff.linkFolderNotEmpty";
+  }
+  if (message.includes("linked vault must be copied to this device")) {
+    return "vaultHandoff.firstLinkNeedsCopy";
+  }
+  if (message.includes("this device owns the linked vault")) {
+    return "vaultHandoff.ownerHoldsVault";
+  }
+  return null;
+}
+
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);
@@ -80,6 +104,8 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (keyMessage) return t(keyMessage);
   const enrollmentMessage = enrollmentApprovalMessage(lower);
   if (enrollmentMessage) return t(enrollmentMessage);
+  const bootstrapMessage = bootstrapRefusalMessage(lower);
+  if (bootstrapMessage) return t(bootstrapMessage);
   if (lower.includes("chat terminals")) {
     return t("vaultHandoff.blockerTerminal");
   }

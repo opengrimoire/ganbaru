@@ -615,7 +615,132 @@ pub(crate) fn active_handoff_staging_path<R: Runtime>(
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    Ok(parent.join(format!(".ganbaru.handoff-{transfer_id}.staging")))
+    Ok(handoff_staging_path_in(parent, transfer_id))
+}
+
+/// Staging folder for a received vault inside `parent`, the folder that will hold the vault, so
+/// activation is a rename on one file system.
+#[cfg(desktop)]
+pub(crate) fn handoff_staging_path_in(parent: &Path, transfer_id: &str) -> PathBuf {
+    parent.join(format!(".ganbaru.handoff-{transfer_id}.staging"))
+}
+
+/// Error returned when the folder chosen for a linked vault already holds files. The webview
+/// maps it to a localized message, so the text is stable.
+pub(crate) const LINK_FOLDER_NOT_EMPTY: &str =
+    "the folder chosen for the linked vault is not empty";
+
+/// Most numbered siblings tried before a first link gives up on a free folder name.
+#[cfg(any(test, desktop))]
+const MAX_LINK_FOLDER_SUFFIX: u32 = 100;
+
+/// Whether `path` can receive a vault: it is missing or an empty folder.
+fn is_free_folder(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        Ok(metadata) => metadata.is_dir() && super::folder_is_empty(path).unwrap_or(false),
+    }
+}
+
+/// Folder name for a vault display name: characters no supported file system accepts become
+/// spaces, and a name with nothing left falls back to the default folder name.
+#[cfg(any(test, desktop))]
+fn vault_folder_name(display_name: &str, fallback: &str) -> String {
+    let cleaned: String = display_name
+        .chars()
+        .map(|character| {
+            if character.is_control() || r#"<>:"/\|?*"#.contains(character) {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches('.').trim();
+    if cleaned.is_empty() || cleaned == ".." {
+        fallback.to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Chooses the folder a first link on a computer activates the linked vault in. A folder the
+/// user chose must be missing or empty. Otherwise the default platform folder is used while it is
+/// missing or empty, and else an empty sibling named after the vault, numbered when that name is
+/// taken. The folder of the vault in use is never chosen, so it stays untouched.
+#[cfg(any(test, desktop))]
+pub(crate) fn resolve_link_folder(
+    chosen: Option<&Path>,
+    default: &Path,
+    vault_display_name: &str,
+) -> Result<PathBuf, String> {
+    if let Some(chosen) = chosen {
+        return if is_free_folder(chosen) {
+            Ok(chosen.to_path_buf())
+        } else {
+            Err(LINK_FOLDER_NOT_EMPTY.to_string())
+        };
+    }
+    if is_free_folder(default) {
+        return Ok(default.to_path_buf());
+    }
+    let parent = default
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    let fallback = default
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Ganbaru");
+    let name = vault_folder_name(vault_display_name, fallback);
+    (1..=MAX_LINK_FOLDER_SUFFIX)
+        .map(|number| {
+            if number == 1 {
+                parent.join(&name)
+            } else {
+                parent.join(format!("{name} {number}"))
+            }
+        })
+        .find(|candidate| is_free_folder(candidate))
+        .ok_or_else(|| "no free folder is available for the linked vault".to_string())
+}
+
+/// What happens to a folder that holds another vault when a received vault replaces it. A copy
+/// of the same vault is always replaced with carry-forward and a rollback copy.
+#[derive(Clone, Debug)]
+pub(crate) enum ReplacedVault {
+    /// Keep a folder that holds another vault whole beside the vault. Used on computers, where a
+    /// first link moves into its own folder instead.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    KeepOther,
+    /// Write a portable backup of another vault into this folder first, refusing the replacement
+    /// when the backup fails, then discard the replaced folder.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    BackUpOther(PathBuf),
+    /// Discard another vault without a backup. Used only for the untouched Android starter.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    DiscardStarter,
+}
+
+/// Where a received vault is activated.
+#[derive(Clone, Debug)]
+enum HandoffPlacement {
+    /// Replaces the folder at `target`.
+    Replace {
+        target: PathBuf,
+        previous: ReplacedVault,
+    },
+    /// Moves the vault into `target`, a missing or empty folder, and leaves the vault in use
+    /// where it is.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    NewFolder { target: PathBuf },
+}
+
+impl HandoffPlacement {
+    fn target(&self) -> &Path {
+        match self {
+            Self::Replace { target, .. } | Self::NewFolder { target } => target,
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -624,16 +749,15 @@ pub(crate) async fn activate_android_handoff(
     staging: &Path,
     transfer_id: &str,
     expected_vault_id: &str,
-    preserve_previous: bool,
+    previous: ReplacedVault,
 ) -> Result<VaultInfo, String> {
     let target = default_vault_path(app)?;
     activate_handoff_at_path(
         app,
         staging,
-        &target,
+        HandoffPlacement::Replace { target, previous },
         transfer_id,
         expected_vault_id,
-        preserve_previous,
     )
     .await
 }
@@ -644,16 +768,35 @@ pub(crate) async fn activate_active_handoff<R: Runtime>(
     staging: &Path,
     transfer_id: &str,
     expected_vault_id: &str,
-    preserve_previous: bool,
+    previous: ReplacedVault,
 ) -> Result<VaultInfo, String> {
     let target = super::active_vault_path(app)?;
     activate_handoff_at_path(
         app,
         staging,
-        &target,
+        HandoffPlacement::Replace { target, previous },
         transfer_id,
         expected_vault_id,
-        preserve_previous,
+    )
+    .await
+}
+
+/// Activates a received vault in `target`, a missing or empty folder, and makes it the vault in
+/// use. The previous vault folder is not touched and stays in the vault picker.
+#[cfg(desktop)]
+pub(crate) async fn activate_handoff_in_new_folder<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    staging: &Path,
+    target: PathBuf,
+    transfer_id: &str,
+    expected_vault_id: &str,
+) -> Result<VaultInfo, String> {
+    activate_handoff_at_path(
+        app,
+        staging,
+        HandoffPlacement::NewFolder { target },
+        transfer_id,
+        expected_vault_id,
     )
     .await
 }
@@ -669,7 +812,17 @@ pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
     expected_vault_id: &str,
 ) -> Result<VaultInfo, String> {
     let target = super::active_vault_path(app)?;
-    activate_handoff_at_path(app, staging, &target, transfer_id, expected_vault_id, false).await
+    activate_handoff_at_path(
+        app,
+        staging,
+        HandoffPlacement::Replace {
+            target,
+            previous: ReplacedVault::KeepOther,
+        },
+        transfer_id,
+        expected_vault_id,
+    )
+    .await
 }
 
 /// Whether the folder at `path` is the vault `vault_id`.
@@ -683,58 +836,53 @@ fn replaces_independent_vault(target: &Path, vault_id: &str) -> bool {
     target.exists() && !holds_vault(target, vault_id)
 }
 
-/// Replaces `target` with the staged handoff. A folder that holds any vault other than
-/// `expected_vault_id` is always kept whole beside it, whatever the caller asked, so a handoff can
-/// never delete an unrelated vault.
+/// Activates the staged handoff at `placement`. A folder that holds any vault other than
+/// `expected_vault_id` is deleted only after its replacement policy wrote a backup of it, or when
+/// it is the untouched Android starter; otherwise it is kept whole beside the vault, whatever the
+/// caller asked.
 async fn activate_handoff_at_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
-    target: &Path,
+    placement: HandoffPlacement,
     transfer_id: &str,
     expected_vault_id: &str,
-    preserve_previous: bool,
 ) -> Result<VaultInfo, String> {
+    let target = placement.target().to_path_buf();
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
-    let preserve_previous =
-        preserve_previous || replaces_independent_vault(target, expected_vault_id);
-    let rollback = if preserve_previous {
-        preserved_handoff_path(parent, target, transfer_id)
-    } else {
-        parent.join(".ganbaru.handoff-refresh-rollback")
-    };
-    if rollback.exists() && staging.exists() {
-        return Err("a previous handoff copy still requires recovery".to_string());
-    }
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?
+        .to_path_buf();
+    fs::create_dir_all(&parent).map_err(|error| format!("create app data directory: {error}"))?;
+    let swap = plan_swap(&placement, &parent, staging, transfer_id, expected_vault_id)?;
+    #[cfg(desktop)]
+    let expected_active = super::active_vault_path(app)?;
     let quiescence = super::quiescence::begin_snapshot_quiescence(app).await?;
-    if let Err(error) = carry_forward_local_changes(app, staging, target, expected_vault_id).await {
+    if let Err(error) = prepare_replacement(app, staging, &placement, expected_vault_id).await {
         return Err(match quiescence.finish() {
             Ok(()) => error,
             Err(resume) => format!("{error}; {resume}"),
         });
     }
-    let flagged = !preserve_previous
-        && staging.exists()
-        && holds_vault(target, expected_vault_id)
-        && replacement_shrinks_drastically(target, staging).await;
+    let flagged = matches!(
+        swap,
+        Swap::Replace {
+            preserve: false,
+            ..
+        }
+    ) && staging.exists()
+        && holds_vault(&target, expected_vault_id)
+        && replacement_shrinks_drastically(&target, staging).await;
     let activation_app = app.clone();
     let staging = staging.to_path_buf();
-    let target = target.to_path_buf();
     let expected_vault_id = expected_vault_id.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(desktop)]
-        if super::active_vault_path(&activation_app)? != target {
+        if super::active_vault_path(&activation_app)? != expected_active {
             return Err("active vault changed while preparing handoff activation".to_string());
         }
         if staging.exists() {
             super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
-                if preserve_previous {
-                    replace_vault_preserving_previous(&staging, &target, &rollback)
-                } else {
-                    replace_vault_flagging(&staging, &target, &rollback, flagged)
-                }
+                run_swap(&swap, &staging, &target, flagged)
             })?;
         }
         let info = vault_info_from_path(&target)?;
@@ -743,13 +891,130 @@ async fn activate_handoff_at_path<R: Runtime>(
         }
         select_quiesced_vault(&activation_app, &info, &quiescence)?;
         quiescence.finish()?;
+        if let Swap::Replace {
+            rollback,
+            discard_preserved: true,
+            ..
+        } = &swap
+            && rollback.exists()
+            && let Err(error) = fs::remove_dir_all(rollback)
+        {
+            eprintln!(
+                "Remove the replaced vault folder '{}': {error}",
+                rollback.display()
+            );
+        }
         Ok(info)
     })
     .await
     .map_err(|error| format!("handoff activation worker failed: {error}"))?
 }
 
-/// same vault. A replacement by another vault carries nothing.
+/// How the staged folder takes its place.
+#[derive(Debug)]
+enum Swap {
+    /// Renamed into a missing or empty folder.
+    IntoNewFolder,
+    /// Renamed over the target. With `preserve`, the target moves to `rollback` whole and is
+    /// deleted after activation only with `discard_preserved`; otherwise `rollback` holds the
+    /// rollback copy of a replacement of the same vault.
+    Replace {
+        rollback: PathBuf,
+        preserve: bool,
+        discard_preserved: bool,
+    },
+}
+
+/// Decides the swap for `placement` before any folder changes.
+fn plan_swap(
+    placement: &HandoffPlacement,
+    parent: &Path,
+    staging: &Path,
+    transfer_id: &str,
+    expected_vault_id: &str,
+) -> Result<Swap, String> {
+    let (target, previous) = match placement {
+        HandoffPlacement::NewFolder { target } => {
+            return if is_free_folder(target) {
+                Ok(Swap::IntoNewFolder)
+            } else {
+                Err(LINK_FOLDER_NOT_EMPTY.to_string())
+            };
+        }
+        HandoffPlacement::Replace { target, previous } => (target, previous),
+    };
+    let replaces_other = replaces_independent_vault(target, expected_vault_id);
+    let preserve = replaces_other;
+    let rollback = if preserve {
+        preserved_handoff_path(parent, target, transfer_id)
+    } else {
+        parent.join(".ganbaru.handoff-refresh-rollback")
+    };
+    if rollback.exists() && staging.exists() {
+        return Err("a previous handoff copy still requires recovery".to_string());
+    }
+    let discard_preserved = replaces_other
+        && match previous {
+            ReplacedVault::BackUpOther(_) => true,
+            ReplacedVault::DiscardStarter => vault_info_from_path(target).is_ok(),
+            ReplacedVault::KeepOther => false,
+        };
+    Ok(Swap::Replace {
+        rollback,
+        preserve,
+        discard_preserved,
+    })
+}
+
+fn run_swap(swap: &Swap, staging: &Path, target: &Path, flagged: bool) -> Result<(), String> {
+    match swap {
+        Swap::IntoNewFolder => move_into_new_folder(staging, target),
+        Swap::Replace {
+            rollback,
+            preserve: true,
+            ..
+        } => replace_vault_preserving_previous(staging, target, rollback),
+        Swap::Replace { rollback, .. } => {
+            replace_vault_flagging(staging, target, rollback, flagged)
+        }
+    }
+}
+
+/// Runs inside snapshot quiescence before the swap: carries this device's changes forward into a
+/// replacement of the same vault, and writes the backup a replacement policy asks for. A failed
+/// backup refuses the replacement.
+async fn prepare_replacement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    staging: &Path,
+    placement: &HandoffPlacement,
+    expected_vault_id: &str,
+) -> Result<(), String> {
+    let HandoffPlacement::Replace { target, previous } = placement else {
+        return Ok(());
+    };
+    carry_forward_local_changes(app, staging, target, expected_vault_id).await?;
+    if let ReplacedVault::BackUpOther(root) = previous
+        && staging.exists()
+        && replaces_independent_vault(target, expected_vault_id)
+    {
+        let now_ms = i64::try_from(crate::sync::now_ms()?)
+            .map_err(|_| "current time is out of range".to_string())?;
+        super::replaced_vaults::write_replaced_vault_backup(root, target, now_ms).await?;
+    }
+    Ok(())
+}
+
+/// Moves `staging` into `target`, which is missing or an empty folder.
+fn move_into_new_folder(staging: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        fs::remove_dir(target)
+            .map_err(|error| format!("prepare the linked vault folder: {error}"))?;
+    }
+    fs::rename(staging, target).map_err(|error| format!("activate the linked vault: {error}"))
+}
+
+/// Carries this device's synced changes, device state, and local managed assets into the staged
+/// replacement when `target` holds the same vault. A replacement by another vault carries nothing.
 async fn carry_forward_local_changes<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -919,24 +1184,34 @@ pub async fn vault_backup_to_downloads(
             &archive_path,
         )
         .await?;
-        let file_name = backup_file_name();
-        let archive_path = path_to_string(&archive_path, "backup archive")?;
-        let saved_name = app.mobile_documents().save_file_download(
-            &archive_path,
-            &file_name,
-            BACKUP_MAX_BYTES,
-            &[BACKUP_EXTENSION],
-            BACKUP_MIME_TYPE,
-            "Ganbaru backup",
-        )?;
-        Ok(VaultBackupOutcome {
-            file_name: saved_name,
-            destination: "downloads",
-        })
+        save_backup_to_downloads(&app, &archive_path)
     }
     .await;
     let _ = fs::remove_dir_all(&transfer);
     result
+}
+
+/// Saves the portable backup archive at `archive_path` to Android Downloads under a fresh
+/// backup file name.
+#[cfg(target_os = "android")]
+pub(crate) fn save_backup_to_downloads(
+    app: &tauri::AppHandle,
+    archive_path: &Path,
+) -> Result<VaultBackupOutcome, String> {
+    let file_name = backup_file_name();
+    let archive_path = path_to_string(archive_path, "backup archive")?;
+    let saved_name = app.mobile_documents().save_file_download(
+        &archive_path,
+        &file_name,
+        BACKUP_MAX_BYTES,
+        &[BACKUP_EXTENSION],
+        BACKUP_MIME_TYPE,
+        "Ganbaru backup",
+    )?;
+    Ok(VaultBackupOutcome {
+        file_name: saved_name,
+        destination: "downloads",
+    })
 }
 
 #[cfg(target_os = "android")]
@@ -1120,6 +1395,124 @@ mod tests {
 
         fs::write(target.join("vault.json"), "invalid json").unwrap();
         assert!(replaces_independent_vault(&target, &linked.vault_id));
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn vault_folder_names_drop_reserved_characters_and_fall_back_when_empty() {
+        assert_eq!(vault_folder_name("Work vault", "Ganbaru"), "Work vault");
+        assert_eq!(vault_folder_name("a/b:c*", "Ganbaru"), "a b c");
+        assert_eq!(vault_folder_name("  Notes.  ", "Ganbaru"), "Notes");
+        assert_eq!(vault_folder_name("<>|?", "Ganbaru"), "Ganbaru");
+        assert_eq!(vault_folder_name("..", "Ganbaru"), "Ganbaru");
+    }
+
+    #[test]
+    fn link_folder_uses_the_default_when_free_and_an_empty_named_sibling_otherwise() {
+        let parent = unique_test_path("link-folder");
+        let default = parent.join("Ganbaru");
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            default
+        );
+
+        fs::create_dir_all(&default).unwrap();
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            default
+        );
+
+        fs::write(default.join("vault.json"), "{}").unwrap();
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            parent.join("Home")
+        );
+
+        fs::create_dir_all(parent.join("Home")).unwrap();
+        fs::write(parent.join("Home").join("note.md"), "kept").unwrap();
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            parent.join("Home 2")
+        );
+        assert_eq!(
+            fs::read_to_string(parent.join("Home").join("note.md")).unwrap(),
+            "kept"
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn chosen_link_folder_must_be_missing_or_empty() {
+        let parent = unique_test_path("chosen-link-folder");
+        let default = parent.join("Ganbaru");
+        let chosen = parent.join("Elsewhere");
+        assert_eq!(
+            resolve_link_folder(Some(&chosen), &default, "Home").unwrap(),
+            chosen
+        );
+
+        fs::create_dir_all(&chosen).unwrap();
+        fs::write(chosen.join("file.txt"), "busy").unwrap();
+        assert_eq!(
+            resolve_link_folder(Some(&chosen), &default, "Home").unwrap_err(),
+            LINK_FOLDER_NOT_EMPTY
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn new_folder_placement_refuses_a_folder_that_gained_files() {
+        let parent = unique_test_path("new-folder-swap");
+        let target = parent.join("Linked");
+        let staging = parent.join("staging");
+        let placement = HandoffPlacement::NewFolder {
+            target: target.clone(),
+        };
+        assert!(matches!(
+            plan_swap(&placement, &parent, &staging, "t1", "vault-linked").unwrap(),
+            Swap::IntoNewFolder
+        ));
+
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("file.txt"), "busy").unwrap();
+        assert_eq!(
+            plan_swap(&placement, &parent, &staging, "t1", "vault-linked").unwrap_err(),
+            LINK_FOLDER_NOT_EMPTY
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn replaced_other_vault_is_discarded_only_after_a_backup_or_as_the_starter() {
+        let parent = unique_test_path("replaced-policy");
+        let target = parent.join("Ganbaru");
+        let staging = parent.join("staging");
+        fs::create_dir_all(&target).unwrap();
+        crate::vault::initialize_vault(&target).unwrap();
+        let discards = |previous: ReplacedVault| {
+            let placement = HandoffPlacement::Replace {
+                target: target.clone(),
+                previous,
+            };
+            match plan_swap(&placement, &parent, &staging, "t1", "vault-linked").unwrap() {
+                Swap::Replace {
+                    preserve,
+                    discard_preserved,
+                    ..
+                } => (preserve, discard_preserved),
+                Swap::IntoNewFolder => panic!("a replacement never moves into a new folder"),
+            }
+        };
+
+        assert_eq!(discards(ReplacedVault::KeepOther), (true, false));
+        assert_eq!(
+            discards(ReplacedVault::BackUpOther(parent.join("backups"))),
+            (true, true)
+        );
+        assert_eq!(discards(ReplacedVault::DiscardStarter), (true, true));
+
+        fs::write(target.join("vault.json"), "invalid json").unwrap();
+        assert_eq!(discards(ReplacedVault::DiscardStarter), (true, false));
         let _ = fs::remove_dir_all(parent);
     }
 

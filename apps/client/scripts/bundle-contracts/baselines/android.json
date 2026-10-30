@@ -30,7 +30,7 @@
       "roots": [
         "src/lib/components/notes/NotesView.svelte"
       ],
-      "maxSourceModules": 440
+      "maxSourceModules": 441
     },
     {
       "name": "quick-notes",
@@ -55,7 +55,7 @@
       "maxSourceModules": 332
     }
   ],
-  "maxTotalSourceModules": 1345,
+  "maxTotalSourceModules": 1349,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

@@ -7,7 +7,7 @@
 - SQLite stays the source of truth. Domain tables hold the materialized current state, and the engine adds metadata beside them; it is never a parallel store the UI reads.
 - Saves are local and immediate, and every write path must replicate, including imports, restores, scheduled jobs, and native background writes.
 - Applying the same set of valid operations in any causal order must give byte-identical state, conflicts, and recovery entries. Nothing is silently lost.
-- No project-operated infrastructure. LAN linking needs no server, and a later relay must store only opaque encrypted records.
+- No project-operated infrastructure. LAN linking needs no server, and the optional relay is self-hosted and stores content only as encrypted records.
 - Operations carry a space, a certified writer, an authorization revision, and a key epoch from the start, so multi-person spaces later are a configuration of the same engine rather than a redesign.
 
 ## Decisions

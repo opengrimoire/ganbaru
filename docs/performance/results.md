@@ -130,6 +130,27 @@ Rows report one 1000-event add or update pass against the practical dense datase
 | 2026-06-02-01 | dense-v1-r1y-s1-d1 | bulk import 1000 add | 848 |
 | 2026-06-02-01 | dense-v1-r1y-s1-d1 | bulk import 1000 update | 902 |
 
+## Sync server
+
+Recorded 2026-10-30 at build ref b4c237a4 with a release build of `ganbaru-sync-relay` as its own process on loopback, on a headless Linux x86_64 mini PC with 8 cores and 7 GB of memory. No other build ran. Client CPU excludes the relay process. The record share is standalone open and seal time over the same records, divided by push and pull CPU. Memory is sampled from `/proc`; 1 MiB is 1,024 KiB.
+
+| Measure | Budget | Result | Status |
+|---|---|---|---|
+| Record encryption and decryption | Under 5% of client pass CPU | 8.0% of push and pull CPU for 2,000 small records (mean 879 bytes), 3.7% once applying them counts; 1.2% of push and pull CPU for 100 records of about 60 KB | Missed for small records without apply |
+| Backup creation | Within 15% of the plaintext archive time | 4,930 ms against 4,168 ms, 18.3% slower (median of 5 rounds, 100,000 notes and 96 MiB of incompressible data, 106 MB archive); the file grows by 0.004% | Missed |
+| Relay memory | Under 64 MiB resident with 10 connected devices | 16.9 MiB resident, 14.9 MiB proportional, 17.5 MiB peak, after storing about 2,100 records with 10 connections held in wait | Met |
+| Relay storage overhead | Under 64 bytes per record beyond ciphertext | 299 bytes per record: the format's 73 bytes of clear header and nonce, and 226 bytes of SQLite growth per row | Missed |
+| Anchor idle memory | Under 150 MiB resident | 32.1 MiB resident, 30.2 MiB proportional, stable for 3 minutes, on a tiny vault | Met for a tiny vault; a full vault is pending |
+
+The 10 connections rotate across three device identities, because the relay tracks connections and not devices. The format alone exceeds the storage budget, so meeting it needs a format change or a revised budget; the missed budgets are recorded here, not resolved.
+
+Pending physical acceptance, not estimated:
+
+- A pass with nothing to send under 1 second over broadband.
+- 1,000 operations from a phone to a desktop through a rented server in under 15 seconds on a 10 Mbit/s uplink.
+- An arm64 home server applying a 100,000-operation catch-up in under 5 minutes, and its idle memory with a full vault.
+- Android battery use.
+
 ## Package size
 
 Package size is not produced by the benchmark harness, but it is deterministic enough to track here. Use decimal MB from byte size.

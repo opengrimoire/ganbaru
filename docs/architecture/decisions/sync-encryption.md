@@ -1,6 +1,6 @@
 # Sync encryption
 
-Status: Partial. Device encryption keys, key epochs, their envelopes and chain links, and the relay record and asset chunk formats are implemented; the relay, its client, and encrypted backups are planned.
+Status: Implemented in source. Device encryption keys, key epochs, their envelopes and chain links, the relay record and asset chunk formats, the relay and its client, and encrypted backups exist. The composition has had no external review, and physical acceptance is pending.
 
 ## Primitives
 
@@ -11,6 +11,18 @@ Each crate is pinned exactly with default features off. The chosen `hpke` featur
 ## Relay formats
 
 A relay record (`GBSR`) carries one stored operation and its writer certificate, sealed under the space key epoch named in its clear header (space, writer, sequence, epoch) with a random nonce; the header is authenticated as associated data after a purpose label, and an opened record whose operation disagrees with its header is refused. A relay asset chunk (`GBSA`) seals one fixed-size chunk of a file under its own subkey with its header (space, asset id, epoch, index, count) as associated data, and the asset id is an HMAC of the plaintext digest under a per-space subkey of epoch 1, so the relay cannot match files across spaces or against known content. A device opens a record or chunk only with an epoch key it opened from its own envelope, so a removed device opens nothing sealed after its removal. The epoch field of the operation header stays zero; the record header carries it.
+
+Encryption stops at intermediaries: direct links rely on mutual TLS with pinned certificates, because both ends are members that may read the content anyway, and a record is sealed only when a relay will store it. An always-on anchor is a member, so it holds keys and reads the vault.
+
+Key epoch records stay plain signed operations on the relay, because a lagging member needs one to open its envelope before it can open anything sealed under that epoch. The relay can read their recipient key ids, and those ids are stable across epochs, so it can track membership changes as opaque ids. [Network and privacy](../../data/security/network-and-privacy.md#relay-encryption) owns the full list of what a relay observes.
+
+## Relay access
+
+Each epoch has its own relay access key pair, an Ed25519 key seeded from a subkey of the epoch key. A device authenticates by signing the TLS exporter of its session, so the credential proves it opened that epoch and a captured signature replays on no other connection. The relay stores only public keys, so it cannot impersonate a device to another relay or derive the space key. It also cannot check that a registered key is the real next one, so the first registration wins, and an admin repairs a wrong one with a signed command.
+
+## Encrypted backups
+
+A backup file (`GBBK`) seals a whole-vault archive in fixed-size chunks under a random file key, each chunk bound to the header digest, its index, and a final-chunk flag, so truncation, reordering, and swapped chunks fail. The file key is sealed separately, so a backup opens with the space key or the recovery kit and a kit holder needs no device. [Sync](../../data/sync.md#bootstrap-assets-backup-and-compaction) owns the behavior.
 
 ## Supply-chain risk
 

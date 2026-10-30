@@ -19,7 +19,7 @@ Pick one mode for a data directory, and one server for a vault.
 | Mode | What it does | What the server can read | Run it on |
 | --- | --- | --- | --- |
 | Relay | Stores sealed records and asset chunks between devices that are not online together. | No record content and no key. It sees record size and timing, the space and writer they belong to, and when the vault's list of key recipients changes: how many there are and an opaque id for each, which show when a device joins or leaves. | A rented server or hardware you own. |
-| Anchor | Runs a full replica of one vault, serves every device, and takes the anchor role, so the vault keeps moving while your personal devices sleep. It is also a backup. | The whole vault. It holds the space keys. | Hardware you own. |
+| Anchor | Runs a full replica of one vault, serves every device, and takes the anchor role, so the vault keeps moving while your personal devices sleep. It also holds an admin key and sequences authority for the vault, and it is a backup. | The whole vault. It holds the space keys. | Hardware you own. |
 
 An anchor server keeps the vault in plaintext and holds its keys, so encryption does not protect the vault from that machine or from whoever runs it. Use relay mode on a rented server, and anchor mode on hardware you own. Disk encryption on the server protects an anchor only while the machine is off.
 
@@ -158,15 +158,15 @@ An anchor serves one vault. The desktop that adds it must be an admin.
 
 1. Print a setup code on the server, as shown above, naming each address your devices can reach; a phone away from home needs a public or VPN address. The code works once, for 15 minutes. A newer code replaces an older one, so run it again whenever a code expires.
 2. Enter the code in Settings > Data, in the server section of an admin desktop, and confirm that this server can read your whole vault. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
-3. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; enter the same code again once it has run. The code stays valid until the server activates.
+3. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; once it has run, enter the same code again, or a new one if it expired.
 
-Every linked device learns the server from the log and dials it from any network. New devices still link to a desktop first, on the LAN.
+Every linked device learns the server from the log and dials it from any network. Two dials happen before that: the desktop adding the server dials the endpoints in the setup code, which may be public, and recovery with the kit through an anchor server dials them from a new device, which may be off the LAN. Every other new device links to a desktop first, on the LAN.
 
 Two limits apply today. A server takes the anchor only as part of being added, so once a desktop takes the anchor from it, or you kept the anchor on a desktop, the anchor cannot go to that server: it keeps running its vault and refuses a second upload with "this server already runs a vault". To return to a server anchor, [remove the server](#removing-a-server) and add it again with a fresh setup on an empty data directory. The recovery kit also cannot be regenerated while a server anchors, so take the anchor to a desktop, regenerate the kit there, and return the same way.
 
 ## Upgrades and stopped commands
 
-Keep the server on the same version as the app. An older server asks for an update when you add it, and one that lags behind keeps serving the records it holds until the handoff protocol itself changes. Settings shows when the server and the device speak different protocol versions. The data directory stays across upgrades, and the server upgrades it when it starts, so an older binary cannot be put back afterwards. The server never updates itself.
+Keep the server on the same version as the app. An older server asks for an update when you add it, and one that lags behind keeps serving the records it holds until the handoff protocol itself changes. For a relay, Settings shows when the server and the device speak different protocol versions; an anchor server is not probed for this. The data directory stays across upgrades, and the server upgrades it when it starts, so an older binary cannot be put back afterwards. The server never updates itself.
 
 With Docker, stop and remove the container, then run the same `docker run` command with the new version:
 

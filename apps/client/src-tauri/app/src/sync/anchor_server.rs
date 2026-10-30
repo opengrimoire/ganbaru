@@ -173,7 +173,8 @@ async fn upload_snapshot<R: Runtime>(
 /// Adds the server behind `code` to the active vault: proves the code, proposes the server's
 /// enrollment as an admin and its configuration, and uploads a snapshot it activates. With
 /// `take_anchor`, the server takes the anchor once it can. The code stays valid until the server
-/// activates, so a caller answered `WaitingForAnchor` repeats the call with it.
+/// activates or it expires, so a caller answered `WaitingForAnchor` repeats the call with it or a
+/// new one.
 pub(super) async fn add_anchor_server<R: Runtime>(
     app: &AppHandle<R>,
     runtime: &SyncRuntime,

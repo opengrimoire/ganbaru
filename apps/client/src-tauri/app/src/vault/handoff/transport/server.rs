@@ -20,6 +20,8 @@ mod dispatch;
 pub(super) mod limits;
 mod listener;
 mod member;
+#[cfg(desktop)]
+mod member_bundles;
 #[cfg(all(desktop, test))]
 pub(super) use dispatch::serve_with_limits;
 #[cfg(desktop)]
@@ -28,6 +30,10 @@ pub(crate) use dispatch::{
 };
 pub(super) use member::serve_member;
 pub(crate) use member::{MemberAdmissionSource, MemberServices};
+#[cfg(desktop)]
+pub(crate) use member_bundles::{
+    MemberBundles, PreparedSnapshot, SnapshotPreparer, SnapshotRequest,
+};
 
 const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);

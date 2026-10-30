@@ -12,6 +12,8 @@ pub(crate) mod enrollment_approval;
 mod key_store;
 mod local_addresses;
 pub(crate) mod receiver;
+#[cfg(desktop)]
+pub(crate) mod snapshot;
 pub(crate) mod source;
 pub(crate) mod transport;
 
@@ -498,6 +500,10 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
             .with_peer_hints(crate::sync::peer_hints(app.clone())),
         admission: crate::sync::member_admission_source(app),
         lan: lan_admission(app, port)?,
+        #[cfg(desktop)]
+        bundles: Some(transport::MemberBundles::new(
+            snapshot::member_snapshot_preparer(app.clone(), manager.clone()),
+        )),
     };
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     #[cfg(desktop)]

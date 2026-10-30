@@ -12,8 +12,8 @@ use ganbaru_atomic_files::{FileAccess, StagedFile};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync_contracts::backup::{
-    BACKUP_CHUNK_BYTES, BACKUP_MAGIC, BACKUP_NONCE_BYTES, BackupError, BackupHeader,
-    ChunkOpener, ChunkSealer, FileKey, HEADER_PREFIX_BYTES, MAX_CHUNK_CIPHERTEXT_BYTES,
+    BACKUP_CHUNK_BYTES, BACKUP_MAGIC, BACKUP_NONCE_BYTES, BackupError, BackupHeader, ChunkOpener,
+    ChunkSealer, FileKey, HEADER_PREFIX_BYTES, MAX_CHUNK_CIPHERTEXT_BYTES,
 };
 use ganbaru_sync_contracts::{EncryptionPublicKey, SpaceId, SpaceKey};
 use sqlx::{Connection, SqliteConnection, SqlitePool};

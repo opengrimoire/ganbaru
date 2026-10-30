@@ -82,14 +82,8 @@ fn format_errors_map_to_refusals_the_user_can_act_on() {
         BackupError::Authentication,
         BackupError::Finished,
     ] {
-        assert_eq!(
-            format_refusal(damaged, true),
-            Some(BackupRefusal::Damaged)
-        );
-        assert_eq!(
-            format_refusal(damaged, false),
-            Some(BackupRefusal::Damaged)
-        );
+        assert_eq!(format_refusal(damaged, true), Some(BackupRefusal::Damaged));
+        assert_eq!(format_refusal(damaged, false), Some(BackupRefusal::Damaged));
     }
     for key in [BackupError::Key, BackupError::Epoch] {
         assert_eq!(format_refusal(key, true), Some(BackupRefusal::WrongKit));
@@ -117,7 +111,10 @@ fn the_kit_wins_over_the_epoch_key_and_a_mistyped_kit_is_refused() {
         Unlock::choose(Some(code), epoch()),
         Ok(Unlock::Kit(_))
     ));
-    assert!(matches!(Unlock::choose(None, epoch()), Ok(Unlock::Epoch(_))));
+    assert!(matches!(
+        Unlock::choose(None, epoch()),
+        Ok(Unlock::Epoch(_))
+    ));
     assert!(matches!(
         Unlock::choose(None, None),
         Err(BackupRefusal::KitRequired)
@@ -245,13 +242,16 @@ async fn an_independent_copy_drops_identity_kit_and_sync_state_but_keeps_domain_
     assert_ne!(detached.vault_id, original.vault_id);
     assert_eq!(detached.display_name, original.display_name);
     let pool = registry.connect_path(database_path(&root)).await.unwrap();
-    for table in ["contacts_local_identity", "contact_card", "sync_recovery_kit"] {
-        let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT COUNT(*) FROM {table}"
-        )))
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    for table in [
+        "contacts_local_identity",
+        "contact_card",
+        "sync_recovery_kit",
+    ] {
+        let rows: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows, 0, "{table}");
     }
     let triggers_after: Vec<String> =

@@ -926,7 +926,10 @@ mod tests {
     }
 
     fn ids(rollbacks: &[DatabaseRollback]) -> Vec<String> {
-        rollbacks.iter().map(|rollback| rollback.id.clone()).collect()
+        rollbacks
+            .iter()
+            .map(|rollback| rollback.id.clone())
+            .collect()
     }
 
     #[test]

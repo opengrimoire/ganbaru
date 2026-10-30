@@ -1,12 +1,10 @@
 //! Whole-vault snapshots and activation, with portable Android backup commands.
 
-#[cfg(target_os = "android")]
-use super::active_vault_path;
 use super::select_quiesced_vault;
 use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, VaultInfo};
 use super::{MAX_VAULT_MANIFEST_BYTES, database_path, parse_vault_manifest, vault_info_from_path};
 #[cfg(target_os = "android")]
-use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
+use super::{default_vault_path, path_to_string};
 #[cfg(target_os = "android")]
 use chrono::{SecondsFormat, Utc};
 #[cfg(target_os = "android")]
@@ -19,8 +17,6 @@ use sqlx::Row;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-#[cfg(target_os = "android")]
-use tauri::Manager;
 use tauri::Runtime;
 use zip::ZipArchive;
 
@@ -74,28 +70,6 @@ pub struct VaultBackupOutcome {
     pub file_name: String,
     /// Stable frontend destination identifier.
     pub destination: &'static str,
-}
-
-#[cfg(target_os = "android")]
-fn unique_transfer_directory<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    operation: &str,
-) -> Result<PathBuf, String> {
-    let root = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| format!("find app cache directory: {error}"))?;
-    fs::create_dir_all(&root).map_err(|error| format!("create app cache directory: {error}"))?;
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| format!("create transfer identifier: {error}"))?
-        .as_nanos();
-    let directory = root.join(format!(
-        "vault-{operation}-{}-{nonce:x}",
-        std::process::id()
-    ));
-    fs::create_dir(&directory).map_err(|error| format!("create transfer directory: {error}"))?;
-    Ok(directory)
 }
 
 #[cfg(target_os = "android")]

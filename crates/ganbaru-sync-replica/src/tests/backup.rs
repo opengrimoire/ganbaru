@@ -2,8 +2,7 @@ use super::{TestDirectory, acquire, add_note, block_on, context, create_vault};
 use crate::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, DATABASE_FILE, VAULT_MANIFEST_FILE,
     create_backup_archive, create_encrypted_backup, create_snapshot_archive, decrypt_backup,
-    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive,
-    vacuum_database,
+    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive, vacuum_database,
 };
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync_contracts::backup::{BACKUP_CHUNK_BYTES, BackupError};
@@ -236,11 +235,19 @@ fn encrypted_backup_holds_the_asset_sweep_gate_until_it_finishes() {
                 .is_ok(),
             "a failed backup releases the gate"
         );
-        assert_eq!(staged_entries(&staging), 0, "a failed backup leaves no staging");
+        assert_eq!(
+            staged_entries(&staging),
+            0,
+            "a failed backup leaves no staging"
+        );
 
         create(backup.clone()).await.expect("create backup");
         assert!(backup.exists());
-        assert_eq!(staged_entries(&staging), 0, "the plaintext archive is removed");
+        assert_eq!(
+            staged_entries(&staging),
+            0,
+            "the plaintext archive is removed"
+        );
     });
 }
 
@@ -354,7 +361,14 @@ fn encrypted_backup_files_refuse_damage_at_the_file_level() {
         refusal(b"GB"),
         BackupFileError::Format(BackupError::Truncated)
     );
-    for cut in [10, header - 1, header, header + 2, header + 30, header + frame - 1] {
+    for cut in [
+        10,
+        header - 1,
+        header,
+        header + 2,
+        header + 30,
+        header + frame - 1,
+    ] {
         assert_eq!(
             refusal(&bytes[..cut]),
             BackupFileError::Format(BackupError::Truncated),
@@ -412,18 +426,30 @@ fn encrypted_backup_files_open_with_the_epoch_key_or_the_kit_only() {
     assert_eq!((header.space, header.epoch), (test_space(), 2));
 
     let archive = directory.path().join("epoch.zip");
-    decrypt_backup(&source, |header| header.open_with_epoch_key(&epoch_key), &archive)
-        .expect("open with the epoch key");
+    decrypt_backup(
+        &source,
+        |header| header.open_with_epoch_key(&epoch_key),
+        &archive,
+    )
+    .expect("open with the epoch key");
     assert_eq!(std::fs::read(&archive).expect("read archive"), plaintext);
     let other = SpaceKey::generate(2).expect("other key");
     let refused = directory.path().join("refused.zip");
     assert_eq!(
-        decrypt_backup(&source, |header| header.open_with_epoch_key(&other), &refused),
+        decrypt_backup(
+            &source,
+            |header| header.open_with_epoch_key(&other),
+            &refused
+        ),
         Err(BackupFileError::Format(BackupError::Key))
     );
     let wrong_kit = EncryptionKeyPair::generate().expect("other kit");
     assert_eq!(
-        decrypt_backup(&source, |header| header.open_with_recovery(&wrong_kit), &refused),
+        decrypt_backup(
+            &source,
+            |header| header.open_with_recovery(&wrong_kit),
+            &refused
+        ),
         Err(BackupFileError::Format(BackupError::Key))
     );
     assert!(!refused.exists());
@@ -432,10 +458,17 @@ fn encrypted_backup_files_open_with_the_epoch_key_or_the_kit_only() {
     std::fs::write(&source, &unlinked).expect("write backup");
     assert_eq!(read_backup_header(&source).expect("header").epoch, 0);
     assert_eq!(
-        decrypt_backup(&source, |header| header.open_with_epoch_key(&epoch_key), &refused),
+        decrypt_backup(
+            &source,
+            |header| header.open_with_epoch_key(&epoch_key),
+            &refused
+        ),
         Err(BackupFileError::Format(BackupError::Epoch))
     );
-    assert_eq!(open_with_kit(&directory, &unlinked).expect("open"), plaintext);
+    assert_eq!(
+        open_with_kit(&directory, &unlinked).expect("open"),
+        plaintext
+    );
 }
 
 #[test]
@@ -475,10 +508,18 @@ fn encrypted_backup_carries_the_snapshot_archive_of_the_vault() {
         );
         assert_eq!(staged_entries(&staging), 0);
         let archive = directory.path().join("restored.zip");
-        decrypt_backup(&backup, |header| header.open_with_recovery(&kit()), &archive)
-            .expect("decrypt backup");
+        decrypt_backup(
+            &backup,
+            |header| header.open_with_recovery(&kit()),
+            &archive,
+        )
+        .expect("decrypt backup");
         let names = archive_names(&archive);
-        for expected in [DATABASE_FILE, "notes/page.md", "assets/notes/files/large.bin"] {
+        for expected in [
+            DATABASE_FILE,
+            "notes/page.md",
+            "assets/notes/files/large.bin",
+        ] {
             assert!(names.iter().any(|name| name == expected), "{expected}");
         }
         assert!(!names.iter().any(|name| name == VAULT_LOCK_FILE));

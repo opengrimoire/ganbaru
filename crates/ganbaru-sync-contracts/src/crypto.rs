@@ -398,15 +398,14 @@ impl KeyEnvelope {
         secret: &[u8; SPACE_KEY_BYTES],
         recipient: &EncryptionPublicKey,
     ) -> Result<Self, CryptoError> {
-        let (encapsulated, sealed) =
-            hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
-                &OpModeS::Base,
-                &recipient.hpke_key()?,
-                info,
-                secret,
-                &[],
-            )
-            .map_err(|_| CryptoError::Seal)?;
+        let (encapsulated, sealed) = hpke::single_shot_seal::<
+            ChaCha20Poly1305,
+            HkdfSha256,
+            X25519HkdfSha256,
+        >(
+            &OpModeS::Base, &recipient.hpke_key()?, info, secret, &[]
+        )
+        .map_err(|_| CryptoError::Seal)?;
         Self::from_parts(recipient.key_id(), &encapsulated.to_bytes(), &sealed)
     }
 

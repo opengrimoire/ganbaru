@@ -96,7 +96,10 @@ impl fmt::Display for BackupError {
         match self {
             Self::NotBackup => formatter.write_str("file is not a Ganbaru backup"),
             Self::Version(version) => {
-                write!(formatter, "backup format version {version} is not supported")
+                write!(
+                    formatter,
+                    "backup format version {version} is not supported"
+                )
             }
             Self::Truncated => formatter.write_str("backup file is incomplete"),
             Self::Malformed => formatter.write_str("backup file is malformed"),

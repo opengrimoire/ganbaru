@@ -73,9 +73,7 @@ async fn opened_space_keys(
 ) -> Result<SpaceKeys, String> {
     let owned_vault_id = vault_id.to_string();
     let space_keys = blocking(move || SpaceKeys::load(keys.as_ref(), &owned_vault_id)).await?;
-    space_keys
-        .open_epochs(&Engine::vault(), conn, ctx)
-        .await?;
+    space_keys.open_epochs(&Engine::vault(), conn, ctx).await?;
     Ok(space_keys)
 }
 

@@ -98,6 +98,7 @@ impl BackupRefusal {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BackupSaveOutcome {
     /// The user closed the save dialog.
+    #[cfg_attr(mobile, allow(dead_code))]
     Cancelled,
     /// The backup was written under this file name.
     Saved {
@@ -153,6 +154,7 @@ pub enum BackupRestoreOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RestorePlatform {
     /// The copy opens from its own folder beside the vault in use.
+    #[cfg_attr(mobile, allow(dead_code))]
     Desktop,
     /// The copy replaces the one vault the app keeps.
     Android,
@@ -214,6 +216,7 @@ fn format_refusal(error: BackupError, with_kit: bool) -> Option<BackupRefusal> {
 #[derive(Debug)]
 enum RestoreError {
     Refused(BackupRefusal),
+    #[cfg_attr(mobile, allow(dead_code))]
     Cancelled,
     Failed(String),
 }
@@ -335,7 +338,9 @@ fn transfer_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, Strin
 
 /// Creates the private directory a picked backup is held in, after removing the ones earlier
 /// inspections left. Returns the token and the directory.
-fn new_restore_transfer<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(String, PathBuf), String> {
+fn new_restore_transfer<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(String, PathBuf), String> {
     let root = transfer_root(app)?;
     remove_stale_transfers(&root, RESTORE_TRANSFER_PREFIX);
     let directory =
@@ -478,11 +483,15 @@ async fn write_backup(
     )
     .await
     .map_err(|error| format!("write encrypted backup: {error}"));
-    let resumed = blocking(move || quiescence.finish()).await.and_then(|resumed| resumed);
+    let resumed = blocking(move || quiescence.finish())
+        .await
+        .and_then(|resumed| resumed);
     match (written, resumed) {
         (Ok(bytes), Ok(())) => Ok(bytes),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(resume)) => Err(format!("{error}; resuming runtimes also failed: {resume}")),
+        (Err(error), Err(resume)) => {
+            Err(format!("{error}; resuming runtimes also failed: {resume}"))
+        }
     }
 }
 
@@ -536,9 +545,7 @@ pub async fn vault_backup_to_file(app: tauri::AppHandle) -> Result<BackupSaveOut
 /// Writes an encrypted backup of the active vault to Android Downloads.
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub async fn vault_backup_to_downloads(
-    app: tauri::AppHandle,
-) -> Result<BackupSaveOutcome, String> {
+pub async fn vault_backup_to_downloads(app: tauri::AppHandle) -> Result<BackupSaveOutcome, String> {
     use ganbaru_mobile_documents::MobileDocumentsExt;
     let transition = quiescence::reserve_vault_transition()?;
     let vault_root = super::active_vault_path(&app)?;
@@ -579,9 +586,9 @@ pub async fn vault_backup_to_downloads(
     result
 }
 
-/// Android Downloads exist only on Android; other builds register the command for the mobile
-/// handler tests.
-#[cfg(not(target_os = "android"))]
+/// Android Downloads exist only on Android; iOS and the desktop mobile handler tests register
+/// this refusal instead.
+#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
 #[tauri::command]
 pub async fn vault_backup_to_downloads() -> Result<BackupSaveOutcome, String> {
     Err("saving a backup to Downloads is only available on Android".to_string())
@@ -794,7 +801,9 @@ async fn staged_summary(
 ) -> Result<LinkSummary, String> {
     let device_id = super::ensure_device_id(app)?;
     let registry = ganbaru_db::DatabasePoolRegistry::default();
-    let pool = registry.connect_path_read_only(database_path(staging)).await?;
+    let pool = registry
+        .connect_path_read_only(database_path(staging))
+        .await?;
     let summary = async {
         let mut conn = pool
             .acquire()
@@ -872,7 +881,10 @@ async fn remove_person_identity(conn: &mut sqlx::SqliteConnection) -> Result<(),
             .await
             .map_err(failed)?;
     }
-    for statement in ["DELETE FROM contacts_local_identity", "DELETE FROM contact_card"] {
+    for statement in [
+        "DELETE FROM contacts_local_identity",
+        "DELETE FROM contact_card",
+    ] {
         sqlx::query(statement)
             .execute(&mut *tx)
             .await
@@ -998,8 +1010,12 @@ async fn restore_in_new_folder(
 ) -> Result<VaultInfo, RestoreError> {
     use super::backup::{is_free_folder, resolve_link_folder, vault_folder_name};
     let start_directory = super::existing_documents_directory(app);
-    let Some(chosen) =
-        super::pick_folder(app, "Choose where to open the restored vault", start_directory).await?
+    let Some(chosen) = super::pick_folder(
+        app,
+        "Choose where to open the restored vault",
+        start_directory,
+    )
+    .await?
     else {
         return Err(RestoreError::Cancelled);
     };
@@ -1012,11 +1028,9 @@ async fn restore_in_new_folder(
     let parent = target
         .parent()
         .ok_or_else(|| "the chosen folder has no parent directory".to_string())?;
-    let staging_parent = ganbaru_atomic_files::create_private_temporary_directory(
-        parent,
-        ".ganbaru.restore-",
-    )
-    .map_err(|error| format!("create restore staging: {error}"))?;
+    let staging_parent =
+        ganbaru_atomic_files::create_private_temporary_directory(parent, ".ganbaru.restore-")
+            .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);
     let staging = staging_parent.join("vault");
     stage_restored_vault(archive, &staging, header).await?;

@@ -6,8 +6,8 @@ use super::golden::assert_vector;
 use crate::backup::{
     BACKUP_CHUNK_BYTES, BACKUP_INFO, BACKUP_MAGIC, BACKUP_NONCE_BYTES, BACKUP_VERSION,
     BACKUP_WRAP_DOMAIN, BackupError, BackupHeader, ChunkOpener, ChunkSealer, EPOCH_WRAP_BYTES,
-    FileKey, HEADER_PREFIX_BYTES, MAX_CHUNK_CIPHERTEXT_BYTES, chunk_aad, recovery_info,
-    seal_wrap, wrap_aad,
+    FileKey, HEADER_PREFIX_BYTES, MAX_CHUNK_CIPHERTEXT_BYTES, chunk_aad, recovery_info, seal_wrap,
+    wrap_aad,
 };
 use crate::crypto::{
     EncryptionKeyPair, KEY_ENVELOPE_BYTES, KeyEnvelope, SPACE_KEY_BYTES, SpaceKey, TAG_BYTES,
@@ -35,8 +35,7 @@ fn pair(byte: u8) -> EncryptionKeyPair {
 fn fixed_header(epoch_key: Option<&SpaceKey>, recovery: &EncryptionKeyPair) -> BackupHeader {
     let file_key = FileKey::from_bytes([0x77; 32]);
     let public =
-        <X25519HkdfSha256 as Kem>::PublicKey::from_bytes(recovery.public_key().as_bytes())
-            .unwrap();
+        <X25519HkdfSha256 as Kem>::PublicKey::from_bytes(recovery.public_key().as_bytes()).unwrap();
     let (encapsulated, sealed) =
         hpke::single_shot_seal_with_rng::<ChaCha20Poly1305, HkdfSha256, X25519HkdfSha256>(
             &OpModeS::Base,
@@ -60,12 +59,15 @@ fn fixed_header(epoch_key: Option<&SpaceKey>, recovery: &EncryptionKeyPair) -> B
     }
 }
 
+/// One sealed chunk: its nonce and ciphertext.
+type Frame = ([u8; BACKUP_NONCE_BYTES], Vec<u8>);
+
 /// Seals `archive` into frames under a fresh header, as a backup writer does.
 fn seal_frames(
     epoch_key: Option<&SpaceKey>,
     recovery: &EncryptionKeyPair,
     archive: &[u8],
-) -> (BackupHeader, Vec<([u8; BACKUP_NONCE_BYTES], Vec<u8>)>) {
+) -> (BackupHeader, Vec<Frame>) {
     let (header, key) = BackupHeader::seal(&space(), epoch_key, &recovery.public_key()).unwrap();
     let mut sealer = ChunkSealer::new(&header, key);
     let mut frames = Vec::new();
@@ -89,7 +91,7 @@ fn seal_frames(
 fn open_frames(
     header: &BackupHeader,
     key: FileKey,
-    frames: &[([u8; BACKUP_NONCE_BYTES], Vec<u8>)],
+    frames: &[Frame],
 ) -> Result<Vec<u8>, BackupError> {
     let mut opener = ChunkOpener::new(header, key);
     let mut archive = Vec::new();
@@ -238,7 +240,7 @@ fn reordered_truncated_extended_and_swapped_chunks_fail() {
     let recovery = pair(6);
     let plaintext = archive(BACKUP_CHUNK_BYTES * 3);
     let (header, frames) = seal_frames(None, &recovery, &plaintext);
-    let open = |frames: &[([u8; BACKUP_NONCE_BYTES], Vec<u8>)]| {
+    let open = |frames: &[Frame]| {
         open_frames(
             &header,
             header.open_with_recovery(&recovery).unwrap(),
@@ -251,15 +253,9 @@ fn reordered_truncated_extended_and_swapped_chunks_fail() {
     assert_eq!(open(&reordered).err(), Some(BackupError::Authentication));
 
     // Dropping the last chunk leaves a full chunk sealed as not last at the end.
-    assert_eq!(
-        open(&frames[..2]).err(),
-        Some(BackupError::Authentication)
-    );
+    assert_eq!(open(&frames[..2]).err(), Some(BackupError::Authentication));
     // Dropping the first chunk moves every index.
-    assert_eq!(
-        open(&frames[1..]).err(),
-        Some(BackupError::Authentication)
-    );
+    assert_eq!(open(&frames[1..]).err(), Some(BackupError::Authentication));
 
     let mut extended = frames.clone();
     extended.push(frames[2].clone());
@@ -310,8 +306,15 @@ fn chunks_after_the_last_and_out_of_bound_lengths_are_refused() {
             .err(),
         Some(BackupError::Malformed)
     );
-    assert_eq!(opener.check_length(u32::MAX).err(), Some(BackupError::Malformed));
-    assert!(opener.check_length(MAX_CHUNK_CIPHERTEXT_BYTES as u32).is_ok());
+    assert_eq!(
+        opener.check_length(u32::MAX).err(),
+        Some(BackupError::Malformed)
+    );
+    assert!(
+        opener
+            .check_length(MAX_CHUNK_CIPHERTEXT_BYTES as u32)
+            .is_ok()
+    );
     // A short chunk that is not last is refused before decryption.
     let mut short = last.clone();
     assert_eq!(
@@ -338,7 +341,10 @@ fn headers_refuse_other_magic_versions_and_lengths() {
         BackupHeader::length(&prefix(&zip)).err(),
         Some(BackupError::NotBackup)
     );
-    assert_eq!(BackupHeader::decode(&zip).err(), Some(BackupError::NotBackup));
+    assert_eq!(
+        BackupHeader::decode(&zip).err(),
+        Some(BackupError::NotBackup)
+    );
 
     let mut newer = bytes.clone();
     newer[4] = 2;
@@ -378,14 +384,15 @@ fn every_header_byte_change_fails_the_file_key_or_the_chunks() {
         for file_key in [
             decoded.open_with_epoch_key(&key),
             decoded.open_with_recovery(&recovery),
-        ] {
-            if let Ok(file_key) = file_key {
-                assert_eq!(
-                    open_frames(&decoded, file_key, &frames).err(),
-                    Some(BackupError::Authentication),
-                    "byte {position}"
-                );
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert_eq!(
+                open_frames(&decoded, file_key, &frames).err(),
+                Some(BackupError::Authentication),
+                "byte {position}"
+            );
         }
     }
 }

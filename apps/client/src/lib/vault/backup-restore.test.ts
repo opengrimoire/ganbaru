@@ -57,7 +57,10 @@ describe("runBackupRestore", () => {
       { kind: "refused", reason: "wrongKit" },
       restored,
     ];
-    const restore = vi.fn(async () => outcomes.shift() ?? restored);
+    const restore = vi.fn(
+      async (_token: string, _kit: string | null): Promise<BackupRestoreOutcome> =>
+        outcomes.shift() ?? restored,
+    );
     const flow = steps({ restore, kits: ["A", "B", "C"] });
     await expect(runBackupRestore(flow)).resolves.toEqual(restored);
     expect(flow.askKit.mock.calls.map(([reason]) => reason)).toEqual([

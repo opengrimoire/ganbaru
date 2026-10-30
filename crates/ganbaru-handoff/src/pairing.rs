@@ -17,7 +17,7 @@ use storage::{
 #[cfg(desktop)]
 use super::protocol::HandoffCompatibility;
 use super::protocol::{
-    BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, decode_sync_charter,
+    BundleMetadata, DeviceKind, PairingInvitation, decode_sync_charter,
     validate_coordinator_endpoints, validate_device_label, validate_identifier,
 };
 #[cfg(desktop)]
@@ -120,8 +120,6 @@ pub struct CoordinatorPin {
     /// The invitation endpoint, kept as the last dial candidate.
     pub endpoint: String,
     pub vault_id: String,
-    #[serde(default)]
-    pub generation: u64,
     pub certificate_fingerprint: String,
     /// The endpoint of the last authenticated connection to the coordinator.
     #[serde(default)]
@@ -257,11 +255,7 @@ struct PairingStateFile {
     #[serde(default)]
     outgoing_transfer: Option<StoredOutgoingTransfer>,
     #[serde(default)]
-    incoming_transfer: Option<StoredIncomingTransfer>,
-    #[serde(default)]
     completed_activation: Option<PendingAcknowledgement>,
-    #[serde(default)]
-    requested_upload: Option<BundlePurpose>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -270,24 +264,12 @@ pub struct PendingAcknowledgement {
     pub vault_id: String,
     pub device_id: String,
     pub transfer_id: String,
-    pub generation: u64,
-    pub purpose: BundlePurpose,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredOutgoingTransfer {
     pub metadata: BundleMetadata,
-    pub purpose: BundlePurpose,
-    pub committed: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoredIncomingTransfer {
-    pub metadata: BundleMetadata,
-    pub source_device_id: String,
-    pub purpose: BundlePurpose,
 }
 
 pub struct TlsIdentity {
@@ -399,9 +381,7 @@ impl PairingManager {
                 replica_ready: false,
                 pending_acknowledgement: None,
                 outgoing_transfer: None,
-                incoming_transfer: None,
                 completed_activation: None,
-                requested_upload: None,
             };
             persist_state(&state_path, &state)?;
             state
@@ -752,11 +732,7 @@ impl PairingManager {
     fn unlink_with(&self, reason: Option<UnlinkReason>) -> Result<(), String> {
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some()
-            || previous.outgoing_transfer.is_some()
-            || previous.incoming_transfer.is_some()
-            || previous.requested_upload.is_some()
-        {
+        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
             return Err("finish or retry the active handoff before unlinking".to_string());
         }
         let state = initialized_state_mut(&mut inner)?;
@@ -785,11 +761,7 @@ impl PairingManager {
         validate_identifier("peer device id", device_id)?;
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some()
-            || previous.outgoing_transfer.is_some()
-            || previous.incoming_transfer.is_some()
-            || previous.requested_upload.is_some()
-        {
+        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
             return Err("finish or retry the active handoff before unlinking".to_string());
         }
         let state = initialized_state_mut(&mut inner)?;
@@ -838,9 +810,7 @@ impl PairingManager {
         state.revoked_by_coordinator = true;
         state.pending_acknowledgement = None;
         state.outgoing_transfer = None;
-        state.incoming_transfer = None;
         state.completed_activation = None;
-        state.requested_upload = None;
         if let Err(error) = persist_initialized_state(&inner) {
             inner.state = Some(previous);
             return Err(error);
@@ -853,7 +823,6 @@ impl PairingManager {
         &self,
         endpoint: std::net::SocketAddr,
         vault_id: String,
-        generation: u64,
         compatibility: HandoffCompatibility,
         now_ms: i64,
     ) -> Result<PairingInvitation, String> {
@@ -872,7 +841,6 @@ impl PairingManager {
             ),
             coordinator_device_id: state.identity.device_id.clone(),
             vault_id,
-            generation,
             expires_at_ms: now_ms.saturating_add(INVITATION_LIFETIME_MS),
         };
         inner.invitations.clear();
@@ -996,7 +964,6 @@ impl PairingManager {
             device_label: coordinator_device_label,
             endpoint: invitation.endpoint.clone(),
             vault_id: invitation.vault_id.clone(),
-            generation: invitation.generation,
             certificate_fingerprint: fingerprint,
             last_endpoint: Some(invitation.endpoint.clone()),
             reported_endpoints,

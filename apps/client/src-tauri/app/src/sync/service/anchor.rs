@@ -3,7 +3,7 @@
 //! of a linked desktop that holds it, and the proposals the coordinator holds for such an
 //! anchor.
 //!
-//! The coordinator keeps serving the hub, vault ownership, and pairing after a handover, so
+//! The coordinator keeps serving the hub and pairing after a handover, so
 //! members keep dialing it. A linked desktop that anchors collects what the coordinator holds
 //! through forward requests and sequences it with its own writer.
 

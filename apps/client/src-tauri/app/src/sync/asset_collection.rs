@@ -22,15 +22,13 @@ type LastCollection = Mutex<Option<(String, Instant)>>;
 static LAST_COLLECTION: LastCollection = Mutex::new(None);
 
 /// Collects the unreferenced asset files of the active vault when its last collection in this
-/// process is a day old. A vault that cannot be written yet leaves the interval unclaimed, so
-/// the next pass tries again; a failure is logged and waits for the next interval.
+/// process is a day old. A failure is logged and waits for the next interval.
 pub(super) async fn collect_if_due<H: SyncHost>(host: &H) {
     let Ok(vault_id) = host.active_vault_id() else {
         return;
     };
     let pool = match host.connect_for_sync().await {
-        Ok(Some(pool)) => pool,
-        Ok(None) => return,
+        Ok(pool) => pool,
         Err(error) => {
             eprintln!("sync asset collection: {error}");
             return;
@@ -84,10 +82,9 @@ async fn collect<H: SyncHost>(
         grace: UNREFERENCED_ASSET_GRACE,
         now: SystemTime::now(),
     };
-    collect_unreferenced_assets(&ArchiveGate::process(), sweep, |class| {
-        let (domain, _) = engine.manifest().asset_class(class.name)?;
-        // A refused permit means the domain is fenced or read-only here, so its files stay.
-        let permit = host.replicated_asset_path(domain.name).ok()?;
+    collect_unreferenced_assets(&ArchiveGate::process(), sweep, |_| {
+        // A refused permit means the vault is being replaced, so its files stay.
+        let permit = host.replicated_asset_path().ok()?;
         (*permit == *root).then_some(permit)
     })
     .await

@@ -252,9 +252,7 @@ pub(crate) struct RecoveryRequest {
 
 /// Recovery offers of the active vault, newest edit first.
 pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryEntryView>, String> {
-    let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
-        return Ok(Vec::new());
-    };
+    let pool = crate::db::connect_active_vault_for_sync(app).await?;
     let vault_id = crate::vault::active_vault_id(app)?;
     let engine = Engine::vault();
     let mut conn = pool
@@ -310,20 +308,13 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
 mod tests {
     use super::*;
 
-    /// Replica-writable domains have concurrent writers, so they can open offers. Notes is held
-    /// to the same rule before its replicas can write, so a Notes table without a restorer fails
-    /// here rather than when replica writes are enabled.
+    /// Every device writes every domain, so every table that can root an offer needs a restorer.
     #[test]
     fn sync_recovery_restorers_cover_every_table_that_can_root_an_offer() {
         let manifest = Engine::vault().manifest();
         let mut roots: Vec<&str> = manifest
             .recovery_root_tables()
             .into_iter()
-            .filter(|table| {
-                manifest.domain_of(table.name).is_some_and(|domain| {
-                    domain.replica_writable || domain.name == notes::DOMAIN_NAME
-                })
-            })
             .map(|table| table.name)
             .collect();
         roots.sort_unstable();

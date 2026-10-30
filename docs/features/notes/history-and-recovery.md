@@ -40,7 +40,7 @@ Pages and blocks created after the selected version move to Trash. If a historic
 
 Historical pending notifications do not become newly deliverable.
 
-Between linked devices, history stays on each device. When history is enabled, each sync apply records a snapshot of the pages another device changed, and a restore on the vault owner writes ordinary edits against the current page, which replicate like any other edit; it never rewinds what other devices hold. While Notes is written on the vault owner only, other devices cannot restore Notes history and sync recovery has no Notes entries yet; they arrive with Notes writes on every device. Settings > Sync can then restore a deleted page, block, discussion, comment, data source, or template that a deletion on another device made unseen, with a new id and out of the trash, or discard it; the rules are in [Device linking and synchronization](../../data/sync.md).
+Between linked devices, history stays on each device. When history is enabled, each sync apply records a snapshot of the pages another device changed, and a restore on any device writes ordinary edits against the current page, which replicate like any other edit; it never rewinds what other devices hold. Settings > Sync can restore a deleted page, block, discussion, comment, data source, or template that a deletion on another device made unseen, with a new id and out of the trash, or discard it; the rules are in [Device linking and synchronization](../../data/sync.md).
 
 ## Page templates
 

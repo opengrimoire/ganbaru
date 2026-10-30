@@ -30,7 +30,7 @@ use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
-use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
+use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::stability::DeviceStanding;
 use ganbaru_sync::{
@@ -619,9 +619,7 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
     if !app.sync_enabled()? {
         return Ok(None);
     }
-    let Some(pool) = app.connect_for_sync().await? else {
-        return Ok(None);
-    };
+    let pool = app.connect_for_sync().await?;
     let vault_id = app.active_vault_id()?;
     let assets: Arc<dyn AssetStore> = Arc::new(ActiveVaultAssets::open(app, &vault_id)?);
     let path = app.sync_files(&vault_id)?.quarantine_path();
@@ -1250,10 +1248,7 @@ impl ServiceState {
             host.stop_serving_members().await;
             return Ok(Next::Idle);
         }
-        let Some(pool) = host.connect_for_sync().await? else {
-            host.stop_serving_members().await;
-            return Ok(Next::Idle);
-        };
+        let pool = host.connect_for_sync().await?;
         let vault_id = host.active_vault_id()?;
         if self.vault_id.as_deref() != Some(vault_id.as_str()) {
             self.enter_vault(vault_id.clone(), runtime, host.active_vault_path()?);
@@ -2203,31 +2198,17 @@ async fn set_connectivity<H: SyncHost>(host: &H, view: &mut SyncStatusView) {
 pub(crate) struct QuiescedSync {
     vault_id: String,
     path: PathBuf,
-    access: DatabaseAccessMode,
 }
 
 /// Decides, before a vault transition fences writes, whether the vault must be sealed once its
-/// pools close. Sealing depends on the role and links, not on the transfer phase, because
-/// preparing a transfer changes the phase before the seal runs.
+/// pools close, which it must while this device is linked in it.
 pub(crate) fn quiesced_sync<H: SyncHost>(host: &H) -> Option<QuiescedSync> {
-    let config_dir = host.config_dir().ok()?;
-    let status = crate::vault::ownership::active_status_in(&config_dir, host.ownership()).ok()?;
-    if !host.ownership().is_linked(&status.vault_id) {
+    if !host.sync_enabled().ok()? {
         return None;
     }
-    let access = if status.can_write {
-        DatabaseAccessMode::ReadWrite
-    } else if status.role == "read-only" {
-        DatabaseAccessMode::Guarded
-    } else {
-        return None;
-    };
-    let path = crate::vault::active_database_path_in(&config_dir).ok()?;
-    Some(QuiescedSync {
-        vault_id: status.vault_id,
-        path,
-        access,
-    })
+    let vault_id = host.active_vault_id().ok()?;
+    let path = crate::vault::active_database_path_in(&host.config_dir().ok()?).ok()?;
+    Some(QuiescedSync { vault_id, path })
 }
 
 /// Seals pending captures of a quiesced vault through a private pool, because the shared
@@ -2250,13 +2231,7 @@ async fn seal_quiesced_with<H: SyncHost>(
     registry: &DatabasePoolRegistry,
     plan: &QuiescedSync,
 ) -> Result<(), String> {
-    let pool = match plan.access {
-        DatabaseAccessMode::Guarded => match registry.connect_path_guarded(&plan.path).await? {
-            (pool, DatabaseAccessMode::Guarded) => pool,
-            _ => return Ok(()),
-        },
-        _ => registry.connect_path(&plan.path).await?,
-    };
+    let pool = registry.connect_path(&plan.path).await?;
     let Some(session) = Session::open(host, pool, &plan.vault_id, KeyRelease::Skip).await? else {
         return Ok(());
     };
@@ -2384,11 +2359,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
         Ok(())
     }
 
-    /// Repairs the Notes structure around the Notes rows that applies changed, on a device that
-    /// may write Notes. The changed keys wait in `notes_sync_repair_pending`, which the repair
-    /// clears in its own transaction, so a failed repair is logged and retried on the next pass
-    /// or start without stopping the exchange. Keys stay pending on a device that may not write
-    /// Notes until it may.
+    /// Repairs the Notes structure around the Notes rows that applies changed. The changed keys
+    /// wait in `notes_sync_repair_pending`, which the repair clears in its own transaction, so a
+    /// failed repair is logged and retried on the next pass or start without stopping the
+    /// exchange.
     async fn repair_notes(&self) {
         if let Err(error) = self.try_repair_notes().await {
             eprintln!("repair notes structure: {error}");
@@ -2397,11 +2371,6 @@ impl<'a, H: SyncHost> Session<'a, H> {
 
     async fn try_repair_notes(&self) -> Result<(), String> {
         if !ganbaru_notes::sync_repair::has_pending(&self.pool).await? {
-            return Ok(());
-        }
-        let config_dir = self.host.config_dir()?;
-        let status = crate::vault::ownership::active_status_in(&config_dir, self.host.ownership())?;
-        if !status.can_write_domain(ganbaru_sync::manifest::vault::notes::DOMAIN_NAME) {
             return Ok(());
         }
         let repair = ganbaru_notes::sync_repair::repair_pending(&self.pool).await?;

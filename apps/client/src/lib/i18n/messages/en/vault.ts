@@ -61,26 +61,6 @@ export const language = {
   spanishOption: "Spanish",
 } as const;
 
-export const vaultOwnership = {
-  recovery: "This vault needs handoff recovery before it can be changed.",
-} as const;
-
-export const vaultOwnershipPrompt = {
-  title: (device: string) => `${device} is the main device`,
-  description: "Only the main device can make changes.",
-  replicaDescription: "Quick notes, preferences, themes, contacts, the Music library, Projects, Calendar, and Chat stay editable here and sync with your devices. Only the main device can change everything else.",
-  ownerRequiredDescription: "This change also affects data that only the main device can change. Use this device as the main device to make it.",
-  continueReadOnly: "Continue in read-only",
-  switching: "Switching to this device...",
-  copying: "Copying the vault to this device...",
-  replacementTitle: "Copy the linked vault to this device?",
-  replacementAndroid:
-    "The linked vault replaces this phone's vault, whose data cannot be merged with it. Ganbaru keeps a backup of the replaced vault on this phone, which you can export or delete in Settings > Data.",
-  replacementDesktop:
-    "Ganbaru copies the linked vault into its own folder on this computer. Your current vault stays as it is and remains in the vault list.",
-  replacementConfirm: "Copy vault",
-} as const;
-
 export const vaultHandoff = {
   heading: "Linked devices",
   description: "Manage your connected devices",
@@ -116,12 +96,8 @@ export const vaultHandoff = {
     "This Linux development build cannot use the packaged firewall helper. Use a packaged build or configure the firewall manually to link a phone.",
   notLinked: "No devices linked",
   devicesHeading: "Devices",
-  linkedTo: (device: string) => `Linked to ${device}`,
   desktopDevice: "Desktop",
   androidDevice: "Phone",
-  anotherDevice: "Another device",
-  transferPending: "A vault transfer is waiting to finish.",
-  linkPhone: "Link phone",
   linkToDesktop: "Link to desktop",
   createQr: "Show pairing QR code",
   linkAnotherDevice: "Link another device",
@@ -160,12 +136,16 @@ export const vaultHandoff = {
   cameraStarting: "Starting camera",
   notNow: "Not now",
   continue: "Continue",
-  deviceLabel: "Phone",
-  useHere: "Switch to this device",
-  refreshCopy: "Get latest changes",
   copyHere: "Copy vault to this device",
   copyHereDescription: "This device is linked. Copy the linked vault here to start syncing with it.",
   copied: "The linked vault is now on this device.",
+  copyInProgress: "The linked vault is already being copied to this device.",
+  firstCopyTitle: "Copy the linked vault to this device?",
+  firstCopyAndroid:
+    "The linked vault replaces this phone's vault, whose data cannot be merged with it. Ganbaru keeps a backup of the replaced vault on this phone, which you can export or delete in Settings > Data.",
+  firstCopyDesktop:
+    "Ganbaru copies the linked vault into its own folder on this computer. Your current vault stays as it is and remains in the vault list.",
+  firstCopyConfirm: "Copy vault",
   linkFolder: "Folder for the linked vault",
   linkFolderDefault: "Default location",
   chooseLinkFolder: "Choose folder",
@@ -175,26 +155,20 @@ export const vaultHandoff = {
   unlink: "Unlink device",
   unlinkTitle: "Unlink this device?",
   unlinkMessage:
-    "The current owner will not change. A read-only copy stays read-only until you explicitly recover it.",
-  recover: "Recover this local copy",
-  recoverTitle: "Use this copy as a separate vault?",
+    "The device stops syncing with this vault. Each device keeps the data it already has.",
+  recover: "Keep this copy as its own vault",
+  recoverTitle: "Keep this copy as its own vault?",
   recoverMessage:
-    "Use this only if the owning device is permanently unavailable. Both copies are preserved, this device becomes writable, and the devices are unlinked. Later changes will not merge automatically.",
-  workingOwnership: "Preparing this device...",
-  workingRefresh: "Getting the latest changes...",
-  workingRequest: "Waiting for the other device...",
-  linked: "Device linked.",
+    "Use this only if the coordinating computer is gone for good. This device forgets its coordinator and linked devices and keeps this copy as its own vault. Changes made elsewhere will no longer sync with it.",
+  workingCopy: "Copying the linked vault to this device...",
   linkedSuccessfully: (device: string) => `${device} was successfully linked.`,
   linkedLabel: "linked",
-  refreshed: "Latest changes received.",
-  requestSent: "The request was sent. Keep both apps open on the same network.",
   unlinked: "Device unlinked.",
   revokedByCoordinator:
-    "This device was unlinked by the coordinating computer. Its local copy remains read-only unless you recover it as a separate vault.",
-  recovered: "This local copy is now a separate writable vault.",
+    "This device was unlinked by the coordinating computer. Its copy of the vault stays on this device but no longer syncs.",
+  recovered: "This copy is now a vault of its own on this device.",
   localBackup:
     "When the linked vault replaces this phone's vault, Ganbaru keeps a backup of the replaced one in Settings > Data.",
-  sameNetwork: "Keep both apps open on the same local network.",
   failed: (details: string) => `The linked-device action failed: ${details}`,
   blockerChat: "Finish or stop active Chat work before moving the vault.",
   blockerTerminal: "Close running Chat terminals before moving the vault.",
@@ -211,12 +185,10 @@ export const vaultHandoff = {
   replacedVaultBackupFailed:
     "The linked vault was not copied because this device has no room to keep a backup of its current vault. Free some storage, then retry.",
   linkFolderNotEmpty: "The chosen folder is not empty. Choose an empty folder for the linked vault.",
-  firstLinkNeedsCopy: "Copy the linked vault to this device first.",
-  ownerHoldsVault: "This device already holds the linked vault as its main device.",
-  ownershipChurnLimit:
-    "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
+  linkFolderInsideVault:
+    "The chosen folder is inside another vault. Choose a folder outside any vault for the linked vault.",
   bundleRequestLimit:
-    "This device asked for the vault too many times in the last hour. Wait a while, then refresh or switch devices again.",
+    "This device asked for the vault too many times in the last hour. Wait a while, then try again.",
   deviceKeyMissing:
     "This device's linking key is missing from the system keyring. Unlink this device, then link it again.",
   deviceKeyUnavailable:
@@ -227,7 +199,5 @@ export const vaultHandoff = {
     "The coordinating computer is handling too many connections right now. Wait a moment, then retry.",
   unreachable:
     "This device could not reach the coordinating computer. Keep both apps open on the same local network, then retry.",
-  ownerUnreachable:
-    "The main device is unavailable. Keep it open on the same local network, then retry.",
   unknownError: "Unknown error",
 } as const;

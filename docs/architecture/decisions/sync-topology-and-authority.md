@@ -16,7 +16,7 @@
 | --- | --- |
 | Treat content merging, delivery, and authority as separate concerns | Content already merges without a leader, and every operation is signed and validated by its receiver, so any path can carry it. Only authority needs ordering. |
 | Leaderless content and delivery, one anchor per space for authority | The anchor is a member desktop that sequences a hash-chained authorization log of enrollments, removals, roles, admin keys, and handovers. Membership changes are rare, so ordering them in one place costs little, while leaderless authority has no satisfying answer for concurrent removals. |
-| The anchor can move; the coordinator stays | Pairing and whole-vault ownership stay with the coordinator, while each device pins the anchor separately and follows handovers through its peer book, so moving authority needs no relinking. |
+| The anchor can move; the coordinator stays | Pairing and first snapshot copies stay with the coordinator, while each device pins the anchor separately and follows handovers through its peer book, so moving authority needs no relinking. |
 | The anchor never gates content | Editing and delivery continue while the anchor is unreachable; only authorization proposals wait. |
 | Log entries travel as content-addressed records | Every device stores entries in a record store keyed by hash and selects one chain deterministically (kit handovers, epoch, epoch root, revision, hash), so any path can carry them and a contest freezes at the common ancestor instead of splitting replicas. |
 | Writer certificates are signed by the device key | Each installation's device key is what the log enrolls and removes, so certificates follow enrollment instead of the person key that every device holds. |

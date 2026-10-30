@@ -307,6 +307,27 @@ pub fn create_private_temporary_directory(parent: &Path, prefix: &str) -> io::Re
     ))
 }
 
+/// Flushes the entries of `directory`, such as a rename into it, to stable storage.
+///
+/// Call it before deleting the only other copy of data that a rename moved into `directory`.
+/// Windows offers no directory flush to ordinary handles, so there it does nothing.
+///
+/// # Errors
+///
+/// Returns an error on Unix when `directory` cannot be opened or its filesystem rejects the
+/// flush.
+pub fn sync_directory_entries(directory: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(directory)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(())
+    }
+}
+
 /// Creates `directory` and any missing ancestors, each accessible only by the current user.
 ///
 /// On Unix every directory this call creates gets mode 0700; existing directories keep their

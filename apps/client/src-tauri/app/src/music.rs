@@ -391,7 +391,7 @@ fn decode_image_data_url(data_url: &str) -> Result<Vec<u8>, String> {
 /// the managed reference.
 #[cfg(not(target_os = "ios"))]
 fn import_managed_artwork(app: &tauri::AppHandle, bytes: &[u8]) -> Result<String, String> {
-    let vault_root = crate::vault::active_replicated_asset_path(app, managed_artwork::DOMAIN_NAME)?;
+    let vault_root = crate::vault::active_writable_vault_path(app)?;
     managed_artwork::import_artwork(&vault_root, bytes)
         .map(|artwork| artwork.reference)
         .map_err(|error| error.to_string())

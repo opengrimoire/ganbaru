@@ -396,7 +396,6 @@ async fn resolve_turn_target(
             }
             let logical_workspace = workspaces::read_workspace(pool, working_folder_id).await?;
             crate::chat::channels::ensure_chat_defaults(
-                app,
                 pool,
                 crate::chat::channels::ChatDefaultsScope::WorkingFolder(working_folder_id.as_str()),
             )

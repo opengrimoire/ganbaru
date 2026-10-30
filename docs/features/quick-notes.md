@@ -48,11 +48,11 @@ Mosaics read scaled copies of large images and the viewer reads the original, bo
 
 Active notes can be pinned, archived, or moved to Trash. Archive and Trash clear pin state. Trash remembers whether the note came from active or Archive so restore returns it appropriately.
 
-Trashed notes are read-only and are permanently deleted after seven days. Expired notes are hidden at once and purged by a background job on a device that can write them. Manual permanent deletion and Empty Trash require confirmation.
+Trashed notes are read-only and are permanently deleted after seven days. Expired notes are hidden at once and purged by a background job. Manual permanent deletion and Empty Trash require confirmation.
 
 ## Linked devices
 
-**Implemented in source; physical multi-device acceptance is pending.** Quick notes and their tags are editable on every linked device, online or offline, including devices that hold a read-only copy of the rest of the vault. Changes reach other devices on the same LAN through the coordinator desktop and converge to identical state everywhere. Protocol, writers, and delivery are owned by [Device linking and synchronization](../data/sync.md); merge rules are in the [sync algorithm](../algorithms/sync/README.md).
+**Implemented in source; physical multi-device acceptance is pending.** Quick notes and their tags are editable on every linked device, online or offline. Changes reach other devices on the same LAN through the coordinator desktop and converge to identical state everywhere. Protocol, writers, and delivery are owned by [Device linking and synchronization](../data/sync.md); merge rules are in the [sync algorithm](../algorithms/sync/README.md).
 
 - **Silent merges:** concurrent changes to color, tag, lifecycle, and order resolve deterministically without asking the user. Two devices that create a tag with the same name end with one tag that keeps every assignment.
 - **Conflicts:** concurrent edits of the same note's title, body, or image list to different values become a conflict. The card shows a conflict badge, and the editor shows a banner listing each version with its device and time: keep this keeps the displayed version, use this picks another version, and keep both keeps the displayed version and creates a new note from the other. Resolving on one device clears the conflict everywhere, and unsaved edits to other fields survive the resolution.

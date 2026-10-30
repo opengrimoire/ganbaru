@@ -46,7 +46,7 @@ Loopback servers use random bearer tokens, bounded requests, narrow registries, 
 
 ## Device linking, sync, and collaboration
 
-Private-LAN device linking with single-writer whole-vault handoff is implemented between one person's desktop and Android devices. It uses pinned, paired transport and moves one validated complete vault; it is not concurrent sync.
+Private-LAN device linking is implemented between one person's desktop and Android devices. It uses pinned, paired transport, gives a newly linked device one validated complete vault copy, and then carries concurrent sync operations between the devices.
 
 Typed domain operations replicate most domains concurrently between linked devices. An optional user-hosted Rust relay for encrypted records is planned, followed by multi-person collaboration with Yrs/Yjs collaborative text. They are not current runtime dependencies. The future transport must preserve local canonical storage and enforce resource visibility for derived data as well as direct reads.
 

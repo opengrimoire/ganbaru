@@ -20,7 +20,6 @@ use sqlx::{AssertSqlSafe, SqliteConnection};
 use crate::Engine;
 use crate::codec::{self, OwnedRow};
 use crate::error::{SyncError, SyncResult, corrupt};
-use crate::guards;
 use crate::hooks::{ChangeNotice, ConcurrentVersion, Notices};
 use crate::hydrate::{self, Elision};
 use crate::manifest::{ColumnSpec, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec};
@@ -738,8 +737,7 @@ async fn settle(
                 _ => None,
             })
             .collect();
-        // A device that may not edit the table leaves the settle to one that may.
-        if rows.is_empty() || guards::is_guarded_here(conn, table.name).await? {
+        if rows.is_empty() {
             continue;
         }
         for (key, concurrent) in rows {

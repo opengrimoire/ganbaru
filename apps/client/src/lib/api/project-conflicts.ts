@@ -8,7 +8,6 @@ import { ensureDbUrl } from "$lib/api/db";
 import { mapMutation, type ProjectsMutationRows } from "$lib/api/projects";
 import { mapSyncDeviceRef, type SyncDeviceRef } from "$lib/api/sync";
 import type { ProjectMutation } from "$lib/projects/types";
-import { withOwnerRequiredPrompt } from "$lib/vault/owner-required";
 import {
   readArray,
   readBoolean,
@@ -169,8 +168,7 @@ export async function loadProjectConflicts(projectId: string): Promise<ProjectCo
 export async function resolveProjectConflict(resolution: ProjectConflictResolution): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   try {
-    return mapMutation(await withOwnerRequiredPrompt(() =>
-      invoke<ProjectsMutationRows>("projects_resolve_conflict", { dbUrl, resolution })));
+    return mapMutation(await invoke<ProjectsMutationRows>("projects_resolve_conflict", { dbUrl, resolution }));
   } catch (error: unknown) {
     throw toProjectConflictError(error);
   }

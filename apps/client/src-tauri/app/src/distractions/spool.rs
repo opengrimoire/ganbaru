@@ -7,7 +7,6 @@
 //! them into the replicated `distractions_block_events`.
 
 use crate::distractions::DistractionsUsageSampleRow;
-use crate::distractions::limits::{MAX_SOURCE_GROUPS, UsageSourceDay};
 use ganbaru_distractions::usage::totals::insert_own_samples;
 use ganbaru_distractions::usage::{
     SpooledBlockEvent, SpooledBlockEventError, UsageDateWindow, record_spooled_block_event,
@@ -586,65 +585,6 @@ async fn ingest_block_events_at(
     .await;
     spool.close().await;
     result
-}
-
-/// This device's pending usage from `week` through `local_date`, summed per source and day, for
-/// a device that cannot write the vault's usage journal.
-pub(crate) async fn pending_source_days<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    vault_id: &str,
-    device_id: &str,
-    week: &str,
-    local_date: &str,
-) -> Result<Vec<UsageSourceDay>, String> {
-    pending_source_days_at(&spool_path(app)?, vault_id, device_id, week, local_date).await
-}
-
-async fn pending_source_days_at(
-    path: &Path,
-    vault_id: &str,
-    device_id: &str,
-    week: &str,
-    local_date: &str,
-) -> Result<Vec<UsageSourceDay>, String> {
-    if !tokio::fs::try_exists(path)
-        .await
-        .map_err(|error| format!("inspect Distractions spool: {error}"))?
-    {
-        return Ok(Vec::new());
-    }
-    let pool = open_spool(path).await?;
-    let rows = sqlx::query(
-        "SELECT source_type, source_key, local_date, SUM(elapsed_seconds) AS elapsed_seconds
-         FROM pending_usage_samples
-         WHERE vault_id = ? AND device_id = ? AND local_date >= ? AND local_date <= ?
-         GROUP BY source_type, source_key, local_date
-         ORDER BY local_date, source_type, source_key LIMIT ?",
-    )
-    .bind(vault_id)
-    .bind(device_id)
-    .bind(week)
-    .bind(local_date)
-    .bind((MAX_SOURCE_GROUPS + 1) as i64)
-    .fetch_all(&pool)
-    .await
-    .map_err(|error| format!("aggregate pending Distractions usage: {error}"));
-    pool.close().await;
-    let rows = rows?;
-    if rows.len() > MAX_SOURCE_GROUPS {
-        return Err("pending usage sources exceed the native limit".into());
-    }
-    rows.into_iter()
-        .map(|row| {
-            let read = |error: sqlx::Error| format!("read pending Distractions usage: {error}");
-            Ok(UsageSourceDay {
-                source_type: row.try_get("source_type").map_err(read)?,
-                source_key: row.try_get("source_key").map_err(read)?,
-                local_date: row.try_get("local_date").map_err(read)?,
-                elapsed_seconds: row.try_get("elapsed_seconds").map_err(read)?,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

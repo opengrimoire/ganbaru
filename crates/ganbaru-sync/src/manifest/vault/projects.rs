@@ -1581,7 +1581,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("project_task_bulk_receipts"),
     ],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[ICON_CLASS],
 };

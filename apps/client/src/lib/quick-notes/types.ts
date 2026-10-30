@@ -96,7 +96,7 @@ export interface QuickNoteTag {
 /** Result of one trash purge pass. */
 export interface QuickNotesTrashPurge {
   purged: number;
-  /** When the oldest remaining trashed note expires; null when nothing is due or this device cannot purge. */
+  /** When the oldest remaining trashed note expires; null when nothing is due. */
   nextPurgeAt: string | null;
 }
 

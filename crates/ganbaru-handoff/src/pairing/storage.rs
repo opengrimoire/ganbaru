@@ -2,11 +2,11 @@
 
 use super::{
     MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
-    PairingStateFile, PendingAcknowledgement, StoredIncomingTransfer, StoredOutgoingTransfer,
-    certificate_fingerprint, decode_certificate, decode_private_key, initialized_state,
-    random_token, validate_pinned_endpoint,
+    PairingStateFile, PendingAcknowledgement, StoredOutgoingTransfer, certificate_fingerprint,
+    decode_certificate, decode_private_key, initialized_state, random_token,
+    validate_pinned_endpoint,
 };
-use crate::protocol::{self, BundlePurpose, validate_device_label, validate_identifier};
+use crate::protocol::{self, validate_device_label, validate_identifier};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -21,21 +21,6 @@ pub(super) fn persist_initialized_state(inner: &PairingManagerInner) -> Result<(
 
 pub(super) fn validate_stored_outgoing(transfer: &StoredOutgoingTransfer) -> Result<(), String> {
     transfer.metadata.validate()?;
-    if transfer.purpose == BundlePurpose::Ownership && transfer.metadata.generation == 0 {
-        return Err("outgoing ownership generation must be positive".to_string());
-    }
-    Ok(())
-}
-
-pub(super) fn validate_stored_incoming(transfer: &StoredIncomingTransfer) -> Result<(), String> {
-    transfer.metadata.validate()?;
-    validate_identifier("incoming source device id", &transfer.source_device_id)?;
-    if transfer.source_device_id == transfer.metadata.device_id {
-        return Err("incoming transfer source and receiver must differ".to_string());
-    }
-    if transfer.purpose == BundlePurpose::Ownership && transfer.metadata.generation == 0 {
-        return Err("incoming ownership generation must be positive".to_string());
-    }
     Ok(())
 }
 
@@ -54,9 +39,6 @@ pub(super) fn validate_activation_record(record: &PendingAcknowledgement) -> Res
     validate_identifier("activation vault id", &record.vault_id)?;
     validate_identifier("activation device id", &record.device_id)?;
     validate_identifier("activation transfer id", &record.transfer_id)?;
-    if record.purpose == BundlePurpose::Ownership && record.generation == 0 {
-        return Err("activation acknowledgement is inconsistent".to_string());
-    }
     Ok(())
 }
 
@@ -198,9 +180,6 @@ pub(super) fn validate_state(
     }
     if let Some(transfer) = state.outgoing_transfer.as_ref() {
         validate_stored_outgoing(transfer)?;
-    }
-    if let Some(transfer) = state.incoming_transfer.as_ref() {
-        validate_stored_incoming(transfer)?;
     }
     if let Some(completed) = state.completed_activation.as_ref() {
         validate_activation_record(completed)?;

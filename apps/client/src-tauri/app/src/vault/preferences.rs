@@ -1,8 +1,8 @@
 //! Vault preferences, split by where each one belongs.
 //!
 //! The [registry](registry::REGISTRY) assigns every preference path a scope. Portable values
-//! are rows of `vault_preferences`, shared by every device of the vault and written by the owner
-//! and by linked replicas, since the preferences sync domain replicates concurrently. Device
+//! are rows of `vault_preferences`, shared by every device of the vault and written on every
+//! linked device, since the preferences sync domain replicates concurrently. Device
 //! values live in a file per vault in the app config directory and are written on every device.
 //! The device file also holds native-owned entries, such as [`CHAT_DEVICE_ENTRY`], that native
 //! commands validate and write and that the registry never routes a patch to.
@@ -22,11 +22,10 @@ mod view;
 pub(crate) use view::value_at;
 
 use super::config::{VaultConfigPatch, validate_config_patch_path};
-use super::{active_replicated_asset_path, active_vault_id, now_utc};
+use super::{active_vault_id, active_writable_vault_path, now_utc};
 use chrono::SecondsFormat;
 use ganbaru_sync::ChangeNotice;
 use ganbaru_sync::domains::preferences::PREFERENCE_TOPIC;
-use ganbaru_sync::manifest::vault::preferences::DOMAIN_NAME as PREFERENCES_DOMAIN;
 use registry::{PATH_SEPARATOR, PreferenceSpec, Scope, Shape, Target};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
@@ -393,7 +392,7 @@ async fn write_plan<R: Runtime>(
     plan: PatchPlan,
 ) -> Result<(), String> {
     if !plan.portable.is_empty() {
-        let _write_permit = active_replicated_asset_path(app, PREFERENCES_DOMAIN)?;
+        let _write_permit = active_writable_vault_path(app)?;
         let pool = crate::db::connect_vault(app).await?;
         apply_portable(&pool, &plan.portable, &timestamp()).await?;
     }

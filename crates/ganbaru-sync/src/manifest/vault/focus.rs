@@ -608,7 +608,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("pomodoro_adaptive_outcomes"),
     ],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[],
 };

@@ -84,19 +84,10 @@ fn canonical_effect<R: Runtime>(
     let Some(effect) = effect else {
         return Ok(None);
     };
-    if crate::vault::active_vault_id(app)? != effect.vault_id {
+    if crate::vault::active_vault_id(app)? != effect.vault_id || state.lifecycle.is_revoked() {
         return Ok(None);
     }
-    let status = app
-        .state::<crate::vault::ownership::VaultOwnershipManager>()
-        .status(&effect.vault_id)?;
-    if !crate::pomodoro::focus_writable(&status)
-        || status.generation != effect.ownership_generation
-        || state.lifecycle.is_revoked()
-    {
-        return Ok(None);
-    }
-    // Ownership reads can wait for IO. Do not return the authority that preceded
+    // The vault read can wait for IO. Do not return the authority that preceded
     // a commit or revocation which happened while that read was in progress.
     let current = state.authority.borrow().as_ref().is_some_and(|authority| {
         same_revision(&authority.effect, &effect)
@@ -135,35 +126,15 @@ pub(crate) fn presentation_is_current<R: Runtime>(
     let Ok(wall_ms) = super::now_ms() else {
         return false;
     };
-    let candidate = state
-        .authority
-        .borrow()
-        .as_ref()
-        .filter(|authority| {
-            authority.effect.vault_generation == generation
-                && authority.effect.execution_revision == revision
-                && authority.presentable(wall_ms, Instant::now())
-        })
-        .map(|authority| authority.effect.clone());
-    let Some(candidate) = candidate else {
-        return false;
-    };
-    if !callback_owner_is_current(app, &candidate) {
-        return false;
-    }
-    // Do not hold the publication borrow while checking another owner's lock.
-    let Ok(wall_ms) = super::now_ms() else {
-        return false;
-    };
     state.authority.borrow().as_ref().is_some_and(|authority| {
-        !state.lifecycle.is_revoked()
-            && same_revision(&authority.effect, &candidate)
+        authority.effect.vault_generation == generation
+            && authority.effect.execution_revision == revision
             && authority.presentable(wall_ms, Instant::now())
     })
 }
 
 fn same_revision(current: &CommittedFocusEffect, candidate: &CommittedFocusEffect) -> bool {
-    current.matches_vault_authority(&candidate.vault_id, candidate.ownership_generation)
+    current.vault_id == candidate.vault_id
         && current.vault_generation == candidate.vault_generation
         && current.execution_revision == candidate.execution_revision
         && current.run_id == candidate.run_id
@@ -189,37 +160,12 @@ pub(crate) fn overlay_context_is_current<R: Runtime>(
     let Ok(wall_ms) = super::now_ms() else {
         return false;
     };
-    let candidate = state
-        .authority
-        .borrow()
-        .as_ref()
-        .filter(|authority| {
-            authority.effect.vault_generation == context.vault_generation
-                && authority.effect.run_id == context.run_id
-                && authority.effect.segment_id == context.segment_id
-                && authority.effect.mode == context.mode
-                && authority.effect.phase == context.phase
-                && (!matches!(
-                    authority.effect.mode,
-                    FocusMode::Running
-                        | FocusMode::ManualPause
-                        | FocusMode::IdlePause
-                        | FocusMode::Suspended
-                ) || authority.current(wall_ms, Instant::now()).is_some())
-        })
-        .map(|authority| authority.effect.clone());
-    let Some(candidate) = candidate else {
-        return false;
-    };
-    if !callback_owner_is_current(app, &candidate) {
-        return false;
-    }
-    let Ok(wall_ms) = super::now_ms() else {
-        return false;
-    };
     state.authority.borrow().as_ref().is_some_and(|authority| {
-        !state.lifecycle.is_revoked()
-            && same_revision(&authority.effect, &candidate)
+        authority.effect.vault_generation == context.vault_generation
+            && authority.effect.run_id == context.run_id
+            && authority.effect.segment_id == context.segment_id
+            && authority.effect.mode == context.mode
+            && authority.effect.phase == context.phase
             && (!matches!(
                 authority.effect.mode,
                 FocusMode::Running
@@ -228,26 +174,6 @@ pub(crate) fn overlay_context_is_current<R: Runtime>(
                     | FocusMode::Suspended
             ) || authority.current(wall_ms, Instant::now()).is_some())
     })
-}
-
-fn callback_owner_is_current<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    effect: &CommittedFocusEffect,
-) -> bool {
-    let Some(ownership) = app.try_state::<crate::vault::ownership::VaultOwnershipManager>() else {
-        return false;
-    };
-    match ownership.cached_status(&effect.vault_id) {
-        Ok(Some(status)) => {
-            crate::pomodoro::focus_writable(&status)
-                && status.generation == effect.ownership_generation
-        }
-        Ok(None) => false,
-        Err(error) => {
-            eprintln!("Native Focus callback ownership is unavailable: {error}");
-            false
-        }
-    }
 }
 
 /// Check a queued Music effect against current cached phase authority without vault IO.
@@ -271,23 +197,12 @@ pub(crate) fn music_delivery_is_current<R: Runtime>(
     {
         return false;
     }
-    let current = state
+    state
         .authority
         .borrow()
         .as_ref()
         .and_then(|authority| authority.current(now, Instant::now()))
-        .cloned();
-    let Some(current) = current else {
-        return false;
-    };
-    let matches = allows_music_delivery(&current, candidate);
-    matches
-        && callback_owner_is_current(app, &current)
-        && !state.lifecycle.is_revoked()
-        && state.authority.borrow().as_ref().is_some_and(|authority| {
-            same_revision(&authority.effect, &current)
-                && authority.current(now, Instant::now()).is_some()
-        })
+        .is_some_and(|current| allows_music_delivery(current, candidate))
 }
 
 /// Capture the owner's actual monotonic deadline, rather than deriving a new
@@ -316,7 +231,7 @@ pub(crate) fn allows_existing_lease(
     current: &CommittedFocusEffect,
     candidate: &CommittedFocusEffect,
 ) -> bool {
-    current.matches_vault_authority(&candidate.vault_id, candidate.ownership_generation)
+    current.vault_id == candidate.vault_id
         && current.vault_generation == candidate.vault_generation
         && current.execution_revision >= candidate.execution_revision
         && current.run_id == candidate.run_id

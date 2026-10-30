@@ -98,12 +98,10 @@ async fn native_delivery_remains_single_flight_and_coalesces_while_a_platform_ca
         calls: Arc::clone(&calls),
         fail: false,
     });
-    handle.publish(&projection(1, 1), Some(3), None).unwrap();
+    handle.publish(&projection(1, 1), None).unwrap();
     assert_eq!(starts.recv().await, Some(1));
     for revision in 2..=100 {
-        handle
-            .publish(&projection(1, revision), Some(3), None)
-            .unwrap();
+        handle.publish(&projection(1, revision), None).unwrap();
     }
     tokio::time::timeout(
         Duration::from_millis(50),
@@ -145,7 +143,7 @@ async fn native_delivery_handoff_timeout_preserves_the_worker_until_quiescence()
         calls: Arc::clone(&calls),
         fail: false,
     });
-    handle.publish(&projection(1, 1), Some(3), None).unwrap();
+    handle.publish(&projection(1, 1), None).unwrap();
     assert_eq!(starts.recv().await, Some(1));
     assert_eq!(
         handle
@@ -179,7 +177,7 @@ async fn native_delivery_backoff_cannot_retry_on_presentation_traffic_or_pollute
         calls: Arc::clone(&calls),
         fail: true,
     });
-    handle.publish(&projection(1, 1), Some(3), None).unwrap();
+    handle.publish(&projection(1, 1), None).unwrap();
     assert_eq!(starts.recv().await, Some(1));
     wait_for_status(&mut handle, |status| status.message.is_some()).await;
     assert_eq!(
@@ -189,11 +187,11 @@ async fn native_delivery_backoff_cannot_retry_on_presentation_traffic_or_pollute
     assert_eq!(handle.message(&projection(1, 2)), None);
     assert_eq!(handle.message(&projection(2, 1)), None);
     for _ in 0..100 {
-        handle.publish(&projection(1, 1), Some(3), None).unwrap();
+        handle.publish(&projection(1, 1), None).unwrap();
     }
     tokio::time::sleep(Duration::from_millis(5)).await;
     assert_eq!(calls.load(Ordering::Acquire), 1);
-    handle.publish(&projection(1, 2), Some(3), None).unwrap();
+    handle.publish(&projection(1, 2), None).unwrap();
     assert_eq!(starts.recv().await, Some(2));
     assert_eq!(calls.load(Ordering::Acquire), 2);
     drop(handle);
@@ -245,7 +243,6 @@ fn native_delivery_coalescing_retains_one_recent_canonical_phase_closure_until_a
     let mut desired = DesiredDelivery {
         accepted: Some(AcceptedDelivery {
             projection: active_projection(),
-            ownership_generation: Some(3),
             pool: None,
         }),
         ..DesiredDelivery::default()
@@ -284,7 +281,6 @@ fn native_delivery_phase_closure_cannot_survive_expiry_stop_or_a_new_vault() {
         let mut desired = DesiredDelivery {
             accepted: Some(AcceptedDelivery {
                 projection: active_projection(),
-                ownership_generation: Some(3),
                 pool: None,
             }),
             ..DesiredDelivery::default()
@@ -316,7 +312,6 @@ fn native_delivery_reports_a_stalled_worker_for_newer_pending_revisions_without_
     let (desired, _input) = watch::channel(DesiredDelivery {
         accepted: Some(AcceptedDelivery {
             projection: projection(1, 2),
-            ownership_generation: Some(3),
             pool: None,
         }),
         ..DesiredDelivery::default()

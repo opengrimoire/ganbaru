@@ -34,10 +34,10 @@ pub enum Classification {
     Derived,
     /// Engine state in `sync_*` tables, or a domain's engine-side table.
     Engine,
-    /// Device-bound rows that never replicate, are writable on replicas, and are emptied in
+    /// Device-bound rows that never replicate, are written on every device, and are emptied in
     /// snapshot copies.
     Local,
-    /// Rows that keep the owner-only whole-vault rules.
+    /// Rows of a table no domain declares, which never replicate.
     Unconverted,
 }
 
@@ -192,9 +192,6 @@ pub struct DomainManifest {
     pub local: &'static [DeviceTable],
     /// Engine-side tables of the domain outside `sync_*`.
     pub engine: &'static [DeviceTable],
-    /// Whether a linked replica may write the domain's replicated tables. Otherwise guards keep
-    /// them owner-only on replicas while the engine still applies remote changes to them.
-    pub replica_writable: bool,
     /// Tables of the domain that sync has not converted yet and that travel with the vault as
     /// they are, declared only so the sweep keeps the asset files their columns name. They are
     /// neither `Local` nor engine tables, so snapshot copies and carry-forward leave their rows
@@ -1274,14 +1271,6 @@ impl Manifest {
     /// Every registered asset class in domain order.
     pub fn asset_classes(&self) -> impl Iterator<Item = &'static AssetClass> {
         self.domains.iter().flat_map(|domain| domain.assets)
-    }
-
-    /// Names of the domains a linked replica may write, in domain order.
-    pub fn replica_writable_domains(&self) -> impl Iterator<Item = &'static str> {
-        self.domains
-            .iter()
-            .filter(|domain| domain.replica_writable)
-            .map(|domain| domain.name)
     }
 
     /// Replicated table by id.

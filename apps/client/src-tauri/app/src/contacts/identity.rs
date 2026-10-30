@@ -163,12 +163,6 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     if let Some(identity) = load_identity(app, pool).await? {
         return Ok(identity);
     }
-    let status = crate::vault::ownership::active_status(app)?;
-    if !status.can_write {
-        return Err(ContactsError::IdentityUnavailable(
-            "the vault owner creates the person identity".to_string(),
-        ));
-    }
     if app.state::<PairingManager>().coordinator_pin()?.is_some() {
         return Err(ContactsError::IdentityUnavailable(
             "the coordinator creates the person identity".to_string(),

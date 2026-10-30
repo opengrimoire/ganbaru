@@ -41,7 +41,7 @@ Rationale: desktop crashes leave no trustworthy evidence of what happened after 
 
 Notifications, overlays, tray, sounds, Music, the distraction blocker, and Android Guardian are effects of committed state, never inputs to it.
 
-- Effects carry the Focus publication generation and the shared vault ownership generation, and are rechecked against current native authority immediately before delivery. Superseded, stopped, or different-run effects are dropped.
+- Effects carry the Focus publication generation and the active vault generation, and are rechecked against current native authority immediately before delivery. Superseded, stopped, or different-run effects are dropped.
 - Effect validity is a monotonic lease (15 seconds) clipped to the accepted phase and event deadlines. Return wait, failed, stopped, and expired phases cannot authorize phase-dependent rules.
 - Effect delivery runs in a separate worker that coalesces to the latest request. A slow or failing platform operation never delays execution; it retries with its own backoff and reports a pending-delivery diagnostic.
 - Android notifications describe only the current accepted phase. At its deadline they remind the user to return; they cannot advance to another phase. Alarm and committed-completion delivery share one receipt so a boundary alert fires once.
@@ -57,7 +57,7 @@ Idle failure is measured from the first committed visibility acknowledgement of 
 
 ## Linked devices
 
-Each linked device runs its own native owner and writes only its own runs, so Focus works on replicas as well as the owner. A run replicates once closed, and the device activity row is rewritten in the same transaction as each start, phase change, pause, resume, and stop, never on heartbeat. A running row expires 10 minutes after its planned phase end and a paused row 30 minutes after the pause began, so a device that goes silent stops blocking admission elsewhere. Expiry is compared with the reading device's clock, so clock skew between devices shortens or lengthens that window. Activity is advisory: it never counts as activity evidence for this device. There is no controller ownership and no remote control: a device never starts, stops, or retargets another device's run, and replication never causes native execution.
+Each linked device runs its own native owner and writes only its own runs, so Focus works the same on every linked device. A run replicates once closed, and the device activity row is rewritten in the same transaction as each start, phase change, pause, resume, and stop, never on heartbeat. A running row expires 10 minutes after its planned phase end and a paused row 30 minutes after the pause began, so a device that goes silent stops blocking admission elsewhere. Expiry is compared with the reading device's clock, so clock skew between devices shortens or lengthens that window. Activity is advisory: it never counts as activity evidence for this device. There is no controller ownership and no remote control: a device never starts, stops, or retargets another device's run, and replication never causes native execution.
 
 ## Planned: companion freshness
 

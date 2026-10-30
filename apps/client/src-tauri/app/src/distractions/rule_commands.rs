@@ -1,12 +1,10 @@
 //! Settings commands that read and edit the vault's distraction rules, one rule change each.
 
 use super::rule_store;
-use crate::vault::ownership::{READ_ONLY_ERROR, active_status};
 use ganbaru_distractions::config::store::{
     self, HostList, LimitDraft, RuleEdit, RuleRefusal, RuleTarget, RulesError,
 };
 use ganbaru_distractions::config::{DistractionsConfig, DistractionsMode};
-use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOMAIN;
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
 
@@ -18,15 +16,6 @@ pub enum RulesEditOutcome {
     Refused { reason: RuleRefusal },
 }
 
-/// Admits the owner and linked replicas that may write distraction rules.
-fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    if active_status(app)?.can_write_domain(DISTRACTIONS_DOMAIN) {
-        Ok(())
-    } else {
-        Err(READ_ONLY_ERROR.to_string())
-    }
-}
-
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -36,7 +25,6 @@ fn now_epoch_ms() -> i64 {
 
 /// Applies `edit` and publishes the change to the blockers when it was saved.
 async fn edit<R: Runtime>(app: &AppHandle<R>, edit: RuleEdit) -> Result<RulesEditOutcome, String> {
-    require_writable(app)?;
     let pool = crate::db::connect_vault(app).await?;
     match store::apply(&pool, &edit, now_epoch_ms()).await {
         Ok(config) => {

@@ -18,6 +18,7 @@
   import {
     beginVaultOwnershipTransition,
     cancelVaultOwnershipTransition,
+    requestFirstVaultCopy,
     requestVaultOwnership,
     shouldPresentVaultOwnershipPrompt,
     type VaultOwnershipPlatform,
@@ -74,6 +75,10 @@
       ? "vaultOwnershipPrompt.ownerRequiredDescription"
       : quickNotesWritable ? "vaultOwnershipPrompt.replicaDescription" : "vaultOwnershipPrompt.description",
   ));
+  /** Before its first copy of the linked vault, this device copies the vault instead of switching. */
+  const primaryLabel = $derived(
+    status?.replicaReady === false ? t("vaultHandoff.copyHere") : t("vaultHandoff.useHere"),
+  );
   const continueLabel = $derived(
     platform === "desktop"
       ? `${t("vaultOwnershipPrompt.continueReadOnly")} (${t("common.escapeKey")})`
@@ -129,6 +134,21 @@
       window.location.reload();
     } catch (cause) {
       cancelVaultOwnershipTransition();
+      error = formatHandoffError(cause, t);
+    } finally {
+      switching = false;
+    }
+  }
+
+  /** Copies the linked vault here for the first time; the main device stays where it is. */
+  async function performFirstCopy(): Promise<void> {
+    if (switching) return;
+    switching = true;
+    error = null;
+    try {
+      await requestFirstVaultCopy();
+      window.location.reload();
+    } catch (cause) {
       error = formatHandoffError(cause, t);
     } finally {
       switching = false;
@@ -245,8 +265,8 @@
             {t("vaultOwnershipPrompt.switching")}
           {:else}
             {platform === "desktop"
-              ? `${t("vaultHandoff.useHere")} (${t("common.enterKey")})`
-              : t("vaultHandoff.useHere")}
+              ? `${primaryLabel} (${t("common.enterKey")})`
+              : primaryLabel}
           {/if}
         </button>
         <button
@@ -280,7 +300,7 @@
     danger={false}
     onConfirm={() => {
       replacementConfirmationOpen = false;
-      void performOwnershipSwitch();
+      void performFirstCopy();
     }}
     onCancel={() => { replacementConfirmationOpen = false; }}
   />

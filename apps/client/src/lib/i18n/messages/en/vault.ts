@@ -72,12 +72,12 @@ export const vaultOwnershipPrompt = {
   ownerRequiredDescription: "This change also affects data that only the main device can change. Use this device as the main device to make it.",
   continueReadOnly: "Continue in read-only",
   switching: "Switching to this device...",
-  replacementTitle: "Replace this device's current data?",
+  replacementTitle: "Copy the linked vault to this device?",
   replacementAndroid:
-    "This phone has a separate Ganbaru vault. Its data cannot be merged with the linked vault. Ganbaru will save a complete backup to Downloads before replacing it.",
+    "The linked vault replaces this phone's vault, whose data cannot be merged with it. Ganbaru keeps a backup of the replaced vault on this phone, which you can export or delete in Settings > Data.",
   replacementDesktop:
-    "This computer has a separate Ganbaru vault. Its data cannot be merged with the linked vault. Ganbaru will preserve a recovery copy beside the current Ganbaru folder before replacing it.",
-  replacementConfirm: "Replace with linked vault",
+    "Ganbaru copies the linked vault into its own folder on this computer. Your current vault stays as it is and remains in the vault list.",
+  replacementConfirm: "Copy vault",
 } as const;
 
 export const vaultHandoff = {
@@ -162,6 +162,13 @@ export const vaultHandoff = {
   deviceLabel: "Phone",
   useHere: "Switch to this device",
   refreshCopy: "Get latest changes",
+  copyHere: "Copy vault to this device",
+  copyHereDescription: "This device is linked. Copy the linked vault here to start syncing with it.",
+  copied: "The linked vault is now on this device.",
+  linkFolder: "Folder for the linked vault",
+  linkFolderDefault: "Default location",
+  chooseLinkFolder: "Choose folder",
+  useDefaultLinkFolder: "Use default",
   retry: "Retry",
   cancel: "Cancel transfer",
   unlink: "Unlink device",
@@ -185,7 +192,7 @@ export const vaultHandoff = {
     "This device was unlinked by the coordinating computer. Its local copy remains read-only unless you recover it as a separate vault.",
   recovered: "This local copy is now a separate writable vault.",
   localBackup:
-    "Before the first desktop vault replaces Android data, Ganbaru saves a recoverable backup to Downloads.",
+    "When the linked vault replaces this phone's vault, Ganbaru keeps a backup of the replaced one in Settings > Data.",
   sameNetwork: "Keep both apps open on the same local network.",
   failed: (details: string) => `The linked-device action failed: ${details}`,
   blockerChat: "Finish or stop active Chat work before moving the vault.",
@@ -200,6 +207,11 @@ export const vaultHandoff = {
     "Another vault is open on this device, so linking is paused. Open the linked vault again to resume.",
   coordinatorVaultInactive:
     "The coordinating computer has another vault open. Open the linked vault there, then retry.",
+  replacedVaultBackupFailed:
+    "The linked vault was not copied because this device has no room to keep a backup of its current vault. Free some storage, then retry.",
+  linkFolderNotEmpty: "The chosen folder is not empty. Choose an empty folder for the linked vault.",
+  firstLinkNeedsCopy: "Copy the linked vault to this device first.",
+  ownerHoldsVault: "This device already holds the linked vault as its main device.",
   ownershipChurnLimit:
     "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
   bundleRequestLimit:

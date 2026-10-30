@@ -132,13 +132,13 @@ describe("VaultOwnershipPrompt", () => {
     });
 
     const switchButton = [...target.querySelectorAll("button")]
-      .find((button) => button.textContent?.trim() === "Switch to this device");
+      .find((button) => button.textContent?.trim() === "Copy vault to this device");
     switchButton?.click();
     await tick();
 
-    expect(target.textContent).toContain("Replace this device's current data?");
+    expect(target.textContent).toContain("Copy the linked vault to this device?");
     expect(target.textContent).toContain("cannot be merged");
-    expect(target.textContent).toContain("backup to Downloads");
+    expect(target.textContent).toContain("Settings > Data");
     expect(backend.receiveDesktopBundle).not.toHaveBeenCalled();
   });
 

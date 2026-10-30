@@ -110,6 +110,15 @@ fn kit_code_parsing_refuses_damaged_codes() {
     assert_eq!(parsed(&code[..code.len() - 1]), Err(RecoveryError::Length));
     assert_eq!(parsed(&format!("{code}0")), Err(RecoveryError::Length));
     assert_eq!(parsed(""), Err(RecoveryError::Length));
+    assert_eq!(
+        parsed(&code.repeat(10_000)),
+        Err(RecoveryError::Length),
+        "a long code stops at the first character past the length"
+    );
+    assert_eq!(
+        RecoverySeed::parse_owned_kit_code(code.to_string()).map(|seed| *seed.as_bytes()),
+        parsed(&code)
+    );
 
     let alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let characters: Vec<char> = code.chars().collect();

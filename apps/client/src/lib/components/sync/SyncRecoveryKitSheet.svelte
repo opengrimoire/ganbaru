@@ -15,10 +15,13 @@
   let {
     kit,
     buttonClass,
+    exportable = true,
     onConfirm,
   }: {
     kit: SyncPendingRecoveryKit;
     buttonClass: string;
+    /** Whether the printable page and the text file export are offered; false where the platform has neither. */
+    exportable?: boolean;
     /** Sends the typed last group; resolves true when the kit was confirmed and forgotten. */
     onConfirm: (lastGroup: string) => Promise<boolean>;
   } = $props();
@@ -112,14 +115,16 @@
   {#if !kit.active}
     <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.kit.inactive")}</p>
   {/if}
-  <div class="flex flex-wrap gap-2">
-    <button type="button" class={buttonClass} disabled={busy || printedAtMs !== null} onclick={() => void print()}>
-      {t("sync.kit.print")}
-    </button>
-    <button type="button" class={buttonClass} disabled={busy} onclick={() => void saveFile()}>
-      {t("sync.kit.saveFile")}
-    </button>
-  </div>
+  {#if exportable}
+    <div class="flex flex-wrap gap-2">
+      <button type="button" class={buttonClass} disabled={busy || printedAtMs !== null} onclick={() => void print()}>
+        {t("sync.kit.print")}
+      </button>
+      <button type="button" class={buttonClass} disabled={busy} onclick={() => void saveFile()}>
+        {t("sync.kit.saveFile")}
+      </button>
+    </div>
+  {/if}
   <form class="flex min-w-0 flex-col gap-2 px-1" onsubmit={(event) => void confirm(event)}>
     <div class="text-[0.8rem] text-foreground">{t("sync.kit.confirmSavedTitle")}</div>
     <div class="text-[0.75rem] text-muted-foreground">{t("sync.kit.confirmSavedMessage")}</div>

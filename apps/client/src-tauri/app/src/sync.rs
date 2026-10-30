@@ -5,6 +5,7 @@
 //! Tauri runtime share it.
 
 mod authority;
+pub(crate) mod backup_keys;
 pub(crate) mod commands;
 mod connectivity;
 mod contests;
@@ -14,7 +15,6 @@ pub(crate) mod headless;
 mod host;
 pub(crate) mod key_protection;
 mod recovery;
-#[cfg(desktop)]
 mod recovery_kit;
 mod service;
 mod status;

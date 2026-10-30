@@ -74,7 +74,7 @@ apps/
       app/: ganbaru-tauri-app library with Tauri commands, managed state, and platform integrations
         build.rs: emits the `desktop` and `mobile` cfg aliases used for platform gating
         src/runtime.rs, runtime/: desktop and mobile composition roots and handler registration tests
-        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, portable and device preferences, document transfer, Android backup and restore
+        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, portable and device preferences, document transfer, encrypted backup and restore
         src/vault/handoff/: LAN device linking and snapshot bootstrap
         src/calendar.rs, calendar/: Calendar command adapters and the platform device-date source
         src/chat.rs, chat/: Chat command adapters, coordination, access profiles, internal MCP tools, checkpoints, previews, and provider settings
@@ -118,9 +118,9 @@ crates/
   ganbaru-working-folders/: Tauri-free working-folder IDs, bindings, and device-state operations
   ganbaru-contacts/: Tauri-free person key pairs, signed contact cards, request signatures, and trust kinds
   ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, TLS pin verifiers, LAN-only dial targets, DNS-SD discovery records and hourly member tags, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and snapshot copy state, and Linux firewall authorization
-  ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, device-signed writer certificates, the space charter, authorization log entries, recovery kit codes, order keys, the signed operation format, and space key envelopes and chain links
+  ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, device-signed writer certificates, the space charter, authorization log entries, recovery kit codes, order keys, the signed operation format, space key envelopes and chain links, and the encrypted backup format
   ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, the authorization record store with chain selection and contests, removal exclusion and late changes, fork evidence, and the simulation harness
-  ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, managed asset collection, whole-vault archives, the pinned TLS listeners, and the sync service loop over a host trait
+  ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, managed asset collection, whole-vault archives, encrypted backup files, the pinned TLS listeners, and the sync service loop over a host trait
   ganbaru-sync-relay/: self-hosted relay server binary in relay mode, storing sealed records and asset chunks it cannot open
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
@@ -151,7 +151,7 @@ Ganbaru/
   templates/: reserved file-based project and methodology templates
 ```
 
-Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Desktop backups go to a user-selected path outside the vault. Android portable backups are exported to shared Downloads and restored through the system document picker.
+Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Backups are encrypted and open with the recovery kit. Desktop backups go to a user-selected path outside the vault. Android backups are exported to shared Downloads and restored through the system document picker.
 
 Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, device preferences per vault, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
 

@@ -33,7 +33,6 @@
     status?.linked === true
       && (platform === "desktop"
         || status.replicaReady
-        || status.canWrite === true
         || !bootstrapReplicaOnLink),
   );
 

@@ -271,29 +271,6 @@ fn a_crash_before_the_settle_is_sealed_leaves_it_for_the_next_pass() {
 }
 
 #[test]
-fn a_device_that_may_not_edit_the_table_leaves_the_settle_to_one_that_may() {
-    block_on(async {
-        let mut replicas = concurrent_clear_and_loose_set().await;
-        replicas[1]
-            .exec(
-                "CREATE TEMP TRIGGER sync_guard_fixture_overrides_update
-                 BEFORE UPDATE ON main.fixture_overrides
-                 WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) IS NOT 1
-                 BEGIN SELECT RAISE(ABORT, 'read-only'); END;",
-            )
-            .await;
-        pull(&mut replicas, 1, 0).await;
-        assert_eq!(pending(&mut replicas[1]).await, 0);
-        assert_eq!(policy(&mut replicas[1]).await.as_deref(), Some(UNATTENDED));
-
-        pull(&mut replicas, 0, 1).await;
-        assert_eq!(replicas[0].seal().await.unwrap().sealed_ops, 1);
-        pull(&mut replicas, 1, 0).await;
-        assert_settled_everywhere(&mut replicas, ASK).await;
-    });
-}
-
-#[test]
 fn a_settled_value_that_breaks_the_group_rules_is_reported_and_not_written() {
     block_on(async {
         // Refused by the adapter's validation, by a CHECK of the domain table the manifest does

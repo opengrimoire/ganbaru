@@ -28,7 +28,6 @@ pub mod codec;
 pub mod devices;
 pub mod domains;
 pub mod error;
-pub mod guards;
 pub mod hold;
 pub mod hooks;
 pub mod local;

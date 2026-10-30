@@ -46,8 +46,8 @@ pub async fn chat_list_channels(
     archived: bool,
 ) -> ChatResult<Vec<ChatChannelRead>> {
     validate_project_id(&project_id)?;
-    let pool = chat_pool(app.clone(), db_url).await?;
-    ensure_chat_defaults(&app, &pool, ChatDefaultsScope::Project(&project_id)).await?;
+    let pool = chat_pool(app, db_url).await?;
+    ensure_chat_defaults(&pool, ChatDefaultsScope::Project(&project_id)).await?;
     read_channels(&pool, Some(&project_id), archived).await
 }
 
@@ -56,8 +56,8 @@ pub async fn chat_list_navigation_channels(
     app: tauri::AppHandle,
     db_url: String,
 ) -> ChatResult<Vec<ChatChannelRead>> {
-    let pool = chat_pool(app.clone(), db_url).await?;
-    ensure_chat_defaults(&app, &pool, ChatDefaultsScope::AllProjects).await?;
+    let pool = chat_pool(app, db_url).await?;
+    ensure_chat_defaults(&pool, ChatDefaultsScope::AllProjects).await?;
     read_channels(&pool, None, false).await
 }
 
@@ -662,23 +662,11 @@ pub(crate) enum ChatDefaultsScope<'a> {
     AllProjects,
 }
 
-/// Creates missing default channels and current-folder execution environments for `scope` when
-/// this device writes Chat. A device that cannot write reads only what is stored.
+/// Creates missing default channels and current-folder execution environments for `scope`.
 pub(crate) async fn ensure_chat_defaults(
-    app: &tauri::AppHandle,
     pool: &SqlitePool,
     scope: ChatDefaultsScope<'_>,
 ) -> ChatResult<()> {
-    let status = crate::vault::ownership::active_status(app).map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::Persistence,
-            "Vault ownership is unavailable",
-            true,
-        )
-    })?;
-    if !status.can_write_domain(ganbaru_sync::manifest::vault::chat::DOMAIN_NAME) {
-        return Ok(());
-    }
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let ensured = match scope {

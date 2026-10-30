@@ -184,7 +184,6 @@ impl LocalPair {
             .create_invitation(
                 endpoint,
                 "vault-1".to_string(),
-                0,
                 super::super::protocol::test_compatibility(),
                 unix_time_ms(),
             )
@@ -267,7 +266,6 @@ impl LocalPair {
             .create_invitation(
                 endpoint,
                 "vault-1".to_string(),
-                0,
                 super::super::protocol::test_compatibility(),
                 unix_time_ms(),
             )
@@ -317,7 +315,6 @@ impl LocalPair {
             vault_id: "vault-1".to_string(),
             device_id: "device-phone".to_string(),
             transfer_id: transfer_id.to_string(),
-            generation: 1,
             archive_bytes: bytes.len() as u64,
             archive_sha256: sha256_file(&path).expect("bundle digest"),
         };
@@ -326,6 +323,18 @@ impl LocalPair {
             .expect("register bundle");
         metadata
     }
+}
+
+/// Asks the coordinator `manager` is linked to for a vault copy, as an authenticated request
+/// that reaches coordinator dispatch.
+async fn prepare_copy(manager: &PairingManager) -> Result<BundleMetadata, String> {
+    request_bundle(
+        manager,
+        &BundleSource::Coordinator,
+        super::super::protocol::test_compatibility(),
+        &TransferCancellation::default(),
+    )
+    .await
 }
 
 impl Drop for LocalPair {
@@ -658,11 +667,19 @@ async fn revoked_phone_clears_its_stale_link_after_authenticated_reconnect() {
         .unlink_device("device-phone")
         .expect("unlink offline phone");
 
-    let error = probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0)
+    let response = request_person_key(&pair.phone)
         .await
-        .expect_err("revoked phone must be rejected");
+        .expect("revoked phone gets an answered refusal");
 
-    assert!(error.contains("unlinked by the coordinator"));
+    assert!(
+        matches!(
+            &response,
+            ControlMessage::Error { code, message, .. }
+                if code == MEMBERSHIP_REVOKED_CODE
+                    && message.contains("unlinked by the coordinator")
+        ),
+        "{response:?}"
+    );
     assert!(
         pair.phone
             .coordinator_pin()
@@ -683,13 +700,13 @@ async fn revoked_phone_clears_its_stale_link_after_authenticated_reconnect() {
 }
 
 #[tokio::test]
-async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
+async fn authenticated_control_flow_prepares_downloads_and_acknowledges() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
     use super::super::pairing::PendingAcknowledgement;
 
     let (pair, mut requests) = LocalPair::start_with_coordinator().await;
     pair.enroll().await;
-    let metadata = pair.register_bundle(b"controlled handoff bundle", "transfer-control");
+    let metadata = pair.register_bundle(b"controlled vault copy", "transfer-control");
     let expected = metadata.clone();
     let coordinator = tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
@@ -698,40 +715,22 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
                     compatibility,
                     vault_id,
                     device_id,
-                    generation,
-                    purpose,
                 } => {
                     assert_eq!(compatibility, super::super::protocol::test_compatibility());
                     assert_eq!(vault_id, expected.vault_id);
                     assert_eq!(device_id, expected.device_id);
-                    assert_eq!(generation, 0);
-                    assert_eq!(purpose, BundlePurpose::Ownership);
                     CoordinatorResponse::Prepared {
                         metadata: expected.clone(),
-                        purpose,
-                    }
-                }
-                CoordinatorOperation::CommitOwnership { metadata } => {
-                    assert_eq!(metadata, expected);
-                    CoordinatorResponse::OwnershipGrant {
-                        vault_id: expected.vault_id.clone(),
-                        transfer_id: expected.transfer_id.clone(),
-                        owner_device_id: expected.device_id.clone(),
-                        generation: expected.generation,
                     }
                 }
                 CoordinatorOperation::Activated {
                     vault_id,
                     device_id,
                     transfer_id,
-                    generation,
-                    purpose,
                 } => {
                     assert_eq!(vault_id, expected.vault_id);
                     assert_eq!(device_id, expected.device_id);
                     assert_eq!(transfer_id, expected.transfer_id);
-                    assert_eq!(generation, expected.generation);
-                    assert_eq!(purpose, BundlePurpose::Ownership);
                     let response = CoordinatorResponse::ActivationAcknowledged {
                         transfer_id: expected.transfer_id.clone(),
                     };
@@ -748,12 +747,10 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
         &pair.phone,
         &BundleSource::Coordinator,
         super::super::protocol::test_compatibility(),
-        0,
-        BundlePurpose::Ownership,
         &TransferCancellation::default(),
     )
     .await
-    .expect("prepare ownership bundle");
+    .expect("prepare vault copy");
     assert_eq!(prepared, metadata);
     let staged = download_bundle(
         &pair.phone,
@@ -762,16 +759,10 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
         &TransferCancellation::default(),
     )
     .await
-    .expect("stage ownership bundle");
+    .expect("stage vault copy");
     assert_eq!(
         fs::read(staged).expect("read staged bundle"),
-        b"controlled handoff bundle"
-    );
-    assert_eq!(
-        commit_staged_ownership(&pair.phone, prepared.clone())
-            .await
-            .expect("commit ownership"),
-        ("device-phone".to_string(), 1)
+        b"controlled vault copy"
     );
     acknowledge_activation(
         &pair.phone,
@@ -780,189 +771,11 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
             vault_id: prepared.vault_id,
             device_id: prepared.device_id,
             transfer_id: prepared.transfer_id,
-            generation: prepared.generation,
-            purpose: BundlePurpose::Ownership,
         },
     )
     .await
     .expect("acknowledge activation");
     coordinator.await.expect("coordinator task");
-}
-
-#[tokio::test]
-async fn android_upload_resumes_from_durable_desktop_staging() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::pairing::StoredOutgoingTransfer;
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
-    pair.enroll().await;
-    let bytes = vec![73_u8; TRANSFER_CHUNK_BYTES * 2 + 17];
-    let transfer_id = "transfer-upload";
-    let (_, archive_path) = pair
-        .phone
-        .outgoing_snapshot_paths(transfer_id)
-        .expect("phone outgoing paths");
-    fs::write(&archive_path, &bytes).expect("write Android archive");
-    let metadata = BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: super::super::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-desktop".to_string(),
-        transfer_id: transfer_id.to_string(),
-        generation: 1,
-        archive_bytes: bytes.len() as u64,
-        archive_sha256: sha256_file(&archive_path).expect("archive digest"),
-    };
-    pair.phone
-        .store_outgoing_transfer(StoredOutgoingTransfer {
-            metadata: metadata.clone(),
-            purpose: BundlePurpose::Ownership,
-            committed: false,
-        })
-        .expect("persist outgoing transfer");
-    let (partial, metadata_path, complete) = pair
-        .desktop
-        .staging_paths(transfer_id)
-        .expect("desktop staging paths");
-    fs::write(&partial, &bytes[..TRANSFER_CHUNK_BYTES]).expect("write partial upload");
-    pair.desktop
-        .write_staging_metadata(&metadata_path, &metadata)
-        .expect("persist upload metadata");
-
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(
-            pair._desktop_root.path().to_path_buf(),
-            "device-desktop".to_string(),
-        )
-        .expect("restart desktop pairing state");
-    assert_eq!(
-        restarted
-            .read_staging_metadata(&metadata_path)
-            .expect("read restarted staging metadata"),
-        Some(metadata.clone())
-    );
-
-    let expected = metadata.clone();
-    let coordinator = tokio::spawn(async move {
-        while let Some(request) = requests.recv().await {
-            let response = match request.operation {
-                CoordinatorOperation::PollUpload {
-                    compatibility,
-                    vault_id,
-                    device_id,
-                    generation,
-                } => {
-                    assert_eq!(compatibility, super::super::protocol::test_compatibility());
-                    assert_eq!(vault_id, expected.vault_id);
-                    assert_eq!(device_id, "device-phone");
-                    assert_eq!(generation, 0);
-                    CoordinatorResponse::UploadStatus {
-                        generation,
-                        requested_upload: Some(BundlePurpose::Ownership),
-                    }
-                }
-                CoordinatorOperation::AuthorizeUpload {
-                    metadata,
-                    source_device_id,
-                    purpose,
-                } => {
-                    assert_eq!(metadata, expected);
-                    assert_eq!(source_device_id, "device-phone");
-                    assert_eq!(purpose, BundlePurpose::Ownership);
-                    CoordinatorResponse::UploadAuthorized {
-                        transfer_id: expected.transfer_id.clone(),
-                        already_received: false,
-                    }
-                }
-                CoordinatorOperation::Uploaded {
-                    metadata,
-                    source_device_id,
-                    purpose,
-                } => {
-                    assert_eq!(metadata, expected);
-                    assert_eq!(source_device_id, "device-phone");
-                    assert_eq!(purpose, BundlePurpose::Ownership);
-                    CoordinatorResponse::IncomingStaged {
-                        transfer_id: expected.transfer_id.clone(),
-                    }
-                }
-                CoordinatorOperation::CommitUploadedOwnership {
-                    metadata,
-                    source_device_id,
-                } => {
-                    assert_eq!(metadata, expected);
-                    assert_eq!(source_device_id, "device-phone");
-                    let response = CoordinatorResponse::ActivationAcknowledged {
-                        transfer_id: expected.transfer_id.clone(),
-                    };
-                    request.response.send(Ok(response)).expect("send response");
-                    break;
-                }
-                operation => panic!("unexpected coordinator operation: {operation:?}"),
-            };
-            request.response.send(Ok(response)).expect("send response");
-        }
-    });
-
-    assert_eq!(
-        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0,)
-            .await
-            .expect("poll coordinator"),
-        Some(BundlePurpose::Ownership)
-    );
-    upload_bundle(
-        &pair.phone,
-        metadata.clone(),
-        "device-phone".to_string(),
-        BundlePurpose::Ownership,
-    )
-    .await
-    .expect("resume Android upload");
-    assert_eq!(fs::read(complete).expect("read completed upload"), bytes);
-    commit_uploaded_ownership(&pair.phone, metadata, "device-phone".to_string())
-        .await
-        .expect("acknowledge uploaded ownership");
-    coordinator.await.expect("coordinator task");
-}
-
-#[tokio::test]
-async fn foreground_poll_observes_a_new_upload_request_without_reconnecting() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
-    pair.enroll().await;
-
-    let coordinator = tokio::spawn(async move {
-        let mut poll_count = 0;
-        while let Some(request) = requests.recv().await {
-            let CoordinatorOperation::PollUpload { generation, .. } = request.operation else {
-                panic!("unexpected coordinator operation");
-            };
-            poll_count += 1;
-            request
-                .response
-                .send(Ok(CoordinatorResponse::UploadStatus {
-                    generation,
-                    requested_upload: (poll_count >= 3).then_some(BundlePurpose::Refresh),
-                }))
-                .expect("send upload status");
-            if poll_count >= 3 {
-                return poll_count;
-            }
-        }
-        poll_count
-    });
-
-    let purpose = tokio::time::timeout(
-        Duration::from_secs(2),
-        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0),
-    )
-    .await
-    .expect("foreground poll should remain responsive")
-    .expect("poll coordinator");
-    assert_eq!(purpose, Some(BundlePurpose::Refresh));
-    assert_eq!(coordinator.await.expect("coordinator task"), 3);
 }
 
 #[tokio::test]
@@ -1119,7 +932,6 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
         .create_invitation(
             pair.invitation.endpoint.parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             super::super::protocol::test_compatibility(),
             unix_time_ms(),
         )
@@ -1157,7 +969,7 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
         peers[0].certificate_fingerprint,
         peers[1].certificate_fingerprint
     );
-    let error = probe_coordinator(&second, super::super::protocol::test_compatibility(), 0)
+    let error = prepare_copy(&second)
         .await
         .expect_err("test server has no coordinator state");
     assert!(
@@ -1195,7 +1007,6 @@ async fn malformed_and_oversized_metadata_is_rejected_by_endpoint() {
                 "vaultId": "vault-1",
                 "deviceId": "device-phone",
                 "transferId": "transfer-invalid",
-                "generation": 1,
                 "archiveBytes": archive_bytes,
                 "archiveSha256": digest,
             }
@@ -1323,7 +1134,6 @@ fn oversized_bundle_metadata_is_rejected_before_network_work() {
         vault_id: "vault-1".to_string(),
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-oversize".to_string(),
-        generation: 1,
         archive_bytes: MAX_ARCHIVE_BYTES + 1,
         archive_sha256: "a".repeat(64),
     };
@@ -1520,7 +1330,7 @@ fn is_busy(message: &ControlMessage) -> bool {
 }
 
 #[tokio::test]
-async fn contact_request_flood_does_not_delay_coordinator_polls() {
+async fn contact_request_flood_does_not_delay_coordinator_requests() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
 
     let (pair, mut requests, mut contacts) = LocalPair::start_with_services().await;
@@ -1537,12 +1347,13 @@ async fn contact_request_flood_does_not_delay_coordinator_polls() {
     });
     let coordinator = tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
-            let CoordinatorOperation::PollUpload { generation, .. } = request.operation else {
+            let CoordinatorOperation::Prepare { .. } = request.operation else {
                 panic!("unexpected coordinator operation");
             };
-            let _ = request.response.send(Ok(CoordinatorResponse::UploadStatus {
-                generation,
-                requested_upload: Some(BundlePurpose::Refresh),
+            let _ = request.response.send(Ok(CoordinatorResponse::Rejected {
+                code: "copy_declined".to_string(),
+                message: "the coordinator answered".to_string(),
+                retryable: false,
             }));
         }
     });
@@ -1564,14 +1375,11 @@ async fn contact_request_flood_does_not_delay_coordinator_polls() {
         .collect();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let purpose = tokio::time::timeout(
-        Duration::from_secs(2),
-        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0),
-    )
-    .await
-    .expect("coordinator polls stay responsive during a contact flood")
-    .expect("poll coordinator");
-    assert_eq!(purpose, Some(BundlePurpose::Refresh));
+    let answer = tokio::time::timeout(Duration::from_secs(2), prepare_copy(&pair.phone))
+        .await
+        .expect("coordinator requests stay responsive during a contact flood")
+        .expect_err("the test coordinator declines the copy");
+    assert_eq!(answer, "the coordinator answered");
 
     for exchange in flood {
         let response = exchange.await.expect("flood task").expect("flood exchange");
@@ -1793,7 +1601,7 @@ async fn connection_flood_is_closed_while_linked_devices_still_connect() {
     }
     assert_eq!(closed, 7, "only the per-source pending budget stays open");
 
-    let error = probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0)
+    let error = prepare_copy(&pair.phone)
         .await
         .expect_err("test server has no coordinator state");
     assert!(
@@ -1858,7 +1666,6 @@ fn pin_with(
         device_label: None,
         endpoint: endpoint.to_string(),
         vault_id: "vault-1".to_string(),
-        generation: 0,
         certificate_fingerprint: "a".repeat(64),
         last_endpoint: last_endpoint.map(str::to_string),
         reported_endpoints: reported_endpoints
@@ -2189,8 +1996,7 @@ async fn the_listener_refuses_a_quarantined_device_and_survives_an_unreadable_li
     // This listener serves no coordinator operations, so a device that passes admission gets
     // that answer, while a refused one loses the connection after the handshake.
     let served = || async {
-        let outcome =
-            probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0).await;
+        let outcome = prepare_copy(&pair.phone).await;
         match outcome {
             Ok(_) => true,
             Err(error) => error.contains("coordinator operations are unavailable"),

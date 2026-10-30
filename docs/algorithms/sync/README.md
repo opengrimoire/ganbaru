@@ -1,6 +1,6 @@
 # Sync merge rules
 
-**Status: Reference.** These rules are implemented in the sync engine for every replicated domain; a test-only fixture domain exercises the shapes no production domain uses yet. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
+**Status: Reference.** These rules are implemented in the sync engine for every replicated domain; a test-only fixture domain exercises the shapes no production domain uses yet. Delivery, writers, and table classes are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
 
 ## Model
 

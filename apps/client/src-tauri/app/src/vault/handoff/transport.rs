@@ -18,8 +18,8 @@ use super::pairing::{
     encode_certificate,
 };
 use super::protocol::{
-    BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
-    TRANSFER_CHUNK_BYTES, read_control, unix_time_ms, write_control,
+    BundleMetadata, ControlMessage, PROTOCOL_VERSION, PairingInvitation, TRANSFER_CHUNK_BYTES,
+    read_control, unix_time_ms, write_control,
 };
 use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -44,6 +44,9 @@ const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
 pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
+/// Stable code of the retryable rejection a device receives while the coordinator serves a
+/// vault copy to another device.
+pub(crate) const BUNDLE_BUSY_CODE: &str = "bundle_busy";
 
 #[derive(Clone, Default)]
 pub(crate) struct TransferCancellation {
@@ -118,6 +121,7 @@ impl ServerCertVerifier for PinnedServerVerifier {
     }
 }
 
+#[cfg(desktop)]
 async fn stream_file<W>(
     writer: &mut W,
     path: &Path,
@@ -130,7 +134,7 @@ where
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|error| format!("open transfer bundle: {error}"))?;
-    file.seek(std::io::SeekFrom::Start(offset))
+    tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(offset))
         .await
         .map_err(|error| format!("seek transfer bundle: {error}"))?;
     let mut remaining = total_bytes.saturating_sub(offset);
@@ -309,12 +313,12 @@ async fn source_exchange(
     read_source_response(manager, coordinator.as_ref(), &mut stream).await
 }
 
+/// Asks `source` to prepare a vault copy for this device. A source that is serving another
+/// device answers with a retryable busy error, which is retried until the coordination wait ends.
 pub(crate) async fn request_bundle(
     manager: &PairingManager,
     source: &BundleSource,
     compatibility: super::protocol::HandoffCompatibility,
-    generation: u64,
-    purpose: BundlePurpose,
     cancellation: &TransferCancellation,
 ) -> Result<BundleMetadata, String> {
     let coordinator = manager
@@ -334,30 +338,21 @@ pub(crate) async fn request_bundle(
                 compatibility: compatibility.clone(),
                 vault_id: coordinator.vault_id.clone(),
                 device_id: device_id.clone(),
-                generation,
-                purpose,
             },
         )
         .await?
         {
-            ControlMessage::BundlePrepared {
-                metadata,
-                purpose: offered_purpose,
-            } if offered_purpose == purpose
-                && metadata.vault_id == coordinator.vault_id
-                && metadata.device_id == device_id
-                && metadata.generation >= generation
-                && (purpose != BundlePurpose::Ownership || metadata.generation > generation) =>
+            ControlMessage::BundlePrepared { metadata }
+                if metadata.vault_id == coordinator.vault_id && metadata.device_id == device_id =>
             {
                 return Ok(metadata);
             }
-            ControlMessage::BundlePending { .. }
-                if started.elapsed() < BUNDLE_COORDINATION_WAIT =>
-            {
+            ControlMessage::Error {
+                code,
+                retryable: true,
+                ..
+            } if code == BUNDLE_BUSY_CODE && started.elapsed() < BUNDLE_COORDINATION_WAIT => {
                 tokio::time::sleep(BUNDLE_COORDINATION_POLL_INTERVAL).await;
-            }
-            ControlMessage::BundlePending { .. } => {
-                return Err("the current owner did not return the vault in time".to_string());
             }
             ControlMessage::Error { message, .. } => return Err(message),
             _ => {
@@ -367,36 +362,6 @@ pub(crate) async fn request_bundle(
                 ));
             }
         }
-    }
-}
-
-pub(crate) async fn commit_staged_ownership(
-    manager: &PairingManager,
-    metadata: BundleMetadata,
-) -> Result<(String, u64), String> {
-    match authenticated_exchange(
-        manager,
-        ControlMessage::CommitStagedOwnership {
-            metadata: metadata.clone(),
-        },
-    )
-    .await?
-    {
-        ControlMessage::OwnershipGrant {
-            vault_id,
-            transfer_id,
-            owner_device_id,
-            generation,
-            ..
-        } if vault_id == metadata.vault_id
-            && transfer_id == metadata.transfer_id
-            && owner_device_id == metadata.device_id
-            && generation == metadata.generation =>
-        {
-            Ok((owner_device_id, generation))
-        }
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid ownership grant".to_string()),
     }
 }
 
@@ -438,8 +403,6 @@ pub(crate) async fn acknowledge_activation(
             vault_id: pending.vault_id.clone(),
             device_id: pending.device_id.clone(),
             transfer_id: pending.transfer_id.clone(),
-            generation: pending.generation,
-            purpose: pending.purpose,
         },
     )
     .await?
@@ -454,108 +417,6 @@ pub(crate) async fn acknowledge_activation(
             "{} returned an invalid activation acknowledgement",
             source.describe()
         )),
-    }
-}
-
-pub(crate) async fn upload_bundle(
-    manager: &PairingManager,
-    metadata: BundleMetadata,
-    source_device_id: String,
-    purpose: BundlePurpose,
-) -> Result<(), String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    if metadata.device_id != coordinator.device_id || metadata.vault_id != coordinator.vault_id {
-        return Err("outgoing bundle does not target the linked coordinator".to_string());
-    }
-    let (_, archive_path) = manager.outgoing_snapshot_paths(&metadata.transfer_id)?;
-    super::protocol::validate_staging_file(&archive_path, &metadata)?;
-    let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = dial_coordinator(manager, &coordinator, identity).await?;
-    timeout_control(write_control(
-        &mut stream,
-        &ControlMessage::UploadBundle {
-            metadata: metadata.clone(),
-            source_device_id,
-            purpose,
-        },
-    ))
-    .await?;
-    let offset = match read_authenticated_response(manager, &coordinator, &mut stream).await? {
-        ControlMessage::ResumeAt { offset } if offset <= metadata.archive_bytes => offset,
-        ControlMessage::Error { message, .. } => return Err(message),
-        _ => return Err("coordinator returned an invalid upload offset".to_string()),
-    };
-    stream_file(&mut stream, &archive_path, offset, metadata.archive_bytes).await?;
-    timeout_control(write_control(
-        &mut stream,
-        &ControlMessage::BundleComplete {
-            transfer_id: metadata.transfer_id.clone(),
-        },
-    ))
-    .await?;
-    match read_authenticated_response(manager, &coordinator, &mut stream).await? {
-        ControlMessage::BundleStaged { transfer_id } if transfer_id == metadata.transfer_id => {
-            Ok(())
-        }
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator did not accept the uploaded bundle".to_string()),
-    }
-}
-
-pub(crate) async fn commit_uploaded_ownership(
-    manager: &PairingManager,
-    metadata: BundleMetadata,
-    source_device_id: String,
-) -> Result<(), String> {
-    match authenticated_exchange(
-        manager,
-        ControlMessage::CommitUploadedOwnership {
-            metadata: metadata.clone(),
-            source_device_id,
-        },
-    )
-    .await?
-    {
-        ControlMessage::ActivationAcknowledged { transfer_id }
-            if transfer_id == metadata.transfer_id =>
-        {
-            Ok(())
-        }
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid ownership acknowledgement".to_string()),
-    }
-}
-
-pub(crate) async fn probe_coordinator(
-    manager: &PairingManager,
-    compatibility: super::protocol::HandoffCompatibility,
-    generation: u64,
-) -> Result<Option<BundlePurpose>, String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let device_id = manager.device_id()?;
-    match authenticated_exchange(
-        manager,
-        ControlMessage::RefreshRequest {
-            protocol_version: PROTOCOL_VERSION,
-            compatibility,
-            vault_id: coordinator.vault_id,
-            device_id,
-            generation,
-        },
-    )
-    .await?
-    {
-        ControlMessage::RefreshStatus {
-            generation: returned,
-            requested_upload,
-            ..
-        } if returned >= generation => Ok(requested_upload),
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid refresh status".to_string()),
     }
 }
 
@@ -750,8 +611,6 @@ pub(crate) async fn fetch_bundle(
     manager: &PairingManager,
     sources: &[BundleSource],
     compatibility: super::protocol::HandoffCompatibility,
-    generation: u64,
-    purpose: BundlePurpose,
     cancellation: &TransferCancellation,
 ) -> Result<FetchedBundle, String> {
     let mut first_error = None;
@@ -759,16 +618,7 @@ pub(crate) async fn fetch_bundle(
         if cancellation.is_cancelled() {
             break;
         }
-        match fetch_from(
-            manager,
-            source,
-            compatibility.clone(),
-            generation,
-            purpose,
-            cancellation,
-        )
-        .await
-        {
+        match fetch_from(manager, source, compatibility.clone(), cancellation).await {
             Ok(fetched) => return Ok(fetched),
             Err(error) => {
                 eprintln!("vault copy from {} failed: {error}", source.describe());
@@ -783,19 +633,9 @@ async fn fetch_from(
     manager: &PairingManager,
     source: &BundleSource,
     compatibility: super::protocol::HandoffCompatibility,
-    generation: u64,
-    purpose: BundlePurpose,
     cancellation: &TransferCancellation,
 ) -> Result<FetchedBundle, String> {
-    let metadata = request_bundle(
-        manager,
-        source,
-        compatibility.clone(),
-        generation,
-        purpose,
-        cancellation,
-    )
-    .await?;
+    let metadata = request_bundle(manager, source, compatibility.clone(), cancellation).await?;
     if let Err(error) = super::protocol::ensure_compatible(&compatibility, &metadata.compatibility)
     {
         let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;

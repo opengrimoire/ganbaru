@@ -23,7 +23,7 @@ use ganbaru_contacts::{
 #[cfg(any(desktop, test))]
 use ganbaru_contacts::{SIGNATURE_BYTES, decode_nonce, nonces_match, verify};
 use sqlx::SqlitePool;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 
 /// How long a request stays pending on both sides.
 pub(crate) const REQUEST_TTL_DAYS: i64 = 7;
@@ -267,7 +267,7 @@ async fn coordinator_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<Option<LocalIdentity>, String> {
-    if !crate::vault::ownership::active_status(app)?.can_write {
+    if follows_coordinator(app)? {
         return Ok(None);
     }
     let Some(row) = super::identity::load_identity_row(pool).await? else {
@@ -788,8 +788,17 @@ pub(super) async fn apply_status_response(
     }
 }
 
+/// Whether this device follows a pinned coordinator, which delivers and answers contact
+/// requests for the person instead of it.
+pub(crate) fn follows_coordinator<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+    Ok(app
+        .state::<crate::vault::handoff::pairing::PairingManager>()
+        .coordinator_pin()?
+        .is_some())
+}
+
 /// Runs the background loop that fetches a missing person key on linked devices and polls
-/// pending sent requests while this device can write.
+/// pending sent requests while this device does not follow a coordinator.
 pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_POLL_DELAY).await;
@@ -805,10 +814,7 @@ pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
 
 async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     super::identity::try_release(app).await;
-    let Ok(status) = crate::vault::ownership::active_status(app) else {
-        return Ok(());
-    };
-    if !status.can_write {
+    if follows_coordinator(app).unwrap_or(true) {
         return Ok(());
     }
     let Ok(pool) = contacts_pool(app).await else {

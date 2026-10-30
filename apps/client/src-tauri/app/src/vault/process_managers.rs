@@ -1,20 +1,21 @@
-//! The pairing and ownership managers one process shares between the app runtime and headless
-//! sync passes.
+//! The pairing manager and managed write fence one process shares between the app runtime and
+//! headless sync passes.
 
 use super::handoff::pairing::PairingManager;
-use super::ownership::VaultOwnershipManager;
+use super::write_fence::VaultWriteFence;
 use crate::sync::key_protection::KeyProtection;
 use ganbaru_handoff::key_wrap::KeyWrapper;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-/// One pairing manager and one ownership manager for a process. Each manager saves its whole
-/// in-memory state, so the Tauri runtime and the headless sync host hold clones of these same
-/// instances: a write through one is visible to the other and never overwritten by a stale copy.
+/// One pairing manager and one managed write fence for a process. The pairing manager saves its
+/// whole in-memory state, so the Tauri runtime and the headless sync host hold clones of the same
+/// instance: a write through one is visible to the other and never overwritten by a stale copy.
+/// The shared fence lets a vault replacement drain the managed writes of a headless pass too.
 #[derive(Clone)]
 pub(crate) struct ProcessManagers {
     pairing: PairingManager,
-    ownership: VaultOwnershipManager,
+    write_fence: VaultWriteFence,
     /// The platform key that seals this device's private key files, tracking lost keys.
     key_protection: Arc<KeyProtection>,
     /// Serializes loads, so two callers never both read the state files.
@@ -32,7 +33,7 @@ impl ProcessManagers {
     pub(crate) fn with_key_wrapper(key_wrapper: Arc<dyn KeyWrapper>) -> Self {
         Self {
             pairing: PairingManager::default(),
-            ownership: VaultOwnershipManager::default(),
+            write_fence: VaultWriteFence::default(),
             key_protection: Arc::new(KeyProtection::new(key_wrapper)),
             loading: Arc::default(),
         }
@@ -42,8 +43,9 @@ impl ProcessManagers {
         &self.pairing
     }
 
-    pub(crate) fn ownership(&self) -> &VaultOwnershipManager {
-        &self.ownership
+    /// The managed write fence of this process.
+    pub(crate) fn write_fence(&self) -> &VaultWriteFence {
+        &self.write_fence
     }
 
     /// The platform key that seals this device's private key files.
@@ -73,16 +75,6 @@ impl ProcessManagers {
             .initialize(config_dir.to_path_buf(), device_id)?;
         crate::sync::key_protection::remove_unprotected_keys(config_dir, &self.pairing);
         Ok(())
-    }
-
-    /// Loads ownership state from the app config directory `config_dir` unless this process
-    /// already loaded it.
-    pub(crate) fn load_ownership(&self, config_dir: &Path) -> Result<(), String> {
-        let _loading = self.lock_loading()?;
-        if self.ownership.is_loaded()? {
-            return Ok(());
-        }
-        self.ownership.initialize_in(config_dir)
     }
 
     fn lock_loading(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {

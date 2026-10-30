@@ -1748,7 +1748,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         },
     ],
     engine: &[],
-    replica_writable: false,
     unconverted: &[],
     assets: &[PAGE_ICONS_CLASS, PAGE_COVERS_CLASS, FILES_CLASS],
 };

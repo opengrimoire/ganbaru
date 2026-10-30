@@ -3,8 +3,6 @@ package org.opengrimoire.ganbaru
 import android.app.UiModeManager
 import android.content.Context
 import android.database.ContentObserver
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.media.AudioManager
@@ -17,7 +15,6 @@ import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
-import android.widget.ImageView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -30,12 +27,9 @@ import kotlin.math.roundToInt
 
 private const val ANDROID_INSETS_BRIDGE_NAME = "GanbaruAndroidInsets"
 private const val ANDROID_APPEARANCE_BRIDGE_NAME = "GanbaruAndroidAppearance"
-private const val ANDROID_TRANSITION_BRIDGE_NAME = "GanbaruAndroidTransition"
 private const val ANDROID_MEDIA_VOLUME_BRIDGE_NAME = "GanbaruAndroidMediaVolume"
 private const val ANDROID_INSETS_EVENT_NAME = "ganbaru:android-insets"
 private const val ANDROID_MEDIA_VOLUME_EVENT_NAME = "ganbaru:android-media-volume"
-private const val ANDROID_TRANSITION_FRAME_HELD_EVENT_NAME =
-  "ganbaru:android-transition-frame-held"
 private const val APPEARANCE_PREFERENCES_NAME = "ganbaru_appearance"
 private const val WINDOW_BACKGROUND_KEY = "window_background"
 private const val NIGHT_MODE_KEY = "night_mode"
@@ -205,61 +199,6 @@ private class AndroidMediaVolumeBridge(private val audioManager: AudioManager) {
   }
 }
 
-private class AndroidTransitionBridge(
-  private val activity: MainActivity,
-  private val webView: WebView,
-) {
-  private var heldFrame: ImageView? = null
-  private var heldBitmap: Bitmap? = null
-
-  @JavascriptInterface
-  fun holdCurrentFrame() {
-    activity.runOnUiThread {
-      if (heldFrame == null) {
-        val parent = webView.parent as? ViewGroup
-        val width = webView.width
-        val height = webView.height
-        if (parent != null && width > 0 && height > 0) {
-          val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-          webView.draw(Canvas(bitmap))
-          val frame = ImageView(activity).apply {
-            setImageBitmap(bitmap)
-            scaleType = ImageView.ScaleType.FIT_XY
-            isClickable = true
-            importantForAccessibility = ImageView.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-          }
-          parent.addView(
-            frame,
-            ViewGroup.LayoutParams(
-              ViewGroup.LayoutParams.MATCH_PARENT,
-              ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-          )
-          heldBitmap = bitmap
-          heldFrame = frame
-        }
-      }
-      webView.evaluateJavascript(
-        "window.dispatchEvent(new Event('$ANDROID_TRANSITION_FRAME_HELD_EVENT_NAME'))",
-        null,
-      )
-    }
-  }
-
-  @JavascriptInterface
-  fun releaseHeldFrame() {
-    activity.runOnUiThread {
-      heldFrame?.let { frame ->
-        (frame.parent as? ViewGroup)?.removeView(frame)
-        frame.setImageDrawable(null)
-      }
-      heldFrame = null
-      heldBitmap?.recycle()
-      heldBitmap = null
-    }
-  }
-}
-
 class MainActivity : TauriActivity() {
   private val androidInsetsBridge by lazy {
     AndroidInsetsBridge(resources.displayMetrics.density)
@@ -351,10 +290,6 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(androidInsetsBridge, ANDROID_INSETS_BRIDGE_NAME)
     webView.addJavascriptInterface(androidAppearanceBridge, ANDROID_APPEARANCE_BRIDGE_NAME)
     webView.addJavascriptInterface(androidMediaVolumeBridge, ANDROID_MEDIA_VOLUME_BRIDGE_NAME)
-    webView.addJavascriptInterface(
-      AndroidTransitionBridge(this, webView),
-      ANDROID_TRANSITION_BRIDGE_NAME,
-    )
     val keyboardResizer = KeyboardResizer(webView)
     var systemBars = Insets.NONE
     fun publishInsets() {

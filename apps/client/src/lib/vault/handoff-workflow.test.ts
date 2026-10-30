@@ -3,14 +3,13 @@ import type { Translate } from "$lib/i18n/translator.svelte";
 import {
   formatHandoffError,
   formatPairingCodeError,
-  formatOwnershipHandoffError,
   hasNewLinkedDevice,
 } from "./handoff-workflow";
 
 const t = ((key: string, value?: string) => value ? `${key}:${value}` : key) as Translate;
 
 describe("formatHandoffError", () => {
-  it("turns ownership blockers into direct recovery guidance", () => {
+  it("turns transfer blockers into direct recovery guidance", () => {
     expect(formatHandoffError("active Chat work blocks vault handoff", t)).toBe(
       "vaultHandoff.blockerChat",
     );
@@ -31,13 +30,10 @@ describe("formatHandoffError", () => {
     expect(formatHandoffError("the folder chosen for the linked vault is not empty", t)).toBe(
       "vaultHandoff.linkFolderNotEmpty",
     );
-    expect(formatOwnershipHandoffError(
-      new Error("the linked vault must be copied to this device before it can refresh or take ownership"),
+    expect(formatHandoffError(
+      new Error("the folder chosen for the linked vault is inside another vault"),
       t,
-    )).toBe("vaultHandoff.firstLinkNeedsCopy");
-    expect(formatHandoffError("this device owns the linked vault, so it holds it already", t)).toBe(
-      "vaultHandoff.ownerHoldsVault",
-    );
+    )).toBe("vaultHandoff.linkFolderInsideVault");
   });
 
   it("turns coordinator failures into same-network retry guidance", () => {
@@ -46,30 +42,18 @@ describe("formatHandoffError", () => {
     );
   });
 
-  it("explains the ownership churn limit instead of a connectivity failure", () => {
-    const message = "vault ownership changed too often; wait before switching devices again";
-    expect(formatHandoffError(message, t)).toBe("vaultHandoff.ownershipChurnLimit");
-    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
-      "vaultHandoff.ownershipChurnLimit",
-    );
-  });
-
   it("explains the per-device snapshot limit instead of a connectivity failure", () => {
     const message =
-      "this device requested the vault too often; wait before refreshing or switching again";
+      "this device requested the vault too often; wait before requesting another copy";
     expect(formatHandoffError(message, t)).toBe("vaultHandoff.bundleRequestLimit");
-    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
-      "vaultHandoff.bundleRequestLimit",
-    );
+    expect(formatHandoffError(new Error(message), t)).toBe("vaultHandoff.bundleRequestLimit");
   });
 
   it("explains disabled linking instead of a connectivity or transfer failure", () => {
     const message =
       "vault linking is disabled because its saved state could not be loaded: read pairing state: network transfer is active";
     expect(formatHandoffError(message, t)).toBe("vaultHandoff.linkingDisabled");
-    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
-      "vaultHandoff.linkingDisabled",
-    );
+    expect(formatHandoffError(new Error(message), t)).toBe("vaultHandoff.linkingDisabled");
   });
 
   it("explains a missing or unreadable device linking key instead of a connectivity failure", () => {
@@ -79,7 +63,7 @@ describe("formatHandoffError", () => {
     const unavailable =
       "this device's linking key could not be read from the system keyring: secret service connection unavailable";
     expect(formatHandoffError(unavailable, t)).toBe("vaultHandoff.deviceKeyUnavailable");
-    expect(formatOwnershipHandoffError(new Error(unavailable), t)).toBe(
+    expect(formatHandoffError(new Error(unavailable), t)).toBe(
       "vaultHandoff.deviceKeyUnavailable",
     );
   });
@@ -87,16 +71,7 @@ describe("formatHandoffError", () => {
   it("explains a busy coordinator instead of a connectivity failure", () => {
     const message = "the coordinator is handling too many connections; retry shortly";
     expect(formatHandoffError(message, t)).toBe("vaultHandoff.coordinatorBusy");
-    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
-      "vaultHandoff.coordinatorBusy",
-    );
-  });
-
-  it("identifies an unreachable main device during an ownership request", () => {
-    expect(formatOwnershipHandoffError(
-      new Error("the current vault owner is unreachable"),
-      t,
-    )).toBe("vaultHandoff.ownerUnreachable");
+    expect(formatHandoffError(new Error(message), t)).toBe("vaultHandoff.coordinatorBusy");
   });
 
   it("turns schema mismatches into update guidance", () => {

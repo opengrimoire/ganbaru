@@ -176,13 +176,11 @@ pub trait FocusLocalTimeResolver: Send + Sync {
 
 /// Post-commit native automation input. A renewed lease can retain its revision;
 /// consumers deduplicate transitions while updating the bounded validity window.
-/// Vault identity and generation prevent effects from crossing vault handoffs.
+/// Vault identity and generation prevent effects from crossing vault replacements.
 #[derive(Clone, Debug)]
 pub struct CommittedFocusEffect {
     pub vault_id: String,
     pub vault_generation: u64,
-    /// Shared vault ownership fence, distinct from this Focus owner's generation.
-    pub ownership_generation: u64,
     pub execution_revision: i64,
     pub run_id: Option<String>,
     pub segment_id: Option<String>,
@@ -198,12 +196,6 @@ pub struct CommittedFocusEffect {
 }
 
 impl CommittedFocusEffect {
-    /// Consumers share the vault ownership fence, while their local runtime
-    /// generations remain independent of the Focus publication generation.
-    pub fn matches_vault_authority(&self, vault_id: &str, ownership_generation: u64) -> bool {
-        self.vault_id == vault_id && self.ownership_generation == ownership_generation
-    }
-
     /// An owner heartbeat cannot extend an accepted phase or Calendar deadline.
     /// A paused phase retains its work allowance but still expires with its run.
     pub fn effective_valid_until_ms(&self) -> i64 {

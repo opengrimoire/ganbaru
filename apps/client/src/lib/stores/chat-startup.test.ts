@@ -6,9 +6,6 @@ import * as workingFolderApi from "$lib/api/project-working-folders";
 import type { ChatChannelRead, ChatMessageRead, ChatSettingsRead } from "$lib/chat/contracts";
 import { readLastChatChannelId } from "$lib/chat/channel-sections";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
-import { getVaultOwnership } from "$lib/vault/ownership.svelte";
-import * as vaultState from "$lib/vault/state";
-import type { VaultOwnershipStatus } from "$lib/vault/state";
 import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
 
@@ -120,30 +117,6 @@ describe("Chat startup", () => {
     expect(chat.channelMessages).toEqual([message("general")]);
     expect(chatApi.recoverInterruptedChatTurns).toHaveBeenCalledOnce();
     expect(chatApi.recoverChatAssignmentDispatchJobs).toHaveBeenCalledOnce();
-  });
-
-  it("takes over stranded work when a live handoff makes this device the vault's owner", async () => {
-    await chat.ensureLoaded();
-    const ownership = getVaultOwnership();
-    const read = vi.spyOn(vaultState, "getVaultOwnershipStatus");
-    const status = (ownerDeviceId: string, generation: number): VaultOwnershipStatus => ({
-      vaultId: "vault", deviceId: "device:this", ownerDeviceId, generation,
-      role: ownerDeviceId === "device:this" ? "owner" : "read-only",
-      canWrite: ownerDeviceId === "device:this", linkedReplica: ownerDeviceId !== "device:this",
-      replicaWritableDomains: [], transferPhase: { kind: "stable" },
-    });
-    try {
-      read.mockResolvedValueOnce(status("device:old", 1));
-      await ownership.refresh();
-      read.mockResolvedValueOnce(status("device:this", 2));
-      await ownership.refresh();
-      expect(chatApi.recoverChatAssignmentDispatchJobs).toHaveBeenCalledTimes(2);
-      read.mockResolvedValueOnce(status("device:other", 3));
-      await ownership.refresh();
-      expect(chatApi.recoverChatAssignmentDispatchJobs).toHaveBeenCalledTimes(2);
-    } finally {
-      ownership.clear();
-    }
   });
 
   it("keeps one draft thread per working folder so a channel's terminal has a scope", async () => {

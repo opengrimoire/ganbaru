@@ -62,7 +62,6 @@ fn enroll_identity(
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             vault_id.to_string(),
-            0,
             crate::protocol::test_compatibility(),
             now_ms,
         )
@@ -98,7 +97,6 @@ fn invitation_is_single_use_and_not_restored_after_restart() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -141,7 +139,6 @@ fn repeated_enrollment_updates_one_existing_membership() {
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 now_ms,
             )
@@ -168,7 +165,6 @@ fn revoked_peer_is_remembered_across_restart_and_removed_by_reenrollment() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -200,7 +196,6 @@ fn revoked_peer_is_remembered_across_restart_and_removed_by_reenrollment() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             200,
         )
@@ -235,7 +230,6 @@ fn stored_coordinator_pins_must_use_the_lowercase_fingerprint_format() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            1,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -302,7 +296,6 @@ fn stored_peer_fingerprints_must_equal_the_recomputed_lowercase_digest() {
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 100,
             )
@@ -343,7 +336,6 @@ fn linked_client_accepts_only_its_existing_coordinator() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            3,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -359,7 +351,6 @@ fn linked_client_accepts_only_its_existing_coordinator() {
 
     let mut refreshed = first_invitation.clone();
     refreshed.endpoint = "127.0.0.1:42000".to_string();
-    refreshed.generation = 4;
     phone
         .ensure_enrollment_target(&refreshed)
         .expect("same coordinator remains valid");
@@ -391,7 +382,6 @@ fn linked_client_accepts_only_its_existing_coordinator() {
         .create_invitation(
             "127.0.0.1:43000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            4,
             crate::protocol::test_compatibility(),
             200,
         )
@@ -470,7 +460,6 @@ fn linked_phone(label: &str) -> (TestDirectory, PairingManager, PairingInvitatio
         .create_invitation(
             "192.168.1.20:43821".parse().expect("endpoint"),
             "vault-1".to_string(),
-            1,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -638,14 +627,12 @@ fn relinking_to_the_same_coordinator_keeps_its_reported_contact() {
         .expect("record contact");
     let mut refreshed = invitation.clone();
     refreshed.endpoint = "192.168.1.40:43821".to_string();
-    refreshed.generation += 1;
     phone
         .record_coordinator(&refreshed, &certificate, None)
         .expect("relink");
     let pin = pin_of(&phone);
     assert_eq!(pin.endpoint, refreshed.endpoint);
     assert_eq!(pin.current_endpoint(), refreshed.endpoint);
-    assert_eq!(pin.generation, refreshed.generation);
     assert_eq!(pin.reported_endpoints, ["192.168.1.30:43821"]);
 }
 
@@ -941,38 +928,6 @@ fn obsolete_pairing_schema_is_rejected_without_rewriting_state() {
 }
 
 #[test]
-fn ownership_upload_request_cannot_be_downgraded_to_refresh() {
-    let temporary = TestDirectory::new("upload-priority");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-
-    manager
-        .request_upload(BundlePurpose::Ownership)
-        .expect("request ownership upload");
-    manager
-        .request_upload(BundlePurpose::Refresh)
-        .expect("request refresh upload");
-
-    assert_eq!(
-        manager.requested_upload().expect("requested upload"),
-        Some(BundlePurpose::Ownership)
-    );
-    manager
-        .cancel_requested_upload(BundlePurpose::Refresh)
-        .expect("ignore lower-priority cancellation");
-    assert_eq!(
-        manager.requested_upload().expect("requested upload"),
-        Some(BundlePurpose::Ownership)
-    );
-    manager
-        .cancel_requested_upload(BundlePurpose::Ownership)
-        .expect("cancel ownership upload");
-    assert_eq!(manager.requested_upload().expect("requested upload"), None);
-}
-
-#[test]
 fn expired_invitation_is_rejected() {
     let temporary = TestDirectory::new("expired");
     let manager = PairingManager::default();
@@ -983,7 +938,6 @@ fn expired_invitation_is_rejected() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -997,6 +951,18 @@ fn expired_invitation_is_rejected() {
     );
 }
 
+fn transfer_metadata(transfer_id: &str) -> BundleMetadata {
+    BundleMetadata {
+        protocol_version: PROTOCOL_VERSION,
+        compatibility: crate::protocol::test_compatibility(),
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        transfer_id: transfer_id.to_string(),
+        archive_bytes: 42,
+        archive_sha256: "a".repeat(64),
+    }
+}
+
 #[test]
 fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     let temporary = TestDirectory::new("unlink");
@@ -1008,7 +974,6 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -1018,17 +983,15 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
         .enroll_peer(enrollment(&invitation, &phone), 101)
         .expect("enroll");
     manager
-        .request_upload(BundlePurpose::Refresh)
-        .expect("request upload");
+        .store_outgoing_transfer(StoredOutgoingTransfer {
+            metadata: transfer_metadata("transfer-unlink"),
+        })
+        .expect("store outgoing transfer");
 
     assert!(manager.unlink().is_err());
-    {
-        let mut inner = manager.lock().expect("pairing lock");
-        initialized_state_mut(&mut inner)
-            .expect("pairing state")
-            .requested_upload = None;
-        persist_initialized_state(&inner).expect("clear request");
-    }
+    manager
+        .clear_outgoing_transfer("transfer-unlink")
+        .expect("clear outgoing transfer");
     manager.unlink().expect("unlink stable pairing");
     assert!(manager.linked_peers().expect("peer status").is_empty());
 }
@@ -1044,8 +1007,6 @@ fn activation_acknowledgement_survives_restart() {
         vault_id: "vault-1".to_string(),
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-1".to_string(),
-        generation: 1,
-        purpose: BundlePurpose::Ownership,
     };
     manager
         .record_activation(pending.clone())
@@ -1075,26 +1036,15 @@ fn activation_acknowledgement_survives_restart() {
 }
 
 #[test]
-fn bidirectional_transfer_state_survives_restart() {
-    let temporary = TestDirectory::new("bidirectional-restart");
+fn outgoing_transfer_and_its_completion_survive_restart() {
+    let temporary = TestDirectory::new("outgoing-restart");
     let manager = PairingManager::default();
     manager
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("initialize");
-    let metadata = BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: crate::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-desktop".to_string(),
-        transfer_id: "transfer-return".to_string(),
-        generation: 2,
-        archive_bytes: 42,
-        archive_sha256: "a".repeat(64),
-    };
+    let metadata = transfer_metadata("transfer-copy");
     let outgoing = StoredOutgoingTransfer {
         metadata: metadata.clone(),
-        purpose: BundlePurpose::Ownership,
-        committed: false,
     };
     manager
         .store_outgoing_transfer(outgoing.clone())
@@ -1103,43 +1053,25 @@ fn bidirectional_transfer_state_survives_restart() {
 
     let restarted = PairingManager::default();
     restarted
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("restart");
     assert_eq!(
         restarted.outgoing_transfer().expect("outgoing transfer"),
         Some(outgoing)
     );
-    restarted
-        .mark_outgoing_committed("transfer-return")
-        .expect("commit outgoing transfer");
-    drop(restarted);
-
-    let committed = PairingManager::default();
-    committed
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
-        .expect("restart committed state");
-    assert!(
-        committed
-            .outgoing_transfer()
-            .expect("committed outgoing transfer")
-            .expect("stored transfer")
-            .committed
-    );
     let completed = PendingAcknowledgement {
         vault_id: metadata.vault_id,
         device_id: metadata.device_id,
         transfer_id: metadata.transfer_id,
-        generation: metadata.generation,
-        purpose: BundlePurpose::Ownership,
     };
-    committed
+    restarted
         .complete_outgoing_activation(completed.clone())
         .expect("complete outgoing activation");
-    drop(committed);
+    drop(restarted);
 
     let acknowledged = PairingManager::default();
     acknowledged
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("restart completed transfer");
     assert_eq!(
         acknowledged.outgoing_transfer().expect("cleared outgoing"),
@@ -1154,76 +1086,6 @@ fn bidirectional_transfer_state_survives_restart() {
 }
 
 #[test]
-fn incoming_transfer_and_completion_survive_restart() {
-    let temporary = TestDirectory::new("incoming-restart");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-    let metadata = BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: crate::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-desktop".to_string(),
-        transfer_id: "incoming-return".to_string(),
-        generation: 3,
-        archive_bytes: 84,
-        archive_sha256: "b".repeat(64),
-    };
-    let incoming = StoredIncomingTransfer {
-        metadata: metadata.clone(),
-        source_device_id: "device-phone".to_string(),
-        purpose: BundlePurpose::Ownership,
-    };
-    manager
-        .store_incoming_transfer(incoming.clone())
-        .expect("store incoming transfer");
-    manager
-        .request_upload(BundlePurpose::Ownership)
-        .expect("store upload request");
-    drop(manager);
-
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart incoming state");
-    assert_eq!(
-        restarted.incoming_transfer().expect("incoming transfer"),
-        Some(incoming)
-    );
-    let completed = PendingAcknowledgement {
-        vault_id: metadata.vault_id,
-        device_id: metadata.device_id,
-        transfer_id: metadata.transfer_id,
-        generation: metadata.generation,
-        purpose: BundlePurpose::Ownership,
-    };
-    restarted
-        .complete_incoming_activation(completed.clone())
-        .expect("complete incoming activation");
-    drop(restarted);
-
-    let acknowledged = PairingManager::default();
-    acknowledged
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart completed state");
-    assert_eq!(
-        acknowledged
-            .completed_activation()
-            .expect("completed activation"),
-        Some(completed)
-    );
-    assert_eq!(
-        acknowledged.incoming_transfer().expect("cleared incoming"),
-        None
-    );
-    assert_eq!(
-        acknowledged.requested_upload().expect("cleared request"),
-        None
-    );
-}
-
-#[test]
 fn enrollment_rejects_control_and_bidi_labels_without_spending_the_invitation() {
     let temporary = TestDirectory::new("label-rejection");
     let manager = PairingManager::default();
@@ -1234,7 +1096,6 @@ fn enrollment_rejects_control_and_bidi_labels_without_spending_the_invitation() 
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -1356,7 +1217,6 @@ fn enrollment_verification_persists_nothing_and_returns_the_code_the_device_show
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 now_ms,
             )
@@ -1429,7 +1289,6 @@ fn a_discarded_invitation_cannot_be_verified_or_enrolled() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -1913,7 +1772,6 @@ fn only_linked_desktops_keep_the_admin_key_they_send_across_restarts() {
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 100,
             )

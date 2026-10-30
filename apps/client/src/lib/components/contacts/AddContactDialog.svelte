@@ -106,8 +106,7 @@
       case "key_unavailable":
         return t("contacts.card.keyPending");
       case "identity_unavailable":
-      case "read_only":
-        return t("contacts.addContact.readOnly");
+        return t("contacts.addContact.identityPending");
       case "profile_incomplete":
         return t("contacts.card.profileIncomplete");
       default:

@@ -586,9 +586,9 @@ fn oversized_carry_bundles_are_refused_before_reading() {
 }
 
 #[test]
-fn guarded_connections_refuse_local_tables_and_signal_commits() {
+fn writable_connections_accept_every_domain_and_signal_commits() {
     block_on(async {
-        let directory = TestDirectory::new("guarded");
+        let directory = TestDirectory::new("commit-signal");
         let path = directory.path().join("vault.sqlite");
         let setup = DatabasePoolRegistry::default();
         create_vault(&setup, &path).await;
@@ -597,25 +597,19 @@ fn guarded_connections_refuse_local_tables_and_signal_commits() {
         let commits = Arc::new(Notify::new());
         let registry = DatabasePoolRegistry::default();
         registry.set_connection_hook(Some(vault_connection_hook(commits.clone())));
-        let (pool, access) = registry
-            .connect_path_guarded(&path)
-            .await
-            .expect("open guarded");
-        assert_eq!(access, DatabaseAccessMode::Guarded);
-
-        let refused = sqlx::query("INSERT INTO notes_local_users (id) VALUES ('user-1')")
-            .execute(&pool)
-            .await
-            .expect_err("guarded replicas refuse tables of domains they do not write");
-        assert!(
-            refused
-                .to_string()
-                .contains(ganbaru_sync::guards::READ_ONLY_MESSAGE),
-            "{refused}"
+        let pool = registry.connect_path(&path).await.expect("open vault");
+        assert_eq!(
+            registry.access(&path).await,
+            Some(DatabaseAccessMode::ReadWrite)
         );
 
+        sqlx::query("INSERT INTO notes_local_users (id) VALUES ('user-1')")
+            .execute(&pool)
+            .await
+            .expect("every device writes Notes tables");
+
         let mut conn = acquire(&pool).await;
-        add_note(&mut conn, "note-guarded").await;
+        add_note(&mut conn, "note-commit").await;
         drop(conn);
         tokio::time::timeout(Duration::from_secs(5), commits.notified())
             .await

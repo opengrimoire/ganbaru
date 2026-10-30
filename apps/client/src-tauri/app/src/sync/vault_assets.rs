@@ -90,14 +90,14 @@ impl<H: SyncHost> AssetStore for ActiveVaultAssets<H> {
 
     fn commit(&self, staged: StagedAsset) -> Result<(), AssetStoreError> {
         let class_name = staged.asset().class().name;
-        let Some((domain, class)) = self.engine.manifest().asset_class(class_name) else {
+        let Some((_, class)) = self.engine.manifest().asset_class(class_name) else {
             return Err(AssetStoreError::Failed(format!(
                 "asset class {class_name} is not registered"
             )));
         };
         let root = self
             .host
-            .replicated_asset_path(domain.name)
+            .replicated_asset_path()
             .map_err(AssetStoreError::Failed)?;
         if *root != *self.root {
             return Err(AssetStoreError::Failed(

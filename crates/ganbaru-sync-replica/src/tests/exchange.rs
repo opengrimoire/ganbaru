@@ -150,6 +150,7 @@ async fn shared_vault_image() -> Vec<u8> {
             key: &key,
             certificate: &certificate,
             reservation: &mut reservation,
+            keys: None,
         };
         let enrollment = Enrollment {
             device_id: device_id.to_string(),
@@ -3458,6 +3459,7 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
                 &hub.ctx,
                 &mut hub.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 &Default::default(),
                 NOW_MS + 2,
             )

@@ -30,6 +30,7 @@
 | `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
 | `sync_released_marks` | Per writer of another device, the highest sequence this replica applied while it was the anchor, so it seals the groups those operations wrote again if they are excluded later. Device-local; never replicates. |
 | `sync_restated_groups` | Per group, the value hash the anchor sealed again without a newer edit, so restoring a late change does not count that version as newer. Kept while the row has an undecided late change. Device-local; never replicates. |
+| `sync_space_keys` | Per key epoch of the selected chain, the chain link that wraps the previous epoch key (none for epoch 1), the envelope sealed to this installation's device encryption key when the epoch has one, and the revision that sequenced the epoch. Derived from the selected chain at every selection and at service start; device-local, never replicates, and emptied in snapshot copies. |
 
 ## Invariants
 

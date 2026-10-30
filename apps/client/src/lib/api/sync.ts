@@ -229,6 +229,10 @@ export const SYNC_PROPOSAL_REJECTIONS = [
   "handover_conflict",
   "epoch_frozen",
   "catching_up",
+  "device_quarantined",
+  "key_unavailable",
+  "anchor_only",
+  "rotation_pending",
 ] as const;
 export type SyncProposalRejection = (typeof SYNC_PROPOSAL_REJECTIONS)[number];
 

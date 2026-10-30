@@ -775,6 +775,7 @@ impl<H: SyncHost> Session<'_, H> {
         settled.clear();
         let before = self.stored_head(active).await?;
         {
+            let quarantined = self.quarantined().await?;
             let mut conn = acquire(&self.pool).await?;
             *settled = authority::sequence_forwarded(
                 &self.engine,
@@ -783,6 +784,7 @@ impl<H: SyncHost> Session<'_, H> {
                 &mut active.local(),
                 &proposals,
                 covered,
+                &quarantined,
                 now_ms()?,
             )
             .await?;
@@ -807,6 +809,7 @@ impl<H: SyncHost> Session<'_, H> {
         }
         let before = self.stored_head(active).await?;
         {
+            let quarantined = self.quarantined().await?;
             let mut conn = acquire(&self.pool).await?;
             authority::sequence_outbox(
                 &self.engine,
@@ -815,6 +818,7 @@ impl<H: SyncHost> Session<'_, H> {
                 &mut active.local(),
                 &mut outbox,
                 covered,
+                &quarantined,
                 now_ms()?,
             )
             .await?;

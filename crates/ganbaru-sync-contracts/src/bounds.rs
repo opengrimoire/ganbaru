@@ -88,3 +88,10 @@ pub const MAX_GROUP_BYTES: usize = 1 << 20;
 /// later operations. A dense Music library refresh of 6,000 items spans 9 operations and one of
 /// the longest metadata 19.
 pub const MAX_OPERATIONS_PER_CHAIN: usize = 256;
+/// Envelopes one key epoch entry carries: one per live device key plus the recovery key. Every
+/// device certifies at least one writer, so the writer bound caps the devices.
+pub const MAX_KEY_RECIPIENTS: usize = MAX_WRITERS_PER_SPACE + 1;
+/// Endpoints one server configuration lists.
+pub const MAX_SERVER_ENDPOINTS: usize = 4;
+/// Largest server endpoint, `host:port`, in bytes.
+pub const MAX_SERVER_ENDPOINT_BYTES: usize = 255;

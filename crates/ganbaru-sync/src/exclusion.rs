@@ -904,6 +904,8 @@ pub(crate) async fn note_local_device(
         return Ok(());
     }
     if let Some(selection) = authorization::select(conn, ctx.space).await? {
+        // The envelope this replica keeps is the one sealed to the local device's key.
+        authorization::write_space_keys(conn, ctx.space, &selection).await?;
         settle(engine, conn, ctx, batch, &selection).await?;
     }
     Ok(())

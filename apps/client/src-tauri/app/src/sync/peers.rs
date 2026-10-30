@@ -722,6 +722,7 @@ mod tests {
             role: DeviceRole::Member,
             enrolled_revision: 2,
             removed_revision: removed.then_some(3),
+            encryption_key: None,
         }
     }
 
@@ -749,6 +750,10 @@ mod tests {
             ],
             discovery_key: [5; 32],
             previous_discovery_key: None,
+            key_epoch: 0,
+            recovery_encryption_key: None,
+            pending_removal: None,
+            server: None,
         }
     }
 

@@ -32,6 +32,7 @@ fn device(index: u8, removed: bool) -> EnrolledDevice {
         role: DeviceRole::Member,
         enrolled_revision: u64::from(index),
         removed_revision: removed.then_some(u64::from(index) + 10),
+        encryption_key: None,
     }
 }
 
@@ -49,6 +50,10 @@ fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
         devices,
         discovery_key: [5; 32],
         previous_discovery_key: None,
+        key_epoch: 0,
+        recovery_encryption_key: None,
+        pending_removal: None,
+        server: None,
     }
 }
 

@@ -265,6 +265,10 @@ export const sync = {
       handover_conflict: "Another handover happened first.",
       epoch_frozen: "Device changes were paused for a handover.",
       catching_up: "The anchor was still catching up.",
+      device_quarantined: "The anchor is holding the device apart.",
+      key_unavailable: "The anchor could not open the vault's current encryption key.",
+      anchor_only: "Only the anchor makes this change.",
+      rotation_pending: "The anchor was still finishing an encryption key change.",
     },
   },
   late: {

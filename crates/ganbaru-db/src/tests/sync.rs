@@ -504,3 +504,50 @@ fn released_marks_keep_one_positive_sequence_per_writer_and_go_with_their_space(
         assert_eq!(left, 0, "released marks go with their space");
     });
 }
+
+#[test]
+fn space_keys_keep_one_bounded_row_per_epoch_and_go_with_their_space() {
+    super::block_on(async {
+        let pool = super::helpers::migrated_memory_pool().await;
+        sqlx::query(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let insert = "INSERT INTO sync_space_keys
+                          (space_id, epoch, wrapped_previous, own_envelope, sequenced_revision)
+                      VALUES (zeroblob(16), ?1,
+                              CASE WHEN ?2 = 0 THEN NULL ELSE zeroblob(?2) END,
+                              CASE WHEN ?3 = 0 THEN NULL ELSE zeroblob(?3) END, ?4)";
+        for (epoch, link, envelope, revision, accepted, reason) in [
+            (1, 0, 96, 4, true, "epoch 1 has no chain link"),
+            (1, 0, 0, 5, false, "an epoch has one row"),
+            (2, 72, 0, 6, true, "a later epoch links the previous key"),
+            (3, 0, 96, 7, false, "a later epoch needs its link"),
+            (4, 72, 64, 8, false, "an envelope has its sealed length"),
+            (5, 40, 96, 9, false, "a chain link has its sealed length"),
+            (0, 0, 96, 10, false, "key epochs start at 1"),
+            (6, 72, 96, 0, false, "a key epoch has a sequenced revision"),
+        ] {
+            let result = sqlx::query(insert)
+                .bind(epoch)
+                .bind(link)
+                .bind(envelope)
+                .bind(revision)
+                .execute(&pool)
+                .await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
+        sqlx::query("DELETE FROM sync_spaces")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_space_keys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "space keys go with their space");
+    });
+}

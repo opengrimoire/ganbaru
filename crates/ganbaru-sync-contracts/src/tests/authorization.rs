@@ -359,7 +359,7 @@ fn unknown_entry_kinds_round_trip_byte_for_byte() {
     assert_eq!(decoded.seal(&writer_key()).unwrap().bytes(), sealed.bytes());
     assert_eq!(future.hash(), entry_hash(envelope.body));
 
-    for kind in 0..=5 {
+    for kind in 0..=9 {
         let entry = Entry::Unknown {
             kind,
             bytes: Vec::new(),

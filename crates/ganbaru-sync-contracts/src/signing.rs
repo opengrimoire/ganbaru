@@ -23,6 +23,8 @@ pub const CHARTER_DOMAIN: &[u8] = b"ganbaru-sync/charter/v1";
 pub const CHARTER_HASH_DOMAIN: &[u8] = b"ganbaru-sync/charter-hash/v1";
 /// Admin signature over an authorization proposal.
 pub const PROPOSAL_DOMAIN: &[u8] = b"ganbaru-sync/proposal/v1";
+/// Device signature over a device-signed authorization proposal: a device key or key epoch.
+pub const DEVICE_PROPOSAL_DOMAIN: &[u8] = b"ganbaru-sync/device-proposal/v1";
 /// Proposal hash, the idempotence key of a proposal.
 pub const PROPOSAL_HASH_DOMAIN: &[u8] = b"ganbaru-sync/proposal-hash/v1";
 /// Authorization entry hash that forms the inner chain of the authorization log.

@@ -25,9 +25,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ganbaru_sync_contracts::bounds::DISCOVERY_KEY_BYTES;
 use ganbaru_sync_contracts::{
-    AdminPublicKey, AuthorizationRecord, Content, DeviceKind, DevicePublicKey, DeviceRole,
-    Digest32, Entry, Envelope, ProposalRejection, ResolveLate, Seq, Sequencing, SetRole,
-    SignedCharter, SignedProposal, SpaceId, VersionVector, WriterId,
+    AdminPublicKey, AuthorizationRecord, ChainLink, Content, DeviceKind, DevicePublicKey,
+    DeviceRole, Digest32, EncryptionPublicKey, Entry, Envelope, KeyEnvelope, KeyEpoch, KeyId,
+    Proposal, ProposalRejection, ResolveLate, Seq, Sequencing, Server, SetRole, SignedCharter,
+    SignedProposal, SpaceId, SpaceKey, VersionVector, WriterId, sign_device_proposal,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -37,7 +38,7 @@ use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::Batch;
 use crate::records::{self, Node};
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
+use crate::{Engine, LocalWriter, SpaceContext, SpaceKeyHolder, exclusion, sql};
 
 mod contest;
 mod contest_view;
@@ -73,6 +74,8 @@ pub struct EnrolledDevice {
     pub enrolled_revision: u64,
     /// Revision that removed it.
     pub removed_revision: Option<u64>,
+    /// The encryption key its latest device key entry published.
+    pub encryption_key: Option<EncryptionPublicKey>,
 }
 
 /// The selected authorization state of a space.
@@ -107,6 +110,15 @@ pub struct AuthorizationView {
     /// The key the latest removal replaced, which devices that have not applied it yet still
     /// advertise under.
     pub previous_discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
+    /// The space key epoch of the selected head; 0 before the first recovery key.
+    pub key_epoch: u32,
+    /// The encryption key of the recovery kit the latest recovery key entry published.
+    pub recovery_encryption_key: Option<EncryptionPublicKey>,
+    /// Device a removal at the head names that takes effect once the anchor's key epoch
+    /// follows it.
+    pub pending_removal: Option<String>,
+    /// The sync server the latest server configuration names.
+    pub server: Option<Server>,
 }
 
 /// A device in derived state.
@@ -121,6 +133,66 @@ struct DeviceState {
     removed: Option<u64>,
     /// Cutoffs of the removal, by writer.
     cutoffs: BTreeMap<WriterId, Seq>,
+    /// The encryption key its latest device key entry published.
+    encryption_key: Option<EncryptionPublicKey>,
+}
+
+/// A space key rotation the anchor seals as the entry right after the one that needs it: a
+/// removal, or a recovery change, in a space with a key epoch, and the first recovery key.
+#[derive(Debug, Clone)]
+struct PendingRotation {
+    /// The removal that takes effect with the key epoch, if a removal needs it.
+    removal: Option<PendingRemoval>,
+}
+
+/// A removal waiting for its key epoch.
+#[derive(Debug, Clone)]
+struct PendingRemoval {
+    device_id: String,
+    revision: u64,
+    cutoffs: BTreeMap<WriterId, Seq>,
+    discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
+}
+
+impl PendingRemoval {
+    fn of(device_id: &str, record: &AuthorizationRecord) -> Self {
+        let (cutoffs, discovery_key) = match &record.sequencing {
+            Sequencing::Removal {
+                cutoffs,
+                discovery_key,
+            } => (cutoffs.iter().copied().collect(), Some(*discovery_key)),
+            _ => (BTreeMap::new(), None),
+        };
+        Self {
+            device_id: device_id.to_string(),
+            revision: record.revision,
+            cutoffs,
+            discovery_key,
+        }
+    }
+}
+
+/// The key material one key epoch of the selected chain publishes: its chain link, and the
+/// envelopes of its key epoch entry followed by those device key entries of the epoch carry.
+#[derive(Debug, Clone)]
+pub(crate) struct EpochKeys {
+    epoch: u32,
+    revision: u64,
+    wrapped_previous: Option<ChainLink>,
+    envelopes: Vec<KeyEnvelope>,
+}
+
+/// One key epoch of the selected chain as `sync_space_keys` stores it for the local device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSpaceKey {
+    /// The key epoch.
+    pub epoch: u32,
+    /// The previous epoch's key sealed under this epoch's key; `None` for epoch 1.
+    pub wrapped_previous: Option<ChainLink>,
+    /// The envelope of this epoch's key to the local device's published encryption key.
+    pub own_envelope: Option<KeyEnvelope>,
+    /// Revision of the key epoch entry.
+    pub sequenced_revision: u64,
 }
 
 /// Authorization state after some prefix of the log. It depends only on the entries from the
@@ -161,6 +233,14 @@ pub(crate) struct AuthState {
     previous_discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
     /// Hashes of the proposals the chain holds, so a chain never orders one proposal twice.
     proposals: Arc<BTreeSet<Digest32>>,
+    /// The space key epoch: 0 until the first recovery key, then the latest key epoch entry's.
+    key_epoch: u32,
+    /// The recovery kit's encryption key, which every key epoch seals an envelope to.
+    recovery_encryption_key: Option<EncryptionPublicKey>,
+    /// The rotation the head waits for: only the anchor's key epoch entry may follow it.
+    pending: Option<PendingRotation>,
+    /// The sync server the latest server configuration names.
+    server: Option<Server>,
 }
 
 /// Selection order of a chain head, see [`AuthState::rank`].
@@ -221,6 +301,7 @@ impl AuthState {
             enrolled: 0,
             removed: None,
             cutoffs: BTreeMap::new(),
+            encryption_key: None,
         };
         Self {
             space: body.space,
@@ -242,7 +323,59 @@ impl AuthState {
             discovery_key: body.discovery_key,
             previous_discovery_key: None,
             proposals: Arc::default(),
+            key_epoch: 0,
+            recovery_encryption_key: None,
+            pending: None,
+            server: None,
         }
+    }
+
+    /// The encryption keys a key epoch that completes `pending` seals envelopes to, by key id:
+    /// every live device's published key except the one the pending removal names, and the
+    /// recovery kit's key.
+    fn rotation_recipients(
+        &self,
+        pending: &PendingRotation,
+    ) -> BTreeMap<KeyId, EncryptionPublicKey> {
+        let removed = pending
+            .removal
+            .as_ref()
+            .map(|removal| removal.device_id.as_str());
+        self.devices
+            .iter()
+            .filter(|(device_id, device)| {
+                device.removed.is_none() && Some(device_id.as_str()) != removed
+            })
+            .filter_map(|(_, device)| device.encryption_key)
+            .chain(self.recovery_encryption_key)
+            .map(|key| (key.key_id(), key))
+            .collect()
+    }
+
+    /// Marks the device of `removal` removed and rotates the discovery key it names.
+    fn apply_removal(&mut self, removal: PendingRemoval) {
+        if let Some(device) = self.devices.get_mut(&removal.device_id) {
+            device.removed = Some(removal.revision);
+            device.cutoffs = removal.cutoffs;
+        }
+        if let Some(discovery_key) = removal.discovery_key
+            && discovery_key != self.discovery_key
+        {
+            self.previous_discovery_key = Some(self.discovery_key);
+            self.discovery_key = discovery_key;
+        }
+    }
+
+    /// Records a rotation the anchor must seal next; in a space without a key epoch only the
+    /// first recovery key starts one, and a removal applies at once.
+    fn rotate(&mut self, removal: Option<PendingRemoval>, first: bool) {
+        if self.key_epoch == 0 && !first {
+            if let Some(removal) = removal {
+                self.apply_removal(removal);
+            }
+            return;
+        }
+        self.pending = Some(PendingRotation { removal });
     }
 
     /// The kit key, an installed recovery key where [`Self::recovery_admits`] it, and every
@@ -318,7 +451,8 @@ impl AuthState {
         if self.proposals.contains(&record.proposal.hash()) {
             return Err(ProposalRejection::Malformed);
         }
-        if !self.is_admin(&proposal.author) {
+        // A device key or key epoch entry is signed by a device key, which its arm checks.
+        if proposal.device_author().is_none() && !self.is_admin(&proposal.author) {
             return Err(ProposalRejection::NotAdmin);
         }
         if let Entry::Handover(handover) = &proposal.entry {
@@ -326,6 +460,17 @@ impl AuthState {
                 return Err(ProposalRejection::HandoverConflict);
             }
             let device = self.live_device(&handover.new_anchor_device_id)?;
+            // A handover continues past a pending rotation, whose key epoch the new anchor
+            // seals, but never to the device the pending removal names.
+            let pending_removal = self
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.removal.as_ref());
+            if pending_removal
+                .is_some_and(|removal| removal.device_id == handover.new_anchor_device_id)
+            {
+                return Err(ProposalRejection::DeviceRemoved);
+            }
             // A handover is a take, signed by the admin key its target holds, unless the kit key
             // or an admitted installed recovery key signed it: those name any live desktop,
             // because the anchor that would sequence its promotion to admin may be lost.
@@ -345,6 +490,9 @@ impl AuthState {
             .is_some_and(|frozen| record.revision > frozen)
         {
             return Err(ProposalRejection::EpochFrozen);
+        }
+        if self.pending.is_some() && !matches!(proposal.entry, Entry::KeyEpoch(_)) {
+            return Err(ProposalRejection::RotationPending);
         }
         match &proposal.entry {
             Entry::Enroll(enroll) => {
@@ -405,6 +553,60 @@ impl AuthState {
                 }
             }
             Entry::Handover(_) => return Err(ProposalRejection::HandoverConflict),
+            Entry::DeviceKey(device_key) => {
+                let device = self.live_device(&device_key.device_id)?;
+                if proposal.device_author() != Some(device.device_key) {
+                    return Err(ProposalRejection::NotAdmin);
+                }
+                // In a space with a key epoch the anchor seals the current key to the new
+                // encryption key; before the first one there is nothing to seal.
+                let sealed = matches!(
+                    record.sequencing,
+                    Sequencing::DeviceKey { envelope: Some(_) }
+                );
+                if sealed != (self.key_epoch > 0) {
+                    return Err(ProposalRejection::Malformed);
+                }
+            }
+            Entry::KeyEpoch(key_epoch) => self.check_key_epoch(proposal, key_epoch)?,
+            Entry::RecoveryKey(_) => {
+                if proposal.author != self.kit_key
+                    && self.anchor_admin_key() != Some(proposal.author)
+                {
+                    return Err(ProposalRejection::NotAdmin);
+                }
+            }
+            Entry::ServerConfig(_) => {}
+        }
+        Ok(())
+    }
+
+    /// Whether `key_epoch`, which `proposal` carries, completes the pending rotation: the next
+    /// epoch, signed by the live anchor's device key, with one envelope to each key of
+    /// [`Self::rotation_recipients`] and no other.
+    fn check_key_epoch(
+        &self,
+        proposal: &Proposal,
+        key_epoch: &KeyEpoch,
+    ) -> Result<(), ProposalRejection> {
+        let Some(pending) = &self.pending else {
+            return Err(ProposalRejection::Malformed);
+        };
+        if Some(key_epoch.key_epoch) != self.key_epoch.checked_add(1) {
+            return Err(ProposalRejection::Malformed);
+        }
+        let anchor = self.live_device(&self.anchor_device_id)?;
+        if proposal.device_author() != Some(anchor.device_key) {
+            return Err(ProposalRejection::NotAnchor);
+        }
+        let expected: BTreeSet<KeyId> = self.rotation_recipients(pending).into_keys().collect();
+        let sealed: BTreeSet<KeyId> = key_epoch
+            .envelopes
+            .iter()
+            .map(|envelope| envelope.recipient)
+            .collect();
+        if sealed != expected || sealed.len() != key_epoch.envelopes.len() {
+            return Err(ProposalRejection::Malformed);
         }
         Ok(())
     }
@@ -457,22 +659,14 @@ impl AuthState {
                         enrolled: record.revision,
                         removed: None,
                         cutoffs: BTreeMap::new(),
+                        encryption_key: None,
                     },
                 );
             }
+            // In a space with a key epoch a removal takes effect only with the key epoch the
+            // anchor seals right after it, so the removed device gets no envelope to it.
             Entry::Remove(remove) => {
-                if let Some(device) = self.devices.get_mut(&remove.device_id) {
-                    device.removed = Some(record.revision);
-                    if let Sequencing::Removal { cutoffs, .. } = &record.sequencing {
-                        device.cutoffs = cutoffs.iter().copied().collect();
-                    }
-                }
-                if let Sequencing::Removal { discovery_key, .. } = &record.sequencing
-                    && *discovery_key != self.discovery_key
-                {
-                    self.previous_discovery_key = Some(self.discovery_key);
-                    self.discovery_key = *discovery_key;
-                }
+                self.rotate(Some(PendingRemoval::of(&remove.device_id, record)), false);
             }
             Entry::SetRole(SetRole::Device { device_id, role }) => {
                 if let Some(device) = self.devices.get_mut(device_id) {
@@ -489,7 +683,24 @@ impl AuthState {
                         .then(|| self.anchor_device_id.clone());
                     self.recovery_opened = None;
                 }
+                self.rotate(None, false);
             }
+            Entry::RecoveryKey(recovery) => {
+                self.recovery_encryption_key = Some(recovery.encryption_key);
+                self.rotate(None, true);
+            }
+            Entry::KeyEpoch(key_epoch) => {
+                if let Some(removal) = self.pending.take().and_then(|pending| pending.removal) {
+                    self.apply_removal(removal);
+                }
+                self.key_epoch = key_epoch.key_epoch;
+            }
+            Entry::DeviceKey(device_key) => {
+                if let Some(device) = self.devices.get_mut(&device_key.device_id) {
+                    device.encryption_key = Some(device_key.encryption_key);
+                }
+            }
+            Entry::ServerConfig(config) => self.server = config.server.clone(),
             Entry::ResolveLate(_) | Entry::Yield(_) | Entry::Unknown { .. } => {}
         }
     }
@@ -585,10 +796,19 @@ impl AuthState {
                     role: device.role,
                     enrolled_revision: device.enrolled,
                     removed_revision: device.removed,
+                    encryption_key: device.encryption_key,
                 })
                 .collect(),
             discovery_key: self.discovery_key,
             previous_discovery_key: self.previous_discovery_key,
+            key_epoch: self.key_epoch,
+            recovery_encryption_key: self.recovery_encryption_key,
+            pending_removal: self
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.removal.as_ref())
+                .map(|removal| removal.device_id.clone()),
+            server: self.server.clone(),
         }
     }
 }
@@ -620,12 +840,15 @@ pub(crate) struct Selection {
     /// Whether the stored tree holds a handover out of the head's epoch instance, so its anchor
     /// stops sequencing there.
     pub(crate) handed_over: bool,
+    /// The key epochs of the chain in epoch order.
+    pub(crate) key_epochs: Vec<EpochKeys>,
 }
 
 impl Selection {
     /// This chain extended by `node`, which its head state admits.
     fn extended(mut self, node: &Node) -> Self {
         self.state.advance(&node.record, node.hash);
+        push_epoch_keys(&mut self.key_epochs, &node.record);
         if let Some(carrier) = node.carriers.first() {
             self.path.push(SelectedEntry {
                 revision: node.record.revision,
@@ -646,6 +869,164 @@ impl Selection {
     pub(crate) fn anchor(&self) -> &str {
         &self.state.anchor_device_id
     }
+}
+
+/// Adds the key material `record`, the next entry of a chain, publishes to the chain's key
+/// epochs: a key epoch entry opens one, and a device key entry's envelope joins the latest.
+fn push_epoch_keys(key_epochs: &mut Vec<EpochKeys>, record: &AuthorizationRecord) {
+    match (&record.proposal.proposal.entry, &record.sequencing) {
+        (Entry::KeyEpoch(key_epoch), _) => key_epochs.push(EpochKeys {
+            epoch: key_epoch.key_epoch,
+            revision: record.revision,
+            wrapped_previous: key_epoch.wrapped_previous.clone(),
+            envelopes: key_epoch.envelopes.clone(),
+        }),
+        (
+            Entry::DeviceKey(_),
+            Sequencing::DeviceKey {
+                envelope: Some(envelope),
+            },
+        ) => {
+            if let Some(keys) = key_epochs.last_mut() {
+                keys.envelopes.push(envelope.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Opens the key of `state`'s key epoch with `holder` from any envelope of that epoch in
+/// `key_epochs`, the chain `state` heads: `None` before the first key epoch, and
+/// [`ProposalRejection::KeyUnavailable`] when the holder opens none, as for an anchor that a
+/// handover or the kit made before its own envelope reached it and that holds no recovery key.
+fn open_current(
+    state: &AuthState,
+    key_epochs: &[EpochKeys],
+    holder: Option<&dyn SpaceKeyHolder>,
+) -> Result<Option<SpaceKey>, ProposalRejection> {
+    if state.key_epoch == 0 {
+        return Ok(None);
+    }
+    let holder = holder.ok_or(ProposalRejection::KeyUnavailable)?;
+    key_epochs
+        .iter()
+        .rev()
+        .find(|keys| keys.epoch == state.key_epoch)
+        .and_then(|keys| {
+            keys.envelopes
+                .iter()
+                .find_map(|envelope| holder.open(&state.space, state.key_epoch, envelope))
+        })
+        .map(Some)
+        .ok_or(ProposalRejection::KeyUnavailable)
+}
+
+/// The key epoch entry that completes the rotation `state` waits for, sealed by the anchor
+/// with a fresh space key: one envelope to each of [`AuthState::rotation_recipients`], the
+/// previous key `current` wrapped under the new one, and the new relay access key. Refuses with
+/// [`ProposalRejection::KeyUnavailable`] unless the holder is the anchor's device and holds the
+/// encryption key the anchor published, so the anchor can always open what it seals, and
+/// unless it opened the current key, so the new epoch never breaks the chain.
+fn rotation_record(
+    state: &AuthState,
+    current: Option<&SpaceKey>,
+    holder: Option<&dyn SpaceKeyHolder>,
+    now_ms: u64,
+) -> SyncResult<Result<(AuthorizationRecord, SpaceKey), ProposalRejection>> {
+    let Some(pending) = &state.pending else {
+        return Err(corrupt("a key epoch was sealed without a pending rotation"));
+    };
+    let Some(holder) = holder else {
+        return Ok(Err(ProposalRejection::KeyUnavailable));
+    };
+    let device_key = holder.device_key().public_key();
+    let held = state
+        .devices
+        .get(&state.anchor_device_id)
+        .is_some_and(|anchor| {
+            anchor.device_key == device_key
+                && anchor.encryption_key == Some(holder.encryption_key())
+        });
+    if !held || (state.key_epoch > 0) != current.is_some() {
+        return Ok(Err(ProposalRejection::KeyUnavailable));
+    }
+    let Some(epoch) = state.key_epoch.checked_add(1) else {
+        return Ok(Err(ProposalRejection::Malformed));
+    };
+    let next = SpaceKey::generate(epoch).map_err(SyncError::Crypto)?;
+    let wrapped_previous = current
+        .map(|previous| ChainLink::seal(&state.space, &next, previous))
+        .transpose()
+        .map_err(SyncError::Crypto)?;
+    let envelopes = state
+        .rotation_recipients(pending)
+        .values()
+        .map(|recipient| KeyEnvelope::seal(&state.space, &next, recipient))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(SyncError::Crypto)?;
+    let relay_access_key = next
+        .relay_access_public_key(&state.space)
+        .map_err(SyncError::Crypto)?;
+    let proposal = Proposal {
+        space: state.space,
+        charter: state.charter,
+        author: AdminPublicKey::from_bytes(*device_key.as_bytes()),
+        created_at_ms: i64::try_from(now_ms).unwrap_or(i64::MAX),
+        entry: Entry::KeyEpoch(KeyEpoch {
+            key_epoch: epoch,
+            wrapped_previous,
+            envelopes,
+            relay_access_key,
+        }),
+    };
+    let signed = sign_device_proposal(&proposal, holder.device_key())
+        .map_err(|error| corrupt(format!("key epoch does not sign: {error}")))?;
+    let record = AuthorizationRecord {
+        epoch: state.epoch,
+        revision: state.revision + 1,
+        previous_entry_hash: state.entry_hash,
+        anchor_device_id: state.anchor_device_id.clone(),
+        proposal: signed,
+        sequencing: Sequencing::Empty,
+    };
+    Ok(Ok((record, next)))
+}
+
+/// Appends the key epoch that the last of `records`, which `state` admits as its parent, makes
+/// pending, so the removal or recovery change and its key epoch seal as consecutive revisions
+/// in one transaction. `current` is a key epoch already opened or sealed for `state`.
+fn follow_with_rotation(
+    state: &AuthState,
+    records: &mut Vec<AuthorizationRecord>,
+    key_epochs: &[EpochKeys],
+    current: Option<SpaceKey>,
+    holder: Option<&dyn SpaceKeyHolder>,
+    now_ms: u64,
+) -> SyncResult<Result<(), ProposalRejection>> {
+    let Some(last) = records.last() else {
+        return Ok(Ok(()));
+    };
+    let mut next = state.clone();
+    next.advance(last, last.hash());
+    if next.pending.is_none() {
+        return Ok(Ok(()));
+    }
+    let current = match current {
+        Some(key) => Some(key),
+        None => match open_current(&next, key_epochs, holder) {
+            Ok(key) => key,
+            Err(rejection) => return Ok(Err(rejection)),
+        },
+    };
+    let (rotation, _) = match rotation_record(&next, current.as_ref(), holder, now_ms)? {
+        Ok(sealed) => sealed,
+        Err(rejection) => return Ok(Err(rejection)),
+    };
+    if let Err(rejection) = next.check(&rotation) {
+        return Ok(Err(rejection));
+    }
+    records.push(rotation);
+    Ok(Ok(()))
 }
 
 fn kind_text(kind: DeviceKind) -> &'static str {
@@ -744,6 +1125,23 @@ struct Stored {
 }
 
 impl Stored {
+    /// The key epochs of the stored chain from the charter to the node `head`, in epoch order.
+    fn key_epochs(&self, head: &Digest32) -> Vec<EpochKeys> {
+        let by_hash: BTreeMap<&Digest32, &Node> =
+            self.nodes.iter().map(|node| (&node.hash, node)).collect();
+        let mut chain = Vec::new();
+        let mut at = by_hash.get(head).copied();
+        while let Some(node) = at {
+            chain.push(&node.record);
+            at = by_hash.get(&node.record.previous_entry_hash).copied();
+        }
+        let mut key_epochs = Vec::new();
+        for record in chain.into_iter().rev() {
+            push_epoch_keys(&mut key_epochs, record);
+        }
+        key_epochs
+    }
+
     /// What `space` stores, or `None` without a charter.
     async fn load(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Option<Self>> {
         let Some(charter) = load_charter(conn, space).await? else {
@@ -1144,6 +1542,7 @@ impl<'a> Walk<'a> {
             reachable: 0,
             held: BTreeSet::new(),
             handed_over: false,
+            key_epochs: Vec::new(),
         };
         for node in path.iter().filter_map(|index| self.visits[*index].node) {
             selection = selection.extended(&self.stored.nodes[node]);
@@ -1892,6 +2291,7 @@ pub(crate) async fn rederive(
         .execute(&mut *conn)
         .await?;
     }
+    write_space_keys(conn, space, &selection).await?;
     for writer in log::writers(conn, space).await? {
         let removal_cutoff = selection
             .state
@@ -1934,6 +2334,84 @@ pub(crate) async fn rederive(
         .await?;
     }
     Ok(Some(selection))
+}
+
+/// Rewrites `sync_space_keys` from the key epochs of `selection`: each epoch's chain link and
+/// the latest envelope to the encryption key the local device published, so a reselection drops
+/// what a superseded chain sealed.
+pub(crate) async fn write_space_keys(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    selection: &Selection,
+) -> SyncResult<()> {
+    sqlx::query("DELETE FROM sync_space_keys WHERE space_id = ?")
+        .bind(space.as_bytes().as_slice())
+        .execute(&mut *conn)
+        .await?;
+    let own_key = exclusion::local_device(conn, space)
+        .await?
+        .and_then(|device_id| selection.state.devices.get(&device_id)?.encryption_key)
+        .map(|key| key.key_id());
+    for keys in &selection.key_epochs {
+        let own_envelope = own_key.and_then(|id| {
+            keys.envelopes
+                .iter()
+                .rev()
+                .find(|envelope| envelope.recipient == id)
+        });
+        sqlx::query(
+            "INSERT INTO sync_space_keys
+                 (space_id, epoch, wrapped_previous, own_envelope, sequenced_revision)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(i64::from(keys.epoch))
+        .bind(
+            keys.wrapped_previous
+                .as_ref()
+                .map(|link| link.to_bytes().to_vec()),
+        )
+        .bind(own_envelope.map(|envelope| envelope.to_bytes().to_vec()))
+        .bind(seq_i64(keys.revision)?)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// The key epochs `sync_space_keys` holds for the local device, in epoch order.
+async fn stored_space_keys(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<Vec<StoredSpaceKey>> {
+    type Row = (i64, Option<Vec<u8>>, Option<Vec<u8>>, i64);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT epoch, wrapped_previous, own_envelope, sequenced_revision
+         FROM sync_space_keys WHERE space_id = ? ORDER BY epoch",
+    )
+    .bind(space.as_bytes().as_slice())
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|(epoch, wrapped_previous, own_envelope, revision)| {
+            Ok(StoredSpaceKey {
+                epoch: u32::try_from(epoch).map_err(|_| corrupt("stored key epoch is invalid"))?,
+                wrapped_previous: wrapped_previous
+                    .map(|bytes| {
+                        ChainLink::from_slice(&bytes)
+                            .ok_or_else(|| corrupt("stored key chain link does not decode"))
+                    })
+                    .transpose()?,
+                own_envelope: own_envelope
+                    .map(|bytes| {
+                        KeyEnvelope::from_slice(&bytes)
+                            .ok_or_else(|| corrupt("stored key envelope does not decode"))
+                    })
+                    .transpose()?,
+                sequenced_revision: stored_u64(revision, "key epoch revision")?,
+            })
+        })
+        .collect()
 }
 
 /// How the selected chain knows the device a genesis names.
@@ -2090,6 +2568,25 @@ impl Engine {
             .map(|selection| selection.state.view()))
     }
 
+    /// The key epochs of the selected chain for the local device, in epoch order, after
+    /// rebuilding `sync_space_keys` from the stored record set, so a snapshot copy, which
+    /// carries none, gets them back at service start. The service opens the newest envelope it
+    /// holds and walks the chain links back from it.
+    pub async fn space_keys(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<Vec<StoredSpaceKey>> {
+        let mut tx = conn.begin().await?;
+        log::ensure_space(&mut tx, ctx.space).await?;
+        if let Some(selection) = select(&mut tx, ctx.space).await? {
+            write_space_keys(&mut tx, ctx.space, &selection).await?;
+        }
+        let keys = stored_space_keys(&mut tx, ctx.space).await?;
+        tx.commit().await?;
+        Ok(keys)
+    }
+
     /// The revision at which the selected chain holds the proposal with `proposal_hash`, if it
     /// does. An outbox drops a proposal once its own replica holds it.
     pub async fn proposal_revision(
@@ -2183,6 +2680,53 @@ impl Engine {
         .await
     }
 
+    /// Seals the key epoch the selected head waits for when the local writer is its anchor, as
+    /// after a handover that continued past a removal or recovery change. Sequencing seals it
+    /// too before the next proposal; this seals it without one. Returns its revision, `None`
+    /// when no rotation is pending, or why the anchor cannot seal it, such as
+    /// [`ProposalRejection::KeyUnavailable`] while it opens no envelope of the current epoch.
+    pub async fn complete_rotation(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: &mut LocalWriter<'_>,
+        now_ms: u64,
+    ) -> SyncResult<Result<Option<u64>, ProposalRejection>> {
+        let mut tx = conn.begin().await?;
+        log::ensure_space(&mut tx, ctx.space).await?;
+        let Some(selection) = select(&mut tx, ctx.space).await? else {
+            return Err(SyncError::ResetRequired("the space has no charter"));
+        };
+        let state = &selection.state;
+        if state.pending.is_none() {
+            return Ok(Ok(None));
+        }
+        if writer.certificate.certificate.device_id != state.anchor_device_id {
+            return Ok(Err(ProposalRejection::NotAnchor));
+        }
+        if selection.handed_over {
+            return Ok(Err(ProposalRejection::HandoverConflict));
+        }
+        let current = match open_current(state, &selection.key_epochs, writer.keys) {
+            Ok(key) => key,
+            Err(rejection) => return Ok(Err(rejection)),
+        };
+        let (record, _) = match rotation_record(state, current.as_ref(), writer.keys, now_ms)? {
+            Ok(sealed) => sealed,
+            Err(rejection) => return Ok(Err(rejection)),
+        };
+        if let Err(rejection) = state.check(&record) {
+            return Ok(Err(rejection));
+        }
+        let revision = record.revision;
+        self.seal_records(&mut tx, ctx, state.charter, vec![record], writer, now_ms)
+            .await?;
+        failpoint!("complete_rotation.before_commit");
+        sql::set_applying(&mut tx, false).await?;
+        tx.commit().await?;
+        Ok(Ok(Some(revision)))
+    }
+
     /// Where a handover that `signer` signs for the desktop `target` continues from: the
     /// selected head when `signer` is its kit key and `target` a live desktop there, or, while
     /// the head's instance is frozen, the best such entry on a branch past the freeze, so a kit
@@ -2266,8 +2810,37 @@ impl Engine {
             return Err(SyncError::ResetRequired("the space has no charter"));
         };
         let handed_over = selection.handed_over;
+        let key_epochs = selection.key_epochs;
         let mut state = selection.state;
+        let holder = writer.keys;
         let local_device = &writer.certificate.certificate.device_id;
+        let anchor_ordering = matches!(ordering, Ordering::Anchor { .. });
+        // Records sealed before the proposal's: the key epoch a handover left pending.
+        let mut records = Vec::new();
+        // The key of the current key epoch, once opened or sealed here.
+        let mut current: Option<SpaceKey> = None;
+        if anchor_ordering && *local_device == state.anchor_device_id && !handed_over {
+            if matches!(proposal.proposal.entry, Entry::KeyEpoch(_)) {
+                return Ok(Err(ProposalRejection::AnchorOnly));
+            }
+            if state.pending.is_some() {
+                let opened = match open_current(&state, &key_epochs, holder) {
+                    Ok(key) => key,
+                    Err(rejection) => return Ok(Err(rejection)),
+                };
+                let (rotation, next) =
+                    match rotation_record(&state, opened.as_ref(), holder, now_ms)? {
+                        Ok(sealed) => sealed,
+                        Err(rejection) => return Ok(Err(rejection)),
+                    };
+                if let Err(rejection) = state.check(&rotation) {
+                    return Ok(Err(rejection));
+                }
+                state.advance(&rotation, rotation.hash());
+                records.push(rotation);
+                current = Some(next);
+            }
+        }
         let record = match (ordering, &proposal.proposal.entry) {
             (Ordering::Anchor { .. }, _) if *local_device != state.anchor_device_id => {
                 return Ok(Err(ProposalRejection::NotAnchor));
@@ -2305,6 +2878,25 @@ impl Engine {
                             discovery_key,
                         }
                     }
+                    Entry::RecoveryKey(_) | Entry::ServerConfig(_) => Sequencing::Empty,
+                    // The anchor seals the current key to a device's new encryption key.
+                    Entry::DeviceKey(device_key) => {
+                        if current.is_none() {
+                            current = match open_current(&state, &key_epochs, holder) {
+                                Ok(key) => key,
+                                Err(rejection) => return Ok(Err(rejection)),
+                            };
+                        }
+                        let envelope = current
+                            .as_ref()
+                            .map(|key| {
+                                KeyEnvelope::seal(&state.space, key, &device_key.encryption_key)
+                            })
+                            .transpose()
+                            .map_err(SyncError::Crypto)?;
+                        Sequencing::DeviceKey { envelope }
+                    }
+                    Entry::KeyEpoch(_) => return Ok(Err(ProposalRejection::AnchorOnly)),
                     Entry::Handover(_) | Entry::Unknown { .. } => {
                         return Ok(Err(ProposalRejection::UnsupportedEntry));
                     }
@@ -2370,7 +2962,14 @@ impl Engine {
             return Ok(Err(rejection));
         }
         let revision = record.revision;
-        self.seal_record(&mut tx, ctx, state.charter, record, writer, now_ms)
+        records.push(record);
+        if anchor_ordering
+            && let Err(rejection) =
+                follow_with_rotation(&state, &mut records, &key_epochs, current, holder, now_ms)?
+        {
+            return Ok(Err(rejection));
+        }
+        self.seal_records(&mut tx, ctx, state.charter, records, writer, now_ms)
             .await?;
         failpoint!("sequence.before_commit");
         sql::set_applying(&mut tx, false).await?;
@@ -2378,18 +2977,23 @@ impl Engine {
         Ok(Ok(revision))
     }
 
-    /// Seals `record`, which the rules at its parent admit, as the next operation of the local
-    /// writer, rederives the selection, and applies what the sealed operation makes ready. The
-    /// caller commits.
-    pub(super) async fn seal_record(
+    /// Seals `records`, consecutive revisions that the rules at each one's parent admit, as the
+    /// next operations of the local writer, rederives the selection, and applies what the sealed
+    /// operations make ready. The reservation records the first, so a rolled back seal of the
+    /// pair stays ahead by one. The caller commits.
+    pub(super) async fn seal_records(
         &self,
         tx: &mut SqliteConnection,
         ctx: &SpaceContext,
         charter: Digest32,
-        record: AuthorizationRecord,
+        records: Vec<AuthorizationRecord>,
         writer: &mut LocalWriter<'_>,
         now_ms: u64,
     ) -> SyncResult<()> {
+        let Some(first) = records.first() else {
+            return Ok(());
+        };
+        let reserved = (first.epoch, first.revision, first.hash());
         sql::begin_engine_write(&mut *tx).await?;
         let mut batch = Batch::load(&mut *tx, ctx.space).await?;
         exclusion::note_local_device(
@@ -2408,20 +3012,23 @@ impl Engine {
             .ok_or_else(|| corrupt("sealer slot has no writer"))?;
         writer
             .reservation
-            .reserve_entry(charter, record.epoch, record.revision, record.hash())
+            .reserve_entry(charter, reserved.0, reserved.1, reserved.2)
             .map_err(SyncError::Reservation)?;
-        sealer
-            .seal_authorization(
-                self,
-                &mut *tx,
-                ctx,
-                &mut batch,
-                writer,
-                record,
-                now_ms,
-                &mut report,
-            )
-            .await?;
+        for record in records {
+            sealer
+                .seal_authorization(
+                    self,
+                    &mut *tx,
+                    ctx,
+                    &mut batch,
+                    writer,
+                    record,
+                    now_ms,
+                    &mut report,
+                )
+                .await?;
+            failpoint!("seal_records.between");
+        }
         if let Some(selection) = rederive(&mut *tx, ctx.space).await? {
             exclusion::settle(self, &mut *tx, ctx, &mut batch, &selection).await?;
         }

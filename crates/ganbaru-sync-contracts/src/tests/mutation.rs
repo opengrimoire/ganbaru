@@ -1,6 +1,7 @@
 use super::fixtures::{
     XorShift, certificate_for, fully_verifies, golden_authorization_log, golden_cause,
-    golden_chain, golden_charter, golden_entries, other_writer_id, person, proposal, writer_key,
+    golden_chain, golden_charter, golden_entries, golden_key_entries, other_writer_id, person,
+    proposal, writer_key,
 };
 use crate::{
     AuthorizationRecord, Envelope, SignedCertificate, SignedCharter, SignedProposal, VersionVector,
@@ -130,7 +131,7 @@ fn authorization_vectors() -> Vec<(Vec<u8>, Verifier)> {
             certificate_verifies,
         ),
     ];
-    for (_, entry, _) in golden_entries() {
+    for (_, entry, _) in golden_entries().into_iter().chain(golden_key_entries()) {
         vectors.push((proposal(entry, 0).encode(), proposal_verifies));
     }
     vectors

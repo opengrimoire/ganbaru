@@ -88,3 +88,21 @@ pub const MAX_GROUP_BYTES: usize = 1 << 20;
 /// later operations. A dense Music library refresh of 6,000 items spans 9 operations and one of
 /// the longest metadata 19.
 pub const MAX_OPERATIONS_PER_CHAIN: usize = 256;
+/// Envelopes one key epoch entry carries: one per live device key plus the recovery key. Every
+/// device certifies at least one writer, so the writer bound caps the devices.
+pub const MAX_KEY_RECIPIENTS: usize = MAX_WRITERS_PER_SPACE + 1;
+/// Endpoints one server configuration lists.
+pub const MAX_SERVER_ENDPOINTS: usize = 4;
+/// Largest server endpoint, `host:port`, in bytes.
+pub const MAX_SERVER_ENDPOINT_BYTES: usize = 255;
+/// Largest relay record plaintext: one operation and one writer certificate, each with a u32
+/// length.
+pub const MAX_RELAY_RECORD_PLAINTEXT_BYTES: usize =
+    MAX_OPERATION_BYTES + MAX_CERTIFICATE_BYTES + 4 + 4;
+/// Plaintext bytes of every relay asset chunk but the last, equal to the chunk of a paired sync
+/// asset pull.
+pub const RELAY_ASSET_CHUNK_BYTES: usize = 600 * 1024;
+/// Largest asset a relay carries, equal to the largest asset a paired sync pull moves.
+pub const MAX_RELAY_ASSET_BYTES: usize = 64 * 1024 * 1024;
+/// Most chunks of one relay asset.
+pub const MAX_RELAY_ASSET_CHUNKS: usize = MAX_RELAY_ASSET_BYTES.div_ceil(RELAY_ASSET_CHUNK_BYTES);

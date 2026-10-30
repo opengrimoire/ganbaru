@@ -53,6 +53,9 @@ pub struct HubVault {
     pub assets: Arc<dyn AssetStore>,
     /// Devices this installation quarantined, whose writers' operations the hub does not store.
     pub quarantined: BTreeSet<String>,
+    /// This installation's device id. Once the selected log removed it, the hub answers record
+    /// exchange only, so a removed coordinator takes in no operations or assets.
+    pub device_id: String,
 }
 
 /// Opens the vault the hub serves, or `None` while it cannot replicate.
@@ -194,6 +197,18 @@ pub fn log_refusal(
         Some(device) if device.removed_revision.is_some() => Some(MemberRefusal::Removed),
         Some(_) => None,
     }
+}
+
+/// The error code of every sync request but record exchange that a hub answers once its
+/// selected log removed the hub's own device.
+pub const HUB_REMOVED: &str = "hub_removed";
+
+/// Whether the selected log `view` removed `device_id`. A device the log never enrolled is not
+/// removed.
+pub fn removes_device(view: &ganbaru_sync::AuthorizationView, device_id: &str) -> bool {
+    view.devices
+        .iter()
+        .any(|device| device.device_id == device_id && device.removed_revision.is_some())
 }
 
 /// The hub handle the coordinator listener routes sync requests to.
@@ -387,6 +402,15 @@ impl SyncHub {
                 .authorization(&mut conn, &ctx)
                 .await
                 .map_err(|error| HubError::failed(format!("read sync authorization: {error}")))?;
+            if view
+                .as_ref()
+                .is_some_and(|view| removes_device(view, &vault.device_id))
+            {
+                return Err(HubError::rejected(
+                    HUB_REMOVED,
+                    "the selected log removed this device, so it answers record exchange only",
+                ));
+            }
             if let Some(refusal) = view.as_ref().and_then(|view| log_refusal(view, &device_id)) {
                 return Err(HubError::rejected(refusal.code(), refusal.describe()));
             }

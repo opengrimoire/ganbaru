@@ -30,6 +30,7 @@
 | `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
 | `sync_released_marks` | Per writer of another device, the highest sequence this replica applied while it was the anchor, so it seals the groups those operations wrote again if they are excluded later. Device-local; never replicates. |
 | `sync_restated_groups` | Per group, the value hash the anchor sealed again without a newer edit, so restoring a late change does not count that version as newer. Kept while the row has an undecided late change. Device-local; never replicates. |
+| `sync_space_keys` | Per key epoch of the selected chain, the chain link that wraps the previous epoch key (none for epoch 1), the envelope sealed to this installation's device encryption key when the epoch has one, and the revision that sequenced the epoch. Derived from the selected chain at every selection and at service start; device-local, never replicates, and emptied in snapshot copies. |
 
 ## Invariants
 
@@ -44,7 +45,7 @@
 - **Redirects point down.** A tombstone redirect is always a lower row key than the tombstoned row, so redirect chains terminate.
 - **Causes exclude redirects.** A tombstone carries a redirect or a cause, never both. A cause names the root of a cascade, so recovery groups the tombstoned row under that root and checks it against the root's coverage.
 - **Published keys are permanent.** A key present in `sync_rows` cannot be inserted again locally when its domain row is gone, which prevents resurrection and key reuse. A [derived-key table](../../algorithms/sync/README.md#derived-keys) is the exception: its rows are removed and added again through an existence register, never tombstoned.
-- **Device-local state stays outside.** Device and admin keys, a recovery seed waiting for its kit to be saved, writer keys, the writer record with its sequence reservation and authorization high-water mark (charter, epoch, revision, and entry hash), the proposal outbox, the quarantine list, pause state, and carry-forward bundles live in the app config directory, never in the vault database, because the vault database is copied whole to other devices. The exception is device state that must change atomically with vault data: it lives in local tables and columns, which snapshot copies empty or reset and a replacement restores from the receiver's live database. The vault root's `vault.lock` holds only the process lock, never data, and stays out of every archive.
+- **Device-local state stays outside.** Device and admin keys, a recovery seed waiting for its kit to be saved, writer keys, the writer record with its sequence reservation and authorization high-water mark (charter, epoch, revision, and entry hash), the proposal outbox, the quarantine list, the peer book, the anchor pin, the vault discovery keys, pause state, and carry-forward bundles live in the app config directory, never in the vault database, because the vault database is copied whole to other devices. The exception is device state that must change atomically with vault data: it lives in local tables and columns, which snapshot copies empty or reset and a replacement restores from the receiver's live database. The vault root's `vault.lock` holds only the process lock, never data, and stays out of every archive.
 
 ## Replicated domain tables
 

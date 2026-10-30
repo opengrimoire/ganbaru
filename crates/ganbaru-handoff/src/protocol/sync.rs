@@ -424,6 +424,11 @@ pub const MAX_SYNC_ASSETS: usize = 512;
 /// Largest asset the exchange moves, streamed in chunks; each asset class enforces its own
 /// bound up to this one.
 pub const MAX_SYNC_ASSET_BYTES: u32 = 64 * 1024 * 1024;
+// Relay asset chunks carry the same chunks and assets as a paired pull.
+const _: () = assert!(
+    SYNC_ASSET_CHUNK_BYTES == ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES
+        && MAX_SYNC_ASSET_BYTES as usize == ganbaru_sync_contracts::bounds::MAX_RELAY_ASSET_BYTES
+);
 /// Base64url length of the largest chunk.
 const MAX_ASSET_CHUNK_TEXT_BYTES: usize = (SYNC_ASSET_CHUNK_BYTES * 4).div_ceil(3);
 /// Length of a media type such as `image/png`.

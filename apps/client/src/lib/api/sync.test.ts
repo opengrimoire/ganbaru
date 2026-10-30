@@ -99,6 +99,8 @@ describe("sync API boundary", () => {
   it("maps a known error code", () => {
     expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "writerLimit" }).lastErrorCode).toBe("writerLimit");
     expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "bootstrapRequired" }).lastErrorCode).toBe("bootstrapRequired");
+    expect(mapSyncStatus({ ...validStatus(), state: "offline", lastErrorCode: "coordinatorRemoved" }).lastErrorCode)
+      .toBe("coordinatorRemoved");
   });
 
   it("maps every device standing and rejects malformed uncounted devices", () => {

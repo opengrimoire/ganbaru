@@ -82,6 +82,10 @@ pub(crate) enum SyncErrorCode {
     /// The hub compacted operations this device lacks, so it pulls nothing until it receives
     /// a fresh copy of the vault. Local changes still reach the hub.
     BootstrapRequired,
+    /// The selected log removed the coordinator this device is linked to, so it exchanges only
+    /// authorization records with it and syncs with the other members until it is linked to
+    /// another computer or its copy is recovered.
+    CoordinatorRemoved,
 }
 
 /// Why the coordinator does not count a linked device toward stability.

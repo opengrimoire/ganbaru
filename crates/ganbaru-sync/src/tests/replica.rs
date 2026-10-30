@@ -19,7 +19,7 @@ use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine
 use crate::manifest::Manifest;
 use crate::{
     ApplyReport, CompactionReport, ContestRejection, Engine, LocalWriter, SealReport,
-    SequenceReservation, SpaceContext, StoreOutcome, SyncResult,
+    SequenceReservation, SpaceContext, SpaceKeyHolder, StoreOutcome, SyncResult,
 };
 use crate::{hydrate, log, publication};
 
@@ -218,6 +218,8 @@ pub(super) struct Identity {
     pub(super) key: WriterKeyPair,
     pub(super) certificate: SignedCertificate,
     pub(super) reservation: Reservation,
+    /// The space keys the writer seals key epochs and envelopes with, if any.
+    pub(super) keys: Option<std::sync::Arc<dyn SpaceKeyHolder>>,
 }
 
 impl Identity {
@@ -244,6 +246,7 @@ impl Identity {
             key,
             certificate,
             reservation: Reservation::default(),
+            keys: None,
         }
     }
 
@@ -256,6 +259,7 @@ impl Identity {
             key: &self.key,
             certificate: &self.certificate,
             reservation: &mut self.reservation,
+            keys: self.keys.as_deref(),
         }
     }
 
@@ -266,6 +270,7 @@ impl Identity {
             key: WriterKeyPair::from_seed(&self.seed).expect("test writer seed should be valid"),
             certificate: self.certificate.clone(),
             reservation: self.reservation.clone(),
+            keys: self.keys.clone(),
         }
     }
 }

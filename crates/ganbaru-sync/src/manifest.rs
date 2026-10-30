@@ -72,6 +72,7 @@ pub const SYNC_LOCAL_TABLES: &[&str] = &[
     "sync_anchor_marks",
     "sync_restated_groups",
     "sync_released_marks",
+    "sync_space_keys",
 ];
 
 /// What a domain trigger may do, so applying remote changes cannot be broken by it.

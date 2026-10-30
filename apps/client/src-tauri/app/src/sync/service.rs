@@ -46,6 +46,7 @@ use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
     ensure_charter, read_admin_key,
 };
+use ganbaru_sync_replica::keys::SpaceKeys;
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
@@ -633,6 +634,7 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
         vault_id,
         assets,
         quarantined,
+        device_id: app.device_id()?,
     }))
 }
 
@@ -1320,12 +1322,24 @@ impl ServiceState {
         let mut next = Next::Idle;
         let is_hub = peer.is_none();
         let mut asset_peer = None;
+        // The coordinator ids of this pass, also when only record exchange reaches it.
+        let mut linked_ids = None;
         match peer {
             None => {}
             Some(_) if view.paused => view.state = SyncState::Paused,
             Some(_) if session.coordinator_quarantined(&manager).await? => {
                 view.state = SyncState::Offline;
                 view.last_error = Some("this device quarantined the coordinator".to_string());
+            }
+            Some((linked_vault, device_id)) if session.coordinator_removed(&manager).await? => {
+                let ids = PeerIds {
+                    vault_id: linked_vault,
+                    device_id,
+                };
+                linked_ids = Some(ids.clone());
+                next = self
+                    .removed_coordinator_pass(&session, &manager, ids, view)
+                    .await?;
             }
             Some((linked_vault, device_id)) => {
                 self.publish(
@@ -1373,6 +1387,7 @@ impl ServiceState {
                     }
                     Ok(()) => self.exchange(&session, wait, view).await?,
                 };
+                linked_ids = Some(assets.ids.clone());
                 asset_peer = Some((assets, transfer));
             }
         }
@@ -1490,10 +1505,8 @@ impl ServiceState {
         }
         // An anchor that is not the coordinator and answered this pass takes the proposals
         // directly, also while the coordinator is away.
-        if let (Some(link), Some((assets, _))) = (anchor_link.as_ref(), asset_peer.as_ref()) {
-            session
-                .replay_outbox(link, &assets.ids, &link.device_id)
-                .await;
+        if let (Some(link), Some(ids)) = (anchor_link.as_ref(), linked_ids.as_ref()) {
+            session.replay_outbox(link, ids, &link.device_id).await;
         }
         #[cfg(desktop)]
         for request in take_anchor {
@@ -1535,6 +1548,9 @@ impl ServiceState {
             #[cfg(mobile)]
             let anchor_ready = true;
             if anchor_ready {
+                if let Err(error) = session.maintain_space_keys(&mut self.writer, true).await {
+                    eprintln!("sync: maintain space keys: {error}");
+                }
                 session
                     .reconcile_devices(&manager, &vault_id, &mut self.writer)
                     .await?;
@@ -1548,6 +1564,9 @@ impl ServiceState {
                     )
                     .await;
             } else {
+                if let Err(error) = session.maintain_space_keys(&mut self.writer, false).await {
+                    eprintln!("sync: maintain space keys: {error}");
+                }
                 #[cfg(desktop)]
                 for request in runtime.take_proposal_requests() {
                     let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
@@ -1610,6 +1629,19 @@ impl ServiceState {
                         Err(error) => eprintln!("sync: sequence own proposals: {error}"),
                     }
                 }
+                let may_sequence = linked_anchor_ready.is_none() && ready;
+                match session
+                    .maintain_space_keys(&mut self.writer, may_sequence)
+                    .await
+                {
+                    Ok(true) if matches!(next, Next::Online(_)) => next = Next::Continue,
+                    Ok(_) => {}
+                    Err(error) => eprintln!("sync: maintain space keys: {error}"),
+                }
+            }
+            #[cfg(mobile)]
+            if let Err(error) = session.maintain_space_keys(&mut self.writer, false).await {
+                eprintln!("sync: maintain space keys: {error}");
             }
             if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
                 // The hub learns of the acknowledgement on the next exchange, which runs now.
@@ -1922,6 +1954,70 @@ impl ServiceState {
             .merge(&self.pull_skips.for_quarantine(quarantined));
         wait.poll = Some(anchor.clone());
         Next::Online(Box::new(wait))
+    }
+
+    /// The pass while the selected log removed the coordinator: record exchange only, so it
+    /// learns its removal, and then members exchange as while it is away. Nothing else reaches
+    /// it or comes from it: no operations or assets, no stable vector, and no anchor marks.
+    async fn removed_coordinator_pass<H: SyncHost>(
+        &mut self,
+        session: &Session<'_, H>,
+        manager: &PairingManager,
+        ids: PeerIds,
+        view: &mut SyncStatusView,
+    ) -> Result<Next, String> {
+        let path = session.files.quarantine_path();
+        let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        let listening = session.host.serve_members().await;
+        self.anchor_link = None;
+        let wait = OnlineWait {
+            transport: PairedTransport(manager.clone()),
+            ids,
+            known: VersionVector::new(),
+            #[cfg(desktop)]
+            hub: VersionVector::new(),
+            poll: None,
+        };
+        let coordinator = manager.coordinator_pin()?.map(|pin| pin.device_id);
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        let records = ClientSession {
+            transport: &wait.transport,
+            ids: &wait.ids,
+            engine: &session.engine,
+            pool: &session.pool,
+            ctx: &session.ctx,
+            writer: self.writer.as_ref().map(ActiveWriter::id),
+            own_writers: &own_writers,
+            quarantined: quarantine.devices(),
+            pull_skips: Some(&self.pull_skips),
+            max_bytes: super::client::MAX_EXCHANGE_BYTES,
+            listening: &listening,
+            records: coordinator.as_deref().map(|peer| RecordLink {
+                state: &self.records,
+                peer,
+            }),
+        }
+        .exchange_records_only()
+        .await;
+        if let Err(error) = records {
+            eprintln!("sync: record exchange with the removed coordinator: {error}");
+        }
+        let next = self
+            .coordinator_away(
+                session,
+                wait,
+                quarantine.devices(),
+                &listening,
+                view,
+                "the selected log removed the coordinator".to_string(),
+            )
+            .await;
+        view.last_error_code = Some(SyncErrorCode::CoordinatorRemoved);
+        Ok(next)
     }
 
     /// Exchanges with the other members the pass plan picks. A failure only delays what members
@@ -2362,6 +2458,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
     /// device key and creating a successor when needed. Returns whether a writer is ready.
     async fn ensure_writer(&self, writer: &mut Option<ActiveWriter>) -> Result<bool, String> {
         if writer.is_some() {
+            self.attach_space_keys(writer).await?;
             return Ok(true);
         }
         let files = self.files.clone();
@@ -2409,7 +2506,112 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 .map(|view| view.charter);
             active.settle_sequenced(charter)?;
         }
+        self.attach_space_keys(writer).await?;
         Ok(writer.is_some())
+    }
+
+    /// Gives a writer without space keys the installation's device encryption key, created once,
+    /// and the epoch keys it opens from the selected log. Plaintext epoch keys stay in memory.
+    async fn attach_space_keys(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
+        let Some(active) = writer.as_mut() else {
+            return Ok(());
+        };
+        if active.space_keys().is_some() {
+            return Ok(());
+        }
+        let files = self.files.clone();
+        let keys = self.keys.clone();
+        let space_keys =
+            Arc::new(blocking(move || SpaceKeys::load(keys.as_ref(), &files.vault_id)).await?);
+        let mut conn = acquire(&self.pool).await?;
+        space_keys
+            .open_epochs(&self.engine, &mut conn, &self.ctx)
+            .await?;
+        active.attach_keys(space_keys);
+        Ok(())
+    }
+
+    /// Publishes this installation's device encryption key while the selected log lacks it and,
+    /// on an anchor that may sequence, seals the key epoch a removal waits for, then reopens the
+    /// epoch keys. A member queues its device key in the outbox for the anchor. Returns whether
+    /// the writer sealed an entry.
+    async fn maintain_space_keys(
+        &self,
+        writer: &mut Option<ActiveWriter>,
+        may_sequence: bool,
+    ) -> Result<bool, String> {
+        use ganbaru_sync_replica::authority::{
+            DeviceKeyPublication, complete_rotation, publish_device_key,
+        };
+        let Some(active) = writer.as_mut() else {
+            return Ok(false);
+        };
+        let Some(space_keys) = active.space_keys().cloned() else {
+            return Ok(false);
+        };
+        let mut conn = acquire(&self.pool).await?;
+        let Some(view) = self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+        else {
+            return Ok(false);
+        };
+        let anchors = view.anchor_device_id == active.device_id();
+        if anchors && !may_sequence {
+            return Ok(false);
+        }
+        let path = self.files.outbox_path();
+        let mut outbox = blocking(move || Outbox::load(&path)).await?;
+        let mut sealed = false;
+        match publish_device_key(
+            &self.engine,
+            &mut conn,
+            &self.ctx,
+            &mut active.local(),
+            &space_keys,
+            &mut outbox,
+            now_ms()?,
+        )
+        .await?
+        {
+            DeviceKeyPublication::Sequenced(_) => sealed = true,
+            DeviceKeyPublication::Rejected(rejection) => {
+                eprintln!("sync: publish the device encryption key: {rejection}");
+            }
+            DeviceKeyPublication::Current | DeviceKeyPublication::Queued => {}
+        }
+        if anchors {
+            match complete_rotation(
+                &self.engine,
+                &mut conn,
+                &self.ctx,
+                &mut active.local(),
+                now_ms()?,
+            )
+            .await?
+            {
+                Ok(Some(_)) => sealed = true,
+                Ok(None) => {}
+                Err(rejection) => eprintln!("sync: seal the waiting key epoch: {rejection}"),
+            }
+        }
+        if sealed {
+            // The record must name what sequencing sealed, or a restored database behind
+            // those entries would still match the writer.
+            let head = self
+                .engine
+                .stored_vector(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read sync stored vector: {error}"))?
+                .get(&active.id());
+            active.committed(head)?;
+        }
+        space_keys
+            .open_epochs(&self.engine, &mut conn, &self.ctx)
+            .await?;
+        Ok(sealed)
     }
 
     /// Creates a successor writer certified by this installation's device key. A device without
@@ -2438,6 +2640,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .map(SuccessorPlan::after)
             .unwrap_or_default();
         *writer = self.create_successor(plan).await?;
+        self.attach_space_keys(writer).await?;
         Ok(writer.is_some())
     }
 
@@ -2450,6 +2653,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .map(SuccessorPlan::after_restore)
             .unwrap_or_default();
         *writer = self.create_successor(plan).await?;
+        self.attach_space_keys(writer).await?;
         Ok(writer.is_some())
     }
 
@@ -2734,6 +2938,34 @@ impl<'a, H: SyncHost> Session<'a, H> {
         Ok(quarantine.contains(&pin.device_id))
     }
 
+    /// The devices this installation quarantined, whose device keys the anchor refuses to
+    /// sequence.
+    #[cfg(desktop)]
+    async fn quarantined(&self) -> Result<BTreeSet<String>, String> {
+        let path = self.files.quarantine_path();
+        Ok(blocking(move || Quarantine::load(&path))
+            .await?
+            .devices()
+            .clone())
+    }
+
+    /// Whether the selected log, derived from the stored record envelopes alone, removed the
+    /// coordinator this device pinned. Such a coordinator gets record exchange only, so it
+    /// learns its removal but no longer takes this device's operations or assets.
+    async fn coordinator_removed(&self, manager: &PairingManager) -> Result<bool, String> {
+        let Some(pin) = manager.coordinator_pin()? else {
+            return Ok(false);
+        };
+        let mut conn = acquire(&self.pool).await?;
+        let view = self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?;
+        Ok(view
+            .is_some_and(|view| ganbaru_sync_replica::hub::removes_device(&view, &pin.device_id)))
+    }
+
     /// On a client, installs the charter pinned at pairing when the space has none yet, and
     /// refuses a space whose charter differs from it, because the pin names the log this device
     /// agreed to follow.
@@ -2898,6 +3130,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             if !anchors || outbox.entries().iter().all(|entry| !entry.pending()) {
                 return Ok(());
             }
+            let quarantined = self.quarantined().await?;
             authority::sequence_outbox(
                 &self.engine,
                 &mut conn,
@@ -2905,6 +3138,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 &mut active.local(),
                 &mut outbox,
                 &VersionVector::new(),
+                &quarantined,
                 now_ms()?,
             )
             .await?;
@@ -2938,6 +3172,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
             return;
         }
         let anchor = self.anchors_here(manager).await;
+        let quarantined = match anchor {
+            Ok(true) => self.quarantined().await,
+            _ => Ok(BTreeSet::new()),
+        };
         let mut outbox = None;
         if matches!(anchor, Ok(false)) {
             let path = self.files.outbox_path();
@@ -2963,18 +3201,22 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 },
                 (Ok(true), Some(active)) => match acquire(&self.pool).await {
                     Ok(mut conn) => match now_ms() {
-                        Ok(now) => {
-                            authority::sequence_covering(
-                                &self.engine,
-                                &mut conn,
-                                &self.ctx,
-                                &mut active.local(),
-                                &request.proposal,
-                                covered,
-                                now,
-                            )
-                            .await
-                        }
+                        Ok(now) => match &quarantined {
+                            Ok(quarantined) => {
+                                authority::sequence_covering(
+                                    &self.engine,
+                                    &mut conn,
+                                    &self.ctx,
+                                    &mut active.local(),
+                                    &request.proposal,
+                                    covered,
+                                    quarantined,
+                                    now,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error.clone()),
+                        },
                         Err(error) => Err(error),
                     },
                     Err(error) => Err(error),

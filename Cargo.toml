@@ -56,6 +56,7 @@ axum = "0.8.8"
 base64 = "0.22.1"
 block2 = "0.6.2"
 cairo-rs = { version = "0.18.5", features = ["png"] }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 dunce = "1.0.5"
 flate2 = "1.1.9"
@@ -88,6 +89,7 @@ ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
 ganbaru-themes = { path = "crates/ganbaru-themes" }
 ganbaru-working-folders = { path = "crates/ganbaru-working-folders" }
 gtk = "0.18"
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
 hyper = { version = "1.10.1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"] }
 if-addrs = { version = "=0.15.0", features = ["link-local"] }
@@ -196,6 +198,8 @@ windows = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 x11rb = "0.13.2"
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize"] }
+zeroize = "1.8.2"
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 
 [profile.dev]

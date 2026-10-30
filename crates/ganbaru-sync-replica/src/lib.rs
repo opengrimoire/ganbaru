@@ -1,6 +1,6 @@
 //! A vault replica's part in concurrent sync, independent of Tauri: database access that
 //! signals commits, the anchor's founding keys, charter, and proposal sequencing, the admin
-//! proposal outbox, the installation writer with its keys and device-local record, carry-forward of local operations
+//! proposal outbox, the installation writer with its keys and device-local record, the installation's space keys with epoch keys held in memory only, carry-forward of local operations
 //! across whole-vault replacement, recovery offers, Reset sync state, both sides of the LAN exchange of operations
 //! and managed asset files over the handoff protocol, the sweep of unreferenced asset files, and
 //! whole-vault archives for backups and bootstrap snapshots. The app owns the service lifecycle, the transport, and the frontend projection.
@@ -12,6 +12,7 @@ pub mod backup;
 pub mod carry_forward;
 pub mod client;
 pub mod hub;
+pub mod keys;
 pub mod outbox;
 pub mod peers;
 pub mod quarantine;

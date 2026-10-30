@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{OperationError, WriterId};
+use ganbaru_sync_contracts::{CryptoError, OperationError, WriterId};
 
 /// An engine failure. Store refusals and held operations are outcomes, not errors.
 #[derive(Debug)]
@@ -53,6 +53,8 @@ pub enum SyncError {
         /// Highest compacted sequence of the writer.
         seq: u64,
     },
+    /// Sealing a key epoch or a key envelope failed, as when the system random source fails.
+    Crypto(CryptoError),
     /// A materialize hook of the named table failed.
     Hook {
         /// Table of the hook.
@@ -106,6 +108,7 @@ impl fmt::Display for SyncError {
                 "operations of writer {} through {seq} were compacted",
                 writer.to_hex()
             ),
+            Self::Crypto(error) => write!(formatter, "sync key operation failed: {error}"),
             Self::Hook { table, error } => {
                 write!(formatter, "materialize hook of {table}: {error}")
             }
@@ -121,6 +124,7 @@ impl std::error::Error for SyncError {
             Self::Database(error) => Some(error),
             Self::Reservation(error) => Some(error),
             Self::Seal(error) => Some(error),
+            Self::Crypto(error) => Some(error),
             Self::Hook { error, .. } => Some(error.as_ref()),
             _ => None,
         }

@@ -165,3 +165,11 @@ ed25519_role!(
     /// An admin signing key. It signs authorization proposals only.
     AdminKeyPair
 );
+
+ed25519_role!(
+    /// The relay access public key of one key epoch, published in its `KeyEpoch` entry.
+    RelayAccessPublicKey,
+    /// The relay access signing key of one key epoch, derived from the epoch's space key. It
+    /// signs relay requests only.
+    RelayAccessKeyPair
+);

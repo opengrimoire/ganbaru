@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 
+use super::keys::SpaceKeys;
 use super::outbox::{Outbox, is_final};
 use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
@@ -16,12 +17,14 @@ use ganbaru_handoff::protocol::{
 };
 use ganbaru_sync::{
     AuthorizationView, ContestEntry, ContestRejection, Engine, LocalWriter, SpaceContext,
+    SpaceKeyHolder,
 };
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AdminPublicKey, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole,
-    Digest32, Enroll, Entry, Handover, Proposal, ProposalRejection, RecoverySeed, Remove, SetRole,
-    SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_proposal,
+    AdminKeyPair, AdminPublicKey, Charter, DeviceKey, DeviceKeyPair, DeviceKind, DevicePublicKey,
+    DeviceRole, Digest32, EncryptionPublicKey, Enroll, Entry, Handover, Proposal,
+    ProposalRejection, RecoveryKey, RecoverySeed, Remove, SetRole, SignedCharter, SignedProposal,
+    SpaceId, VersionVector, sign_charter, sign_device_proposal, sign_proposal,
 };
 use sqlx::SqliteConnection;
 
@@ -267,6 +270,7 @@ pub async fn sequence(
         writer,
         proposal,
         &VersionVector::new(),
+        &BTreeSet::new(),
         now_ms,
     )
     .await
@@ -274,7 +278,9 @@ pub async fn sequence(
 
 /// [`sequence`] on a linked anchor: a removal's cutoffs cover at least `covered`, the stored
 /// vector the coordinator last reported, since the anchor may store less of a device it
-/// quarantined than the coordinator and members already applied.
+/// quarantined than the coordinator and members already applied. A device key entry of a device
+/// in `quarantined` is refused, so a device this installation distrusts receives no envelope.
+#[allow(clippy::too_many_arguments)]
 pub async fn sequence_covering(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -282,8 +288,14 @@ pub async fn sequence_covering(
     writer: &mut LocalWriter<'_>,
     proposal: &SignedProposal,
     covered: &VersionVector,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> Result<Result<u64, ProposalRejection>, String> {
+    if let Entry::DeviceKey(entry) = &proposal.proposal.entry
+        && quarantined.contains(&entry.device_id)
+    {
+        return Ok(Err(ProposalRejection::DeviceQuarantined));
+    }
     let discovery_key = match proposal.proposal.entry {
         Entry::Remove(_) => *DiscoveryKey::generate()?.as_bytes(),
         _ => current_discovery_key(engine, conn, ctx).await?,
@@ -296,8 +308,9 @@ pub async fn sequence_covering(
 
 /// Sequences every waiting proposal of the anchor's outbox in order, records final rejections,
 /// and drops the proposals the selected chain now holds. Removal cutoffs cover at least
-/// `covered`, as in [`sequence_covering`]. Returns how many proposals were sequenced or
-/// replayed.
+/// `covered`, and device key entries of devices in `quarantined` are refused, as in
+/// [`sequence_covering`]. Returns how many proposals were sequenced or replayed.
+#[allow(clippy::too_many_arguments)]
 pub async fn sequence_outbox(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -305,12 +318,22 @@ pub async fn sequence_outbox(
     writer: &mut LocalWriter<'_>,
     outbox: &mut Outbox,
     covered: &VersionVector,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> Result<usize, String> {
     let mut sequenced = 0;
     for proposal in outbox.pending() {
-        let outcome =
-            sequence_covering(engine, conn, ctx, writer, &proposal, covered, now_ms).await?;
+        let outcome = sequence_covering(
+            engine,
+            conn,
+            ctx,
+            writer,
+            &proposal,
+            covered,
+            quarantined,
+            now_ms,
+        )
+        .await?;
         sequenced += usize::from(outcome.is_ok());
         outbox.settle(&proposal.hash(), outcome)?;
     }
@@ -393,8 +416,9 @@ pub async fn collect_forwards(
 /// Sequences the proposals a hub forwarded through the anchor's writer and returns the final
 /// rejections, which the next forward reports so the hub stops holding them. Accepted
 /// proposals need no report: the hub finds them in the chain once it applies the entries.
-/// Removal cutoffs cover at least `covered`, the hub's stored vector, as in
-/// [`sequence_covering`].
+/// Removal cutoffs cover at least `covered`, the hub's stored vector, and device key entries of
+/// devices in `quarantined` are refused, as in [`sequence_covering`].
+#[allow(clippy::too_many_arguments)]
 pub async fn sequence_forwarded(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -402,12 +426,22 @@ pub async fn sequence_forwarded(
     writer: &mut LocalWriter<'_>,
     proposals: &[SignedProposal],
     covered: &VersionVector,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> Result<Vec<(Digest32, ProposalRejection)>, String> {
     let mut rejected = Vec::new();
     for proposal in proposals {
-        if let Err(rejection) =
-            sequence_covering(engine, conn, ctx, writer, proposal, covered, now_ms).await?
+        if let Err(rejection) = sequence_covering(
+            engine,
+            conn,
+            ctx,
+            writer,
+            proposal,
+            covered,
+            quarantined,
+            now_ms,
+        )
+        .await?
             && is_final(rejection)
         {
             rejected.push((proposal.hash(), rejection));
@@ -863,6 +897,121 @@ pub async fn force_handover_here(
         }
     }
     Ok(Ok(revision))
+}
+
+/// The proposal that publishes the device encryption key of `keys` for the device `device_id`,
+/// signed by that device's key.
+pub fn device_key_proposal(
+    space: SpaceId,
+    charter: Digest32,
+    device_id: &str,
+    keys: &SpaceKeys,
+    now_ms: u64,
+) -> Result<SignedProposal, String> {
+    let device = keys.device_key();
+    sign_device_proposal(
+        &Proposal {
+            space,
+            charter,
+            author: AdminPublicKey::from_bytes(*device.public_key().as_bytes()),
+            created_at_ms: millis(now_ms)?,
+            entry: Entry::DeviceKey(DeviceKey {
+                device_id: device_id.to_string(),
+                encryption_key: keys.public_key(),
+            }),
+        },
+        device,
+    )
+    .map_err(|error| format!("sign sync device key proposal: {error}"))
+}
+
+/// The entry that names the recovery encryption key, which every later key epoch seals an
+/// envelope to. The first one the anchor sequences opens key epoch 1.
+pub fn recovery_key_entry(encryption_key: EncryptionPublicKey) -> Entry {
+    Entry::RecoveryKey(RecoveryKey { encryption_key })
+}
+
+/// What publishing the device encryption key did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceKeyPublication {
+    /// The selected log already names the key, or the device is not live in it.
+    Current,
+    /// The proposal waits in the outbox for the anchor.
+    Queued,
+    /// The anchor sequenced it at this revision.
+    Sequenced(u64),
+    /// The anchor refused it.
+    Rejected(ProposalRejection),
+}
+
+/// Publishes the device encryption key of `keys` when the selected log does not name it for
+/// the local writer's live device: the anchor sequences it, and any other device places the
+/// proposal in its outbox once for the anchor to collect. On the anchor, a rotation the log
+/// waits for is sealed first.
+pub async fn publish_device_key(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    keys: &SpaceKeys,
+    outbox: &mut Outbox,
+    now_ms: u64,
+) -> Result<DeviceKeyPublication, String> {
+    let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+    else {
+        return Ok(DeviceKeyPublication::Current);
+    };
+    let device_id = writer.certificate.certificate.device_id.clone();
+    let encryption_key = keys.public_key();
+    let live = view.devices.iter().find(|device| {
+        device.device_id == device_id
+            && device.removed_revision.is_none()
+            && device.device_key == keys.device_key().public_key()
+    });
+    let Some(device) = live else {
+        return Ok(DeviceKeyPublication::Current);
+    };
+    if device.encryption_key == Some(encryption_key) {
+        return Ok(DeviceKeyPublication::Current);
+    }
+    let proposal = device_key_proposal(ctx.space, view.charter, &device_id, keys, now_ms)?;
+    if view.anchor_device_id != device_id {
+        let queued = outbox
+            .find(|entry| {
+                matches!(entry, Entry::DeviceKey(queued)
+                    if queued.device_id == device_id && queued.encryption_key == encryption_key)
+            })
+            .is_some();
+        if !queued && outbox.has_room() {
+            outbox.add(proposal)?;
+        }
+        return Ok(DeviceKeyPublication::Queued);
+    }
+    Ok(
+        match sequence(engine, conn, ctx, writer, &proposal, now_ms).await? {
+            Ok(revision) => DeviceKeyPublication::Sequenced(revision),
+            Err(rejection) => DeviceKeyPublication::Rejected(rejection),
+        },
+    )
+}
+
+/// On the anchor, seals the key epoch the selected log waits for, as after a handover that
+/// continued past a removal. Returns its revision, `None` when nothing waits, or why the anchor
+/// cannot seal it yet, such as before it opens the current epoch.
+pub async fn complete_rotation(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<Option<u64>, ProposalRejection>, String> {
+    engine
+        .complete_rotation(conn, ctx, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync key epoch: {error}"))
 }
 
 fn millis(now_ms: u64) -> Result<i64, String> {

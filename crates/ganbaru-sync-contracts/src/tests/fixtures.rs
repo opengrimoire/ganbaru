@@ -1,13 +1,16 @@
 use crate::signing::Digest32;
 use crate::{
-    AdminKeyPair, AuthorizationRecord, Cause, Change, ChangeAction, Charter, Content,
-    DeviceKeyPair, DeviceKind, DeviceRole, Enroll, Entry, Envelope, Field, GroupId, GroupValue,
-    Handover, Header, Hlc, LateResolution, LateRow, Operation, OperationKind, Proposal,
-    RecoverySeed, Remove, ResolveLate, RowKey, Sequencing, SetRole, SignedCertificate,
-    SignedCharter, SignedProposal, SpaceId, TableId, Value, WriterCertificate, WriterId,
-    WriterKeyPair, WriterPublicKey, sign_certificate, sign_charter, sign_proposal,
+    AdminKeyPair, AdminPublicKey, AuthorizationRecord, Cause, ChainLink, Change, ChangeAction,
+    Charter, Content, DeviceKey, DeviceKeyPair, DeviceKind, DeviceRole, EncryptionKeyPair,
+    EncryptionPublicKey, Enroll, Entry, Envelope, Field, GroupId, GroupValue, Handover, Header,
+    Hlc, KeyEnvelope, KeyEpoch, LateResolution, LateRow, Operation, OperationKind, Proposal,
+    RecoveryKey, RecoverySeed, RelayAccessKeyPair, Remove, ResolveLate, RowKey, Sequencing, Server,
+    ServerConfig, ServerMode, SetRole, SignedCertificate, SignedCharter, SignedProposal, SpaceId,
+    TableId, Value, WriterCertificate, WriterId, WriterKeyPair, WriterPublicKey, sign_certificate,
+    sign_charter, sign_device_proposal, sign_proposal,
 };
 use ganbaru_contacts::PersonKeyPair;
+use zeroize::Zeroizing;
 
 pub const PERSON_SEED: [u8; 32] = [0x11; 32];
 pub const WRITER_SEED: [u8; 32] = [0x22; 32];
@@ -268,15 +271,113 @@ pub fn golden_charter() -> SignedCharter {
     sign_charter(&charter, &person()).unwrap()
 }
 
+/// A proposal signed by the golden admin key, or for a device-signed entry by the golden anchor
+/// device key.
 pub fn proposal(entry: Entry, created_at_offset_ms: i64) -> SignedProposal {
+    let device_signed = entry.device_signed();
+    let author = if device_signed {
+        AdminPublicKey::from_bytes(*device_key().public_key().as_bytes())
+    } else {
+        admin_key().public_key()
+    };
     let proposal = Proposal {
         space: space(),
         charter: golden_charter().hash(),
-        author: admin_key().public_key(),
+        author,
         created_at_ms: GOLDEN_CREATED_AT_MS + created_at_offset_ms,
         entry,
     };
-    sign_proposal(&proposal, &admin_key()).unwrap()
+    if device_signed {
+        sign_device_proposal(&proposal, &device_key()).unwrap()
+    } else {
+        sign_proposal(&proposal, &admin_key()).unwrap()
+    }
+}
+
+/// A fixed X25519 public key derived from `seed`.
+pub fn encryption_key(seed: u8) -> EncryptionPublicKey {
+    EncryptionKeyPair::from_secret(Zeroizing::new([seed; 32]))
+        .unwrap()
+        .public_key()
+}
+
+/// A key envelope with fixed bytes addressed to `recipient`. Its contents do not open; it
+/// freezes the encoding only.
+pub fn fixed_envelope(recipient: &EncryptionPublicKey, fill: u8) -> KeyEnvelope {
+    KeyEnvelope {
+        recipient: recipient.key_id(),
+        encapsulated: [fill; 32],
+        sealed: [fill.wrapping_add(1); 48],
+    }
+}
+
+/// The golden key epoch 2 entry: a chain link and envelopes to two device keys and the recovery
+/// key, ascending by key id.
+pub fn golden_key_epoch() -> KeyEpoch {
+    let mut envelopes: Vec<KeyEnvelope> = [0x71, 0x72, 0x73]
+        .iter()
+        .map(|seed| fixed_envelope(&encryption_key(*seed), *seed))
+        .collect();
+    envelopes.sort_by_key(|envelope| envelope.recipient);
+    KeyEpoch {
+        key_epoch: 2,
+        wrapped_previous: Some(ChainLink {
+            nonce: [0x74; 24],
+            sealed: [0x75; 48],
+        }),
+        envelopes,
+        relay_access_key: RelayAccessKeyPair::from_seed(&[0x76; 32])
+            .unwrap()
+            .public_key(),
+    }
+}
+
+/// One golden entry of every space key kind, with its sequencing.
+pub fn golden_key_entries() -> Vec<(&'static str, Entry, Sequencing)> {
+    let device_encryption_key = encryption_key(0x71);
+    vec![
+        (
+            "authorization-device-key",
+            Entry::DeviceKey(DeviceKey {
+                device_id: GOLDEN_DEVICE_ID.to_string(),
+                encryption_key: device_encryption_key,
+            }),
+            Sequencing::DeviceKey {
+                envelope: Some(fixed_envelope(&device_encryption_key, 0x77)),
+            },
+        ),
+        (
+            "authorization-key-epoch",
+            Entry::KeyEpoch(golden_key_epoch()),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-recovery-key",
+            Entry::RecoveryKey(RecoveryKey {
+                encryption_key: encryption_key(0x73),
+            }),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-server-config",
+            Entry::ServerConfig(ServerConfig {
+                server: Some(Server {
+                    mode: ServerMode::Relay,
+                    endpoints: vec![
+                        "relay.example.org:7443".to_string(),
+                        "[2001:db8::1]:7443".to_string(),
+                    ],
+                    certificate_fingerprint: [0x78; 32],
+                }),
+            }),
+            Sequencing::Empty,
+        ),
+        (
+            "authorization-server-config-removed",
+            Entry::ServerConfig(ServerConfig { server: None }),
+            Sequencing::Empty,
+        ),
+    ]
 }
 
 pub fn enroll_entry() -> Entry {

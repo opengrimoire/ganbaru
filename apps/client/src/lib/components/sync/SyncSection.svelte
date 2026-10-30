@@ -50,12 +50,15 @@
     buttonClass,
     mobileLayout = false,
     onAllowNetworkAccess,
+    onRecoverLocalCopy,
     onFreshCopy,
   }: {
     buttonClass: string;
     mobileLayout?: boolean;
     /** Starts allowing this desktop's sync listener through the firewall, when this device can. */
     onAllowNetworkAccess?: () => void;
+    /** Starts recovering this local copy as a separate vault, when this device can. */
+    onRecoverLocalCopy?: () => void;
     /** Copies the linked vault to this device again after sync reported that it must; absent where this device cannot receive one. */
     onFreshCopy?: () => Promise<void>;
   } = $props();
@@ -256,6 +259,16 @@
             {/if}
           {/snippet}
         </Notice>
+      {:else if status.lastErrorCode === "coordinatorRemoved" && onRecoverLocalCopy}
+        <Notice tone="warning" role="status" copy={false} message={t("sync.coordinatorRemoved")}>
+          {#snippet actions()}
+            <button type="button" class="notice-action-text" onclick={onRecoverLocalCopy}>
+              {t("vaultHandoff.recover")}
+            </button>
+          {/snippet}
+        </Notice>
+      {:else if status.lastErrorCode === "coordinatorRemoved"}
+        <Notice tone="warning" role="status" copy={false} message={t("sync.coordinatorRemoved")} />
       {:else if status.state === "error" && status.lastError}
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}

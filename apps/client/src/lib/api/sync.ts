@@ -16,7 +16,7 @@ export const SYNC_ROLES = ["hub", "client"] as const;
 export type SyncRole = (typeof SYNC_ROLES)[number];
 
 /** Sync problems the interface explains in its own words. */
-export const SYNC_ERROR_CODES = ["writerLimit", "bootstrapRequired"] as const;
+export const SYNC_ERROR_CODES = ["writerLimit", "bootstrapRequired", "coordinatorRemoved"] as const;
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
 
 /**
@@ -229,6 +229,10 @@ export const SYNC_PROPOSAL_REJECTIONS = [
   "handover_conflict",
   "epoch_frozen",
   "catching_up",
+  "device_quarantined",
+  "key_unavailable",
+  "anchor_only",
+  "rotation_pending",
 ] as const;
 export type SyncProposalRejection = (typeof SYNC_PROPOSAL_REJECTIONS)[number];
 

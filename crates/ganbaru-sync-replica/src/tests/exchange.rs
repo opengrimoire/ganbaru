@@ -68,6 +68,7 @@ struct Replica {
     writer: ActiveWriter,
     engine: Engine,
     assets: Arc<dyn AssetStore>,
+    device_id: String,
 }
 
 /// The device key of a test device, derived from its id.
@@ -149,6 +150,7 @@ async fn shared_vault_image() -> Vec<u8> {
             key: &key,
             certificate: &certificate,
             reservation: &mut reservation,
+            keys: None,
         };
         let enrollment = Enrollment {
             device_id: device_id.to_string(),
@@ -229,6 +231,7 @@ impl Replica {
             pool,
             ctx,
             writer,
+            device_id: device_id.to_string(),
         }
     }
 
@@ -501,16 +504,19 @@ fn open_hub(replica: &Replica) -> OpenHubVault {
 fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
     let pool = replica.pool.clone();
     let assets = Arc::clone(&replica.assets);
+    let device_id = replica.device_id.clone();
     Arc::new(move || {
         let pool = pool.clone();
         let assets = Arc::clone(&assets);
         let quarantined = quarantined.clone();
+        let device_id = device_id.clone();
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 assets,
                 quarantined,
+                device_id,
             }))
         })
     })
@@ -3453,6 +3459,7 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
                 &hub.ctx,
                 &mut hub.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 &Default::default(),
                 NOW_MS + 2,
             )

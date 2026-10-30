@@ -10,7 +10,8 @@ pub(crate) use restore::{read_only_uri, repair_foreign_keys};
 
 use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
-    Envelope, GroupId, Seq, SpaceId, TableId, Value, VersionVector, WriterId, WriterPublicKey,
+    AdminPublicKey, EncryptionPublicKey, Envelope, GroupId, RecoveryPublicKeys, Seq, SpaceId,
+    TableId, Value, VersionVector, WriterId, WriterPublicKey,
 };
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
@@ -143,7 +144,7 @@ pub async fn reset_sync_state(conn: &mut SqliteConnection) -> SyncResult<()> {
     for table in crate::manifest::SYNC_TABLES
         .iter()
         .chain(crate::manifest::SYNC_LOCAL_TABLES)
-        .filter(|table| **table != APPLY_STATE_TABLE)
+        .filter(|table| !RESET_KEEPS.contains(*table))
     {
         sqlx::query(AssertSqlSafe(format!("DELETE FROM {}", sql::ident(table))))
             .execute(&mut *tx)
@@ -154,8 +155,65 @@ pub async fn reset_sync_state(conn: &mut SqliteConnection) -> SyncResult<()> {
     Ok(())
 }
 
-/// The singleton engine table whose flag domain triggers read, kept by [`reset_sync_state`].
-const APPLY_STATE_TABLE: &str = "sync_apply_state";
+/// Engine tables [`reset_sync_state`] keeps: the singleton whose flag domain triggers read,
+/// and the public keys of the recovery kit the user saved, which founds the next space too.
+pub const RESET_KEEPS: &[&str] = &["sync_apply_state", RECOVERY_KIT_TABLE];
+
+/// The singleton engine table holding the public keys of the vault's recovery kit.
+const RECOVERY_KIT_TABLE: &str = "sync_recovery_kit";
+
+/// The public keys of the vault's recovery kit, `None` before a kit exists. Founding a space
+/// names the recovery admin key in its charter, and the anchor publishes the recovery
+/// encryption key in the space's first recovery key entry.
+pub async fn recovery_kit_keys(
+    conn: &mut SqliteConnection,
+) -> SyncResult<Option<RecoveryPublicKeys>> {
+    let row = sqlx::query(
+        "SELECT recovery_admin_key, recovery_encryption_key FROM sync_recovery_kit WHERE id = 1",
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let admin: Vec<u8> = row.try_get("recovery_admin_key")?;
+    let encryption: Vec<u8> = row.try_get("recovery_encryption_key")?;
+    let admin: [u8; 32] = admin
+        .try_into()
+        .map_err(|_| corrupt("stored recovery admin key has the wrong length"))?;
+    let encryption: [u8; 32] = encryption
+        .try_into()
+        .map_err(|_| corrupt("stored recovery encryption key has the wrong length"))?;
+    Ok(Some(RecoveryPublicKeys {
+        admin: AdminPublicKey::from_bytes(admin),
+        encryption: EncryptionPublicKey::from_bytes(encryption)
+            .map_err(|error| corrupt(format!("stored recovery encryption key: {error}")))?,
+    }))
+}
+
+/// Records `keys` as the public keys of the vault's recovery kit, replacing any earlier kit's.
+pub async fn store_recovery_kit_keys(
+    conn: &mut SqliteConnection,
+    keys: &RecoveryPublicKeys,
+    now_ms: u64,
+) -> SyncResult<()> {
+    let created_at_ms = i64::try_from(now_ms)
+        .map_err(|_| SyncError::InvalidRequest("the clock is out of range"))?;
+    sqlx::query(
+        "INSERT INTO sync_recovery_kit (id, recovery_admin_key, recovery_encryption_key, created_at_ms)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+             recovery_admin_key = excluded.recovery_admin_key,
+             recovery_encryption_key = excluded.recovery_encryption_key,
+             created_at_ms = excluded.created_at_ms",
+    )
+    .bind(keys.admin.as_bytes().as_slice())
+    .bind(keys.encryption.as_bytes().as_slice())
+    .bind(created_at_ms)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
 
 /// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
 /// emptied and every `Local` column is reset to its materialization value, because device state

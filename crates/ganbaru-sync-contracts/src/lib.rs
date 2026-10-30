@@ -54,6 +54,6 @@ pub use op::{
 };
 pub use order_key::{OrderKey, OrderKeyError};
 pub use order_placement::{OrderPlacementError, OrderedRow};
-pub use recovery::{RecoveryError, RecoverySeed};
+pub use recovery::{RecoveryError, RecoveryPublicKeys, RecoverySeed};
 pub use signing::{Digest32, WriterKeyError, WriterKeyPair, WriterPublicKey};
 pub use vector::VersionVector;

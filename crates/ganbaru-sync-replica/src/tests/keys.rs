@@ -20,7 +20,7 @@ use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::key_wrap::is_envelope;
 use ganbaru_sync::Engine;
 use ganbaru_sync_contracts::{
-    DeviceKeyPair, DeviceKind, EncryptionKeyPair, ProposalRejection, VersionVector,
+    DeviceKeyPair, DeviceKind, EncryptionKeyPair, ProposalRejection, RecoverySeed, VersionVector,
 };
 
 const PHONE_ID: &str = "device-phone";
@@ -112,7 +112,7 @@ fn the_anchor_publishes_its_key_and_opens_each_epoch_it_seals() {
             &mut conn,
             &ctx,
             &mut writer.local(),
-            &keys,
+            keys.as_ref(),
             &mut outbox,
             NOW_MS,
         )
@@ -125,7 +125,7 @@ fn the_anchor_publishes_its_key_and_opens_each_epoch_it_seals() {
                 &mut conn,
                 &ctx,
                 &mut writer.local(),
-                &keys,
+                keys.as_ref(),
                 &mut outbox,
                 NOW_MS,
             )
@@ -269,6 +269,113 @@ fn the_anchor_refuses_the_device_key_of_a_quarantined_device() {
         .await
         .expect("sequence")
         .expect("an unquarantined device publishes its key");
+        drop(conn);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+/// The founding kit starts the key epochs once, after the anchor's own device key, and only a
+/// kit whose admin key the charter names does. A desktop opens the current epoch without the
+/// kit only once the log names its encryption key.
+#[test]
+fn the_founding_kit_starts_the_key_epochs_after_the_anchor_key() {
+    block_on(async {
+        let directory = TestDirectory::new("space-keys-founding-kit");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let store = MemoryKeyStore::default();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn).await;
+        let mut writer = create_writer(
+            &files,
+            &store,
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        let keys = Arc::new(SpaceKeys::new(
+            device(),
+            EncryptionKeyPair::generate().expect("encryption key"),
+        ));
+        writer.attach_keys(keys.clone());
+        let mut outbox = Outbox::load(&files.outbox_path()).expect("load outbox");
+        let admin = anchor_keys().admin;
+        let kit = anchor_keys().recovery;
+        macro_rules! start {
+            ($kit:expr) => {
+                authority::start_key_epochs(
+                    &engine,
+                    &mut conn,
+                    &ctx,
+                    &admin,
+                    &mut writer.local(),
+                    &$kit,
+                    NOW_MS,
+                )
+                .await
+                .expect("start key epochs")
+            };
+        }
+
+        let view = engine
+            .authorization(&mut conn, &ctx)
+            .await
+            .expect("read")
+            .expect("charter");
+        assert!(authority::opens_current_epoch(&view, DEVICE_ID, None));
+        assert_eq!(
+            start!(kit),
+            Err(ProposalRejection::KeyUnavailable),
+            "the anchor seals no key epoch before its own key is published"
+        );
+
+        authority::publish_device_key(
+            &engine,
+            &mut conn,
+            &ctx,
+            &mut writer.local(),
+            keys.as_ref(),
+            &mut outbox,
+            NOW_MS,
+        )
+        .await
+        .expect("publish");
+        let other = RecoverySeed::from_bytes([0x77; 32])
+            .public_keys()
+            .expect("other kit");
+        assert_eq!(
+            start!(other),
+            Ok(None),
+            "a kit the charter does not name starts nothing"
+        );
+        assert!(start!(kit).expect("started").is_some());
+        let view = engine
+            .authorization(&mut conn, &ctx)
+            .await
+            .expect("read")
+            .expect("charter");
+        assert_eq!(view.key_epoch, 1);
+        assert_eq!(view.recovery_encryption_key, Some(kit.encryption));
+        assert_eq!(start!(kit), Ok(None), "the epochs start once");
+
+        assert!(authority::opens_current_epoch(
+            &view,
+            DEVICE_ID,
+            Some(keys.as_ref())
+        ));
+        assert!(!authority::opens_current_epoch(&view, DEVICE_ID, None));
+        let unpublished = SpaceKeys::new(
+            device(),
+            EncryptionKeyPair::generate().expect("encryption key"),
+        );
+        assert!(
+            !authority::opens_current_epoch(&view, DEVICE_ID, Some(&unpublished)),
+            "an unpublished key opens no envelope"
+        );
         drop(conn);
         registry.close_all().await.expect("close pools");
     });

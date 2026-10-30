@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
     AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
-    Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove,
+    Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, RecoverySeed, Remove,
     SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector,
     WriterCertificate, WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
 };
@@ -137,10 +137,16 @@ pub(super) fn device_admin(index: usize) -> AdminKeyPair {
     AdminKeyPair::from_seed(&seed).expect("test admin seed should be valid")
 }
 
-/// The recovery admin key of `person`'s spaces.
+/// The recovery kit seed of `person`'s spaces.
+pub(super) fn recovery_seed(person: &PersonKeyPair) -> RecoverySeed {
+    RecoverySeed::from_bytes(key_seed(person, RECOVERY_PURPOSE, 0))
+}
+
+/// The recovery admin key of `person`'s spaces, which their kit derives.
 pub(super) fn recovery_admin(person: &PersonKeyPair) -> AdminKeyPair {
-    AdminKeyPair::from_seed(&key_seed(person, RECOVERY_PURPOSE, 0))
-        .expect("test admin seed should be valid")
+    recovery_seed(person)
+        .recovery_admin_key()
+        .expect("test recovery seed should derive an admin key")
 }
 
 /// The charter of `space`, owned by `person`, with the anchor device as first anchor.

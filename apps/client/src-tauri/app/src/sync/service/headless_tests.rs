@@ -86,7 +86,9 @@ fn anchor_keys() -> AnchorKeys {
     AnchorKeys {
         device: DeviceKeyPair::from_seed(&[8; 32]).expect("anchor device key"),
         admin: AdminKeyPair::from_seed(&[9; 32]).expect("anchor admin key"),
-        recovery: RecoverySeed::from_bytes([10; 32]),
+        recovery: RecoverySeed::from_bytes([10; 32])
+            .public_keys()
+            .expect("recovery kit keys"),
     }
 }
 

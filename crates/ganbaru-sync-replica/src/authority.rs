@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use super::keys::SpaceKeys;
+use super::keys::KitKeys;
 use super::outbox::{Outbox, is_final};
 use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
@@ -22,40 +22,66 @@ use ganbaru_sync::{
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, Charter, DeviceKey, DeviceKeyPair, DeviceKind, DevicePublicKey,
-    DeviceRole, Digest32, EncryptionPublicKey, Enroll, Entry, Handover, Proposal,
-    ProposalRejection, RecoveryKey, RecoverySeed, Remove, SetRole, SignedCharter, SignedProposal,
-    SpaceId, VersionVector, sign_charter, sign_device_proposal, sign_proposal,
+    DeviceRole, Digest32, EncryptionKeyPair, EncryptionPublicKey, Enroll, Entry, Handover,
+    Proposal, ProposalRejection, RecoveryKey, RecoveryPublicKeys, RecoverySeed, Remove, SetRole,
+    SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_device_proposal,
+    sign_proposal,
 };
 use sqlx::SqliteConnection;
 
-/// The secrets an anchor holds for a space: its device key, the admin key it signs proposals
-/// with, and the recovery seed whose derived admin key the charter names.
+/// The keys an anchor founds a space with: its device key, the admin key it signs proposals
+/// with, and the public keys of the recovery kit, whose admin key the charter names and whose
+/// encryption key the first recovery key entry names.
 pub struct AnchorKeys {
     pub device: DeviceKeyPair,
     pub admin: AdminKeyPair,
-    pub recovery: RecoverySeed,
+    pub recovery: RecoveryPublicKeys,
 }
 
 /// Reads the anchor keys of a vault, creating each missing one once. Only founding a charter
-/// calls this: a recovery seed the user saved and the store forgot is created anew, for the
-/// next charter's kit. Key stores may block, so callers run this off the async runtime.
-pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AnchorKeys, String> {
+/// calls this. `stored_kit` is the kit the vault database keeps, as for a kit created before the
+/// vault linked, and founds the space as it is. Without one, a kit that waits unsaved in the key
+/// store founds it, and otherwise a new kit is created and waits for the user to save it. The
+/// caller stores the returned kit's public keys in the vault database. Key stores may block, so
+/// callers run this off the async runtime.
+pub fn ensure_anchor_keys(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    stored_kit: Option<RecoveryPublicKeys>,
+) -> Result<AnchorKeys, String> {
     let device = ensure_device_key(keys, vault_id)?;
     let admin = ensure_admin_key(keys, vault_id)?;
-    let recovery = match pending_recovery_seed(keys, vault_id)? {
-        Some(seed) => seed,
-        None => {
-            let seed = RecoverySeed::generate()
-                .map_err(|error| format!("create sync recovery seed: {error}"))?;
-            keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes())?;
-            seed
-        }
+    let recovery = match stored_kit {
+        Some(kit) => kit,
+        None => match pending_recovery_seed(keys, vault_id)? {
+            Some(seed) => recovery_public_keys(&seed)?,
+            None => recovery_public_keys(&create_recovery_seed(keys, vault_id)?)?,
+        },
     };
     Ok(AnchorKeys {
         device,
         admin,
         recovery,
     })
+}
+
+/// Creates a recovery seed and keeps it in the key store until the user saves its kit,
+/// replacing any seed that waits there. Key stores may block, so callers run this off the
+/// async runtime.
+pub fn create_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<RecoverySeed, String> {
+    let seed =
+        RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
+    keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes())?;
+    Ok(seed)
+}
+
+/// The public keys of the kit `seed` makes.
+pub fn recovery_public_keys(seed: &RecoverySeed) -> Result<RecoveryPublicKeys, String> {
+    seed.public_keys()
+        .map_err(|error| format!("derive the recovery keys: {error}"))
 }
 
 /// Reads the admin key of a vault, creating it once. A desktop that links to a coordinator
@@ -117,11 +143,7 @@ pub async fn ensure_charter(
     {
         return Ok(charter);
     }
-    let recovery_admin_key = anchor
-        .recovery
-        .recovery_admin_key()
-        .map_err(|error| format!("derive the recovery admin key: {error}"))?
-        .public_key();
+    let recovery_admin_key = anchor.recovery.admin;
     let charter = sign_charter(
         &Charter {
             space: ctx.space,
@@ -469,13 +491,15 @@ pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
     }))
 }
 
-/// Replaces the vault's recovery kit and returns the new seed. The `set role` proposal naming
-/// the new recovery admin key enters the outbox first and the seed is stored after, so a full
-/// outbox changes nothing and a failed store withdraws the proposal: the log never names a key
-/// whose seed is gone. The key store keeps the new seed until the user saves the kit. A kit
-/// that still waits is never overwritten while it may still sign: one the log names must be
-/// saved first, and one whose proposal still waits must be sequenced or rejected first. Key
-/// stores may block, so callers run this off the async runtime.
+/// Replaces the vault's recovery kit and returns the new seed. Two proposals enter the outbox:
+/// the recovery key entry naming the new recovery encryption key, then the `set role` naming the
+/// new recovery admin key. The recovery key goes first, so the key epoch it opens and every
+/// later one seal no envelope to the old kit. The seed is stored after both, so a full outbox
+/// changes nothing and a failed store withdraws them: the log never names a key whose seed is
+/// gone. The key store keeps the new seed until the user saves the kit. A kit that still waits
+/// is never overwritten while it may still sign: one the log names must be saved first, and one
+/// whose proposal still waits must be sequenced or rejected first. Key stores may block, so
+/// callers run this off the async runtime.
 pub fn regenerate_recovery_kit(
     keys: &dyn SyncKeyStore,
     vault_id: &str,
@@ -485,6 +509,11 @@ pub fn regenerate_recovery_kit(
     admin: &AdminKeyPair,
     now_ms: u64,
 ) -> Result<RecoverySeed, String> {
+    // The anchor rejects a recovery key entry another admin key signs, which would leave the
+    // new kit's admin key without its encryption key.
+    if !is_admin(view, &view.anchor_device_id, &admin.public_key()) {
+        return Err("only the anchor computer replaces the recovery kit".to_string());
+    }
     if let Some(waiting) = pending_recovery_seed(keys, vault_id)? {
         let key = recovery_public_key(&waiting)?;
         if key == view.recovery_admin_key {
@@ -504,14 +533,29 @@ pub fn regenerate_recovery_kit(
     }
     let seed =
         RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
-    let proposal = propose(space, view.charter, admin, recovery_entry(&seed)?, now_ms)?;
-    let hash = proposal.hash();
-    outbox.add(proposal)?;
+    let public = recovery_public_keys(&seed)?;
+    let mut added = Vec::new();
+    for entry in [
+        recovery_key_entry(public.encryption),
+        recovery_entry(&seed)?,
+    ] {
+        let proposal = propose(space, view.charter, admin, entry, now_ms)?;
+        let hash = proposal.hash();
+        if let Err(error) = outbox.add(proposal) {
+            withdraw_all(outbox, &added)?;
+            return Err(error);
+        }
+        added.push(hash);
+    }
     if let Err(error) = keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes()) {
-        outbox.withdraw(&hash)?;
+        withdraw_all(outbox, &added)?;
         return Err(error);
     }
     Ok(seed)
+}
+
+fn withdraw_all(outbox: &mut Outbox, hashes: &[Digest32]) -> Result<(), String> {
+    hashes.iter().try_for_each(|hash| outbox.withdraw(hash))
 }
 
 fn recovery_public_key(seed: &RecoverySeed) -> Result<AdminPublicKey, String> {
@@ -561,6 +605,23 @@ pub fn forget_recovery_seed(
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 
+/// Deletes the recovery seed of a vault without a sync space once the user saved its kit. The
+/// seed is kept unless `stored`, the kit keys the vault database keeps for charter creation at
+/// first link, are the keys it derives, because forgetting it could leave a founding kit nobody
+/// holds. Key stores may block, so callers run this off the async runtime.
+pub fn forget_unlinked_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    stored: Option<RecoveryPublicKeys>,
+) -> Result<(), String> {
+    if let Some(seed) = pending_recovery_seed(keys, vault_id)?
+        && stored != Some(recovery_public_keys(&seed)?)
+    {
+        return Err("the vault does not keep this recovery kit; create it again".to_string());
+    }
+    keys.remove(vault_id, SyncKey::RecoverySeed)
+}
+
 /// The recovery admin key `kit_code` derives, whether or not any log names it. Refuses a code
 /// that does not parse. A forced handover uses it unchecked, because a stolen anchor may have
 /// replaced the recovery key on the selected chain, and the engine admits the handover only
@@ -570,6 +631,16 @@ pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
         .map_err(|error| format!("read the recovery kit: {error}"))?;
     seed.recovery_admin_key()
         .map_err(|error| format!("derive the recovery admin key: {error}"))
+}
+
+/// The recovery encryption key `kit_code` derives, which opens every key epoch sealed while the
+/// log names it. Refuses a code that does not parse. Callers keep the key only while the kit
+/// flow runs.
+pub fn kit_encryption(kit_code: &str) -> Result<EncryptionKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code)
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    seed.recovery_encryption_key()
+        .map_err(|error| format!("derive the recovery encryption key: {error}"))
 }
 
 /// The recovery admin key `kit_code` derives. Refuses a code that does not parse or a kit
@@ -772,6 +843,13 @@ pub async fn seal_handover_here(
                 .to_string(),
         );
     }
+    if !opens_current_epoch(
+        &view,
+        &writer.certificate.certificate.device_id,
+        writer.keys,
+    ) {
+        return Err(KEYLESS_ANCHOR.to_string());
+    }
     let epoch = view
         .epoch
         .checked_add(1)
@@ -807,7 +885,36 @@ pub struct ForcedHandover<'a> {
     /// Devices the user marked in the device review of a kit recovery, removed under the kit
     /// key after the handover. Only a handover the kit key signs removes them.
     pub removals: Vec<String>,
+    /// The recovery encryption key the kit derives, set on a kit recovery. It opens the
+    /// recovery envelope of the current key epoch, so this desktop can publish its own device
+    /// key and seal the rotations after the handover before an envelope to its own key exists.
+    pub recovery: Option<&'a EncryptionKeyPair>,
 }
+
+/// Whether a desktop that takes the anchor without the kit opens the current key epoch: the
+/// space has no key epoch yet, or the selected log names the encryption key of `keys` for the
+/// live device `device_id`, so an envelope of every later epoch reaches it. An anchor that
+/// opens none could seal neither its own device key nor any rotation, so every removal would
+/// wait forever.
+pub fn opens_current_epoch(
+    view: &AuthorizationView,
+    device_id: &str,
+    keys: Option<&dyn SpaceKeyHolder>,
+) -> bool {
+    if view.key_epoch == 0 {
+        return true;
+    }
+    let Some(keys) = keys else {
+        return false;
+    };
+    view.devices.iter().any(|device| {
+        device.device_id == device_id
+            && device.removed_revision.is_none()
+            && device.encryption_key == Some(keys.encryption_key())
+    })
+}
+
+const KEYLESS_ANCHOR: &str = "this desktop's encryption key is not published yet; sync once with the anchor, or use the recovery kit";
 
 /// Forces the anchor to this desktop after the anchor is lost or stolen: signs with the
 /// request's signer and seals a handover without an old anchor vector, so operations only the
@@ -816,9 +923,36 @@ pub struct ForcedHandover<'a> {
 /// is still live, which may lie below a stolen anchor's removal of it, and then removes the old
 /// anchor and every device marked in the device review; any other signer continues from the
 /// selected head. With a promotion, the new anchor then sequences the promotion of its own
-/// device to admin with that key, signed by the same signer. Returns the revision of the last
-/// entry, or why the engine rejected one.
+/// device to admin with that key, signed by the same signer. With the kit's recovery key, the
+/// new anchor publishes its own device key right after the handover, which seals any rotation
+/// the handover point waits for, and signs every later entry with that key at hand. Without it,
+/// a desktop that would open no key epoch is refused before anything is sealed. Returns the
+/// revision of the last entry, or why the engine rejected one.
 pub async fn force_handover_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    forced: &ForcedHandover<'_>,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let Some(recovery) = forced.recovery else {
+        return force_handover_with(engine, conn, ctx, forced, writer, now_ms).await;
+    };
+    let base = writer
+        .keys
+        .ok_or_else(|| "this desktop holds no sync encryption key".to_string())?;
+    let kit = KitKeys::new(base, recovery);
+    let mut with_kit = LocalWriter {
+        key: writer.key,
+        certificate: writer.certificate,
+        reservation: &mut *writer.reservation,
+        keys: Some(&kit),
+    };
+    force_handover_with(engine, conn, ctx, forced, &mut with_kit, now_ms).await
+}
+
+async fn force_handover_with(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -845,6 +979,16 @@ pub async fn force_handover_here(
             "the log holds only its charter, so no epoch can continue it; link the devices again"
                 .to_string(),
         );
+    }
+    if forced.recovery.is_none() {
+        let view = engine
+            .authorization(conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "the sync space has no charter".to_string())?;
+        if !opens_current_epoch(&view, &device_id, writer.keys) {
+            return Err(KEYLESS_ANCHOR.to_string());
+        }
     }
     let charter = engine
         .charter(conn, ctx)
@@ -876,6 +1020,13 @@ pub async fn force_handover_here(
         Ok(revision) => revision,
         Err(rejection) => return Ok(Err(rejection)),
     };
+    if forced.recovery.is_some() {
+        match sequence_own_device_key(engine, conn, ctx, writer, now_ms).await? {
+            Ok(Some(sealed)) => revision = revision.max(sealed),
+            Ok(None) => {}
+            Err(rejection) => return Ok(Err(rejection)),
+        }
+    }
     let mut follow_up = Vec::new();
     if point.by_kit {
         let mut removed = BTreeSet::from([device_id.clone()]);
@@ -905,7 +1056,7 @@ pub fn device_key_proposal(
     space: SpaceId,
     charter: Digest32,
     device_id: &str,
-    keys: &SpaceKeys,
+    keys: &dyn SpaceKeyHolder,
     now_ms: u64,
 ) -> Result<SignedProposal, String> {
     let device = keys.device_key();
@@ -917,7 +1068,7 @@ pub fn device_key_proposal(
             created_at_ms: millis(now_ms)?,
             entry: Entry::DeviceKey(DeviceKey {
                 device_id: device_id.to_string(),
-                encryption_key: keys.public_key(),
+                encryption_key: keys.encryption_key(),
             }),
         },
         device,
@@ -947,13 +1098,13 @@ pub enum DeviceKeyPublication {
 /// Publishes the device encryption key of `keys` when the selected log does not name it for
 /// the local writer's live device: the anchor sequences it, and any other device places the
 /// proposal in its outbox once for the anchor to collect. On the anchor, a rotation the log
-/// waits for is sealed first.
+/// waits for is sealed right after the key, which the anchor needs to seal it.
 pub async fn publish_device_key(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: &mut LocalWriter<'_>,
-    keys: &SpaceKeys,
+    keys: &dyn SpaceKeyHolder,
     outbox: &mut Outbox,
     now_ms: u64,
 ) -> Result<DeviceKeyPublication, String> {
@@ -965,7 +1116,7 @@ pub async fn publish_device_key(
         return Ok(DeviceKeyPublication::Current);
     };
     let device_id = writer.certificate.certificate.device_id.clone();
-    let encryption_key = keys.public_key();
+    let encryption_key = keys.encryption_key();
     let live = view.devices.iter().find(|device| {
         device.device_id == device_id
             && device.removed_revision.is_none()
@@ -996,6 +1147,88 @@ pub async fn publish_device_key(
             Err(rejection) => DeviceKeyPublication::Rejected(rejection),
         },
     )
+}
+
+/// On the anchor, sequences the device key of the local writer's keys unless the selected log
+/// already names it. Returns the revision, `None` when nothing was sequenced, or why the engine
+/// refused it.
+async fn sequence_own_device_key(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<Option<u64>, ProposalRejection>, String> {
+    let keys = writer
+        .keys
+        .ok_or_else(|| "this desktop holds no sync encryption key".to_string())?;
+    let view = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        .ok_or_else(|| "the sync space has no charter".to_string())?;
+    let device_id = writer.certificate.certificate.device_id.clone();
+    let published = view.devices.iter().any(|device| {
+        device.device_id == device_id && device.encryption_key == Some(keys.encryption_key())
+    });
+    if published {
+        return Ok(Ok(None));
+    }
+    let proposal = device_key_proposal(ctx.space, view.charter, &device_id, keys, now_ms)?;
+    Ok(sequence(engine, conn, ctx, writer, &proposal, now_ms)
+        .await?
+        .map(Some))
+}
+
+/// On the anchor of a space without a key epoch, sequences the first recovery key entry,
+/// which names the kit's recovery encryption key and opens key epoch 1. `kit` is the kit the
+/// vault database keeps; it starts the epochs only when its admin key is the one the selected
+/// log names, so a kit the log does not name never receives an envelope. The anchor's own
+/// device key must be sequenced first, because the anchor seals the key epoch to it. Returns
+/// the revision of the key epoch, `None` when nothing was sequenced, or why the engine refused
+/// it.
+pub async fn start_key_epochs(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    writer: &mut LocalWriter<'_>,
+    kit: &RecoveryPublicKeys,
+    now_ms: u64,
+) -> Result<Result<Option<u64>, ProposalRejection>, String> {
+    let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+    else {
+        return Ok(Ok(None));
+    };
+    let device_id = &writer.certificate.certificate.device_id;
+    if !starts_key_epochs(&view, device_id, kit) {
+        return Ok(Ok(None));
+    }
+    let proposal = propose(
+        ctx.space,
+        view.charter,
+        admin,
+        recovery_key_entry(kit.encryption),
+        now_ms,
+    )?;
+    Ok(sequence(engine, conn, ctx, writer, &proposal, now_ms)
+        .await?
+        .map(Some))
+}
+
+/// Whether the anchor `device_id` starts the key epochs of the space `view` shows with `kit`:
+/// it anchors, no recovery key entry was sequenced, and the log names the kit's admin key.
+pub fn starts_key_epochs(
+    view: &AuthorizationView,
+    device_id: &str,
+    kit: &RecoveryPublicKeys,
+) -> bool {
+    view.anchor_device_id == device_id
+        && view.recovery_encryption_key.is_none()
+        && view.recovery_admin_key == kit.admin
 }
 
 /// On the anchor, seals the key epoch the selected log waits for, as after a handover that

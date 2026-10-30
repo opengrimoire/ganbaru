@@ -8,7 +8,7 @@ use crate::local::{
     prepare_snapshot_copy, replacement_vector, restore_local_state, space_context,
 };
 use crate::log::WriterState;
-use ganbaru_sync_contracts::VersionVector;
+use ganbaru_sync_contracts::{RecoverySeed, VersionVector};
 use sqlx::{Connection, SqliteConnection};
 
 async fn add_note(replica: &mut Replica, id: &str, title: &str) {
@@ -553,6 +553,10 @@ fn reset_sync_state_clears_engine_tables_and_the_next_open_republishes_every_row
         add_note(&mut replica, "note-2", "Two").await;
         replica.seal().await.unwrap();
         assert!(replica.count("SELECT COUNT(*) FROM sync_ops").await > 0);
+        let kit = RecoverySeed::from_bytes([0x31; 32]).public_keys().unwrap();
+        local::store_recovery_kit_keys(&mut replica.conn, &kit, replica.now_ms)
+            .await
+            .unwrap();
 
         local::reset_sync_state(&mut replica.conn).await.unwrap();
 
@@ -563,9 +567,14 @@ fn reset_sync_state_clears_engine_tables_and_the_next_open_republishes_every_row
             let rows = replica
                 .count(&format!("SELECT COUNT(*) FROM \"{table}\""))
                 .await;
-            let expected = i64::from(*table == "sync_apply_state");
+            let expected = i64::from(local::RESET_KEEPS.contains(table));
             assert_eq!(rows, expected, "{table} after the reset");
         }
+        assert_eq!(
+            local::recovery_kit_keys(&mut replica.conn).await.unwrap(),
+            Some(kit),
+            "the saved kit founds the next space"
+        );
         assert_eq!(
             replica
                 .count("SELECT applying FROM sync_apply_state WHERE singleton = 1")
@@ -620,6 +629,47 @@ fn reset_sync_state_clears_engine_tables_and_the_next_open_republishes_every_row
                 .await,
             2,
             "every current note is published again"
+        );
+    });
+}
+
+/// Storing a kit replaces the single row whole, and a snapshot copy carries the kit's public
+/// keys to the receiving device.
+#[test]
+fn the_recovery_kit_keys_are_replaced_whole_and_copied_with_snapshots() {
+    block_on(async {
+        let mut replica = Replica::anchor(0, 32).await;
+        assert_eq!(
+            local::recovery_kit_keys(&mut replica.conn).await.unwrap(),
+            None
+        );
+        let first = RecoverySeed::from_bytes([0x41; 32]).public_keys().unwrap();
+        let second = RecoverySeed::from_bytes([0x42; 32]).public_keys().unwrap();
+        assert_ne!(first, second);
+        local::store_recovery_kit_keys(&mut replica.conn, &first, replica.now_ms)
+            .await
+            .unwrap();
+        local::store_recovery_kit_keys(&mut replica.conn, &second, replica.now_ms + 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            replica
+                .count("SELECT COUNT(*) FROM sync_recovery_kit")
+                .await,
+            1
+        );
+        assert_eq!(
+            local::recovery_kit_keys(&mut replica.conn).await.unwrap(),
+            Some(second)
+        );
+
+        let mut copy = connection_from(&replica.snapshot().await).await;
+        prepare_snapshot_copy(&mut copy, replica.engine.manifest())
+            .await
+            .unwrap();
+        assert_eq!(
+            local::recovery_kit_keys(&mut copy).await.unwrap(),
+            Some(second)
         );
     });
 }

@@ -86,6 +86,8 @@ export const sync = {
     codePlaceholder: "ganbaru-relay:… or ganbaru-anchor:…",
     takeAnchor: "Make this server the anchor, so devices keep syncing while every computer is off",
     unreviewed: "I understand that the server encryption has not had an external security review yet",
+    unreviewedAnchor: "I understand that this server can read my whole vault, and that this feature has not had an external security review yet",
+    anchorReadable: "An anchor server holds the vault keys and can read everything in the vault. Encryption does not protect the vault from this server. Use an anchor only on hardware you own, and a relay on a rented server.",
     add: "Add server",
     adding: "Adding server…",
     added: "Relay added. It takes effect once the anchor confirms it.",

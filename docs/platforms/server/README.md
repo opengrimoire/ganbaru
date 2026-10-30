@@ -1,6 +1,6 @@
 # Self-hosted server
 
-**Status: Partial.** The `ganbaru-sync-relay` binary runs on a machine you control, and sync never needs it. Relay mode and anchor mode are implemented in source; physical acceptance is pending. Settings for adding a server are in progress, so the app steps below name what the desktop does once they ship.
+**Status: Partial.** The `ganbaru-sync-relay` binary runs on a machine you control, and sync never needs it. Relay mode, anchor mode, and their Settings are implemented in source; physical acceptance is pending.
 
 Pick one mode for a data directory.
 
@@ -9,7 +9,7 @@ Pick one mode for a data directory.
 | Relay | Stores sealed records and asset chunks between devices that are not online together. | Nothing inside the records. |
 | Anchor | Runs a full replica of one vault, serves every device, and takes the anchor role, so the vault keeps moving while your personal devices sleep. It is also a backup. | The whole vault. It holds the space keys. |
 
-Choose the anchor only for a machine you trust with your vault. [Sync](../../data/sync.md) owns the behavior and [Network and privacy](../../data/security/network-and-privacy.md) owns the security boundary.
+An anchor server keeps the vault in plaintext and holds its keys, so encryption does not protect the vault from that machine or from whoever runs it. Use relay mode on a rented server, and anchor mode on hardware you own. [Sync](../../data/sync.md) owns the behavior and [Network and privacy](../../data/security/network-and-privacy.md) owns the security boundary.
 
 ## What you need
 
@@ -46,7 +46,7 @@ Stop the server, then run `ganbaru-sync-relay anchor backup --data-dir <path> --
 The server must hold the anchor role, and you need the recovery kit.
 
 1. Run `anchor setup` on the server for a fresh code.
-2. On a new desktop, enter the code and the kit. The desktop derives the recovery admin key in memory, enrolls itself as an admin through the server, and copies the vault into a new folder.
+2. On a new desktop, choose **Recover from an anchor server** on the linking screen of the first launch, or in Settings > Data when the device is not linked, and enter the code and the kit. The desktop derives the recovery admin key in memory, enrolls itself as an admin through the server, and copies the vault into a new folder.
 3. Keep the recovery kit. The person key does not return this way: a linked phone or desktop that still holds it can share it again, and otherwise anything signed with it stays as it is.
 
 If the copy fails after the enrollment, repeat the steps with a fresh code and the same kit.

@@ -92,6 +92,8 @@ export const sync = {
     codePlaceholder: "ganbaru-relay:… o ganbaru-anchor:…",
     takeAnchor: "Hacer de este servidor el ancla, para que los dispositivos sigan sincronizándose con todas las computadoras apagadas",
     unreviewed: "Entiendo que el cifrado del servidor aún no ha tenido una revisión de seguridad externa",
+    unreviewedAnchor: "Entiendo que este servidor puede leer toda mi bóveda y que esta función aún no ha tenido una revisión de seguridad externa",
+    anchorReadable: "Un servidor ancla guarda las claves de la bóveda y puede leer todo su contenido. El cifrado no protege la bóveda de este servidor. Usa un ancla solo en hardware propio, y un relé en un servidor rentado.",
     add: "Agregar servidor",
     adding: "Agregando servidor…",
     added: "Relé agregado. Entra en vigor cuando el ancla lo confirme.",

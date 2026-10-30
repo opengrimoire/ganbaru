@@ -180,9 +180,10 @@
         />
         <label class="flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
           <Checkbox class="mt-0.5" bind:checked={acknowledged} disabled={busy} />
-          <span class="min-w-0">{t("sync.server.unreviewed")}</span>
+          <span class="min-w-0">{isAnchorCode ? t("sync.server.unreviewedAnchor") : t("sync.server.unreviewed")}</span>
         </label>
         {#if isAnchorCode}
+          <p class="text-[0.8rem] leading-5 text-foreground">{t("sync.server.anchorReadable")}</p>
           <label class="flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
             <Checkbox class="mt-0.5" bind:checked={takeAnchor} disabled={busy} />
             <span class="min-w-0">{t("sync.server.takeAnchor")}</span>

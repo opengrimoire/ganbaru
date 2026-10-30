@@ -23,6 +23,7 @@ The intended enforcement is defined in [Repository policy](../repository-policy.
 | Linux x64 | `.deb`, `.rpm`, and `.AppImage` |
 | Windows x64 | Tauri `.msi` and setup executable |
 | Android 10 or newer | Signed universal APK and AAB with ARM64, ARMv7, x86, and x86_64 libraries |
+| Self-hosted sync server | Static Linux binaries for x86_64 and aarch64, and a container image ([Distribution](distribution.md#sync-relay)) |
 | macOS and iOS | Not part of the current release workflow |
 
 Linux builds use Ubuntu 22.04 to preserve broader glibc compatibility. Windows builds use the pinned Windows runner. Android release artifacts are separate from the desktop updater feed.

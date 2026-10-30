@@ -1,6 +1,6 @@
 # Sync topology and authority decisions
 
-**Status: Implemented** for authority and LAN peer exchange. Recorded 2026-10-09, after Quick notes replication was implemented in source through a single coordinator hub, to remove that single point. The anchored authorization log, device and admin keys, removal cutoffs, late changes, fork evidence, quarantine, anchor handover (planned, forced by the recovery kit, and contested), the recovery kit, and LAN peer exchange between members are implemented in source. The relay and the always-on anchor are planned. The engine itself is explained by [Sync engine decisions](sync-engine.md), the contract by [Device linking and synchronization](../../data/sync.md), and people, spaces, and roles by [Contacts and invitations](../../features/collaboration/README.md).
+**Status: Implemented** for authority and LAN peer exchange. Recorded 2026-10-09, after Quick notes replication was implemented in source through a single coordinator hub, to remove that single point. The anchored authorization log, device and admin keys, removal cutoffs, late changes, fork evidence, quarantine, anchor handover (planned, forced by the recovery kit, and contested), the recovery kit, and LAN peer exchange between members are implemented in source. The relay and the always-on anchor are implemented in source, with physical acceptance pending. The engine itself is explained by [Sync engine decisions](sync-engine.md), the contract by [Device linking and synchronization](../../data/sync.md), and people, spaces, and roles by [Contacts and invitations](../../features/collaboration/README.md).
 
 ## Constraints
 
@@ -26,8 +26,8 @@
 | Device-local quarantine without the anchor | Any device can immediately refuse another while the anchor is unreachable. Quarantine never excludes operations by itself, so replicas still converge once the removal is sequenced. |
 | Anchor handover is admin-signed and increments an anchor epoch | A lost, replaced, or restored anchor can hand over without consensus. Two concurrent takes freeze the epoch until one contestant yields or the kit decides, and a forked anchor freezes its epoch until a handover. |
 | Every member installation serves its LAN peers | With removal decided by the anchor's log, any enrolled device can store and serve operations, authenticated by mutual TLS with the certificates its enrollment names. A device removed before the handshake still receives authorization records, so it learns of its removal. |
-| A relay is blind and never an anchor (planned) | It cannot read content or validate authorization, so it only stores and forwards encrypted records. |
-| An always-on anchor is an enrolled member, not a service (planned) | One self-hosted binary can run as a full member that holds the keys, which makes it the anchor, a hub reachable from every network, and a backup. This is the organization configuration and also suits one person with a home server. |
+| A relay never reads content and is never an anchor | It cannot read content or validate authorization, so it only stores and forwards encrypted records. It still sees [metadata](../../data/security/network-and-privacy.md#relay-encryption), including opaque key recipients. |
+| An always-on anchor is an enrolled member, not a service | One self-hosted binary can run as a full member that holds the keys, which makes it the anchor, a hub reachable from every network, and a backup. This is the organization configuration and also suits one person with a home server. |
 | Personal data is a space with one member | Devices and people use the same log, cutoff, and key rules; a person's anchor defaults to their coordinator desktop. |
 
 ## Rejected alternatives
@@ -37,7 +37,7 @@
 - **A single hub forever:** a switched-off coordinator would stop all sync, and every device would need to share its LAN.
 - **Any hub sealing removals:** two hubs with different stored sequences would give different cutoffs for the same removal.
 - **Project-operated relays or anchors:** conflict with the project's self-hosting principle and would centralize authority.
-- **A shared folder as transport:** dropped; member listeners on the LAN and the planned relay cover the reachability it would add.
+- **A shared folder as transport:** dropped; member listeners on the LAN and the relay cover the reachability it would add.
 - **Vouching for operations past a cutoff:** accepting evidence from peers would let a removed device influence outcomes through peers that have not yet seen the removal. Cutoffs stay fixed, and an admin restoring late changes covers the honest case.
 
 ## Accepted limitations

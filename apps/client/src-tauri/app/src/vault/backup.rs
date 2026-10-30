@@ -10,6 +10,8 @@ use chrono::{SecondsFormat, Utc};
 use ganbaru_mobile_documents::MobileDocumentsExt;
 #[cfg(any(desktop, test))]
 use ganbaru_sync_replica::backup::ArchiveGate;
+#[cfg(target_os = "android")]
+use ganbaru_sync_replica::backup::BACKUP_MAX_BYTES;
 use ganbaru_sync_replica::backup::{
     BACKUP_MAX_ENTRIES, DIFFERENT_VAULT_ERROR, is_bundle_layout_entry, is_database_sidecar,
 };

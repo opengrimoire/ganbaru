@@ -561,7 +561,7 @@ fn server_source(
     let target = crate::anchor_link::ServerTarget::of(view)?;
     let device_id = target.device_id(view)?;
     (device_id != own_device_id && !quarantined.contains(device_id))
-        .then(|| BundleSource::Server(target))
+        .then_some(BundleSource::Server(target))
 }
 
 /// The live members of `view` that serve vault copies besides the coordinator: computers other

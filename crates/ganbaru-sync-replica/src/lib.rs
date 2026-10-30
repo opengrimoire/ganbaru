@@ -9,6 +9,7 @@
 
 pub mod access;
 pub mod anchor_link;
+#[cfg(desktop)]
 pub mod anchor_setup;
 pub mod assets;
 pub mod authority;

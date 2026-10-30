@@ -201,7 +201,8 @@ pub fn parse_fingerprint(text: &[u8]) -> Result<[u8; FINGERPRINT_BYTES], String>
         return Err(damaged());
     }
     let mut bytes = [0_u8; FINGERPRINT_BYTES];
-    for (byte, pair) in bytes.iter_mut().zip(text.chunks_exact(2)) {
+    let (pairs, _) = text.as_chunks::<2>();
+    for (byte, pair) in bytes.iter_mut().zip(pairs) {
         let pair = std::str::from_utf8(pair).map_err(|_| damaged())?;
         *byte = u8::from_str_radix(pair, 16).map_err(|_| damaged())?;
     }

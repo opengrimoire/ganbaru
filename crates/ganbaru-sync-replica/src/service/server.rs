@@ -28,6 +28,7 @@ pub(super) struct ServerLink {
     assets: Arc<dyn AssetStore>,
     transfer: AssetTransfer,
     /// What the server reported storing, which covers removal cutoffs an anchor here seals.
+    #[cfg_attr(mobile, allow(dead_code))]
     stored: VersionVector,
     /// An exchange stopped at its byte bound.
     pub(super) more: bool,
@@ -194,6 +195,7 @@ impl ServiceState {
         manager: &PairingManager,
         mut link: ServerLink,
     ) -> Result<bool, String> {
+        #[cfg_attr(mobile, allow(unused_mut))]
         let mut more = false;
         if link.anchors {
             session

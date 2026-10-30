@@ -433,7 +433,7 @@ impl Session {
     async fn claim(
         &mut self,
         space: SpaceId,
-        token: &str,
+        token: &RelaySetupToken,
         epoch: u32,
         access_key: &str,
         admins: &[String],
@@ -442,7 +442,6 @@ impl Session {
         signature: &str,
     ) -> (RelayResponse, Next) {
         let parsed = (|| -> Result<_, String> {
-            let token = RelaySetupToken::from_text(token)?;
             let access_key = decode_relay_access_key(access_key)?;
             let admins = admins
                 .iter()
@@ -450,9 +449,9 @@ impl Session {
                 .collect::<Result<Vec<_>, _>>()?;
             let signer = decode_relay_admin_key(signer)?;
             let signature = decode_relay_signature(signature)?;
-            Ok((token, access_key, admins, signer, signature))
+            Ok((access_key, admins, signer, signature))
         })();
-        let (token, access_key, admins, signer, signature) = match parsed {
+        let (access_key, admins, signer, signature) = match parsed {
             Ok(parsed) => parsed,
             Err(error) => return bad_request(&error),
         };
@@ -478,7 +477,7 @@ impl Session {
         }
         let claim = ClaimRequest {
             space,
-            token: &token,
+            token,
             epoch,
             access_key,
             admins: &admins,

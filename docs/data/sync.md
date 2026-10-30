@@ -199,7 +199,7 @@ Content merges without a leader and any path may deliver signed operations; only
 | Coordinator | The desktop that pairs devices, owns the vault for whole-vault handoff, and runs the main hub. It founds the space and is its first anchor, and it stays coordinator after a handover moves the anchor. |
 | Hub | Any member installation that stores and serves operations. Every linked member desktop, and a phone while the app is in the foreground, serves its LAN peers, authenticated by mutual TLS with the certificates its enrollment names. |
 | Anchor | The one member desktop per space that sequences the hash-chained authorization log of enrollments, removals, roles, admin keys, and handovers. It never gates content. |
-| Relay | **Planned.** A blind, self-hosted store-and-forward service for encrypted records. It is never an anchor. |
+| Relay | **Partial.** A blind, self-hosted store-and-forward service for encrypted records. It is never an anchor. The server exists in source; devices do not use it yet. |
 | Always-on anchor | **Planned.** A self-hosted server running as an enrolled member that holds the keys, so it is also a hub reachable from every network and a backup. |
 
 Editing and delivery continue while the anchor is unreachable; only authorization proposals wait. The implemented rules for admin keys, removal cutoffs, late changes, quarantine, fork evidence, handover, contests, and the recovery kit are in [Writers](#writers), and member listeners and record exchange in [Exchange](#exchange); the pure selection and exclusion logic is in [Sync merge rules](../algorithms/sync/README.md#authorization-and-exclusion).

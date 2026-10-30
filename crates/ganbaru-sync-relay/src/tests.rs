@@ -770,7 +770,7 @@ impl Client {
             },
         );
         self.send(&RelayRequest::Claim {
-            token: token.to_text(),
+            token: token.clone(),
             epoch: 1,
             access_key: encode_relay_bytes(access_key.as_bytes()),
             admins: vec![encode_relay_bytes(owner.public_key().as_bytes())],

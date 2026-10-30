@@ -73,7 +73,6 @@ const fn base64_length(bytes: usize) -> usize {
 
 const KEY_TEXT_LENGTH: usize = base64_length(PUBLIC_KEY_BYTES);
 const SIGNATURE_TEXT_LENGTH: usize = base64_length(SIGNATURE_BYTES);
-const TOKEN_TEXT_LENGTH: usize = base64_length(RELAY_SETUP_TOKEN_BYTES);
 const MAX_RECORD_TEXT_BYTES: usize = base64_length(MAX_RELAY_RECORD_BYTES);
 const MAX_CHUNK_TEXT_BYTES: usize = base64_length(MAX_RELAY_ASSET_CHUNK_BYTES);
 const MAX_ENTRY_TEXT_BYTES: usize = base64_length(MAX_RELAY_EPOCH_ENTRY_BYTES);
@@ -334,7 +333,7 @@ pub enum RelayRequest {
     Auth { epoch: u32, signature: String },
     /// Creates the space with a one-time setup token.
     Claim {
-        token: String,
+        token: RelaySetupToken,
         epoch: u32,
         access_key: String,
         admins: Vec<String>,
@@ -395,14 +394,12 @@ impl Frame for RelayRequest {
                 check_fixed_text("relay signature", signature, SIGNATURE_TEXT_LENGTH)
             }
             Self::Claim {
-                token,
                 access_key,
                 admins,
                 signer,
                 signature,
                 ..
             } => {
-                check_fixed_text("relay setup token", token, TOKEN_TEXT_LENGTH)?;
                 check_fixed_text("relay access key", access_key, KEY_TEXT_LENGTH)?;
                 if admins.is_empty() || admins.len() > MAX_RELAY_ADMIN_KEYS {
                     return Err("relay admin set is invalid".to_string());
@@ -755,6 +752,20 @@ impl fmt::Debug for RelaySetupToken {
     }
 }
 
+impl Serialize for RelaySetupToken {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_text())
+    }
+}
+
+impl<'de> Deserialize<'de> for RelaySetupToken {
+    /// Reads the wire text, refusing any length other than the token's before decoding.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::from_text(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// What a relay operator hands to an admin device: where the relay listens, how to pin its TLS
 /// certificate, and the one-time token that claims a space.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1011,6 +1022,25 @@ mod tests {
         assert!(RelaySetupCode::from_bytes(&version).is_err());
         assert!(RelaySetupCode::from_text("ganbaru-relay:").is_err());
         assert!(!format!("{code:?}").contains(&code.token.to_text()));
+        let claim = RelayRequest::Claim {
+            token: code.token.clone(),
+            epoch: 1,
+            access_key: encode_relay_bytes(&[1; PUBLIC_KEY_BYTES]),
+            admins: vec![encode_relay_bytes(&[2; PUBLIC_KEY_BYTES])],
+            counter: 1,
+            signer: encode_relay_bytes(&[2; PUBLIC_KEY_BYTES]),
+            signature: encode_relay_bytes(&[3; SIGNATURE_BYTES]),
+        };
+        assert!(!format!("{claim:?}").contains(&code.token.to_text()));
+        let wire = serde_json::to_vec(&claim).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<RelayRequest>(&wire).unwrap(),
+            claim
+        );
+        let short = String::from_utf8(wire)
+            .unwrap()
+            .replace(&code.token.to_text(), "AAAA");
+        assert!(serde_json::from_str::<RelayRequest>(&short).is_err());
     }
 
     #[test]

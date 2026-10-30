@@ -189,7 +189,7 @@ The re-seal is refused when an operation from another writer already depends on 
 
 1. Phone P, offline, edits note N's title (seq 41) and then its body (seq 42). The anchor A has stored P's writer through seq 40, and desktop D has received seq 41 from P on the LAN.
 2. An admin removes P. A sequences the removal with cutoff 40, its stored sequence for P's writer.
-3. D applies the removal: seq 41 is excluded, its title version is removed, and the title it superseded comes back. Seq 42 later reaches D from P and is held as excluded without applying. Both leave one late change for N with the title and body values.
+3. D applies the removal: seq 41 is excluded, its title version is removed, and the title it superseded comes back. Seq 42 later reaches D through a peer that had not yet applied the removal and is held as excluded without applying. Both leave one late change for N with the title and body values.
 4. The admin restores the late change. The restore seals the late title and body under the admin's own writer, which every replica applies as ordinary writes, and the `resolve late` entry closes the late change everywhere. Had the admin discarded it, N would keep the values from before seq 41.
 
 ### Late-created row

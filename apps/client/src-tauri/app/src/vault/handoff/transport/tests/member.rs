@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::sync::hub::{OpenHubVault, SyncHub};
-use crate::vault::handoff::pairing::certificate_fingerprint;
+use crate::vault::handoff::pairing::{PendingAcknowledgement, certificate_fingerprint};
 use crate::vault::handoff::protocol::decode_certificate_fingerprint;
 use ganbaru_sync::{AuthorizationView, EnrolledDevice};
 use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind as SyncDeviceKind, DevicePublicKey};
@@ -29,16 +29,25 @@ struct MemberListener {
 
 impl MemberListener {
     async fn start() -> Self {
+        Self::start_serving(None, false).await
+    }
+
+    /// A member listener dialed by `phone`, or by a new unlinked phone, that serves vault
+    /// copies when `serve_copies`.
+    async fn start_serving(phone: Option<PairingManager>, serve_copies: bool) -> Self {
         let member_root = TestDirectory::new("member");
         let phone_root = TestDirectory::new("member-phone");
         let member = PairingManager::default();
         member
             .initialize(member_root.path().to_path_buf(), MEMBER.to_string())
             .expect("initialize member");
-        let phone = PairingManager::default();
-        phone
-            .initialize(phone_root.path().to_path_buf(), PHONE.to_string())
-            .expect("initialize phone");
+        let phone = phone.unwrap_or_else(|| {
+            let phone = PairingManager::default();
+            phone
+                .initialize(phone_root.path().to_path_buf(), PHONE.to_string())
+                .expect("initialize phone");
+            phone
+        });
         let fingerprint = |manager: &PairingManager| {
             certificate_fingerprint(manager.certificate().expect("certificate").as_ref())
         };
@@ -56,6 +65,7 @@ impl MemberListener {
                 Box::pin(async move { Ok(current) })
             }),
             lan: LanAdmission::default(),
+            bundles: serve_copies.then(|| snapshot_copies(member_root.path().to_path_buf())),
         };
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -96,6 +106,57 @@ impl MemberListener {
         )
         .await
     }
+
+    /// This listener as a vault copy source.
+    fn source(&self) -> BundleSource {
+        BundleSource::Member {
+            device_id: MEMBER.to_string(),
+            endpoints: vec![self.endpoint.clone()],
+            fingerprint: self.member_fingerprint.clone(),
+        }
+    }
+}
+
+/// The archive bytes every test snapshot copy holds.
+const MEMBER_COPY: &[u8] = b"member snapshot copy";
+
+/// Snapshot copies written under `root`, built for the request as the app builds them.
+fn snapshot_copies(root: PathBuf) -> server::MemberBundles {
+    server::MemberBundles::new(std::sync::Arc::new(
+        move |request: server::SnapshotRequest| {
+            let root = root.clone();
+            Box::pin(async move {
+                let transfer_id = random_token("transfer")?;
+                let archive_path = root.join(format!("{transfer_id}.zip"));
+                fs::write(&archive_path, MEMBER_COPY).map_err(|error| error.to_string())?;
+                let metadata = BundleMetadata {
+                    protocol_version: PROTOCOL_VERSION,
+                    compatibility: super::super::super::protocol::test_compatibility(),
+                    vault_id: request.vault_id,
+                    device_id: request.device_id,
+                    transfer_id,
+                    generation: request.generation,
+                    archive_bytes: MEMBER_COPY.len() as u64,
+                    archive_sha256: sha256_file(&archive_path)?,
+                };
+                Ok(server::PreparedSnapshot {
+                    metadata,
+                    archive_path,
+                })
+            })
+        },
+    ))
+}
+
+fn bundle_request(purpose: BundlePurpose) -> ControlMessage {
+    ControlMessage::RequestBundle {
+        protocol_version: PROTOCOL_VERSION,
+        compatibility: super::super::super::protocol::test_compatibility(),
+        vault_id: VAULT.to_string(),
+        device_id: PHONE.to_string(),
+        generation: 0,
+        purpose,
+    }
 }
 
 impl Drop for MemberListener {
@@ -108,7 +169,25 @@ impl Drop for MemberListener {
 
 /// Admission of a log that enrolled the phone with `fingerprint`, removed when `removed`.
 fn admission_with(fingerprint: &str, removed: bool) -> MemberAdmission {
-    let view = AuthorizationView {
+    MemberAdmission::new(
+        VAULT,
+        &enrolling_view(fingerprint, removed),
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+/// Admission of a log that enrolled the phone with `fingerprint`, which this installation
+/// quarantined.
+fn admission_quarantining(fingerprint: &str) -> MemberAdmission {
+    MemberAdmission::new(
+        VAULT,
+        &enrolling_view(fingerprint, false),
+        &std::collections::BTreeSet::from([PHONE.to_string()]),
+    )
+}
+
+fn enrolling_view(fingerprint: &str, removed: bool) -> AuthorizationView {
+    AuthorizationView {
         epoch: 1,
         revision: 3,
         entry_hash: [7; 32],
@@ -135,8 +214,7 @@ fn admission_with(fingerprint: &str, removed: bool) -> MemberAdmission {
         recovery_encryption_key: None,
         pending_removal: None,
         server: None,
-    };
-    MemberAdmission::new(VAULT, &view, &std::collections::BTreeSet::new())
+    }
 }
 
 fn hello(device_id: &str) -> ControlMessage {
@@ -315,7 +393,13 @@ async fn the_coordinator_serves_nothing_to_a_device_the_log_removed() {
     let pulled = pull().await.expect("sync exchange");
     assert!(refused_with(&pulled, "member_removed"), "{pulled:?}");
     let metadata = pair.register_bundle(b"whole-vault bundle", "transfer-removed");
-    let download = download_bundle(&pair.phone, metadata, &TransferCancellation::default()).await;
+    let download = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await;
     assert!(
         download.is_err_and(|error| error.contains("removed from the vault")),
         "a removed device downloads no bundle"
@@ -371,4 +455,174 @@ async fn the_coordinator_serves_nothing_while_its_log_admission_cannot_be_read()
         .await
         .expect("person key exchange");
     assert!(unavailable(&key), "{key:?}");
+}
+
+/// A phone linked to a running coordinator, and a member desktop serving copies to it.
+async fn linked_phone_and_member() -> (LocalPair, MemberListener) {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let member = MemberListener::start_serving(Some(pair.phone.clone()), true).await;
+    member.admit(admission_with(&member.phone_fingerprint, false));
+    (pair, member)
+}
+
+fn acknowledgement_of(metadata: &BundleMetadata) -> PendingAcknowledgement {
+    PendingAcknowledgement {
+        vault_id: metadata.vault_id.clone(),
+        device_id: metadata.device_id.clone(),
+        transfer_id: metadata.transfer_id.clone(),
+        generation: metadata.generation,
+        purpose: BundlePurpose::Refresh,
+    }
+}
+
+#[tokio::test]
+async fn a_member_listener_serves_a_vault_copy_to_an_enrolled_device() {
+    let (pair, member) = linked_phone_and_member().await;
+    let source = member.source();
+    let fetched = fetch_bundle(
+        &pair.phone,
+        std::slice::from_ref(&source),
+        super::super::super::protocol::test_compatibility(),
+        4,
+        BundlePurpose::Refresh,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("copy from the member");
+    assert_eq!(fetched.source, source);
+    assert_eq!(fetched.metadata.device_id, PHONE);
+    assert_eq!(
+        fetched.metadata.generation, 4,
+        "a member's copy keeps the ownership generation the device holds"
+    );
+    assert_eq!(fs::read(&fetched.archive).expect("read copy"), MEMBER_COPY);
+
+    let pending = acknowledgement_of(&fetched.metadata);
+    acknowledge_activation(&pair.phone, &source, &pending)
+        .await
+        .expect("acknowledge the copy");
+    acknowledge_activation(&pair.phone, &source, &pending)
+        .await
+        .expect("a repeated acknowledgement is answered");
+    let fresh = fetch_bundle(
+        &pair.phone,
+        std::slice::from_ref(&source),
+        super::super::super::protocol::test_compatibility(),
+        4,
+        BundlePurpose::Refresh,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("a later copy after the first was released");
+    assert_ne!(fresh.metadata.transfer_id, fetched.metadata.transfer_id);
+}
+
+#[tokio::test]
+async fn a_member_listener_serves_no_ownership_transfer() {
+    let listener = MemberListener::start_serving(None, true).await;
+    let response = listener
+        .request(bundle_request(BundlePurpose::Ownership))
+        .await
+        .expect("answered refusal");
+    assert!(refused_with(&response, "bootstrap_only"), "{response:?}");
+}
+
+#[tokio::test]
+async fn a_member_listener_gives_no_copy_to_a_removed_quarantined_or_unknown_device() {
+    let listener = MemberListener::start_serving(None, true).await;
+    listener.admit(admission_with(&listener.phone_fingerprint, true));
+    let removed = listener
+        .request(bundle_request(BundlePurpose::Refresh))
+        .await
+        .expect("answered refusal");
+    assert!(refused_with(&removed, "member_removed"), "{removed:?}");
+
+    // A handshake may reuse the admission read moments ago; the fresh read after it refuses.
+    listener.admit(admission_quarantining(&listener.phone_fingerprint));
+    let quarantined = listener
+        .request(bundle_request(BundlePurpose::Refresh))
+        .await;
+    assert!(
+        quarantined
+            .as_ref()
+            .is_ok_and(|response| refused_with(response, "member_quarantined")),
+        "{quarantined:?}"
+    );
+
+    listener.admit(admission_with(&"0".repeat(64), false));
+    let unknown = listener
+        .request(bundle_request(BundlePurpose::Refresh))
+        .await;
+    assert!(
+        unknown
+            .as_ref()
+            .is_ok_and(|response| refused_with(response, "member_unknown")),
+        "{unknown:?}"
+    );
+
+    // Once the handshake admission is read again, neither completes a handshake.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(
+        listener
+            .request(bundle_request(BundlePurpose::Refresh))
+            .await
+            .is_err(),
+        "a device the log never enrolled completes no handshake"
+    );
+    listener.admit(admission_quarantining(&listener.phone_fingerprint));
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(
+        listener
+            .request(bundle_request(BundlePurpose::Refresh))
+            .await
+            .is_err(),
+        "a quarantined device completes no handshake"
+    );
+}
+
+#[tokio::test]
+async fn a_device_falls_back_from_an_unreachable_coordinator_to_a_member() {
+    let (mut pair, member) = linked_phone_and_member().await;
+    if let Some(shutdown) = pair.shutdown.take() {
+        let _ = shutdown.send(());
+    }
+    // Lets the coordinator's accept loop observe the shutdown and close its socket.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let fetched = fetch_bundle(
+        &pair.phone,
+        &[BundleSource::Coordinator, member.source()],
+        super::super::super::protocol::test_compatibility(),
+        0,
+        BundlePurpose::Refresh,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("copy from the member after the coordinator failed");
+    assert_eq!(fetched.source, member.source());
+    assert_eq!(fs::read(&fetched.archive).expect("read copy"), MEMBER_COPY);
+}
+
+#[tokio::test]
+async fn a_failed_copy_reports_the_coordinator_error_first() {
+    let (mut pair, member) = linked_phone_and_member().await;
+    if let Some(shutdown) = pair.shutdown.take() {
+        let _ = shutdown.send(());
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    member.admit(admission_with(&member.phone_fingerprint, true));
+    let error = fetch_bundle(
+        &pair.phone,
+        &[BundleSource::Coordinator, member.source()],
+        super::super::super::protocol::test_compatibility(),
+        0,
+        BundlePurpose::Refresh,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect_err("no source serves a copy");
+    assert!(
+        !error.contains("removed"),
+        "the device it enrolled with explains the failure: {error}"
+    );
 }

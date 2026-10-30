@@ -49,7 +49,7 @@ impl<R: Runtime> CoordinatorState<R> {
                         &staging,
                         &metadata.transfer_id,
                         &metadata.vault_id,
-                        false,
+                        crate::vault::backup::ReplacedVault::KeepOther,
                     )
                     .await?;
                     let device_id = self.pairing.device_id()?;
@@ -108,7 +108,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 &staging,
                 &metadata.transfer_id,
                 &metadata.vault_id,
-                false,
+                crate::vault::backup::ReplacedVault::KeepOther,
             )
             .await?;
             let device_id = self.pairing.device_id()?;

@@ -2,6 +2,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import ReplacedVaultBackups from "$lib/components/vault/ReplacedVaultBackups.svelte";
   import VaultLockWarning from "$lib/components/vault/VaultLockWarning.svelte";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -118,6 +119,8 @@
   </section>
 
   <DatabaseRollbacks onRestored={() => window.location.reload()} />
+
+  <ReplacedVaultBackups />
 </div>
 
 {#if restoreConfirmationOpen}

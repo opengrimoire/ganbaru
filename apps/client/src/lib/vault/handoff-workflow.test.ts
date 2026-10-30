@@ -23,6 +23,23 @@ describe("formatHandoffError", () => {
     )).toBe("vaultHandoff.blockerTerminal");
   });
 
+  it("explains each refused copy of the linked vault before any generic failure", () => {
+    expect(formatHandoffError(
+      "the vault this link replaces could not be backed up on this device: write backup: no space left",
+      t,
+    )).toBe("vaultHandoff.replacedVaultBackupFailed");
+    expect(formatHandoffError("the folder chosen for the linked vault is not empty", t)).toBe(
+      "vaultHandoff.linkFolderNotEmpty",
+    );
+    expect(formatOwnershipHandoffError(
+      new Error("the linked vault must be copied to this device before it can refresh or take ownership"),
+      t,
+    )).toBe("vaultHandoff.firstLinkNeedsCopy");
+    expect(formatHandoffError("this device owns the linked vault, so it holds it already", t)).toBe(
+      "vaultHandoff.ownerHoldsVault",
+    );
+  });
+
   it("turns coordinator failures into same-network retry guidance", () => {
     expect(formatHandoffError(new Error("connect coordinator: refused"), t)).toBe(
       "vaultHandoff.unreachable",

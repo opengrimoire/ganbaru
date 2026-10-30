@@ -3,6 +3,7 @@ import type { PairingStatus } from "$lib/api/vault-handoff";
 import {
   beginVaultOwnershipTransition,
   cancelVaultOwnershipTransition,
+  requestFirstVaultCopy,
   requestVaultOwnership,
   shouldPresentVaultOwnershipPrompt,
   VAULT_OWNERSHIP_TRANSITION_STORAGE_KEY,
@@ -120,5 +121,14 @@ describe("vault ownership prompt", () => {
     await expect(requestVaultOwnership("desktop", deps)).rejects.toThrow(
       "coordinator request timed out",
     );
+  });
+
+  it("copies the linked vault once for a first link and reports a transfer already running", async () => {
+    const receive = vi.fn(async () => ({ activated: true, inProgress: false }));
+    await requestFirstVaultCopy(receive);
+    expect(receive).toHaveBeenCalledTimes(1);
+
+    const running = vi.fn(async () => ({ activated: false, inProgress: true }));
+    await expect(requestFirstVaultCopy(running)).rejects.toThrow("current vault transfer");
   });
 });

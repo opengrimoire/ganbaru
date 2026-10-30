@@ -34,8 +34,7 @@
       && (platform === "desktop"
         || status.replicaReady
         || status.canWrite === true
-        || !bootstrapReplicaOnLink
-        || !status.untouchedStarterVault),
+        || !bootstrapReplicaOnLink),
   );
 
   function safeStorage(): Storage | undefined {

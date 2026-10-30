@@ -19,8 +19,10 @@
     readEnrollmentCode,
     readSuggestedDeviceLabel,
     readPairingStatus,
+    pickLinkFolder,
     receiveDesktopBundle,
     recoverLocalVaultCopy,
+    resetLinkFolder,
     requestOwnerBundle,
     respondToEnrollment,
     revokeDesktopNetworkAccess,
@@ -42,7 +44,7 @@
   import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
-  type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "ownership" | "refresh" | "unlink" | "recover";
+  type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "ownership" | "refresh" | "bootstrap" | "unlink" | "recover" | "linkFolder";
 
   /** How long onboarding waits for an approved device to appear before it shows a new code. */
   const APPROVED_ENROLLMENT_SETTLE_ATTEMPTS = 20;
@@ -93,6 +95,8 @@
   let enrollmentCode = $state<string | null>(null);
   let confirmation = $state<"network" | "networkRevoke" | "unlink" | "recover" | "replace" | null>(null);
   let unlinkDeviceId = $state<string | null>(null);
+  /** The folder chosen for the first copy of the linked vault on this computer; null uses the default. */
+  let linkFolder = $state<string | null>(null);
   let networkAccess = $state<DesktopNetworkAccess | null>(
     untrack(() => initialInvitation?.networkAccess ?? status?.networkAccess ?? null),
   );
@@ -135,6 +139,10 @@
           : t("vaultHandoff.networkAccessAllowed"),
   );
   const isCoordinatorClient = $derived(status?.coordinatorEndpoint != null);
+  /** Before its first copy of the linked vault, this device copies the vault instead of taking ownership. */
+  const firstCopyPending = $derived(status?.replicaReady === false);
+  const ownershipBusy = $derived(busy === "ownership" || busy === "bootstrap");
+  const ownershipLabel = $derived(firstCopyPending ? t("vaultHandoff.copyHere") : t("vaultHandoff.useHere"));
   /** Failures that replace the content they block render in that place instead of the trailing error line. */
   const errorShownInPlace = $derived(
     error !== null
@@ -327,7 +335,6 @@
         platform === "android"
         && presentation === "onboarding"
         && bootstrapReplicaOnLink
-        && next.untouchedStarterVault
         && !next.replicaReady
       ) {
         const outcome = await receiveDesktopBundle("bootstrap");
@@ -352,7 +359,12 @@
     }
   }
 
-  async function receive(mode: "ownership" | "refresh"): Promise<void> {
+  function receivedNotice(mode: "ownership" | "refresh" | "bootstrap"): string {
+    if (mode === "ownership") return t("vaultHandoff.linked");
+    return mode === "refresh" ? t("vaultHandoff.refreshed") : t("vaultHandoff.copied");
+  }
+
+  async function receive(mode: "ownership" | "refresh" | "bootstrap"): Promise<void> {
     busy = mode;
     error = null;
     if (mode === "ownership") ownershipError = null;
@@ -364,7 +376,7 @@
         return;
       }
       await loadStatus();
-      notice = mode === "ownership" ? t("vaultHandoff.linked") : t("vaultHandoff.refreshed");
+      notice = receivedNotice(mode);
       if (outcome.activated) onActivated?.();
     } catch (cause) {
       if (mode === "ownership") {
@@ -456,7 +468,7 @@
   }
 
   function handleOwnershipAction(): void {
-    if (presentation === "control" && busy === "ownership" && isCoordinatorClient) {
+    if (presentation === "control" && ownershipBusy && isCoordinatorClient) {
       void cancelReceive();
       return;
     }
@@ -465,6 +477,41 @@
       return;
     }
     beginOwnershipTransfer();
+  }
+
+  /** Lets the user choose an empty folder for the first copy of the linked vault on this computer. */
+  async function chooseLinkFolder(): Promise<void> {
+    busy = "linkFolder";
+    error = null;
+    try {
+      const chosen = await pickLinkFolder();
+      if (chosen !== null) linkFolder = chosen;
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function useDefaultLinkFolder(): Promise<void> {
+    busy = "linkFolder";
+    error = null;
+    try {
+      await resetLinkFolder();
+      linkFolder = null;
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      busy = null;
+    }
+  }
+
+  /** Copies the linked vault here again after sync reported that this copy can no longer catch up. */
+  async function getFreshCopy(): Promise<void> {
+    const outcome = await receiveDesktopBundle("bootstrap");
+    if (outcome.inProgress) throw new Error("finish or retry the current vault transfer first");
+    await loadStatus();
+    if (outcome.activated) onActivated?.();
   }
 
   onMount(() => {
@@ -561,7 +608,7 @@
       </div>
     {/if}
     {#if presentation === "onboarding" && status.linked}
-      {#if bootstrapReplicaOnLink && status.untouchedStarterVault && !status.replicaReady}
+      {#if bootstrapReplicaOnLink && !status.replicaReady}
         {@render onboardingLoader()}
       {:else}
         <p class="text-center text-base font-medium leading-6 text-foreground">
@@ -736,7 +783,28 @@
     {/if}
 
     {#if presentation === "control" || (status.linked && presentation !== "onboarding")}
-      {#if presentation === "control" || !status.canWrite || (platform === "android" && (busy === "ownership" || busy === "refresh"))}
+      {#if presentation === "settings" && firstCopyPending && isCoordinatorClient}
+        <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("vaultHandoff.copyHereDescription")}</p>
+        {#if platform === "desktop"}
+          <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-1">
+            <div class="min-w-0 flex-1 text-[0.8rem] leading-5">
+              <div class="text-foreground">{t("vaultHandoff.linkFolder")}</div>
+              <div class="break-all text-muted-foreground">{linkFolder ?? t("vaultHandoff.linkFolderDefault")}</div>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              {#if linkFolder !== null}
+                <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => void useDefaultLinkFolder()}>
+                  {t("vaultHandoff.useDefaultLinkFolder")}
+                </button>
+              {/if}
+              <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => void chooseLinkFolder()}>
+                {t("vaultHandoff.chooseLinkFolder")}
+              </button>
+            </div>
+          </div>
+        {/if}
+      {/if}
+      {#if presentation === "control" || !status.canWrite || (platform === "android" && (ownershipBusy || busy === "refresh"))}
       <div class={presentation === "control"
         ? "flex flex-col"
         : "flex flex-wrap gap-2"}>
@@ -745,21 +813,21 @@
           <button
             type="button"
             class={presentation === "control" ? controlButtonClass : primaryButtonClass}
-            disabled={presentation === "control" && busy === "ownership"
+            disabled={presentation === "control" && ownershipBusy
               ? !isCoordinatorClient
               : busy !== null || !status.linked || status.pendingTransfer || status.canWrite !== false}
             onclick={handleOwnershipAction}
           >
             {#if presentation === "control"}
-              <span class="min-w-0 truncate">{busy === "ownership" && isCoordinatorClient ? t("vaultHandoff.cancel") : t("vaultHandoff.useHere")}</span>
-              {#if busy === "ownership"}
+              <span class="min-w-0 truncate">{ownershipBusy && isCoordinatorClient ? t("vaultHandoff.cancel") : ownershipLabel}</span>
+              {#if ownershipBusy}
                 <LoaderCircle size={14} strokeWidth={1.8} class="shrink-0 animate-spin opacity-70" aria-hidden="true" />
               {:else}
                 <ArrowRight size={14} strokeWidth={1.8} class="shrink-0 opacity-70" aria-hidden="true" />
               {/if}
             {:else}
-              {#if busy === "ownership"}<LoaderCircle size={14} class="animate-spin" />{/if}
-              {t("vaultHandoff.useHere")}
+              {#if ownershipBusy}<LoaderCircle size={14} class="animate-spin" />{/if}
+              {ownershipLabel}
             {/if}
           </button>
           {#if ownershipError}
@@ -795,7 +863,7 @@
             </button>
           {/if}
         {/if}
-        {#if presentation !== "control" && isCoordinatorClient && (busy === "ownership" || busy === "refresh")}
+        {#if presentation !== "control" && isCoordinatorClient && (ownershipBusy || busy === "refresh")}
           <button type="button" class={buttonClass} onclick={() => void cancelReceive()}>
             {t("vaultHandoff.cancel")}
           </button>
@@ -826,6 +894,10 @@
           && (networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired")
           ? () => setNetworkAccess(true)
           : undefined}
+        onRecoverLocalCopy={!status.canWrite && status.replicaReady && !status.pendingTransfer && busy === null
+          ? () => { confirmation = "recover"; }
+          : undefined}
+        onFreshCopy={isCoordinatorClient && status.replicaReady && status.canWrite === false ? getFreshCopy : undefined}
       />
     {/if}
   {:else if error}
@@ -849,10 +921,10 @@
     {/if}
   {/if}
 
-  {#if presentation !== "control" && (busy === "ownership" || busy === "refresh")}
+  {#if presentation !== "control" && (ownershipBusy || busy === "refresh")}
     <p role="status" class="flex items-center gap-2 px-1 text-[0.8rem] text-muted-foreground">
       <LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />
-      {busy === "ownership"
+      {ownershipBusy
           ? t("vaultHandoff.workingOwnership")
           : t("vaultHandoff.workingRefresh")}
     </p>
@@ -994,7 +1066,7 @@
     danger={false}
     onConfirm={() => {
       confirmation = null;
-      beginOwnershipTransfer();
+      void receive("bootstrap");
     }}
     onCancel={() => { confirmation = null; }}
   />

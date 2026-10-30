@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use super::writer::{SyncKey, SyncKeyStore, ensure_device_key};
-use ganbaru_sync::{Engine, SpaceContext, SpaceKeyHolder, StoredSpaceKey};
+use ganbaru_sync::{Engine, SpaceContext, SpaceKeyHolder, open_space_keys};
 use ganbaru_sync_contracts::crypto::SPACE_KEY_BYTES;
 use ganbaru_sync_contracts::{
     DeviceKeyPair, EncryptionKeyPair, EncryptionPublicKey, KeyEnvelope, SpaceId, SpaceKey,
@@ -101,44 +101,13 @@ impl SpaceKeys {
             .space_keys(conn, ctx)
             .await
             .map_err(|error| format!("read sync space keys: {error}"))?;
-        let opened = self.open_stored(&ctx.space, &stored);
+        let opened = open_space_keys(&ctx.space, &stored, self);
         let newest = opened.keys().next_back().copied();
         *self
             .opened
             .lock()
             .map_err(|_| "sync space keys are poisoned".to_string())? = opened;
         Ok(newest)
-    }
-
-    /// The keys `stored` opens, by epoch.
-    fn open_stored(&self, space: &SpaceId, stored: &[StoredSpaceKey]) -> BTreeMap<u32, SpaceKey> {
-        let mut opened = BTreeMap::new();
-        let Some(start) = stored.iter().rposition(|keys| {
-            keys.own_envelope
-                .as_ref()
-                .is_some_and(|envelope| self.open(space, keys.epoch, envelope).is_some())
-        }) else {
-            return opened;
-        };
-        let Some(mut key) = stored[start]
-            .own_envelope
-            .as_ref()
-            .and_then(|envelope| self.open(space, stored[start].epoch, envelope))
-        else {
-            return opened;
-        };
-        for index in (0..=start).rev() {
-            let previous = stored[index]
-                .wrapped_previous
-                .as_ref()
-                .and_then(|link| link.open(space, &key).ok());
-            opened.insert(key.epoch(), key);
-            match previous {
-                Some(next) if index > 0 && stored[index - 1].epoch == next.epoch() => key = next,
-                _ => break,
-            }
-        }
-        opened
     }
 }
 

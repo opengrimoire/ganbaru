@@ -649,7 +649,6 @@ commands.allow = [
   "show_notes_notification",
   "show_project_task_notification",
   "startup_elapsed_ms",
-  "sync_add_anchor_server",
   "sync_add_server",
   "sync_authority",
   "sync_contest_object",

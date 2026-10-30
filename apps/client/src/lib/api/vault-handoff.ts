@@ -351,6 +351,16 @@ export async function requestVaultBootstrap(): Promise<VaultBootstrapOutcome> {
 }
 
 /**
+ * On a new desktop, recovers the vault an anchor server runs with the setup code it printed and
+ * the recovery kit, which enrolls this desktop as an admin and copies the vault into a new folder.
+ *
+ * @returns The validated outcome of the copy.
+ */
+export async function recoverVaultThroughServer(code: string, kit: string): Promise<VaultBootstrapOutcome> {
+  return parseBootstrapOutcome(await invoke<unknown>("sync_recover_through_server", { code, kit }));
+}
+
+/**
  * Reads whether this device is linked, which device coordinates the link, and whether a vault
  * copy is still required or running.
  *

@@ -5,6 +5,8 @@
     getSyncServerStatus,
     removeSyncServer,
     SyncServerError,
+    type SyncServerAddStep,
+    type SyncServerRemoval,
     type SyncServerView,
   } from "$lib/api/sync";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -24,6 +26,10 @@
 
   /** The section of the distribution guide that covers running the self-hosted relay. */
   const RELAY_GUIDE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/docs/operations/release/distribution.md#sync-relay";
+  /** The guide that covers running an always-on anchor server. */
+  const ANCHOR_GUIDE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/docs/platforms/server/README.md";
+  /** The text every anchor server setup code starts with. */
+  const ANCHOR_CODE_PREFIX = "ganbaru-anchor:";
 
   const { t } = getLocalization();
   let server = $state<SyncServerView | null>(null);
@@ -32,11 +38,15 @@
   let busy = $state(false);
   let code = $state("");
   let acknowledged = $state(false);
+  let takeAnchor = $state(true);
+  /** Whether an anchor server is being added and the form stays up to repeat it with the same code. */
+  let resuming = $state(false);
   let message = $state("");
   let failed = $state(false);
   let removeConfirming = $state(false);
 
   const lines = $derived(server ? syncServerLines(t, server) : []);
+  const isAnchorCode = $derived(code.trim().startsWith(ANCHOR_CODE_PREFIX));
 
   /** Loads the server the vault names and probes a relay; a probe failure is part of the view. */
   async function refresh(): Promise<void> {
@@ -66,16 +76,30 @@
     message = "";
     failed = false;
     try {
-      await addSyncServer(entered, acknowledged);
-      code = "";
-      acknowledged = false;
-      message = t("sync.server.added");
+      const step = await addSyncServer(entered, acknowledged, isAnchorCode && takeAnchor);
+      resuming = step === "waitingForAnchor";
+      if (!resuming) {
+        code = "";
+        acknowledged = false;
+      }
+      message = addedMessage(step);
       await refresh();
     } catch (cause: unknown) {
       showError(cause);
     } finally {
       busy = false;
     }
+  }
+
+  function addedMessage(step: SyncServerAddStep): string {
+    if (step === "active") return t("sync.server.anchorActive");
+    if (step === "waitingForAnchor") return t("sync.server.anchorWaiting");
+    return t("sync.server.added");
+  }
+
+  function removedMessage(removal: SyncServerRemoval): string {
+    if (removal.relayCleared) return t("sync.server.removed");
+    return removal.problem === null ? t("sync.server.removedAnchor") : t("sync.server.removedRelayKept");
   }
 
   async function remove(): Promise<void> {
@@ -86,7 +110,7 @@
     failed = false;
     try {
       const removal = await removeSyncServer();
-      message = removal.relayCleared ? t("sync.server.removed") : t("sync.server.removedRelayKept");
+      message = removedMessage(removal);
       await refresh();
     } catch (cause: unknown) {
       showError(cause);
@@ -95,11 +119,11 @@
     }
   }
 
-  async function openGuide(): Promise<void> {
+  async function openGuide(url: string): Promise<void> {
     try {
-      await openUrl(RELAY_GUIDE_URL);
+      await openUrl(url);
     } catch (cause: unknown) {
-      console.warn("relay setup guide could not be opened", cause);
+      console.warn("server setup guide could not be opened", cause);
     }
   }
 
@@ -116,7 +140,7 @@
 
   {#if loadFailed && !server}
     <Notice class="px-1 text-[0.8rem] leading-5" message={t("sync.server.loadFailed")} copy={false} onRetry={refresh} />
-  {:else if server}
+  {:else if server && !resuming}
     <div class="flex min-w-0 flex-col gap-0.5 px-1 text-[0.8rem] leading-5" role="status">
       <div class="text-foreground">{server.mode === "relay" ? t("sync.server.relay") : t("sync.server.anchor")}</div>
       {#each lines as line (line)}
@@ -136,8 +160,10 @@
         </button>
       {/if}
     </div>
-  {:else if !loading}
-    <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.server.none")}</p>
+  {:else if !loading || resuming}
+    {#if !resuming}
+      <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.server.none")}</p>
+    {/if}
     {#if canManage}
       <form class="flex min-w-0 flex-col gap-2 px-1" onsubmit={(event) => void add(event)}>
         <label class="text-[0.8rem] text-muted-foreground" for="sync-server-code">{t("sync.server.codeLabel")}</label>
@@ -156,6 +182,12 @@
           <Checkbox class="mt-0.5" bind:checked={acknowledged} disabled={busy} />
           <span class="min-w-0">{t("sync.server.unreviewed")}</span>
         </label>
+        {#if isAnchorCode}
+          <label class="flex min-w-0 items-start gap-2 text-[0.8rem] leading-5 text-foreground">
+            <Checkbox class="mt-0.5" bind:checked={takeAnchor} disabled={busy} />
+            <span class="min-w-0">{t("sync.server.takeAnchor")}</span>
+          </label>
+        {/if}
         <div class="flex flex-wrap gap-2">
           <button type="submit" class={buttonClass} disabled={busy || !acknowledged || code.trim().length === 0}>
             {busy ? t("sync.server.adding") : t("sync.server.add")}
@@ -167,9 +199,12 @@
     {/if}
   {/if}
 
-  <div class="px-1">
-    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide()}>
+  <div class="flex flex-wrap gap-x-4 gap-y-1 px-1">
+    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide(RELAY_GUIDE_URL)}>
       {t("sync.server.guide")}
+    </button>
+    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide(ANCHOR_GUIDE_URL)}>
+      {t("sync.server.anchorGuide")}
     </button>
   </div>
 

@@ -30,7 +30,7 @@ An anchor serves one vault. The desktop that adds it must be an admin.
 
 1. Start the server with `ganbaru-sync-relay anchor --data-dir <path>`. It listens on port 43823 unless you pass `--listen <address:port>`.
 2. In a second shell, run `ganbaru-sync-relay anchor setup --data-dir <path> --endpoint <host:port>`. Name each address your devices can reach; a phone away from home needs a public or VPN address. The command prints a QR code and a text code that work once, for 15 minutes. A newer code replaces an older one, so run it again whenever a code expires.
-3. Enter the code on the admin desktop. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
+3. Enter the code in Settings > Data, in the server section of an admin desktop. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
 4. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; enter the same code again once it has run. The code stays valid until the server activates.
 
 Every linked device learns the server from the log and dials it from any network. New devices still link to a desktop first, on the LAN.
@@ -47,10 +47,10 @@ The server must hold the anchor role, and you need the recovery kit.
 
 1. Run `anchor setup` on the server for a fresh code.
 2. On a new desktop, enter the code and the kit. The desktop derives the recovery admin key in memory, enrolls itself as an admin through the server, and copies the vault into a new folder.
-3. Save the new recovery kit the app offers once the vault has opened. The person key does not return this way: a linked phone or desktop that still holds it can share it again, and otherwise anything signed with it stays as it is.
+3. Keep the recovery kit. The person key does not return this way: a linked phone or desktop that still holds it can share it again, and otherwise anything signed with it stays as it is.
 
 If the copy fails after the enrollment, repeat the steps with a fresh code and the same kit.
 
 ## Removing a server
 
-Remove the server from the device list in Settings, on an admin desktop. If it held the anchor, hand the anchor to a desktop first. Then stop the process and delete the data directory.
+On an admin desktop, take the anchor first if the server holds it. Then remove the server in Settings > Data, remove it from the device list, stop the process, and delete the data directory.

@@ -1,6 +1,7 @@
-//! The sync server of the active vault's space for Settings: adding a relay from its setup code,
-//! its status, and removing it. Claiming and removing the relay space run through the replica
-//! relay API; the server configuration entry runs through the service as an authority action.
+//! The sync server of the active vault's space for Settings: adding a relay or an anchor server
+//! from its setup code, its status, and removing it. Claiming and removing the relay space run
+//! through the replica relay API; the server configuration entry runs through the service as an
+//! authority action, and an anchor server is set up in `anchor_server`.
 
 use ganbaru_handoff::protocol::relay::RELAY_PROTOCOL_VERSION;
 use ganbaru_sync::local;
@@ -15,15 +16,23 @@ use super::host::{AppHost, SyncHost};
 use super::service::RELAY_LOOPBACK;
 
 #[cfg(desktop)]
+use super::anchor_server::add_anchor_server;
+#[cfg(desktop)]
 use super::commands::run_authority;
 #[cfg(desktop)]
 use super::service::{AuthorityAction, SyncRuntime, blocking};
+#[cfg(desktop)]
+use ganbaru_handoff::protocol::anchor::{ANCHOR_SETUP_TEXT_PREFIX, AnchorSetupCode};
 #[cfg(desktop)]
 use ganbaru_handoff::protocol::relay::{RELAY_SETUP_TEXT_PREFIX, RelaySetupCode};
 #[cfg(desktop)]
 use ganbaru_sync::Engine;
 #[cfg(desktop)]
 use ganbaru_sync_contracts::{AdminKeyPair, Server, SpaceId};
+#[cfg(desktop)]
+use ganbaru_sync_replica::anchor_link::ServerTarget;
+#[cfg(desktop)]
+use ganbaru_sync_replica::anchor_setup::AnchorSetupError;
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::read_admin_key;
 #[cfg(desktop)]
@@ -32,10 +41,6 @@ use ganbaru_sync_replica::keys::SpaceKeys;
 use ganbaru_sync_replica::relay::{claim_space, relay_admin_set, remove_space};
 #[cfg(desktop)]
 use tauri::State;
-
-/// Prefix every server setup code text starts with; the part up to the colon names its kind.
-#[cfg(desktop)]
-const SETUP_CODE_PREFIX: &str = "ganbaru-";
 
 /// Why a server command failed. The interface shows each code as localized text; details stay
 /// in the log.
@@ -53,8 +58,14 @@ pub enum SyncServerError {
     Unacknowledged,
     /// The text is not a server setup code.
     InvalidCode,
-    /// The code sets up an anchor server, which this build cannot set up yet.
-    AnchorPending,
+    /// The anchor server refused the setup secret, which is wrong, used, or expired.
+    SetupRefused,
+    /// The anchor server speaks an older protocol than this device.
+    ServerNeedsUpdate,
+    /// The anchor server speaks a newer protocol than this device.
+    DeviceNeedsUpdate,
+    /// The server anchors the vault, so another device takes the anchor before it goes.
+    ServerIsAnchor,
     /// The active vault has not joined a sync space.
     NotSyncing,
     /// This device does not hold a live admin key of the space.
@@ -75,6 +86,18 @@ impl From<String> for SyncServerError {
     fn from(detail: String) -> Self {
         eprintln!("sync server: {detail}");
         Self::Failed
+    }
+}
+
+#[cfg(desktop)]
+impl From<AnchorSetupError> for SyncServerError {
+    fn from(error: AnchorSetupError) -> Self {
+        match error {
+            AnchorSetupError::ServerNeedsUpdate => Self::ServerNeedsUpdate,
+            AnchorSetupError::DeviceNeedsUpdate => Self::DeviceNeedsUpdate,
+            AnchorSetupError::Refused => Self::SetupRefused,
+            AnchorSetupError::Other(detail) => detail.into(),
+        }
     }
 }
 
@@ -164,28 +187,38 @@ pub struct SyncServerRemoval {
     pub problem: Option<RelayProblem>,
 }
 
-/// The kind a setup code names before its colon, for codes this build cannot parse.
+/// How far adding a server came.
 #[cfg(desktop)]
-fn setup_code_error(text: &str) -> SyncServerError {
-    let anchor = text
-        .trim()
-        .strip_prefix(SETUP_CODE_PREFIX)
-        .and_then(|rest| rest.split_once(':'))
-        .is_some_and(|(kind, _)| kind == "anchor");
-    if anchor {
-        SyncServerError::AnchorPending
-    } else {
-        SyncServerError::InvalidCode
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncServerAdded {
+    /// The relay is claimed; devices follow its configuration once the anchor sequences it.
+    Proposed,
+    /// The anchor server waits for the current anchor; repeat the call with the same code.
+    WaitingForAnchor,
+    /// The anchor server runs the vault.
+    Active,
 }
 
-/// Parses a pasted relay setup code, or reports what kind of code it is otherwise.
+/// A pasted server setup code.
 #[cfg(desktop)]
-fn parse_setup_code(text: &str) -> Result<RelaySetupCode, SyncServerError> {
-    if !text.trim().starts_with(RELAY_SETUP_TEXT_PREFIX) {
-        return Err(setup_code_error(text));
-    }
-    RelaySetupCode::from_text(text).map_err(|error| {
+enum SetupCode {
+    Relay(RelaySetupCode),
+    Anchor(AnchorSetupCode),
+}
+
+/// Parses a pasted server setup code by the kind its prefix names.
+#[cfg(desktop)]
+fn parse_setup_code(text: &str) -> Result<SetupCode, SyncServerError> {
+    let text = text.trim();
+    let parsed = if text.starts_with(RELAY_SETUP_TEXT_PREFIX) {
+        RelaySetupCode::from_text(text).map(SetupCode::Relay)
+    } else if text.starts_with(ANCHOR_SETUP_TEXT_PREFIX) {
+        AnchorSetupCode::from_text(text).map(SetupCode::Anchor)
+    } else {
+        return Err(SyncServerError::InvalidCode);
+    };
+    parsed.map_err(|error| {
         eprintln!("sync server setup code: {error}");
         SyncServerError::InvalidCode
     })
@@ -193,7 +226,7 @@ fn parse_setup_code(text: &str) -> Result<RelaySetupCode, SyncServerError> {
 
 /// The space id and admin key pair of a live admin desktop.
 #[cfg(desktop)]
-struct AdminContext {
+pub(super) struct AdminContext {
     space: SpaceId,
     admin: AdminKeyPair,
 }
@@ -201,7 +234,7 @@ struct AdminContext {
 /// The selected authorization, the space, and this desktop's admin key, refusing a device that
 /// is not a live admin.
 #[cfg(desktop)]
-async fn admin_context<R: Runtime>(
+pub(super) async fn admin_context<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(ganbaru_sync::AuthorizationView, AdminContext), SyncServerError> {
     let view = authorization(app)
@@ -267,11 +300,10 @@ async fn newest_space_key<R: Runtime>(
     holder.epoch_key(newest).ok_or(SyncServerError::NoKeys)
 }
 
-/// On a live admin desktop, claims the relay a pasted setup code names for the active vault's
-/// space and proposes the server configuration that names it, which every device follows once
-/// the anchor sequences it. `acknowledged_unreviewed` confirms the user accepted that the
-/// server cryptography has had no external review. A failed proposal removes the claimed relay
-/// space again.
+/// On a live admin desktop, adds the server a pasted setup code names to the active vault.
+/// `acknowledged_unreviewed` confirms the user accepted that the server cryptography has had no
+/// external review. `take_anchor` asks an anchor server to take the anchor once it can; a relay
+/// ignores it.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_add_server<R: Runtime>(
@@ -279,16 +311,31 @@ pub async fn sync_add_server<R: Runtime>(
     runtime: State<'_, SyncRuntime>,
     code: String,
     acknowledged_unreviewed: bool,
-) -> Result<(), SyncServerError> {
+    take_anchor: bool,
+) -> Result<SyncServerAdded, SyncServerError> {
     if !acknowledged_unreviewed {
         return Err(SyncServerError::Unacknowledged);
     }
-    let code = parse_setup_code(&code)?;
-    let (view, context) = admin_context(&app).await?;
+    match parse_setup_code(&code)? {
+        SetupCode::Relay(code) => add_relay(&app, &runtime, code).await,
+        SetupCode::Anchor(code) => add_anchor_server(&app, &runtime, &code, take_anchor).await,
+    }
+}
+
+/// Claims the relay `code` names for the active vault's space and proposes the server
+/// configuration that names it, which every device follows once the anchor sequences it. A
+/// failed proposal removes the claimed relay space again.
+#[cfg(desktop)]
+async fn add_relay<R: Runtime>(
+    app: &AppHandle<R>,
+    runtime: &SyncRuntime,
+    code: RelaySetupCode,
+) -> Result<SyncServerAdded, SyncServerError> {
+    let (view, context) = admin_context(app).await?;
     if view.server.is_some() {
         return Err(SyncServerError::ServerExists);
     }
-    let first = newest_space_key(&app).await?;
+    let first = newest_space_key(app).await?;
     let admins: Vec<_> = relay_admin_set(&view).into_iter().collect();
     let target = RelayTarget {
         endpoints: code.endpoints.clone(),
@@ -309,7 +356,7 @@ pub async fn sync_add_server<R: Runtime>(
         endpoints: code.endpoints,
         certificate_fingerprint: code.certificate_fingerprint,
     };
-    if let Err(error) = run_authority(&runtime, AuthorityAction::SetServer(Some(server))).await {
+    if let Err(error) = run_authority(runtime, AuthorityAction::SetServer(Some(server))).await {
         if let Err(cleanup) =
             remove_space(&target, context.space, RELAY_LOOPBACK, &context.admin).await
         {
@@ -318,12 +365,22 @@ pub async fn sync_add_server<R: Runtime>(
         return Err(error.into());
     }
     runtime.sync_now();
-    Ok(())
+    Ok(SyncServerAdded::Proposed)
+}
+
+/// Whether the server the configuration names is the vault's anchor. Devices stop dialing a
+/// removed server, so a vault it anchors would lose its anchor with it.
+#[cfg(desktop)]
+fn server_anchors(view: &ganbaru_sync::AuthorizationView) -> bool {
+    ServerTarget::of(view)
+        .is_some_and(|target| target.device_id(view) == Some(view.anchor_device_id.as_str()))
 }
 
 /// On a live admin desktop, proposes removing the space's server configuration, then asks a
 /// relay to drop the space and everything it stores for it. The relay removal is best effort:
-/// an unreachable relay keeps its copy of the sealed records, which it cannot open.
+/// an unreachable relay keeps its copy of the sealed records, which it cannot open. An anchor
+/// server that anchors the vault is refused until another device takes the anchor; once
+/// removed from the configuration it stays enrolled until it is removed from the device list.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_remove_server<R: Runtime>(
@@ -333,6 +390,7 @@ pub async fn sync_remove_server<R: Runtime>(
     let (view, context) = admin_context(&app).await?;
     let target = match &view.server {
         None => return Err(SyncServerError::NoServer),
+        Some(_) if server_anchors(&view) => return Err(SyncServerError::ServerIsAnchor),
         Some(_) => RelayTarget::of(&view),
     };
     run_authority(&runtime, AuthorityAction::SetServer(None)).await?;
@@ -396,11 +454,13 @@ pub async fn sync_server_status<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(desktop)]
+    use ganbaru_handoff::protocol::relay::{RELAY_SETUP_TOKEN_BYTES, RelaySetupToken};
 
     #[test]
     fn server_errors_reach_the_frontend_as_codes() {
-        let wire = serde_json::to_value(SyncServerError::AnchorPending).expect("serialize");
-        assert_eq!(wire, serde_json::json!({ "code": "anchorPending" }));
+        let wire = serde_json::to_value(SyncServerError::ServerNeedsUpdate).expect("serialize");
+        assert_eq!(wire, serde_json::json!({ "code": "serverNeedsUpdate" }));
         let wire = serde_json::to_value(SyncServerError::Relay {
             problem: RelayProblem::SetupCodeRefused,
         })
@@ -438,18 +498,40 @@ mod tests {
 
     #[cfg(desktop)]
     #[test]
-    fn setup_codes_of_other_kinds_are_told_apart() {
+    fn setup_codes_parse_by_the_kind_their_prefix_names() {
+        let anchor = AnchorSetupCode(RelaySetupCode {
+            endpoints: vec!["server.example:7443".to_string()],
+            certificate_fingerprint: [7; 32],
+            token: RelaySetupToken::from_bytes([9; RELAY_SETUP_TOKEN_BYTES]),
+        });
+        let text = format!("  {}\n", anchor.to_text().expect("encode"));
+        assert!(matches!(parse_setup_code(&text), Ok(SetupCode::Anchor(_))));
+        for text in [
+            "  hello".to_string(),
+            format!("{ANCHOR_SETUP_TEXT_PREFIX}not-a-code"),
+            format!("{RELAY_SETUP_TEXT_PREFIX}not-a-code"),
+        ] {
+            assert_eq!(
+                parse_setup_code(&text).err(),
+                Some(SyncServerError::InvalidCode)
+            );
+        }
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn setup_failures_reach_the_frontend_as_codes() {
         assert_eq!(
-            parse_setup_code("ganbaru-anchor:abc").err(),
-            Some(SyncServerError::AnchorPending)
+            SyncServerError::from(AnchorSetupError::ServerNeedsUpdate),
+            SyncServerError::ServerNeedsUpdate
         );
         assert_eq!(
-            parse_setup_code("  hello").err(),
-            Some(SyncServerError::InvalidCode)
+            SyncServerError::from(AnchorSetupError::Refused),
+            SyncServerError::SetupRefused
         );
         assert_eq!(
-            parse_setup_code(&format!("{RELAY_SETUP_TEXT_PREFIX}not-a-code")).err(),
-            Some(SyncServerError::InvalidCode)
+            SyncServerError::from(AnchorSetupError::Other("reset".to_string())),
+            SyncServerError::Failed
         );
     }
 }

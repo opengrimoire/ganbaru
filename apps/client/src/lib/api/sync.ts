@@ -1039,10 +1039,17 @@ export interface SyncServerRemoval {
   problem: SyncRelayProblem | null;
 }
 
+/** How far adding a server came. */
+export const SYNC_SERVER_ADD_STEPS = ["proposed", "waitingForAnchor", "active"] as const;
+export type SyncServerAddStep = (typeof SYNC_SERVER_ADD_STEPS)[number];
+
 export const SYNC_SERVER_ERROR_CODES = [
   "unacknowledged",
   "invalidCode",
-  "anchorPending",
+  "setupRefused",
+  "serverNeedsUpdate",
+  "deviceNeedsUpdate",
+  "serverIsAnchor",
   "notSyncing",
   "notAdmin",
   "serverExists",
@@ -1130,12 +1137,18 @@ async function invokeServerCommand(command: string, args?: Record<string, unknow
 }
 
 /**
- * On a live admin desktop, claims the relay a pasted setup code names and proposes it as the
- * vault's server. `acknowledgedUnreviewed` confirms the user accepted that the server
- * cryptography has had no external review; the command refuses without it.
+ * On a live admin desktop, adds the relay or anchor server a pasted setup code names to the vault.
+ * `acknowledgedUnreviewed` confirms the user accepted that the server cryptography has had no
+ * external review; the command refuses without it. `takeAnchor` asks an anchor server to take the
+ * anchor once it can. A `waitingForAnchor` answer is repeated with the same code.
  */
-export async function addSyncServer(code: string, acknowledgedUnreviewed: boolean): Promise<void> {
-  await invokeServerCommand("sync_add_server", { code, acknowledgedUnreviewed });
+export async function addSyncServer(
+  code: string,
+  acknowledgedUnreviewed: boolean,
+  takeAnchor: boolean,
+): Promise<SyncServerAddStep> {
+  const step = await invokeServerCommand("sync_add_server", { code, acknowledgedUnreviewed, takeAnchor });
+  return readEnum(step, SYNC_SERVER_ADD_STEPS, "sync server add step");
 }
 
 /** On a live admin desktop, proposes removing the vault's server and asks a relay to drop the space. */

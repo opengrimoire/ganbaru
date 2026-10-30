@@ -913,7 +913,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_quarantine_list,
             crate::sync::commands::sync_quarantine_device,
             crate::sync::commands::sync_quarantine_lift,
-            crate::sync::anchor_server::sync_add_anchor_server,
             crate::sync::anchor_server::sync_recover_through_server,
             crate::sync::commands::sync_take_anchor,
             crate::sync::commands::sync_promote_device,

@@ -92,11 +92,7 @@ fn server_admission(host: &AnchorHost) -> MemberAdmissionSource {
     let source = member_admission_source(host);
     Arc::new(move || {
         let source = source.clone();
-        Box::pin(async move {
-            Ok(source()
-                .await?
-                .map(MemberAdmission::answering_forwards))
-        })
+        Box::pin(async move { Ok(source().await?.map(MemberAdmission::answering_forwards)) })
     })
 }
 
@@ -192,7 +188,11 @@ pub fn setup(config: &AnchorSetupConfig) -> Result<String, String> {
     });
     // Encoding first means an unusable code never replaces a working secret.
     let text = describe_setup(&code)?;
-    state::store_setup_secret(&paths, &code.0.token, unix_time_ms().saturating_add(lifetime))?;
+    state::store_setup_secret(
+        &paths,
+        &code.0.token,
+        unix_time_ms().saturating_add(lifetime),
+    )?;
     Ok(text)
 }
 
@@ -252,4 +252,3 @@ pub async fn backup(config: AnchorBackupConfig) -> Result<String, String> {
         config.out.display()
     ))
 }
-

@@ -140,6 +140,8 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "chat::preview::",
         "distractions::commands::",
         "crate::sync::commands::sync_reset_state",
+        "crate::sync::anchor_server::sync_add_anchor_server",
+        "crate::sync::anchor_server::sync_recover_through_server",
         "crate::sync::commands::sync_take_anchor",
         "crate::sync::commands::sync_promote_device",
         "crate::sync::commands::sync_regenerate_recovery_kit",

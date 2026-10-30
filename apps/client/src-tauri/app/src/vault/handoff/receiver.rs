@@ -316,6 +316,9 @@ async fn receive(
     #[cfg(not(desktop))]
     let staging = handoff_staging_path(app, &metadata.transfer_id)?;
     crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
+    if metadata.derived_state_stale {
+        crate::sync::rebuild_staged_vault(&staging).await?;
+    }
     #[cfg(desktop)]
     let new_folder = match &link_folder {
         Some(folder) => Some(resolve_staged_link_folder(folder, &staging)?),
@@ -386,6 +389,89 @@ async fn receive(
     }
     reload_application_shell(app)?;
     acknowledgement?;
+    Ok(ReceiveOutcome {
+        transfer_id: Some(metadata.transfer_id),
+        activated: true,
+        in_progress: false,
+    })
+}
+
+/// Copies the vault a new desktop just recovered through its server into a new folder and opens
+/// it. The recovery enrolled this desktop, so the server admits it without a coordinator pin. A
+/// copy is settled once it opens, so an unanswered acknowledgement only leaves the server to
+/// release its reservation when it expires.
+#[cfg(desktop)]
+pub(crate) async fn receive_recovered(
+    app: tauri::AppHandle,
+    target: ganbaru_sync_replica::anchor_link::ServerTarget,
+    vault_id: String,
+) -> Result<ReceiveOutcome, String> {
+    let lifecycle = app.state::<ReceiverLifecycle>();
+    let Ok(_operation) = lifecycle.operation.try_lock() else {
+        return Ok(ReceiveOutcome {
+            transfer_id: None,
+            activated: false,
+            in_progress: true,
+        });
+    };
+    let cancellation = lifecycle.begin()?;
+    let source = BundleSource::Recovery { target, vault_id };
+    let result = receive_recovered_copy(&app, source, &cancellation).await;
+    lifecycle.finish();
+    result
+}
+
+#[cfg(desktop)]
+async fn receive_recovered_copy(
+    app: &tauri::AppHandle,
+    source: BundleSource,
+    cancellation: &TransferCancellation,
+) -> Result<ReceiveOutcome, String> {
+    let pairing = app.state::<PairingManager>().inner().clone();
+    let folder = prepare_link_folder(app)?;
+    let FetchedBundle {
+        source,
+        metadata,
+        archive,
+    } = super::transport::fetch_bundle(
+        &pairing,
+        &[source],
+        super::current_compatibility(app),
+        cancellation,
+    )
+    .await?;
+    let staging =
+        crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id);
+    crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
+    if metadata.derived_state_stale {
+        crate::sync::rebuild_staged_vault(&staging).await?;
+    }
+    let target = resolve_staged_link_folder(&folder, &staging)?;
+    crate::vault::backup::activate_handoff_in_new_folder(
+        app,
+        &staging,
+        target,
+        &metadata.transfer_id,
+        &metadata.vault_id,
+    )
+    .await?;
+    app.state::<ReceiverLifecycle>().set_link_folder(None)?;
+    let pending = PendingAcknowledgement {
+        vault_id: metadata.vault_id.clone(),
+        device_id: pairing.device_id()?,
+        transfer_id: metadata.transfer_id.clone(),
+    };
+    if let Err(error) = super::transport::acknowledge_activation(&pairing, &source, &pending).await
+    {
+        eprintln!(
+            "vault copy from {}: acknowledgement failed: {error}",
+            source.describe()
+        );
+    }
+    if let Err(error) = pairing.remove_staging(&metadata.transfer_id) {
+        eprintln!("failed to clean completed vault transfer: {error}");
+    }
+    reload_application_shell(app)?;
     Ok(ReceiveOutcome {
         transfer_id: Some(metadata.transfer_id),
         activated: true,

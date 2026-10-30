@@ -158,7 +158,7 @@ async fn open_source(
             connect_member_endpoints(manager, endpoints, fingerprint).await?,
             None,
         )),
-        BundleSource::Server(target) => {
+        BundleSource::Server(target) | BundleSource::Recovery { target, .. } => {
             let (_, identity) = load_tls_identity(manager).await?;
             let stream = ganbaru_sync_replica::anchor_link::dial_server(
                 target,
@@ -169,6 +169,18 @@ async fn open_source(
             Ok((stream, None))
         }
     }
+}
+
+/// The vault a copy from `source` belongs to: the one this device is pinned to, or the one a
+/// recovery names, since a recovering desktop has no pin.
+fn bundle_vault_id(manager: &PairingManager, source: &BundleSource) -> Result<String, String> {
+    if let BundleSource::Recovery { vault_id, .. } = source {
+        return Ok(vault_id.clone());
+    }
+    manager
+        .coordinator_pin()?
+        .map(|pin| pin.vault_id)
+        .ok_or_else(|| "this device is not linked to a coordinator".to_string())
 }
 
 async fn read_source_response<R>(
@@ -203,9 +215,7 @@ pub(crate) async fn request_bundle(
     compatibility: super::protocol::HandoffCompatibility,
     cancellation: &TransferCancellation,
 ) -> Result<BundleMetadata, String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+    let vault_id = bundle_vault_id(manager, source)?;
     let device_id = manager.device_id()?;
     let started = tokio::time::Instant::now();
     loop {
@@ -218,14 +228,14 @@ pub(crate) async fn request_bundle(
             ControlMessage::RequestBundle {
                 protocol_version: PROTOCOL_VERSION,
                 compatibility: compatibility.clone(),
-                vault_id: coordinator.vault_id.clone(),
+                vault_id: vault_id.clone(),
                 device_id: device_id.clone(),
             },
         )
         .await?
         {
             ControlMessage::BundlePrepared { metadata }
-                if metadata.vault_id == coordinator.vault_id && metadata.device_id == device_id =>
+                if metadata.vault_id == vault_id && metadata.device_id == device_id =>
             {
                 return Ok(metadata);
             }
@@ -541,10 +551,7 @@ async fn download_bundle_inner(
     stop_after_bytes: Option<u64>,
 ) -> Result<PathBuf, String> {
     metadata.validate()?;
-    let pinned = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    if pinned.vault_id != metadata.vault_id {
+    if bundle_vault_id(manager, source)? != metadata.vault_id {
         return Err("transfer belongs to a different vault".to_string());
     }
     let (mut stream, coordinator) = open_source(manager, source).await?;

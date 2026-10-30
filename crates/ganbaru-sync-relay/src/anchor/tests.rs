@@ -8,7 +8,9 @@ use ganbaru_handoff::protocol::anchor::AnchorSetupCode;
 use ganbaru_handoff::protocol::{
     self, BundleMetadata, HandoffCompatibility, encode_sync_charter, sha256_file,
 };
-use ganbaru_sync::{AuthorizationView, Engine, LocalWriter, SequenceReservation, SpaceContext, local};
+use ganbaru_sync::{
+    AuthorizationView, Engine, LocalWriter, SequenceReservation, SpaceContext, local,
+};
 use ganbaru_sync_contracts::authorization::{Enroll, Entry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKeyPair, DeviceKind, DeviceRole, RecoverySeed, SignedCertificate,
@@ -110,7 +112,10 @@ impl Founder {
         .unwrap();
         let mut conn = pool.acquire().await.unwrap();
         let engine = Engine::vault();
-        engine.init_space(&mut conn, VAULT_ID, NOW_MS).await.unwrap();
+        engine
+            .init_space(&mut conn, VAULT_ID, NOW_MS)
+            .await
+            .unwrap();
         let ctx = local::space_context(&mut conn, VAULT_ID)
             .await
             .unwrap()
@@ -172,7 +177,12 @@ impl Founder {
             keys: None,
         };
         authority::sequence(
-            &engine, &mut conn, &self.ctx, &mut writer, &proposal, NOW_MS,
+            &engine,
+            &mut conn,
+            &self.ctx,
+            &mut writer,
+            &proposal,
+            NOW_MS,
         )
         .await
         .unwrap()
@@ -308,7 +318,10 @@ async fn wait_for_anchor(data_dir: &Path, server: &str) -> AuthorizationView {
         if view.anchor_device_id == server {
             return view;
         }
-        assert!(Instant::now() < deadline, "the server never took the anchor");
+        assert!(
+            Instant::now() < deadline,
+            "the server never took the anchor"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -331,12 +344,8 @@ fn a_proven_desktop_activates_a_server_that_takes_the_anchor() {
             let code = printed_code(root, &endpoint);
             let server = enroll_and_upload(&founder, &code).await;
             let view = wait_for_anchor(root, &server).await;
-            assert!(
-                view.devices
-                    .iter()
-                    .any(|device| device.device_id == server
-                        && device.device_key != founder.device.public_key())
-            );
+            assert!(view.devices.iter().any(|device| device.device_id == server
+                && device.device_key != founder.device.public_key()));
             let refused = open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
                 .await
                 .err()
@@ -418,7 +427,9 @@ fn a_recovery_kit_enrolls_a_new_desktop_through_the_server_as_anchor() {
             let admin = AdminKeyPair::from_seed(&[41; 32]).unwrap();
             let engine = Engine::vault();
             let mut conn = founder.pool.acquire().await.unwrap();
-            let charter = charter_hash(&engine, &mut conn, &founder.ctx).await.unwrap();
+            let charter = charter_hash(&engine, &mut conn, &founder.ctx)
+                .await
+                .unwrap();
             drop(conn);
             let proposal = authority::recovery_enrollment(
                 founder.ctx.space,

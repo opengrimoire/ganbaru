@@ -208,7 +208,7 @@ pub(crate) async fn late_changes<R: Runtime>(
     ))
 }
 
-async fn authorization<R: Runtime>(
+pub(super) async fn authorization<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<AuthorizationView>, String> {
     let pool = crate::db::connect_active_vault_for_sync(app).await?;

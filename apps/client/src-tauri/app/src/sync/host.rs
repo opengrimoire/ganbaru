@@ -52,6 +52,28 @@ fn vault_engine(hooks: Hooks) -> Result<Engine, String> {
     .map_err(|error| format!("build sync engine: {error}"))
 }
 
+/// Rebuilds the derived state of the vault staged at `staging` before anything opens it, for a
+/// copy whose source seals none: an anchor server, or an encrypted backup it wrote.
+pub(crate) async fn rebuild_staged_vault(staging: &std::path::Path) -> Result<(), String> {
+    let pools = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = pools
+        .connect_path(staging.join(crate::vault::APP_SQLITE_FILE))
+        .await?;
+    let rebuilt = async {
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|error| format!("acquire sync connection: {error}"))?;
+        vault_engine(vault_hooks())?
+            .rebuild_derived_state(&mut conn)
+            .await
+            .map_err(|error| format!("rebuild derived state: {error}"))
+    }
+    .await;
+    let closed = pools.close_all().await;
+    rebuilt.and(closed)
+}
+
 /// Opens the active vault of `config_dir` read-write for sync work through `pools`.
 async fn connect_for_sync_in(
     pools: &DatabaseState,

@@ -9,9 +9,9 @@ use ganbaru_handoff::protocol::ControlMessage;
 use ganbaru_sync::Engine;
 use ganbaru_sync_replica::assets::{AssetStore, ContentAddressedStore, InFlightAssets};
 use ganbaru_sync_replica::recovery::RecoveryRestorers;
-use ganbaru_sync_replica::service::transport::{DialFuture, SyncDialer};
 use ganbaru_sync_replica::service::SyncHost;
 use ganbaru_sync_replica::service::status::SyncStatusView;
+use ganbaru_sync_replica::service::transport::{DialFuture, SyncDialer};
 use ganbaru_sync_replica::writer::SyncKeyStore;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -123,7 +123,8 @@ impl SyncHost for AnchorHost {
 
     fn asset_store(&self, _vault_id: &str) -> Result<Arc<dyn AssetStore>, String> {
         Ok(Arc::new(
-            ContentAddressedStore::new(self.0.paths.vault()).with_in_flight(self.0.in_flight.clone()),
+            ContentAddressedStore::new(self.0.paths.vault())
+                .with_in_flight(self.0.in_flight.clone()),
         ))
     }
 

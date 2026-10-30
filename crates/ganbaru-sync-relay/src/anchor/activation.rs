@@ -163,7 +163,10 @@ async fn prepare_snapshot(
     version: &'static str,
     request: SnapshotRequest,
 ) -> Result<PreparedSnapshot, String> {
-    if host.activation()?.is_none_or(|active| active.vault_id != request.vault_id) {
+    if host
+        .activation()?
+        .is_none_or(|active| active.vault_id != request.vault_id)
+    {
         return Err("this server does not run the requested vault".to_string());
     }
     let transfer_id = random_token("transfer")?;

@@ -17,7 +17,7 @@ export const SYNC_ROLES = ["hub", "client"] as const;
 export type SyncRole = (typeof SYNC_ROLES)[number];
 
 /** Sync problems the interface explains in its own words. */
-export const SYNC_ERROR_CODES = ["writerLimit", "bootstrapRequired", "coordinatorRemoved"] as const;
+export const SYNC_ERROR_CODES = ["writerLimit", "bootstrapRequired", "coordinatorRemoved", "serverNeedsUpdate"] as const;
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
 
 /**

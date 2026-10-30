@@ -142,8 +142,7 @@ impl SetupRoute {
         let Ok(proof) = anchor::decode_anchor_proof(proof) else {
             return Ok(false);
         };
-        let Some(secret) =
-            super::state::live_setup_secret(self.host.paths(), unix_time_ms())?
+        let Some(secret) = super::state::live_setup_secret(self.host.paths(), unix_time_ms())?
         else {
             return Ok(false);
         };
@@ -161,10 +160,7 @@ impl SetupRoute {
     }
 
     /// The vault a proven peer talks about, or why it cannot be served.
-    fn proven_vault(
-        &self,
-        asked: Option<String>,
-    ) -> Result<Result<String, &'static str>, String> {
+    fn proven_vault(&self, asked: Option<String>) -> Result<Result<String, &'static str>, String> {
         let active = self.host.activation()?;
         Ok(match (asked, active) {
             (Some(asked), Some(active)) if asked != active.vault_id => {
@@ -306,11 +302,8 @@ impl SetupRoute {
                 return Err(message);
             }
         };
-        let closed = timeout_control(read_control_limited(
-            stream,
-            protocol::MAX_CONTROL_BYTES,
-        ))
-        .await;
+        let closed =
+            timeout_control(read_control_limited(stream, protocol::MAX_CONTROL_BYTES)).await;
         let complete = matches!(
             &closed,
             Ok(ControlMessage::BundleComplete { transfer_id })

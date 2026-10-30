@@ -759,16 +759,26 @@ impl<H: SyncHost> Session<'_, H> {
     }
 
     /// Queues what enrolling an anchor server takes: its enrollment as an admin, then the server
-    /// configuration, skipping what the selected log already holds so a repeated setup is
-    /// harmless.
+    /// configuration, skipping what the selected log or the outbox already holds so a repeated
+    /// setup is harmless.
     async fn propose_server(
         &self,
         admin: &AdminContext,
         server: &ServerEnrollment,
     ) -> Result<(), String> {
+        let path = self.files.outbox_path();
+        let outbox = blocking(move || Outbox::load(&path)).await?;
+        let waiting = |matches: &dyn Fn(&Entry) -> bool| {
+            outbox
+                .entries()
+                .iter()
+                .any(|entry| entry.pending() && matches(&entry.proposal.proposal.entry))
+        };
         let enrolled = admin.view.devices.iter().any(|device| {
             device.device_id == server.device_id && device.removed_revision.is_none()
-        });
+        }) || waiting(
+            &|entry| matches!(entry, Entry::Enroll(enroll) if enroll.device_id == server.device_id),
+        );
         if !enrolled {
             let entry = Entry::Enroll(Enroll {
                 device_id: server.device_id.clone(),
@@ -780,7 +790,11 @@ impl<H: SyncHost> Session<'_, H> {
             });
             self.queue_proposal(admin, entry).await?;
         }
-        if admin.view.server.as_ref() != Some(&server.server) {
+        let queued = waiting(&|entry| {
+            matches!(entry, Entry::ServerConfig(config)
+                if config.server.as_ref() == Some(&server.server))
+        });
+        if admin.view.server.as_ref() != Some(&server.server) && !queued {
             let entry = Entry::ServerConfig(ServerConfig {
                 server: Some(server.server.clone()),
             });

@@ -51,7 +51,8 @@ impl DataPaths {
     }
 
     pub fn database(&self) -> PathBuf {
-        self.vault().join(ganbaru_sync_replica::backup::DATABASE_FILE)
+        self.vault()
+            .join(ganbaru_sync_replica::backup::DATABASE_FILE)
     }
 
     /// The record that commits an activation.

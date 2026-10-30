@@ -547,7 +547,21 @@ pub async fn bootstrap_members<H: SyncHost>(
     );
     let known = read_peer_book(host, vault_id);
     let discovered = discovered_members(host, vault_id, &own_device_id, &view, &members).await;
-    Ok(bootstrap_sources(&view, &members, &discovered, &known))
+    let mut sources = bootstrap_sources(&view, &members, &discovered, &known);
+    sources.extend(server_source(&view, &own_device_id, quarantined.devices()));
+    Ok(sources)
+}
+
+/// The anchor server of `view` as a copy source, unless it is this device or quarantined here.
+fn server_source(
+    view: &AuthorizationView,
+    own_device_id: &str,
+    quarantined: &BTreeSet<String>,
+) -> Option<BundleSource> {
+    let target = crate::anchor_link::ServerTarget::of(view)?;
+    let device_id = target.device_id(view)?;
+    (device_id != own_device_id && !quarantined.contains(device_id))
+        .then(|| BundleSource::Server(target))
 }
 
 /// The live members of `view` that serve vault copies besides the coordinator: computers other
@@ -605,7 +619,8 @@ fn bootstrap_sources(
 
 /// The device a vault copy comes from: the coordinator this device is pinned to, or a member
 /// listener pinned to the certificate fingerprint its enrollment recorded in the selected log, or
-/// the anchor server the selected log configures, dialed under the server rule.
+/// the anchor server the selected log configures, dialed under the server rule, or the server a
+/// desktop recovered through, which it knows from the setup code and has no pin or log for yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BundleSource {
     Coordinator,
@@ -615,6 +630,10 @@ pub enum BundleSource {
         fingerprint: String,
     },
     Server(crate::anchor_link::ServerTarget),
+    Recovery {
+        target: crate::anchor_link::ServerTarget,
+        vault_id: String,
+    },
 }
 
 impl BundleSource {
@@ -623,7 +642,7 @@ impl BundleSource {
         match self {
             Self::Coordinator => "the coordinator".to_string(),
             Self::Member { device_id, .. } => format!("member {device_id}"),
-            Self::Server(_) => "the anchor server".to_string(),
+            Self::Server(_) | Self::Recovery { .. } => "the anchor server".to_string(),
         }
     }
 }
@@ -632,12 +651,13 @@ impl BundleSource {
 mod tests {
     use super::{
         AnchorDial, AuthorizationView, BTreeMap, BTreeSet, BundleSource, DeviceKind, anchor_dial,
-        bootstrap_sources, fingerprint_hex, serving_members,
+        bootstrap_sources, fingerprint_hex, server_source, serving_members,
     };
     use crate::peers::anchor_pin::AnchorPin;
     use crate::peers::book::PeerEndpoints;
     use ganbaru_handoff::pairing::CoordinatorPin;
     use ganbaru_sync::EnrolledDevice;
+    use ganbaru_sync_contracts::authorization::{Server, ServerMode};
     use ganbaru_sync_contracts::{AdminPublicKey, DevicePublicKey, DeviceRole};
 
     fn anchor(device_id: &str, fingerprint: char) -> AnchorPin {
@@ -757,6 +777,35 @@ mod tests {
             pending_removal: None,
             server: None,
         }
+    }
+
+    #[test]
+    fn the_anchor_server_serves_copies_unless_it_is_quarantined_or_this_device() {
+        let mut view = view();
+        let none = BTreeSet::new();
+        assert_eq!(server_source(&view, "device-self", &none), None);
+        let server = Server {
+            mode: ServerMode::Anchor,
+            endpoints: vec!["server.example:43823".to_string()],
+            certificate_fingerprint: [3; 32],
+        };
+        view.server = Some(server.clone());
+        assert!(matches!(
+            server_source(&view, "device-self", &none),
+            Some(BundleSource::Server(target)) if target.certificate_fingerprint == [3; 32]
+        ));
+        assert_eq!(server_source(&view, "device-laptop", &none), None);
+        let quarantined = BTreeSet::from(["device-laptop".to_string()]);
+        assert_eq!(server_source(&view, "device-self", &quarantined), None);
+        view.server = Some(Server {
+            mode: ServerMode::Relay,
+            ..server
+        });
+        assert_eq!(
+            server_source(&view, "device-self", &none),
+            None,
+            "a relay holds no vault to copy"
+        );
     }
 
     #[test]

@@ -162,7 +162,9 @@ pub async fn validate_vault_database(database: &Path) -> Result<(), String> {
             .await
             .map_err(|error| format!("check vault database: {error}"))?;
         if result != "ok" {
-            return Err(format!("vault database failed its integrity check: {result}"));
+            return Err(format!(
+                "vault database failed its integrity check: {result}"
+            ));
         }
         Ok(())
     }

@@ -2210,6 +2210,7 @@ dependencies = [
  "ganbaru-sync-contracts",
  "ganbaru-themes",
  "keyring",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

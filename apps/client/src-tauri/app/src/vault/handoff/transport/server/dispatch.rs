@@ -198,7 +198,7 @@ impl Routes for CoordinatorRoutes {
                     }
                 };
                 let decision =
-                    await_enrollment_approval(stream, &approvals, &device_label, device_kind, code)
+                    await_enrollment_approval(stream, approvals, &device_label, device_kind, code)
                         .await;
                 match decision {
                     Ok(EnrollmentDecision::Approved) => {}
@@ -271,7 +271,7 @@ impl Routes for CoordinatorRoutes {
                     request_id,
                     signature,
                 };
-                send_contact_response(stream, contacts.as_ref(), &limits, source, operation).await
+                send_contact_response(stream, contacts.as_ref(), limits, source, operation).await
             }
             ControlMessage::ContactRequestStatus {
                 request_id,
@@ -286,7 +286,7 @@ impl Routes for CoordinatorRoutes {
                     issued_at_ms,
                     signature,
                 };
-                send_contact_response(stream, contacts.as_ref(), &limits, source, operation).await
+                send_contact_response(stream, contacts.as_ref(), limits, source, operation).await
             }
             ControlMessage::PersonKeyRequest {
                 vault_id,
@@ -310,7 +310,7 @@ impl Routes for CoordinatorRoutes {
                     peer_certificate,
                     &metadata.vault_id,
                 )?;
-                serve_download(stream, &manager, metadata).await
+                serve_download(stream, manager, metadata).await
             }
             ControlMessage::RequestBundle {
                 compatibility,

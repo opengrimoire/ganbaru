@@ -111,4 +111,5 @@ objc2-web-kit = { workspace = true }
 ganbaru-chat = { workspace = true, features = ["test-support"] }
 ganbaru-db = { workspace = true, features = ["test-support"] }
 ganbaru-handoff = { workspace = true, features = ["test-support"] }
+ganbaru-sync-replica = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }

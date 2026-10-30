@@ -3,7 +3,7 @@
 
 use super::authority::{self, AuthorityView, LateChangesView, OutboxEntryView};
 use super::contests::{self, ContestsDto};
-use super::host::SyncHost;
+use super::host::{AppHost, SyncHost};
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
 #[cfg(desktop)]
 use super::recovery_kit::{self, KIT_LOCK, RecoveryKitState};
@@ -105,7 +105,7 @@ pub async fn sync_set_foreground<R: Runtime>(
     if visible {
         runtime.sync_now();
     } else {
-        app.stop_serving_members().await;
+        AppHost::of(&app).stop_serving_members().await;
     }
     Ok(())
 }
@@ -184,7 +184,7 @@ pub async fn sync_quarantine_device<R: Runtime>(
     runtime: State<'_, SyncRuntime>,
     device_id: String,
 ) -> Result<(), String> {
-    if device_id == app.device_id()? {
+    if device_id == AppHost::of(&app).device_id()? {
         return Err("this device cannot quarantine itself".to_string());
     }
     let path = quarantine_path(&app)?;
@@ -264,7 +264,12 @@ pub async fn sync_recovery_kit_state<R: Runtime>(
     let _kit = KIT_LOCK.lock().await;
     let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
-    recovery_kit::state(&mut conn, &app.key_store()?, &app.active_vault_id()?).await
+    recovery_kit::state(
+        &mut conn,
+        &AppHost::of(&app).key_store()?,
+        &AppHost::of(&app).active_vault_id()?,
+    )
+    .await
 }
 
 /// Creates or replaces the recovery kit of an active vault that does not sync yet; its public
@@ -277,8 +282,8 @@ pub async fn sync_create_recovery_kit<R: Runtime>(app: AppHandle<R>) -> Result<(
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::create(
         &mut conn,
-        &app.key_store()?,
-        &app.active_vault_id()?,
+        &AppHost::of(&app).key_store()?,
+        &AppHost::of(&app).active_vault_id()?,
         super::now_ms()?,
     )
     .await
@@ -298,8 +303,8 @@ pub async fn sync_recovery_kit_saved<R: Runtime>(
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::confirm_saved(
         &mut conn,
-        &app.key_store()?,
-        &app.active_vault_id()?,
+        &AppHost::of(&app).key_store()?,
+        &AppHost::of(&app).active_vault_id()?,
         &last_group,
     )
     .await
@@ -362,7 +367,7 @@ pub async fn sync_force_anchor<R: Runtime>(
             } => (revision, old_anchor),
             _ => return Err("sync answered forcing the anchor with something else".to_string()),
         };
-    if quarantine_anchor && old_anchor != app.device_id()? {
+    if quarantine_anchor && old_anchor != AppHost::of(&app).device_id()? {
         let path = quarantine_path(&app)?;
         {
             let _guard = QUARANTINE_LOCK.lock().await;
@@ -587,8 +592,8 @@ async fn run_authority(
 }
 
 fn quarantine_path<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
-    let vault_id = app.active_vault_id()?;
-    Ok(app.sync_files(&vault_id)?.quarantine_path())
+    let vault_id = AppHost::of(app).active_vault_id()?;
+    Ok(AppHost::of(app).sync_files(&vault_id)?.quarantine_path())
 }
 
 async fn close_recovery(

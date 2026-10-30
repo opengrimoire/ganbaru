@@ -21,9 +21,7 @@ mod member_bundles;
 #[cfg(all(desktop, test))]
 pub(super) use dispatch::serve_with_limits;
 #[cfg(desktop)]
-pub(crate) use dispatch::{
-    CoordinatorServices, EnrollmentSealer, QuarantinedDevices, serve_with_coordinator,
-};
+pub(crate) use dispatch::{CoordinatorServices, EnrollmentSealer, serve_with_coordinator};
 #[cfg(desktop)]
 pub(crate) use member_bundles::{
     MemberBundles, PreparedSnapshot, SnapshotPreparer, SnapshotRequest,

@@ -16,7 +16,7 @@ use ganbaru_sync_replica::records::{BackstopState, GrowthAlert, RecordExchange, 
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
 
-use super::host::SyncHost;
+use super::host::{AppHost, SyncHost};
 
 /// The contests of the active vault's sync space and its record storage state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -218,7 +218,7 @@ pub(crate) async fn read<R: Runtime>(
     records: &RecordExchange,
 ) -> Result<Option<ContestsDto>, String> {
     let pool = crate::db::connect_active_vault_for_sync(app).await?;
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
     let own = super::devices::stable_device_id(app)?;
     let admin = own_admin_key(app, &vault_id).await?;
     let engine = Engine::vault();

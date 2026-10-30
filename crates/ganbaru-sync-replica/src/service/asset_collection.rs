@@ -4,10 +4,10 @@
 //! fences it.
 
 use super::host::SyncHost;
-use ganbaru_sync_replica::assets::{
+use crate::assets::{
     AssetSweep, InFlightAssets, UNREFERENCED_ASSET_GRACE, collect_unreferenced_assets,
 };
-use ganbaru_sync_replica::backup::ArchiveGate;
+use crate::backup::ArchiveGate;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -23,7 +23,7 @@ static LAST_COLLECTION: LastCollection = Mutex::new(None);
 
 /// Collects the unreferenced asset files of the active vault when its last collection in this
 /// process is a day old. A failure is logged and waits for the next interval.
-pub(super) async fn collect_if_due<H: SyncHost>(host: &H) {
+pub async fn collect_if_due<H: SyncHost>(host: &H) {
     let Ok(vault_id) = host.active_vault_id() else {
         return;
     };

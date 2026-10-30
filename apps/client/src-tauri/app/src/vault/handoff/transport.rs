@@ -1,16 +1,18 @@
 //! Pinned client transport and shared resumable archive streaming.
 
-mod dial_report;
 mod server;
-pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
-use dial_report::{DialOutcome, record_dial};
-pub(crate) use server::{
-    CoordinatorListener, LanAdmission, MemberAdmissionSource, MemberServices, serve_member_listener,
-};
+#[cfg(all(test, desktop))]
+use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
+pub(crate) use ganbaru_sync_replica::service::dial_report::CoordinatorDialReport;
+use ganbaru_sync_replica::service::dial_report::{DialOutcome, record_dial};
+pub(crate) use ganbaru_sync_replica::service::peers::BundleSource;
+#[cfg(test)]
+use ganbaru_sync_replica::service::sync_peer;
+pub(crate) use server::{CoordinatorListener, LanAdmission, MemberServices, serve_member_listener};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorServices, EnrollmentSealer, MemberBundles, PreparedSnapshot, QuarantinedDevices,
-    SnapshotPreparer, SnapshotRequest, serve_with_coordinator,
+    CoordinatorServices, EnrollmentSealer, MemberBundles, PreparedSnapshot, SnapshotPreparer,
+    SnapshotRequest, serve_with_coordinator,
 };
 
 use super::pairing::{
@@ -167,28 +169,6 @@ pub(crate) async fn enroll(
         }
         ControlMessage::Error { message, .. } => Err(message),
         _ => Err("coordinator returned an invalid enrollment response".to_string()),
-    }
-}
-
-/// The device a vault copy comes from: the coordinator this device is pinned to, or a member
-/// listener pinned to the certificate fingerprint its enrollment recorded in the selected log.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BundleSource {
-    Coordinator,
-    Member {
-        device_id: String,
-        endpoints: Vec<String>,
-        fingerprint: String,
-    },
-}
-
-impl BundleSource {
-    /// A short name for logs and error messages.
-    pub(crate) fn describe(&self) -> String {
-        match self {
-            Self::Coordinator => "the coordinator".to_string(),
-            Self::Member { device_id, .. } => format!("member {device_id}"),
-        }
     }
 }
 
@@ -379,16 +359,6 @@ pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<Contr
         },
     )
     .await
-}
-
-/// The vault and device ids a sync exchange presents, or `None` on a device that is not linked
-/// to a coordinator.
-pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, String)>, String> {
-    let Some(coordinator) = manager.coordinator_pin()? else {
-        return Ok(None);
-    };
-    let device_id = manager.device_id()?;
-    Ok(Some((coordinator.vault_id, device_id)))
 }
 
 /// Sends one sync message to the coordinator over the linked-device identity. A sync state
@@ -857,7 +827,7 @@ const MAX_CONCURRENT_COORDINATOR_DIALS: usize = 4;
 ///
 /// When every candidate fails, it awaits `discover` once and dials the endpoints it returns that
 /// were not tried yet. `discover` does nothing until then. How the dial ended is recorded for
-/// [`coordinator_dial_report`].
+/// [`coordinator_dial_report`](ganbaru_sync_replica::service::dial_report::coordinator_dial_report).
 async fn connect_coordinator(
     manager: &PairingManager,
     coordinator: &CoordinatorPin,

@@ -1,39 +1,36 @@
-//! The sync transport of a linked device: requests travel to the paired coordinator over the
-//! pinned handoff connection.
+//! The app's sync dialer: requests travel to the paired coordinator over the pinned handoff
+//! connection, and to member listeners pinned to their enrolled certificates.
 
 use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::handoff::protocol::ControlMessage;
-use ganbaru_sync_replica::client::SyncTransport;
+use ganbaru_sync_replica::service::transport::{DialFuture, SyncDialer};
 
-/// Sends requests to the coordinator this device is paired with.
-#[derive(Clone)]
-pub(crate) struct PairedTransport(pub PairingManager);
+/// Dials through the handoff transport of the app.
+pub(crate) struct AppDialer;
 
-impl SyncTransport for PairedTransport {
-    async fn request(&self, message: ControlMessage) -> Result<ControlMessage, String> {
-        crate::vault::handoff::transport::sync_request(&self.0, message).await
+impl SyncDialer for AppDialer {
+    fn coordinator<'a>(
+        &'a self,
+        manager: &'a PairingManager,
+        message: ControlMessage,
+    ) -> DialFuture<'a> {
+        Box::pin(crate::vault::handoff::transport::sync_request(
+            manager, message,
+        ))
     }
-}
 
-/// Sends requests to one member listener, pinned to the certificate fingerprint its enrollment
-/// recorded in the selected log.
-#[derive(Clone)]
-pub(crate) struct MemberTransport {
-    pub manager: PairingManager,
-    /// The device the pinned fingerprint belongs to in the selected log.
-    pub device_id: String,
-    pub endpoints: Vec<String>,
-    pub fingerprint: String,
-}
-
-impl SyncTransport for MemberTransport {
-    async fn request(&self, message: ControlMessage) -> Result<ControlMessage, String> {
-        crate::vault::handoff::transport::member_sync_request(
-            &self.manager,
-            &self.endpoints,
-            &self.fingerprint,
+    fn member<'a>(
+        &'a self,
+        manager: &'a PairingManager,
+        endpoints: &'a [String],
+        fingerprint: &'a str,
+        message: ControlMessage,
+    ) -> DialFuture<'a> {
+        Box::pin(crate::vault::handoff::transport::member_sync_request(
+            manager,
+            endpoints,
+            fingerprint,
             message,
-        )
-        .await
+        ))
     }
 }

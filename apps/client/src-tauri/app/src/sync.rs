@@ -4,18 +4,15 @@
 //! `ganbaru-sync-replica`. A pass runs through a host, so the app and a headless pass without a
 //! Tauri runtime share it.
 
-mod asset_collection;
 mod authority;
 pub(crate) mod commands;
 mod connectivity;
 mod contests;
 pub(crate) mod devices;
-pub(crate) mod discovery_keys;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod headless;
 mod host;
 pub(crate) mod key_protection;
-mod peers;
 mod recovery;
 #[cfg(desktop)]
 mod recovery_kit;
@@ -25,16 +22,18 @@ mod transport;
 mod vault_assets;
 
 pub(crate) use ganbaru_sync_replica::hub;
-use ganbaru_sync_replica::{assets, carry_forward, client, writer};
+pub(crate) use ganbaru_sync_replica::service::discovery_keys;
+use ganbaru_sync_replica::service::peers;
+use ganbaru_sync_replica::{assets, writer};
 
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-pub(crate) use peers::{bootstrap_members, peer_hints, read_peer_book, reported_members};
+pub(crate) use peers::reported_members;
 pub(crate) use service::{
-    SyncRuntime, ensure_device_key, member_admission_source, member_hub, quiesced_sync,
-    release_runtime_handle, resume_after_vault_handoff, seal_quiesced, setup,
-    stop_for_vault_handoff, sync_files,
+    SyncRuntime, bootstrap_members, ensure_device_key, member_admission_source, member_hub,
+    peer_hints, quiesced_sync, read_peer_book, release_runtime_handle, resume_after_vault_handoff,
+    seal_quiesced, setup, stop_for_vault_handoff, sync_files,
 };
 #[cfg(desktop)]
 pub(crate) use service::{

@@ -86,7 +86,7 @@ apps/
         src/notifications.rs, notifications/: desktop native notifications and Android notification capabilities
         src/sound_effects.rs, system_command.rs: app sound effects and bounded fixed-command execution
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
-        src/sync.rs, sync/: sync service lifecycle, paired transport, managed asset transfer, recovery listing, status, and sync commands
+        src/sync.rs, sync/: sync service host on the Tauri app, dialers, vault assets, recovery listing, status, and sync commands
         src/quick_notes.rs, quick_notes/: Quick notes command adapters and image file commands
         src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
@@ -117,10 +117,10 @@ crates/
   ganbaru-chat/: Chat persistence, runtime, Git workspaces, checkpoints, review, and application services
   ganbaru-working-folders/: Tauri-free working-folder IDs, bindings, and device-state operations
   ganbaru-contacts/: Tauri-free person key pairs, signed contact cards, request signatures, and trust kinds
-  ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, LAN-only dial targets, DNS-SD discovery records and hourly member tags, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and snapshot copy state, and Linux firewall authorization
+  ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, TLS pin verifiers, LAN-only dial targets, DNS-SD discovery records and hourly member tags, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and snapshot copy state, and Linux firewall authorization
   ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, device-signed writer certificates, the space charter, authorization log entries, recovery kit codes, order keys, the signed operation format, and space key envelopes and chain links
   ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, the authorization record store with chain selection and contests, removal exclusion and late changes, fork evidence, and the simulation harness
-  ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, managed asset collection, and whole-vault archives
+  ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, managed asset collection, whole-vault archives, the pinned TLS listeners, and the sync service loop over a host trait
   ganbaru-sync-relay/: self-hosted relay server binary in relay mode, storing sealed records and asset chunks it cannot open
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary

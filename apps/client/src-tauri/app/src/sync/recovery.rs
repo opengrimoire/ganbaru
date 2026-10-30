@@ -8,12 +8,11 @@ use ganbaru_sync::manifest::vault::{
 };
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
-    RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
+    RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
 use serde::Serialize;
 use sqlx::SqliteConnection;
 use tauri::{AppHandle, Runtime};
-use tokio::sync::oneshot;
 
 /// Restorers of the domains whose rows can root a recovery offer, one line per table.
 static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
@@ -241,13 +240,6 @@ pub(crate) struct RecoveryEntryView {
 pub(crate) struct RecoveryTextView {
     pub title: String,
     pub preview: String,
-}
-
-/// A recovery action waiting for the service, which owns the local writer.
-pub(crate) struct RecoveryRequest {
-    pub choice: RecoveryChoice,
-    /// Receives the id of the restored row, if any.
-    pub reply: oneshot::Sender<Result<Option<String>, String>>,
 }
 
 /// Recovery offers of the active vault, newest edit first.

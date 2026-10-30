@@ -542,7 +542,8 @@ pub(crate) fn configure_background<R: tauri::Runtime>(
 ) {
     use super::host::SyncHost;
     use ganbaru_mobile_sync::MobileSyncExt;
-    let config = match (app.sync_enabled(), app.config_dir()) {
+    let host = super::host::AppHost::of(app);
+    let config = match (host.sync_enabled(), host.config_dir()) {
         (Ok(linked), Ok(config_dir)) => BackgroundConfig::of(linked, view, config_dir),
         (Err(error), _) | (_, Err(error)) => {
             eprintln!("background sync configuration: {error}");

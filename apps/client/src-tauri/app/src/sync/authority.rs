@@ -13,7 +13,7 @@ use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Serialize;
 use tauri::{AppHandle, Runtime};
 
-use super::host::SyncHost;
+use super::host::{AppHost, SyncHost};
 use super::service::blocking;
 
 /// The selected authorization state of the active vault's sync space.
@@ -152,10 +152,10 @@ pub(crate) async fn read<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Author
     let Some(view) = authorization(app).await? else {
         return Ok(None);
     };
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
     let own = super::devices::stable_device_id(app)?;
     let own_is_admin = own_is_admin(app, &vault_id, &view, &own).await?;
-    let path = app.sync_files(&vault_id)?.quarantine_path();
+    let path = AppHost::of(app).sync_files(&vault_id)?.quarantine_path();
     let quarantined = blocking(move || Quarantine::load(&path)).await?;
     let names = super::devices::read(app)?;
     Ok(Some(authority_view(
@@ -179,7 +179,7 @@ pub(crate) async fn late_changes<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<LateChangesView, String> {
     let pool = crate::db::connect_active_vault_for_sync(app).await?;
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
     let engine = Engine::vault();
     let mut conn = pool
         .acquire()
@@ -211,7 +211,7 @@ async fn authorization<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<AuthorizationView>, String> {
     let pool = crate::db::connect_active_vault_for_sync(app).await?;
-    let vault_id = app.active_vault_id()?;
+    let vault_id = AppHost::of(app).active_vault_id()?;
     let engine = Engine::vault();
     let mut conn = pool
         .acquire()
@@ -230,8 +230,8 @@ async fn authorization<R: Runtime>(
 }
 
 async fn load_outbox<R: Runtime>(app: &AppHandle<R>) -> Result<Outbox, String> {
-    let vault_id = app.active_vault_id()?;
-    let path = app.sync_files(&vault_id)?.outbox_path();
+    let vault_id = AppHost::of(app).active_vault_id()?;
+    let path = AppHost::of(app).sync_files(&vault_id)?.outbox_path();
     blocking(move || Outbox::load(&path)).await
 }
 

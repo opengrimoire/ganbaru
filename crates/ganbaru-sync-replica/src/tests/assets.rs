@@ -448,18 +448,48 @@ impl SweepVault {
         .expect("insert note image");
     }
 
+    /// Keeps a late change of a removed device whose image list references `contents`, decided
+    /// by `resolution` or still undecided.
+    async fn late_note_image(&self, row: &str, contents: &[u8], resolution: Option<&str>) {
+        let value = note_image_value(contents).encode();
+        let mut groups = vec![note_group::IMAGES.get()];
+        groups.extend_from_slice(&[0; 8 + 16 + 8]);
+        groups.extend_from_slice(&u32::try_from(value.len()).expect("length").to_be_bytes());
+        groups.extend_from_slice(&value);
+        sqlx::query(
+            "INSERT INTO sync_late_changes
+                 (removal_revision, table_id, row_key, change, groups, resolution, resolved_revision)
+             VALUES (1, ?, ?, 'values', ?, ?, CASE WHEN ?4 IS NULL THEN NULL ELSE 2 END)",
+        )
+        .bind(i64::from(NOTES_TABLE.0))
+        .bind(row)
+        .bind(groups)
+        .bind(resolution)
+        .execute(&self.pool)
+        .await
+        .expect("insert late change");
+    }
+
+    /// Keeps a displaced version whose image list references `contents`.
+    async fn displace_note_image(&self, contents: &[u8]) {
+        sqlx::query(
+            "INSERT INTO sync_displaced_versions
+                 (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value,
+                  displaced_by_writer, displaced_by_seq)
+             VALUES (?, 'displaced', ?, zeroblob(16), 1, 0, zeroblob(32), ?, zeroblob(16), 2)",
+        )
+        .bind(i64::from(NOTES_TABLE.0))
+        .bind(i64::from(note_group::IMAGES.get()))
+        .bind(note_image_value(contents).encode())
+        .execute(&self.pool)
+        .await
+        .expect("insert displaced version");
+    }
+
     /// Keeps a retained version of a deleted note whose image list references `contents`, as
     /// an open conflict or recovery offer does.
     async fn retain_note_image(&self, contents: &[u8]) {
-        let image = NoteImage {
-            sha256: digest(contents),
-            content_type: "image/png".to_string(),
-            byte_size: u32::try_from(contents.len()).expect("image size"),
-            width: 4,
-            height: 4,
-        };
-        let encoded = encode_images(&[image]).expect("encode images");
-        let value = Value::new(vec![Field::Blob(encoded)]).expect("image value");
+        let value = note_image_value(contents);
         sqlx::query(
             "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, 'gone', 'tombstoned')",
         )
@@ -522,6 +552,19 @@ impl SweepVault {
     }
 }
 
+/// The image group value of a note whose only image is `contents`.
+fn note_image_value(contents: &[u8]) -> Value {
+    let image = NoteImage {
+        sha256: digest(contents),
+        content_type: "image/png".to_string(),
+        byte_size: u32::try_from(contents.len()).expect("image size"),
+        width: 4,
+        height: 4,
+    };
+    let encoded = encode_images(&[image]).expect("encode images");
+    Value::new(vec![Field::Blob(encoded)]).expect("image value")
+}
+
 fn admit_all(_: &'static AssetClass) -> Option<()> {
     Some(())
 }
@@ -532,9 +575,13 @@ fn assets_sweep_removes_unreferenced_files_of_every_class_and_keeps_referenced_o
         let vault = SweepVault::new("assets-collect").await;
         let [live, retained, orphan, profile, replaced, unregistered] =
             [20, 21, 22, 23, 24, 25].map(|seed| bytes(64, seed));
+        let [late, discarded, displaced] = [26, 27, 28].map(|seed| bytes(64, seed));
         let live_name = vault.aged_file(&IMAGES_CLASS, &live);
         let retained_name = vault.aged_file(&IMAGES_CLASS, &retained);
         let orphan_name = vault.aged_file(&IMAGES_CLASS, &orphan);
+        let late_name = vault.aged_file(&IMAGES_CLASS, &late);
+        vault.aged_file(&IMAGES_CLASS, &discarded);
+        let displaced_name = vault.aged_file(&IMAGES_CLASS, &displaced);
         let profile_name = vault.aged_file(&PROFILE_CLASS, &profile);
         vault.aged_file(&PROFILE_CLASS, &replaced);
         let unregistered_name = vault.aged_file(&LARGE_CLASS, &unregistered);
@@ -544,16 +591,28 @@ fn assets_sweep_removes_unreferenced_files_of_every_class_and_keeps_referenced_o
         }
         vault.reference_note_image("note", &live).await;
         vault.retain_note_image(&retained).await;
+        vault.late_note_image("late", &late, None).await;
+        vault
+            .late_note_image("discarded", &discarded, Some("discard"))
+            .await;
+        vault.displace_note_image(&displaced).await;
         vault.set_profile_image(&replaced).await;
         vault.set_profile_image(&profile).await;
 
         let in_flight = Arc::new(InFlightAssets::default());
         assert_eq!(
             vault.sweep(&in_flight, SystemTime::now(), admit_all).await,
-            Ok(2),
-            "the orphaned note image and the replaced profile picture go"
+            Ok(3),
+            "the orphaned and discarded note images and the replaced profile picture go"
         );
-        let mut images = vec![live_name, retained_name, staged, "notes.txt".to_string()];
+        let mut images = vec![
+            live_name,
+            retained_name,
+            late_name,
+            displaced_name,
+            staged,
+            "notes.txt".to_string(),
+        ];
         images.sort();
         assert_eq!(entries(vault.root(), &IMAGES_CLASS), images);
         assert_eq!(entries(vault.root(), &PROFILE_CLASS), vec![profile_name]);

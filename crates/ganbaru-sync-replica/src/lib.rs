@@ -8,6 +8,8 @@
 //! Tauri runtime, the listener routes, and the frontend projection.
 
 pub mod access;
+pub mod anchor_link;
+pub mod anchor_setup;
 pub mod assets;
 pub mod authority;
 pub mod backup;

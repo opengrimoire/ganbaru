@@ -17,8 +17,9 @@ use ganbaru_handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, DeviceKind, Digest32, Entry, LateResolution, LateRow, ProposalRejection,
-    ResolveLate, RowKey, SignedProposal, TableId, VersionVector,
+    AdminKeyPair, AdminPublicKey, DeviceKind, DevicePublicKey, DeviceRole, Digest32, Enroll, Entry,
+    LateResolution, LateRow, ProposalRejection, ResolveLate, RowKey, Server, ServerConfig,
+    SignedProposal, TableId, VersionVector,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -52,6 +53,20 @@ pub enum AuthorityAction {
     /// Seal, as the anchor of the instance the stored handover with this hash leaves, an
     /// objection to it.
     Object(Digest32),
+    /// Propose enrolling an anchor server as an admin and naming it in the server configuration.
+    EnrollServer(ServerEnrollment),
+}
+
+/// What an admin device learned from a server that proved its setup conversation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerEnrollment {
+    pub device_id: String,
+    pub device_key: DevicePublicKey,
+    pub label: String,
+    /// The admin key the server generated for itself; the server's private key never leaves it.
+    pub admin_key: AdminPublicKey,
+    /// The configuration that tells members to dial it.
+    pub server: Server,
 }
 
 /// A forced handover a person asks for. Its debug form never shows the kit code.
@@ -127,6 +142,10 @@ impl std::fmt::Debug for AuthorityAction {
             }
             Self::Yield(handover) => formatter.debug_tuple("Yield").field(handover).finish(),
             Self::Object(handover) => formatter.debug_tuple("Object").field(handover).finish(),
+            Self::EnrollServer(enrollment) => formatter
+                .debug_tuple("EnrollServer")
+                .field(&enrollment.device_id)
+                .finish(),
         }
     }
 }
@@ -396,6 +415,10 @@ impl<H: SyncHost> Session<'_, H> {
             }
             AuthorityAction::ForceAnchor(_) => {
                 Err("forcing the anchor runs with the sync writer".to_string())
+            }
+            AuthorityAction::EnrollServer(server) => {
+                self.propose_server(&admin, server).await?;
+                Ok(AuthorityAnswer::Proposed)
             }
             AuthorityAction::Yield(_) | AuthorityAction::Object(_) => {
                 Err("a contest record runs with the sync writer".to_string())
@@ -733,6 +756,64 @@ impl<H: SyncHost> Session<'_, H> {
         self.sequence_own_outbox(active, covered).await?;
         let after = self.record_commit(active).await?;
         Ok(after > before)
+    }
+
+    /// Queues what enrolling an anchor server takes: its enrollment as an admin, then the server
+    /// configuration, skipping what the selected log already holds so a repeated setup is
+    /// harmless.
+    async fn propose_server(
+        &self,
+        admin: &AdminContext,
+        server: &ServerEnrollment,
+    ) -> Result<(), String> {
+        let enrolled = admin.view.devices.iter().any(|device| {
+            device.device_id == server.device_id && device.removed_revision.is_none()
+        });
+        if !enrolled {
+            let entry = Entry::Enroll(Enroll {
+                device_id: server.device_id.clone(),
+                device_key: server.device_key,
+                tls_fingerprint: server.server.certificate_fingerprint,
+                label: server.label.clone(),
+                device_kind: DeviceKind::Server,
+                role: DeviceRole::Admin(server.admin_key),
+            });
+            self.queue_proposal(admin, entry).await?;
+        }
+        if admin.view.server.as_ref() != Some(&server.server) {
+            let entry = Entry::ServerConfig(ServerConfig {
+                server: Some(server.server.clone()),
+            });
+            self.queue_proposal(admin, entry).await?;
+        }
+        Ok(())
+    }
+
+    /// Seals the handover a server asked for once it can sequence for the space: it is an admin
+    /// and opens the current key epoch. A server dials nobody, so what it stored is what it can
+    /// vouch for; a device that stored more keeps it, and late changes cover the rest.
+    pub async fn take_wanted_anchor(
+        &self,
+        manager: &PairingManager,
+        writer: &mut Option<ActiveWriter>,
+    ) -> Result<(), String> {
+        let admin = self.admin_context(manager).await?;
+        if admin.anchors() {
+            return self.host.anchor_taken();
+        }
+        if !admin.is_admin() {
+            return Ok(());
+        }
+        let Some(active) = writer.as_ref() else {
+            return Ok(());
+        };
+        let keys = active.space_keys().map(|keys| keys.as_ref() as _);
+        if !authority::opens_current_epoch(&admin.view, &admin.device_id, keys) {
+            return Ok(());
+        }
+        self.take_anchor(manager, writer, &VersionVector::new())
+            .await
+            .map(drop)
     }
 
     /// Sequences this anchoring desktop's own waiting proposals, also while the coordinator is

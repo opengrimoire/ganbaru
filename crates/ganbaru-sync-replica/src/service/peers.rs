@@ -414,7 +414,7 @@ pub async fn exchange_with_members<H: SyncHost>(
 
 /// Records what the log's anchor reported storing in a direct exchange as anchor marks, so
 /// displaced versions it covers are released without waiting for the coordinator to relay it.
-async fn record_direct_anchor_marks(
+pub(super) async fn record_direct_anchor_marks(
     engine: &Engine,
     pool: &SqlitePool,
     ctx: &SpaceContext,
@@ -604,7 +604,8 @@ fn bootstrap_sources(
 }
 
 /// The device a vault copy comes from: the coordinator this device is pinned to, or a member
-/// listener pinned to the certificate fingerprint its enrollment recorded in the selected log.
+/// listener pinned to the certificate fingerprint its enrollment recorded in the selected log, or
+/// the anchor server the selected log configures, dialed under the server rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BundleSource {
     Coordinator,
@@ -613,6 +614,7 @@ pub enum BundleSource {
         endpoints: Vec<String>,
         fingerprint: String,
     },
+    Server(crate::anchor_link::ServerTarget),
 }
 
 impl BundleSource {
@@ -621,6 +623,7 @@ impl BundleSource {
         match self {
             Self::Coordinator => "the coordinator".to_string(),
             Self::Member { device_id, .. } => format!("member {device_id}"),
+            Self::Server(_) => "the anchor server".to_string(),
         }
     }
 }

@@ -15,14 +15,18 @@ use tokio::net::TcpStream;
 
 pub mod admission;
 #[cfg(desktop)]
+pub mod bundles;
+#[cfg(desktop)]
 pub mod coordinator;
 pub mod limits;
 pub mod listener;
 pub mod member;
+pub mod server;
 
 pub use admission::LanAdmission;
 pub use listener::CoordinatorListener;
 pub use member::{MemberAdmissionSource, MemberServices, serve_member};
+pub use server::{ServerServices, serve_server};
 
 use crate::peers::admission::MemberAdmission;
 use limits::ConnectionLimits;

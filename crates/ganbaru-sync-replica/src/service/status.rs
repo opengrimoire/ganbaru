@@ -83,6 +83,8 @@ pub enum SyncErrorCode {
     /// authorization records with it and syncs with the other members until it is linked to
     /// another computer or its copy is recovered.
     CoordinatorRemoved,
+    /// The anchor server speaks an older protocol, so it stopped answering this device.
+    ServerNeedsUpdate,
 }
 
 /// Why the coordinator does not count a linked device toward stability.

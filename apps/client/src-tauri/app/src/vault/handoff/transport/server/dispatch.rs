@@ -2,7 +2,6 @@
 //! archive serving. The listener itself, with TLS, admission, and sync dispatch, is
 //! [`ganbaru_sync_replica::serve::coordinator`].
 
-use super::super::stream_file;
 use super::limits::ConnectionLimits;
 use super::{CoordinatorListener, LanAdmission, MemberAdmissionSource, send_error};
 use crate::contacts::requests::PeerReply;
@@ -16,10 +15,11 @@ use crate::vault::handoff::enrollment_approval::{
 };
 use crate::vault::handoff::pairing::{Enrollment, PairingManager, PinnedCharter};
 use crate::vault::handoff::protocol::{
-    BundleMetadata, ControlMessage, PROTOCOL_VERSION, read_control, unix_time_ms, write_control,
+    ControlMessage, PROTOCOL_VERSION, unix_time_ms, write_control,
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use ganbaru_handoff::dial::LoopbackPolicy;
+use ganbaru_sync_replica::serve::bundles::serve_download;
 pub(crate) use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
 use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream, timeout_control};
 use std::future::Future;
@@ -516,58 +516,4 @@ async fn send_coordinator_response_value(
         } => return send_error(stream, &code, &message, retryable).await,
     };
     timeout_control(write_control(stream, &message)).await
-}
-
-pub(super) async fn serve_download(
-    stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
-    manager: &PairingManager,
-    requested: BundleMetadata,
-) -> Result<(), String> {
-    let registered = manager.outgoing_bundle(&requested.transfer_id)?;
-    if registered.metadata != requested {
-        return send_error(
-            stream,
-            "transfer_metadata",
-            "requested transfer metadata does not match the registered bundle",
-            false,
-        )
-        .await;
-    }
-    timeout_control(write_control(
-        stream,
-        &ControlMessage::BundleMetadata {
-            metadata: registered.metadata.clone(),
-        },
-    ))
-    .await?;
-    let response = timeout_control(read_control(stream)).await?;
-    let offset = match response {
-        ControlMessage::ResumeAt { offset } if offset <= registered.metadata.archive_bytes => {
-            offset
-        }
-        _ => {
-            return send_error(
-                stream,
-                "resume_offset",
-                "transfer resume offset is invalid",
-                false,
-            )
-            .await;
-        }
-    };
-    stream_file(
-        stream,
-        &registered.path,
-        offset,
-        registered.metadata.archive_bytes,
-    )
-    .await?;
-    match timeout_control(read_control(stream)).await? {
-        ControlMessage::BundleComplete { transfer_id }
-            if transfer_id == registered.metadata.transfer_id =>
-        {
-            Ok(())
-        }
-        _ => Err("receiver did not acknowledge the completed transfer".to_string()),
-    }
 }

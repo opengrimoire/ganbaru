@@ -676,6 +676,29 @@ pub fn recovery_promotion(
     )
 }
 
+/// Signs, with the recovery admin key `kit_code` derives, the proposal that enrolls a new desktop
+/// as an admin after every device of the space is lost. The derived key lives only inside this
+/// call, and the anchor refuses a kit its selected log no longer names.
+pub fn recovery_enrollment(
+    space: SpaceId,
+    charter: Digest32,
+    kit_code: &str,
+    enrollment: Enrollment,
+    admin_key: AdminPublicKey,
+    now_ms: u64,
+) -> Result<SignedProposal, String> {
+    let recovery = kit_admin(kit_code)?;
+    let entry = Entry::Enroll(Enroll {
+        role: DeviceRole::Admin(admin_key),
+        device_id: enrollment.device_id,
+        device_key: enrollment.device_key,
+        tls_fingerprint: enrollment.tls_fingerprint,
+        label: enrollment.label,
+        device_kind: enrollment.device_kind,
+    });
+    propose(space, charter, &recovery, entry, now_ms)
+}
+
 /// The enrolled devices other than `own_device_id`, the anchor, and servers that are not removed and
 /// for which `linked` is false. An admin hub proposes their removal, because the coordinator
 /// links every device of the space.

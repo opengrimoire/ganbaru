@@ -63,43 +63,6 @@ impl TransferCancellation {
     }
 }
 
-#[cfg(desktop)]
-async fn stream_file<W>(
-    writer: &mut W,
-    path: &Path,
-    offset: u64,
-    total_bytes: u64,
-) -> Result<(), String>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|error| format!("open transfer bundle: {error}"))?;
-    tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(offset))
-        .await
-        .map_err(|error| format!("seek transfer bundle: {error}"))?;
-    let mut remaining = total_bytes.saturating_sub(offset);
-    let mut buffer = vec![0_u8; TRANSFER_CHUNK_BYTES];
-    while remaining > 0 {
-        let chunk_bytes = usize::try_from(remaining.min(buffer.len() as u64))
-            .map_err(|_| "transfer chunk size overflow".to_string())?;
-        tokio::time::timeout(CHUNK_TIMEOUT, file.read_exact(&mut buffer[..chunk_bytes]))
-            .await
-            .map_err(|_| "reading the transfer bundle timed out".to_string())?
-            .map_err(|error| format!("read transfer bundle: {error}"))?;
-        tokio::time::timeout(CHUNK_TIMEOUT, writer.write_all(&buffer[..chunk_bytes]))
-            .await
-            .map_err(|_| "sending the transfer bundle timed out".to_string())?
-            .map_err(|error| format!("send transfer bundle: {error}"))?;
-        remaining -= chunk_bytes as u64;
-    }
-    writer
-        .flush()
-        .await
-        .map_err(|error| format!("flush transfer bundle: {error}"))
-}
-
 pub(crate) async fn enroll(
     manager: &PairingManager,
     invitation: &PairingInvitation,
@@ -195,6 +158,16 @@ async fn open_source(
             connect_member_endpoints(manager, endpoints, fingerprint).await?,
             None,
         )),
+        BundleSource::Server(target) => {
+            let (_, identity) = load_tls_identity(manager).await?;
+            let stream = ganbaru_sync_replica::anchor_link::dial_server(
+                target,
+                Some(identity),
+                ganbaru_sync_replica::service::RELAY_LOOPBACK,
+            )
+            .await?;
+            Ok((stream, None))
+        }
     }
 }
 
@@ -547,9 +520,9 @@ async fn fetch_from(
             archive,
         }),
         Err(error) => {
-            // The coordinator keeps a copy it prepared so the download can resume; a member
-            // holds one copy at a time and is released for the next device.
-            if matches!(source, BundleSource::Member { .. }) {
+            // The coordinator keeps a copy it prepared so the download can resume; a member or
+            // server holds one copy at a time and is released for the next device.
+            if !matches!(source, BundleSource::Coordinator) {
                 let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;
             }
             Err(error)

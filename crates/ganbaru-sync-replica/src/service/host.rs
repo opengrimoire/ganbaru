@@ -116,6 +116,23 @@ pub trait SyncHost: Clone + Send + Sync + 'static {
         async {}
     }
 
+    /// Whether this host is a headless always-on server, which links no device on its own: it
+    /// keeps enrolled devices it has no link to, and its log does not wait for members to return.
+    fn is_server(&self) -> bool {
+        false
+    }
+
+    /// Whether this host should take the anchor as soon as it can. Only a server asks.
+    fn wants_anchor(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// Tells a host that asked for the anchor that it holds it, so a later handover away from it
+    /// stands.
+    fn anchor_taken(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Keeps this device's member sync listener running for a pass and returns the endpoints
     /// it is reachable at, which the pass reports to the hubs it dials. A host that serves no
     /// listener reports none.

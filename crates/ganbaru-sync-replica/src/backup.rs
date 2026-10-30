@@ -8,6 +8,14 @@
 //! [`ganbaru_sync_contracts::backup`]: the plaintext archive lives only in a private staging
 //! directory, and the encrypted file is streamed in fixed chunks, so memory stays constant.
 
+mod extract;
+
+pub use extract::{
+    DIFFERENT_VAULT_ERROR, MAX_VAULT_MANIFEST_BYTES, SkippedEntries, VAULT_APP_MARKER,
+    VAULT_SCHEMA_VERSION, VaultManifest, extract_backup_archive, extract_backup_archive_within,
+    parse_vault_manifest, safe_archive_path,
+};
+
 use ganbaru_atomic_files::{FileAccess, StagedFile};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;

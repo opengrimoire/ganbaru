@@ -45,7 +45,7 @@ export const sync = {
   bootstrapCopied: "This device has a fresh copy of the vault.",
   uncounted: {
     dormant: (device: string) =>
-      `Sync no longer waits for ${device}, which has not synced for a long time. When it returns, link it again or transfer the vault to it.`,
+      `Sync no longer waits for ${device}, which has not synced for a long time. When it returns, link it again.`,
     relinkRequired: (device: string) => `Link ${device} again so it can sync.`,
   },
   connection: {

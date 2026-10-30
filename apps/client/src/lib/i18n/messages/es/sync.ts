@@ -51,7 +51,7 @@ export const sync = {
   bootstrapCopied: "Este dispositivo tiene una copia nueva de la bóveda.",
   uncounted: {
     dormant: (device: string) =>
-      `La sincronización ya no espera a ${device}, que lleva mucho tiempo sin sincronizarse. Cuando vuelva, vincúlalo de nuevo o transfiérele la bóveda.`,
+      `La sincronización ya no espera a ${device}, que lleva mucho tiempo sin sincronizarse. Cuando vuelva, vincúlalo de nuevo.`,
     relinkRequired: (device: string) => `Vuelve a vincular ${device} para que pueda sincronizarse.`,
   },
   connection: {

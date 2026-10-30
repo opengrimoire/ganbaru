@@ -32,5 +32,5 @@
 
   <DatabaseRollbacks onRestored={() => window.location.reload()} />
 
-  <ReplacedVaultBackups />
+  <ReplacedVaultBackups onRestored={() => window.location.reload()} />
 </div>

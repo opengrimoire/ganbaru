@@ -637,6 +637,19 @@ pub async fn vault_dismiss_database_rollback(
         .map_err(|error| format!("database rollback dismiss worker failed: {error}"))?
 }
 
+/// Refuses restoring the copy described by `retention` when it is another vault and the vault
+/// summarized by `active` is linked on Android, as a restored backup is refused there.
+fn refuse_other_vault_rollback(
+    platform: super::encrypted_backup::RestorePlatform,
+    retention: &Retention,
+    active: Option<&crate::sync::backup_keys::LinkSummary>,
+) -> Result<(), String> {
+    if !retention.other_vault {
+        return Ok(());
+    }
+    super::encrypted_backup::refuse_other_vault_while_linked(platform, active)
+}
+
 /// Restores a database rollback of the active vault under the shared vault
 /// transition guard. The caller reloads the app afterwards so every runtime
 /// reopens the restored data from a clean state.
@@ -647,7 +660,15 @@ pub async fn vault_restore_database_rollback(
 ) -> Result<(), String> {
     let transition = super::quiescence::reserve_vault_transition()?;
     let writable_vault = active_writable_vault_path(&app)?;
-    validate_rollback(writable_vault.as_ref(), &id).await?;
+    let (_, retention) = validate_rollback(writable_vault.as_ref(), &id).await?;
+    if retention.other_vault {
+        let active = super::encrypted_backup::active_link_summary(&app).await?;
+        refuse_other_vault_rollback(
+            super::encrypted_backup::PLATFORM,
+            &retention,
+            active.as_ref(),
+        )?;
+    }
     let quiescence = super::quiescence::begin_reserved_quiescence(
         &app,
         transition,
@@ -992,6 +1013,51 @@ mod tests {
         assert!(restore_rollback(&vault, &shown[0].id, at(5)).await.unwrap());
         assert_eq!(vault_id_at(&vault).unwrap(), "vault-b");
         assert_eq!(marker(&vault).await, 2);
+        let _ = fs::remove_dir_all(vault);
+    }
+
+    #[tokio::test]
+    async fn another_vault_rollback_is_refused_while_linked_on_android() {
+        use super::super::encrypted_backup::{LINKED_ANDROID_RESTORE_ERROR, RestorePlatform};
+        use crate::sync::backup_keys::LinkSummary;
+        let vault = test_vault("other-vault-linked");
+        write_manifest(&vault, "vault-a");
+        create_database(&vault, BEFORE_RESET).await;
+        let kept_a = retain_other_vault(&vault, at(2)).unwrap();
+        write_manifest(&vault, "vault-b");
+        create_database(&vault, AFTER_RESET).await;
+        let summary = |other_devices| LinkSummary {
+            space: ganbaru_sync_contracts::SpaceId::personal("vault-b"),
+            other_devices,
+        };
+        let (linked, unlinked) = (summary(1), summary(0));
+
+        let (_, other) = validate_rollback(&vault, &kept_a).await.unwrap();
+        assert!(other.other_vault);
+        assert_eq!(
+            refuse_other_vault_rollback(RestorePlatform::Android, &other, Some(&linked)),
+            Err(LINKED_ANDROID_RESTORE_ERROR.to_string())
+        );
+        for (platform, active) in [
+            (RestorePlatform::Android, Some(&unlinked)),
+            (RestorePlatform::Android, None),
+            (RestorePlatform::Desktop, Some(&linked)),
+        ] {
+            assert_eq!(
+                refuse_other_vault_rollback(platform, &other, active),
+                Ok(()),
+                "{platform:?} {active:?}"
+            );
+        }
+        let same = Retention {
+            vault: Some("vault-b".to_string()),
+            ..Retention::default()
+        };
+        assert_eq!(
+            refuse_other_vault_rollback(RestorePlatform::Android, &same, Some(&linked)),
+            Ok(()),
+            "a copy of the same vault is not another vault"
+        );
         let _ = fs::remove_dir_all(vault);
     }
 

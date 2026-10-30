@@ -3,6 +3,7 @@ import {
   backupRefusalMessage,
   backupSaveStatus,
   refusalNeedsKit,
+  replacedVaultRestoreError,
   runBackupRestore,
   type BackupRestoreSteps,
 } from "./backup-restore";
@@ -137,5 +138,16 @@ describe("backup messages", () => {
     expect(backupSaveStatus({ kind: "refused", reason: "noRecoveryKit" }, "file", translate)?.kind).toBe(
       "error",
     );
+  });
+
+  it("asks a linked phone to unlink before restoring a replaced vault", () => {
+    expect(replacedVaultRestoreError({ kind: "refused", reason: "linkedAndroid" }, translate)).toBe(
+      "This phone is linked to other devices. Unlink this phone first, then restore.",
+    );
+    expect(replacedVaultRestoreError({ kind: "refused", reason: "damaged" }, translate)).toBe(
+      backupRefusalMessage("damaged", translate),
+    );
+    expect(replacedVaultRestoreError(restored, translate)).toBeNull();
+    expect(replacedVaultRestoreError({ kind: "cancelled" }, translate)).toBeNull();
   });
 });

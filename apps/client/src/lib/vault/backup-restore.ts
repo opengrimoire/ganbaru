@@ -85,6 +85,23 @@ export function backupRefusalMessage(reason: BackupRefusal, t: Translate): strin
   }
 }
 
+/**
+ * The error a refused restore of a replaced vault shows. A linked phone is asked to unlink,
+ * since restoring on a computer does not apply to a copy kept on the phone.
+ *
+ * @param outcome - Restore outcome.
+ * @param t - Translator.
+ * @returns The message, or `null` when nothing was refused.
+ */
+export function replacedVaultRestoreError(
+  outcome: BackupRestoreOutcome,
+  t: Translate,
+): string | null {
+  if (outcome.kind !== "refused") return null;
+  if (outcome.reason === "linkedAndroid") return t("dataFolderError.linkedAndroid");
+  return backupRefusalMessage(outcome.reason, t);
+}
+
 /** A status line after a backup action, or `null` when there is nothing to report. */
 export type BackupStatus = { kind: "success" | "error"; message: string } | null;
 

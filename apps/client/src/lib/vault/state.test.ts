@@ -258,6 +258,27 @@ describe("replaced vault backups", () => {
     await deleteReplacedVaultBackup(backup.id);
     expect(invokeMock).toHaveBeenCalledWith("vault_delete_replaced_backup", { id: backup.id });
   });
+
+  it("restores a backup by its ID and returns a refusal for a linked phone", async () => {
+    const { restoreReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "linkedAndroid" });
+    await expect(restoreReplacedVaultBackup(backup.id)).resolves.toEqual({
+      kind: "refused",
+      reason: "linkedAndroid",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_replaced_backup", { id: backup.id });
+    invokeMock.mockResolvedValueOnce({ kind: "restored", placement: "elsewhere" });
+    await expect(restoreReplacedVaultBackup(backup.id)).rejects.toThrow("unknown");
+  });
+
+  it("asks to unlink when a linked phone restores another vault's rollback copy", async () => {
+    const { formatVaultError } = await loadModule();
+    expect(
+      formatVaultError(
+        "this phone is linked to other devices; unlink it before restoring another vault",
+      ),
+    ).toBe("This phone is linked to other devices. Unlink this phone first, then restore.");
+  });
 });
 
 describe("encrypted backups", () => {

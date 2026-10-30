@@ -113,6 +113,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "vault::replaced_vaults::vault_replaced_backups",
         "vault::replaced_vaults::vault_export_replaced_backup",
         "vault::replaced_vaults::vault_delete_replaced_backup",
+        "vault::encrypted_backup::vault_restore_replaced_backup",
         "chat::channels::chat_list_navigation_channels",
         "chat::conflicts::chat_conflicts",
         "chat::conflicts::chat_resolve_conflict",

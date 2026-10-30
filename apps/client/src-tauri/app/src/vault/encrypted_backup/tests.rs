@@ -270,3 +270,88 @@ async fn an_independent_copy_drops_identity_kit_and_sync_state_but_keeps_domain_
     registry.close_all().await.unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn a_replaced_vault_copy_stages_as_the_vault_it_was_and_detaches_into_a_new_one() {
+    use super::super::replaced_vaults::{replaced_vault_backup_path, write_replaced_vault_backup};
+    let root = unique_test_path("replaced-restore");
+    let vault = root.join("Ganbaru");
+    fs::create_dir_all(&vault).unwrap();
+    let original = crate::vault::initialize_vault(&vault).unwrap();
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = registry.connect_path(database_path(&vault)).await.unwrap();
+    let themes_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM themes")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    registry.close_all().await.unwrap();
+    let kept = root.join("replaced-vaults");
+    let backup = write_replaced_vault_backup(&kept, &vault, 1_000)
+        .await
+        .unwrap();
+
+    let archive = replaced_vault_backup_path(&kept, &backup.id).unwrap();
+    let staging = root.join(RESTORE_STAGING_NAME);
+    let info = stage_restored_vault(&archive, &staging, None)
+        .await
+        .unwrap();
+    assert_eq!(info.vault_id, original.vault_id);
+    let pool = registry
+        .connect_path(database_path(&staging))
+        .await
+        .unwrap();
+    let themes_staged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM themes")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    registry.close_all().await.unwrap();
+    assert_eq!(themes_staged, themes_before);
+
+    detach_restored_copy(&staging).await.unwrap();
+    assert_ne!(
+        read_vault_manifest(&staging).unwrap().vault_id,
+        original.vault_id
+    );
+    assert!(archive.is_file(), "the kept copy stays restorable");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_replaced_vault_restore_reads_only_known_copies_in_the_private_folder() {
+    use super::super::replaced_vaults::replaced_vault_backup_path;
+    let root = unique_test_path("replaced-unknown");
+    let kept = root.join("replaced-vaults");
+    fs::create_dir_all(&kept).unwrap();
+    fs::write(root.join("outside.ganbaru-backup"), b"zip").unwrap();
+    for id in [
+        "replaced-1000.ganbaru-backup",
+        "../outside.ganbaru-backup",
+        "replaced-1000.ganbaru-backup/../../outside.ganbaru-backup",
+        "",
+    ] {
+        assert_eq!(
+            replaced_vault_backup_path(&kept, id),
+            Err("replaced vault backup is unknown".to_string()),
+            "{id}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_linked_android_phone_refuses_to_restore_another_vault() {
+    use RestorePlatform::{Android, Desktop};
+    let linked = summary("vault-a", 1);
+    let unlinked = summary("vault-a", 0);
+    assert_eq!(
+        refuse_linked(Android, Some(&linked)),
+        Err(BackupRefusal::LinkedAndroid)
+    );
+    assert_eq!(refuse_linked(Android, Some(&unlinked)), Ok(()));
+    assert_eq!(refuse_linked(Android, None), Ok(()));
+    assert_eq!(refuse_linked(Desktop, Some(&linked)), Ok(()));
+    assert_eq!(
+        refuse_other_vault_while_linked(Android, Some(&linked)),
+        Err(LINKED_ANDROID_RESTORE_ERROR.to_string())
+    );
+}

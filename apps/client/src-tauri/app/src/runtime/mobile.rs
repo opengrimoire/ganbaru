@@ -72,6 +72,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::replaced_vaults::vault_replaced_backups,
             vault::replaced_vaults::vault_export_replaced_backup,
             vault::replaced_vaults::vault_delete_replaced_backup,
+            vault::encrypted_backup::vault_restore_replaced_backup,
             chat::settings_commands::chat_read_settings,
             chat::settings_commands::chat_discover_default_providers,
             chat::settings_commands::chat_update_behavior,

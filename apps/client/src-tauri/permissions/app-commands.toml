@@ -721,6 +721,7 @@ commands.allow = [
   "vault_replaced_backups",
   "vault_restore_backup",
   "vault_restore_database_rollback",
+  "vault_restore_replaced_backup",
   "vault_reveal_active",
   "vault_use_default",
   "write_benchmark_state",

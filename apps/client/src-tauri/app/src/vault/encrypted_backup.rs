@@ -152,7 +152,7 @@ pub enum BackupRestoreOutcome {
 
 /// The platform a restore runs on, which decides where an independent copy goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RestorePlatform {
+pub(super) enum RestorePlatform {
     /// The copy opens from its own folder beside the vault in use.
     #[cfg_attr(mobile, allow(dead_code))]
     Desktop,
@@ -161,9 +161,9 @@ enum RestorePlatform {
 }
 
 #[cfg(desktop)]
-const PLATFORM: RestorePlatform = RestorePlatform::Desktop;
+pub(super) const PLATFORM: RestorePlatform = RestorePlatform::Desktop;
 #[cfg(mobile)]
-const PLATFORM: RestorePlatform = RestorePlatform::Android;
+pub(super) const PLATFORM: RestorePlatform = RestorePlatform::Android;
 
 /// Refuses a restore on an Android device whose vault enrolled another device.
 fn refuse_linked_android(
@@ -174,6 +174,28 @@ fn refuse_linked_android(
         return Err(BackupRefusal::LinkedAndroid);
     }
     Ok(())
+}
+
+/// Refuses a restore on an Android device whose active vault, if any, enrolled another device.
+fn refuse_linked(
+    platform: RestorePlatform,
+    active: Option<&LinkSummary>,
+) -> Result<(), BackupRefusal> {
+    active.map_or(Ok(()), |active| refuse_linked_android(platform, active))
+}
+
+/// Error of a restore that would put another vault in place of one linked on Android. The
+/// Settings error formatter recognizes it and asks the user to unlink first.
+pub(super) const LINKED_ANDROID_RESTORE_ERROR: &str =
+    "this phone is linked to other devices; unlink it before restoring another vault";
+
+/// Refuses restoring another vault over the vault summarized by `active` while it is linked on
+/// Android, with [`LINKED_ANDROID_RESTORE_ERROR`].
+pub(super) fn refuse_other_vault_while_linked(
+    platform: RestorePlatform,
+    active: Option<&LinkSummary>,
+) -> Result<(), String> {
+    refuse_linked(platform, active).map_err(|_| LINKED_ANDROID_RESTORE_ERROR.to_string())
 }
 
 /// Chooses how a backup whose staged vault is summarized by `backup` restores over the active
@@ -419,6 +441,23 @@ async fn active_vault_for(
     app: &tauri::AppHandle,
     header: &BackupHeader,
 ) -> Result<Option<ActiveVault>, String> {
+    active_vault_with(app, Some(header)).await
+}
+
+/// The active vault's link summary, `None` when no vault is selected yet.
+pub(super) async fn active_link_summary(
+    app: &tauri::AppHandle,
+) -> Result<Option<LinkSummary>, String> {
+    Ok(active_vault_with(app, None)
+        .await?
+        .map(|active| active.summary))
+}
+
+/// Reads the active vault and, when `header` names a backup, the epoch key that may open it.
+async fn active_vault_with(
+    app: &tauri::AppHandle,
+    header: Option<&BackupHeader>,
+) -> Result<Option<ActiveVault>, String> {
     if super::read_app_state(app)?.active_vault_path.is_none() {
         return Ok(None);
     }
@@ -431,9 +470,13 @@ async fn active_vault_for(
         .await
         .map_err(|error| format!("open the vault database: {error}"))?;
     let summary = backup_keys::link_summary(&mut conn, &vault_id, &device_id).await?;
-    let epoch_key =
-        backup_keys::active_epoch_key(app, &mut conn, &vault_id, &header.space, header.epoch)
-            .await?;
+    let epoch_key = match header {
+        Some(header) => {
+            backup_keys::active_epoch_key(app, &mut conn, &vault_id, &header.space, header.epoch)
+                .await?
+        }
+        None => None,
+    };
     Ok(Some(ActiveVault {
         root,
         summary,
@@ -443,10 +486,7 @@ async fn active_vault_for(
 
 /// Refuses a restore on an Android device whose active vault enrolled another device.
 fn refuse_linked_active(active: Option<&ActiveVault>) -> Result<(), BackupRefusal> {
-    match active {
-        Some(active) => refuse_linked_android(PLATFORM, &active.summary),
-        None => Ok(()),
-    }
+    refuse_linked(PLATFORM, active.map(|active| &active.summary))
 }
 
 /// The keys a backup of the active vault is sealed to, `None` without a recovery kit.
@@ -699,28 +739,55 @@ pub async fn vault_restore_backup(
             reason: BackupRefusal::Expired,
         });
     };
-    match restore_pending(&app, transition, &pending, kit).await {
-        Ok((vault, placement)) => {
-            discard(pending);
-            Ok(BackupRestoreOutcome::Restored { vault, placement })
+    let result = restore_pending(&app, transition, &pending, kit).await;
+    match &result {
+        Err(RestoreError::Refused(reason)) if reason.keeps_file() => {
+            hold_pending(Some(pending))?;
         }
-        Err(RestoreError::Refused(reason)) => {
-            if reason.keeps_file() {
-                hold_pending(Some(pending))?;
-            } else {
-                discard(pending);
-            }
-            Ok(BackupRestoreOutcome::Refused { reason })
-        }
-        Err(RestoreError::Cancelled) => {
-            discard(pending);
-            Ok(BackupRestoreOutcome::Cancelled)
-        }
-        Err(RestoreError::Failed(error)) => {
-            discard(pending);
-            Err(error)
-        }
+        _ => discard(pending),
     }
+    restore_outcome(result)
+}
+
+/// The outcome the webview receives for a finished restore attempt.
+fn restore_outcome(
+    result: Result<(VaultInfo, RestorePlacement), RestoreError>,
+) -> Result<BackupRestoreOutcome, String> {
+    match result {
+        Ok((vault, placement)) => Ok(BackupRestoreOutcome::Restored { vault, placement }),
+        Err(RestoreError::Refused(reason)) => Ok(BackupRestoreOutcome::Refused { reason }),
+        Err(RestoreError::Cancelled) => Ok(BackupRestoreOutcome::Cancelled),
+        Err(RestoreError::Failed(error)) => Err(error),
+    }
+}
+
+/// Restores the copy of a vault this phone replaced, named by `id` inside the private
+/// replaced-vault folder. It is placed like a restored backup, so the active vault is kept as a
+/// rollback copy, and a phone linked to other devices refuses.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn vault_restore_replaced_backup(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<BackupRestoreOutcome, String> {
+    let transition = quiescence::reserve_vault_transition()?;
+    let root = super::replaced_vaults::replaced_vaults_root(&app)?;
+    let archive = super::replaced_vaults::replaced_vault_backup_path(&root, &id)?;
+    let result = async {
+        let active = active_vault_with(&app, None).await?;
+        refuse_linked_active(active.as_ref())?;
+        place_restored_backup(&app, transition, &archive, None, active.as_ref()).await
+    }
+    .await;
+    restore_outcome(result)
+}
+
+/// Report that replaced vault backups exist only on Android.
+#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
+#[tauri::command]
+pub async fn vault_restore_replaced_backup(id: String) -> Result<BackupRestoreOutcome, String> {
+    let _ = id;
+    Err("replaced vault backups are only available on Android".to_string())
 }
 
 /// Decrypts the held backup and restores it as this platform places it.
@@ -765,15 +832,22 @@ async fn restore_pending(
     })
     .await?
     .map_err(|error| RestoreError::from_file(error, with_kit))?;
-    place_restored_backup(app, transition, &archive, &header, active.as_ref()).await
+    place_restored_backup(
+        app,
+        transition,
+        &archive,
+        Some(&header.space),
+        active.as_ref(),
+    )
+    .await
 }
 
-/// Extracts the restored archive into the new folder `staging` and checks that it is a whole
-/// vault of the backup's space.
+/// Extracts the archive into the new folder `staging` and checks that it is a whole vault and,
+/// when `expected_space` is given, a vault of that space.
 async fn stage_restored_vault(
     archive: &Path,
     staging: &Path,
-    header: &BackupHeader,
+    expected_space: Option<&SpaceId>,
 ) -> Result<VaultInfo, RestoreError> {
     let extract_archive = archive.to_path_buf();
     let extract_staging = staging.to_path_buf();
@@ -787,7 +861,7 @@ async fn stage_restored_vault(
     .await??;
     skipped.report("Backup restore", "outside the vault layout");
     let info = validate_restored_vault(staging).await?;
-    if SpaceId::personal(&info.vault_id) != header.space {
+    if expected_space.is_some_and(|space| SpaceId::personal(&info.vault_id) != *space) {
         return Err(RestoreError::Refused(BackupRefusal::Damaged));
     }
     Ok(info)
@@ -962,17 +1036,18 @@ async fn replace_active_vault(
     .await?
 }
 
-/// Places the decrypted backup at `archive` as this platform restores it.
+/// Places the vault archive at `archive` as this platform restores it. `expected_space` is the
+/// space a decrypted backup declares, and `None` for a replaced-vault copy kept on this device.
 #[cfg(desktop)]
 async fn place_restored_backup(
     app: &tauri::AppHandle,
     transition: VaultTransition,
     archive: &Path,
-    header: &BackupHeader,
+    expected_space: Option<&SpaceId>,
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     if let Some(active) = active
-        && header.space == active.summary.space
+        && expected_space == Some(&active.summary.space)
         && active.summary.other_devices == 0
     {
         let target = &active.root;
@@ -981,7 +1056,7 @@ async fn place_restored_backup(
         let recover_rollback = rollback.clone();
         blocking(move || recover_interrupted_restore(&recover_target, &recover_rollback)).await??;
         let staged = StagedFolder::new(&staging);
-        let info = stage_restored_vault(archive, &staging, header).await?;
+        let info = stage_restored_vault(archive, &staging, expected_space).await?;
         let backup = staged_summary(app, &staging, &info.vault_id).await?;
         if plan_restore(PLATFORM, Some(&active.summary), &backup)? == RestorePlacement::InPlace {
             let restored = replace_active_vault(
@@ -996,7 +1071,7 @@ async fn place_restored_backup(
             return Ok((restored, RestorePlacement::InPlace));
         }
     }
-    let restored = restore_in_new_folder(app, transition, archive, header).await?;
+    let restored = restore_in_new_folder(app, transition, archive, expected_space).await?;
     Ok((restored, RestorePlacement::IndependentCopy))
 }
 
@@ -1006,7 +1081,7 @@ async fn restore_in_new_folder(
     app: &tauri::AppHandle,
     transition: VaultTransition,
     archive: &Path,
-    header: &BackupHeader,
+    expected_space: Option<&SpaceId>,
 ) -> Result<VaultInfo, RestoreError> {
     use super::backup::{is_free_folder, resolve_link_folder, vault_folder_name};
     let start_directory = super::existing_documents_directory(app);
@@ -1033,7 +1108,7 @@ async fn restore_in_new_folder(
             .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);
     let staging = staging_parent.join("vault");
-    stage_restored_vault(archive, &staging, header).await?;
+    stage_restored_vault(archive, &staging, expected_space).await?;
     detach_restored_copy(&staging).await?;
     let (move_staging, move_target) = (staging.clone(), target.clone());
     blocking(move || {
@@ -1052,7 +1127,7 @@ async fn place_restored_backup(
     app: &tauri::AppHandle,
     transition: VaultTransition,
     archive: &Path,
-    header: &BackupHeader,
+    expected_space: Option<&SpaceId>,
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     let target = super::default_vault_path(app)?;
@@ -1068,7 +1143,7 @@ async fn place_restored_backup(
     })
     .await??;
     let staged = StagedFolder::new(&staging);
-    let info = stage_restored_vault(archive, &staging, header).await?;
+    let info = stage_restored_vault(archive, &staging, expected_space).await?;
     let backup = staged_summary(app, &staging, &info.vault_id).await?;
     let placement = plan_restore(PLATFORM, active.map(|active| &active.summary), &backup)?;
     let other_vault = placement == RestorePlacement::IndependentCopy;
@@ -1104,7 +1179,7 @@ async fn place_restored_backup(
     _app: &tauri::AppHandle,
     _transition: VaultTransition,
     _archive: &Path,
-    _header: &BackupHeader,
+    _expected_space: Option<&SpaceId>,
     _active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     Err(RestoreError::Failed(

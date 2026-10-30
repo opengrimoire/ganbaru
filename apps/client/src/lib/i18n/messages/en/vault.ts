@@ -51,6 +51,8 @@ export const dataFolderError = {
     "Folder not found. Choose another or import an existing one.",
   openElsewhere:
     "This folder is open in another Ganbaru app. Close that app or choose another folder.",
+  linkedAndroid:
+    "This phone is linked to other devices. Unlink this phone first, then restore.",
 } as const;
 
 export const language = {

@@ -33,6 +33,9 @@ const VAULT_LOCK_STATUSES: readonly VaultLockStatus[] = ["notHeld", "exclusive",
 /** Lowercase text of the native error raised when another Ganbaru app holds the vault lock. */
 const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app";
 
+/** Lowercase text of the native error raised when a linked phone restores another vault. */
+const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault";
+
 /**
  * Validates the native vault lock status.
  *
@@ -158,6 +161,10 @@ export function formatVaultError(
 
   if (lower.includes(VAULT_OPEN_ELSEWHERE_MESSAGE)) {
     return t("dataFolderError.openElsewhere");
+  }
+
+  if (lower.includes(LINKED_ANDROID_RESTORE_MESSAGE)) {
+    return t("dataFolderError.linkedAndroid");
   }
 
   if (
@@ -535,6 +542,21 @@ export async function restoreInspectedBackup(
 ): Promise<BackupRestoreOutcome> {
   const outcome = parseBackupRestoreOutcome(
     await invoke<unknown>("vault_restore_backup", { token, kit }),
+  );
+  if (outcome.kind !== "restored") return outcome;
+  return { ...outcome, vault: activateVaultInfo(outcome.vault) };
+}
+
+/**
+ * Restores one replaced vault kept on this Android phone in place of the active vault,
+ * activating the restored vault.
+ *
+ * @param id - Identifier from {@link listReplacedVaultBackups}.
+ * @returns The restore outcome; a phone linked to other devices is refused.
+ */
+export async function restoreReplacedVaultBackup(id: string): Promise<BackupRestoreOutcome> {
+  const outcome = parseBackupRestoreOutcome(
+    await invoke<unknown>("vault_restore_replaced_backup", { id }),
   );
   if (outcome.kind !== "restored") return outcome;
   return { ...outcome, vault: activateVaultInfo(outcome.vault) };

@@ -160,7 +160,7 @@ pub(crate) fn commit_configuration<R: Runtime>(
     result
 }
 
-/// Freeze native publication and revoke Guardian rules before a vault pointer or ownership change.
+/// Freeze native publication and revoke Guardian rules before a vault pointer change.
 pub(crate) fn freeze_for_selection<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let Some(control) = control(app) else {
         return Ok(());
@@ -276,9 +276,7 @@ async fn refresh<R: Runtime>(
     }
     let vault_id = vault::active_vault_id(app)?;
     let path = vault::active_vault_path(app)?;
-    let status = app
-        .state::<vault::ownership::VaultOwnershipManager>()
-        .status(&vault_id)?;
+    let device_id = vault::ensure_device_id(app)?;
     let rules = crate::distractions::rule_store::snapshot(app).await?;
     if rules.vault_id != vault_id {
         return Err("Guardian vault changed while its rules were read".into());
@@ -317,7 +315,7 @@ async fn refresh<R: Runtime>(
         .map_err(|error| format!("begin Guardian native accounting: {error}"))?;
     let sources = crate::distractions::limits::store::read_source_days(
         &mut tx,
-        &status.device_id,
+        &device_id,
         &capture.week_start_local_date,
         &capture.local_date,
     )
@@ -339,10 +337,6 @@ async fn refresh<R: Runtime>(
             || frame.generation != generation
             || vault::active_vault_path(&publication_app)? != path
             || vault::active_vault_id(&publication_app)? != vault_id
-            || publication_app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?
-                != status
             || !crate::distractions::rule_store::is_current(rules_revision)
         {
             return Err("Guardian publication context changed during accounting".into());

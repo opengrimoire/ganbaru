@@ -23,9 +23,7 @@ use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::domains::preferences::{
     MAX_PROFILE_IMAGE_BYTES, PROFILE_IMAGE_PATH_FIELD, PROFILE_IMAGE_SIZE_FIELD, ProfileImage,
 };
-use ganbaru_sync::manifest::vault::preferences::{
-    DOMAIN_NAME as PREFERENCES_DOMAIN, PROFILE_CLASS,
-};
+use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
 
 const PROFILE_IMAGE_MAX_BYTES: usize = MAX_PROFILE_IMAGE_BYTES as usize;
 const PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES: usize = PROFILE_IMAGE_MAX_BYTES / (1024 * 1024);
@@ -170,7 +168,7 @@ fn save_profile_image_bytes<R: Runtime>(
     if ProfileImage::from_json(&asset.preference_value()).is_none() {
         return Err(profile_image_unsupported_type_error());
     }
-    let writable_root = vault::active_replicated_asset_path(app, PREFERENCES_DOMAIN)?;
+    let writable_root = vault::active_writable_vault_path(app)?;
     let vault_root = writable_root.to_path_buf();
     let path = PROFILE_CLASS.directory(&vault_root).join(file_name);
     if !ganbaru_atomic_files::is_regular_file(&path) {
@@ -311,7 +309,7 @@ pub async fn profile_image_delete_file<R: Runtime>(
     app: AppHandle<R>,
     relative_path: String,
 ) -> Result<(), String> {
-    let _write_permit = vault::active_replicated_asset_path(&app, PREFERENCES_DOMAIN)?;
+    let _write_permit = vault::active_writable_vault_path(&app)?;
     let file_name = validate_profile_image_relative_path(&relative_path)?;
     let view = vault::preferences::effective_view(&app).await?;
     if is_configured_profile_image(&view, file_name) {

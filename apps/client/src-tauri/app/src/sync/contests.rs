@@ -217,9 +217,7 @@ pub(crate) async fn read<R: Runtime>(
     app: &AppHandle<R>,
     records: &RecordExchange,
 ) -> Result<Option<ContestsDto>, String> {
-    let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
-        return Ok(None);
-    };
+    let pool = crate::db::connect_active_vault_for_sync(app).await?;
     let vault_id = app.active_vault_id()?;
     let own = super::devices::stable_device_id(app)?;
     let admin = own_admin_key(app, &vault_id).await?;

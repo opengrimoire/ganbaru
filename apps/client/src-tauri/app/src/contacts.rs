@@ -13,7 +13,6 @@ mod tests;
 
 use crate::vault::handoff::protocol::QrMatrix;
 use ganbaru_contacts::TrustKind;
-use ganbaru_sync::manifest::vault::contacts::DOMAIN_NAME as CONTACTS_DOMAIN;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use store::{ContactState, RequestDirection, RequestState};
@@ -35,8 +34,6 @@ pub enum ContactsError {
     CardRevoked(String),
     /// The recipient could not be reached through the hint in the card.
     RecipientUnreachable(String),
-    /// The vault is read-only on this device.
-    ReadOnly(String),
     /// The row changed since the frontend last read it.
     RevisionConflict(String),
     Failed(String),
@@ -58,7 +55,6 @@ impl ContactsError {
             | Self::InvalidCard(message)
             | Self::CardRevoked(message)
             | Self::RecipientUnreachable(message)
-            | Self::ReadOnly(message)
             | Self::RevisionConflict(message)
             | Self::Failed(message) => message,
         }
@@ -232,17 +228,6 @@ async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
     let _ = app;
 }
 
-fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), ContactsError> {
-    let status = crate::vault::ownership::active_status(app)?;
-    if status.can_write_domain(CONTACTS_DOMAIN) {
-        Ok(())
-    } else {
-        Err(ContactsError::ReadOnly(
-            "the vault is read-only on this device".to_string(),
-        ))
-    }
-}
-
 async fn snapshot<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -289,7 +274,6 @@ pub async fn contacts_local_card<R: Runtime>(
 pub async fn contacts_regenerate_card<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<LocalCardView, ContactsError> {
-    require_writable(&app)?;
     ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
@@ -342,7 +326,6 @@ pub async fn contacts_send_request<R: Runtime>(
     app: AppHandle<R>,
     request: SendContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
@@ -363,7 +346,6 @@ pub async fn contacts_accept_request<R: Runtime>(
     app: AppHandle<R>,
     request: AcceptContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::accept_request(
         &pool,
@@ -382,7 +364,6 @@ pub async fn contacts_decline_request<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::close_request(
         &pool,
@@ -400,7 +381,6 @@ pub async fn contacts_cancel_request<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::close_request(
         &pool,
@@ -418,7 +398,6 @@ pub async fn contacts_block<R: Runtime>(
     app: AppHandle<R>,
     request: BlockPersonRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::block_person(&pool, &request.public_key, store::now()).await?;
     snapshot(&app, &pool).await
@@ -429,7 +408,6 @@ pub async fn contacts_unblock<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     remove_contact_in_state(
         &pool,
@@ -446,7 +424,6 @@ pub async fn contacts_remove<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     remove_contact_in_state(
         &pool,
@@ -463,7 +440,6 @@ pub async fn contacts_update_trust<R: Runtime>(
     app: AppHandle<R>,
     request: UpdateTrustRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     let now = store::now();
     let updated = store::update_contact_trust(
@@ -490,7 +466,7 @@ pub async fn contacts_sync_requests<R: Runtime>(
     let pool = contacts_pool(&app).await?;
     if let Some(identity) = identity::load_identity(&app, &pool).await?
         && identity.key.is_some()
-        && crate::vault::ownership::active_status(&app)?.can_write
+        && !requests::follows_coordinator(&app)?
     {
         requests::poll_sent_requests(&pool, &identity).await?;
     }

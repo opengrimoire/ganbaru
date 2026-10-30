@@ -67,29 +67,25 @@ pub(crate) async fn drain_and_flush<R: tauri::Runtime>(
 }
 
 /// Forces the active vault's spooled samples, spooled block events, and stale totals out before
-/// exit or a vault snapshot, when this device may write usage. A device that may not keeps its
-/// spool.
+/// exit or a vault snapshot.
 #[cfg(desktop)]
 pub(crate) async fn flush_active_vault<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME;
     use tauri::Manager;
     if crate::vault::available_active_vault_path(app)?.is_none() {
         return Ok(());
     }
     let vault_id = crate::vault::active_vault_id(app)?;
-    let ownership = app.state::<crate::vault::ownership::VaultOwnershipManager>();
-    let status = ownership.status(&vault_id)?;
-    if !status.can_write_domain(DOMAIN_NAME) {
-        return Ok(());
-    }
-    let _permit = ownership.acquire_replicated_write(&vault_id, DOMAIN_NAME)?;
+    let device_id = crate::vault::ensure_device_id(app)?;
+    let _permit = app
+        .state::<crate::vault::write_fence::VaultWriteFence>()
+        .acquire_managed_write()?;
     if crate::vault::active_vault_id(app)? != vault_id {
         return Err("usage totals vault changed before the flush".into());
     }
     let pool = crate::db::connect_vault(app).await?;
-    drain_and_flush(app, &pool, &vault_id, &status.device_id, true)
+    drain_and_flush(app, &pool, &vault_id, &device_id, true)
         .await
         .map(|_| ())
 }

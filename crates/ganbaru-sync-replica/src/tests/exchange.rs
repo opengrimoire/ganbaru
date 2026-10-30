@@ -2678,7 +2678,7 @@ fn the_hub_refuses_assets_outside_their_registered_class_before_staging() {
         };
 
         let unregistered = SyncAsset {
-            class: "notes/files".to_string(),
+            class: "unregistered/files".to_string(),
             ..asset_to_wire(&image)
         };
         let refused = transport

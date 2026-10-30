@@ -319,7 +319,7 @@ impl Owner {
         &mut self,
         prepared: PreparedSoundscape,
         activation: ContextActivation,
-        permit: crate::vault::ownership::ManagedVaultWritePermit,
+        permit: crate::vault::write_fence::ManagedVaultWritePermit,
     ) -> MusicLibraryResult<()> {
         let Some(request) = prepared.action else {
             return Ok(());

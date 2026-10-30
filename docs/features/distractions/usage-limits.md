@@ -22,7 +22,7 @@ Accounting, totals, and enforcement are native and independent of WebView schedu
 - **Android:** the Guardian service observes and enforces selected packages, even if the app process is gone. A Rust publisher in the app process combines canonical and pending usage into shared totals and rule snapshots for Guardian; Guardian adds only later local observations on top.
 - **Every linked device** adds the other devices' daily totals, which sync, to its own recorded and pending usage. Each device publishes its own totals at most every five minutes while limits are read, and immediately on desktop exit, when Android moves to the background, and before a vault snapshot.
 
-Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or handoff invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
+Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or a snapshot bootstrap invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
 
 ## Counting integrity
 

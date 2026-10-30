@@ -262,12 +262,7 @@ pub async fn sync_recovery_kit_state<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<RecoveryKitState, String> {
     let _kit = KIT_LOCK.lock().await;
-    let Some(pool) = crate::db::connect_active_vault_for_sync(&app).await? else {
-        return Ok(RecoveryKitState {
-            stored: false,
-            pending: None,
-        });
-    };
+    let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::state(&mut conn, &app.key_store()?, &app.active_vault_id()?).await
 }
@@ -278,7 +273,7 @@ pub async fn sync_recovery_kit_state<R: Runtime>(
 #[tauri::command]
 pub async fn sync_create_recovery_kit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let _kit = KIT_LOCK.lock().await;
-    let pool = writable_kit_vault(&app).await?;
+    let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::create(
         &mut conn,
@@ -299,7 +294,7 @@ pub async fn sync_recovery_kit_saved<R: Runtime>(
     last_group: String,
 ) -> Result<bool, String> {
     let _kit = KIT_LOCK.lock().await;
-    let pool = writable_kit_vault(&app).await?;
+    let pool = crate::db::connect_active_vault_for_sync(&app).await?;
     let mut conn = acquire_kit_connection(&pool).await?;
     recovery_kit::confirm_saved(
         &mut conn,
@@ -308,14 +303,6 @@ pub async fn sync_recovery_kit_saved<R: Runtime>(
         &last_group,
     )
     .await
-}
-
-/// The active vault opened for the recovery kit, when this device may write it.
-#[cfg(desktop)]
-async fn writable_kit_vault<R: Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
-    crate::db::connect_active_vault_for_sync(app)
-        .await?
-        .ok_or_else(|| "this device cannot write the active vault".to_string())
 }
 
 #[cfg(desktop)]

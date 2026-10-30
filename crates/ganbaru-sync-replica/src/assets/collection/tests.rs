@@ -42,7 +42,6 @@ static PINS_DOMAIN: DomainManifest = DomainManifest {
         }],
     }],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[PINS_CLASS],
 };

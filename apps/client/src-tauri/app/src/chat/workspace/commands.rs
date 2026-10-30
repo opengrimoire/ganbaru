@@ -608,15 +608,13 @@ pub async fn projects_open_working_folder(
     open_authorized_workspace(&authorized)
 }
 
-/// Removes an external working folder. The removal cascades into Projects and Chat rows, so a
-/// device that cannot write both domains is refused before any terminal or binding changes.
+/// Removes an external working folder. The removal cascades into Projects and Chat rows.
 #[tauri::command]
 pub async fn projects_remove_working_folder(
     app: tauri::AppHandle,
     db_url: String,
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<()> {
-    require_folder_removal_writable(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(&working_folder_id)?;
@@ -624,28 +622,6 @@ pub async fn projects_remove_working_folder(
         .clear_folder(&working_folder_id)?;
     repository::remove_external_working_folder(&pool, &working_folder_id).await?;
     remove_active_device_binding(&app, &working_folder_id)
-}
-
-/// Admits a device that may write both Projects and Chat rows of the active vault: the owner, or
-/// a linked replica both domains let write.
-fn require_folder_removal_writable(app: &tauri::AppHandle) -> ChatResult<()> {
-    let status = crate::vault::ownership::active_status(app)
-        .map_err(|message| ChatError::new(ChatErrorCode::Permission, message, true))?;
-    let writable = [
-        ganbaru_sync::manifest::vault::projects::DOMAIN_NAME,
-        ganbaru_sync::manifest::vault::chat::DOMAIN_NAME,
-    ]
-    .iter()
-    .all(|domain| status.can_write_domain(domain));
-    if writable {
-        Ok(())
-    } else {
-        Err(ChatError::new(
-            ChatErrorCode::Permission,
-            crate::vault::ownership::READ_ONLY_ERROR,
-            true,
-        ))
-    }
 }
 
 #[tauri::command]

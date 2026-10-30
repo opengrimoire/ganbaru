@@ -1,6 +1,6 @@
 # Notes links and collaboration
 
-Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Comments and suggestions replicate with the Notes structure from the vault owner; shared access control is planned.
+Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Comments and suggestions replicate with the Notes structure between linked devices; shared access control is planned.
 
 ## Inline links
 
@@ -60,7 +60,7 @@ Notification previews and deep links obey the same effective page access as dire
 
 ## Collaboration operations
 
-Comment and suggestion mutations write their rows directly with explicit state transitions, and resolve, reopen, accept, and reject validate the version they were based on. Across devices, comment threads, comments, reactions, and suggestions replicate as described in [Notes and Projects](../../data/schema/notes-and-projects.md#sync): concurrent edits, resolves, and deletes of one comment all apply, an accepted suggestion outranks a concurrent reject, and two devices editing one comment body or one discussion's status surface a conflict on the page. Read and mute state stays on each device. While Notes is written on the vault owner only, these conflicts cannot arise yet.
+Comment and suggestion mutations write their rows directly with explicit state transitions, and resolve, reopen, accept, and reject validate the version they were based on. Across devices, comment threads, comments, reactions, and suggestions replicate as described in [Notes and Projects](../../data/schema/notes-and-projects.md#sync): concurrent edits, resolves, and deletes of one comment all apply, an accepted suggestion outranks a concurrent reject, and two devices editing one comment body or one discussion's status surface a conflict on the page. Read and mute state stays on each device.
 
 ## Access
 

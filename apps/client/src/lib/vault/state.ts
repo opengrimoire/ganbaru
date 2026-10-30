@@ -23,42 +23,6 @@ export interface VaultBackupOutcome {
   destination: "downloads";
 }
 
-export type VaultTransferPhase =
-  | { kind: "stable" }
-  | {
-    kind: "preparingOutgoing";
-    transferId: string;
-    receiverDeviceId: string;
-    nextGeneration: number;
-  }
-  | {
-    kind: "outgoingCommitted";
-    transferId: string;
-    receiverDeviceId: string;
-    committedGeneration: number;
-  }
-  | {
-    kind: "incomingCommitted";
-    transferId: string;
-    sourceDeviceId: string;
-    committedGeneration: number;
-  }
-  | { kind: "recoveryRequired"; transferId: string; reason: string };
-
-export interface VaultOwnershipStatus {
-  vaultId: string;
-  deviceId: string;
-  ownerDeviceId: string;
-  generation: number;
-  role: "owner" | "read-only" | "recovery";
-  canWrite: boolean;
-  /** A stable replica linked to the vault's owner, whose database opens guarded and syncs. */
-  linkedReplica: boolean;
-  /** Sync domains whose replicated tables this linked replica may write while the rest of the vault is read-only. Empty unless `linkedReplica`. */
-  replicaWritableDomains: string[];
-  transferPhase: VaultTransferPhase;
-}
-
 /**
  * How this app holds its active vault against other Ganbaru apps: `exclusive` when the vault lock is held, `unsupported` when the file system cannot lock so another app cannot be detected, and `notHeld` before any vault opens.
  */
@@ -82,26 +46,6 @@ export function parseVaultLockStatus(value: unknown): VaultLockStatus {
   return status;
 }
 
-/** Sync domain name of Quick notes, as the vault manifest registers it. */
-export const QUICK_NOTES_SYNC_DOMAIN = "quick_notes";
-
-/** Sync domain name of Projects, as the vault manifest registers it. */
-export const PROJECTS_SYNC_DOMAIN = "projects";
-
-/** Sync domain name of Chat, as the vault manifest registers it. */
-export const CHAT_SYNC_DOMAIN = "chat";
-
-/**
- * Whether this device may write the replicated tables of a sync domain, as the owner or as a linked replica the domain lets write.
- *
- * @param status Ownership status of the active vault.
- * @param domain Sync domain name from the vault manifest.
- * @returns True when writes to the domain are accepted on this device.
- */
-export function canWriteSyncDomain(status: VaultOwnershipStatus, domain: string): boolean {
-  return status.canWrite || (status.linkedReplica && status.replicaWritableDomains.includes(domain));
-}
-
 export type VaultErrorAction =
   | "startup"
   | "default"
@@ -121,12 +65,6 @@ function readString(value: unknown): string | null {
 
 function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
-}
-
-function readStringList(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const items = value.map(readString);
-  return items.every((item): item is string => item !== null) ? items : null;
 }
 
 function readNonNegativeInteger(value: unknown): number | null {
@@ -168,85 +106,6 @@ function parseVaultBackupOutcome(value: unknown): VaultBackupOutcome {
     throw new Error("backup response is incomplete");
   }
   return { fileName, destination: "downloads" };
-}
-
-function parseTransferPhase(value: unknown): VaultTransferPhase {
-  if (!isRecord(value) || typeof value.kind !== "string") {
-    throw new Error("vault ownership transfer phase is invalid");
-  }
-  if (value.kind === "stable") return { kind: "stable" };
-  const transferId = readString(value.transferId);
-  if (!transferId) throw new Error("vault ownership transfer phase is incomplete");
-  if (value.kind === "recoveryRequired") {
-    const reason = readString(value.reason);
-    if (!reason) throw new Error("vault ownership transfer phase is incomplete");
-    return { kind: value.kind, transferId, reason };
-  }
-  const committedGeneration = readNonNegativeInteger(value.committedGeneration);
-  if (value.kind === "incomingCommitted") {
-    const sourceDeviceId = readString(value.sourceDeviceId);
-    if (!sourceDeviceId || committedGeneration === null) {
-      throw new Error("vault ownership transfer phase is incomplete");
-    }
-    return { kind: value.kind, transferId, sourceDeviceId, committedGeneration };
-  }
-  const receiverDeviceId = readString(value.receiverDeviceId);
-  if (!receiverDeviceId) throw new Error("vault ownership transfer phase is incomplete");
-  if (value.kind === "preparingOutgoing") {
-    const nextGeneration = readNonNegativeInteger(value.nextGeneration);
-    if (nextGeneration === null) {
-      throw new Error("vault ownership transfer phase is incomplete");
-    }
-    return { kind: value.kind, transferId, receiverDeviceId, nextGeneration };
-  }
-  if (value.kind === "outgoingCommitted" && committedGeneration !== null) {
-    return { kind: value.kind, transferId, receiverDeviceId, committedGeneration };
-  }
-  throw new Error("vault ownership transfer phase is invalid");
-}
-
-function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
-  if (!isRecord(value)) throw new Error("vault ownership response is not an object");
-  const vaultId = readString(value.vaultId);
-  const deviceId = readString(value.deviceId);
-  const ownerDeviceId = readString(value.ownerDeviceId);
-  const generation = readNonNegativeInteger(value.generation);
-  const role = value.role;
-  const canWrite = readBoolean(value.canWrite);
-  const linkedReplica = readBoolean(value.linkedReplica);
-  const replicaWritableDomains = readStringList(value.replicaWritableDomains);
-  if (
-    !vaultId
-    || !deviceId
-    || !ownerDeviceId
-    || generation === null
-    || (role !== "owner" && role !== "read-only" && role !== "recovery")
-    || canWrite === null
-    || linkedReplica === null
-    || replicaWritableDomains === null
-  ) {
-    throw new Error("vault ownership response is incomplete");
-  }
-  if (canWrite !== (role === "owner")) {
-    throw new Error("vault ownership response has an inconsistent role");
-  }
-  if (linkedReplica && role !== "read-only") {
-    throw new Error("vault ownership response has an inconsistent linked replica");
-  }
-  if (!linkedReplica && replicaWritableDomains.length > 0) {
-    throw new Error("vault ownership response has inconsistent replica writes");
-  }
-  return {
-    vaultId,
-    deviceId,
-    ownerDeviceId,
-    generation,
-    role,
-    canWrite,
-    linkedReplica,
-    replicaWritableDomains,
-    transferPhase: parseTransferPhase(value.transferPhase),
-  };
 }
 
 function activateVaultInfo(info: VaultInfo): VaultInfo;
@@ -371,10 +230,6 @@ export async function getActiveVaultInfo(): Promise<VaultInfo | null> {
 /** Returns the active vault information most recently validated by the native runtime. */
 export function getCachedActiveVaultInfo(): VaultInfo | null | undefined {
   return cachedActiveVaultInfo;
-}
-
-export async function getVaultOwnershipStatus(): Promise<VaultOwnershipStatus> {
-  return parseVaultOwnershipStatus(await invoke<unknown>("vault_ownership_status"));
 }
 
 /**

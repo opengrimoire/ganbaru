@@ -37,7 +37,6 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 #[cfg(desktop)]
 use crate::native_dialogs::on_dialog_thread;
-use crate::projects::PROJECTS_DOMAIN;
 use crate::{db::connect_vault, vault};
 
 /// Project icon files this process created. A discarded upload may delete only these, so a
@@ -199,7 +198,7 @@ fn save_project_icon_bytes<R: Runtime>(
     let kind = validate_project_icon_image(&bytes)?.kind;
     let file_name = format!("{}.{}", hex_hash(&bytes), kind.extension());
     let relative_path = format!("{PROJECT_ICON_DIR}/{file_name}");
-    let writable_root = vault::active_replicated_asset_path(app, PROJECTS_DOMAIN)?;
+    let writable_root = vault::active_writable_vault_path(app)?;
     let vault_root = writable_root.to_path_buf();
     let path = writable_root
         .join("assets")

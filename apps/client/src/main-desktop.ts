@@ -286,7 +286,6 @@ void finishDesktopReadiness({
   mounted: appPromise,
   flushUpdates: tick,
   document,
-  clearTransitionMarker: (key) => window.sessionStorage.removeItem(key),
   revealMainWindow: getCurrentWindow().label === "main"
     ? () => invoke<void>("reveal_main_window")
     : null,

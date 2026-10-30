@@ -1414,7 +1414,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("music_transfer_receipts"),
     ],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[ARTWORK_CLASS],
 };

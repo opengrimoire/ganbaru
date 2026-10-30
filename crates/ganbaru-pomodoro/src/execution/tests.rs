@@ -13,11 +13,10 @@ const MINUTE: i64 = 60_000;
 const LOCAL_DEVICE: &str = "device-local";
 
 #[test]
-fn phase_consumers_use_shared_ownership_and_cannot_renew_past_accepted_deadlines() {
+fn phase_consumers_cannot_renew_past_accepted_deadlines() {
     let mut effect = CommittedFocusEffect {
         vault_id: "vault".into(),
         vault_generation: 47,
-        ownership_generation: 3,
         execution_revision: 6,
         run_id: Some("run".into()),
         segment_id: Some("segment".into()),
@@ -31,9 +30,6 @@ fn phase_consumers_use_shared_ownership_and_cannot_renew_past_accepted_deadlines
         remaining_ms: 500,
         valid_until_ms: 16000,
     };
-    assert!(effect.matches_vault_authority("vault", 3));
-    assert!(!effect.matches_vault_authority("vault", 47));
-    assert!(!effect.matches_vault_authority("other-vault", 3));
     assert_eq!(effect.effective_valid_until_ms(), 1500);
     effect.valid_until_ms = 32000;
     assert_eq!(effect.effective_valid_until_ms(), 1500);

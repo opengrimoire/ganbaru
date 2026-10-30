@@ -1,5 +1,5 @@
-//! Vault snapshot archives a desktop serves to another device: the coordinator for any purpose,
-//! and a member listener for a first or fresh copy. Both build the archive the same way, so the
+//! Vault snapshot archives a desktop serves to another device: the coordinator for a first or
+//! fresh copy, and a member listener for a fresh copy. Both build the archive the same way, so the
 //! copy leaves out Local tables and device-only files whichever device serves it.
 
 use super::pairing::{PairingManager, random_token};
@@ -42,7 +42,6 @@ pub(crate) fn bundle_metadata<R: Runtime>(
     vault_id: String,
     device_id: String,
     transfer_id: String,
-    generation: u64,
     archive_path: &Path,
 ) -> Result<BundleMetadata, String> {
     Ok(BundleMetadata {
@@ -51,7 +50,6 @@ pub(crate) fn bundle_metadata<R: Runtime>(
         vault_id,
         device_id,
         transfer_id,
-        generation,
         archive_bytes: archive_path
             .metadata()
             .map_err(|error| format!("inspect handoff archive: {error}"))?
@@ -89,13 +87,11 @@ async fn prepare_member_snapshot<R: Runtime>(
     let archived = archive_active_vault(app, pairing, &transfer_id).await;
     drop(quiescence);
     let archive_path = archived?;
-    // The copy changes no ownership, so it carries the generation the receiver already holds.
     match bundle_metadata(
         app,
         request.vault_id,
         request.device_id,
         transfer_id,
-        request.generation,
         &archive_path,
     ) {
         Ok(metadata) => Ok(PreparedSnapshot {

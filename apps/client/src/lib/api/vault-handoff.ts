@@ -32,11 +32,8 @@ export interface PairingStatus {
   peerLabel: string | null;
   coordinatorEndpoint: string | null;
   vaultId: string | null;
-  canWrite: boolean | null;
-  recoveryRequired: boolean;
   revokedByCoordinator: boolean;
   replicaReady: boolean;
-  pendingTransfer: boolean;
   canInvite: boolean;
   untouchedStarterVault: boolean;
   /** A device waiting for this coordinator to approve it; absent where linking cannot be hosted. */
@@ -55,22 +52,35 @@ export interface PendingEnrollment {
 export interface LinkedDevice {
   deviceId: string;
   label: string | null;
-  isOwner: boolean;
   isCoordinator: boolean;
   kind: "computer" | "phone" | "unknown";
 }
 
 let cachedPairingStatus: PairingStatus | undefined;
 
-export type DesktopBundleReceiveMode = "ownership" | "refresh" | "bootstrap";
-export type OwnerBundlePurpose = Exclude<DesktopBundleReceiveMode, "bootstrap">;
-
-export interface DesktopBundleReceiveOutcome {
+/** Result of copying the linked vault to this device. */
+export interface VaultBootstrapOutcome {
+  /** The transfer that delivered the copy, or `null` when nothing was received. */
   transferId: string | null;
-  generation: number | null;
+  /** Whether the received copy is now the vault in use. */
   activated: boolean;
+  /** Whether another copy was already being received, so this request did nothing. */
   inProgress: boolean;
 }
+
+/** Whether a snapshot bootstrap is not needed, still required after linking, or running. */
+export type VaultBootstrapState = "none" | "required" | "running";
+
+/** Link status of this device, derived from pairing and receiver state only. */
+export interface VaultLinkStatus {
+  /** Whether this device is pinned to a coordinator or coordinates linked devices. */
+  linked: boolean;
+  /** The coordinator of the link: the pinned coordinator, or this desktop when it coordinates. */
+  coordinatorDeviceId: string | null;
+  bootstrap: VaultBootstrapState;
+}
+
+const BOOTSTRAP_STATES: readonly VaultBootstrapState[] = ["none", "required", "running"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -165,11 +175,8 @@ function parseStatus(value: unknown): PairingStatus {
     typeof value.deviceId !== "string" ||
     typeof value.linked !== "boolean" ||
     !Array.isArray(value.devices) ||
-    (value.canWrite !== null && typeof value.canWrite !== "boolean") ||
-    typeof value.recoveryRequired !== "boolean" ||
     typeof value.revokedByCoordinator !== "boolean" ||
-    typeof value.replicaReady !== "boolean" ||
-    typeof value.pendingTransfer !== "boolean"
+    typeof value.replicaReady !== "boolean"
     || typeof value.canInvite !== "boolean"
     || typeof value.untouchedStarterVault !== "boolean"
   ) {
@@ -180,7 +187,6 @@ function parseStatus(value: unknown): PairingStatus {
       !isRecord(device)
       || typeof device.deviceId !== "string"
       || (device.label !== null && typeof device.label !== "string")
-      || typeof device.isOwner !== "boolean"
       || typeof device.isCoordinator !== "boolean"
       || !isDeviceKind(device.kind)
     ) {
@@ -189,7 +195,6 @@ function parseStatus(value: unknown): PairingStatus {
     return {
       deviceId: device.deviceId,
       label: device.label as string | null,
-      isOwner: device.isOwner,
       isCoordinator: device.isCoordinator,
       kind: device.kind,
     };
@@ -202,11 +207,8 @@ function parseStatus(value: unknown): PairingStatus {
     peerLabel: nullableString(value.peerLabel, "peer label"),
     coordinatorEndpoint: nullableString(value.coordinatorEndpoint, "coordinator endpoint"),
     vaultId: nullableString(value.vaultId, "vault id"),
-    canWrite: value.canWrite as boolean | null,
-    recoveryRequired: value.recoveryRequired,
     revokedByCoordinator: value.revokedByCoordinator,
     replicaReady: value.replicaReady,
-    pendingTransfer: value.pendingTransfer,
     canInvite: value.canInvite,
     untouchedStarterVault: value.untouchedStarterVault,
     pendingEnrollment: value.pendingEnrollment === undefined
@@ -218,22 +220,47 @@ function parseStatus(value: unknown): PairingStatus {
   };
 }
 
-function parseReceiveOutcome(value: unknown): DesktopBundleReceiveOutcome {
+function parseBootstrapOutcome(value: unknown): VaultBootstrapOutcome {
   if (
     !isRecord(value) ||
     typeof value.activated !== "boolean" ||
     typeof value.inProgress !== "boolean" ||
-    (value.transferId !== null && typeof value.transferId !== "string") ||
-    (value.generation !== null && !Number.isSafeInteger(value.generation))
+    (value.transferId !== null && typeof value.transferId !== "string")
   ) {
-    throw new Error("Invalid desktop bundle receive response");
+    throw new Error("Invalid vault bootstrap response");
   }
   return {
     transferId: value.transferId as string | null,
-    generation: value.generation as number | null,
     activated: value.activated,
     inProgress: value.inProgress,
   };
+}
+
+function isBootstrapState(value: unknown): value is VaultBootstrapState {
+  return BOOTSTRAP_STATES.includes(value as VaultBootstrapState);
+}
+
+/**
+ * Validates the native link status.
+ *
+ * @param value Untrusted `vault_link_status` response.
+ * @returns The link status.
+ * @throws When the response is incomplete or inconsistent.
+ */
+function parseLinkStatus(value: unknown): VaultLinkStatus {
+  if (
+    !isRecord(value)
+    || typeof value.linked !== "boolean"
+    || (value.coordinatorDeviceId !== null && typeof value.coordinatorDeviceId !== "string")
+    || !isBootstrapState(value.bootstrap)
+  ) {
+    throw new Error("Invalid vault link status response");
+  }
+  const coordinatorDeviceId = value.coordinatorDeviceId as string | null;
+  if (value.linked !== (coordinatorDeviceId !== null)) {
+    throw new Error("Invalid vault link status response");
+  }
+  return { linked: value.linked, coordinatorDeviceId, bootstrap: value.bootstrap };
 }
 
 /** Creates a short-lived single-use invitation on the desktop coordinator. */
@@ -313,13 +340,24 @@ export function getCachedPairingStatus(): PairingStatus | undefined {
   return cachedPairingStatus;
 }
 
-/** Receives and activates the desktop vault through the shared whole-vault path. */
-export async function receiveDesktopBundle(
-  mode: DesktopBundleReceiveMode,
-): Promise<DesktopBundleReceiveOutcome> {
-  return parseReceiveOutcome(
-    await invoke<unknown>("handoff_receive_desktop_bundle", { mode }),
-  );
+/**
+ * Copies the linked vault to this device: the first copy after linking, or a fresh copy that
+ * replaces the vault in use.
+ *
+ * @returns The validated outcome of the copy.
+ */
+export async function requestVaultBootstrap(): Promise<VaultBootstrapOutcome> {
+  return parseBootstrapOutcome(await invoke<unknown>("handoff_request_bootstrap"));
+}
+
+/**
+ * Reads whether this device is linked, which device coordinates the link, and whether a vault
+ * copy is still required or running.
+ *
+ * @returns The validated link status.
+ */
+export async function vaultLinkStatus(): Promise<VaultLinkStatus> {
+  return parseLinkStatus(await invoke<unknown>("vault_link_status"));
 }
 
 /**
@@ -346,23 +384,15 @@ export function cancelDesktopBundleReceive(): Promise<void> {
   return invoke("handoff_cancel_receive");
 }
 
-/** Requests the current linked owner to upload a whole-vault bundle. */
-export function requestOwnerBundle(
-  purpose: OwnerBundlePurpose,
-): Promise<void> {
-  return invoke("handoff_request_owner_bundle", { purpose });
-}
-
-/** Removes the linked-device relationship without changing the current owner. */
+/** Removes one linked device, or this device's link to its coordinator. */
 export function unlinkVaultDevice(deviceId: string): Promise<void> {
   return invoke("handoff_unlink", { deviceId });
 }
 
-/** Explicitly forks the last local copy after the owning device is permanently unavailable. */
-export async function recoverLocalVaultCopy(): Promise<number> {
-  const generation = await invoke<unknown>("handoff_recover_local_copy");
-  if (!Number.isSafeInteger(generation) || (generation as number) < 0) {
-    throw new Error("Invalid vault recovery generation response");
-  }
-  return generation as number;
+/**
+ * Keeps this device's copy as a vault of its own, for when its coordinator is gone for good:
+ * this device forgets its coordinator and every linked device.
+ */
+export async function recoverLocalVaultCopy(): Promise<void> {
+  await invoke("handoff_recover_local_copy");
 }

@@ -379,7 +379,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     derived: &["quick_notes_search_fts"],
     local: &[],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[IMAGES_CLASS],
 };

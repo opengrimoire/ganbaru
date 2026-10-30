@@ -8,7 +8,6 @@
 use base64::{Engine as _, engine::general_purpose};
 use ganbaru_quick_notes::images::{self, MAX_IMAGE_BYTES};
 use ganbaru_quick_notes::{QuickNoteImage, QuickNoteImageError, QuickNoteImageFile};
-use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES_DOMAIN;
 #[cfg(desktop)]
 use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
@@ -31,7 +30,7 @@ pub async fn quick_notes_import_image<R: Runtime>(
     request: Request<'_>,
 ) -> Result<QuickNoteImage, QuickNoteImageError> {
     let bytes = request_bytes(request.body())?;
-    let vault_root = vault::active_replicated_asset_path(&app, QUICK_NOTES_DOMAIN)?;
+    let vault_root = vault::active_writable_vault_path(&app)?;
     blocking(move || images::import_image(&vault_root, &bytes)).await
 }
 
@@ -128,7 +127,7 @@ async fn import_paths<R: Runtime>(
     if paths.is_empty() {
         return Ok(pick);
     }
-    let vault_root = vault::active_replicated_asset_path(app, QUICK_NOTES_DOMAIN)?;
+    let vault_root = vault::active_writable_vault_path(app)?;
     blocking(move || {
         for path in paths.iter().take(limit) {
             // A file that cannot be read is reported like any other refused file; only a failed
@@ -164,7 +163,7 @@ pub async fn quick_notes_paste_clipboard_image<R: Runtime>(
         rejected: Vec::new(),
         skipped: 0,
     };
-    let vault_root = vault::active_replicated_asset_path(&app, QUICK_NOTES_DOMAIN)?;
+    let vault_root = vault::active_writable_vault_path(&app)?;
     let imported = match read_clipboard_png(&app).await {
         Ok(None) => return Ok(pick),
         Ok(Some(png)) => blocking(move || images::import_image(&vault_root, &png)).await,

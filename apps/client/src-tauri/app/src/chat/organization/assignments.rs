@@ -98,7 +98,7 @@ fn stranded_executor(executing_device_id: Option<&str>, device: PostingDevice<'_
 }
 
 /// Takes over the active assignments whose executing device can no longer write Chat, as after
-/// a whole-vault handoff or an unlink, when `device` can run new work. Unstarted work moves to a
+/// an unlink or a revoked writer, when `device` can run new work. Unstarted work moves to a
 /// successor this device runs; started work fails with a reason, since its provider session
 /// lives on the old device, and Retry or Start runs it again here.
 pub(super) async fn take_over_stranded_assignments(

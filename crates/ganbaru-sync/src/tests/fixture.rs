@@ -1550,7 +1550,6 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         },
     ],
     engine: &[],
-    replica_writable: true,
     unconverted: &[],
     assets: &[FIXTURE_CLASS],
 };

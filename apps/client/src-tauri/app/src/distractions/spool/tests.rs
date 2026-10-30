@@ -288,34 +288,6 @@ async fn compaction_preserves_the_exact_pending_total() {
     remove(&path);
 }
 
-#[tokio::test]
-async fn pending_usage_sums_per_source_and_day_inside_the_week() {
-    let path = temporary_spool("pending-days");
-    let mut earlier = sample("earlier", 40);
-    earlier.local_date = "2026-09-06".to_string();
-    enqueue_native_samples_at(
-        &path,
-        VAULT,
-        DEVICE,
-        &[sample("one", 12), sample("two", 18), earlier],
-    )
-    .await
-    .unwrap();
-    let days = pending_source_days_at(&path, VAULT, DEVICE, "2026-09-07", "2026-09-13")
-        .await
-        .unwrap();
-    assert_eq!(
-        days,
-        [UsageSourceDay {
-            source_type: "desktop-app".to_string(),
-            source_key: "steam".to_string(),
-            local_date: "2026-09-13".to_string(),
-            elapsed_seconds: 30,
-        }]
-    );
-    remove(&path);
-}
-
 async fn spool_block_event(path: &Path, vault_id: &str, event_id: &str, source_key: &str) {
     spool_block_event_in_run(path, vault_id, event_id, source_key, "run-gone").await;
 }

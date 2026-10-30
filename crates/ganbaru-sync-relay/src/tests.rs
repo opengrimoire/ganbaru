@@ -163,6 +163,29 @@ async fn claimed_store(
     store
 }
 
+async fn claim_with(
+    store: &RelayStore,
+    space: SpaceId,
+    token: &RelaySetupToken,
+    first: &RelayAccessKeyPair,
+    owner: &AdminKeyPair,
+) -> Result<(), StoreError> {
+    let admins = [owner.public_key()];
+    store
+        .claim(
+            &ClaimRequest {
+                space,
+                token,
+                epoch: 1,
+                access_key: first.public_key(),
+                admins: &admins,
+                counter: 0,
+            },
+            unix_time_ms(),
+        )
+        .await
+}
+
 fn have(entries: &[(WriterId, u64)]) -> HashMap<WriterId, u64> {
     entries.iter().copied().collect()
 }
@@ -1673,6 +1696,7 @@ async fn pending_connection_budgets_close_extra_connections_and_free_slots_on_cl
         pending_per_source: 2,
         authenticated: 4,
         authenticated_per_source: 4,
+        ..ConnectionLimits::default()
     })
     .await;
     let first = Client::connect(&relay).await;
@@ -1736,6 +1760,7 @@ async fn authentication_moves_a_connection_to_the_authenticated_budget() {
         pending_per_source: 1,
         authenticated: 1,
         authenticated_per_source: 1,
+        ..ConnectionLimits::default()
     })
     .await;
     let space = space_id(1);
@@ -1761,5 +1786,107 @@ async fn authentication_moves_a_connection_to_the_authenticated_budget() {
     assert_eq!(
         refusal(&second.auth(space, 1, &key).await),
         Some(RelayRefusalCode::Busy)
+    );
+}
+
+#[tokio::test]
+async fn authenticated_requests_wait_for_frame_memory_then_get_busy() {
+    let relay = start_relay(ConnectionLimits {
+        // Room for one request reservation, not two.
+        frame_memory_bytes: MAX_CONTROL_BYTES + MAX_CONTROL_BYTES / 2,
+        frame_memory_wait: Duration::from_millis(200),
+        ..ConnectionLimits::default()
+    })
+    .await;
+    let space = space_id(1);
+    let key = access(&space, 1);
+    let token = issue_token(&relay).await;
+    let mut holder = Client::connect(&relay).await;
+    holder.hello(space).await;
+    holder.claim(space, &token, &key, &admin()).await;
+    assert_eq!(refusal(&holder.auth(space, 1, &key).await), None);
+    let mut other = Client::connect(&relay).await;
+    other.hello(space).await;
+    assert_eq!(refusal(&other.auth(space, 1, &key).await), None);
+    assert_eq!(refusal(&other.send(&RelayRequest::State).await), None);
+
+    // A length prefix without its body holds a reservation while the body is awaited.
+    holder.stream.write_all(&64u32.to_be_bytes()).await.unwrap();
+    holder.stream.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        refusal(&other.send(&RelayRequest::State).await),
+        Some(RelayRefusalCode::Busy)
+    );
+
+    // Once the holder disconnects, its memory returns to the budget.
+    drop(holder);
+    let mut served = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut retry = Client::connect(&relay).await;
+        retry.hello(space).await;
+        retry.auth(space, 1, &key).await;
+        if refusal(&retry.send(&RelayRequest::State).await).is_none() {
+            served = true;
+            break;
+        }
+    }
+    assert!(served);
+}
+
+#[tokio::test]
+async fn operators_list_and_remove_spaces_and_revoke_setup_tokens() {
+    let dir = TempDir::new();
+    // Commands refuse a directory without a relay database instead of creating one.
+    assert!(crate::list_spaces(dir.path()).await.is_err());
+    let store = open_store(&dir, RetentionPolicy::default()).await;
+    let first = RelaySetupToken::from_bytes([1; 32]);
+    let second = RelaySetupToken::from_bytes([2; 32]);
+    let third = RelaySetupToken::from_bytes([3; 32]);
+    for token in [&first, &second, &third] {
+        store
+            .add_setup_token(token, unix_time_ms() + DAY_MS)
+            .await
+            .unwrap();
+    }
+    assert!(store.revoke_setup_token(&first).await.unwrap());
+    assert!(!store.revoke_setup_token(&first).await.unwrap());
+    let space = space_id(4);
+    let key = access(&space, 1);
+    let owner = admin();
+    let claimed = claim_with(&store, space, &first, &key, &owner).await;
+    assert_eq!(code_of(claimed), RelayRefusalCode::Token);
+    claim_with(&store, space, &second, &key, &owner)
+        .await
+        .unwrap();
+    assert_eq!(store.revoke_all_setup_tokens().await.unwrap(), 1);
+    let listed = store.spaces().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].space, space);
+    assert_eq!(listed[0].current_epoch, 1);
+    store.close().await;
+    assert!(
+        crate::list_spaces(dir.path())
+            .await
+            .unwrap()
+            .contains(&space.to_hex())
+    );
+
+    // A serving relay holds the data directory lock, so removal waits for it to stop.
+    let lock = crate::lock_data_dir(dir.path()).unwrap();
+    let remove = crate::config::RemoveSpaceConfig {
+        data_dir: dir.path().to_path_buf(),
+        space,
+    };
+    assert!(crate::remove_space(remove.clone()).await.is_err());
+    drop(lock);
+    crate::remove_space(remove.clone()).await.unwrap();
+    assert!(crate::remove_space(remove).await.is_err());
+    let store = open_store(&dir, RetentionPolicy::default()).await;
+    assert!(store.spaces().await.unwrap().is_empty());
+    assert_eq!(
+        code_of(store.state(&space).await),
+        RelayRefusalCode::UnknownSpace
     );
 }

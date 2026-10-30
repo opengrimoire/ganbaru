@@ -500,7 +500,6 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
       require(pendingDocumentCopy == null) { "A document import is already active" }
       val args = invoke.parseArgs(PickDocumentToPathArgs::class.java)
       require(args.maxBytes > 0) { "Document size limit must be positive" }
-      require(args.acceptedExtensions.isNotEmpty()) { "At least one document extension is required" }
       require(args.mimeTypes.isNotEmpty()) { "At least one document MIME type is required" }
       require(args.documentKind.isNotBlank()) { "Document kind is required" }
       val destination = PrivateTransferPaths.unusedDestination(
@@ -550,7 +549,11 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
         requireForeignPickerResult(uri)
         val displayName = resolveOpenableDisplayName(uri)
           ?: throw IllegalArgumentException("The selected document has no file name")
-        require(DocumentTextCodec.hasAllowedExtension(displayName, pending.acceptedExtensions)) {
+        // An empty list accepts any name; the caller then checks the copied bytes itself.
+        require(
+          pending.acceptedExtensions.isEmpty() ||
+            DocumentTextCodec.hasAllowedExtension(displayName, pending.acceptedExtensions)
+        ) {
           "Select a supported ${pending.documentKind} file"
         }
         val source = activity.contentResolver.openInputStream(uri)

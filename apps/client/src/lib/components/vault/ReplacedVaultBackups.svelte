@@ -1,20 +1,30 @@
 <script lang="ts">
   import Download from "@lucide/svelte/icons/download";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { replacedVaultRestoreError } from "$lib/vault/backup-restore";
   import {
     deleteReplacedVaultBackup,
     exportReplacedVaultBackup,
     formatVaultError,
     listReplacedVaultBackups,
+    restoreReplacedVaultBackup,
     type ReplacedVaultBackup,
   } from "$lib/vault/state";
 
-  /** Lists the Android backups of vaults that a first link replaced, with export and delete. */
+  /**
+   * Lists the Android backups of vaults that a first link replaced, with restore, export, and
+   * delete.
+   *
+   * @param onRestored - Reloads the app after a restore replaced the active vault.
+   */
+  let { onRestored }: { onRestored: () => void } = $props();
+
   const localization = getLocalization();
   const { t } = localization;
   const BYTES_PER_MEGABYTE = 1_000_000;
@@ -23,6 +33,7 @@
 
   let backups = $state<ReplacedVaultBackup[]>([]);
   let pendingDelete = $state<ReplacedVaultBackup | null>(null);
+  let pendingRestore = $state<ReplacedVaultBackup | null>(null);
   let busy = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -61,6 +72,25 @@
       notice = t("settings.data.backupSaved", outcome.fileName);
     } catch (cause: unknown) {
       error = formatVaultError(cause, "backup", t);
+    } finally {
+      busy = null;
+    }
+  }
+
+  async function restoreBackup(backup: ReplacedVaultBackup): Promise<void> {
+    pendingRestore = null;
+    busy = backup.id;
+    error = null;
+    notice = null;
+    try {
+      const outcome = await restoreReplacedVaultBackup(backup.id);
+      if (outcome.kind === "restored") {
+        onRestored();
+        return;
+      }
+      error = replacedVaultRestoreError(outcome, t);
+    } catch (cause: unknown) {
+      error = formatVaultError(cause, "restore", t);
     } finally {
       busy = null;
     }
@@ -105,6 +135,15 @@
           <div class="flex shrink-0 gap-2">
             <button
               type="button"
+              onclick={() => pendingRestore = backup}
+              disabled={busy !== null}
+              class={buttonClass}
+            >
+              <RotateCcw size={14} strokeWidth={1.9} class="shrink-0" />
+              <span>{t("settings.data.replacedVaultRestore")}</span>
+            </button>
+            <button
+              type="button"
               onclick={() => void exportBackup(backup)}
               disabled={busy !== null}
               class={buttonClass}
@@ -137,6 +176,17 @@
       <Notice class="px-1 text-[0.8rem]" message={error} />
     {/if}
   </section>
+{/if}
+
+{#if pendingRestore}
+  <ConfirmDialog
+    title={t("settings.data.replacedVaultRestoreTitle")}
+    message={t("settings.data.replacedVaultRestoreMessage")}
+    confirmLabel={t("settings.data.replacedVaultRestore")}
+    cancelLabel={t("common.cancel")}
+    onConfirm={() => { const backup = pendingRestore; if (backup) void restoreBackup(backup); }}
+    onCancel={() => pendingRestore = null}
+  />
 {/if}
 
 {#if pendingDelete}

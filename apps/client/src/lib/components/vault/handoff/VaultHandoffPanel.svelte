@@ -790,8 +790,8 @@
     {/if}
 
     </fieldset>
-    {#if presentation === "settings" && !status.linked && platform === "desktop"}
-      <SyncRecoveryKitSetup {buttonClass} />
+    {#if presentation === "settings" && !status.linked}
+      <SyncRecoveryKitSetup {buttonClass} exportable={platform === "desktop"} />
     {/if}
     {#if presentation === "settings" && status.linked}
       <SyncSection

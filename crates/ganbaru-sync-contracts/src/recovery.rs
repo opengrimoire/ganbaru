@@ -196,7 +196,11 @@ impl RecoverySeed {
             if character == KIT_GROUP_SEPARATOR || character.is_whitespace() {
                 continue;
             }
-            values.push(crockford_value(character).ok_or(RecoveryError::Character)?);
+            let value = crockford_value(character).ok_or(RecoveryError::Character)?;
+            if values.len() == KIT_CODE_CHARS {
+                return Err(RecoveryError::Length);
+            }
+            values.push(value);
         }
         if values.len() != KIT_CODE_CHARS {
             return Err(RecoveryError::Length);
@@ -208,6 +212,13 @@ impl RecoverySeed {
             return Err(RecoveryError::Checksum);
         }
         Ok(Self(seed))
+    }
+
+    /// Parses a kit code the caller hands over, such as one received from a user interface,
+    /// and zeroizes its text afterwards.
+    pub fn parse_owned_kit_code(code: String) -> Result<Self, RecoveryError> {
+        let code = Zeroizing::new(code);
+        Self::parse_kit_code(&code)
     }
 }
 

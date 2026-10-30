@@ -27,7 +27,7 @@ use tauri_plugin_dialog::FilePath;
 use tauri_plugin_fs::{FsExt, OpenOptions};
 
 #[cfg(desktop)]
-fn require_extension(path: &Path, allowed: &[&str], label: &str) -> Result<(), String> {
+pub(crate) fn require_extension(path: &Path, allowed: &[&str], label: &str) -> Result<(), String> {
     require_absolute_path(path)?;
     let ext = path
         .extension()
@@ -103,7 +103,7 @@ fn read_text_file_capped(path: &Path, max_bytes: u64, label: &str) -> Result<Str
 }
 
 #[cfg(desktop)]
-fn pick_open_path(
+pub(crate) fn pick_open_path(
     app: &tauri::AppHandle,
     title: &str,
     filter_name: &str,

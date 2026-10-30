@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -121,6 +121,7 @@ impl ServerCertVerifier for PinnedServerVerifier {
     }
 }
 
+#[cfg(desktop)]
 async fn stream_file<W>(
     writer: &mut W,
     path: &Path,
@@ -133,7 +134,7 @@ where
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|error| format!("open transfer bundle: {error}"))?;
-    file.seek(std::io::SeekFrom::Start(offset))
+    tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(offset))
         .await
         .map_err(|error| format!("seek transfer bundle: {error}"))?;
     let mut remaining = total_bytes.saturating_sub(offset);

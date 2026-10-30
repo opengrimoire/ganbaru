@@ -13,7 +13,7 @@ use chrono::{SecondsFormat, Utc};
 use ganbaru_mobile_documents::MobileDocumentsExt;
 use ganbaru_sync_replica::backup::{
     ArchiveGate, BACKUP_MAX_BYTES, BACKUP_MAX_DEPTH, BACKUP_MAX_ENTRIES, COPY_BUFFER_BYTES,
-    create_snapshot_archive, is_bundle_layout_entry, is_database_sidecar,
+    is_bundle_layout_entry, is_database_sidecar,
 };
 use sqlx::Row;
 use std::fs;
@@ -108,12 +108,13 @@ fn backup_file_name() -> String {
 }
 
 /// Creates one consistent whole-vault archive after the caller excludes vault writers.
+#[cfg(desktop)]
 pub(crate) async fn create_handoff_archive(
     vault_root: &Path,
     database_snapshot: &Path,
     archive_path: &Path,
 ) -> Result<(), String> {
-    create_snapshot_archive(
+    ganbaru_sync_replica::backup::create_snapshot_archive(
         &ArchiveGate::process(),
         vault_root,
         database_snapshot,
@@ -736,12 +737,10 @@ pub(crate) enum ReplacedVault {
     #[cfg_attr(not(desktop), allow(dead_code))]
     KeepOther,
     /// Write a portable backup of another vault into this folder first, refusing the replacement
-    /// when the backup fails, then discard the replaced folder.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-    BackUpOther(PathBuf),
-    /// [`Self::BackUpOther`], except that a folder that is still the untouched Android starter
-    /// when the swap begins is discarded without a backup. The starter is re-read inside
-    /// snapshot quiescence, so a starter the user entered while the copy downloaded is backed up.
+    /// when the backup fails, then discard the replaced folder. A folder that is still the
+    /// untouched Android starter when the swap begins is discarded without a backup. The starter
+    /// is re-read inside snapshot quiescence, so a starter the user entered while the copy
+    /// downloaded is backed up.
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     BackUpUnlessStarter(PathBuf),
 }
@@ -977,7 +976,7 @@ fn plan_swap(
     }
     let discard_preserved = replaces_other
         && match previous {
-            ReplacedVault::BackUpOther(_) | ReplacedVault::BackUpUnlessStarter(_) => true,
+            ReplacedVault::BackUpUnlessStarter(_) => true,
             ReplacedVault::KeepOther => false,
         };
     Ok(Swap::Replace {
@@ -1015,7 +1014,6 @@ async fn prepare_replacement<R: Runtime>(
     };
     carry_forward_local_changes(app, staging, target, expected_vault_id).await?;
     let root = match previous {
-        ReplacedVault::BackUpOther(root) => Some(root),
         ReplacedVault::BackUpUnlessStarter(root) => {
             replaced_vault_needs_backup(super::untouched_starter_vault(app)?, target)
                 .then_some(root)
@@ -1622,10 +1620,6 @@ mod tests {
         };
 
         assert_eq!(discards(ReplacedVault::KeepOther), (true, false));
-        assert_eq!(
-            discards(ReplacedVault::BackUpOther(parent.join("backups"))),
-            (true, true)
-        );
         assert_eq!(
             discards(ReplacedVault::BackUpUnlessStarter(parent.join("backups"))),
             (true, true)

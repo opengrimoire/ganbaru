@@ -33,6 +33,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use tauri::{Manager, Runtime};
 
+#[cfg(desktop)]
 pub(crate) use protocol::sha256_file;
 
 pub(crate) fn current_compatibility<R: Runtime>(app: &tauri::AppHandle<R>) -> HandoffCompatibility {

@@ -330,7 +330,6 @@ impl AndroidPresentation {
         now: i64,
     ) -> Result<(), FocusExecutionError> {
         use ganbaru_mobile_notifications::MobileNotificationsExt;
-        use tauri::Manager;
         let Some(snapshot) = &projection.snapshot else {
             return Ok(());
         };

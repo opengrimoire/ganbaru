@@ -5,6 +5,7 @@ use super::host::SyncHost;
 use super::service::blocking;
 use super::transport::MemberTransport;
 use crate::vault::handoff::pairing::PairingManager;
+use crate::vault::handoff::transport::BundleSource;
 use ganbaru_handoff::protocol::MAX_MEMBER_ENDPOINTS;
 use ganbaru_handoff::protocol::MemberEndpoint;
 use ganbaru_sync::local;
@@ -539,10 +540,97 @@ where
     )
 }
 
+/// The member desktops a device may take a vault copy from after the coordinator it enrolled
+/// with, from the selected log of the active vault `vault_id`. Empty while the active vault is
+/// another one or sync does not run there, as on a first link: without the log no other
+/// device's certificate is known, so the coordinator is the only source.
+pub(crate) async fn bootstrap_members<H: SyncHost>(
+    host: &H,
+    vault_id: &str,
+    coordinator_device_id: &str,
+) -> Result<Vec<BundleSource>, String> {
+    let Some((active_vault_id, view)) = selected_authorization(host).await? else {
+        return Ok(Vec::new());
+    };
+    if active_vault_id != vault_id {
+        return Ok(Vec::new());
+    }
+    let path = host.sync_files(vault_id)?.quarantine_path();
+    let quarantined = blocking(move || Quarantine::load(&path)).await?;
+    let own_device_id = host.pairing().device_id()?;
+    let members = serving_members(
+        &view,
+        &own_device_id,
+        coordinator_device_id,
+        quarantined.devices(),
+    );
+    let known = read_peer_book(host, vault_id);
+    let discovered = discovered_members(vault_id, &own_device_id, &view, &members).await;
+    Ok(bootstrap_sources(&view, &members, &discovered, &known))
+}
+
+/// The live members of `view` that serve vault copies besides the coordinator: desktops other
+/// than this device. Phones serve no copies.
+fn serving_members(
+    view: &AuthorizationView,
+    own_device_id: &str,
+    coordinator_device_id: &str,
+    quarantined: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut members = live_members(view, quarantined);
+    members.retain(|device_id| {
+        device_id != own_device_id
+            && device_id != coordinator_device_id
+            && view
+                .devices
+                .iter()
+                .any(|device| &device.device_id == device_id && device.kind == DeviceKind::Desktop)
+    });
+    members
+}
+
+/// One copy source per member with a known endpoint, pinned to the certificate its enrollment
+/// recorded in `view`. Discovered endpoints come before those the peer book holds.
+fn bootstrap_sources(
+    view: &AuthorizationView,
+    members: &BTreeSet<String>,
+    discovered: &BTreeMap<String, Vec<String>>,
+    known: &PeerEndpoints,
+) -> Vec<BundleSource> {
+    members
+        .iter()
+        .filter_map(|device_id| {
+            let fingerprint = view
+                .devices
+                .iter()
+                .find(|device| &device.device_id == device_id)
+                .map(|device| fingerprint_hex(&device.tls_fingerprint))?;
+            let mut endpoints: Vec<String> = Vec::new();
+            let found = discovered.get(device_id).cloned().unwrap_or_default();
+            for endpoint in found.into_iter().chain(known.endpoints(device_id)) {
+                if !endpoints.contains(&endpoint) {
+                    endpoints.push(endpoint);
+                }
+            }
+            endpoints.truncate(MAX_MEMBER_ENDPOINTS);
+            (!endpoints.is_empty()).then(|| BundleSource::Member {
+                device_id: device_id.clone(),
+                endpoints,
+                fingerprint,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AnchorDial, anchor_dial};
+    use super::{
+        AnchorDial, AuthorizationView, BTreeMap, BTreeSet, BundleSource, DeviceKind, anchor_dial,
+        bootstrap_sources, fingerprint_hex, serving_members,
+    };
     use ganbaru_handoff::pairing::CoordinatorPin;
+    use ganbaru_sync::EnrolledDevice;
+    use ganbaru_sync_contracts::{AdminPublicKey, DevicePublicKey, DeviceRole};
     use ganbaru_sync_replica::peers::anchor_pin::AnchorPin;
     use ganbaru_sync_replica::peers::book::PeerEndpoints;
 
@@ -617,5 +705,89 @@ mod tests {
             &PeerEndpoints::default(),
         );
         assert!(unknown.endpoints.is_empty());
+    }
+
+    fn enrolled(
+        device_id: &str,
+        fingerprint: u8,
+        kind: DeviceKind,
+        removed: bool,
+    ) -> EnrolledDevice {
+        EnrolledDevice {
+            device_id: device_id.to_string(),
+            device_key: DevicePublicKey::from_bytes([3; 32]),
+            tls_fingerprint: [fingerprint; 32],
+            label: None,
+            kind,
+            role: DeviceRole::Member,
+            enrolled_revision: 2,
+            removed_revision: removed.then_some(3),
+        }
+    }
+
+    /// A log with the coordinator, this phone, two live desktops, a removed desktop, a
+    /// quarantined desktop, and another phone.
+    fn view() -> AuthorizationView {
+        AuthorizationView {
+            epoch: 1,
+            revision: 4,
+            entry_hash: [7; 32],
+            anchor_device_id: "device-coordinator".to_string(),
+            frozen_at: None,
+            catch_up: None,
+            charter: [8; 32],
+            recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
+            kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+            devices: vec![
+                enrolled("device-coordinator", 1, DeviceKind::Desktop, false),
+                enrolled("device-self", 2, DeviceKind::Mobile, false),
+                enrolled("device-laptop", 3, DeviceKind::Desktop, false),
+                enrolled("device-office", 4, DeviceKind::Desktop, false),
+                enrolled("device-removed", 5, DeviceKind::Desktop, true),
+                enrolled("device-quarantined", 6, DeviceKind::Desktop, false),
+                enrolled("device-tablet", 7, DeviceKind::Mobile, false),
+            ],
+            discovery_key: [5; 32],
+            previous_discovery_key: None,
+        }
+    }
+
+    #[test]
+    fn only_live_member_desktops_besides_the_coordinator_serve_copies() {
+        let quarantined = BTreeSet::from(["device-quarantined".to_string()]);
+        assert_eq!(
+            serving_members(&view(), "device-self", "device-coordinator", &quarantined),
+            BTreeSet::from(["device-laptop".to_string(), "device-office".to_string()])
+        );
+    }
+
+    #[test]
+    fn copy_sources_pin_the_enrolled_certificate_and_prefer_discovered_endpoints() {
+        let members = BTreeSet::from(["device-laptop".to_string(), "device-office".to_string()]);
+        let discovered = BTreeMap::from([(
+            "device-laptop".to_string(),
+            vec!["192.168.1.40:43821".to_string()],
+        )]);
+        let mut known = PeerEndpoints::default();
+        known.observe(
+            "device-laptop",
+            &[
+                "192.168.1.40:43821".to_string(),
+                "192.168.1.41:43821".to_string(),
+            ],
+            1_700_000_000_000,
+        );
+        assert_eq!(
+            bootstrap_sources(&view(), &members, &discovered, &known),
+            vec![BundleSource::Member {
+                device_id: "device-laptop".to_string(),
+                endpoints: vec![
+                    "192.168.1.40:43821".to_string(),
+                    "192.168.1.41:43821".to_string(),
+                ],
+                fingerprint: fingerprint_hex(&[3; 32]),
+            }],
+            "a member without a known endpoint is no source"
+        );
     }
 }

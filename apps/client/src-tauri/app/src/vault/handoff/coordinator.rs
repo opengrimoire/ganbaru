@@ -195,13 +195,13 @@ pub(crate) const BUNDLE_PREPARATION_LIMIT: &str =
 
 /// Recent vault snapshots started for each linked device, kept in memory for the per-device limit.
 #[derive(Debug, Default)]
-struct BundlePreparationWindows {
+pub(crate) struct BundlePreparationWindows {
     peers: BTreeMap<String, VecDeque<Instant>>,
 }
 
 impl BundlePreparationWindows {
     /// Records a snapshot for the device, or refuses it while that device's window is full.
-    fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
+    pub(crate) fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
         self.peers.retain(|_, events| {
             forget_expired(events, now, BUNDLE_PREPARATION_WINDOW);
             !events.is_empty()

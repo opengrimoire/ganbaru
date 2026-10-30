@@ -2,7 +2,7 @@
 
 use super::pairing::{PairingManager, PendingAcknowledgement};
 use super::protocol::BundlePurpose;
-use super::transport::TransferCancellation;
+use super::transport::{BundleSource, FetchedBundle, TransferCancellation};
 use crate::vault::backup::ReplacedVault;
 use crate::vault::ownership::{TransferPhase, VaultOwnershipManager};
 use serde::{Deserialize, Serialize};
@@ -307,23 +307,21 @@ async fn receive(
     };
 
     let purpose = mode.purpose();
-    let metadata = super::transport::request_bundle(
+    let sources = bundle_sources(app, mode, &coordinator.vault_id, &coordinator.device_id).await;
+    let FetchedBundle {
+        source,
+        metadata,
+        archive,
+    } = super::transport::fetch_bundle(
         &pairing,
+        &sources,
         super::current_compatibility(app),
         status.generation,
         purpose,
         cancellation,
     )
     .await?;
-    if let Err(error) = super::protocol::ensure_compatible(
-        &super::current_compatibility(app),
-        &metadata.compatibility,
-    ) {
-        let _ = super::transport::cancel_prepared_transfer(&pairing, &metadata.transfer_id).await;
-        return Err(error);
-    }
-    let archive =
-        super::transport::download_bundle(&pairing, metadata.clone(), cancellation).await?;
+    let from_coordinator = source == BundleSource::Coordinator;
     #[cfg(desktop)]
     let staging = match &link_folder {
         Some(folder) => {
@@ -349,9 +347,10 @@ async fn receive(
             coordinator.device_id,
             generation,
         )?;
-    } else if coordinator_owns && metadata.generation >= status.generation {
+    } else if from_coordinator && coordinator_owns && metadata.generation >= status.generation {
         // A bootstrap served while another device owns the vault leaves the ownership record
-        // as it is; the coordinator's copy carries no newer ownership than the record.
+        // as it is; the coordinator's copy carries no newer ownership than the record. A
+        // member's copy changes no ownership.
         ownership.advance_remote_coordinator(
             &metadata.vault_id,
             &coordinator.device_id,
@@ -405,9 +404,27 @@ async fn receive(
             metadata.generation,
         )?;
     }
-    let acknowledgement = super::transport::acknowledge_activation(&pairing, &pending).await;
-    if acknowledgement.is_ok() {
+    let acknowledgement = if from_coordinator {
+        super::transport::acknowledge_activation(&pairing, &source, &pending).await
+    } else {
+        // A pending acknowledgement is only ever retried with the coordinator, so a member's
+        // copy is settled first and acknowledged once; a member releases an unacknowledged
+        // copy when its reservation expires.
         pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
+        if let Err(error) =
+            super::transport::acknowledge_activation(&pairing, &source, &pending).await
+        {
+            eprintln!(
+                "vault copy from {}: acknowledgement failed: {error}",
+                source.describe()
+            );
+        }
+        Ok(())
+    };
+    if acknowledgement.is_ok() {
+        if from_coordinator {
+            pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
+        }
         if let Err(error) = pairing.remove_staging(&pending.transfer_id) {
             eprintln!("failed to clean completed vault transfer: {error}");
         }
@@ -424,6 +441,26 @@ async fn receive(
         activated: true,
         in_progress: false,
     })
+}
+
+/// Where a vault copy is asked for, in order: the coordinator this device enrolled with, then
+/// for a fresh copy the member desktops the local selected log shows as live. Ownership and
+/// refreshes come from the coordinator alone, and so does a first copy, since the log that
+/// names the other members arrives with it.
+async fn bundle_sources(
+    app: &tauri::AppHandle,
+    mode: ReceiveMode,
+    vault_id: &str,
+    coordinator_device_id: &str,
+) -> Vec<BundleSource> {
+    let mut sources = vec![BundleSource::Coordinator];
+    if matches!(mode, ReceiveMode::Bootstrap) {
+        match crate::sync::bootstrap_members(app, vault_id, coordinator_device_id).await {
+            Ok(members) => sources.extend(members),
+            Err(error) => eprintln!("vault copy: member sources are unavailable: {error}"),
+        }
+    }
+    sources
 }
 
 async fn resume_committed_ownership(
@@ -453,7 +490,9 @@ async fn resume_committed_ownership(
     pairing.record_activation(pending.clone())?;
     app.state::<VaultOwnershipManager>()
         .finalize_incoming(vault_id, &transfer_id, generation)?;
-    let acknowledgement = super::transport::acknowledge_activation(pairing, &pending).await;
+    let acknowledgement =
+        super::transport::acknowledge_activation(pairing, &BundleSource::Coordinator, &pending)
+            .await;
     if acknowledgement.is_ok() {
         pairing.clear_pending_acknowledgement(&transfer_id)?;
         if let Err(error) = pairing.remove_staging(&transfer_id) {
@@ -515,7 +554,8 @@ async fn flush_pending_acknowledgement(app: &tauri::AppHandle) -> Result<(), Str
             }
         }
     }
-    super::transport::acknowledge_activation(&pairing, &pending).await?;
+    super::transport::acknowledge_activation(&pairing, &BundleSource::Coordinator, &pending)
+        .await?;
     pairing.clear_pending_acknowledgement(&pending.transfer_id)?;
     if let Err(error) = pairing.remove_staging(&pending.transfer_id) {
         eprintln!("failed to clean acknowledged vault transfer: {error}");

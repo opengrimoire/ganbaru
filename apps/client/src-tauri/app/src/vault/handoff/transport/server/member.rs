@@ -2,7 +2,8 @@
 //! the app is in the foreground.
 //!
 //! It serves only sync requests from the devices the local selected authorization log enrolled
-//! and did not remove, and that this installation did not quarantine. Pairing, other handoff,
+//! and did not remove, and that this installation did not quarantine, and on a desktop the
+//! snapshot copies of the vault those devices bootstrap from. Pairing, other handoff,
 //! contact, and authorization proposal requests are refused with a typed code, so the anchor and
 //! the coordinator keep those roles.
 
@@ -44,6 +45,9 @@ pub(crate) struct MemberServices {
     pub admission: MemberAdmissionSource,
     /// Whether the network behind each local address may reach the listener at all.
     pub lan: LanAdmission,
+    /// The snapshot copies a member desktop serves to enrolled devices. Phones serve none.
+    #[cfg(desktop)]
+    pub bundles: Option<super::MemberBundles>,
 }
 
 /// A TLS configuration and the admitted certificate fingerprints it was built for.
@@ -227,6 +231,20 @@ async fn handle_member_connection(
             return send_error(&mut stream, "malformed_control", &error, false).await;
         }
     };
+    #[cfg(desktop)]
+    if let Some(bundles) = connection.services.bundles.as_ref()
+        && super::MemberBundles::handles(&request)
+    {
+        return bundles
+            .serve(
+                &mut stream,
+                connection.manager,
+                &admission,
+                &fingerprint,
+                request,
+            )
+            .await;
+    }
     if let Err(refusal) = admission.request(&fingerprint, &request) {
         return refuse(&mut stream, refusal).await;
     }

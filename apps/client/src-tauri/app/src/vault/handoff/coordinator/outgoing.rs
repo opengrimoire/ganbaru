@@ -4,8 +4,8 @@ use super::{CompletedActivation, CoordinatorResponse, CoordinatorState, Prepared
 use crate::vault::handoff::pairing::{
     PendingAcknowledgement, StoredOutgoingTransfer, random_token,
 };
-use crate::vault::handoff::protocol::{BundleMetadata, BundlePurpose, PROTOCOL_VERSION};
-use crate::vault::handoff::{current_compatibility, sha256_file};
+use crate::vault::handoff::protocol::{BundleMetadata, BundlePurpose};
+use crate::vault::handoff::snapshot::{archive_active_vault, bundle_metadata};
 use crate::vault::ownership::VaultOwnershipManager;
 use crate::vault::quiescence::{
     SnapshotQuiescence, SourceQuiescence, abort_source_preparation, begin_snapshot_quiescence,
@@ -100,46 +100,22 @@ impl<R: Runtime> CoordinatorState<R> {
             ),
             BundlePurpose::Refresh => (None, Some(begin_snapshot_quiescence(&self.app).await?)),
         };
-        let (database_snapshot, archive_path) =
-            match self.pairing.outgoing_snapshot_paths(&transfer_id) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    return Err(abort_source_preparation(quiescence, error).await);
-                }
-            };
-        let vault_root = match crate::vault::active_vault_path(&self.app) {
+        let archived = archive_active_vault(&self.app, &self.pairing, &transfer_id).await;
+        drop(snapshot_quiescence);
+        let archive_path = match archived {
             Ok(path) => path,
             Err(error) => {
                 return Err(abort_source_preparation(quiescence, error).await);
             }
         };
-        let snapshot_result = crate::vault::backup::create_handoff_archive(
-            &vault_root,
-            &database_snapshot,
+        let metadata_result = bundle_metadata(
+            &self.app,
+            vault_id,
+            device_id,
+            transfer_id,
+            next_generation,
             &archive_path,
-        )
-        .await;
-        drop(snapshot_quiescence);
-        let _ = fs::remove_file(&database_snapshot);
-        if let Err(error) = snapshot_result {
-            let _ = fs::remove_file(&archive_path);
-            return Err(abort_source_preparation(quiescence, error).await);
-        }
-        let metadata_result: Result<BundleMetadata, String> = (|| {
-            Ok(BundleMetadata {
-                protocol_version: PROTOCOL_VERSION,
-                compatibility: current_compatibility(&self.app),
-                vault_id,
-                device_id,
-                transfer_id,
-                generation: next_generation,
-                archive_bytes: archive_path
-                    .metadata()
-                    .map_err(|error| format!("inspect handoff archive: {error}"))?
-                    .len(),
-                archive_sha256: sha256_file(&archive_path)?,
-            })
-        })();
+        );
         let metadata = match metadata_result {
             Ok(metadata) => metadata,
             Err(error) => {

@@ -209,6 +209,7 @@ export const sync = {
     kind: {
       desktop: "Computadora",
       mobile: "Teléfono",
+      server: "Servidor",
     },
     role: {
       anchor: "Ancla",

@@ -29,7 +29,7 @@ pub(super) struct ServerLink {
     transfer: AssetTransfer,
     /// What the server reported storing, which covers removal cutoffs an anchor here seals.
     #[cfg_attr(mobile, allow(dead_code))]
-    stored: VersionVector,
+    pub(super) stored: VersionVector,
     /// An exchange stopped at its byte bound.
     pub(super) more: bool,
     /// The selected log names the server as the anchor.

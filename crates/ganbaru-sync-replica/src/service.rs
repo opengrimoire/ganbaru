@@ -1566,7 +1566,7 @@ impl ServiceState {
         }
         self.apply_new(&session).await?;
         let anchor_link = self.anchor_link.take();
-        if is_hub {
+        if is_hub && !session.anchored_by_server().await? {
             view.anchor_unreachable_since_ms = None;
         } else if !view.paused {
             let reachable = anchor_reachable(
@@ -1607,6 +1607,13 @@ impl ServiceState {
             }
             take_anchor
         };
+        // What an anchor server that answered this pass stores, which is what the handover away
+        // from it must cover.
+        #[cfg(desktop)]
+        let anchor_server_stored = server_link
+            .as_ref()
+            .filter(|link| link.anchors)
+            .map(|link| link.stored.clone());
         if let Some((assets, _)) = asset_peer.as_ref()
             && view.state != SyncState::Offline
         {
@@ -1616,14 +1623,14 @@ impl ServiceState {
                 .unwrap_or_default();
             #[cfg(desktop)]
             {
-                let hub_stored = match &next {
+                let old_anchor_stored = anchor_server_stored.clone().or_else(|| match &next {
                     Next::Online(wait) if view.state == SyncState::Idle => Some(wait.hub.clone()),
                     _ => None,
-                };
+                });
                 for request in take_anchor.drain(..) {
-                    let outcome = if let Some(hub_stored) = hub_stored.as_ref() {
+                    let outcome = if let Some(stored) = old_anchor_stored.as_ref() {
                         session
-                            .take_anchor(&manager, &mut self.writer, hub_stored)
+                            .take_anchor(&manager, &mut self.writer, stored)
                             .await
                     } else {
                         Err(
@@ -1682,11 +1689,23 @@ impl ServiceState {
         }
         #[cfg(desktop)]
         for request in take_anchor {
-            request.answer(Err(if is_hub {
-                "the coordinating computer cannot take the anchor back yet".to_string()
-            } else {
-                "taking the anchor needs a current exchange with the coordinator".to_string()
-            }));
+            let outcome = match anchor_server_stored.as_ref() {
+                Some(stored) => {
+                    session
+                        .take_anchor(&manager, &mut self.writer, stored)
+                        .await
+                }
+                None if is_hub => {
+                    Err("the coordinating computer cannot take the anchor back yet".to_string())
+                }
+                None => Err(
+                    "taking the anchor needs a current exchange with the coordinator".to_string(),
+                ),
+            };
+            if outcome.is_ok() {
+                next = Next::Continue;
+            }
+            request.answer(outcome);
         }
         if let Some((assets, mut transfer)) = asset_peer {
             next = self
@@ -3574,6 +3593,18 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .await
             .map_err(|error| format!("read sync authorization: {error}"))?
             .map(|view| view.anchor_device_id))
+    }
+
+    /// Whether the selected log names a server as the anchor.
+    async fn anchored_by_server(&self) -> Result<bool, String> {
+        let mut conn = acquire(&self.pool).await?;
+        Ok(self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .as_ref()
+            .is_some_and(peers::anchored_by_server))
     }
 
     /// On a client, drops outbox proposals the applied chain holds and sends the rest to the

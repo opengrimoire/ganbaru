@@ -600,10 +600,10 @@ impl<H: SyncHost> Session<'_, H> {
     /// With `kit`, the recovery admin key it derives signs the handover, the removal of the old
     /// anchor, and this desktop's promotion to admin when it is not one, and is dropped at once;
     /// a stolen anchor that removed this desktop does not stop it. Without it, an admin desktop
-    /// signs with its admin key. The coordinator does not force the anchor: while it anchors nothing
-    /// is lost, and otherwise its members reach it, so a planned handover applies. A kit use may
-    /// name the kit point it continues from and the devices the device review marked, which the
-    /// kit key removes after the handover.
+    /// signs with its admin key. The coordinator forces the anchor only from a lost server: while
+    /// it anchors nothing is lost, and a desktop anchor reaches it, so a planned handover applies.
+    /// A kit use may name the kit point it continues from and the devices the device review
+    /// marked, which the kit key removes after the handover.
     async fn force_anchor(
         &self,
         manager: &PairingManager,
@@ -617,12 +617,12 @@ impl<H: SyncHost> Session<'_, H> {
                 "only the recovery kit chooses a point or removes reviewed devices".to_string(),
             );
         }
-        if is_hub {
-            return Err("the coordinator takes the anchor through a planned handover".to_string());
-        }
         let admin = self.admin_context(manager).await?;
         if admin.anchors() {
             return Err("this desktop already anchors the vault".to_string());
+        }
+        if is_hub && !super::peers::anchored_by_server(&admin.view) {
+            return Err("the coordinator takes the anchor through a planned handover".to_string());
         }
         let device = admin
             .view

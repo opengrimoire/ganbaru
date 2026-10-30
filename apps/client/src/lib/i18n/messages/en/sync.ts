@@ -196,6 +196,7 @@ export const sync = {
     kind: {
       desktop: "Computer",
       mobile: "Phone",
+      server: "Server",
     },
     role: {
       anchor: "Anchor",

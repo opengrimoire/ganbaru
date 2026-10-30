@@ -564,6 +564,14 @@ fn server_source(
         .then_some(BundleSource::Server(target))
 }
 
+/// Whether the selected log names a server as the anchor. A coordinator that handed the anchor
+/// to a server reaches it directly, so it takes the anchor back as a linked desktop does.
+pub(super) fn anchored_by_server(view: &AuthorizationView) -> bool {
+    view.devices.iter().any(|device| {
+        device.device_id == view.anchor_device_id && device.kind == DeviceKind::Server
+    })
+}
+
 /// The live members of `view` that serve vault copies besides the coordinator: computers other
 /// than this device. Phones serve no copies.
 fn serving_members(
@@ -651,7 +659,7 @@ impl BundleSource {
 mod tests {
     use super::{
         AnchorDial, AuthorizationView, BTreeMap, BTreeSet, BundleSource, DeviceKind, anchor_dial,
-        bootstrap_sources, fingerprint_hex, server_source, serving_members,
+        anchored_by_server, bootstrap_sources, fingerprint_hex, server_source, serving_members,
     };
     use crate::peers::anchor_pin::AnchorPin;
     use crate::peers::book::PeerEndpoints;
@@ -777,6 +785,17 @@ mod tests {
             pending_removal: None,
             server: None,
         }
+    }
+
+    #[test]
+    fn only_a_server_device_named_as_the_anchor_anchors_by_server() {
+        let mut view = view();
+        assert!(!anchored_by_server(&view));
+        view.devices
+            .push(enrolled("device-server", 8, DeviceKind::Server, false));
+        assert!(!anchored_by_server(&view));
+        view.anchor_device_id = "device-server".to_string();
+        assert!(anchored_by_server(&view));
     }
 
     #[test]

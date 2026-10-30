@@ -123,7 +123,7 @@
       <div class="min-w-0 flex-1 basis-48">
         <div class="truncate text-[0.866667rem] font-medium text-foreground">{syncAuthorityDeviceName(t, entry)}</div>
         <div class="mt-0.5 flex flex-wrap gap-1 text-[0.75rem] text-muted-foreground">
-          <span>{entry.kind === "desktop" ? t("sync.authority.kind.desktop") : t("sync.authority.kind.mobile")}</span>
+          <span>{t(`sync.authority.kind.${entry.kind}`)}</span>
           {#each syncDeviceBadges(entry) as badge (badge)}
             <span class="rounded-sm bg-muted px-1.5">{syncDeviceBadgeLabel(t, badge)}</span>
           {/each}

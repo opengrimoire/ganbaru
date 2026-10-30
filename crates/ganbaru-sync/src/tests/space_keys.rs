@@ -22,14 +22,14 @@ use crate::{SpaceKeyHolder, StoredSpaceKey, SyncError};
 
 /// The keys of one test installation: its device signing key, a device encryption key, and
 /// optionally the recovery key a kit derives.
-struct TestKeys {
+pub(super) struct TestKeys {
     device: DeviceKeyPair,
     encryption: EncryptionKeyPair,
     recovery: Option<EncryptionKeyPair>,
 }
 
 impl TestKeys {
-    fn new(device: DeviceKeyPair) -> Arc<Self> {
+    pub(super) fn new(device: DeviceKeyPair) -> Arc<Self> {
         Arc::new(Self {
             device,
             encryption: EncryptionKeyPair::generate().unwrap(),
@@ -83,7 +83,7 @@ fn device_key_proposal(
 }
 
 /// An anchor holding `keys` that published its own encryption key.
-async fn keyed_anchor(salt: u64, keys: Arc<TestKeys>) -> Replica {
+pub(super) async fn keyed_anchor(salt: u64, keys: Arc<TestKeys>) -> Replica {
     let mut anchor = Replica::anchor(0, salt).await;
     anchor.identity.keys = Some(keys.clone());
     let own = device_key_proposal(
@@ -97,7 +97,7 @@ async fn keyed_anchor(salt: u64, keys: Arc<TestKeys>) -> Replica {
 }
 
 /// Sequences a device key entry for member `index` holding `keys` on `anchor`.
-async fn publish_member(anchor: &mut Replica, index: usize, keys: &TestKeys) -> u64 {
+pub(super) async fn publish_member(anchor: &mut Replica, index: usize, keys: &TestKeys) -> u64 {
     let signed = device_key_proposal(
         anchor,
         &device_key(&person(), index),
@@ -108,14 +108,14 @@ async fn publish_member(anchor: &mut Replica, index: usize, keys: &TestKeys) -> 
 }
 
 /// Sequences the recovery key entry that starts key epoch 1.
-async fn start_epochs(anchor: &mut Replica, recovery: &EncryptionKeyPair) -> u64 {
+pub(super) async fn start_epochs(anchor: &mut Replica, recovery: &EncryptionKeyPair) -> u64 {
     let entry = Entry::RecoveryKey(RecoveryKey {
         encryption_key: recovery.public_key(),
     });
     anchor.sequence(entry).await.unwrap().unwrap()
 }
 
-async fn stored_keys(replica: &mut Replica) -> Vec<StoredSpaceKey> {
+pub(super) async fn stored_keys(replica: &mut Replica) -> Vec<StoredSpaceKey> {
     replica
         .engine
         .space_keys(&mut replica.conn, &replica.ctx)
@@ -135,7 +135,7 @@ async fn own_key(replica: &mut Replica, keys: &TestKeys, epoch: u32) -> Option<S
 }
 
 /// A member that stored and applied everything `anchor` sealed.
-async fn synced_member(index: usize, salt: u64, anchor: &mut Replica) -> Replica {
+pub(super) async fn synced_member(index: usize, salt: u64, anchor: &mut Replica) -> Replica {
     let mut member = Replica::new(index, salt).await;
     member.pull(anchor).await;
     member.apply_all().await.unwrap();

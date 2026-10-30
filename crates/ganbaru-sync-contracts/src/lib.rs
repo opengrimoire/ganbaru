@@ -18,6 +18,7 @@ pub mod op;
 pub mod order_key;
 pub mod order_placement;
 pub mod recovery;
+pub mod relay;
 pub mod signing;
 pub mod vector;
 
@@ -55,5 +56,8 @@ pub use op::{
 pub use order_key::{OrderKey, OrderKeyError};
 pub use order_placement::{OrderPlacementError, OrderedRow};
 pub use recovery::{RecoveryError, RecoveryPublicKeys, RecoverySeed};
+pub use relay::{
+    OpenedRecord, RelayAssetChunk, RelayAssetHeader, RelayAssetId, RelayAssetOpener, RelayError,
+    RelayRecord, RelayRecordHeader, relay_asset_chunk_count, seal_relay_asset,
+};
 pub use signing::{Digest32, WriterKeyError, WriterKeyPair, WriterPublicKey};
-pub use vector::VersionVector;

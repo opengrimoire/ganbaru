@@ -33,6 +33,7 @@ pub mod hold;
 pub mod hooks;
 pub mod local;
 pub mod manifest;
+pub mod relay;
 pub mod seed;
 pub mod stability;
 pub mod triggers;
@@ -89,6 +90,7 @@ pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
 pub use records::WriterRetirement;
 pub use recovery::{MAX_UNSEEN_PRESENTATIONS, RecoveryDescendant, RecoveryEntry};
+pub use relay::{RelayKeys, open_space_keys};
 pub use reseal::ResealReport;
 pub use seal::{
     InvalidRow, MAX_BYTES_PER_SEAL, MAX_CHANGES_PER_SEAL, MAX_OPS_PER_SEAL, SealReport,

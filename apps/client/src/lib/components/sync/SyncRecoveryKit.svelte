@@ -1,23 +1,13 @@
 <script lang="ts">
-  import {
-    saveSyncRecoveryKitFile,
-    type SyncAuthorityDevice,
-    type SyncContests,
-    type SyncPendingRecoveryKit,
-  } from "$lib/api/sync";
+  import type { SyncAuthorityDevice, SyncContests, SyncPendingRecoveryKit } from "$lib/api/sync";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
-  import {
-    syncAuthorityDeviceName,
-    type SyncKitUse,
-    syncKitCodeLines,
-    syncKitFileName,
-    syncKitFileText,
-  } from "$lib/sync/authority";
+  import { syncAuthorityDeviceName, type SyncKitUse } from "$lib/sync/authority";
+  import SyncRecoveryKitSheet from "./SyncRecoveryKitSheet.svelte";
   import { syncContestDeviceName, syncKitPointLabel, syncKitPoints, syncKitReviewDevices } from "$lib/sync/contests";
 
   let {
@@ -30,7 +20,10 @@
     contests = null,
   }: {
     buttonClass: string;
-    /** Whether this admin desktop shows and saves a waiting kit or recovery key. */
+    /**
+     * Whether this admin desktop shows and saves a waiting kit or recovery key. Any other
+     * desktop explains that only an admin computer can.
+     */
     canManage: boolean;
     /** Whether this anchor desktop may install a new recovery key. */
     canInstallKey: boolean;
@@ -43,13 +36,12 @@
     contests?: SyncContests | null;
   } = $props();
 
-  const localization = getLocalization();
-  const { t } = localization;
+  const { t } = getLocalization();
   const authorityState = getSyncAuthorityState();
   let busy = $state(false);
   let message = $state("");
   let failed = $state(false);
-  let confirmation = $state<"saved" | "regenerate" | "force" | null>(null);
+  let confirmation = $state<"regenerate" | "force" | null>(null);
   let code = $state("");
   let quarantineAnchor = $state(false);
   /** The user's marks in the device review, by device id, over each device's preselection. */
@@ -75,8 +67,6 @@
       : t("sync.authority.forceAnchorMessage"),
   );
 
-  const codeLines = $derived(pendingKit ? syncKitCodeLines(pendingKit.code) : []);
-
   async function run(action: () => Promise<unknown>, success: string, failure: string): Promise<void> {
     if (busy) return;
     busy = true;
@@ -92,14 +82,6 @@
     } finally {
       busy = false;
     }
-  }
-
-  function saveFile(kit: SyncPendingRecoveryKit): Promise<void> {
-    return run(
-      () => saveSyncRecoveryKitFile(syncKitFileName(t), syncKitFileText(t, localization.locale, kit.code, Date.now())),
-      "",
-      t("sync.kit.saveFailed"),
-    );
   }
 
   async function useKit(event: SubmitEvent): Promise<void> {
@@ -139,8 +121,7 @@
   function confirm(): void {
     const current = confirmation;
     confirmation = null;
-    if (current === "saved") void run(authorityState.confirmKitSaved, "", t("sync.kit.confirmFailed"));
-    else if (current === "regenerate") void run(authorityState.regenerateKit, "", t("sync.kit.regenerateFailed"));
+    if (current === "regenerate") void run(authorityState.regenerateKit, "", t("sync.kit.regenerateFailed"));
     else if (current === "force") void forceWithKit();
   }
 </script>
@@ -150,24 +131,10 @@
     <div class="text-[0.866667rem] text-foreground">{t("sync.kit.heading")}</div>
     <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("sync.kit.description")}</div>
   </div>
-  {#if canManage && pendingKit}
-    <Notice tone="warning" role="status" copy={false} class="px-1 text-[0.8rem] leading-5" message={t("sync.kit.pending")} />
-    <div class="px-1" aria-label={t("sync.kit.code")}>
-      {#each codeLines as line, index (index)}
-        <p class="font-mono text-[0.933333rem] font-semibold tracking-wider text-foreground select-all" dir="ltr">{line}</p>
-      {/each}
-    </div>
-    {#if !pendingKit.active}
-      <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.kit.inactive")}</p>
-    {/if}
-    <div class="flex flex-wrap gap-2">
-      <button type="button" class={buttonClass} disabled={busy} onclick={() => void saveFile(pendingKit)}>
-        {t("sync.kit.saveFile")}
-      </button>
-      <button type="button" class={buttonClass} disabled={busy} onclick={() => { confirmation = "saved"; }}>
-        {t("sync.kit.confirmSaved")}
-      </button>
-    </div>
+  {#if !canManage}
+    <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.kit.adminOnly")}</p>
+  {:else if pendingKit}
+    <SyncRecoveryKitSheet kit={pendingKit} {buttonClass} onConfirm={authorityState.confirmKitSaved} />
   {:else if canInstallKey}
     <div class="flex flex-wrap gap-2">
       <button type="button" class={buttonClass} disabled={busy} onclick={() => { confirmation = "regenerate"; }}>
@@ -248,16 +215,7 @@
   {/if}
 </div>
 
-{#if confirmation === "saved"}
-  <ConfirmDialog
-    title={t("sync.kit.confirmSavedTitle")}
-    message={t("sync.kit.confirmSavedMessage")}
-    confirmLabel={t("sync.kit.confirmSaved")}
-    cancelLabel={t("common.cancel")}
-    onConfirm={confirm}
-    onCancel={() => { confirmation = null; }}
-  />
-{:else if confirmation === "force"}
+{#if confirmation === "force"}
   <ConfirmDialog
     title={t("sync.authority.forceAnchorTitle")}
     message={forceMessage}

@@ -383,7 +383,7 @@
           {now}
         />
       {/if}
-      {#if canManageKit || kitUse}
+      {#if canManageKit || kitUse || !mobileLayout}
         <SyncRecoveryKit
           {buttonClass}
           canManage={canManageKit}

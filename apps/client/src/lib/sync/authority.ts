@@ -176,8 +176,8 @@ export function canManageSyncRecoveryKit(context: SyncAuthorityContext): boolean
 }
 
 /**
- * Whether this admin desktop may install a new recovery key. Only the anchor's own admin key
- * installs one, and it never replaces the printed kit, which alone rotates the kit.
+ * Whether this admin desktop may replace the recovery kit. Only the anchor's own admin key
+ * installs the new kit's recovery key, so only the anchor offers the replacement.
  */
 export function canInstallSyncRecoveryKey(context: SyncAuthorityContext): boolean {
   const own = syncOwnDevice(context.authority);

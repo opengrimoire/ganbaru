@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { parseQrMatrix, type PairingQrMatrix } from "$lib/api/vault-handoff";
 import {
   readArray,
   readBoolean,
@@ -410,8 +411,21 @@ export interface SyncContests {
 export interface SyncPendingRecoveryKit {
   /** The grouped kit code with its checksum. */
   code: string;
-  /** Whether the vault already trusts the kit; a regenerated kit waits for the anchor. */
+  /** The kit code as a QR module matrix, for the printable page. */
+  qr: PairingQrMatrix;
+  /**
+   * Whether the kit protects the vault: the vault's sync space names it, or, before the vault
+   * links, the vault keeps it for its first charter. A replacement kit waits for the anchor.
+   */
   active: boolean;
+}
+
+/** The recovery kit of the active vault. */
+export interface SyncRecoveryKitState {
+  /** Whether the vault keeps a recovery kit's public keys. */
+  stored: boolean;
+  /** The kit this desktop holds until the user confirms saving it, or null. */
+  pending: SyncPendingRecoveryKit | null;
 }
 
 function readConnection(value: unknown, label: string): SyncConnectionView {
@@ -561,7 +575,17 @@ export function mapSyncPendingRecoveryKit(value: unknown, label: string): SyncPe
   const row = readRecord(value, label);
   const code = readString(row.code, `${label}.code`);
   if (code.trim().length === 0) throw new Error(`${label}.code must not be empty`);
-  return { code, active: readBoolean(row.active, `${label}.active`) };
+  return { code, qr: parseQrMatrix(row.qr), active: readBoolean(row.active, `${label}.active`) };
+}
+
+/** Validates the recovery kit state from the native side. */
+export function mapSyncRecoveryKitState(value: unknown): SyncRecoveryKitState {
+  const label = "recovery kit state";
+  const row = readRecord(value, label);
+  return {
+    stored: readBoolean(row.stored, `${label}.stored`),
+    pending: readNullable(row.pending, `${label}.pending`, mapSyncPendingRecoveryKit),
+  };
 }
 
 /** A 32-byte hash in lowercase hexadecimal, as the native side writes entry hashes. */
@@ -735,12 +759,6 @@ export function mapSyncContests(value: unknown): SyncContests {
   };
 }
 
-function readKitCode(value: unknown, label: string): string {
-  const code = readString(value, label);
-  if (code.trim().length === 0) throw new Error(`${label} must not be empty`);
-  return code;
-}
-
 /** Validates a device reference from the native side. */
 export function mapSyncDeviceRef(value: unknown, label: string): SyncDeviceRef {
   const row = readRecord(value, label);
@@ -881,23 +899,30 @@ export async function promoteSyncDevice(deviceId: string): Promise<void> {
   await invoke("sync_promote_device", { deviceId });
 }
 
-/** Replaces the recovery kit on an admin desktop and returns the new code, shown once. */
-export async function regenerateSyncRecoveryKit(): Promise<string> {
-  return readKitCode(await invoke<unknown>("sync_regenerate_recovery_kit"), "recovery kit code");
+/**
+ * Replaces the recovery kit from the anchor desktop. The new kit then waits to be saved, as
+ * {@link getSyncRecoveryKitState} shows.
+ */
+export async function regenerateSyncRecoveryKit(): Promise<void> {
+  await invoke("sync_regenerate_recovery_kit");
 }
 
-/** The recovery kit this admin desktop holds until the user confirms saving it, or null. */
-export async function getPendingSyncRecoveryKit(): Promise<SyncPendingRecoveryKit | null> {
-  return readNullable(
-    await invoke<unknown>("sync_recovery_kit_pending"),
-    "pending recovery kit",
-    mapSyncPendingRecoveryKit,
-  );
+/** The active vault's recovery kit, with the kit this desktop holds until the user saves it. */
+export async function getSyncRecoveryKitState(): Promise<SyncRecoveryKitState> {
+  return mapSyncRecoveryKitState(await invoke<unknown>("sync_recovery_kit_state"));
 }
 
-/** Deletes the recovery seed from this desktop after the user saved the kit. */
-export async function confirmSyncRecoveryKitSaved(): Promise<void> {
-  await invoke("sync_recovery_kit_saved");
+/** Creates or replaces the recovery kit of a desktop vault that is not linked yet. */
+export async function createSyncRecoveryKit(): Promise<void> {
+  await invoke("sync_create_recovery_kit");
+}
+
+/**
+ * Confirms the user saved the waiting kit by sending the last group of its code as typed. When
+ * it matches, this desktop deletes the recovery seed and the call returns true.
+ */
+export async function confirmSyncRecoveryKitSaved(lastGroup: string): Promise<boolean> {
+  return readBoolean(await invoke<unknown>("sync_recovery_kit_saved", { lastGroup }), "recovery kit confirmation");
 }
 
 /** What a forced anchor handover signs with and whether it also quarantines the lost anchor. */

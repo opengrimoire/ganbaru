@@ -33,6 +33,7 @@
   } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import SyncRecoveryKitSetup from "$lib/components/sync/SyncRecoveryKitSetup.svelte";
   import SyncSection from "$lib/components/sync/SyncSection.svelte";
   import {
     formatHandoffError,
@@ -885,6 +886,9 @@
     {/if}
 
     </fieldset>
+    {#if presentation === "settings" && !status.linked && platform === "desktop" && status.canWrite !== false}
+      <SyncRecoveryKitSetup {buttonClass} />
+    {/if}
     {#if presentation === "settings" && status.linked}
       <SyncSection
         {buttonClass}

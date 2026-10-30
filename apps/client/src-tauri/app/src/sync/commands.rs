@@ -6,9 +6,9 @@ use super::contests::{self, ContestsDto};
 use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
 #[cfg(desktop)]
-use super::service::{
-    AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, PendingRecoveryKit,
-};
+use super::recovery_kit::{self, KIT_LOCK, RecoveryKitState};
+#[cfg(desktop)]
+use super::service::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
 use super::service::{SyncRuntime, blocking};
 use super::status::{SyncNotice, SyncStatusView, SyncSubscribers};
 #[cfg(desktop)]
@@ -241,39 +241,90 @@ pub async fn sync_promote_device(
         .map(|_| ())
 }
 
-/// Replaces the vault's recovery kit on an admin desktop and returns the new kit code, which is
-/// shown once. The old kit stops signing once the anchor sequences the change.
+/// Replaces the vault's recovery kit on an admin desktop. The new kit waits for the user to
+/// save it, as [`sync_recovery_kit_state`] shows; the old kit stops signing once the anchor
+/// sequences the change and opens no data encrypted after it.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn sync_regenerate_recovery_kit(
-    runtime: State<'_, SyncRuntime>,
-) -> Result<String, String> {
+pub async fn sync_regenerate_recovery_kit(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
+    let _kit = KIT_LOCK.lock().await;
     match run_authority(&runtime, AuthorityAction::RegenerateRecoveryKit).await? {
-        AuthorityAnswer::RecoveryKit(code) => Ok(code),
+        AuthorityAnswer::RecoveryKit => Ok(()),
         _ => Err("sync answered the recovery kit request with something else".to_string()),
     }
 }
 
-/// The recovery kit whose seed this desktop still holds because the user has not confirmed
-/// saving it, such as the kit founding a charter creates, or none.
+/// The recovery kit of the active vault: whether the vault keeps a kit, and the kit whose seed
+/// this desktop still holds because the user has not confirmed saving it.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn sync_recovery_kit_pending(
-    runtime: State<'_, SyncRuntime>,
-) -> Result<Option<PendingRecoveryKit>, String> {
-    match run_authority(&runtime, AuthorityAction::PendingRecoveryKit).await? {
-        AuthorityAnswer::PendingRecoveryKit(kit) => Ok(kit),
-        _ => Err("sync answered the recovery kit request with something else".to_string()),
-    }
+pub async fn sync_recovery_kit_state<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<RecoveryKitState, String> {
+    let _kit = KIT_LOCK.lock().await;
+    let Some(pool) = crate::db::connect_active_vault_for_sync(&app).await? else {
+        return Ok(RecoveryKitState {
+            stored: false,
+            pending: None,
+        });
+    };
+    let mut conn = acquire_kit_connection(&pool).await?;
+    recovery_kit::state(&mut conn, &app.key_store()?, &app.active_vault_id()?).await
 }
 
-/// Deletes the recovery seed after the user confirmed saving the kit, so no device keeps it.
+/// Creates or replaces the recovery kit of an active vault that does not sync yet; its public
+/// keys found the charter when the vault first links.
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn sync_recovery_kit_saved(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
-    run_authority(&runtime, AuthorityAction::RecoveryKitSaved)
+pub async fn sync_create_recovery_kit<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let _kit = KIT_LOCK.lock().await;
+    let pool = writable_kit_vault(&app).await?;
+    let mut conn = acquire_kit_connection(&pool).await?;
+    recovery_kit::create(
+        &mut conn,
+        &app.key_store()?,
+        &app.active_vault_id()?,
+        super::now_ms()?,
+    )
+    .await
+}
+
+/// Confirms that the user saved the waiting recovery kit by typing back the last group of its
+/// code, then deletes its seed, so no device keeps it. Returns false when the group does not
+/// match.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_recovery_kit_saved<R: Runtime>(
+    app: AppHandle<R>,
+    last_group: String,
+) -> Result<bool, String> {
+    let _kit = KIT_LOCK.lock().await;
+    let pool = writable_kit_vault(&app).await?;
+    let mut conn = acquire_kit_connection(&pool).await?;
+    recovery_kit::confirm_saved(
+        &mut conn,
+        &app.key_store()?,
+        &app.active_vault_id()?,
+        &last_group,
+    )
+    .await
+}
+
+/// The active vault opened for the recovery kit, when this device may write it.
+#[cfg(desktop)]
+async fn writable_kit_vault<R: Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
+    crate::db::connect_active_vault_for_sync(app)
+        .await?
+        .ok_or_else(|| "this device cannot write the active vault".to_string())
+}
+
+#[cfg(desktop)]
+async fn acquire_kit_connection(
+    pool: &sqlx::SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, String> {
+    pool.acquire()
         .await
-        .map(|_| ())
+        .map_err(|error| format!("acquire sync connection: {error}"))
 }
 
 /// Uses a recovery kit on this enrolled desktop: proposes, signed with the recovery admin key

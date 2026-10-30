@@ -27,9 +27,7 @@ use super::writer::{
 };
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 #[cfg(desktop)]
-pub(crate) use anchor::{
-    AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision, PendingRecoveryKit,
-};
+pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, ForceRequest, LateDecision};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
@@ -2601,7 +2599,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             &mut conn,
             &self.ctx,
             &mut active.local(),
-            &space_keys,
+            space_keys.as_ref(),
             &mut outbox,
             now_ms()?,
         )
@@ -2627,6 +2625,12 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 Ok(None) => {}
                 Err(rejection) => eprintln!("sync: seal the waiting key epoch: {rejection}"),
             }
+            if self
+                .start_key_epochs(&mut conn, &mut active.local(), &view)
+                .await?
+            {
+                sealed = true;
+            }
         }
         if sealed {
             // The record must name what sequencing sealed, or a restored database behind
@@ -2643,6 +2647,53 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .open_epochs(&self.engine, &mut conn, &self.ctx)
             .await?;
         Ok(sealed)
+    }
+
+    /// On the anchor of a space without a key epoch, sequences the recovery key entry of the kit
+    /// the vault database keeps, signed by this installation's admin key, which opens the first
+    /// key epoch. `view` is the selected log read before this pass published the device key, so
+    /// the entry is attempted only where the kit can start the epochs. Returns whether it sealed.
+    async fn start_key_epochs(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        writer: &mut ganbaru_sync::LocalWriter<'_>,
+        view: &ganbaru_sync::AuthorizationView,
+    ) -> Result<bool, String> {
+        use ganbaru_sync_replica::authority::{
+            read_admin_key as read_stored_admin_key, start_key_epochs, starts_key_epochs,
+        };
+        let Some(kit) = local::recovery_kit_keys(conn)
+            .await
+            .map_err(|error| format!("read the sync recovery kit: {error}"))?
+        else {
+            return Ok(false);
+        };
+        if !starts_key_epochs(view, &writer.certificate.certificate.device_id, &kit) {
+            return Ok(false);
+        }
+        let keys = self.keys.clone();
+        let vault_id = self.files.vault_id.clone();
+        let Some(admin) = blocking(move || read_stored_admin_key(keys.as_ref(), &vault_id)).await?
+        else {
+            return Ok(false);
+        };
+        match start_key_epochs(
+            &self.engine,
+            conn,
+            &self.ctx,
+            &admin,
+            writer,
+            &kit,
+            now_ms()?,
+        )
+        .await?
+        {
+            Ok(sealed) => Ok(sealed.is_some()),
+            Err(rejection) => {
+                eprintln!("sync: start the key epochs: {rejection}");
+                Ok(false)
+            }
+        }
     }
 
     /// Creates a successor writer certified by this installation's device key. A device without
@@ -3045,12 +3096,27 @@ impl<'a, H: SyncHost> Session<'a, H> {
         Ok(())
     }
 
-    /// The anchor keys of the vault, each created once.
+    /// The anchor keys of the vault, each created once. The recovery kit is the one the vault
+    /// database keeps, as for a kit created before the vault linked; without one, the kit that
+    /// founds the space is stored there before the charter names it.
     #[cfg(desktop)]
     async fn anchor_keys(&self) -> Result<AnchorKeys, String> {
+        let stored = {
+            let mut conn = acquire(&self.pool).await?;
+            ganbaru_sync::local::recovery_kit_keys(&mut conn)
+                .await
+                .map_err(|error| format!("read the sync recovery kit: {error}"))?
+        };
         let keys = self.keys.clone();
         let vault_id = self.files.vault_id.clone();
-        blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id)).await
+        let anchor = blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id, stored)).await?;
+        if stored.is_none() {
+            let mut conn = acquire(&self.pool).await?;
+            ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &anchor.recovery, now_ms()?)
+                .await
+                .map_err(|error| format!("store the sync recovery kit: {error}"))?;
+        }
+        Ok(anchor)
     }
 
     /// On the coordinator, unlinks every linked device the selected log removed, whichever admin

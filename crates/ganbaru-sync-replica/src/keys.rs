@@ -1,5 +1,5 @@
-//! The installation's space keys: its device encryption key, the recovery key it may hold, and
-//! the plaintext epoch keys it opened, which live in memory only.
+//! The installation's space keys: its device encryption key and the plaintext epoch keys it
+//! opened, which live in memory only, and the recovery key a kit flow lends them while it runs.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -40,7 +40,6 @@ pub fn ensure_encryption_key(
 pub struct SpaceKeys {
     device: DeviceKeyPair,
     encryption: EncryptionKeyPair,
-    recovery: Option<EncryptionKeyPair>,
     opened: Mutex<BTreeMap<u32, SpaceKey>>,
 }
 
@@ -50,7 +49,6 @@ impl SpaceKeys {
         Self {
             device,
             encryption,
-            recovery: None,
             opened: Mutex::new(BTreeMap::new()),
         }
     }
@@ -61,14 +59,6 @@ impl SpaceKeys {
         let device = ensure_device_key(keys, vault_id)?;
         let encryption = ensure_encryption_key(keys, vault_id)?;
         Ok(Self::new(device, encryption))
-    }
-
-    /// The same keys with the recovery encryption key the recovery kit derives, which opens
-    /// the recovery envelope of every key epoch, as an anchor recovered with the kit needs
-    /// before its own envelope exists.
-    pub fn with_recovery(mut self, recovery: EncryptionKeyPair) -> Self {
-        self.recovery = Some(recovery);
-        self
     }
 
     /// The public half of the device encryption key.
@@ -121,10 +111,7 @@ impl SpaceKeyHolder for SpaceKeys {
     }
 
     fn open(&self, space: &SpaceId, epoch: u32, envelope: &KeyEnvelope) -> Option<SpaceKey> {
-        std::iter::once(&self.encryption)
-            .chain(self.recovery.as_ref())
-            .filter(|pair| pair.public_key().key_id() == envelope.recipient)
-            .find_map(|pair| envelope.open(space, epoch, pair).ok())
+        open_with(&self.encryption, space, epoch, envelope)
     }
 }
 
@@ -133,10 +120,61 @@ impl std::fmt::Debug for SpaceKeys {
         formatter
             .debug_struct("SpaceKeys")
             .field("encryption", &self.encryption.public_key())
-            .field(
-                "recovery",
-                &self.recovery.as_ref().map(EncryptionKeyPair::public_key),
-            )
             .finish_non_exhaustive()
     }
+}
+
+/// The installation's keys with the recovery encryption key a recovery kit derives, which
+/// opens the recovery envelope of every key epoch. An anchor the kit recovered needs it to
+/// sign its own device key and seal the rotations after the handover before an envelope to its
+/// own key exists. The kit flow builds this for one call and drops it, so the recovery key
+/// never outlives the flow.
+pub struct KitKeys<'a> {
+    base: &'a dyn SpaceKeyHolder,
+    recovery: &'a EncryptionKeyPair,
+}
+
+impl<'a> KitKeys<'a> {
+    /// `base` with the kit's recovery encryption key.
+    pub fn new(base: &'a dyn SpaceKeyHolder, recovery: &'a EncryptionKeyPair) -> Self {
+        Self { base, recovery }
+    }
+}
+
+impl SpaceKeyHolder for KitKeys<'_> {
+    fn device_key(&self) -> &DeviceKeyPair {
+        self.base.device_key()
+    }
+
+    fn encryption_key(&self) -> EncryptionPublicKey {
+        self.base.encryption_key()
+    }
+
+    fn open(&self, space: &SpaceId, epoch: u32, envelope: &KeyEnvelope) -> Option<SpaceKey> {
+        self.base
+            .open(space, epoch, envelope)
+            .or_else(|| open_with(self.recovery, space, epoch, envelope))
+    }
+}
+
+impl std::fmt::Debug for KitKeys<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KitKeys")
+            .field("encryption", &self.base.encryption_key())
+            .field("recovery", &self.recovery.public_key())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opens `envelope` with `pair` when the envelope names it.
+fn open_with(
+    pair: &EncryptionKeyPair,
+    space: &SpaceId,
+    epoch: u32,
+    envelope: &KeyEnvelope,
+) -> Option<SpaceKey> {
+    (pair.public_key().key_id() == envelope.recipient)
+        .then(|| envelope.open(space, epoch, pair).ok())
+        .flatten()
 }

@@ -64,6 +64,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_fork_evidence",
     "sync_row_creations",
     "sync_stale_rows",
+    "sync_recovery_kit",
 ];
 
 /// Engine tables of device-bound state that every manifest classifies as `Local`, so snapshot

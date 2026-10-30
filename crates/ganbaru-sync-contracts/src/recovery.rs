@@ -2,21 +2,27 @@
 //!
 //! Keys derive with HKDF-SHA256 over the seed, an empty salt, and an info string of a purpose
 //! label followed by a zero byte, so each purpose gets an independent key from the same kit. The
-//! recovery admin key uses [`RECOVERY_ADMIN_INFO`].
+//! recovery admin key uses [`RECOVERY_ADMIN_INFO`] and the recovery encryption key, the X25519
+//! pair space key envelopes are sealed to, uses [`RECOVERY_HPKE_INFO`]. Seed and derived bytes
+//! are zeroized on drop, and comparisons of seed-derived values run in constant time.
 //!
 //! The kit code is the seed followed by a 3-byte checksum (the first bytes of the recovery kit
 //! digest of the seed), written in Crockford base32 and grouped for reading aloud. Parsing
 //! ignores case, hyphens, and whitespace, reads `O` as `0` and `I` or `L` as `1`, and refuses a
 //! code whose checksum does not match.
 
-use crate::keys::{AdminKeyPair, KeyError, SEED_BYTES};
+use crate::crypto::{CryptoError, EncryptionKeyPair, EncryptionPublicKey};
+use crate::keys::{AdminKeyPair, AdminPublicKey, KeyError, SEED_BYTES};
 use crate::signing::{RECOVERY_KIT_DOMAIN, domain_digest};
 use ring::hkdf::{HKDF_SHA256, Salt};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::fmt;
+use zeroize::Zeroizing;
 
 /// HKDF info label of the recovery admin key.
 pub const RECOVERY_ADMIN_INFO: &[u8] = b"ganbaru-sync/recovery-admin/v1";
+/// HKDF info label of the recovery encryption key.
+pub const RECOVERY_HPKE_INFO: &[u8] = b"ganbaru-sync/recovery-hpke/v1";
 /// Checksum bytes appended to the seed in a kit code.
 pub const KIT_CHECKSUM_BYTES: usize = 3;
 /// Characters per group in a formatted kit code.
@@ -43,6 +49,8 @@ pub enum RecoveryError {
     Random,
     /// A derived key could not be built.
     Key(KeyError),
+    /// A derived encryption key could not be built.
+    Encryption(CryptoError),
 }
 
 impl fmt::Display for RecoveryError {
@@ -53,6 +61,7 @@ impl fmt::Display for RecoveryError {
             Self::Checksum => formatter.write_str("recovery code checksum does not match"),
             Self::Random => formatter.write_str("secure random source failed"),
             Self::Key(error) => write!(formatter, "recovery key: {error}"),
+            Self::Encryption(error) => write!(formatter, "recovery encryption key: {error}"),
         }
     }
 }
@@ -65,23 +74,34 @@ impl From<KeyError> for RecoveryError {
     }
 }
 
-/// The secret seed a recovery kit carries.
-#[derive(Clone, PartialEq, Eq)]
-pub struct RecoverySeed([u8; SEED_BYTES]);
+/// The secret seed a recovery kit carries. Its bytes are zeroized on drop; it has no `PartialEq`,
+/// so seeds compare only through [`Self::ct_eq`].
+#[derive(Clone)]
+pub struct RecoverySeed(Zeroizing<[u8; SEED_BYTES]>);
+
+/// The public keys a recovery kit derives, which a vault keeps without the seed: the recovery
+/// admin key a charter names and the recovery encryption key space key envelopes are sealed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryPublicKeys {
+    /// Public half of the recovery admin key.
+    pub admin: AdminPublicKey,
+    /// Public half of the recovery encryption key.
+    pub encryption: EncryptionPublicKey,
+}
 
 impl RecoverySeed {
     /// Generates a fresh seed from the secure random source.
     pub fn generate() -> Result<Self, RecoveryError> {
-        let mut seed = [0u8; SEED_BYTES];
+        let mut seed = Zeroizing::new([0u8; SEED_BYTES]);
         SystemRandom::new()
-            .fill(&mut seed)
+            .fill(seed.as_mut())
             .map_err(|_| RecoveryError::Random)?;
         Ok(Self(seed))
     }
 
     /// Wraps raw seed bytes.
     pub fn from_bytes(bytes: [u8; SEED_BYTES]) -> Self {
-        Self(bytes)
+        Self(Zeroizing::new(bytes))
     }
 
     /// Raw seed bytes.
@@ -89,18 +109,23 @@ impl RecoverySeed {
         &self.0
     }
 
+    /// Whether `other` is the same seed, compared in constant time.
+    pub fn ct_eq(&self, other: &Self) -> bool {
+        constant_time_eq(self.0.as_slice(), other.0.as_slice())
+    }
+
     /// Derives 32 bytes for the purpose `label`. The label must be unique to its purpose and
     /// version.
-    pub fn derive(&self, label: &[u8]) -> [u8; SEED_BYTES] {
+    pub fn derive(&self, label: &[u8]) -> Zeroizing<[u8; SEED_BYTES]> {
         let mut info = Vec::with_capacity(label.len() + 1);
         info.extend_from_slice(label);
         info.push(0);
         let info = [info.as_slice()];
-        let mut output = [0u8; SEED_BYTES];
+        let mut output = Zeroizing::new([0u8; SEED_BYTES]);
         Salt::new(HKDF_SHA256, &[])
-            .extract(&self.0)
+            .extract(self.0.as_slice())
             .expand(&info, HKDF_SHA256)
-            .and_then(|okm| okm.fill(&mut output))
+            .and_then(|okm| okm.fill(output.as_mut()))
             .expect("HKDF-SHA256 expands 32 bytes");
         output
     }
@@ -110,12 +135,23 @@ impl RecoverySeed {
         Ok(AdminKeyPair::from_seed(&self.derive(RECOVERY_ADMIN_INFO))?)
     }
 
+    /// The recovery encryption key pair, the X25519 key a kit opens space key envelopes with.
+    pub fn recovery_encryption_key(&self) -> Result<EncryptionKeyPair, RecoveryError> {
+        EncryptionKeyPair::from_secret(self.derive(RECOVERY_HPKE_INFO))
+            .map_err(RecoveryError::Encryption)
+    }
+
+    /// The public halves of both recovery keys.
+    pub fn public_keys(&self) -> Result<RecoveryPublicKeys, RecoveryError> {
+        Ok(RecoveryPublicKeys {
+            admin: self.recovery_admin_key()?.public_key(),
+            encryption: self.recovery_encryption_key()?.public_key(),
+        })
+    }
+
     /// The grouped kit code.
     pub fn kit_code(&self) -> String {
-        let mut payload = [0u8; KIT_PAYLOAD_BYTES];
-        payload[..SEED_BYTES].copy_from_slice(&self.0);
-        payload[SEED_BYTES..].copy_from_slice(&kit_checksum(&self.0));
-        let characters = encode_base32(&payload);
+        let characters = self.code_characters();
         let mut code = String::with_capacity(KIT_CODE_CHARS + KIT_CODE_CHARS / KIT_GROUP_CHARS);
         for (index, character) in characters.iter().enumerate() {
             if index > 0 && index % KIT_GROUP_CHARS == 0 {
@@ -126,9 +162,36 @@ impl RecoverySeed {
         code
     }
 
+    /// Whether `typed` is the last group of the kit code, read as [`Self::parse_kit_code`] reads
+    /// a code and compared in constant time. A person types it back to confirm a saved kit.
+    pub fn last_group_matches(&self, typed: &str) -> bool {
+        let characters = self.code_characters();
+        let start = (KIT_CODE_CHARS - 1) / KIT_GROUP_CHARS * KIT_GROUP_CHARS;
+        let expected = &characters[start..];
+        let mut values = Zeroizing::new(Vec::with_capacity(expected.len()));
+        for character in typed.chars() {
+            if character == KIT_GROUP_SEPARATOR || character.is_whitespace() {
+                continue;
+            }
+            match crockford_value(character) {
+                Some(value) => values.push(CROCKFORD_ALPHABET[usize::from(value)]),
+                None => return false,
+            }
+        }
+        constant_time_eq(expected, &values)
+    }
+
+    /// The base32 characters of the kit code without separators.
+    fn code_characters(&self) -> Zeroizing<Vec<u8>> {
+        let mut payload = Zeroizing::new([0u8; KIT_PAYLOAD_BYTES]);
+        payload[..SEED_BYTES].copy_from_slice(self.0.as_slice());
+        payload[SEED_BYTES..].copy_from_slice(&kit_checksum(&self.0));
+        Zeroizing::new(encode_base32(payload.as_slice()))
+    }
+
     /// Parses a kit code as a person may type it.
     pub fn parse_kit_code(code: &str) -> Result<Self, RecoveryError> {
-        let mut values = Vec::with_capacity(KIT_CODE_CHARS);
+        let mut values = Zeroizing::new(Vec::with_capacity(KIT_CODE_CHARS));
         for character in code.chars() {
             if character == KIT_GROUP_SEPARATOR || character.is_whitespace() {
                 continue;
@@ -138,14 +201,23 @@ impl RecoverySeed {
         if values.len() != KIT_CODE_CHARS {
             return Err(RecoveryError::Length);
         }
-        let payload = decode_base32(&values).ok_or(RecoveryError::Checksum)?;
-        let mut seed = [0u8; SEED_BYTES];
+        let payload = Zeroizing::new(decode_base32(&values).ok_or(RecoveryError::Checksum)?);
+        let mut seed = Zeroizing::new([0u8; SEED_BYTES]);
         seed.copy_from_slice(&payload[..SEED_BYTES]);
-        if payload[SEED_BYTES..] != kit_checksum(&seed) {
+        if !constant_time_eq(&payload[SEED_BYTES..], &kit_checksum(&seed)) {
             return Err(RecoveryError::Checksum);
         }
         Ok(Self(seed))
     }
+}
+
+/// Compares two byte strings without branching on their contents. Only the lengths may leak.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = u8::from(left.len() != right.len());
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    std::hint::black_box(difference) == 0
 }
 
 impl fmt::Debug for RecoverySeed {

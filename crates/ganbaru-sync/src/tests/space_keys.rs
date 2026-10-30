@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use ganbaru_sync_contracts::{
     AdminPublicKey, DeviceKey, DeviceKeyPair, EncryptionKeyPair, EncryptionPublicKey, Entry,
-    KeyEnvelope, KeyEpoch, Proposal, ProposalRejection, RecoveryKey, SignedProposal, SpaceId,
-    SpaceKey, sign_device_proposal,
+    KeyEnvelope, KeyEpoch, Proposal, ProposalRejection, RecoveryKey, RecoverySeed, SignedProposal,
+    SpaceId, SpaceKey, sign_device_proposal,
 };
 
 use super::authorization::{remove_entry, view};
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Replica, anchor_device_key, connection_from, device_id, device_key, person,
-    person_proposal, recovery_admin, test_charter,
+    person_proposal, recovery_admin, recovery_seed, test_charter,
 };
 use crate::error::failpoints;
 use crate::local::prepare_snapshot_copy;
@@ -459,8 +459,7 @@ fn a_kit_recovered_anchor_opens_the_current_epoch_with_the_recovery_key() {
     block_on(async {
         let anchor_keys = TestKeys::new(anchor_device_key(&person()));
         let mut anchor = keyed_anchor(10, anchor_keys).await;
-        // A generated pair stands in for the recovery key the kit derives.
-        let recovery = EncryptionKeyPair::generate().unwrap();
+        let recovery = recovery_seed(&person()).recovery_encryption_key().unwrap();
         start_epochs(&mut anchor, &recovery).await;
 
         let mut recovered = synced_member(3, 10, &mut anchor).await;
@@ -543,5 +542,173 @@ fn a_snapshot_copy_rebuilds_its_space_keys_from_the_log() {
         // Applying notes the local device again, whose envelopes the rebuild keeps.
         anchor.apply_once().await.unwrap();
         assert_eq!(stored_keys(&mut anchor).await, stored);
+    });
+}
+
+#[test]
+fn an_anchor_reached_past_a_pending_removal_publishes_its_key_and_completes_it() {
+    block_on(async {
+        let anchor_keys = TestKeys::new(anchor_device_key(&person()));
+        let mut anchor = keyed_anchor(12, anchor_keys).await;
+        let recovery = recovery_seed(&person()).recovery_encryption_key().unwrap();
+        start_epochs(&mut anchor, &recovery).await;
+        let removal = anchor.remove(&device_id(3)).await.unwrap();
+        let ops = anchor.own_ops().await;
+        let (_, prefix) = ops.split_last().unwrap();
+
+        let mut recovered = Replica::new(1, 12).await;
+        recovered.receive(prefix).await;
+        recovered.apply_all().await.unwrap();
+        assert_eq!(
+            view(&mut recovered).await.pending_removal,
+            Some(device_id(3))
+        );
+        let forced = recovered
+            .handover_proposal(&recovery_admin(&person()))
+            .await;
+        recovered
+            .seal_handover(&forced, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let handed = view(&mut recovered).await;
+        assert_eq!(handed.pending_removal, Some(device_id(3)));
+
+        // Without an envelope it opens, the new anchor can neither publish nor seal.
+        let without_kit = TestKeys::new(device_key(&person(), 1));
+        recovered.identity.keys = Some(without_kit.clone());
+        let own = device_key_proposal(
+            &recovered,
+            &device_key(&person(), 1),
+            &device_id(1),
+            without_kit.encryption.public_key(),
+        );
+        assert_eq!(
+            recovered.sequence_signed(&own).await.unwrap(),
+            Err(ProposalRejection::KeyUnavailable)
+        );
+
+        // Another device's key first needs the rotation, which the anchor cannot seal before
+        // it publishes its own key.
+        let with_kit = TestKeys::with_recovery(device_key(&person(), 1), recovery);
+        recovered.identity.keys = Some(with_kit.clone());
+        let other = device_key_proposal(
+            &recovered,
+            &device_key(&person(), 2),
+            &device_id(2),
+            TestKeys::new(device_key(&person(), 2))
+                .encryption
+                .public_key(),
+        );
+        assert_eq!(
+            recovered.sequence_signed(&other).await.unwrap(),
+            Err(ProposalRejection::KeyUnavailable)
+        );
+        assert_eq!(view(&mut recovered).await, handed);
+
+        let own = device_key_proposal(
+            &recovered,
+            &device_key(&person(), 1),
+            &device_id(1),
+            with_kit.encryption.public_key(),
+        );
+        let published = recovered.sequence_signed(&own).await.unwrap().unwrap();
+        let head = view(&mut recovered).await;
+        assert_eq!(
+            head.revision,
+            published + 1,
+            "the key epoch follows at once"
+        );
+        assert_eq!(head.key_epoch, 2);
+        assert_eq!(head.pending_removal, None);
+        let gone = head
+            .devices
+            .iter()
+            .find(|device| device.device_id == device_id(3))
+            .unwrap();
+        assert_eq!(gone.removed_revision, Some(removal));
+        assert!(own_key(&mut recovered, &with_kit, 2).await.is_some());
+    });
+}
+
+#[test]
+fn a_replaced_recovery_key_opens_no_later_epoch() {
+    block_on(async {
+        let anchor_keys = TestKeys::new(anchor_device_key(&person()));
+        let mut anchor = keyed_anchor(13, anchor_keys).await;
+        start_epochs(
+            &mut anchor,
+            &recovery_seed(&person()).recovery_encryption_key().unwrap(),
+        )
+        .await;
+        let replacement = RecoverySeed::from_bytes([0x5a; 32]);
+        start_epochs(&mut anchor, &replacement.recovery_encryption_key().unwrap()).await;
+        assert_eq!(view(&mut anchor).await.key_epoch, 2);
+
+        let mut recovered = synced_member(3, 13, &mut anchor).await;
+        // The point a handover the replaced kit signs continues from names neither the kit's
+        // recovery encryption key nor a key of this desktop, so the replica refuses that forced
+        // handover before sealing it. The engine itself seals it, which shows why.
+        let point = recovered
+            .engine
+            .handover_point(
+                &mut recovered.conn,
+                &recovered.ctx,
+                &recovery_admin(&person()).public_key(),
+                &device_id(3),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(point.by_kit);
+        assert_eq!(point.view.key_epoch, 2);
+        assert_eq!(
+            point.view.recovery_encryption_key,
+            Some(replacement.recovery_encryption_key().unwrap().public_key())
+        );
+        assert!(
+            point
+                .view
+                .devices
+                .iter()
+                .all(|device| device.device_id != device_id(3) || device.encryption_key.is_none())
+        );
+        let forced = recovered
+            .handover_proposal(&recovery_admin(&person()))
+            .await;
+        recovered
+            .seal_handover(&forced, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let own = |recovered: &Replica, keys: &TestKeys| {
+            device_key_proposal(
+                recovered,
+                &device_key(&person(), 3),
+                &device_id(3),
+                keys.encryption.public_key(),
+            )
+        };
+
+        // The replaced kit's key opens epoch 1 only, so it cannot reach the current key.
+        let old_kit = TestKeys::with_recovery(
+            device_key(&person(), 3),
+            recovery_seed(&person()).recovery_encryption_key().unwrap(),
+        );
+        let signed = own(&recovered, &old_kit);
+        recovered.identity.keys = Some(old_kit);
+        assert_eq!(
+            recovered.sequence_signed(&signed).await.unwrap(),
+            Err(ProposalRejection::KeyUnavailable)
+        );
+
+        let new_kit = TestKeys::with_recovery(
+            device_key(&person(), 3),
+            replacement.recovery_encryption_key().unwrap(),
+        );
+        let signed = own(&recovered, &new_kit);
+        recovered.identity.keys = Some(new_kit.clone());
+        recovered.sequence_signed(&signed).await.unwrap().unwrap();
+        assert!(own_key(&mut recovered, &new_kit, 2).await.is_some());
     });
 }

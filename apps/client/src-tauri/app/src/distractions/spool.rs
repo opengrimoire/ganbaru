@@ -7,7 +7,6 @@
 //! them into the replicated `distractions_block_events`.
 
 use crate::distractions::DistractionsUsageSampleRow;
-use crate::distractions::limits::{MAX_SOURCE_GROUPS, UsageSourceDay};
 use ganbaru_distractions::usage::totals::insert_own_samples;
 use ganbaru_distractions::usage::{
     SpooledBlockEvent, SpooledBlockEventError, UsageDateWindow, record_spooled_block_event,

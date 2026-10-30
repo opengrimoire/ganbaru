@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub mod relay;
 mod sync;
 
 pub use sync::{
@@ -1101,28 +1102,82 @@ fn validate_card_text(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn write_control<W>(writer: &mut W, message: &ControlMessage) -> Result<(), String>
+/// A message carried in one length-prefixed JSON frame. Every frame is validated before it is
+/// encoded and after it is decoded, so a peer never sends or acts on a message outside its bounds.
+pub trait Frame: Serialize + DeserializeOwned {
+    /// What the frame is called in errors.
+    const LABEL: &'static str;
+
+    /// Checks every bound and text form of the message.
+    fn validate(&self) -> Result<(), String>;
+}
+
+impl Frame for ControlMessage {
+    const LABEL: &'static str = "handoff control message";
+
+    fn validate(&self) -> Result<(), String> {
+        ControlMessage::validate(self)
+    }
+}
+
+/// Writes one frame: a big-endian u32 length, then the JSON encoding of a valid `message` no
+/// larger than [`MAX_CONTROL_BYTES`].
+pub async fn write_frame<W, T>(writer: &mut W, message: &T) -> Result<(), String>
 where
     W: AsyncWrite + Unpin,
+    T: Frame,
 {
     message.validate()?;
-    let encoded = serde_json::to_vec(message)
-        .map_err(|error| format!("encode handoff control message: {error}"))?;
+    let label = T::LABEL;
+    let encoded =
+        serde_json::to_vec(message).map_err(|error| format!("encode {label}: {error}"))?;
     if encoded.len() > MAX_CONTROL_BYTES {
-        return Err("handoff control message exceeds the size limit".to_string());
+        return Err(format!("{label} exceeds the size limit"));
     }
     writer
         .write_u32(encoded.len() as u32)
         .await
-        .map_err(|error| format!("write handoff message length: {error}"))?;
+        .map_err(|error| format!("write {label} length: {error}"))?;
     writer
         .write_all(&encoded)
         .await
-        .map_err(|error| format!("write handoff message: {error}"))?;
+        .map_err(|error| format!("write {label}: {error}"))?;
     writer
         .flush()
         .await
-        .map_err(|error| format!("flush handoff message: {error}"))
+        .map_err(|error| format!("flush {label}: {error}"))
+}
+
+/// Reads one frame no larger than `max_bytes`, which never exceeds [`MAX_CONTROL_BYTES`]. The
+/// length is checked before the frame is allocated, and the decoded message is validated.
+pub async fn read_frame<R, T>(reader: &mut R, max_bytes: usize) -> Result<T, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
+    let label = T::LABEL;
+    let length = reader
+        .read_u32()
+        .await
+        .map_err(|error| format!("read {label} length: {error}"))? as usize;
+    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
+        return Err(format!("{label} has an invalid size"));
+    }
+    let mut encoded = vec![0_u8; length];
+    reader
+        .read_exact(&mut encoded)
+        .await
+        .map_err(|error| format!("read {label}: {error}"))?;
+    let message: T = decode_bounded_json(&encoded, label)?;
+    message.validate()?;
+    Ok(message)
+}
+
+pub async fn write_control<W>(writer: &mut W, message: &ControlMessage) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_frame(writer, message).await
 }
 
 pub async fn read_control<R>(reader: &mut R) -> Result<ControlMessage, String>
@@ -1141,22 +1196,7 @@ pub async fn read_control_limited<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let length = reader
-        .read_u32()
-        .await
-        .map_err(|error| format!("read handoff message length: {error}"))?
-        as usize;
-    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
-        return Err("handoff control message has an invalid size".to_string());
-    }
-    let mut encoded = vec![0_u8; length];
-    reader
-        .read_exact(&mut encoded)
-        .await
-        .map_err(|error| format!("read handoff message: {error}"))?;
-    let message: ControlMessage = decode_bounded_json(&encoded, "handoff control message")?;
-    message.validate()?;
-    Ok(message)
+    read_frame(reader, max_bytes).await
 }
 
 fn decode_bounded_json<T: DeserializeOwned>(encoded: &[u8], label: &str) -> Result<T, String> {

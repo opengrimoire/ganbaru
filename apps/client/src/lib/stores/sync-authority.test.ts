@@ -64,7 +64,7 @@ describe("sync authority state", () => {
     const state = await load();
     await state.refresh();
     expect(state.authority?.ownIsAdmin).toBe(false);
-    expect(calls("sync_recovery_kit_pending")).toBe(0);
+    expect(calls("sync_recovery_kit_state")).toBe(0);
     expect(state.pendingKit).toBeNull();
 
     answer({
@@ -72,11 +72,11 @@ describe("sync authority state", () => {
       sync_outbox_list: [],
       sync_late_changes: NO_LATE_CHANGES,
       sync_contests: NO_CONTESTS,
-      sync_recovery_kit_pending: { code: "ABCD-EFGH", active: true },
+      sync_recovery_kit_state: { stored: true, pending: { code: "ABCD-EFGH", qr: { width: 1, modules: [true] }, active: true } },
     });
     await state.refresh();
-    expect(calls("sync_recovery_kit_pending")).toBe(1);
-    expect(state.pendingKit).toEqual({ code: "ABCD-EFGH", active: true });
+    expect(calls("sync_recovery_kit_state")).toBe(1);
+    expect(state.pendingKit).toEqual({ code: "ABCD-EFGH", qr: { width: 1, modules: [true] }, active: true });
   });
 
   it("keeps the last state and reports a failure when a response is invalid", async () => {

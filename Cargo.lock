@@ -2178,6 +2178,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-sync-relay"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-atomic-files",
+ "ganbaru-handoff",
+ "ganbaru-sync-contracts",
+ "rcgen",
+ "rustls",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "ganbaru-sync-replica"
 version = "0.1.0"
 dependencies = [

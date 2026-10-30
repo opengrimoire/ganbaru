@@ -17,6 +17,8 @@ mod host;
 pub(crate) mod key_protection;
 mod peers;
 mod recovery;
+#[cfg(desktop)]
+mod recovery_kit;
 mod service;
 mod status;
 mod transport;

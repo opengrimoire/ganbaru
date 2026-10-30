@@ -31,12 +31,8 @@ pub(crate) enum AuthorityAction {
     TakeAnchor,
     /// Propose making a linked desktop an admin with the admin key it sent at pairing.
     Promote(String),
-    /// Replace the recovery kit and propose its recovery admin key.
+    /// Replace the recovery kit and propose its recovery encryption key and recovery admin key.
     RegenerateRecoveryKit,
-    /// Read the recovery kit whose seed waits for the user to save it.
-    PendingRecoveryKit,
-    /// Forget the recovery seed after the user saved its kit.
-    RecoveryKitSaved,
     /// Propose, signed with the recovery admin key the kit code derives, making this enrolled
     /// desktop an admin with its own admin key.
     UseRecoveryKit(String),
@@ -116,8 +112,6 @@ impl std::fmt::Debug for AuthorityAction {
             Self::TakeAnchor => formatter.write_str("TakeAnchor"),
             Self::Promote(device_id) => formatter.debug_tuple("Promote").field(device_id).finish(),
             Self::RegenerateRecoveryKit => formatter.write_str("RegenerateRecoveryKit"),
-            Self::PendingRecoveryKit => formatter.write_str("PendingRecoveryKit"),
-            Self::RecoveryKitSaved => formatter.write_str("RecoveryKitSaved"),
             Self::UseRecoveryKit(_) => formatter.write_str("UseRecoveryKit(<redacted>)"),
             Self::ProposeRemoval(device_id) => formatter
                 .debug_tuple("ProposeRemoval")
@@ -149,22 +143,8 @@ pub(crate) enum AuthorityAnswer {
     ForcedAnchor { revision: u64, old_anchor: String },
     /// The authorization revision of the yield or objection this desktop sealed.
     Contested(u64),
-    /// The code of the regenerated recovery kit, shown once.
-    RecoveryKit(String),
-    /// The recovery kit waiting to be saved, if any.
-    PendingRecoveryKit(Option<PendingRecoveryKit>),
-}
-
-/// A recovery kit whose seed the key store holds until the user saves it. Its debug form never
-/// shows the code.
-#[derive(Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PendingRecoveryKit {
-    /// The grouped kit code with its checksum.
-    pub(crate) code: String,
-    /// Whether the selected log names the kit's recovery admin key; a regenerated kit is
-    /// inactive until the anchor sequences it.
-    pub(crate) active: bool,
+    /// The regenerated recovery kit, which waits in the key store until the user saves it.
+    RecoveryKit,
 }
 
 impl std::fmt::Debug for AuthorityAnswer {
@@ -183,22 +163,8 @@ impl std::fmt::Debug for AuthorityAnswer {
             Self::Contested(revision) => {
                 formatter.debug_tuple("Contested").field(revision).finish()
             }
-            Self::RecoveryKit(_) => formatter.write_str("RecoveryKit(<redacted>)"),
-            Self::PendingRecoveryKit(kit) => formatter
-                .debug_tuple("PendingRecoveryKit")
-                .field(kit)
-                .finish(),
+            Self::RecoveryKit => formatter.write_str("RecoveryKit"),
         }
-    }
-}
-
-impl std::fmt::Debug for PendingRecoveryKit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PendingRecoveryKit")
-            .field("code", &"<redacted>")
-            .field("active", &self.active)
-            .finish()
     }
 }
 
@@ -406,17 +372,6 @@ impl<H: SyncHost> Session<'_, H> {
     ) -> Result<AuthorityAnswer, String> {
         let admin = self.admin_context(manager).await?;
         match action {
-            AuthorityAction::PendingRecoveryKit => {
-                return self.pending_recovery_kit(&admin).await;
-            }
-            AuthorityAction::RecoveryKitSaved => {
-                let keys = self.keys.clone();
-                let vault_id = self.files.vault_id.clone();
-                let view = admin.view.clone();
-                blocking(move || authority::forget_recovery_seed(keys.as_ref(), &vault_id, &view))
-                    .await?;
-                return Ok(AuthorityAnswer::Proposed);
-            }
             AuthorityAction::UseRecoveryKit(code) => {
                 return self.use_recovery_kit(&admin, code).await;
             }
@@ -433,9 +388,7 @@ impl<H: SyncHost> Session<'_, H> {
             AuthorityAction::TakeAnchor => {
                 Err("taking the anchor runs after an exchange with the coordinator".to_string())
             }
-            AuthorityAction::PendingRecoveryKit
-            | AuthorityAction::RecoveryKitSaved
-            | AuthorityAction::UseRecoveryKit(_) => {
+            AuthorityAction::UseRecoveryKit(_) => {
                 Err("the recovery kit action ran on the admin path".to_string())
             }
             AuthorityAction::ResolveLate(_) => {
@@ -504,7 +457,12 @@ impl<H: SyncHost> Session<'_, H> {
                     )
                 })
                 .await?;
-                Ok(AuthorityAnswer::RecoveryKit(seed.kit_code()))
+                let public = authority::recovery_public_keys(&seed)?;
+                let mut conn = acquire(&self.pool).await?;
+                ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &public, now)
+                    .await
+                    .map_err(|error| format!("store the recovery kit keys: {error}"))?;
+                Ok(AuthorityAnswer::RecoveryKit)
             }
             AuthorityAction::ProposeRemoval(device_id) => {
                 let live = admin.view.devices.iter().any(|device| {
@@ -520,25 +478,6 @@ impl<H: SyncHost> Session<'_, H> {
                 Ok(AuthorityAnswer::Proposed)
             }
         }
-    }
-
-    /// The recovery kit whose seed the key store still holds, and whether the selected log
-    /// names its recovery admin key.
-    async fn pending_recovery_kit(&self, admin: &AdminContext) -> Result<AuthorityAnswer, String> {
-        let keys = self.keys.clone();
-        let vault_id = self.files.vault_id.clone();
-        let Some(seed) =
-            blocking(move || authority::pending_recovery_seed(keys.as_ref(), &vault_id)).await?
-        else {
-            return Ok(AuthorityAnswer::PendingRecoveryKit(None));
-        };
-        let active = authority::recovery_kit_active(&admin.view, &seed)?;
-        Ok(AuthorityAnswer::PendingRecoveryKit(Some(
-            PendingRecoveryKit {
-                code: seed.kit_code(),
-                active,
-            },
-        )))
     }
 
     /// Uses the recovery kit on this enrolled desktop: proposes, signed with the recovery admin
@@ -664,6 +603,7 @@ impl<H: SyncHost> Session<'_, H> {
             return Err("this desktop is not enrolled in the vault's sync space".to_string());
         }
         let recovery;
+        let kit_keys = kit.map(authority::kit_encryption).transpose()?;
         let (signer, promote) = match kit {
             Some(code) => {
                 recovery = authority::kit_admin(code)?;
@@ -685,6 +625,7 @@ impl<H: SyncHost> Session<'_, H> {
             promote,
             point: request.point,
             removals: request.removals.clone(),
+            recovery: kit_keys.as_ref(),
         };
         let mut conn = acquire(&self.pool).await?;
         let revision = authority::force_handover_here(

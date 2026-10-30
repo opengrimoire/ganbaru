@@ -12,7 +12,7 @@
 use super::handover::{LAPTOP_DEVICE, enroll_mobile, laptop_ids, sequence_here};
 use super::{
     DirectTransport, HUB_DEVICE, PHONE_DEVICE, Replica, block_on, contact_source, device_key, done,
-    hub, hub_keys, open_hub, phone_ids, test_contact,
+    hub, hub_keys, hub_recovery_seed, open_hub, phone_ids, test_contact,
 };
 use crate::authority::{self, Enrollment, ForcedHandover};
 use crate::client::{ClientSession, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport};
@@ -230,7 +230,7 @@ async fn forced_away_removing(label: &str, others: &[&str]) -> (Replica, Replica
         .await
         .expect("read authorization")
         .expect("charter");
-    let recovery = authority::recovery_admin(&view, &hub_keys().recovery.kit_code()).expect("kit");
+    let recovery = authority::recovery_admin(&view, &hub_recovery_seed().kit_code()).expect("kit");
     let laptop_admin = AdminKeyPair::from_seed(&[32; 32]).expect("admin seed");
     let forced = ForcedHandover {
         signer: &recovery,
@@ -240,6 +240,7 @@ async fn forced_away_removing(label: &str, others: &[&str]) -> (Replica, Replica
             .chain(others.iter().copied())
             .map(str::to_string)
             .collect(),
+        recovery: None,
     };
     authority::force_handover_here(
         &laptop.engine,

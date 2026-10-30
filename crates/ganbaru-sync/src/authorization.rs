@@ -398,6 +398,18 @@ impl AuthState {
             })
     }
 
+    /// Whether `entry` may be sequenced while a rotation is pending: the key epoch that completes
+    /// it, and the anchor's own device key. An anchor that a handover or the kit made before it
+    /// published an encryption key can seal no key epoch, so it publishes first, sealing the
+    /// current key to itself from an envelope it opens, such as the recovery envelope.
+    fn admits_while_pending(&self, entry: &Entry) -> bool {
+        match entry {
+            Entry::KeyEpoch(_) => true,
+            Entry::DeviceKey(device_key) => device_key.device_id == self.anchor_device_id,
+            _ => false,
+        }
+    }
+
     /// Admin key of the live anchor device.
     fn anchor_admin_key(&self) -> Option<AdminPublicKey> {
         self.devices
@@ -491,7 +503,7 @@ impl AuthState {
         {
             return Err(ProposalRejection::EpochFrozen);
         }
-        if self.pending.is_some() && !matches!(proposal.entry, Entry::KeyEpoch(_)) {
+        if self.pending.is_some() && !self.admits_while_pending(&proposal.entry) {
             return Err(ProposalRejection::RotationPending);
         }
         match &proposal.entry {
@@ -2001,6 +2013,10 @@ pub struct HandoverPoint {
     pub anchor_device_id: String,
     /// Whether `signer` is the kit key there.
     pub by_kit: bool,
+    /// The authorization state after the entry, derived from verified stored records only, so a
+    /// handover can check what it continues from, such as its key epoch and the encryption keys
+    /// published there, rather than the selected head.
+    pub view: AuthorizationView,
 }
 
 impl HandoverPoint {
@@ -2011,6 +2027,7 @@ impl HandoverPoint {
             entry_hash: state.entry_hash,
             anchor_device_id: state.anchor_device_id.clone(),
             by_kit,
+            view: state.view(),
         }
     }
 }
@@ -2823,7 +2840,8 @@ impl Engine {
             if matches!(proposal.proposal.entry, Entry::KeyEpoch(_)) {
                 return Ok(Err(ProposalRejection::AnchorOnly));
             }
-            if state.pending.is_some() {
+            // The anchor's own device key goes first, and the key epoch follows it.
+            if state.pending.is_some() && !state.admits_while_pending(&proposal.proposal.entry) {
                 let opened = match open_current(&state, &key_epochs, holder) {
                     Ok(key) => key,
                     Err(rejection) => return Ok(Err(rejection)),

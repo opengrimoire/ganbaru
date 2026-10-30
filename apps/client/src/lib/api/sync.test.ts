@@ -67,6 +67,7 @@ function validStatus(): Record<string, unknown> {
     recovery: [{ table: "quick_notes", count: 1 }],
     clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
     uncountedDevices: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" }],
+    deviceAcknowledgements: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, lastAcknowledgedAtMs: 600 }],
     connection: { network: "lan", address: "192.168.1.20:43821" },
     degraded: ["localNetworkDenied"],
     unconfirmed: 3,
@@ -109,6 +110,7 @@ describe("sync API boundary", () => {
       recovery: [{ table: "quick_notes", count: 1 }],
       clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
       uncountedDevices: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" }],
+      deviceAcknowledgements: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, lastAcknowledgedAtMs: 600 }],
       connection: { network: "lan", address: "192.168.1.20:43821" },
       degraded: ["localNetworkDenied"],
       unconfirmed: 3,
@@ -200,6 +202,17 @@ describe("sync API boundary", () => {
     expect(mapSyncStatus(withUndelivered(null)).relay?.undelivered).toBeNull();
     expect(() => mapSyncStatus(withUndelivered(-1))).toThrow();
     expect(() => mapSyncStatus(withUndelivered(undefined))).toThrow();
+  });
+
+  it("maps a device that acknowledged nothing and rejects malformed acknowledgements", () => {
+    const device = { deviceId: "device-c", deviceLabel: null, ownDevice: false };
+    const withAcknowledgements = (deviceAcknowledgements: unknown) => ({ ...validStatus(), deviceAcknowledgements });
+    expect(mapSyncStatus(withAcknowledgements([{ device, lastAcknowledgedAtMs: null }])).deviceAcknowledgements)
+      .toEqual([{ device, lastAcknowledgedAtMs: null }]);
+    expect(() => mapSyncStatus(withAcknowledgements([{ device, lastAcknowledgedAtMs: -1 }]))).toThrow();
+    expect(() => mapSyncStatus(withAcknowledgements([{ device }]))).toThrow();
+    expect(() => mapSyncStatus(withAcknowledgements([{ lastAcknowledgedAtMs: 1 }]))).toThrow();
+    expect(() => mapSyncStatus(withAcknowledgements(undefined))).toThrow();
   });
 
   it("maps every device standing and rejects malformed uncounted devices", () => {

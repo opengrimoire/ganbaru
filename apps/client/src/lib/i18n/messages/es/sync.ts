@@ -54,6 +54,10 @@ export const sync = {
       `La sincronización ya no espera a ${device}, que lleva mucho tiempo sin sincronizarse. Cuando vuelva, contará de nuevo y, como mucho, necesitará una copia nueva. No lo vincules de nuevo: eso convierte sus ediciones no enviadas en cambios tardíos.`,
     relinkRequired: (device: string) => `Vuelve a vincular ${device} para que pueda sincronizarse.`,
   },
+  acknowledgement: {
+    last: (device: string, time: string) => `Última confirmación de ${device}: ${time}`,
+    none: (device: string) => `Aún sin confirmación de ${device}`,
+  },
   connection: {
     lan: (address: string) => `Conectado por la red local en ${address}`,
     overlay: (address: string) => `Conectado por la red superpuesta en ${address}`,

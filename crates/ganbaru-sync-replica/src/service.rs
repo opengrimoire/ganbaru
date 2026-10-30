@@ -66,7 +66,6 @@ use crate::writer::{
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::pairing::{PairingManager, PinnedCharter};
 use ganbaru_handoff::protocol::SyncRefusalCode;
-use ganbaru_sync::stability::DeviceStanding;
 use ganbaru_sync::{
     ChangeNotice, Engine, SealReport, SpaceContext, SyncError, compaction_limit, hold, local,
 };
@@ -1868,16 +1867,8 @@ impl ServiceState {
             .stability(&mut conn, &session.ctx, &devices, now)
             .await
             .map_err(|error| format!("compute sync stability: {error}"))?;
-        if stability
-            .devices
-            .iter()
-            .all(|device| device.standing == DeviceStanding::Counted)
-        {
-            view.uncounted_devices.clear();
-        } else {
-            let names = devices::read_with(host.device_id()?, manager);
-            view.set_device_standings(&stability.devices, &names);
-        }
+        let names = devices::read_with(local_device_id, manager);
+        view.set_device_standings(&stability.devices, &names);
         Ok(stability.stable)
     }
 

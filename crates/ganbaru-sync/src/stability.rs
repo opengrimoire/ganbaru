@@ -55,6 +55,9 @@ pub struct DeviceAcknowledgement {
     pub device_id: String,
     /// Operations the device acknowledged holding.
     pub acknowledged: VersionVector,
+    /// When the operation behind `acknowledged` was stored here, or `None` when the device
+    /// acknowledges nothing.
+    pub acknowledged_at_ms: Option<u64>,
     /// When the newest operation of any of the device's writers was stored here.
     pub last_stored_ms: Option<u64>,
     /// Whether the device is counted.
@@ -181,13 +184,15 @@ async fn device_acknowledgement(
             }
         }
     };
-    let acknowledged = match newest_active_writer(conn, ctx, &device.device_id).await? {
-        Some(writer) => writer_acknowledgement(conn, ctx, writer).await?,
-        None => VersionVector::new(),
-    };
+    let (acknowledged, acknowledged_at_ms) =
+        match newest_active_writer(conn, ctx, &device.device_id).await? {
+            Some(writer) => writer_acknowledgement(conn, ctx, writer).await?,
+            None => (VersionVector::new(), None),
+        };
     Ok(DeviceAcknowledgement {
         device_id: device.device_id.clone(),
         acknowledged,
+        acknowledged_at_ms,
         last_stored_ms,
         standing,
     })
@@ -211,14 +216,14 @@ async fn newest_active_writer(
 }
 
 /// Context of the newest stored operation of `writer` with a known context, including the
-/// operation itself.
+/// operation itself, and when that operation was stored here.
 async fn writer_acknowledgement(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: WriterId,
-) -> SyncResult<VersionVector> {
+) -> SyncResult<(VersionVector, Option<u64>)> {
     let row = sqlx::query(
-        "SELECT seq, context FROM sync_ops
+        "SELECT seq, context, stored_at_ms FROM sync_ops
          WHERE space_id = ? AND writer_id = ? AND length(context) > 0
          ORDER BY seq DESC LIMIT 1",
     )
@@ -227,12 +232,13 @@ async fn writer_acknowledgement(
     .fetch_optional(&mut *conn)
     .await?;
     let Some(row) = row else {
-        return Ok(VersionVector::new());
+        return Ok((VersionVector::new(), None));
     };
     let seq: Seq = stored_u64(row.try_get(0)?, "sequence")?;
     let bytes: Vec<u8> = row.try_get(1)?;
+    let stored_at_ms = stored_u64(row.try_get(2)?, "operation storage time")?;
     let mut context =
         decode_context(&bytes)?.ok_or_else(|| corrupt("known context decodes as unknown"))?;
     context.set(writer, seq);
-    Ok(context)
+    Ok((context, Some(stored_at_ms)))
 }

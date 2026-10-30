@@ -10,6 +10,7 @@ import {
   formatSyncTime,
   syncConflictLines,
   syncDescription,
+  syncDeviceAcknowledgementLines,
   syncDeviceName,
   syncHeldLines,
   syncLastExchangeLabel,
@@ -126,6 +127,20 @@ describe("sync status presentation", () => {
     expect(lines.map((entry) => entry.deviceId)).toEqual(["a", "b"]);
     expect(lines[0].line).toContain("Sync no longer waits for Old phone");
     expect(lines[1].line).toBe("Link another device again so it can sync.");
+  });
+
+  it("reports each device's last acknowledgement and the ones with none yet", () => {
+    expect(syncDeviceAcknowledgementLines(t, "en", status({}), NOW)).toEqual([]);
+    const lines = syncDeviceAcknowledgementLines(t, "en", status({
+      deviceAcknowledgements: [
+        { device: { deviceId: "a", deviceLabel: "Laptop", ownDevice: false }, lastAcknowledgedAtMs: NOW - 5 * 60_000 },
+        { device: { deviceId: "b", deviceLabel: null, ownDevice: false }, lastAcknowledgedAtMs: null },
+      ],
+    }), NOW);
+    expect(lines).toEqual([
+      { deviceId: "a", line: "Last confirmation from Laptop: 5 min ago" },
+      { deviceId: "b", line: "No confirmation from another device yet" },
+    ]);
   });
 
   it("names own, labeled, and unknown devices", () => {

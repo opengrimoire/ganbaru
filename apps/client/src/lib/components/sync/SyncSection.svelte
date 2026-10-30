@@ -17,6 +17,7 @@
     syncHeldLines,
     syncLastExchangeLabel,
     syncDeliveryLines,
+    syncDeviceAcknowledgementLines,
     syncRecoveryTotal,
     syncRelayLines,
     syncRoleLabel,
@@ -80,6 +81,7 @@
   const held = $derived(syncHeldLines(t, status));
   const clockAhead = $derived(syncClockAheadLines(t, status));
   const uncountedDevices = $derived(syncUncountedDeviceLines(t, status));
+  const acknowledgementLines = $derived(syncDeviceAcknowledgementLines(t, localization.locale, status, now));
   const conflictLines = $derived(syncConflictLines(t, syncPresentations, status));
   const recoveryTotal = $derived(syncRecoveryTotal(status));
   const description = $derived(syncDescription(t, localization.locale, syncPresentations));
@@ -253,6 +255,9 @@
       {/each}
       {#each relayLines as line (line)}
         <div class="min-w-0 break-words text-muted-foreground">{line}</div>
+      {/each}
+      {#each acknowledgementLines as entry (entry.deviceId)}
+        <div class="min-w-0 break-words text-muted-foreground">{entry.line}</div>
       {/each}
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />

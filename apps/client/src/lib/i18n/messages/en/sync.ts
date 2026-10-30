@@ -48,6 +48,10 @@ export const sync = {
       `Sync no longer waits for ${device}, which has not synced for a long time. When it returns it counts again and needs a fresh copy at most. Do not link it again: that turns its unsent edits into late changes.`,
     relinkRequired: (device: string) => `Link ${device} again so it can sync.`,
   },
+  acknowledgement: {
+    last: (device: string, time: string) => `Last confirmation from ${device}: ${time}`,
+    none: (device: string) => `No confirmation from ${device} yet`,
+  },
   connection: {
     lan: (address: string) => `Connected over local network at ${address}`,
     overlay: (address: string) => `Connected over overlay network at ${address}`,

@@ -33,6 +33,13 @@ export interface SyncUncountedDevice {
   standing: SyncDeviceStanding;
 }
 
+/** When the coordinator last stored an acknowledgement from a linked device. */
+export interface SyncDeviceAcknowledgement {
+  device: SyncDeviceRef;
+  /** Unix milliseconds; null while the device has acknowledged nothing. */
+  lastAcknowledgedAtMs: number | null;
+}
+
 /** The kind of network a linked device reached its coordinator over. */
 export const SYNC_CONNECTION_NETWORKS = ["lan", "overlay"] as const;
 export type SyncConnectionNetwork = (typeof SYNC_CONNECTION_NETWORKS)[number];
@@ -140,6 +147,8 @@ export interface SyncStatusView {
   clockAheadDevices: SyncDeviceRef[];
   /** On the coordinator, linked devices it does not count toward stability, in device id order. */
   uncountedDevices: SyncUncountedDevice[];
+  /** On the coordinator, the last acknowledgement of every other linked device, in device id order. */
+  deviceAcknowledgements: SyncDeviceAcknowledgement[];
   /** Kept after a failed dial, so it describes the current link only while idle or syncing. */
   connection: SyncConnectionView | null;
   /** Why connectivity is degraded, without repeats. */
@@ -211,6 +220,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   recovery: [],
   clockAheadDevices: [],
   uncountedDevices: [],
+  deviceAcknowledgements: [],
   connection: null,
   degraded: [],
   unconfirmed: 0,
@@ -542,6 +552,14 @@ function readUncountedDevice(value: unknown, label: string): SyncUncountedDevice
   };
 }
 
+function readDeviceAcknowledgement(value: unknown, label: string): SyncDeviceAcknowledgement {
+  const row = readRecord(value, label);
+  return {
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    lastAcknowledgedAtMs: readNullable(row.lastAcknowledgedAtMs, `${label}.lastAcknowledgedAtMs`, readNonNegativeSafeInteger),
+  };
+}
+
 /** Validates a sync status from the native side. */
 export function mapSyncStatus(value: unknown): SyncStatusView {
   const row = readRecord(value, "sync status");
@@ -561,6 +579,7 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     recovery: readArray(row.recovery, "sync status.recovery", readTableCount),
     clockAheadDevices: readArray(row.clockAheadDevices, "sync status.clockAheadDevices", mapSyncDeviceRef),
     uncountedDevices: readArray(row.uncountedDevices, "sync status.uncountedDevices", readUncountedDevice),
+    deviceAcknowledgements: readArray(row.deviceAcknowledgements, "sync status.deviceAcknowledgements", readDeviceAcknowledgement),
     connection: readNullable(row.connection, "sync status.connection", readConnection),
     degraded: readDegradedReasons(row.degraded, "sync status.degraded"),
     unconfirmed: readNonNegativeSafeInteger(row.unconfirmed, "sync status.unconfirmed"),

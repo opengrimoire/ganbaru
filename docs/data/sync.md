@@ -267,7 +267,7 @@ Vault replacement fences writers within one process; `vault.lock` keeps every ot
 
 ### Settings and Android delivery
 
-Settings shows linked devices with their roles and the anchor, connection method, last successful sync, pending and unconfirmed changes, conflicts, recovery entries, late changes, and the recovery kit, with pause, retry, quarantine, removal, and reset, relay delivery counts while the space uses a relay, and the server with relay setup and removal. Unavailable assets and the same controls during onboarding are planned.
+Settings shows linked devices with their roles and the anchor, on the coordinator each device's last acknowledgement, connection method, last successful sync, pending and unconfirmed changes, conflicts, recovery entries, late changes, and the recovery kit, with pause, retry, quarantine, removal, and reset, relay delivery counts while the space uses a relay, and the server with relay setup and removal. Unavailable assets and the same controls during onboarding are planned.
 
 The sync status already carries the network class (local or overlay) and address of the coordinator a linked device last reached in this app run, and the degraded reasons the device can detect: Android background and standby restrictions, a connection refused because local network access is denied, and a Linux firewall that blocks the coordinator listener or a member listener until the person allows peers to connect, or, on a linked desktop whose browse found nothing, may block discovery. Settings shows each reason with its recovery action where the app has one.
 

@@ -128,6 +128,25 @@ export function syncUncountedDeviceLines(t: Translate, status: SyncStatusView): 
   });
 }
 
+/**
+ * Describes when each linked device last acknowledged, keyed by device id, with the time the
+ * coordinator stored that acknowledgement. Empty away from the coordinator.
+ */
+export function syncDeviceAcknowledgementLines(
+  t: Translate,
+  locale: AppLocale,
+  status: SyncStatusView,
+  nowMs: number,
+): { deviceId: string; line: string }[] {
+  return status.deviceAcknowledgements.map(({ device, lastAcknowledgedAtMs }) => {
+    const name = syncDeviceName(device, t("sync.recovery.thisDevice"), t("sync.recovery.otherDevice"));
+    const line = lastAcknowledgedAtMs === null
+      ? t("sync.acknowledgement.none", name)
+      : t("sync.acknowledgement.last", name, formatSyncTime(t, locale, lastAcknowledgedAtMs, nowMs));
+    return { deviceId: device.deviceId, line };
+  });
+}
+
 /** Labels the service state. */
 export function syncStateLabel(t: Translate, state: SyncState): string {
   switch (state) {

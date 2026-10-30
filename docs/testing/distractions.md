@@ -9,7 +9,7 @@ The core requirement on both platforms is that native code owns usage accounting
 Use a disposable selected application and a separate protected application. Record the operating system, display server or compositor, rule, and result.
 
 - Suspend the WebView while a selected application stays open. Daily and weekly usage keep counting, an exhausted limit still closes the application, and the UI catches up on return.
-- Disable a rule, switch vaults, or complete or abort a handoff while an interval is pending. Old observations never close an application or republish an obsolete exhaustion.
+- Disable a rule, switch vaults, or complete or abort a snapshot bootstrap while an interval is pending. Old observations never close an application or republish an obsolete exhaustion.
 - Suspend the system past the supported evidence gap. The gap is not counted as usage.
 - Verify foreground counting on X11, Windows, and supported compositors. Where Wayland does not expose foreground identity, selected-process counting and its settings label are used; unsupported observation stays unavailable without invented usage.
 - Replace a selected process during a close attempt. The captured process identity does not authorize closing its replacement, and protected aliases are never closed.
@@ -24,7 +24,7 @@ Also run the distraction blocker cases in [Android acceptance](android.md#distra
 
 - Suspend the WebView with the process and Guardian available. Shared usage refreshes and exhausted limits enforce.
 - Usage recorded between native capture and rule application is counted exactly once.
-- Disable or replace a rule, switch vaults, or complete or abort a handoff during publication. An old capture never reinstalls the earlier rule snapshot.
+- Disable or replace a rule, switch vaults, or complete or abort a snapshot bootstrap during publication. An old capture never reinstalls the earlier rule snapshot.
 - Delay Guardian IPC during configuration changes, vault selection, and exit. Busy changes return a retry error, and shutdown does not wait on the publisher.
 - Remove the application process while Guardian remains. Local counting and retained enforcement continue.
 - Interrupt linked read-only acknowledgement after the accepted cache commits. Totals stay consistent across retries and restart.

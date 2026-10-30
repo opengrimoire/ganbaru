@@ -97,7 +97,7 @@ async fn freeze_and_fence<R: Runtime>(
     .map_err(|error| format!("vault writer drain worker failed: {error}"))?
 }
 
-/// Holds the central write boundaries while creating an vault snapshot.
+/// Holds the central write boundaries while creating a vault snapshot.
 pub(crate) struct SnapshotQuiescence {
     _database_guard: db::VaultExclusiveGuard,
     _managed_write_fence: super::write_fence::ManagedVaultWriteFence,

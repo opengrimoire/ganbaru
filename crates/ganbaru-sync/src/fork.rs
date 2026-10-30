@@ -13,8 +13,10 @@
 //! of applied operations past the prefix are removed, the versions they superseded come back
 //! from `sync_displaced_versions`, and the operations are dropped, which leaves the replica as if
 //! it never stored them. Unlike a removal, a fork leaves no late changes. Each installation of
-//! the writer's device keeps its own branch until it re-seals it with a new writer, see
-//! [`Engine::reseal_fork`]; an installation destroyed before that loses its branch.
+//! the writer's device keeps the branch it applied until it re-seals it with a new writer, see
+//! [`Engine::reseal_fork`]; an installation destroyed before that loses its branch. A copy past
+//! the prefix that an installation of the writer's device stored without applying is excluded
+//! as on any other replica.
 //!
 //! The anchor and members whose anchor marks passed a branch retain nothing it displaced, so
 //! excluding it can leave a group without a version on them, still showing the branch value,
@@ -315,10 +317,11 @@ async fn store_evidence(
 }
 
 /// Settles fork evidence stored since the last engine write, inside one: both branches of every
-/// forked writer of another device are excluded, which removes the merge effects of its applied
-/// operations past the shared prefix, restores the versions they superseded, and drops the
-/// operations, as if this replica had never stored them. The chain is then selected again, since
-/// the dropped operations may carry entries and a fork of an anchor's writer freezes its epoch.
+/// forked writer are excluded, except a branch its own device applied, which stays for re-seal.
+/// Exclusion removes the merge effects of the applied operations past the shared prefix, restores
+/// the versions they superseded, and drops the operations, as if this replica had never stored
+/// them. The chain is then selected again, since the dropped operations may carry entries and a
+/// fork of an anchor's writer freezes its epoch.
 pub(crate) async fn reconcile(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -341,7 +344,8 @@ pub(crate) async fn reconcile(
     Ok(())
 }
 
-/// Excludes both branches of every forked writer of another device that still holds them.
+/// Excludes both branches of every forked writer that still holds them, except a branch an
+/// installation of the writer's own device applied.
 async fn exclude_branches(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -351,13 +355,17 @@ async fn exclude_branches(
     let local = exclusion::local_device(conn, ctx.space).await?;
     let mut cut = Vec::new();
     for (writer, fork) in forked(conn, ctx.space).await? {
-        if local.as_deref() == Some(fork.device_id.as_str()) {
-            continue;
-        }
         let Some(row) = log::writer(conn, ctx.space, writer).await? else {
             continue;
         };
         let keep = fork.keep_through();
+        // An installation of the writer's own device keeps the branch it applied for
+        // [`Engine::reseal_fork`]. A copy it stored past the prefix without applying, such as one
+        // a restored installation pulled from a peer, is no branch of its own and nothing would
+        // ever re-seal or apply it, so it is excluded as on every other replica.
+        if local.as_deref() == Some(fork.device_id.as_str()) && row.applied > keep {
+            continue;
+        }
         if row.stored > keep.max(1) || row.applied > keep {
             cut.push((writer, keep, row.applied));
         }

@@ -794,6 +794,107 @@ fn both_copies_reseal_from_received_evidence_and_a_successor_can_fork_again() {
 }
 
 #[test]
+fn a_copy_of_a_branch_its_own_device_stored_without_applying_is_excluded() {
+    block_on(async {
+        let (mut original, mut clone) = installation(310).await;
+        // A backup restored at the shared prefix, on the same device, writing with a new writer.
+        let mut restored = original.clone_device().await;
+        restored.rotate();
+        let mut hub = Replica::new(2, 310).await;
+        let forked = original.writer();
+        diverge(&mut original, &mut clone).await;
+        deliver(&mut hub, &mut original).await;
+        cross(&mut hub, &mut clone).await;
+        assert_eq!(hub.evidence().await.len(), 1);
+
+        // The restored copy stores the original's branch without applying it, then learns of
+        // the fork. The branch is no copy it applied, so nothing would ever re-seal it, and it is
+        // dropped as on every other replica.
+        let branch = original.ops_since(&restored.stored_vector().await).await;
+        restored.receive(&branch).await;
+        assert_eq!(restored.stored_vector().await.get(&forked), 3);
+        deliver(&mut restored, &mut hub).await;
+        assert_eq!(restored.stored_vector().await.get(&forked), 2);
+        assert!(
+            restored
+                .engine
+                .own_forks(&mut restored.conn, &restored.ctx)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            title(&mut restored, "note-1").await.as_deref(),
+            Some("Draft")
+        );
+        restored.check_invariants().await;
+
+        let mut replicas = vec![hub, restored, original, clone];
+        converge(&mut replicas).await;
+        let settled = replicas[0].domain_dump().await;
+        for replica in &mut replicas {
+            assert_eq!(replica.domain_dump().await, settled);
+            assert_eq!(replica.stored_vector().await.get(&forked), 2);
+        }
+    });
+}
+
+#[test]
+fn a_partly_applied_copy_of_an_own_branch_is_sealed_again_up_to_what_it_applied() {
+    block_on(async {
+        let (mut original, mut clone) = installation(311).await;
+        // A backup restored at the shared prefix, on the same device, writing with a new writer.
+        let mut restored = original.clone_device().await;
+        restored.rotate();
+        let mut hub = Replica::new(2, 311).await;
+        let forked = original.writer();
+        diverge(&mut original, &mut clone).await;
+        edit(
+            &mut original,
+            "UPDATE quick_notes SET title = 'Later' WHERE id = 'note-2'",
+        )
+        .await;
+        deliver(&mut hub, &mut original).await;
+        cross(&mut hub, &mut clone).await;
+        assert_eq!(hub.evidence().await.len(), 1);
+
+        // The restored copy applies the first operation of the branch and only stores the
+        // second before it learns of the fork.
+        let branch = original.ops_since(&restored.stored_vector().await).await;
+        assert_eq!(branch.len(), 2);
+        take(&mut restored, &branch[..1]).await;
+        restored.receive(&branch[1..]).await;
+        assert_eq!(restored.stored_vector().await.get(&forked), 4);
+
+        // The evidence settles the copy, and the apply pass re-seals the applied operation under
+        // a new writer and drops the stored one, which would never apply past the cutoff.
+        deliver(&mut restored, &mut hub).await;
+        assert_eq!(restored.stored_vector().await.get(&forked), 2);
+        assert!(
+            restored
+                .engine
+                .own_forks(&mut restored.conn, &restored.ctx)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            title(&mut restored, "note-1").await.as_deref(),
+            Some("Original")
+        );
+        restored.check_invariants().await;
+
+        let mut replicas = vec![hub, restored, original, clone];
+        converge(&mut replicas).await;
+        let settled = replicas[0].domain_dump().await;
+        for replica in &mut replicas {
+            assert_eq!(replica.domain_dump().await, settled);
+            assert_eq!(replica.stored_vector().await.get(&forked), 2);
+        }
+    });
+}
+
+#[test]
 fn a_forked_anchor_freezes_its_epoch_until_a_handover() {
     block_on(async {
         let mut anchor = Replica::anchor(0, 307).await;

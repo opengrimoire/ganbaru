@@ -94,6 +94,11 @@ pub enum EvidenceRefusal {
     /// An operation claims a revision below the one the operation before the fork was sealed
     /// against.
     UnprovableRevision,
+    /// The fork sits at or below what this replica compacted of the writer, so a stable branch
+    /// stands here. This is a device-local integrity guard, not an authority rule: the
+    /// authorization records of the pair are admitted first, and a replica that disagrees with
+    /// the hub takes a fresh copy.
+    InsideCompactedRange,
 }
 
 /// A forked writer as exclusion sees it.
@@ -176,7 +181,9 @@ pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> Syn
 /// sequence as its cutoff. Evidence of a fork at an earlier sequence replaces a later one, since
 /// the cutoff only falls. A revoked writer keeps its removal cutoff apart, so its cutoff becomes
 /// the fork's and the result does not depend on whether the removal or the evidence came first.
-/// The envelopes are stored ordered by hash, so every replica holds the same row.
+/// The envelopes are stored ordered by hash, so every replica holds the same row. A fork at or
+/// below the writer's compacted sequence is refused, since its bodies are gone here and that
+/// branch cannot be excluded.
 pub(crate) async fn record(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -196,6 +203,20 @@ pub(crate) async fn record(
         && stored_u64(existing, "fork sequence")? <= seq
     {
         return Ok(EvidenceOutcome::Known);
+    }
+    let compacted: Option<i64> = sqlx::query_scalar(
+        "SELECT compacted_seq FROM sync_writers WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(compacted) = compacted
+        && seq <= stored_u64(compacted, "compacted sequence")?
+    {
+        return Ok(EvidenceOutcome::Refused(
+            EvidenceRefusal::InsideCompactedRange,
+        ));
     }
     let [(first, first_hash), (second, second_hash)] = pair;
     let (first, second) = if first_hash <= second_hash {
@@ -514,7 +535,8 @@ pub(crate) async fn collect_republish(
 }
 
 /// Adds to `groups` every group that a stored operation of `writer` in
-/// `(keep, through]` writes.
+/// `(keep, through]` writes. A body compaction emptied is skipped: that operation is final and
+/// has nothing to write again. An empty body above the writer's compacted sequence is corrupt.
 async fn collect_written(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -529,7 +551,9 @@ async fn collect_written(
     }
     let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
         "SELECT envelope FROM sync_ops
-         WHERE space_id = ? AND writer_id = ? AND seq > ? AND seq <= ?",
+         WHERE space_id = ?1 AND writer_id = ?2 AND seq > ?3 AND seq <= ?4
+            AND NOT (length(envelope) = 0 AND seq <= (SELECT compacted_seq FROM sync_writers
+                WHERE space_id = ?1 AND writer_id = ?2))",
     )
     .bind(space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -762,7 +786,7 @@ pub(crate) async fn drop_branch(
     }
     sqlx::query(
         "UPDATE sync_writers SET stored_seq = ?1, applied_seq = ?2, head_hash = ?3,
-            head_clock = ?4
+            head_clock = ?4, compacted_seq = min(compacted_seq, ?1)
          WHERE space_id = ?5 AND writer_id = ?6",
     )
     .bind(seq_i64(stored)?)

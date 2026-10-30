@@ -14,13 +14,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use ganbaru_sync_contracts::{GroupId, Value};
+use ganbaru_sync_contracts::{GroupId, TableId, Value};
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
+use crate::exclusion::decode_groups;
 use crate::local::retained_group_values;
 use crate::manifest::{DomainManifest, GroupSpec, TableSpec};
+use crate::merge::group_id;
 use crate::seal::read_group_value;
 use crate::sql::ident;
 
@@ -443,8 +445,10 @@ impl Engine {
     }
 
     /// The class name and digest of every file the asset sweep keeps: each
-    /// [`Engine::referenced_assets`] reference, and each file a row of a `Local` or declared
-    /// unconverted table names through a declared [`LocalAssetColumn`].
+    /// [`Engine::referenced_assets`] reference, each file a row of a `Local` or declared
+    /// unconverted table names through a declared [`LocalAssetColumn`], and each file an
+    /// undecided late change or a displaced version references, which only exclusion can bring
+    /// back.
     ///
     /// Every read runs in one transaction, so the set describes one database state even while
     /// a pass applies or seals on another connection.
@@ -479,7 +483,40 @@ impl Engine {
                 }
             }
         }
+        for (table, group, value) in held_group_values(conn).await? {
+            let Some((domain, table)) = self.asset_table(table, group) else {
+                continue;
+            };
+            // A late value comes from a removed device and may be invalid: it names no file, and
+            // it must not stop every later sweep.
+            let Ok(assets) = self.asset_refs(domain, table, group, &value) else {
+                continue;
+            };
+            kept.extend(
+                assets
+                    .into_iter()
+                    .map(|asset| (asset.class.name, asset.sha256)),
+            );
+        }
         Ok(kept)
+    }
+
+    /// The table of `table` and its domain, when its adapter declares `group` as holding assets.
+    fn asset_table(
+        &self,
+        table: TableId,
+        group: GroupId,
+    ) -> Option<(&'static DomainManifest, &'static TableSpec)> {
+        let domain = self
+            .manifest()
+            .domains
+            .iter()
+            .find(|domain| domain.tables.iter().any(|spec| spec.id == table))?;
+        let spec = domain.tables.iter().find(|spec| spec.id == table)?;
+        self.adapter(spec)?
+            .asset_groups(table)
+            .contains(&group)
+            .then_some((domain, spec))
     }
 
     /// References of one group value, checked against the domain's classes.
@@ -507,6 +544,41 @@ impl Engine {
         }
         Ok(assets)
     }
+}
+
+/// Every group value that no live row or retained version holds but an exclusion can still
+/// bring back: those of late changes an admin has not decided, and displaced versions.
+async fn held_group_values(
+    conn: &mut SqliteConnection,
+) -> SyncResult<Vec<(TableId, GroupId, Value)>> {
+    let table_id = |id: i64| {
+        u16::try_from(id)
+            .map(TableId)
+            .map_err(|_| corrupt("a held value of a table id out of range"))
+    };
+    let mut values = Vec::new();
+    let late: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT table_id, groups FROM sync_late_changes
+         WHERE resolution IS NULL AND groups IS NOT NULL",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for (table, groups) in late {
+        let table = table_id(table)?;
+        for (group, late) in decode_groups(&groups)? {
+            values.push((table, group, late.value));
+        }
+    }
+    let displaced: Vec<(i64, i64, Vec<u8>)> =
+        sqlx::query_as("SELECT table_id, group_id, value FROM sync_displaced_versions")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (table, group, value) in displaced {
+        let value =
+            Value::decode(&value).map_err(|_| corrupt("a displaced value does not decode"))?;
+        values.push((table_id(table)?, group_id(group)?, value));
+    }
+    Ok(values)
 }
 
 /// Values of one group for every live row that may hold it. A group stored only in owned rows

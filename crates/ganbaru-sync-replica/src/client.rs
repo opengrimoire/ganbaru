@@ -302,7 +302,16 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 self.engine
                     .ops_after(&mut conn, self.ctx, &cursor, self.page_limit(moved))
                     .await
-                    .map_err(|error| format!("read sync operations: {error}"))?
+            };
+            let page = match page {
+                Ok(page) => page,
+                // The hub cut what this replica compacted, so the two only meet again through
+                // a fresh copy, which carries this replica's unsent operations forward.
+                Err(SyncError::Compacted { .. }) => {
+                    exchanged.bootstrap_required = true;
+                    return Ok(None);
+                }
+                Err(error) => return Err(format!("read sync operations: {error}")),
             };
             if page.ops.is_empty() {
                 return Ok(None);
@@ -535,11 +544,16 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 continue;
             }
             let pair = self.request_evidence(*writer, Vec::new()).await?;
-            if let Some(EvidenceOutcome::Refused(refusal)) = self.store_evidence(&pair).await? {
-                return Err(format!(
-                    "this device refused fork evidence of its writer {}: {refusal:?}",
-                    writer.to_hex()
-                ));
+            match self.store_evidence(&pair).await? {
+                // Nothing here can be re-sealed; `share_evidence` asks for a fresh copy.
+                Some(EvidenceOutcome::Refused(EvidenceRefusal::InsideCompactedRange)) => continue,
+                Some(EvidenceOutcome::Refused(refusal)) => {
+                    return Err(format!(
+                        "this device refused fork evidence of its writer {}: {refusal:?}",
+                        writer.to_hex()
+                    ));
+                }
+                None | Some(EvidenceOutcome::Stored | EvidenceOutcome::Known) => {}
             }
             return fork_at(*writer, *seq).map(fork_only);
         }
@@ -548,7 +562,8 @@ impl<T: SyncTransport> ClientSession<'_, T> {
 
     /// Offers this installation's operation of `writer` at the first differing sequence, so the
     /// hub holds fork evidence that it forwards to every member, and stores the pair the hub
-    /// answers. A hub that no longer holds its own copy answers no pair.
+    /// answers. A hub that no longer holds its own copy answers no pair. A pair inside what this
+    /// replica compacted is left aside, since its compacted branch stands.
     async fn offer_own(&self, writer: WriterId, seq: Seq) -> Result<(), String> {
         let operation = {
             let mut conn = acquire(self.pool).await?;
@@ -562,7 +577,12 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         };
         let pair = self.request_evidence(writer, vec![operation]).await?;
         match self.store_evidence(&pair).await? {
-            None | Some(EvidenceOutcome::Stored | EvidenceOutcome::Known) => Ok(()),
+            None
+            | Some(
+                EvidenceOutcome::Stored
+                | EvidenceOutcome::Known
+                | EvidenceOutcome::Refused(EvidenceRefusal::InsideCompactedRange),
+            ) => Ok(()),
             Some(EvidenceOutcome::Refused(refusal)) => Err(format!(
                 "the hub answered fork evidence of writer {} this device refused: {refusal:?}",
                 writer.to_hex()
@@ -573,7 +593,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
     /// Exchanges fork evidence with the hub: fetches the pair of every writer the hub reports
     /// forked that this replica does not know forked at that sequence, and offers the pair of
     /// every writer this replica knows forked that the hub does not. A pair whose writer, or the
-    /// operation before its fork, this replica has not stored yet waits for a later exchange.
+    /// operation before its fork, this replica has not stored yet waits for a later exchange. A
+    /// pair inside what this replica compacted means the hub cut a branch that stands here, so
+    /// this replica takes a fresh copy of the hub.
     async fn share_evidence(
         &self,
         hub_forked: &[(WriterId, Seq)],
@@ -593,16 +615,21 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 continue;
             }
             let pair = self.request_evidence(*writer, Vec::new()).await?;
-            if let Some(EvidenceOutcome::Refused(refusal)) = self.store_evidence(&pair).await?
-                && !matches!(
-                    refusal,
-                    EvidenceRefusal::UnknownWriter | EvidenceRefusal::UnknownPrefix
-                )
-            {
-                exchanged.problem = Some(format!(
-                    "this device refused fork evidence of writer {}: {refusal:?}",
-                    writer.to_hex()
-                ));
+            match self.store_evidence(&pair).await? {
+                Some(EvidenceOutcome::Refused(EvidenceRefusal::InsideCompactedRange)) => {
+                    exchanged.bootstrap_required = true;
+                }
+                Some(EvidenceOutcome::Refused(
+                    EvidenceRefusal::UnknownWriter | EvidenceRefusal::UnknownPrefix,
+                ))
+                | Some(EvidenceOutcome::Stored | EvidenceOutcome::Known)
+                | None => {}
+                Some(EvidenceOutcome::Refused(refusal)) => {
+                    exchanged.problem = Some(format!(
+                        "this device refused fork evidence of writer {}: {refusal:?}",
+                        writer.to_hex()
+                    ));
+                }
             }
         }
         let hub: BTreeMap<WriterId, Seq> = hub_forked.iter().copied().collect();

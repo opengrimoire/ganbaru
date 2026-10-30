@@ -31,6 +31,15 @@ fn main() -> ExitCode {
             Command::Setup(config) => ganbaru_sync_relay::setup(config)
                 .await
                 .map(|text| print!("{text}")),
+            Command::Spaces(data_dir) => ganbaru_sync_relay::list_spaces(&data_dir)
+                .await
+                .map(|text| print!("{text}")),
+            Command::RemoveSpace(config) => ganbaru_sync_relay::remove_space(config)
+                .await
+                .map(|text| print!("{text}")),
+            Command::RevokeSetup(config) => ganbaru_sync_relay::revoke_setup(config)
+                .await
+                .map(|text| print!("{text}")),
             Command::Help => Ok(()),
         }
     });

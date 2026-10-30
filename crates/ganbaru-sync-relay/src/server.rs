@@ -6,8 +6,9 @@
 //! cannot be replayed on another connection.
 
 use crate::limits::{
-    BudgetPermit, ConnectionBudget, IDLE_TIMEOUT, MAX_AUTHENTICATED_CONNECTIONS,
-    MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE, MAX_PENDING_CONNECTIONS,
+    BudgetPermit, ConnectionBudget, FRAME_BODY_TIMEOUT, FRAME_MEMORY_WAIT, FrameMemory,
+    FrameReservation, IDLE_TIMEOUT, MAX_AUTHENTICATED_CONNECTIONS,
+    MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE, MAX_IN_FLIGHT_FRAME_BYTES, MAX_PENDING_CONNECTIONS,
     MAX_PENDING_CONNECTIONS_PER_SOURCE, PRE_AUTH_DEADLINE, PRE_AUTH_FRAME_TIMEOUT, SourceKey,
     TLS_HANDSHAKE_TIMEOUT, WRITE_TIMEOUT,
 };
@@ -21,7 +22,8 @@ use ganbaru_handoff::protocol::relay::{
     decode_relay_space, decode_relay_writer, encode_relay_asset, encode_relay_bytes,
 };
 use ganbaru_handoff::protocol::{
-    MAX_CONTROL_BYTES, MAX_UNAUTHENTICATED_CONTROL_BYTES, SyncSeq, read_frame, write_frame,
+    MAX_CONTROL_BYTES, MAX_UNAUTHENTICATED_CONTROL_BYTES, SyncSeq, read_frame, read_frame_body,
+    read_frame_length, write_frame,
 };
 use ganbaru_sync_contracts::relay::{MAX_RELAY_ASSET_CHUNK_BYTES, MAX_RELAY_RECORD_BYTES};
 use ganbaru_sync_contracts::{RelayAssetChunk, RelayRecord, SpaceId, WriterId};
@@ -61,6 +63,10 @@ pub struct ConnectionLimits {
     pub authenticated: usize,
     /// Authenticated connections per source.
     pub authenticated_per_source: usize,
+    /// Frame bytes authenticated requests and their responses may hold at once.
+    pub frame_memory_bytes: usize,
+    /// Longest a request waits for frame memory before the relay answers busy.
+    pub frame_memory_wait: Duration,
 }
 
 impl Default for ConnectionLimits {
@@ -70,8 +76,26 @@ impl Default for ConnectionLimits {
             pending_per_source: MAX_PENDING_CONNECTIONS_PER_SOURCE,
             authenticated: MAX_AUTHENTICATED_CONNECTIONS,
             authenticated_per_source: MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE,
+            frame_memory_bytes: MAX_IN_FLIGHT_FRAME_BYTES,
+            frame_memory_wait: FRAME_MEMORY_WAIT,
         }
     }
+}
+
+/// Frame bytes one authenticated request reserves: its own frame plus room for the largest
+/// response, held until the response is written.
+fn request_reservation(length: usize) -> usize {
+    length.saturating_add(MAX_CONTROL_BYTES)
+}
+
+/// How an authenticated read ended.
+enum Incoming {
+    /// A request to handle.
+    Request(RelayRequest),
+    /// A refusal to send before closing.
+    Refuse(RelayResponse),
+    /// The connection ended or timed out.
+    Closed,
 }
 
 struct Shared {
@@ -84,6 +108,8 @@ struct Shared {
     generations: Mutex<HashMap<SpaceId, Arc<RwLock<u64>>>>,
     pending: ConnectionBudget,
     authenticated: ConnectionBudget,
+    frame_memory: FrameMemory,
+    frame_memory_wait: Duration,
 }
 
 impl Shared {
@@ -141,6 +167,8 @@ impl RelayServer {
                     limits.authenticated,
                     limits.authenticated_per_source,
                 ),
+                frame_memory: FrameMemory::new(limits.frame_memory_bytes),
+                frame_memory_wait: limits.frame_memory_wait,
             }),
         }
     }
@@ -201,6 +229,7 @@ impl RelayServer {
                 phase: Phase::Start,
                 permit,
                 deadline: Instant::now() + PRE_AUTH_DEADLINE,
+                reservation: None,
             };
             session.run(tls).await;
         });
@@ -234,6 +263,8 @@ struct Session {
     phase: Phase,
     permit: BudgetPermit,
     deadline: Instant,
+    /// Frame memory of the authenticated request being served.
+    reservation: Option<FrameReservation>,
 }
 
 fn refused(code: RelayRefusalCode, message: &str) -> (RelayResponse, Next) {
@@ -281,40 +312,83 @@ fn parse_vector(have: &[SyncSeq]) -> Result<HashMap<WriterId, u64>, String> {
 impl Session {
     async fn run(&mut self, mut tls: TlsStream<TcpStream>) {
         loop {
-            let authenticated = matches!(self.phase, Phase::Authenticated { .. });
-            let (limit, wait) = if authenticated {
-                (MAX_CONTROL_BYTES, IDLE_TIMEOUT)
+            let incoming = if matches!(self.phase, Phase::Authenticated { .. }) {
+                self.read_authenticated(&mut tls).await
             } else {
-                let left = self.deadline.saturating_duration_since(Instant::now());
-                (
-                    MAX_UNAUTHENTICATED_CONTROL_BYTES,
-                    left.min(PRE_AUTH_FRAME_TIMEOUT),
-                )
+                self.read_pending(&mut tls).await
             };
-            let request =
-                match tokio::time::timeout(wait, read_frame::<_, RelayRequest>(&mut tls, limit))
-                    .await
-                {
-                    Ok(Ok(request)) => request,
-                    Ok(Err(error)) => {
-                        let (response, _) = bad_request(&error);
-                        let _ =
-                            tokio::time::timeout(WRITE_TIMEOUT, write_frame(&mut tls, &response))
-                                .await;
-                        break;
-                    }
-                    Err(_) => break,
-                };
+            let request = match incoming {
+                Incoming::Request(request) => request,
+                Incoming::Refuse(response) => {
+                    let _ =
+                        tokio::time::timeout(WRITE_TIMEOUT, write_frame(&mut tls, &response)).await;
+                    break;
+                }
+                Incoming::Closed => break,
+            };
             let (response, next) = self.handle(request).await;
-            match tokio::time::timeout(WRITE_TIMEOUT, write_frame(&mut tls, &response)).await {
-                Ok(Ok(())) => {}
-                _ => break,
-            }
-            if next == Next::Close {
+            let written =
+                tokio::time::timeout(WRITE_TIMEOUT, write_frame(&mut tls, &response)).await;
+            self.reservation = None;
+            if !matches!(written, Ok(Ok(()))) || next == Next::Close {
                 break;
             }
         }
         let _ = tokio::time::timeout(WRITE_TIMEOUT, tls.shutdown()).await;
+    }
+
+    /// Reads one small frame before authentication, within the pre-auth deadline.
+    async fn read_pending(&self, tls: &mut TlsStream<TcpStream>) -> Incoming {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        let wait = left.min(PRE_AUTH_FRAME_TIMEOUT);
+        match tokio::time::timeout(
+            wait,
+            read_frame::<_, RelayRequest>(tls, MAX_UNAUTHENTICATED_CONTROL_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(request)) => Incoming::Request(request),
+            Ok(Err(error)) => Incoming::Refuse(bad_request(&error).0),
+            Err(_) => Incoming::Closed,
+        }
+    }
+
+    /// Reads one authenticated frame. Its memory is reserved from the global frame budget after
+    /// the length arrives and before the body is allocated, and stays reserved until the
+    /// response is written.
+    async fn read_authenticated(&mut self, tls: &mut TlsStream<TcpStream>) -> Incoming {
+        let length = match tokio::time::timeout(
+            IDLE_TIMEOUT,
+            read_frame_length::<_, RelayRequest>(tls, MAX_CONTROL_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(length)) => length,
+            Ok(Err(error)) => return Incoming::Refuse(bad_request(&error).0),
+            Err(_) => return Incoming::Closed,
+        };
+        let Some(reservation) = self
+            .shared
+            .frame_memory
+            .reserve(request_reservation(length), self.shared.frame_memory_wait)
+            .await
+        else {
+            return Incoming::Refuse(RelayResponse::refused(
+                RelayRefusalCode::Busy,
+                "relay memory is busy; try again later",
+            ));
+        };
+        self.reservation = Some(reservation);
+        match tokio::time::timeout(
+            FRAME_BODY_TIMEOUT,
+            read_frame_body::<_, RelayRequest>(tls, length),
+        )
+        .await
+        {
+            Ok(Ok(request)) => Incoming::Request(request),
+            Ok(Err(error)) => Incoming::Refuse(bad_request(&error).0),
+            Err(_) => Incoming::Closed,
+        }
     }
 
     fn binding(&self, space: SpaceId) -> RelayBinding {
@@ -795,8 +869,11 @@ impl Session {
         }
     }
 
+    /// Answers whether records the device lacks are ready. The request's frame memory is
+    /// released while it sleeps, so idle waits never hold the budget; after a wake the check
+    /// runs only if memory is free now, and otherwise the device is told to pull.
     async fn wait(
-        &self,
+        &mut self,
         space: SpaceId,
         epoch: u32,
         have: &HashMap<WriterId, u64>,
@@ -815,11 +892,16 @@ impl Session {
         {
             return Ok(RelayResponse::Waited { ready: true });
         }
+        self.reservation = None;
         if tokio::time::timeout(RELAY_WAIT_TIMEOUT, notified)
             .await
             .is_err()
         {
             return Ok(RelayResponse::Waited { ready: false });
+        }
+        self.reservation = self.shared.frame_memory.try_reserve(request_reservation(0));
+        if self.reservation.is_none() {
+            return Ok(RelayResponse::Waited { ready: true });
         }
         let ready = !self
             .shared

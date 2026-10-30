@@ -217,6 +217,19 @@ pub struct EpochCredential {
     pub current_epoch: u32,
 }
 
+/// What an operator sees of one claimed space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpaceSummary {
+    /// Space id.
+    pub space: SpaceId,
+    /// Current epoch.
+    pub current_epoch: u32,
+    /// Bytes of stored records and chunks.
+    pub stored_bytes: u64,
+    /// When the space was claimed, in Unix milliseconds.
+    pub created_at_ms: i64,
+}
+
 /// The relay's SQLite store.
 #[derive(Clone, Debug)]
 pub struct RelayStore {
@@ -270,6 +283,58 @@ impl RelayStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Revokes one unused setup token. Returns whether it was still live.
+    pub async fn revoke_setup_token(&self, token: &RelaySetupToken) -> StoreResult<bool> {
+        let deleted = sqlx::query("DELETE FROM relay_setup_tokens WHERE token_hash = ?")
+            .bind(token_hash(token).as_slice())
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(deleted > 0)
+    }
+
+    /// Revokes every unused setup token and returns how many were stored.
+    pub async fn revoke_all_setup_tokens(&self) -> StoreResult<u64> {
+        Ok(sqlx::query("DELETE FROM relay_setup_tokens")
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    /// Lists every claimed space, ordered by space id, for an operator.
+    pub async fn spaces(&self) -> StoreResult<Vec<SpaceSummary>> {
+        let rows = sqlx::query(
+            "SELECT space_id, current_epoch, stored_bytes, created_at_ms FROM relay_spaces \
+             ORDER BY space_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let space: Vec<u8> = row.try_get(0)?;
+                Ok(SpaceSummary {
+                    space: SpaceId::from_slice(&space).ok_or_else(|| {
+                        StoreError::Database(sqlx::Error::Protocol("stored space id".into()))
+                    })?,
+                    current_epoch: epoch_from_sql(row.try_get(1)?),
+                    stored_bytes: from_sql(row.try_get(2)?),
+                    created_at_ms: row.try_get(3)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Deletes a space with its epochs, records, and assets on an operator's command. Returns
+    /// whether the space existed. Its admins can claim it again only with a new setup code.
+    pub async fn remove_space(&self, space: &SpaceId) -> StoreResult<bool> {
+        let deleted = sqlx::query("DELETE FROM relay_spaces WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(deleted > 0)
     }
 
     /// Creates a space with a setup token, consuming the token.

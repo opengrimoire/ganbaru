@@ -211,6 +211,113 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Builds the self-hosted relay as a static musl binary on a native runner for each
+  # architecture, so no cross toolchain is needed. The binaries join the signed SHA256SUMS like
+  # every other release asset.
+  build-relay:
+    if: github.event_name != 'release'
+    name: build relay ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    # Each matrix leg sets only its own key, so both digests reach the signing job.
+    outputs:
+      relay-linux-x64: ${{ steps.digest.outputs.relay-linux-x64 }}
+      relay-linux-arm64: ${{ steps.digest.outputs.relay-linux-arm64 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            asset_arch: x86_64
+            artifact: relay-linux-x64
+          - name: linux arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            asset_arch: aarch64
+            artifact: relay-linux-arm64
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: checkout
+        # actions/checkout v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: setup node
+        # actions/setup-node v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "24"
+
+      - name: validate release metadata
+        id: release
+        run: node apps/client/scripts/release/resolve-release-metadata.mjs
+
+      - name: install pinned Rust toolchain and musl target
+        env:
+          RELAY_TARGET: ${{ matrix.target }}
+        run: |
+          rustup show
+          rustup target add "$RELAY_TARGET"
+
+      - name: install musl C toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools file
+
+      - name: fetch Rust dependencies
+        run: cargo fetch --locked
+
+      - name: build static relay
+        env:
+          RELAY_TARGET: ${{ matrix.target }}
+        run: |
+          # ring and the bundled SQLite compile C code, which must target musl as well.
+          target_env="$(printf '%s' "$RELAY_TARGET" | tr '-' '_')"
+          export "CC_${target_env}=musl-gcc"
+          cargo build --release --locked -p ganbaru-sync-relay --target "$RELAY_TARGET"
+
+      - name: stage relay asset
+        env:
+          RELAY_TARGET: ${{ matrix.target }}
+          RELAY_ASSET_ARCH: ${{ matrix.asset_arch }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          binary="target/$RELAY_TARGET/release/ganbaru-sync-relay"
+          description="$(file -b "$binary")"
+          echo "$description"
+          case "$description" in
+            *"statically linked"* | *"static-pie linked"*) ;;
+            *)
+              echo "The relay binary is not statically linked"
+              exit 1
+              ;;
+          esac
+          if [ -z "$RELEASE_VERSION" ]; then
+            echo "Release metadata did not resolve a version"
+            exit 1
+          fi
+          mkdir -p dist/relay-assets
+          cp "$binary" "dist/relay-assets/ganbaru-sync-relay_${RELEASE_VERSION}_linux_${RELAY_ASSET_ARCH}"
+
+      - name: record asset digest
+        id: digest
+        run: node apps/client/scripts/release/release-asset-digests.mjs record dist/relay-assets ${{ matrix.artifact }}
+
+      - name: upload unsigned assets
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: unsigned-${{ matrix.artifact }}
+          path: dist/relay-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
   # Holds the signing secrets. It must not install workspace dependencies or run builds, so code
   # from the dependency graph never shares a runner with the keys; check-signing-isolation.mjs
   # enforces this.
@@ -220,6 +327,7 @@ jobs:
     needs:
       - build-release
       - build-android
+      - build-relay
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     environment: release
@@ -286,12 +394,28 @@ jobs:
           name: unsigned-android
           path: dist/unsigned/unsigned-android
 
+      - name: download unsigned relay x64 assets
+        # actions/download-artifact v7.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: unsigned-relay-linux-x64
+          path: dist/unsigned/unsigned-relay-linux-x64
+
+      - name: download unsigned relay arm64 assets
+        # actions/download-artifact v7.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: unsigned-relay-linux-arm64
+          path: dist/unsigned/unsigned-relay-linux-arm64
+
       - name: verify unsigned asset digests
         env:
           DIGEST_UNSIGNED_LINUX_X64: ${{ needs.build-release.outputs.linux-x64 }}
           DIGEST_UNSIGNED_WINDOWS_X64: ${{ needs.build-release.outputs.windows-x64 }}
           DIGEST_UNSIGNED_ANDROID: ${{ needs.build-android.outputs.android }}
-        run: node apps/client/scripts/release/release-asset-digests.mjs collect dist/unsigned dist/release-assets unsigned-linux-x64 unsigned-windows-x64 unsigned-android
+          DIGEST_UNSIGNED_RELAY_LINUX_X64: ${{ needs.build-relay.outputs.relay-linux-x64 }}
+          DIGEST_UNSIGNED_RELAY_LINUX_ARM64: ${{ needs.build-relay.outputs.relay-linux-arm64 }}
+        run: node apps/client/scripts/release/release-asset-digests.mjs collect dist/unsigned dist/release-assets unsigned-linux-x64 unsigned-windows-x64 unsigned-android unsigned-relay-linux-x64 unsigned-relay-linux-arm64
 
       - name: sign Android release assets
         env:
@@ -626,3 +750,90 @@ jobs:
           version="${RELEASE_TAG_NAME#app-v}"
           git -C dist/aur/ganbaru-bin commit -m "update to $version"
           git -C dist/aur/ganbaru-bin push origin HEAD:master
+
+  # Publishes the relay container image once admins publish the release. It holds only the
+  # GITHUB_TOKEN with packages: write and never enters the release environment, so the signing
+  # secrets are unreachable. It builds nothing from source: it verifies the published relay
+  # binaries against the signed SHA256SUMS and copies them into a scratch image.
+  # check-signing-isolation.mjs enforces this.
+  publish-relay-image:
+    if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'app-v')
+    name: publish relay image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    concurrency:
+      group: relay-image
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+      GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
+    steps:
+      - name: checkout
+        # actions/checkout v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: setup node
+        # actions/setup-node v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "24"
+
+      - name: download relay binaries
+        run: |
+          mkdir -p dist/release-assets
+          gh release download "$RELEASE_TAG_NAME" --pattern "ganbaru-sync-relay_*" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
+
+      - name: verify relay binaries
+        run: node apps/client/scripts/release/release-checksums.mjs verify dist/release-assets
+
+      - name: stage image context
+        run: |
+          version="${RELEASE_TAG_NAME#app-v}"
+          context="dist/relay-image"
+          mkdir -p "$context/linux-amd64" "$context/linux-arm64" "$context/data"
+          install -m 0555 "dist/release-assets/ganbaru-sync-relay_${version}_linux_x86_64" "$context/linux-amd64/ganbaru-sync-relay"
+          install -m 0555 "dist/release-assets/ganbaru-sync-relay_${version}_linux_aarch64" "$context/linux-arm64/ganbaru-sync-relay"
+          cp crates/ganbaru-sync-relay/Containerfile "$context/Containerfile"
+
+      - name: log in to GitHub Container Registry
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      # Each architecture is built and pushed with the default builder, then joined into one
+      # index by digest, so no builder image or emulator is pulled.
+      - name: build and push relay image
+        run: |
+          version="${RELEASE_TAG_NAME#app-v}"
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/$owner/ganbaru-sync-relay"
+          references=()
+          for arch in amd64 arm64; do
+            docker build \
+              --platform "linux/$arch" \
+              --file dist/relay-image/Containerfile \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.version=$version" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.licenses=AGPL-3.0-only" \
+              --tag "$image:$version-$arch" \
+              dist/relay-image
+            docker push "$image:$version-$arch"
+            references+=("$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$version-$arch")")
+          done
+          docker buildx imagetools create --tag "$image:$version" "${references[@]}"
+          digest="sha256:$(docker buildx imagetools inspect --raw "$image:$version" | sha256sum | cut -d ' ' -f 1)"
+          echo "Published $image@$digest"
+          {
+            echo "### Relay image"
+            echo
+            echo "\`$image@$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: log out of GitHub Container Registry
+        if: always()
+        run: docker logout ghcr.io

@@ -76,12 +76,17 @@ fn device_key(device_id: &str) -> DeviceKeyPair {
     DeviceKeyPair::from_seed(&Sha256::digest(device_id.as_bytes()).into()).expect("device seed")
 }
 
+/// The recovery seed whose kit founds the space of [`HUB_DEVICE`].
+fn hub_recovery_seed() -> RecoverySeed {
+    RecoverySeed::from_bytes([22; 32])
+}
+
 /// The anchor keys of [`HUB_DEVICE`].
 fn hub_keys() -> AnchorKeys {
     AnchorKeys {
         device: device_key(HUB_DEVICE),
         admin: AdminKeyPair::from_seed(&[21; 32]).expect("admin seed"),
-        recovery: RecoverySeed::from_bytes([22; 32]),
+        recovery: hub_recovery_seed().public_keys().expect("recovery keys"),
     }
 }
 

@@ -2,9 +2,9 @@ import {
   confirmSyncRecoveryKitSaved,
   discardSyncLateChange,
   forceSyncAnchor,
-  getPendingSyncRecoveryKit,
   getSyncAuthority,
   getSyncContests,
+  getSyncRecoveryKitState,
   liftSyncQuarantine,
   listenSyncApplied,
   listenSyncStatus,
@@ -73,7 +73,7 @@ async function refresh(): Promise<void> {
       listSyncOutbox(),
       listSyncLateChanges(),
     ]);
-    const nextKit = KIT_CAPABLE && nextAuthority?.ownIsAdmin ? await getPendingSyncRecoveryKit() : null;
+    const nextKit = KIT_CAPABLE && nextAuthority?.ownIsAdmin ? (await getSyncRecoveryKitState()).pending : null;
     if (expected !== generation) return;
     authority = nextAuthority;
     contests = nextContests;
@@ -175,7 +175,8 @@ export function getSyncAuthorityState() {
     restoreLateChange: (change: SyncLateChange) => thenRefresh(() => restoreSyncLateChange(lateTarget(change))),
     discardLateChange: (change: SyncLateChange) => thenRefresh(() => discardSyncLateChange(lateTarget(change))),
     regenerateKit: () => thenRefresh(regenerateSyncRecoveryKit),
-    confirmKitSaved: () => thenRefresh(confirmSyncRecoveryKitSaved),
+    /** Confirms the waiting kit was saved with the last group of its code; false when it does not match. */
+    confirmKitSaved: (lastGroup: string) => thenRefresh(() => confirmSyncRecoveryKitSaved(lastGroup)),
     useKit: (code: string) => thenRefresh(() => useSyncRecoveryKit(code)),
     resetSyncState: () => thenRefresh(resetSyncState),
     /** Yields a contest to `handover`, or withdraws this device's objection against it. */

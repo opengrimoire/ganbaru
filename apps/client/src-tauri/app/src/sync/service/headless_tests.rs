@@ -82,11 +82,16 @@ async fn has_note(pool: &SqlitePool, id: &str) -> bool {
 }
 
 /// The anchor keys of [`COORDINATOR_DEVICE`].
+/// Seed of the recovery kit the test anchor founds its space with.
+const RECOVERY_SEED: [u8; 32] = [10; 32];
+
 fn anchor_keys() -> AnchorKeys {
     AnchorKeys {
         device: DeviceKeyPair::from_seed(&[8; 32]).expect("anchor device key"),
         admin: AdminKeyPair::from_seed(&[9; 32]).expect("anchor admin key"),
-        recovery: RecoverySeed::from_bytes([10; 32]),
+        recovery: RecoverySeed::from_bytes(RECOVERY_SEED)
+            .public_keys()
+            .expect("recovery kit keys"),
     }
 }
 
@@ -581,8 +586,9 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
         .await
         .expect("read phone authorization")
         .expect("phone charter");
-    let recovery = authority::recovery_admin(&view, &anchor_keys().recovery.kit_code())
-        .expect("the kit recovers the vault");
+    let recovery =
+        authority::recovery_admin(&view, &RecoverySeed::from_bytes(RECOVERY_SEED).kit_code())
+            .expect("the kit recovers the vault");
     let mut laptop_writer = create_writer(
         &SyncFiles::new(laptop_directory.path().join("sync"), VAULT_ID).expect("laptop files"),
         &FileKeyStore::new(
@@ -604,6 +610,7 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
             promote: None,
             point: None,
             removals: Vec::new(),
+            recovery: None,
         },
         &mut laptop_writer.local(),
         now_ms().expect("clock"),

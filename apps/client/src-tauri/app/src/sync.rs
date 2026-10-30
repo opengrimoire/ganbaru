@@ -19,6 +19,7 @@ pub(crate) mod key_protection;
 mod peers;
 mod recovery;
 mod recovery_kit;
+pub(crate) mod server;
 mod service;
 mod status;
 mod transport;

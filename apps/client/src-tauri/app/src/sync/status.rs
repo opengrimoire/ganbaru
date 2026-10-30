@@ -4,6 +4,7 @@
 use ganbaru_handoff::dial::{DialAddressClass, validate_dial_endpoint};
 use ganbaru_sync::stability::{DeviceAcknowledgement, DeviceStanding};
 use ganbaru_sync::{ClockWarning, DeviceNames, DeviceRef, SyncStatus};
+pub(crate) use ganbaru_sync_replica::relay::RelayProblem;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -159,15 +160,19 @@ pub(crate) struct RelayDeliveryView {
     pub deferred_files: usize,
     pub stored_bytes: u64,
     pub quota_bytes: u64,
+    /// When the relay last answered this device, in Unix milliseconds, `None` when it has not
+    /// answered during this app run.
+    pub last_contact_at_ms: Option<u64>,
     /// Why the pass stopped early or what the relay needs from an administrator.
-    pub problem: Option<String>,
+    pub problem: Option<RelayProblem>,
 }
 
 impl RelayDeliveryView {
-    /// The counts of `pass`, finished at `now_ms`.
+    /// The counts of `pass`, finished at `now_ms`, when the relay answered.
     pub(crate) fn of(pass: &ganbaru_sync_replica::relay::RelayPass, now_ms: u64) -> Self {
         Self {
             last_pass_at_ms: now_ms,
+            last_contact_at_ms: Some(now_ms),
             sent: pass.pushed,
             received: pass.pulled,
             undelivered: pass.undelivered,
@@ -176,14 +181,24 @@ impl RelayDeliveryView {
             deferred_files: pass.deferred_assets,
             stored_bytes: pass.stored_bytes,
             quota_bytes: pass.quota_bytes,
-            problem: pass.problem.clone(),
+            problem: pass.problem,
         }
     }
 
-    /// A pass that could not reach or use the relay at `now_ms`.
-    pub(crate) fn failed(problem: String, now_ms: u64) -> Self {
+    /// A pass that could not reach or use the relay at `now_ms`. The last contact moves to
+    /// `now_ms` when the relay answered with the refusal, and otherwise stays `last_contact_at_ms`.
+    pub(crate) fn failed(
+        problem: RelayProblem,
+        now_ms: u64,
+        last_contact_at_ms: Option<u64>,
+    ) -> Self {
         Self {
             last_pass_at_ms: now_ms,
+            last_contact_at_ms: if problem.relay_answered() {
+                Some(now_ms)
+            } else {
+                last_contact_at_ms
+            },
             problem: Some(problem),
             ..Self::default()
         }
@@ -601,12 +616,20 @@ mod tests {
                 "deferredFiles": 3,
                 "storedBytes": 4_096,
                 "quotaBytes": 1_048_576,
+                "lastContactAtMs": 900,
                 "problem": null,
             })
         );
-        let failed = RelayDeliveryView::failed("relay unreachable".to_string(), 7);
-        assert_eq!(failed.problem.as_deref(), Some("relay unreachable"));
+        let failed = RelayDeliveryView::failed(RelayProblem::Unreachable, 7, Some(3));
+        assert_eq!(failed.problem, Some(RelayProblem::Unreachable));
         assert_eq!((failed.sent, failed.last_pass_at_ms), (0, 7));
+        assert_eq!(failed.last_contact_at_ms, Some(3));
+        let wire = serde_json::to_value(&failed).expect("serialize relay");
+        assert_eq!(wire["problem"], "unreachable");
+        let refused = RelayDeliveryView::failed(RelayProblem::AccessRefused, 9, Some(3));
+        assert_eq!(refused.last_contact_at_ms, Some(9));
+        let wire = serde_json::to_value(&refused).expect("serialize relay");
+        assert_eq!(wire["problem"], "accessRefused");
         let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
         assert_eq!(empty["relay"], serde_json::Value::Null);
     }

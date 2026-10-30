@@ -14,7 +14,8 @@ use crate::client::{MAX_EXCHANGE_BYTES, PeerIds};
 use crate::keys::SpaceKeys;
 use crate::outbox::Outbox;
 use crate::relay::{
-    Connection, RelayLimits, RelayPass, RelaySession, RelayTarget, UNMETERED_MAX_ASSET_BYTES,
+    Connection, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession, RelayTarget,
+    UNMETERED_MAX_ASSET_BYTES,
     claim_space,
 };
 use crate::tests::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note};
@@ -212,7 +213,7 @@ impl Keyed {
             .expect("relay pass")
     }
 
-    async fn try_pass(&self, relay: &TestRelay, max_asset_bytes: u32) -> Result<RelayPass, String> {
+    async fn try_pass(&self, relay: &TestRelay, max_asset_bytes: u32) -> Result<RelayPass, RelayError> {
         let admin = self.replica.device_id == HUB_DEVICE;
         self.pass_as(relay, admin, MAX_EXCHANGE_BYTES, max_asset_bytes)
             .await
@@ -232,7 +233,7 @@ impl Keyed {
         admin: bool,
         max_bytes: usize,
         max_asset_bytes: u32,
-    ) -> Result<RelayPass, String> {
+    ) -> Result<RelayPass, RelayError> {
         let admin_key = hub_keys().admin;
         let own_writers = self.replica.writer.own_writers();
         let quarantined = BTreeSet::new();
@@ -318,6 +319,7 @@ fn two_devices_converge_only_through_the_relay() {
         assert_eq!(pushed.epoch, 1);
         assert!(pushed.pushed > 0);
         assert!(pushed.stored_bytes > 0);
+        assert_eq!(pushed.undelivered, 0, "{pushed:?}");
 
         let pulled = phone.pass(&relay).await;
         assert_eq!(pulled.problem, None);
@@ -719,11 +721,9 @@ fn a_device_whose_flush_stalls_does_not_register_the_next_epoch() {
         let stalled = hub_device.pass(&relay).await;
         assert!(stalled.registered.is_empty(), "{stalled:?}");
         assert_eq!(stalled.epoch, 1, "{stalled:?}");
-        assert!(
-            stalled
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("does not register")),
+        assert_eq!(
+            stalled.problem,
+            Some(RelayProblem::RelayBehind),
             "{stalled:?}"
         );
         let pool = relay_database(&relay).await;
@@ -876,11 +876,9 @@ fn asset_chunks_round_trip_and_a_tampered_chunk_is_refused() {
         tablet.replica.apply().await;
         let refused = tablet.pass(&relay).await;
         assert_eq!(refused.downloaded, 0);
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("refused")),
+        assert_eq!(
+            refused.problem,
+            Some(RelayProblem::AssetRefused),
             "{refused:?}"
         );
         assert_eq!(tablet.replica.asset_bytes(&image), None);

@@ -1,4 +1,11 @@
-import type { SyncDegradedReason, SyncDeviceRef, SyncRole, SyncState, SyncStatusView } from "$lib/api/sync";
+import type {
+  SyncDegradedReason,
+  SyncDeviceRef,
+  SyncRelayProblem,
+  SyncRole,
+  SyncState,
+  SyncStatusView,
+} from "$lib/api/sync";
 import type { AppLocale } from "$lib/i18n/locales";
 import { formatDateTime, formatList, formatNumber, formatRelativeMinutes } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
@@ -207,7 +214,6 @@ export function syncRelayLines(t: Translate, locale: AppLocale, status: SyncStat
   const lines = [t("sync.relay.lastPass", formatSyncTime(t, locale, relay.lastPassAtMs, nowMs))];
   if (relay.sent > 0) lines.push(t("sync.relay.sent", relay.sent));
   if (relay.received > 0) lines.push(t("sync.relay.received", relay.received));
-  if (relay.undelivered > 0) lines.push(t("sync.relay.undelivered", relay.undelivered));
   if (relay.uploadedFiles > 0) lines.push(t("sync.relay.uploadedFiles", relay.uploadedFiles));
   if (relay.downloadedFiles > 0) lines.push(t("sync.relay.downloadedFiles", relay.downloadedFiles));
   if (relay.deferredFiles > 0) lines.push(t("sync.relay.deferredFiles", relay.deferredFiles));
@@ -215,7 +221,38 @@ export function syncRelayLines(t: Translate, locale: AppLocale, status: SyncStat
     const megabytes = (bytes: number) => formatNumber(locale, bytes / BYTES_PER_MEGABYTE, STORAGE_UNIT);
     lines.push(t("sync.relay.storage", megabytes(relay.storedBytes), megabytes(relay.quotaBytes)));
   }
-  if (relay.problem !== null) lines.push(t("sync.relay.problem", relay.problem));
+  if (relay.problem !== null) {
+    lines.push(t("sync.relay.problem", syncRelayProblemLabel(t, relay.problem)));
+    lines.push(
+      relay.lastContactAtMs === null
+        ? t("sync.relay.noContact")
+        : t("sync.relay.lastContact", formatSyncTime(t, locale, relay.lastContactAtMs, nowMs)),
+    );
+  }
+  return lines;
+}
+
+/** Explains a typed relay problem in the user's language. */
+export function syncRelayProblemLabel(t: Translate, problem: SyncRelayProblem): string {
+  return t(`sync.server.problems.${problem}`);
+}
+
+/**
+ * Describes where this device's own changes stand on the way through the relay: saved here and
+ * not on the relay yet, received by the relay and waiting for the anchor, or all confirmed. The
+ * relay count is the unconfirmed changes the relay already holds, so it is an upper bound when
+ * the anchor has not reported on changes that moved directly. Empty without a relay pass.
+ */
+export function syncDeliveryLines(t: Translate, status: SyncStatusView): string[] {
+  const relay = status.relay;
+  if (relay === null) return [];
+  const lines: string[] = [];
+  if (relay.undelivered > 0) lines.push(t("sync.delivery.saved", relay.undelivered));
+  const atRelay = Math.max(0, status.unconfirmed - relay.undelivered);
+  if (atRelay > 0) lines.push(t("sync.delivery.receivedByRelay", atRelay));
+  if (lines.length === 0 && status.unconfirmed === 0 && status.pendingLocalChanges === 0) {
+    lines.push(t("sync.delivery.confirmed"));
+  }
   return lines;
 }
 

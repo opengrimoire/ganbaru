@@ -54,7 +54,7 @@ use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
 use ganbaru_sync_replica::records::{FreeSpace, RecordExchange, RecordLink};
 use ganbaru_sync_replica::relay::{
-    METERED_MAX_ASSET_BYTES, RelayLimits, RelayPass, RelaySession, RelayTarget,
+    METERED_MAX_ASSET_BYTES, RelayError, RelayLimits, RelayPass, RelayProblem, RelaySession, RelayTarget,
     UNMETERED_MAX_ASSET_BYTES,
 };
 use ganbaru_sync_replica::reset;
@@ -101,7 +101,7 @@ const RESTORE_CATCH_UP_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// Whether relay passes dial a loopback relay: debug builds allow a relay on this computer for
 /// development, release builds refuse it.
-const RELAY_LOOPBACK: ganbaru_handoff::dial::LoopbackPolicy = if cfg!(debug_assertions) {
+pub(super) const RELAY_LOOPBACK: ganbaru_handoff::dial::LoopbackPolicy = if cfg!(debug_assertions) {
     ganbaru_handoff::dial::LoopbackPolicy::Allow
 } else {
     ganbaru_handoff::dial::LoopbackPolicy::Reject
@@ -123,17 +123,27 @@ fn relay_asset_bound() -> u32 {
 }
 
 /// Records a relay pass outcome in `view`. A failure stays a present relay status, which keeps
-/// the Android relay worker scheduled while the space names a relay.
-fn record_relay_outcome(view: &mut SyncStatusView, outcome: Result<RelayPass, String>) {
+/// the Android relay worker scheduled while the space names a relay. `last_contact_at_ms` is
+/// when the relay last answered before this pass.
+fn record_relay_outcome(
+    view: &mut SyncStatusView,
+    outcome: Result<RelayPass, RelayError>,
+    last_contact_at_ms: Option<u64>,
+) {
     let (now, clock) = match now_ms() {
         Ok(now) => (now, None),
-        Err(error) => (0, Some(error)),
+        Err(error) => (0, Some(RelayError::from(error))),
     };
     view.relay = Some(match (outcome, clock) {
-        (Ok(pass), None) => RelayDeliveryView::of(&pass, now),
+        (Ok(pass), None) => {
+            if let Some(detail) = &pass.detail {
+                eprintln!("sync relay: {detail}");
+            }
+            RelayDeliveryView::of(&pass, now)
+        }
         (Err(error), _) | (Ok(_), Some(error)) => {
-            eprintln!("sync relay: {error}");
-            RelayDeliveryView::failed(error, now)
+            eprintln!("sync relay: {}", error.detail);
+            RelayDeliveryView::failed(error.problem, now, last_contact_at_ms)
         }
     });
 }
@@ -1843,6 +1853,12 @@ impl ServiceState {
         session: &Session<'_, H>,
         view: &mut SyncStatusView,
     ) -> bool {
+        // `self.view` still holds the status the previous pass published.
+        let last_contact = self
+            .view
+            .relay
+            .as_ref()
+            .and_then(|relay| relay.last_contact_at_ms);
         let target = match Self::relay_target(session).await {
             Ok(Some(target)) => target,
             Ok(None) => {
@@ -1850,13 +1866,13 @@ impl ServiceState {
                 return false;
             }
             Err(error) => {
-                record_relay_outcome(view, Err(error));
+                record_relay_outcome(view, Err(error.into()), last_contact);
                 return false;
             }
         };
         let outcome = self.run_relay(session, &target).await;
         let more = outcome.as_ref().is_ok_and(|pass| pass.more);
-        record_relay_outcome(view, outcome);
+        record_relay_outcome(view, outcome, last_contact);
         more
     }
 
@@ -1878,12 +1894,12 @@ impl ServiceState {
         &self,
         session: &Session<'_, H>,
         target: &RelayTarget,
-    ) -> Result<RelayPass, String> {
+    ) -> Result<RelayPass, RelayError> {
         let holder = self
             .writer
             .as_ref()
             .and_then(ActiveWriter::space_keys)
-            .ok_or_else(|| "this device holds no space keys yet".to_string())?;
+            .ok_or_else(|| RelayError::new(RelayProblem::NoKeys, "this device holds no space keys yet"))?;
         let keys = session.keys.clone();
         let vault_id = session.host.active_vault_id()?;
         let admin_vault = vault_id.clone();

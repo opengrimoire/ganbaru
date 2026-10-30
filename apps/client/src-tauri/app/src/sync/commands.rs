@@ -570,7 +570,7 @@ fn parse_digest(text: &str, what: &str) -> Result<Digest32, String> {
 }
 
 #[cfg(desktop)]
-async fn run_authority(
+pub(super) async fn run_authority(
     runtime: &SyncRuntime,
     action: AuthorityAction,
 ) -> Result<AuthorityAnswer, String> {

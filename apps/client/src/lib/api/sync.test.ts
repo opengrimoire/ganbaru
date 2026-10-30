@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  addSyncServer,
   confirmSyncRecoveryKitSaved,
   createSyncRecoveryKit,
   discardSyncLateChange,
@@ -8,6 +9,7 @@ import {
   getSyncAuthority,
   getSyncContests,
   getSyncRecoveryKitState,
+  getSyncServerStatus,
   listenSyncApplied,
   listenSyncStatus,
   listSyncLateChanges,
@@ -21,11 +23,15 @@ import {
   mapSyncOutboxEntry,
   mapSyncPendingRecoveryKit,
   mapSyncRecoveryKitState,
+  mapSyncServerError,
+  mapSyncServerRemoval,
+  mapSyncServerView,
   mapSyncStatus,
   objectSyncContest,
   OFF_SYNC_STATUS,
   regenerateSyncRecoveryKit,
   removeSyncDevice,
+  removeSyncServer,
   restoreSyncLateChange,
   restoreSyncRecovery,
   resumeSyncRecords,
@@ -82,6 +88,7 @@ function validRelay(): Record<string, unknown> {
     deferredFiles: 2,
     storedBytes: 4_096,
     quotaBytes: 1_048_576,
+    lastContactAtMs: 880,
     problem: null,
   };
 }
@@ -117,7 +124,64 @@ describe("sync API boundary", () => {
     expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), sent: -1 } })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), quotaBytes: 1.5 } })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), problem: 3 } })).toThrow();
+    expect(() =>
+      mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), problem: "the relay is down" } }),
+    ).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), lastContactAtMs: -5 } })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), relay: { ...validRelay(), lastContactAtMs: undefined } })).toThrow();
     expect(mapSyncStatus({ ...validStatus(), relay: null }).relay).toBeNull();
+  });
+
+  it("maps relay problems and a relay that has not answered yet", () => {
+    const relay = mapSyncStatus({
+      ...validStatus(),
+      relay: { ...validRelay(), lastContactAtMs: null, problem: "setupCodeRefused" },
+    }).relay;
+    expect(relay?.problem).toBe("setupCodeRefused");
+    expect(relay?.lastContactAtMs).toBeNull();
+  });
+
+  it("maps server status, removal, and typed server errors", async () => {
+    const server = {
+      mode: "relay",
+      endpoints: ["relay.example.net:7443"],
+      certificateFingerprint: "ab".repeat(32),
+      canManage: true,
+      probe: { protocolVersion: 1, compatible: true, problem: null },
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(server);
+    await expect(getSyncServerStatus()).resolves.toEqual(server);
+    expect(invoke).toHaveBeenLastCalledWith("sync_server_status", undefined);
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(getSyncServerStatus()).resolves.toBeNull();
+    expect(() => mapSyncServerView({ ...server, mode: "mirror" })).toThrow();
+    expect(() => mapSyncServerView({ ...server, probe: { ...server.probe, problem: "down" } })).toThrow();
+    expect(() => mapSyncServerView({ ...server, endpoints: [7443] })).toThrow();
+    expect(mapSyncServerView({ ...server, mode: "anchor", probe: null }).probe).toBeNull();
+
+    vi.mocked(invoke).mockResolvedValueOnce({ relayCleared: false, problem: "unreachable" });
+    await expect(removeSyncServer()).resolves.toEqual({ relayCleared: false, problem: "unreachable" });
+    expect(() => mapSyncServerRemoval({ relayCleared: "yes", problem: null })).toThrow();
+
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await addSyncServer("ganbaru-relay:CODE", true);
+    expect(invoke).toHaveBeenLastCalledWith("sync_add_server", {
+      code: "ganbaru-relay:CODE",
+      acknowledgedUnreviewed: true,
+    });
+    vi.mocked(invoke).mockRejectedValueOnce({ code: "relay", problem: "alreadyClaimed" });
+    await expect(addSyncServer("ganbaru-relay:CODE", true)).rejects.toMatchObject({
+      code: "relay",
+      problem: "alreadyClaimed",
+    });
+    vi.mocked(invoke).mockRejectedValueOnce({ code: "anchorPending" });
+    await expect(addSyncServer("ganbaru-anchor:CODE", true)).rejects.toMatchObject({
+      code: "anchorPending",
+      problem: null,
+    });
+    expect(mapSyncServerError("socket closed").code).toBe("failed");
+    expect(mapSyncServerError({ code: "relay", problem: "melted" }).code).toBe("failed");
+    expect(mapSyncServerError({ code: "teapot" }).code).toBe("failed");
   });
 
   it("maps the off status of an unlinked vault", () => {

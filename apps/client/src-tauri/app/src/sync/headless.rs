@@ -1099,8 +1099,9 @@ mod tests {
         let without = SyncStatusView::default();
         let with = SyncStatusView {
             relay: Some(crate::sync::status::RelayDeliveryView::failed(
-                "unreachable".to_string(),
+                crate::sync::status::RelayProblem::Unreachable,
                 1,
+                None,
             )),
             ..SyncStatusView::default()
         };

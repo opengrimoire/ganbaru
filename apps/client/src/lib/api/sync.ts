@@ -54,6 +54,33 @@ export interface SyncConnectionView {
   address: string;
 }
 
+/** Why a relay pass, a relay probe, or a relay command stopped; the interface explains each. */
+export const SYNC_RELAY_PROBLEMS = [
+  "unreachable",
+  "incompatible",
+  "notClaimed",
+  "alreadyClaimed",
+  "setupCodeRefused",
+  "accessRefused",
+  "adminRefused",
+  "busy",
+  "writerLimit",
+  "refused",
+  "noKeys",
+  "epochUnsettled",
+  "epochAhead",
+  "relayBehind",
+  "adminSetFull",
+  "gap",
+  "trimmed",
+  "recordRefused",
+  "fork",
+  "noProgress",
+  "assetRefused",
+  "failed",
+] as const;
+export type SyncRelayProblem = (typeof SYNC_RELAY_PROBLEMS)[number];
+
 /** What the last relay pass of this app run moved, and what still waits. */
 export interface SyncRelayDelivery {
   /** When the last relay pass finished, in Unix milliseconds. */
@@ -72,8 +99,10 @@ export interface SyncRelayDelivery {
   /** The relay's stored bytes for this vault and its quota; zero quota means no limit reported. */
   storedBytes: number;
   quotaBytes: number;
+  /** When the relay last answered this device in this app run, in Unix milliseconds. */
+  lastContactAtMs: number | null;
   /** Set when the pass stopped early or the relay needs an administrator. */
-  problem: string | null;
+  problem: SyncRelayProblem | null;
 }
 
 /** Stored operations this device cannot apply, by reason. */
@@ -496,8 +525,13 @@ function readRelayDelivery(value: unknown, label: string): SyncRelayDelivery {
     deferredFiles: readNonNegativeSafeInteger(row.deferredFiles, `${label}.deferredFiles`),
     storedBytes: readNonNegativeSafeInteger(row.storedBytes, `${label}.storedBytes`),
     quotaBytes: readNonNegativeSafeInteger(row.quotaBytes, `${label}.quotaBytes`),
-    problem: readNullable(row.problem, `${label}.problem`, readString),
+    lastContactAtMs: readNullable(row.lastContactAtMs, `${label}.lastContactAtMs`, readNonNegativeSafeInteger),
+    problem: readNullable(row.problem, `${label}.problem`, readRelayProblem),
   };
+}
+
+function readRelayProblem(value: unknown, label: string): SyncRelayProblem {
+  return readEnum(value, SYNC_RELAY_PROBLEMS, label);
 }
 
 function readUncountedDevice(value: unknown, label: string): SyncUncountedDevice {
@@ -952,6 +986,142 @@ export async function regenerateSyncRecoveryKit(): Promise<void> {
 /** The active vault's recovery kit, with the kit this desktop holds until the user saves it. */
 export async function getSyncRecoveryKitState(): Promise<SyncRecoveryKitState> {
   return mapSyncRecoveryKitState(await invoke<unknown>("sync_recovery_kit_state"));
+}
+
+export const SYNC_SERVER_MODES = ["relay", "anchor"] as const;
+export type SyncServerMode = (typeof SYNC_SERVER_MODES)[number];
+
+/** Whether the relay answered a probe just now. */
+export interface SyncServerProbe {
+  /** The relay's protocol version, or null when it did not answer. */
+  protocolVersion: number | null;
+  /** Whether this build speaks that protocol version. */
+  compatible: boolean;
+  /** Why the probe failed, or null when the relay answered. */
+  problem: SyncRelayProblem | null;
+}
+
+/** The server the vault's sync space names. */
+export interface SyncServerView {
+  mode: SyncServerMode;
+  /** Addresses as `host:port`. */
+  endpoints: string[];
+  /** SHA-256 of the server's certificate in lowercase hexadecimal. */
+  certificateFingerprint: string;
+  /** Whether this device may remove the server. */
+  canManage: boolean;
+  /** A probe of a relay, or null for an anchor server. */
+  probe: SyncServerProbe | null;
+}
+
+/** What removing the server did at the relay; the relay removal is best effort. */
+export interface SyncServerRemoval {
+  relayCleared: boolean;
+  problem: SyncRelayProblem | null;
+}
+
+export const SYNC_SERVER_ERROR_CODES = [
+  "unacknowledged",
+  "invalidCode",
+  "anchorPending",
+  "notSyncing",
+  "notAdmin",
+  "serverExists",
+  "noServer",
+  "noKeys",
+  "relay",
+  "failed",
+] as const;
+export type SyncServerErrorCode = (typeof SYNC_SERVER_ERROR_CODES)[number];
+
+/** A server command failure with the code the interface explains. */
+export class SyncServerError extends Error {
+  readonly code: SyncServerErrorCode;
+  /** The relay problem behind a `relay` failure. */
+  readonly problem: SyncRelayProblem | null;
+
+  constructor(code: SyncServerErrorCode, problem: SyncRelayProblem | null) {
+    super(problem === null ? `sync server: ${code}` : `sync server: ${code} (${problem})`);
+    this.name = "SyncServerError";
+    this.code = code;
+    this.problem = problem;
+  }
+}
+
+/** Maps a rejected server command to a {@link SyncServerError}; unknown shapes become `failed`. */
+export function mapSyncServerError(error: unknown): SyncServerError {
+  if (error instanceof SyncServerError) return error;
+  try {
+    const row = readRecord(error, "sync server error");
+    const code = readEnum(row.code, SYNC_SERVER_ERROR_CODES, "sync server error.code");
+    const problem = code === "relay" ? readRelayProblem(row.problem, "sync server error.problem") : null;
+    return new SyncServerError(code, problem);
+  } catch {
+    return new SyncServerError("failed", null);
+  }
+}
+
+function readServerProbe(value: unknown, label: string): SyncServerProbe {
+  const row = readRecord(value, label);
+  return {
+    protocolVersion: readNullable(row.protocolVersion, `${label}.protocolVersion`, readNonNegativeSafeInteger),
+    compatible: readBoolean(row.compatible, `${label}.compatible`),
+    problem: readNullable(row.problem, `${label}.problem`, readRelayProblem),
+  };
+}
+
+/** Validates the server status the native command returns. */
+export function mapSyncServerView(value: unknown, label = "sync server"): SyncServerView {
+  const row = readRecord(value, label);
+  return {
+    mode: readEnum(row.mode, SYNC_SERVER_MODES, `${label}.mode`),
+    endpoints: readArray(row.endpoints, `${label}.endpoints`, readString),
+    certificateFingerprint: readString(row.certificateFingerprint, `${label}.certificateFingerprint`),
+    canManage: readBoolean(row.canManage, `${label}.canManage`),
+    probe: readNullable(row.probe, `${label}.probe`, readServerProbe),
+  };
+}
+
+/** Validates what removing the server reports. */
+export function mapSyncServerRemoval(value: unknown): SyncServerRemoval {
+  const row = readRecord(value, "sync server removal");
+  return {
+    relayCleared: readBoolean(row.relayCleared, "sync server removal.relayCleared"),
+    problem: readNullable(row.problem, "sync server removal.problem", readRelayProblem),
+  };
+}
+
+/**
+ * The server the active vault's sync space names, probing a relay, or null before the vault
+ * joined a sync space or while it names no server.
+ */
+export async function getSyncServerStatus(): Promise<SyncServerView | null> {
+  return readNullable(await invokeServerCommand("sync_server_status"), "sync server", (value) =>
+    mapSyncServerView(value),
+  );
+}
+
+/** Runs a server command, turning its rejection into a {@link SyncServerError}. */
+async function invokeServerCommand(command: string, args?: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await invoke<unknown>(command, args);
+  } catch (error) {
+    throw mapSyncServerError(error);
+  }
+}
+
+/**
+ * On a live admin desktop, claims the relay a pasted setup code names and proposes it as the
+ * vault's server. `acknowledgedUnreviewed` confirms the user accepted that the server
+ * cryptography has had no external review; the command refuses without it.
+ */
+export async function addSyncServer(code: string, acknowledgedUnreviewed: boolean): Promise<void> {
+  await invokeServerCommand("sync_add_server", { code, acknowledgedUnreviewed });
+}
+
+/** On a live admin desktop, proposes removing the vault's server and asks a relay to drop the space. */
+export async function removeSyncServer(): Promise<SyncServerRemoval> {
+  return mapSyncServerRemoval(await invokeServerCommand("sync_remove_server"));
 }
 
 /** Creates or replaces the recovery kit of a desktop vault that is not linked yet. */

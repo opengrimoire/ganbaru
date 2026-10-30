@@ -16,6 +16,7 @@
     syncDescription,
     syncHeldLines,
     syncLastExchangeLabel,
+    syncDeliveryLines,
     syncRecoveryTotal,
     syncRelayLines,
     syncRoleLabel,
@@ -29,6 +30,7 @@
   import SyncLateChanges from "./SyncLateChanges.svelte";
   import SyncOutboxList from "./SyncOutboxList.svelte";
   import SyncRecoveryKit from "./SyncRecoveryKit.svelte";
+  import SyncServer from "./SyncServer.svelte";
   import SyncContestCard from "./SyncContestCard.svelte";
   import { syncKitContested, syncStorageAlertLines } from "$lib/sync/contests";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -37,6 +39,7 @@
   import {
     canInstallSyncRecoveryKey,
     canManageSyncRecoveryKit,
+    canManageSyncServer,
     canResetSyncState,
     canResolveSyncLateChanges,
     canSuggestSyncHandover,
@@ -83,6 +86,7 @@
   const stateLabel = $derived(syncStateLabel(t, status.state));
   const connectionLabel = $derived(syncConnectionLabel(t, status));
   const relayLines = $derived(syncRelayLines(t, localization.locale, status, now));
+  const deliveryLines = $derived(syncDeliveryLines(t, status));
   const degradedRows = $derived(syncDegradedRows(t, status));
   const authorityState = getSyncAuthorityState();
   let resetConfirming = $state(false);
@@ -244,6 +248,9 @@
       {#if status.waiting > 0}
         <div class="text-muted-foreground">{t("sync.waiting", status.waiting)}</div>
       {/if}
+      {#each deliveryLines as line (line)}
+        <div class="min-w-0 break-words text-muted-foreground">{line}</div>
+      {/each}
       {#each relayLines as line (line)}
         <div class="min-w-0 break-words text-muted-foreground">{line}</div>
       {/each}
@@ -400,6 +407,10 @@
         />
       {/if}
     {/if}
+    <SyncServer
+      buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass}
+      canManage={authorityContext !== null && canManageSyncServer(authorityContext)}
+    />
   {/if}
 </div>
 

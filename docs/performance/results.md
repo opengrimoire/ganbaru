@@ -132,7 +132,7 @@ Rows report one 1000-event add or update pass against the practical dense datase
 
 ## Sync server
 
-Recorded 2026-10-30 at build ref b4c237a4 with a release build of `ganbaru-sync-relay` as its own process on loopback, on a headless Linux x86_64 mini PC with 8 cores and 7 GB of memory. No other build ran. Client CPU excludes the relay process. Memory is sampled from `/proc`; 1 MiB is 1,024 KiB.
+Recorded 2026-10-30 at build ref b4c237a4 with a release build of `ganbaru-sync-relay` as its own process on loopback, on a headless Linux x86_64 mini PC with 8 cores and 7 GB of memory. No other build ran. Client CPU excludes the relay process. The record share is standalone open and seal time over the same records, divided by push and pull CPU. Memory is sampled from `/proc`; 1 MiB is 1,024 KiB.
 
 | Measure | Budget | Result | Status |
 |---|---|---|---|

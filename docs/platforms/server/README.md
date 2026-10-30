@@ -1,6 +1,6 @@
 # Self-hosted server
 
-**Status: Partial.** The `ganbaru-sync-relay` binary runs on a machine you control, and sync never needs it. Relay mode, anchor mode, and their Settings are implemented in source; physical acceptance is pending.
+**Status: Implemented in source.** The `ganbaru-sync-relay` binary runs on a machine you control, and sync never needs it. Relay mode, anchor mode, and their Settings exist; physical acceptance is pending.
 
 This is the setup guide. [Sync](../../data/sync.md) owns the behavior and [Network and privacy](../../data/security/network-and-privacy.md) owns the security boundary.
 

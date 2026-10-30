@@ -80,7 +80,7 @@ The relay never receives record content, asset content, or a key it can open. It
 
 - Connection addresses and timing, and the size of records and chunks.
 - Routing fields in the clear: space id, writer id, sequence, key epoch, and asset id. It holds no device identity for a connection.
-- Key epoch records, which it receives as plain signed bytes, because members that lag behind fetch them before they can open anything. The key material in them stays sealed, but each one lists its recipients by opaque key id. An id stays the same for a device across epochs, so the relay can count recipients and compare epochs to see when a device joined or was removed, without learning which device it is.
+- Key epoch records, which it receives as plain signed bytes, because members that lag behind fetch them before they can open anything. The key material in them stays sealed, but each one lists its recipients by opaque key id. An id stays the same for a device across epochs, so the relay can count recipients, the recovery key among them, and compare epochs to see when a device joined or was removed, without learning which device it is.
 - The admin public keys of the space, which it checks to accept admin commands.
 
 An always-on anchor is outside this boundary, because it is a member that holds the keys and reads the whole vault. Revocation prevents future operations and key distribution but cannot erase plaintext already on an offline device or external provider. See [Synchronization](../sync.md).

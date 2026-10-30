@@ -2,7 +2,6 @@
 //! sync requests, and archive serving.
 
 use super::super::{MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, stream_file, timeout_control};
-use super::client_verifier::PinnedClientVerifier;
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::{
     COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, MemberAdmissionSource,
@@ -24,6 +23,7 @@ use crate::vault::handoff::protocol::{
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use ganbaru_handoff::dial::LoopbackPolicy;
+use ganbaru_handoff::tls::PinnedClientVerifier;
 use ganbaru_sync_replica::peers::admission::MemberRefusal;
 use rustls::pki_types::CertificateDer;
 use std::collections::BTreeSet;

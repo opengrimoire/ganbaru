@@ -14,18 +14,15 @@ pub(crate) use server::{
 };
 
 use super::pairing::{
-    CoordinatorPin, PairingManager, PinnedCharter, TlsIdentity, certificate_fingerprint,
-    encode_certificate,
+    CoordinatorPin, PairingManager, PinnedCharter, TlsIdentity, encode_certificate,
 };
 use super::protocol::{
     BundleMetadata, ControlMessage, PROTOCOL_VERSION, PairingInvitation, TRANSFER_CHUNK_BYTES,
     read_control, unix_time_ms, write_control,
 };
 use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use ganbaru_handoff::tls::PinnedServerVerifier;
+use rustls::pki_types::ServerName;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -60,64 +57,6 @@ impl TransferCancellation {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
-    }
-}
-
-#[derive(Debug)]
-struct PinnedServerVerifier {
-    fingerprint: String,
-    algorithms: WebPkiSupportedAlgorithms,
-}
-
-impl PinnedServerVerifier {
-    fn new(fingerprint: String) -> Self {
-        let provider = rustls::crypto::ring::default_provider();
-        Self {
-            fingerprint,
-            algorithms: provider.signature_verification_algorithms,
-        }
-    }
-}
-
-impl ServerCertVerifier for PinnedServerVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        if !intermediates.is_empty()
-            || certificate_fingerprint(end_entity.as_ref()) != self.fingerprint
-        {
-            return Err(rustls::Error::General(
-                "coordinator certificate does not match the pinned identity".to_string(),
-            ));
-        }
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls12_signature(message, certificate, signature, &self.algorithms)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls13_signature(message, certificate, signature, &self.algorithms)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.algorithms.supported_schemes()
     }
 }
 

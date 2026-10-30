@@ -7,7 +7,6 @@
 //! contact, and authorization proposal requests are refused with a typed code, so the anchor and
 //! the coordinator keep those roles.
 
-use super::client_verifier::PinnedClientVerifier;
 use super::limits::ConnectionLimits;
 use super::{
     COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, accept_connections,
@@ -18,6 +17,7 @@ use crate::vault::handoff::pairing::{PairingManager, certificate_fingerprint};
 use crate::vault::handoff::protocol::{self, read_control_limited, write_control};
 use crate::vault::handoff::transport::{TLS_HANDSHAKE_TIMEOUT, load_tls_identity, timeout_control};
 use ganbaru_handoff::dial::LoopbackPolicy;
+use ganbaru_handoff::tls::PinnedClientVerifier;
 use ganbaru_sync_replica::peers::admission::{MemberAdmission, MemberRefusal};
 use std::collections::BTreeSet;
 use std::future::Future;

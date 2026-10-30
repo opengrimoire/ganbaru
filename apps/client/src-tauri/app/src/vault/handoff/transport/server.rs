@@ -14,7 +14,6 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 
 pub(super) mod admission;
-mod client_verifier;
 #[cfg(desktop)]
 mod dispatch;
 pub(super) mod limits;

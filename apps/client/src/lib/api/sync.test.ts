@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  confirmSyncRecoveryKitSaved,
+  createSyncRecoveryKit,
   discardSyncLateChange,
   forceSyncAnchor,
-  getPendingSyncRecoveryKit,
   getSyncAuthority,
   getSyncContests,
+  getSyncRecoveryKitState,
   listenSyncApplied,
   listenSyncStatus,
   listSyncLateChanges,
@@ -18,6 +20,7 @@ import {
   mapSyncNotice,
   mapSyncOutboxEntry,
   mapSyncPendingRecoveryKit,
+  mapSyncRecoveryKitState,
   mapSyncStatus,
   objectSyncContest,
   OFF_SYNC_STATUS,
@@ -417,16 +420,35 @@ describe("sync authority API boundary", () => {
     expect(() => mapSyncLateChange(validLateChange({ decisionPending: 1 }), "late")).toThrow();
   });
 
-  it("maps the pending recovery kit and refuses an empty code", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ code: "ABCD-EFGH", active: true });
-    await expect(getPendingSyncRecoveryKit()).resolves.toEqual({ code: "ABCD-EFGH", active: true });
+  it("maps the recovery kit state and refuses an empty code or a malformed QR matrix", async () => {
+    const qr = { width: 2, modules: [true, false, false, true] };
+    const kit = { code: "ABCD-EFGH", qr, active: true };
+    vi.mocked(invoke).mockResolvedValueOnce({ stored: true, pending: kit });
+    await expect(getSyncRecoveryKitState()).resolves.toEqual({ stored: true, pending: kit });
+    expect(invoke).toHaveBeenLastCalledWith("sync_recovery_kit_state");
+    vi.mocked(invoke).mockResolvedValueOnce({ stored: false, pending: null });
+    await expect(getSyncRecoveryKitState()).resolves.toEqual({ stored: false, pending: null });
+    expect(() => mapSyncPendingRecoveryKit({ ...kit, code: " " }, "kit")).toThrow();
+    expect(() => mapSyncPendingRecoveryKit({ ...kit, qr: { width: 2, modules: [true] } }, "kit")).toThrow();
+    expect(() => mapSyncPendingRecoveryKit({ ...kit, qr: undefined }, "kit")).toThrow();
+    expect(() => mapSyncRecoveryKitState({ stored: "yes", pending: null })).toThrow();
+    expect(() => mapSyncRecoveryKitState({ stored: true })).toThrow();
+  });
+
+  it("creates, replaces, and confirms the recovery kit with their native names", async () => {
     vi.mocked(invoke).mockResolvedValueOnce(null);
-    await expect(getPendingSyncRecoveryKit()).resolves.toBeNull();
-    expect(() => mapSyncPendingRecoveryKit({ code: " ", active: true }, "kit")).toThrow();
-    vi.mocked(invoke).mockResolvedValueOnce("");
-    await expect(regenerateSyncRecoveryKit()).rejects.toThrow();
-    vi.mocked(invoke).mockResolvedValueOnce("ABCD-EFGH");
-    await expect(regenerateSyncRecoveryKit()).resolves.toBe("ABCD-EFGH");
+    await expect(createSyncRecoveryKit()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("sync_create_recovery_kit");
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(regenerateSyncRecoveryKit()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("sync_regenerate_recovery_kit");
+    vi.mocked(invoke).mockResolvedValueOnce(false);
+    await expect(confirmSyncRecoveryKitSaved("WXYZ")).resolves.toBe(false);
+    expect(invoke).toHaveBeenLastCalledWith("sync_recovery_kit_saved", { lastGroup: "WXYZ" });
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+    await expect(confirmSyncRecoveryKitSaved("WXYZ")).resolves.toBe(true);
+    vi.mocked(invoke).mockResolvedValueOnce("true");
+    await expect(confirmSyncRecoveryKitSaved("WXYZ")).rejects.toThrow();
   });
 
   it("sends late change targets, device ids, and kit text with their native names", async () => {

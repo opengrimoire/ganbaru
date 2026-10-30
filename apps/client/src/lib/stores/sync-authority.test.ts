@@ -52,29 +52,30 @@ describe("sync authority state", () => {
   });
 
   it("loads the pending kit only when this desktop is an admin", async () => {
-    answer({ sync_authority: authority(false), sync_outbox_list: [], sync_late_changes: [] });
+    answer({ sync_authority: authority(false), sync_contests: null, sync_outbox_list: [], sync_late_changes: { changes: [], total: 0 } });
     const state = await load();
     await state.refresh();
     expect(state.authority?.ownIsAdmin).toBe(false);
-    expect(calls("sync_recovery_kit_pending")).toBe(0);
+    expect(calls("sync_recovery_kit_state")).toBe(0);
     expect(state.pendingKit).toBeNull();
 
     answer({
       sync_authority: authority(true),
+      sync_contests: null,
       sync_outbox_list: [],
-      sync_late_changes: [],
-      sync_recovery_kit_pending: { code: "ABCD-EFGH", active: true },
+      sync_late_changes: { changes: [], total: 0 },
+      sync_recovery_kit_state: { stored: true, pending: { code: "ABCD-EFGH", qr: { width: 1, modules: [true] }, active: true } },
     });
     await state.refresh();
-    expect(calls("sync_recovery_kit_pending")).toBe(1);
-    expect(state.pendingKit).toEqual({ code: "ABCD-EFGH", active: true });
+    expect(calls("sync_recovery_kit_state")).toBe(1);
+    expect(state.pendingKit).toEqual({ code: "ABCD-EFGH", qr: { width: 1, modules: [true] }, active: true });
   });
 
   it("keeps the last state and reports a failure when a response is invalid", async () => {
-    answer({ sync_authority: authority(false), sync_outbox_list: [], sync_late_changes: [] });
+    answer({ sync_authority: authority(false), sync_contests: null, sync_outbox_list: [], sync_late_changes: { changes: [], total: 0 } });
     const state = await load();
     await state.refresh();
-    answer({ sync_authority: authority(false), sync_outbox_list: [{ change: "remove" }], sync_late_changes: [] });
+    answer({ sync_authority: authority(false), sync_contests: null, sync_outbox_list: [{ change: "remove" }], sync_late_changes: { changes: [], total: 0 } });
     await state.refresh();
     expect(state.loadFailed).toBe(true);
     expect(state.authority?.devices).toHaveLength(1);
@@ -96,7 +97,7 @@ describe("sync authority state", () => {
   });
 
   it("sends late decisions by removal, table, and row, then reloads", async () => {
-    answer({ sync_authority: null, sync_outbox_list: [], sync_late_changes: [] });
+    answer({ sync_authority: null, sync_contests: null, sync_outbox_list: [], sync_late_changes: { changes: [], total: 0 } });
     const state = await load();
     await state.discardLateChange({
       removalRevision: 4,

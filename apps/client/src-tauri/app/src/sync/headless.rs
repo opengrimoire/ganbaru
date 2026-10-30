@@ -167,29 +167,102 @@ fn parse_config_dir(text: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Records a network service discovery browse found, which the coordinator dialer of this
-/// process reads while a background pass runs.
+/// The network a relay worker run reports.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RelayNetworkInput {
+    metered: bool,
+}
+
+/// The input of a relay worker run.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RelayRunInput {
+    relay: RelayNetworkInput,
+}
+
+/// What the worker hands a pass besides the config directory.
+#[derive(Debug)]
+enum PassInput {
+    /// Coordinator records a network service discovery browse found.
+    Records(Vec<DiscoveredRecord>),
+    /// A relay worker run on a network that is `metered` or not.
+    Relay { metered: bool },
+}
+
+/// Parses the worker's pass input: a JSON object naming the relay network, or a records array
+/// as [`parse_records`] reads it. Both are bounded by [`MAX_RECORDS_BYTES`], and anything else
+/// refuses the whole input.
+fn parse_input(text: &str) -> Result<PassInput, String> {
+    if text.len() > MAX_RECORDS_BYTES {
+        return Err("the pass input is too large".to_string());
+    }
+    if text.trim_start().starts_with('{') {
+        let input: RelayRunInput =
+            serde_json::from_str(text).map_err(|error| format!("read relay input: {error}"))?;
+        return Ok(PassInput::Relay {
+            metered: input.relay.metered,
+        });
+    }
+    parse_records(text).map(PassInput::Records)
+}
+
+/// What the worker handed the running background pass, which the coordinator dialer and the
+/// relay pass of this process read.
+struct PassInputs {
+    /// Records a network service discovery browse found.
+    records: Mutex<Vec<DiscoveredRecord>>,
+    /// Whether the relay worker's network is metered, `None` outside a relay worker run.
+    metered: Mutex<Option<bool>>,
+}
+
+impl PassInputs {
+    const fn new() -> Self {
+        Self {
+            records: Mutex::new(Vec::new()),
+            metered: Mutex::new(None),
+        }
+    }
+}
+
 #[cfg(target_os = "android")]
-static PROVIDED_RECORDS: Mutex<Vec<DiscoveredRecord>> = Mutex::new(Vec::new());
+static PROVIDED: PassInputs = PassInputs::new();
 
-/// Clears the provided records when a pass ends, also when it unwinds.
-struct ProvidedRecords<'a>(&'a Mutex<Vec<DiscoveredRecord>>);
+/// Clears the provided inputs when a pass ends, also when it unwinds.
+struct ProvidedInputs<'a>(&'a PassInputs);
 
-impl<'a> ProvidedRecords<'a> {
-    fn install(store: &'a Mutex<Vec<DiscoveredRecord>>, records: Vec<DiscoveredRecord>) -> Self {
-        if let Ok(mut provided) = store.lock() {
+impl<'a> ProvidedInputs<'a> {
+    fn install(store: &'a PassInputs, input: PassInput) -> Self {
+        let (records, metered) = match input {
+            PassInput::Records(records) => (records, None),
+            PassInput::Relay { metered } => (Vec::new(), Some(metered)),
+        };
+        if let Ok(mut provided) = store.records.lock() {
             *provided = records;
+        }
+        if let Ok(mut provided) = store.metered.lock() {
+            *provided = metered;
         }
         Self(store)
     }
 }
 
-impl Drop for ProvidedRecords<'_> {
+impl Drop for ProvidedInputs<'_> {
     fn drop(&mut self) {
-        if let Ok(mut provided) = self.0.lock() {
+        if let Ok(mut provided) = self.0.records.lock() {
             provided.clear();
         }
+        if let Ok(mut provided) = self.0.metered.lock() {
+            *provided = None;
+        }
     }
+}
+
+/// Whether the network of the running relay worker pass is metered, `None` when no relay worker
+/// pass runs.
+#[cfg(target_os = "android")]
+pub(crate) fn relay_metered() -> Option<bool> {
+    PROVIDED.metered.lock().ok().and_then(|metered| *metered)
 }
 
 /// The instance names `pin`'s coordinator may advertise under any of `keys` at `unix_seconds`,
@@ -206,7 +279,7 @@ pub(crate) fn discovery_names(
 }
 
 fn provided_endpoints_in(
-    store: &Mutex<Vec<DiscoveredRecord>>,
+    store: &PassInputs,
     keys: &[DiscoveryKey],
     pin: &CoordinatorPin,
     unix_seconds: u64,
@@ -216,6 +289,7 @@ fn provided_endpoints_in(
         return Vec::new();
     }
     store
+        .records
         .lock()
         .map(|records| discovery::match_candidates(&expected, &records))
         .unwrap_or_default()
@@ -231,7 +305,7 @@ fn published_keys(pin: &CoordinatorPin) -> Vec<DiscoveryKey> {
 /// Endpoints of `pin`'s coordinator among the records the running background pass was given.
 #[cfg(target_os = "android")]
 pub(crate) fn provided_endpoints(pin: &CoordinatorPin) -> Vec<SocketAddr> {
-    provided_endpoints_in(&PROVIDED_RECORDS, &published_keys(pin), pin, unix_now())
+    provided_endpoints_in(&PROVIDED, &published_keys(pin), pin, unix_now())
 }
 
 fn unix_now_ms() -> u64 {
@@ -262,12 +336,12 @@ fn outcome_of(pass: &Result<HeadlessPass, String>) -> PassOutcome {
 
 /// Runs a background pass for the worker's arguments and returns its JSON result. While an
 /// exchange stops at its byte bound, up to [`MAX_PASSES`] passes continue it. The arguments are
-/// validated before use, `records` are visible to the dialer only during the passes, and a panic
-/// in `pass` or `names` is reported as `failed`.
+/// validated before use, the records or relay network in `input` are visible to the pass only
+/// while it runs, and a panic in `pass` or `names` is reported as `failed`.
 fn run_pass_with(
-    store: &Mutex<Vec<DiscoveredRecord>>,
+    store: &PassInputs,
     config_dir: JavaText,
-    records: JavaText,
+    input: JavaText,
     mut pass: impl FnMut(&Path) -> Result<HeadlessPass, String>,
     names: impl FnOnce(&Path) -> Result<Vec<String>, String>,
 ) -> String {
@@ -278,15 +352,15 @@ fn run_pass_with(
         let Ok(config_dir) = parse_config_dir(&config_dir) else {
             return PassResult::failed();
         };
-        let records = match records {
-            JavaText::Null => Vec::new(),
+        let input = match input {
+            JavaText::Null => PassInput::Records(Vec::new()),
             JavaText::TooLong => return PassResult::failed(),
-            JavaText::Text(text) => match parse_records(&text) {
-                Ok(records) => records,
+            JavaText::Text(text) => match parse_input(&text) {
+                Ok(input) => input,
                 Err(_) => return PassResult::failed(),
             },
         };
-        let provided = ProvidedRecords::install(store, records);
+        let provided = ProvidedInputs::install(store, input);
         let mut result = pass(&config_dir);
         for _ in 1..MAX_PASSES {
             match &result {
@@ -322,15 +396,15 @@ fn run_pass_with(
     }
 }
 
-/// [`run_pass_with`] against the process record store.
+/// [`run_pass_with`] against the process input store.
 #[cfg(target_os = "android")]
 fn run_pass_json(
     config_dir: JavaText,
-    records: JavaText,
+    input: JavaText,
     pass: impl FnMut(&Path) -> Result<HeadlessPass, String>,
     names: impl FnOnce(&Path) -> Result<Vec<String>, String>,
 ) -> String {
-    run_pass_with(&PROVIDED_RECORDS, config_dir, records, pass, names)
+    run_pass_with(&PROVIDED, config_dir, input, pass, names)
 }
 
 /// The discovery names of the coordinator pinned in `config_dir`, read through the pairing
@@ -455,15 +529,20 @@ pub(crate) struct BackgroundConfig {
     pub(crate) linked: bool,
     /// Local changes wait to be exchanged.
     pub(crate) pending: bool,
+    /// The sync space uses a relay, so relay passes run on any connected network.
+    pub(crate) relay: bool,
     pub(crate) config_dir: PathBuf,
 }
 
 impl BackgroundConfig {
-    /// The state for a device whose linking is `linked` and whose status is `view`.
+    /// The state for a device whose linking is `linked` and whose status is `view`. Relay work
+    /// is scheduled while the last pass ran a relay step, which an unpaused pass of an enabled
+    /// space whose server configuration names a relay does.
     pub(crate) fn of(linked: bool, view: &SyncStatusView, config_dir: PathBuf) -> Self {
         Self {
             linked,
             pending: view.pending_local_changes > 0,
+            relay: view.relay.is_some(),
             config_dir,
         }
     }
@@ -557,7 +636,12 @@ pub(crate) fn configure_background<R: tauri::Runtime>(
         let delivered = deliver_latest(&DESIRED_CONFIG, &DELIVERED_CONFIG, |config| {
             app.mobile_sync()
                 .ok_or_else(|| "the background sync plugin is not registered".to_string())?
-                .configure(config.linked, config.pending, &config.config_dir)
+                .configure(
+                    config.linked,
+                    config.pending,
+                    config.relay,
+                    &config.config_dir,
+                )
         });
         if let Err(error) = delivered {
             eprintln!("{error}");
@@ -570,8 +654,8 @@ mod tests {
     use super::*;
     use crate::sync::status::SyncStatusView;
 
-    fn store() -> Mutex<Vec<DiscoveredRecord>> {
-        Mutex::new(Vec::new())
+    fn store() -> PassInputs {
+        PassInputs::new()
     }
 
     fn pass(state: SyncState, role: Option<SyncRole>, delegated: bool) -> HeadlessPass {
@@ -864,8 +948,57 @@ mod tests {
             |_| Ok(Vec::new()),
         );
         assert_eq!(seen, vec!["192.168.1.30:43821".parse().expect("endpoint")]);
-        assert!(store.lock().expect("store").is_empty());
+        assert!(store.records.lock().expect("store").is_empty());
         assert!(provided_endpoints_in(&store, &keys(), &pin, now).is_empty());
+    }
+
+    #[test]
+    fn a_relay_run_shows_its_network_to_the_pass_only_while_it_runs() {
+        let store = store();
+        for (input, expected) in [
+            (r#"{"relay":{"metered":true}}"#, Some(true)),
+            (r#" {"relay":{"metered":false}}"#, Some(false)),
+            ("[]", None),
+        ] {
+            let mut seen = None;
+            let json = run_pass_with(
+                &store,
+                config_dir(),
+                JavaText::Text(input.to_string()),
+                |_| {
+                    seen = *store.metered.lock().expect("metered");
+                    Ok(pass(SyncState::Idle, Some(SyncRole::Client), false))
+                },
+                |_| Ok(Vec::new()),
+            );
+            assert_eq!(json, r#"{"outcome":"synced","discoveryNames":[]}"#);
+            assert_eq!(seen, expected, "{input}");
+            assert_eq!(*store.metered.lock().expect("metered"), None);
+        }
+    }
+
+    #[test]
+    fn malformed_relay_inputs_refuse_the_pass() {
+        for input in [
+            r#"{"relay":{}}"#.to_string(),
+            r#"{"relay":{"metered":"yes"}}"#.to_string(),
+            r#"{"relay":{"metered":true,"extra":1}}"#.to_string(),
+            r#"{"relay":{"metered":true},"records":[]}"#.to_string(),
+            r#"{"metered":true}"#.to_string(),
+            format!(
+                r#"{{"relay":{{"metered":true}}}}{}"#,
+                " ".repeat(MAX_RECORDS_BYTES)
+            ),
+        ] {
+            let json = run_pass_with(
+                &store(),
+                config_dir(),
+                JavaText::Text(input),
+                |_| panic!("an invalid relay input must not run a pass"),
+                |_| Ok(Vec::new()),
+            );
+            assert_eq!(json, r#"{"outcome":"failed","discoveryNames":[]}"#);
+        }
     }
 
     #[test]
@@ -873,7 +1006,7 @@ mod tests {
         let store = store();
         let pin = pin();
         let name = discovery_names(&keys(), &pin, unix_now())[1].clone();
-        *store.lock().expect("store") = vec![DiscoveredRecord {
+        *store.records.lock().expect("store") = vec![DiscoveredRecord {
             instance_name: name,
             port: 43_821,
             addresses: vec!["192.168.1.30".parse().expect("address")],
@@ -889,7 +1022,7 @@ mod tests {
         let pin = pin();
         let now = unix_now();
         let previous = discovery_names(&keys(), &pin, now)[1].clone();
-        *store.lock().expect("store") = vec![DiscoveredRecord {
+        *store.records.lock().expect("store") = vec![DiscoveredRecord {
             instance_name: previous,
             port: 43_821,
             addresses: vec!["192.168.1.30".parse().expect("address")],
@@ -958,7 +1091,30 @@ mod tests {
             |_| panic!("names failed"),
         );
         assert_eq!(json, failed);
-        assert!(store.lock().expect("store").is_empty());
+        assert!(store.records.lock().expect("store").is_empty());
+    }
+
+    #[test]
+    fn relay_work_is_scheduled_only_while_passes_find_a_relay() {
+        let without = SyncStatusView::default();
+        let with = SyncStatusView {
+            relay: Some(crate::sync::status::RelayDeliveryView::failed(
+                "unreachable".to_string(),
+                1,
+            )),
+            ..SyncStatusView::default()
+        };
+        assert!(!BackgroundConfig::of(true, &without, PathBuf::from("/config")).relay);
+        assert!(BackgroundConfig::of(true, &with, PathBuf::from("/config")).relay);
+        let desired = Mutex::new(None);
+        assert!(take_change(
+            &desired,
+            BackgroundConfig::of(true, &without, PathBuf::from("/config"))
+        ));
+        assert!(take_change(
+            &desired,
+            BackgroundConfig::of(true, &with, PathBuf::from("/config"))
+        ));
     }
 
     #[test]

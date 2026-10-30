@@ -58,6 +58,18 @@ export const sync = {
     lan: (address: string) => `Conectado por la red local en ${address}`,
     overlay: (address: string) => `Conectado por la red superpuesta en ${address}`,
   },
+  relay: {
+    lastPass: (time: string) => `Relé revisado ${time}`,
+    sent: (count: number) => `${count} ${count === 1 ? "cambio enviado" : "cambios enviados"} por el relé`,
+    received: (count: number) => `${count} ${count === 1 ? "cambio recibido" : "cambios recibidos"} por el relé`,
+    undelivered: (count: number) => `${count} ${count === 1 ? "cambio aún no está" : "cambios aún no están"} en el relé`,
+    uploadedFiles: (count: number) => `${count} ${count === 1 ? "archivo subido" : "archivos subidos"} al relé`,
+    downloadedFiles: (count: number) => `${count} ${count === 1 ? "archivo descargado" : "archivos descargados"} del relé`,
+    deferredFiles: (count: number) =>
+      `${count} ${count === 1 ? "archivo grande espera" : "archivos grandes esperan"} una red sin límite de datos`,
+    storage: (used: string, quota: string) => `Almacenamiento del relé: ${used} de ${quota}`,
+    problem: (message: string) => `Relé: ${message}`,
+  },
   degraded: {
     backgroundRestricted: "Android restringe Ganbaru en segundo plano, así que la sincronización espera hasta que abras la app.",
     standbyRestricted: "Android rara vez deja que Ganbaru funcione en segundo plano, así que la sincronización puede retrasarse.",

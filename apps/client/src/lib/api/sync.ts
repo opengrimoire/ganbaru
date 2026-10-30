@@ -54,6 +54,28 @@ export interface SyncConnectionView {
   address: string;
 }
 
+/** What the last relay pass of this app run moved, and what still waits. */
+export interface SyncRelayDelivery {
+  /** When the last relay pass finished, in Unix milliseconds. */
+  lastPassAtMs: number;
+  /** Sealed changes the pass delivered to the relay. */
+  sent: number;
+  /** Sealed changes the pass received from the relay. */
+  received: number;
+  /** Changes of this device's writers the relay does not hold yet. */
+  undelivered: number;
+  /** Files the pass uploaded and downloaded. */
+  uploadedFiles: number;
+  downloadedFiles: number;
+  /** Files left for a later pass because the network is metered. */
+  deferredFiles: number;
+  /** The relay's stored bytes for this vault and its quota; zero quota means no limit reported. */
+  storedBytes: number;
+  quotaBytes: number;
+  /** Set when the pass stopped early or the relay needs an administrator. */
+  problem: string | null;
+}
+
 /** Stored operations this device cannot apply, by reason. */
 export interface SyncHeldCounts {
   newerFormat: number;
@@ -104,6 +126,8 @@ export interface SyncStatusView {
    * milliseconds. Null while the anchor answers, on the coordinator, and before the first pass.
    */
   anchorUnreachableSinceMs: number | null;
+  /** The last relay pass of this app run, or null when the vault syncs without a relay or none ran yet. */
+  relay: SyncRelayDelivery | null;
 }
 
 export interface SyncDeviceRef {
@@ -164,6 +188,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   oldestUnconfirmedAtMs: null,
   displacedVersions: 0,
   anchorUnreachableSinceMs: null,
+  relay: null,
 };
 
 export const SYNC_DEVICE_KINDS = ["desktop", "mobile"] as const;
@@ -459,6 +484,22 @@ function readTableCount(value: unknown, label: string): SyncTableCount {
   };
 }
 
+function readRelayDelivery(value: unknown, label: string): SyncRelayDelivery {
+  const row = readRecord(value, label);
+  return {
+    lastPassAtMs: readNonNegativeSafeInteger(row.lastPassAtMs, `${label}.lastPassAtMs`),
+    sent: readNonNegativeSafeInteger(row.sent, `${label}.sent`),
+    received: readNonNegativeSafeInteger(row.received, `${label}.received`),
+    undelivered: readNonNegativeSafeInteger(row.undelivered, `${label}.undelivered`),
+    uploadedFiles: readNonNegativeSafeInteger(row.uploadedFiles, `${label}.uploadedFiles`),
+    downloadedFiles: readNonNegativeSafeInteger(row.downloadedFiles, `${label}.downloadedFiles`),
+    deferredFiles: readNonNegativeSafeInteger(row.deferredFiles, `${label}.deferredFiles`),
+    storedBytes: readNonNegativeSafeInteger(row.storedBytes, `${label}.storedBytes`),
+    quotaBytes: readNonNegativeSafeInteger(row.quotaBytes, `${label}.quotaBytes`),
+    problem: readNullable(row.problem, `${label}.problem`, readString),
+  };
+}
+
 function readUncountedDevice(value: unknown, label: string): SyncUncountedDevice {
   const row = readRecord(value, label);
   return {
@@ -500,6 +541,7 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
       "sync status.anchorUnreachableSinceMs",
       readNonNegativeSafeInteger,
     ),
+    relay: readNullable(row.relay, "sync status.relay", readRelayDelivery),
   };
 }
 

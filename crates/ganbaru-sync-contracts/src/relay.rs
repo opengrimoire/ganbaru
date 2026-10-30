@@ -59,6 +59,8 @@ pub enum RelayError {
     Version(u8),
     /// The replica holds no key of the stated epoch.
     UnknownEpoch(u32),
+    /// The replica holds no epoch key at all, so it cannot seal.
+    NoKey,
     /// The key offered is of another epoch than the one stated.
     WrongEpoch {
         /// The epoch the header states.
@@ -88,6 +90,7 @@ impl fmt::Display for RelayError {
             Self::Codec(error) => write!(formatter, "relay encoding: {error}"),
             Self::Version(version) => write!(formatter, "relay format version {version} is newer"),
             Self::UnknownEpoch(epoch) => write!(formatter, "key epoch {epoch} is not held"),
+            Self::NoKey => formatter.write_str("no key epoch is held"),
             Self::WrongEpoch { stated, key } => {
                 write!(
                     formatter,
@@ -747,13 +750,15 @@ impl RelayAssetOpener {
         // The asset id is a keyed digest, so it is compared in constant time.
         hmac::verify(&self.id_key, &self.sha256, header.asset.as_bytes())
             .map_err(|_| RelayError::Mismatch("asset id"))?;
-        if *self.count.get_or_insert(header.count) != header.count {
+        if self.count.is_some_and(|count| count != header.count) {
             return Err(RelayError::Mismatch("chunk count"));
         }
         if header.index != self.next {
             return Err(RelayError::Order);
         }
         let plaintext = chunk.open(key)?;
+        // The count is kept only once a chunk authenticated under it.
+        self.count.get_or_insert(header.count);
         self.received += plaintext.len();
         if self.received > MAX_RELAY_ASSET_BYTES {
             return Err(CodecError::Bounds("relay asset").into());

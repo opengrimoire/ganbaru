@@ -43,8 +43,10 @@ internal object SyncNative {
   fun ensureLoaded(): Boolean = loaded
 
   /**
-   * Runs one headless pass for the app config directory with optional discovered records JSON
-   * and returns the JSON result, or `null` when Rust could not create it.
+   * Runs one headless pass for the app config directory with an optional input, either a JSON
+   * array of discovered coordinator records or a relay network object from
+   * [RelayScheduling.passInput], and returns the JSON result, or `null` when Rust could not
+   * create it.
    */
   @JvmStatic
   external fun runPass(configDir: String, records: String?): String?

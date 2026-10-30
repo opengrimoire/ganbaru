@@ -85,6 +85,34 @@ internal object SyncScheduling {
     if (apiLevel >= EXPEDITED_JOB_API_LEVEL) OneTimeRequest.EXPEDITED else OneTimeRequest.ORDINARY
 }
 
+/** The network a relay run waits for. */
+internal enum class RelayNetwork {
+  /** Any network with internet access, metered or not. */
+  CONNECTED,
+}
+
+/**
+ * Relay scheduling decisions, kept free of Android types so JVM tests cover them. A relay is a
+ * user-configured server on the internet, so relay runs need any connected network rather than
+ * the local network a coordinator exchange needs.
+ */
+internal object RelayScheduling {
+  const val PERIODIC_WORK = "ganbaru-sync-relay"
+  const val PERIODIC_INTERVAL_MINUTES = 15L
+
+  /** The network every relay run requires. */
+  val requiredNetwork: RelayNetwork = RelayNetwork.CONNECTED
+
+  /** A relay run happens only for a vault whose sync space uses a relay. */
+  fun shouldRun(relay: Boolean, configDir: String?): Boolean = relay && !configDir.isNullOrEmpty()
+
+  /**
+   * The pass input that tells Rust whether the network is metered. On a metered network the pass
+   * still moves every record but leaves asset files above the metered bound for a later run.
+   */
+  fun passInput(metered: Boolean): String = """{"relay":{"metered":$metered}}"""
+}
+
 /**
  * Tells network changes apart from the state a callback reports when it is registered, so
  * registering never schedules a pass by itself.

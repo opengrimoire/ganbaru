@@ -59,6 +59,22 @@ class SyncSchedulingTest {
   }
 
   @Test
+  fun relayRunsNeedAnyConnectedNetworkNotTheLocalOne() {
+    assertEquals(RelayNetwork.CONNECTED, RelayScheduling.requiredNetwork)
+    assertTrue(RelayScheduling.shouldRun(relay = true, configDir = "/data/app"))
+    assertFalse(RelayScheduling.shouldRun(relay = false, configDir = "/data/app"))
+    assertFalse(RelayScheduling.shouldRun(relay = true, configDir = null))
+    assertFalse(RelayScheduling.shouldRun(relay = true, configDir = ""))
+    assertTrue(RelayScheduling.PERIODIC_WORK != SyncScheduling.PERIODIC_WORK)
+  }
+
+  @Test
+  fun aRelayRunTellsRustWhetherTheNetworkIsMetered() {
+    assertEquals("""{"relay":{"metered":true}}""", RelayScheduling.passInput(metered = true))
+    assertEquals("""{"relay":{"metered":false}}""", RelayScheduling.passInput(metered = false))
+  }
+
+  @Test
   fun registeringANetworkCallbackIsNotAChange() {
     val observations = NetworkObservations()
     assertFalse(observations.observe(1, setOf("192.168.1.2/24")))

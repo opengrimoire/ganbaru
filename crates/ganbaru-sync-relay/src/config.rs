@@ -4,7 +4,8 @@
 use crate::store::{
     DEFAULT_MAX_AGE, DEFAULT_QUOTA_BYTES, MIN_MAX_AGE, MIN_QUOTA_BYTES, RetentionPolicy,
 };
-use ganbaru_handoff::protocol::relay::RELAY_PORT;
+use ganbaru_handoff::protocol::relay::{RELAY_PORT, RelaySetupCode, RelaySetupToken};
+use ganbaru_sync_contracts::SpaceId;
 use ganbaru_sync_contracts::bounds::MAX_SERVER_ENDPOINTS;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -20,10 +21,16 @@ pub const USAGE: &str = "\
 usage:
   ganbaru-sync-relay serve --data-dir <path> [--listen <address:port>] [--quota-mib <n>] [--max-age-days <n>]
   ganbaru-sync-relay setup --data-dir <path> --endpoint <host:port> [--endpoint <host:port> ...]
+  ganbaru-sync-relay spaces --data-dir <path>
+  ganbaru-sync-relay remove-space --data-dir <path> --space <space id>
+  ganbaru-sync-relay revoke-setup --data-dir <path> [--code <setup code>]
   ganbaru-sync-relay help
 
-serve   runs the relay. The quota applies to each space.
-setup   prints a one-time setup code that lets one device claim a space on this relay.";
+serve         runs the relay. The quota applies to each space.
+setup         prints a one-time setup code that lets one device claim a space on this relay.
+spaces        lists the claimed spaces with their epoch and stored bytes.
+remove-space  deletes a space and everything stored for it. Stop the relay first.
+revoke-setup  revokes one unused setup code, or every unused one when --code is omitted.";
 
 /// Settings of the `serve` subcommand.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +52,24 @@ pub struct SetupConfig {
     pub endpoints: Vec<String>,
 }
 
+/// Settings of the `remove-space` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoveSpaceConfig {
+    /// Directory holding the database.
+    pub data_dir: PathBuf,
+    /// Space to delete.
+    pub space: SpaceId,
+}
+
+/// Settings of the `revoke-setup` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevokeSetupConfig {
+    /// Directory holding the database.
+    pub data_dir: PathBuf,
+    /// Token of the setup code to revoke, or `None` to revoke every unused one.
+    pub token: Option<RelaySetupToken>,
+}
+
 /// A parsed command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -52,6 +77,12 @@ pub enum Command {
     Serve(ServeConfig),
     /// Prints a setup code.
     Setup(SetupConfig),
+    /// Lists the claimed spaces of the relay in a data directory.
+    Spaces(PathBuf),
+    /// Deletes one space.
+    RemoveSpace(RemoveSpaceConfig),
+    /// Revokes unused setup codes.
+    RevokeSetup(RevokeSetupConfig),
     /// Prints usage.
     Help,
 }
@@ -74,6 +105,12 @@ where
     match subcommand.as_str() {
         "serve" => parse_serve(flags).map(Command::Serve),
         "setup" => parse_setup(flags).map(Command::Setup),
+        "spaces" => {
+            reject_unknown(&flags, &["--data-dir"])?;
+            data_dir(&flags).map(Command::Spaces)
+        }
+        "remove-space" => parse_remove_space(flags).map(Command::RemoveSpace),
+        "revoke-setup" => parse_revoke_setup(flags).map(Command::RevokeSetup),
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => Err(format!("unknown subcommand {subcommand:?}")),
     }
@@ -196,9 +233,77 @@ fn parse_setup(flags: Vec<(String, String)>) -> Result<SetupConfig, String> {
     })
 }
 
+fn parse_remove_space(flags: Vec<(String, String)>) -> Result<RemoveSpaceConfig, String> {
+    reject_unknown(&flags, &["--data-dir", "--space"])?;
+    let space = single(&flags, "--space")?.ok_or_else(|| "--space is required".to_string())?;
+    let space = SpaceId::from_hex(space.trim())
+        .ok_or_else(|| "--space must be a space id as printed by the spaces command".to_string())?;
+    Ok(RemoveSpaceConfig {
+        data_dir: data_dir(&flags)?,
+        space,
+    })
+}
+
+fn parse_revoke_setup(flags: Vec<(String, String)>) -> Result<RevokeSetupConfig, String> {
+    reject_unknown(&flags, &["--data-dir", "--code"])?;
+    let token = match single(&flags, "--code")? {
+        Some(text) => Some(
+            RelaySetupCode::from_text(&text)
+                .map_err(|_| {
+                    "--code must be a setup code printed by the setup command".to_string()
+                })?
+                .token,
+        ),
+        None => None,
+    };
+    Ok(RevokeSetupConfig {
+        data_dir: data_dir(&flags)?,
+        token,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operator_commands_parse_their_targets() {
+        assert_eq!(
+            parse(args("spaces --data-dir d")).unwrap(),
+            Command::Spaces(PathBuf::from("d"))
+        );
+        assert!(parse(args("spaces --data-dir d --space x")).is_err());
+        let space = SpaceId::from_bytes([7; 16]);
+        let Command::RemoveSpace(config) = parse(args(&format!(
+            "remove-space --data-dir d --space {}",
+            space.to_hex()
+        )))
+        .unwrap() else {
+            panic!("expected remove-space");
+        };
+        assert_eq!(config.space, space);
+        assert!(parse(args("remove-space --data-dir d")).is_err());
+        assert!(parse(args("remove-space --data-dir d --space 0102")).is_err());
+
+        let code = RelaySetupCode {
+            endpoints: vec!["relay.example.org:43823".to_string()],
+            certificate_fingerprint: [3; 32],
+            token: RelaySetupToken::from_bytes([9; 32]),
+        };
+        let Command::RevokeSetup(config) = parse(args(&format!(
+            "revoke-setup --data-dir d --code {}",
+            code.to_text().unwrap()
+        )))
+        .unwrap() else {
+            panic!("expected revoke-setup");
+        };
+        assert_eq!(config.token, Some(code.token));
+        let Command::RevokeSetup(config) = parse(args("revoke-setup --data-dir d")).unwrap() else {
+            panic!("expected revoke-setup");
+        };
+        assert_eq!(config.token, None);
+        assert!(parse(args("revoke-setup --data-dir d --code nope")).is_err());
+    }
 
     fn args(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_string).collect()

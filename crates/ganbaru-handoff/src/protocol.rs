@@ -1155,12 +1155,37 @@ where
     R: AsyncRead + Unpin,
     T: Frame,
 {
+    let length = read_frame_length::<R, T>(reader, max_bytes).await?;
+    read_frame_body(reader, length).await
+}
+
+/// Reads the length prefix of one frame and checks it against `max_bytes`, which never exceeds
+/// [`MAX_CONTROL_BYTES`]. A caller that budgets memory reserves the returned length before it
+/// reads the body with [`read_frame_body`].
+pub async fn read_frame_length<R, T>(reader: &mut R, max_bytes: usize) -> Result<usize, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
     let label = T::LABEL;
     let length = reader
         .read_u32()
         .await
         .map_err(|error| format!("read {label} length: {error}"))? as usize;
     if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
+        return Err(format!("{label} has an invalid size"));
+    }
+    Ok(length)
+}
+
+/// Reads and validates the body of a frame whose length [`read_frame_length`] returned.
+pub async fn read_frame_body<R, T>(reader: &mut R, length: usize) -> Result<T, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
+    let label = T::LABEL;
+    if length == 0 || length > MAX_CONTROL_BYTES {
         return Err(format!("{label} has an invalid size"));
     }
     let mut encoded = vec![0_u8; length];

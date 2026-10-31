@@ -282,7 +282,6 @@ impl<R: Runtime> SyncHost for AppHost<R> {
 
     async fn refresh_cached(&self, notices: &[ChangeNotice]) {
         crate::vault::preferences::on_sync_notices(self, notices).await;
-        crate::projects::sync::on_sync_notices(self, notices);
         crate::calendar::sync::on_sync_notices(self, notices);
         crate::pomodoro::sync::on_sync_notices(self, notices);
         #[cfg(desktop)]
@@ -516,8 +515,15 @@ impl SyncHost for HeadlessHost {
     fn emit_status(&self, _view: &SyncStatusView) {}
 
     /// A background pass has no views, no Guardian runtime, and no notification scheduler, so
-    /// reminders, Android alarms, and Guardian rules it changes refresh when the app next opens.
-    fn emit_applied(&self, _tables: Vec<String>) {}
+    /// views, reminders, Android alarms, and Guardian rules it changes refresh when the app next
+    /// reaches the foreground.
+    fn emit_applied(&self, tables: Vec<String>) {
+        super::background_changes::record_tables(tables);
+    }
+
+    async fn refresh_cached(&self, notices: &[ChangeNotice]) {
+        super::background_changes::record_notices(notices);
+    }
 
     #[cfg(desktop)]
     async fn discover_members(

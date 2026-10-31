@@ -1,16 +1,5 @@
 import type { SyncDomainPresentation, SyncTablePresentation } from "$lib/sync/presentation-registry";
-import { notifyCalendarSyncChanged } from "./sync-events";
-
-/** Replicated Calendar tables, as sync names them in applied notices, conflicts, and recovery offers. */
-export const CALENDAR_SYNC_TABLES: readonly string[] = [
-  "calendars",
-  "icalendar_objects",
-  "icalendar_components",
-  "calendar_events",
-  "calendar_event_archives",
-  "calendar_event_archive_import_objects",
-  "project_task_event_links",
-];
+import { CALENDAR_SYNC_TABLES, notifyCalendarSyncChanged } from "./sync-events";
 
 /** Titles, descriptions, and timing edited on two devices are chosen in the event panel. A hidden event returns as a new event. */
 const EVENTS_PRESENTATION: SyncTablePresentation = {

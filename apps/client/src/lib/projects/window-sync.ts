@@ -1,12 +1,14 @@
+import { listenSyncApplied } from "$lib/api/sync";
 import type { ProjectMutation } from "$lib/projects/types";
 import { createVaultChangeChannel } from "$lib/windows/vault-change-channel";
+import { PROJECTS_SYNC_TABLES } from "./sync-events";
 
 /** Key published when a committed change names no project, such as a group edit. */
 export const PROJECTS_WORKSPACE_CHANGE_KEY = "workspace";
 
 /**
- * Key the app publishes when sync applied Projects rows. Applied rows can be deleted ones that no longer name their
- * project, so it marks every project as changed. It matches `SYNC_CHANGE_KEY` in the native Projects sync module.
+ * Key for changes sync made to Projects rows. Applied rows can be deleted ones that no longer name their project, so it
+ * marks every project as changed.
  */
 export const PROJECTS_SYNC_CHANGE_KEY = "sync";
 
@@ -48,7 +50,27 @@ export function publishProjectsSyncChange(): void {
   projectChanges.publish([PROJECTS_SYNC_CHANGE_KEY]);
 }
 
-/** Receive the project ids (or the workspace key) other windows changed, gathered per pause in their editing. */
-export function listenForProjectChanges(onChange: (keys: ReadonlySet<string>) => void): Promise<() => void> {
-  return projectChanges.listen(onChange);
+/** Whether replicated changes to these tables affect Projects views. */
+export function touchesProjects(tables: readonly string[]): boolean {
+  return tables.some((table) => PROJECTS_SYNC_TABLES.has(table));
+}
+
+/**
+ * Receive the project ids (or the workspace key) other windows changed, gathered per pause in their editing, and the
+ * sync key when a linked device changed Projects rows.
+ */
+export async function listenForProjectChanges(onChange: (keys: ReadonlySet<string>) => void): Promise<() => void> {
+  const stopWindows = await projectChanges.listen(onChange);
+  try {
+    const stopReplicated = await listenSyncApplied((tables) => {
+      if (touchesProjects(tables)) onChange(new Set([PROJECTS_SYNC_CHANGE_KEY]));
+    });
+    return () => {
+      stopWindows();
+      stopReplicated();
+    };
+  } catch (error: unknown) {
+    stopWindows();
+    throw error;
+  }
 }

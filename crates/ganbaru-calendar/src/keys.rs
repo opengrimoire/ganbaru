@@ -20,3 +20,16 @@ pub fn archive_import_object_key(
     .map(|key| key.as_str().to_string())
     .map_err(|error| format!("derive {ARCHIVE_IMPORT_OBJECT_KEY_PREFIX} key: {error}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use ganbaru_sync::manifest::vault::calendar;
+
+    #[test]
+    fn archive_object_key_prefix_matches_the_sync_manifest() {
+        assert_eq!(
+            super::ARCHIVE_IMPORT_OBJECT_KEY_PREFIX,
+            calendar::ARCHIVE_OBJECT_KEY_PREFIX
+        );
+    }
+}

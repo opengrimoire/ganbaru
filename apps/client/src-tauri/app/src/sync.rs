@@ -7,6 +7,8 @@
 #[cfg(desktop)]
 pub(crate) mod anchor_server;
 mod authority;
+#[cfg(any(mobile, test))]
+mod background_changes;
 pub(crate) mod backup_keys;
 pub(crate) mod commands;
 mod connectivity;

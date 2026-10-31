@@ -12,7 +12,6 @@ pub(crate) mod project_commands;
 pub(crate) mod relationship_commands;
 pub(crate) mod reorder;
 pub(crate) mod structure_commands;
-pub(crate) mod sync;
 pub(crate) mod task_bulk;
 pub(crate) mod task_commands;
 pub(crate) mod views;

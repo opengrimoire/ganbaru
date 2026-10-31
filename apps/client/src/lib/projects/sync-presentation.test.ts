@@ -3,8 +3,8 @@ import { en } from "$lib/i18n/messages/en";
 import { es } from "$lib/i18n/messages/es";
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import { syncPresentations } from "$lib/sync/presentations";
-import { PROJECTS_SYNC_PRESENTATION, PROJECTS_SYNC_TABLES } from "./sync-presentation";
-import { onProjectsSyncChanged } from "./sync-events";
+import { PROJECTS_SYNC_PRESENTATION } from "./sync-presentation";
+import { onProjectsSyncChanged, PROJECTS_SYNC_TABLES } from "./sync-events";
 import { publishProjectsSyncChange } from "./window-sync";
 
 vi.mock("./window-sync", () => ({ publishProjectsSyncChange: vi.fn() }));

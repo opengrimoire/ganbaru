@@ -91,8 +91,8 @@ pub fn sync_now(runtime: State<'_, SyncRuntime>) {
 
 /// Reports whether the phone app is in the foreground. Going to the background stops the
 /// member listener before the command returns, so the phone listens only while it is visible;
-/// coming to the foreground runs a pass, which starts the listener when this phone is a linked
-/// member.
+/// coming to the foreground reports what background passes applied, so views left loaded reload,
+/// and runs a pass, which starts the listener when this phone is a linked member.
 #[cfg(any(mobile, test))]
 #[tauri::command]
 pub async fn sync_set_foreground<R: Runtime>(
@@ -102,6 +102,13 @@ pub async fn sync_set_foreground<R: Runtime>(
 ) -> Result<(), String> {
     runtime.set_foreground(visible);
     if visible {
+        let changes = super::background_changes::take();
+        if !changes.is_empty() {
+            let notices = changes.notices.into_iter().collect::<Vec<_>>();
+            AppHost::of(&app)
+                .report_changes(changes.tables, &notices)
+                .await;
+        }
         runtime.sync_now();
     } else {
         AppHost::of(&app).stop_serving_members().await;

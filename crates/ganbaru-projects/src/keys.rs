@@ -53,3 +53,30 @@ pub fn view_preference_key(view_id: &str, preference_key: &str) -> Result<String
 pub fn task_event_key(task_id: &str, event_id: &str) -> Result<String, String> {
     key(TASK_EVENT_KEY_PREFIX, &[task_id, event_id])
 }
+
+#[cfg(test)]
+mod tests {
+    use ganbaru_sync::manifest::vault::{calendar, projects};
+
+    #[test]
+    fn key_prefixes_match_the_sync_manifest() {
+        assert_eq!(super::PRIORITY_KEY_PREFIX, projects::PRIORITY_KEY_PREFIX);
+        assert_eq!(
+            super::DEPENDENCY_KEY_PREFIX,
+            projects::DEPENDENCY_KEY_PREFIX
+        );
+        assert_eq!(super::TASK_TAG_KEY_PREFIX, projects::TASK_TAG_KEY_PREFIX);
+        assert_eq!(
+            super::CUSTOM_FIELD_VALUE_KEY_PREFIX,
+            projects::CUSTOM_FIELD_VALUE_KEY_PREFIX
+        );
+        assert_eq!(
+            super::VIEW_PREFERENCE_KEY_PREFIX,
+            projects::VIEW_PREFERENCE_KEY_PREFIX
+        );
+        assert_eq!(
+            super::TASK_EVENT_KEY_PREFIX,
+            calendar::TASK_EVENT_KEY_PREFIX
+        );
+    }
+}

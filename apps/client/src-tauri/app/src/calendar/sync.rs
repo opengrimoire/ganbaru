@@ -2,10 +2,10 @@
 //!
 //! The Calendar post-apply hook (`ganbaru_calendar::sync_apply`) rebuilds component projections
 //! inside the engine transaction and reports each changed Calendar row under its table name. The
-//! host hands those reports to [`on_sync_notices`], which publishes the Calendar window change
-//! event every Calendar store already listens to, so open windows reload and desktop
-//! notification schedules follow the reloaded events, and marks the native Focus Calendar
-//! projection stale so titles, links, and admission read the applied rows.
+//! host hands those reports to [`on_sync_notices`], which marks the native Focus Calendar
+//! projection stale so titles, links, and admission read the applied rows. Calendar stores reload
+//! from the applied notice the frontend receives on every platform for the same tables, and
+//! desktop notification schedules follow the reloaded events.
 
 use ganbaru_sync::ChangeNotice;
 use serde::Serialize;
@@ -38,16 +38,15 @@ fn calendar_changed(notices: &[ChangeNotice]) -> bool {
         .any(|notice| ganbaru_calendar::sync_apply::is_calendar_topic(notice.topic))
 }
 
-/// Refreshes Calendar views and the Focus Calendar projection when sync change `notices`
-/// include Calendar rows.
+/// Marks the Focus Calendar projection stale when sync change `notices` include Calendar rows.
 pub(crate) fn on_sync_notices<R: Runtime>(app: &AppHandle<R>, notices: &[ChangeNotice]) {
     if calendar_changed(notices) {
-        publish_change(app);
+        crate::pomodoro::invalidate_calendar(app);
     }
 }
 
-/// Reloads open Calendar windows and marks the native Focus Calendar projection stale after
-/// Calendar rows changed outside the native Focus edit path.
+/// Reloads open Calendar windows and marks the native Focus Calendar projection stale after a
+/// local command changed Calendar rows outside the native Focus edit path.
 pub(crate) fn publish_change<R: Runtime>(app: &AppHandle<R>) {
     crate::pomodoro::invalidate_calendar(app);
     let envelope = ChangeEnvelope {

@@ -3,8 +3,8 @@ import { en } from "$lib/i18n/messages/en";
 import { es } from "$lib/i18n/messages/es";
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import { syncPresentations } from "$lib/sync/presentations";
-import { onCalendarSyncChanged } from "./sync-events";
-import { CALENDAR_SYNC_PRESENTATION, CALENDAR_SYNC_TABLES } from "./sync-presentation";
+import { CALENDAR_SYNC_TABLES, onCalendarSyncChanged, touchesCalendar } from "./sync-events";
+import { CALENDAR_SYNC_PRESENTATION } from "./sync-presentation";
 
 vi.mock("$lib/projects/window-sync", () => ({ publishProjectsSyncChange: vi.fn() }));
 
@@ -38,6 +38,12 @@ describe("calendar sync presentation", () => {
       expect(syncPresentations.recoveryNote(tEn, table)).toBeTruthy();
       expect(syncPresentations.recoveryNote(tEs, table)).toBeTruthy();
     }
+  });
+
+  it("treats every Calendar table and the Focus topic as touching Calendar views", () => {
+    for (const table of [...CALENDAR_SYNC_TABLES, "focus"]) expect(touchesCalendar([table])).toBe(true);
+    expect(touchesCalendar(["quick_notes", "projects"])).toBe(false);
+    expect(touchesCalendar([])).toBe(false);
   });
 
   it("points event conflicts to the Calendar, with plural forms", () => {

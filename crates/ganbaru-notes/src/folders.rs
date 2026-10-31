@@ -78,6 +78,7 @@ pub async fn update_folder(
         .map_err(|e| format!("begin notes folder update: {e}"))?;
     let current = get_folder_tx(&mut tx, folder_id).await?;
     validate_folder_parent(&mut tx, &current.project_id, parent_folder_id).await?;
+    crate::structure::ensure_folder_parent_acyclic_tx(&mut tx, folder_id, parent_folder_id).await?;
     let result = sqlx::query(
         "UPDATE notes_folders
          SET parent_folder_id = ?,

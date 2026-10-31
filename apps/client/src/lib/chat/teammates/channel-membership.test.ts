@@ -42,9 +42,10 @@ function channelAccess(
     groupId: "group:1",
     channelName: channelId,
     accessProfileId: "profile:build",
+    accessProfileRevisionId: "profile:build:revision:2",
     accessProfileRevision: 2,
     capabilities: { readHistory: true, participate: true },
-    historyBoundary: { kind: "fromGrant", lowerOrdinal: 12 },
+    historyBoundary: { kind: "fromGrant", lowerOrderKey: "c00C" },
     runtimeApprovalOverride: "autoApprove",
     scratchRuntimeApprovalOverride: null,
     folderGrants: [
@@ -96,7 +97,7 @@ describe("channel membership", () => {
     expect(input).toEqual({
       channelId: "channel:a",
       accessProfileId: "profile:conversation",
-      accessProfileRevision: 3,
+      accessProfileRevisionId: "profile:conversation:revision:3",
       capabilities: { readHistory: false, participate: true },
       historyBoundary: { kind: "entire" },
       runtimeApprovalOverride: null,
@@ -112,7 +113,7 @@ describe("channel membership", () => {
     expect(next.map((entry) => entry.channelId)).toEqual(["channel:b"]);
     expect(next[0]).toMatchObject({
       accessProfileId: "profile:build",
-      accessProfileRevision: 2,
+      accessProfileRevisionId: "profile:build:revision:2",
       historyBoundary: { kind: "fromGrant" },
       runtimeApprovalOverride: "autoApprove",
     });

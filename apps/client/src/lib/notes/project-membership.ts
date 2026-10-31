@@ -1,8 +1,6 @@
 import type { NotesPage } from "./types";
 import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 
-export const NOTES_PAGE_PROJECT_ID_PROPERTY = "__ganbaru_project_id";
-
 export interface NotesCreatePageOptions {
   projectId?: string | null;
   folderId?: string | null;
@@ -14,13 +12,12 @@ export function normalizeNotesProjectId(projectId: string | null | undefined): s
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function notesPageProjectId(page: Pick<NotesPage, "properties">): string | null {
-  const value = page.properties[NOTES_PAGE_PROJECT_ID_PROPERTY];
-  return typeof value === "string" ? normalizeNotesProjectId(value) : null;
+export function notesPageProjectId(page: Pick<NotesPage, "project_id">): string | null {
+  return normalizeNotesProjectId(page.project_id);
 }
 
 export function notesPageMatchesProject(
-  page: Pick<NotesPage, "properties">,
+  page: Pick<NotesPage, "project_id">,
   projectId: string | null | undefined,
 ): boolean {
   const normalizedProjectId = normalizeNotesProjectId(projectId);
@@ -44,14 +41,4 @@ export function mergeNotesNavigationPages(
   return [...new Map(
     [...destinationPages, ...workspacePages].map((page) => [page.id, page]),
   ).values()];
-}
-
-export function notesPageProjectProperties(
-  projectId: string | null | undefined,
-): Record<string, unknown> | undefined {
-  const normalizedProjectId = normalizeNotesProjectId(projectId);
-  if (!normalizedProjectId) return undefined;
-  return {
-    [NOTES_PAGE_PROJECT_ID_PROPERTY]: normalizedProjectId,
-  };
 }

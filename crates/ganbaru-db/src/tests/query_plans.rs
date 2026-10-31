@@ -22,7 +22,7 @@ fn hot_domain_queries_use_expected_indexes() {
             ),
             (
                 "Notes block children",
-                "SELECT id FROM notes_blocks WHERE parent_block_id = 'block-1' AND in_trash = 0 ORDER BY sort_order, id",
+                "SELECT id FROM notes_blocks WHERE parent_block_id = 'block-1' AND in_trash = 0 ORDER BY order_key, id",
                 "idx_notes_blocks_parent_block",
             ),
             (
@@ -43,7 +43,7 @@ fn hot_domain_queries_use_expected_indexes() {
             (
                 "active Pomodoro segment",
                 "SELECT id FROM pomodoro_segments WHERE status = 'active' LIMIT 1",
-                "idx_pomodoro_segments_single_active",
+                "idx_pomodoro_segments_active",
             ),
             (
                 "active Quick notes",
@@ -54,6 +54,16 @@ fn hot_domain_queries_use_expected_indexes() {
                 "tagged Quick notes",
                 "SELECT id FROM quick_notes WHERE tag_id = 'tag-1' AND archived = 0 AND trashed_at IS NULL ORDER BY pinned DESC, order_key ASC, id ASC LIMIT 60",
                 "idx_quick_notes_tag_active",
+            ),
+            (
+                "sync apply chain start",
+                "SELECT seq FROM sync_ops WHERE space_id = zeroblob(16) AND writer_id = zeroblob(16) AND seq < 300 AND group_continues = 0 ORDER BY seq DESC LIMIT 1",
+                "idx_sync_ops_chain_ends",
+            ),
+            (
+                "sync latest storage order",
+                "SELECT max(stored_order) FROM sync_ops WHERE space_id = zeroblob(16)",
+                "idx_sync_ops_stored_order",
             ),
         ];
         for (name, sql, expected) in cases {

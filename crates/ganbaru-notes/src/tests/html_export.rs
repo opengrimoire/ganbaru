@@ -27,6 +27,7 @@ fn html_export_writes_page_tree_assets_comments_and_database_metadata() {
                 title: "Child Page".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: Some(BLOCK_A.to_string()),
                 properties: None,
@@ -217,5 +218,102 @@ fn html_export_is_deterministic_and_warns_when_assets_are_excluded() {
                         && diagnostic["block_id"] == BLOCK_C
                 })
         );
+    });
+}
+
+#[test]
+fn html_archive_reads_a_referenced_path_of_the_same_bytes_when_the_row_path_holds_no_file() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("ganbaru-notes-html-fallback-{nonce}"));
+        let vault = base.join("vault");
+        let files = vault.join("assets").join("notes").join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let bytes = b"same bytes under two names";
+        let sha = assets::files::hex_hash(bytes);
+        let row_path = format!("notes/files/{sha}.txt");
+        let referenced_path = format!("notes/files/{sha}.csv");
+        std::fs::write(files.join(format!("{sha}.csv")), bytes).unwrap();
+        sqlx::query(
+            "INSERT INTO notes_assets
+                 (id, asset_path, kind, source_type, content_type, byte_size, sha256)
+             VALUES (?1, ?2, 'file', 'local_upload', 'text/plain', ?3, ?4)",
+        )
+        .bind(format!("notes/files:{sha}"))
+        .bind(&row_path)
+        .bind(bytes.len() as i64)
+        .bind(&sha)
+        .execute(&pool)
+        .await
+        .unwrap();
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_A),
+                after: Some(BLOCK_A.to_string()),
+                children: vec![block(
+                    BLOCK_C,
+                    "file",
+                    local_media_payload(
+                        &referenced_path,
+                        "text/csv",
+                        bytes.len() as i64,
+                        &sha,
+                        "Shared file",
+                        Some("shared.csv"),
+                    ),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut archive = transfers::html_export::export_archive(
+            &pool,
+            NoteHtmlExportRequest {
+                page_id: PAGE_A.to_string(),
+                include_page_tree: Some(false),
+                include_comments: Some(false),
+                include_resolved_comments: Some(false),
+                include_assets: Some(true),
+                include_database_views: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+        let exported = &archive.dto.assets;
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].source_path, row_path);
+        assert_eq!(
+            exported[0].fallback_source_paths,
+            std::slice::from_ref(&referenced_path)
+        );
+        assert!(exported[0].exported);
+        let target = base.join("export.zip");
+
+        transfers::html_export::archive::write_archive(&vault, &target, &mut archive).unwrap();
+
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&target).unwrap()).unwrap();
+        let mut entry = zip
+            .by_name(&format!("assets/{row_path}"))
+            .expect("the row's archive path holds the referenced bytes");
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut read).unwrap();
+        assert_eq!(read, bytes);
+        drop(entry);
+        assert!(
+            archive
+                .dto
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "html_export_asset_read_failed"),
+            "the fallback read leaves no read failure"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     });
 }

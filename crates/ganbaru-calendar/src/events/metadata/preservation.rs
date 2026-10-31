@@ -85,9 +85,8 @@ impl Preservation {
         components.sort_by(|a, b| a.id.cmp(&b.id));
         let component_ids = ids_json(components.iter().map(|row| row.id.as_str()))?;
         let properties = ComponentProperty::read(connection, &component_ids, budget).await?;
-        let property_ids = ids_json(properties.iter().map(|row| row.id.as_str()))?;
-        let parameters = Parameter::read(connection, &property_ids, budget).await?;
-        let nodes = Node::read(connection, &property_ids, budget).await?;
+        let parameters = Parameter::read(connection, &component_ids, budget).await?;
+        let nodes = Node::read(connection, &component_ids, budget).await?;
         // Every stored descendant must carry the same property/parameter owner.
         // Without this check, malformed ownerless children would disappear from
         // an owner-based selection and be silently omitted by a copy.
@@ -127,26 +126,31 @@ impl Preservation {
             .map(|row| (row.id.as_str(), row.parent_node_id.as_deref()))
             .collect();
         validate_parents(&nodes, true, "value")?;
-        let properties: BTreeSet<_> = self.properties.iter().map(|row| row.id.as_str()).collect();
-        let parameters: BTreeMap<_, _> = self
-            .parameters
+        let properties: BTreeMap<_, _> = self
+            .properties
             .iter()
-            .map(|row| (row.id.as_str(), row.property_id.as_str()))
+            .map(|row| (row.id.as_str(), row.component_id.as_str()))
             .collect();
+        let mut parameters = BTreeMap::new();
+        for row in &self.parameters {
+            if properties.get(row.property_id.as_str()) != Some(&row.component_id.as_str()) {
+                return Err("Calendar preservation parameter has an invalid owner".into());
+            }
+            parameters.insert(row.id.as_str(), row.property_id.as_str());
+        }
         let by_id: BTreeMap<_, _> = self
             .nodes
             .iter()
             .map(|row| (row.id.as_str(), row))
             .collect();
         for row in &self.nodes {
-            if row.number_value.is_some_and(|value| !value.is_finite()) {
-                return Err("Calendar preservation contains a non-finite numeric value".into());
+            if let Some(value) = row.number_value.as_deref() {
+                crate::stored_number::parse(value)?;
             }
-            let property = row.property_id.as_deref();
-            let parameter = row.parameter_id.as_deref();
-            if property.is_some() == parameter.is_some()
-                || property.is_some_and(|id| !properties.contains(id))
-                || parameter.is_some_and(|id| !parameters.contains_key(id))
+            let property = row.property_id.as_str();
+            let parameter_owner = row.parameter_id.as_deref().map(|id| parameters.get(id));
+            if properties.get(property) != Some(&row.component_id.as_str())
+                || parameter_owner.is_some_and(|owner| owner != Some(&property))
             {
                 return Err("Calendar preservation value has an invalid owner".into());
             }

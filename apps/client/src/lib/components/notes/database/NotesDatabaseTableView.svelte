@@ -26,6 +26,7 @@
   import NotesDatabaseSortControls from "./NotesDatabaseSortControls.svelte";
   import NotesDatabaseSettingsFooter from "./NotesDatabaseSettingsFooter.svelte";
   import NotesDatabaseQueryBar from "./NotesDatabaseQueryBar.svelte";
+  import NotesDatabaseMismatchCell from "./NotesDatabaseMismatchCell.svelte";
   import NotesDatabasePropertyEditor from "./NotesDatabasePropertyEditor.svelte";
   import NotesDatabaseRowParentControls from "./NotesDatabaseRowParentControls.svelte";
   import NotesDatabaseBulkPropertyMenu from "./NotesDatabaseBulkPropertyMenu.svelte";
@@ -69,6 +70,7 @@
   import { formatList, formatNumber } from "$lib/i18n/formatters";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import {
+    notesDatabasePropertyCell,
     notesDatabaseTableEditValuesEqual,
     notesDatabaseTableCellEditValue,
     notesDatabaseTableCellText,
@@ -1487,10 +1489,15 @@
                 </div>
                 {#each visibleColumns as column, columnIndex (column.id)}
                   {@const editValue = rowCreation.valueFor(row, column)}
+                  {@const cell = notesDatabasePropertyCell(row, column)}
                   <CollectionCell role="cell" class={`${frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} ${notesTableColumnPresentation(tableConfiguration?.presentation, column.id).wrap ? "notes-table-wrap" : ""}`}
                     style={`${frozenStyle(column.id) ?? ""} ${conditionalColorStyle(row, column.id)}`}>
                     <div class={column.type === "title" ? "flex w-full min-w-0 items-start gap-0.5" : "contents"}
                       style={column.type === "title" ? `padding-left: ${titleIndent(hierarchy?.depth ?? 0)};` : ""}>
+                    {#if cell.kind === "mismatch"}
+                    <NotesDatabaseMismatchCell pageId={row.id} propertyId={column.id} storedType={cell.storedType}
+                      disabled={mutating} onSettled={() => loadTable(false)} />
+                    {:else}
                     <NotesDatabasePropertyEditor {row} {column} {rowIndex} {columnIndex} value={editValue}
                       disabled={mutating || (column.type !== "title" && rowCreation.blocked(row.id))}
                       onSave={(value) => saveCell(row, column, value)}
@@ -1498,6 +1505,7 @@
                       onEditingChange={(editing) => { isEditingCell = editing; }}
                       onDraft={(value) => rowCreation.draft(row.id, column.id, value)}
                       onRunButton={() => { void runButton(row, column); }} />
+                    {/if}
                     </div>
                     {#if column.type === "title"}
                       <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100"

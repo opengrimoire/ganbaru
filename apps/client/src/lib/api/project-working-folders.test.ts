@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { addSelectedProjectWorkingFolder, bindSelectedProjectWorkingFolder, pickProjectWorkingFolder } from "./project-working-folders";
+import { addSelectedProjectWorkingFolder, bindSelectedProjectWorkingFolder, pickProjectWorkingFolder, removeProjectWorkingFolder } from "./project-working-folders";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("$lib/api/db", () => ({ ensureDbUrl: async () => "sqlite:vault" }));
@@ -81,5 +81,14 @@ describe("trust decisions at binding", () => {
     expect(await bindSelectedProjectWorkingFolder("folder", selection)).toEqual(folder);
     vi.mocked(invoke).mockResolvedValueOnce(folder).mockRejectedValueOnce(new Error("git missing"));
     expect(await bindSelectedProjectWorkingFolder("folder", selection)).toEqual(folder);
+  });
+});
+
+describe("external folder removal", () => {
+  it("removes the folder from the active vault and passes a refusal through unchanged", async () => {
+    const refusal = { code: "permission", message: "working folder is in use", retryable: true };
+    vi.mocked(invoke).mockRejectedValueOnce(refusal);
+    await expect(removeProjectWorkingFolder("folder")).rejects.toBe(refusal);
+    expect(invoke).toHaveBeenCalledWith("projects_remove_working_folder", { dbUrl: "sqlite:vault", workingFolderId: "folder" });
   });
 });

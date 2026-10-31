@@ -1,34 +1,64 @@
-//! Seeded simulation of installations that edit Quick notes, partly offline, and exchange
-//! operations through a hub over a network that drops, duplicates, and reorders messages.
-//! Engine calls crash at failpoints and must leave no trace, writers are revoked and re-sealed,
-//! and conflicts and recovery offers are resolved along the way. After every step the
-//! databases keep their invariants; at quiescence every installation holds the same
-//! replicated state.
+//! Seeded simulation of installations that edit Quick notes and the test-only fixture domain,
+//! partly offline, and exchange operations through a hub over a network that drops, duplicates,
+//! and reorders messages.
+//! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices while
+//! they edit and excludes what they write past the cutoff, cloned spare installations fork their
+//! writer and re-seal once fork evidence reaches them, and conflicts and recovery offers are
+//! resolved along the way. Exchanges sometimes end with the hub and the exchanging replica compacting what is stable, except one replica that never
+//! compacts; compaction never changes domain rows. After every step the databases keep their
+//! invariants; at quiescence every installation holds the same replicated state, and every
+//! override policy the fixture hook settles shows its strictest concurrent version.
 //!
-//! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default keeps the debug
-//! test run near half a minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
-//! that seed alone.
+//! Seeds are split across four test functions that the harness runs in parallel.
+//! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
+//! test run takes a few minutes. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
+//! that seed alone in the shard that owns it.
 
-use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
+mod peer;
+mod relay;
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use ganbaru_sync_contracts::{Envelope, Field, Value, VersionVector, WriterId};
 
 use super::block_on;
-use super::replica::{Replica, START_MS, quoted, rank};
+use super::fixture::{
+    ASK, BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES,
+    MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, UNATTENDED, edge_key, membership_key,
+    memo_tag_key, override_group, policy_rank,
+};
+use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, rank};
+use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
+use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
-use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult};
+use crate::merge;
+use crate::stability::{CountedDevice, DeviceStanding};
+use crate::{
+    ApplyReport, EvidenceOutcome, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult,
+    compaction_limit,
+};
 
 const DEFAULT_SEEDS: u64 = 48;
 const SEEDS_VARIABLE: &str = "GANBARU_SYNC_SOAK_SEEDS";
 const SEED_VARIABLE: &str = "GANBARU_SYNC_SEED";
+/// Test functions the seeds are split across, so the test harness runs them in parallel.
+const SHARDS: u64 = 4;
 const STEPS: usize = 60;
 const TAG_NAMES: &[&str] = &["Work", "work", "Home", "Ideas", "IDEAS", "Errands"];
 const WORDS: &[&str] = &[
     "alpha", "beta", "gamma", "delta", "plan", "call", "buy", "read",
 ];
 const ONE_DAY_MS: u64 = 86_400_000;
+/// Local transactions in one burst of node or edge edits.
+const TREE_BURST: usize = 3;
+/// Items and nodes every replica holds before the first step.
+const SHARED_ROWS: usize = 5;
+/// Id prefix of the shared items, created by replica 0 as its own.
+const SHARED_ITEM: &str = "item-0-shared-";
 
 /// SplitMix64: small, fast, and stable across platforms, so a seed always replays the same run.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -39,11 +69,11 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, bound: usize) -> usize {
+    pub(super) fn below(&mut self, bound: usize) -> usize {
         (self.next() % bound as u64) as usize
     }
 
-    fn chance(&mut self, percent: u64) -> bool {
+    pub(super) fn chance(&mut self, percent: u64) -> bool {
         self.next() % 100 < percent
     }
 
@@ -71,7 +101,32 @@ struct Sim {
     skew_ms: Vec<u64>,
     clock_ms: u64,
     created: usize,
+    /// Devices enrolled beyond the replicas and the hub that a removal used up.
+    spares: usize,
+    /// Override edits, drawn apart from `rng` and keyed apart from `created`, so they leave
+    /// every other choice of a seed as it was.
+    overrides: Overrides,
 }
+
+/// Choices and ids of fixture override edits.
+struct Overrides {
+    rng: Rng,
+    created: usize,
+}
+
+impl Overrides {
+    fn new(seed: u64) -> Self {
+        Self {
+            rng: Rng(seed ^ OVERRIDE_SEED_MIX),
+            created: 0,
+        }
+    }
+}
+
+/// Mixed into a seed for the override edit stream.
+const OVERRIDE_SEED_MIX: u64 = 0x6f76_6572_7269_6465;
+/// Chance in percent that a local edit is followed by an override edit.
+const OVERRIDE_EDIT_PERCENT: u64 = 6;
 
 /// Runs `call`, first crashing it at a random failpoint now and then. A crashed call must leave
 /// the database exactly as it was; the call then runs again without a failpoint.
@@ -104,33 +159,58 @@ async fn crashing<T>(
     call(replica).await
 }
 
-const SEAL_FAILPOINTS: &[&str] = &["seal.reserve", "seal.before_commit"];
-const APPLY_FAILPOINTS: &[&str] = &["apply.before_commit", "seal.reserve", "seal.before_commit"];
-const RESEAL_FAILPOINTS: &[&str] = &["reseal.before_commit", "seal.reserve"];
-const RECOVERY_FAILPOINTS: &[&str] = &["recovery.before_commit", "seal.reserve"];
+const SEAL_FAILPOINTS: &[&str] = &[
+    "seal.reserve",
+    "seal.before_commit",
+    "hold.before_seal",
+    "elide.before_commit",
+];
+const APPLY_FAILPOINTS: &[&str] = &[
+    "apply.before_commit",
+    "seal.reserve",
+    "seal.before_commit",
+    "hold.before_seal",
+    "elide.before_commit",
+];
+const SEQUENCE_FAILPOINTS: &[&str] = &["sequence.before_commit", "seal.reserve"];
+const RECOVERY_FAILPOINTS: &[&str] = &[
+    "recovery.before_commit",
+    "seal.reserve",
+    "elide.before_commit",
+];
 
-/// Seals pending captures, rotating the writer once when it is no longer active.
+/// Seals pending captures, recovering the writer once when it is no longer active. A removed
+/// device seals nothing more, like the app once it learns of its removal.
 async fn seal(rng: &mut Rng, replica: &mut Replica) {
-    let result = crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
-        r.seal().await
-    })
-    .await;
-    match result {
-        Ok(_) => {}
-        Err(SyncError::WriterInactive(_)) => {
-            replica.rotate();
-            crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
-                r.seal().await
-            })
-            .await
-            .unwrap();
-        }
-        Err(error) => panic!("replica {} failed to seal: {error:?}", replica.index),
+    let before = replica.seal_snapshot().await;
+    if seal_rotating(rng, replica).await {
+        replica.check_sealed_writes(&before).await;
     }
 }
 
-/// Applies until nothing ready remains, re-sealing and rotating like the app.
+/// Returns false when the device turned out to be removed.
+async fn seal_rotating(rng: &mut Rng, replica: &mut Replica) -> bool {
+    let mut rotated = false;
+    loop {
+        let result = crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
+            r.seal().await
+        })
+        .await;
+        match result {
+            Ok(_) => return true,
+            Err(SyncError::DeviceRemoved) if replica.device_removed().await => return false,
+            Err(SyncError::WriterInactive(_)) if !rotated => {
+                replica.recover_inactive().await;
+                rotated = true;
+            }
+            Err(error) => panic!("replica {} failed to seal: {error:?}", replica.index),
+        }
+    }
+}
+
+/// Applies until nothing ready remains, rotating like the app while the device stays enrolled.
 async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
+    let mut last = ApplyReport::default();
     for _ in 0..1_000 {
         let report: ApplyReport =
             crashing(rng, replica, APPLY_FAILPOINTS, async |r: &mut Replica| {
@@ -138,30 +218,52 @@ async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
             })
             .await
             .unwrap_or_else(|error| panic!("replica {} failed to apply: {error:?}", replica.index));
-        assert!(
-            report.blocked_revocations.is_empty(),
-            "replica {} blocked a revocation",
-            replica.index
-        );
-        if let Some(needed) = report.reseal_needed {
-            crashing(rng, replica, RESEAL_FAILPOINTS, async |r: &mut Replica| {
-                r.reseal(needed).await
-            })
-            .await
-            .unwrap_or_else(|error| {
-                panic!("replica {} failed to re-seal: {error:?}", replica.index)
-            });
-        } else if report.local_writer_frozen {
-            replica.rotate();
+        // Fork evidence reaches an installation without freezing its writer when the apply
+        // seals nothing, so every round re-seals its own forks, as the app does.
+        let resealed = replica.reseal_own_forks().await;
+        if report.local_writer_frozen && !replica.device_removed().await {
+            if !resealed {
+                replica.rotate();
+            }
         } else if !report.more {
             return;
         }
+        last = report;
     }
-    panic!("replica {} never finished applying", replica.index);
+    let writers = replica
+        .scalar_text(
+            "SELECT group_concat(device_id || ' ' || hex(writer_id) || ' ' || state || ' '
+                || stored_seq || ' ' || applied_seq, ', ')
+             FROM sync_writers",
+        )
+        .await;
+    let sealed = replica.seal().await;
+    panic!(
+        "replica {} never finished applying, last report {last:?}, local writer {}, device \
+         writers {writers:?}, seal {sealed:?}",
+        replica.index,
+        replica.writer()
+    );
 }
 
 /// Stores delivered operations and applies them. Returns whether anything new was stored.
 async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
+    let (stored, refusals) = store(rng, to, ops).await;
+    if let Some(fork) = refusals
+        .iter()
+        .find(|refusal| matches!(refusal, StoreRefusal::Fork { .. }))
+    {
+        panic!("replica {} refused an operation: {fork:?}", to.index);
+    }
+    apply_all(rng, to).await;
+    acknowledge(rng, to).await;
+    stored
+}
+
+/// Stores delivered operations without applying them. Returns whether anything new was stored
+/// and, in order, the refusals that stop an exchange's direction: a gap, an unknown writer, or a
+/// fork. Any other refusal is a defect.
+async fn store(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> (bool, Vec<StoreRefusal>) {
     let outcomes = crashing(
         rng,
         to,
@@ -175,23 +277,107 @@ async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
     .await
     .unwrap_or_else(|error| panic!("replica {} failed to store: {error:?}", to.index));
     let mut stored = false;
-    for outcome in outcomes {
+    let mut refusals = Vec::new();
+    for (op, outcome) in ops.iter().zip(outcomes) {
         match outcome {
             StoreOutcome::Stored { held } => {
-                assert_eq!(held, None, "replica {} held an operation", to.index);
+                // Only an operation of a removed device past its cutoff is held.
+                if held.is_some() {
+                    assert_eq!(held, Some(HoldReason::Invalid));
+                    let operation = Envelope::decode(op).unwrap().operation().unwrap();
+                    let excluded = to
+                        .count(&format!(
+                            "SELECT count(*) FROM sync_ops WHERE writer_id = x'{}' AND seq = {}
+                                AND excluded_revision IS NOT NULL",
+                            operation.writer.to_hex(),
+                            operation.seq
+                        ))
+                        .await;
+                    assert_eq!(excluded, 1, "replica {} held an operation", to.index);
+                }
                 stored = true;
             }
-            StoreOutcome::Duplicate
-            | StoreOutcome::Refused(
-                StoreRefusal::Gap { .. } | StoreRefusal::UnknownWriter | StoreRefusal::Revoked,
-            ) => {}
+            StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Revoked) => {}
+            StoreOutcome::Refused(
+                refusal @ (StoreRefusal::Gap { .. }
+                | StoreRefusal::UnknownWriter
+                | StoreRefusal::Fork { .. }),
+            ) => {
+                refusals.push(refusal);
+            }
             StoreOutcome::Refused(refusal) => {
                 panic!("replica {} refused an operation: {refusal:?}", to.index)
             }
         }
     }
-    apply_all(rng, to).await;
-    stored
+    (stored, refusals)
+}
+
+const ACKNOWLEDGE_FAILPOINTS: &[&str] = &["acknowledge.before_commit", "seal.reserve"];
+
+/// Seals the writer's genesis and any due acknowledgement, rotating the writer once like the
+/// app. Most calls seal nothing, so only some of them may crash: the snapshots a crash
+/// compares would otherwise double the run time.
+async fn acknowledge(rng: &mut Rng, replica: &mut Replica) {
+    let failpoints = if rng.chance(10) {
+        ACKNOWLEDGE_FAILPOINTS
+    } else {
+        &[]
+    };
+    let mut call = async |r: &mut Replica| {
+        r.engine
+            .acknowledge(&mut r.conn, &r.ctx, &mut r.identity.local(), r.now_ms)
+            .await
+    };
+    match crashing(rng, replica, failpoints, &mut call).await {
+        // A removed device seals nothing and keeps its revoked writer; its installation stops
+        // once it notices.
+        Ok(_) | Err(SyncError::DeviceRemoved) => {}
+        Err(SyncError::WriterInactive(_)) if replica.device_removed().await => {}
+        Err(SyncError::WriterInactive(_)) => {
+            replica.recover_inactive().await;
+            crashing(rng, replica, failpoints, call)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("replica {} failed to acknowledge: {error:?}", replica.index)
+                });
+        }
+        Err(error) => panic!("replica {} failed to acknowledge: {error:?}", replica.index),
+    }
+}
+
+/// Percent of exchange steps that end with compaction.
+const COMPACTION_PERCENT: u64 = 40;
+
+/// Index of the replica that never compacts, which every other replica must still equal.
+const NEVER_COMPACTS: usize = 0;
+
+/// Compacts `replica` up to `limit` in batches of `batch` operations, crashing between batches
+/// now and then.
+async fn compact(rng: &mut Rng, replica: &mut Replica, limit: &VersionVector, batch: usize) {
+    crashing(rng, replica, &["compact_batch"], async |r: &mut Replica| {
+        r.compact(limit, batch).await
+    })
+    .await
+    .unwrap_or_else(|error| panic!("replica {} failed to compact: {error:?}", replica.index));
+}
+
+/// The head of `writer` the hub stores with the same hash as `replica`, as the probe of a
+/// pass confirms it: the lower of both stored sequences, when the hashes there agree.
+async fn confirmed_head(hub: &mut Replica, replica: &mut Replica, writer: WriterId) -> Option<u64> {
+    let seq = hub
+        .stored_vector()
+        .await
+        .get(&writer)
+        .min(replica.stored_vector().await.get(&writer));
+    if seq == 0 {
+        return None;
+    }
+    let sql = format!(
+        "SELECT lower(hex(hash)) FROM sync_ops WHERE writer_id = x'{}' AND seq = {seq}",
+        writer.to_hex()
+    );
+    (ids(hub, &sql).await == ids(replica, &sql).await).then_some(seq)
 }
 
 /// The operations of a message after the network dropped, duplicated, or reordered some.
@@ -219,15 +405,23 @@ fn unreliable(rng: &mut Rng, ops: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
     delivered
 }
 
-/// Sends what `from` has and `to` lacks. Returns whether `to` stored anything new.
+/// Sends the fork evidence and operations `from` has and `to` lacks, as an exchange does.
+/// Returns whether `to` stored anything new.
 async fn send(rng: &mut Rng, from: &mut Replica, to: &mut Replica, reliable: bool) -> bool {
+    let learned = to
+        .take_evidence(from)
+        .await
+        .contains(&EvidenceOutcome::Stored);
     let known = to.stored_vector().await;
     let ops = from.ops_since(&known).await;
     if ops.is_empty() {
-        return false;
+        if learned {
+            apply_all(rng, to).await;
+        }
+        return learned;
     }
     let ops = if reliable { ops } else { unreliable(rng, ops) };
-    deliver(rng, to, &ops).await
+    deliver(rng, to, &ops).await || learned
 }
 
 async fn ids(replica: &mut Replica, sql: &str) -> Vec<String> {
@@ -241,6 +435,59 @@ fn iso_time(ms: u64) -> String {
     format!("strftime('%Y-%m-%dT%H:%M:%fZ', {ms} / 1000.0, 'unixepoch')")
 }
 
+/// The ancestors of `node`, nearest first, in a parent map whose roots map to an empty id.
+fn ancestors<'a>(parents: &'a BTreeMap<String, String>, node: &str) -> Vec<&'a str> {
+    let mut chain = Vec::new();
+    let mut at = parents.get(node);
+    while let Some(parent) = at.filter(|parent| !parent.is_empty()) {
+        // A local tree has no cycle; the bound only stops a broken one.
+        if chain.len() > parents.len() {
+            break;
+        }
+        chain.push(parent.as_str());
+        at = parents.get(parent);
+    }
+    chain
+}
+
+/// Depth of `node`: a root has depth 0.
+fn depth(parents: &BTreeMap<String, String>, node: &str) -> usize {
+    ancestors(parents, node).len()
+}
+
+/// Whether `node` is `ancestor` or lies in its subtree.
+fn is_within(parents: &BTreeMap<String, String>, node: &str, ancestor: &str) -> bool {
+    node == ancestor || ancestors(parents, node).contains(&ancestor)
+}
+
+/// How many levels the subtree of `node` reaches below it.
+fn height(parents: &BTreeMap<String, String>, node: &str) -> usize {
+    let base = depth(parents, node);
+    parents
+        .keys()
+        .filter(|other| is_within(parents, other, node))
+        .map(|other| depth(parents, other) - base)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether `start` reaches `goal` through `edges`.
+fn reaches(edges: &[(String, String)], start: &str, goal: &str) -> bool {
+    let mut seen = BTreeSet::from([start]);
+    let mut pending = vec![start];
+    while let Some(row) = pending.pop() {
+        if row == goal {
+            return true;
+        }
+        for (_, to) in edges.iter().filter(|(from, _)| from == row) {
+            if seen.insert(to.as_str()) {
+                pending.push(to.as_str());
+            }
+        }
+    }
+    false
+}
+
 impl Sim {
     async fn new(seed: u64) -> Self {
         let mut rng = Rng(seed);
@@ -248,7 +495,7 @@ impl Sim {
         let mut replicas = Vec::with_capacity(count);
         let mut skew_ms = Vec::with_capacity(count);
         for index in 0..count {
-            replicas.push(Replica::new(index, seed).await.coordinated_by(count));
+            replicas.push(Replica::new(index, seed).await);
             // Clocks run up to a day ahead of the hub's.
             skew_ms.push(if rng.chance(30) {
                 rng.next() % ONE_DAY_MS
@@ -256,7 +503,7 @@ impl Sim {
                 0
             });
         }
-        let hub = Replica::new(count, seed).await.coordinated_by(count);
+        let hub = Replica::anchor(count, seed).await;
         Self {
             rng,
             replicas,
@@ -265,11 +512,24 @@ impl Sim {
             skew_ms,
             clock_ms: START_MS,
             created: 0,
+            spares: 0,
+            overrides: Overrides::new(seed),
         }
     }
 
+    /// Advances every clock by up to two seconds, and now and then by long enough for
+    /// acknowledgements or keepalives to fall due again.
     fn advance_clocks(&mut self) {
-        self.clock_ms += 1 + self.rng.next() % 2_000;
+        let elapsed = if self.rng.chance(3) {
+            ACKNOWLEDGEMENT_INTERVAL_MS + self.rng.next() % KEEPALIVE_INTERVAL_MS
+        } else {
+            1 + self.rng.next() % 2_000
+        };
+        self.advance_clocks_by(elapsed);
+    }
+
+    fn advance_clocks_by(&mut self, elapsed_ms: u64) {
+        self.clock_ms += elapsed_ms;
         self.hub.now_ms = self.clock_ms;
         for (replica, skew) in self.replicas.iter_mut().zip(&self.skew_ms) {
             replica.now_ms = self.clock_ms + skew;
@@ -324,8 +584,8 @@ impl Sim {
         sql
     }
 
-    /// One local edit of the kind the app makes, in one transaction. Edits that break a domain
-    /// constraint roll back, as a refused app command would.
+    /// One local edit of the kind the app makes, in one transaction, or a burst of node or edge
+    /// edits. Edits that break a domain constraint roll back, as a refused app command would.
     async fn edit(&mut self, index: usize) {
         let notes = ids(
             &mut self.replicas[index],
@@ -341,7 +601,42 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(15);
+        if self.overrides.rng.chance(OVERRIDE_EDIT_PERCENT) {
+            self.edit_overrides(index, now.clone()).await;
+        }
+        let kind = self.rng.below(45);
+        if kind >= 43 {
+            return self.edit_lists(index, now).await;
+        }
+        if kind >= 41 {
+            return self.edit_boards(index, now).await;
+        }
+        if kind >= 39 {
+            return self.edit_memos(index).await;
+        }
+        if kind >= 37 {
+            return self.edit_drafts(index).await;
+        }
+        if kind >= 25 {
+            // Tree and edge edits come in bursts, so concurrent moves and adds meet often.
+            for _ in 0..TREE_BURST {
+                if kind >= 31 {
+                    self.edit_edges(index).await;
+                } else {
+                    self.edit_nodes(index).await;
+                }
+            }
+            return;
+        }
+        if kind >= 21 {
+            return self.edit_memberships(index, now).await;
+        }
+        if kind >= 18 {
+            return self.edit_links(index).await;
+        }
+        if kind >= 15 {
+            return self.edit_fixture(index, kind - 15, now).await;
+        }
         let kind = if note.is_none() && (3..=11).contains(&kind) {
             0
         } else {
@@ -435,6 +730,710 @@ impl Sim {
             _ => return,
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of a fixture item: create, relabel, or delete. The fixture domain's
+    /// triggers mark local creates, count label edits, and keep the index in step.
+    async fn edit_fixture(&mut self, index: usize, kind: usize, now: String) {
+        let items = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_items ORDER BY id",
+        )
+        .await;
+        let item = self.rng.pick(&items).map(|id| quoted(id));
+        let sql = match (kind, item) {
+            (1, Some(item)) => format!(
+                "UPDATE fixture_items SET label = {} WHERE id = {item}",
+                quoted(&self.words())
+            ),
+            (2, Some(item)) => format!("DELETE FROM fixture_items WHERE id = {item}"),
+            _ => {
+                let id = self.next_id("item", index);
+                format!(
+                    "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ({}, {now}, {}, 0)",
+                    quoted(&id),
+                    quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture drafts and their parts: create a draft that may be published
+    /// at once, publish, retitle, add or edit a part, delete a draft, or try to turn a published
+    /// draft back into a draft, which the publication guard refuses.
+    async fn edit_drafts(&mut self, index: usize) {
+        let drafts = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_drafts ORDER BY id",
+        )
+        .await;
+        let parts = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_draft_parts ORDER BY id",
+        )
+        .await;
+        let draft = self.rng.pick(&drafts).map(|id| quoted(id));
+        let part = self.rng.pick(&parts).map(|id| quoted(id));
+        let sql = match (self.rng.below(7), draft, part) {
+            (1, Some(draft), _) => {
+                format!("UPDATE fixture_drafts SET published = 1 WHERE id = {draft}")
+            }
+            (2, Some(draft), _) => format!(
+                "UPDATE fixture_drafts SET title = {} WHERE id = {draft}",
+                quoted(&self.words())
+            ),
+            (3, Some(draft), _) => {
+                let id = self.next_id("part", index);
+                format!(
+                    "INSERT INTO fixture_draft_parts (id, draft_id, body) VALUES ({}, {draft}, {})",
+                    quoted(&id),
+                    quoted(&self.words())
+                )
+            }
+            (4, _, Some(part)) => format!(
+                "UPDATE fixture_draft_parts SET body = {} WHERE id = {part}",
+                quoted(&self.words())
+            ),
+            (5, Some(draft), _) => format!("DELETE FROM fixture_drafts WHERE id = {draft}"),
+            (6, Some(draft), _) => {
+                let sql = format!("UPDATE fixture_drafts SET published = 0 WHERE id = {draft}");
+                let replica = &mut self.replicas[index];
+                let published = replica
+                    .count(&format!(
+                        "SELECT count(*) FROM fixture_drafts WHERE id = {draft} AND published = 1"
+                    ))
+                    .await;
+                let reverted = replica.try_exec(&sql).await;
+                assert!(
+                    published == 0 || !reverted,
+                    "replica {index} turned published draft {draft} back into a draft"
+                );
+                return;
+            }
+            _ => {
+                let id = self.next_id("draft", index);
+                let mut sql = format!(
+                    "INSERT INTO fixture_drafts (id, title, published) VALUES ({}, {}, {});",
+                    quoted(&id),
+                    quoted(&self.words()),
+                    u8::from(self.rng.chance(30))
+                );
+                for _ in 0..self.rng.below(3) {
+                    let part = self.next_id("part", index);
+                    sql.push_str(&format!(
+                        "INSERT INTO fixture_draft_parts (id, draft_id, body) VALUES ({}, {}, {});",
+                        quoted(&part),
+                        quoted(&id),
+                        quoted(&self.words())
+                    ));
+                }
+                sql
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture memos: create, relabel, add a line or a tag, delete with a
+    /// hold the way domain code does, or undo a held delete, which inserts the memo again only
+    /// while [`hold::release_hold`] confirms the lease. The lines and tags the delete removed
+    /// stay held until the lease expires.
+    async fn edit_memos(&mut self, index: usize) {
+        let memos = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_memos ORDER BY id",
+        )
+        .await;
+        let held = ids(
+            &mut self.replicas[index],
+            &format!(
+                "SELECT row_key FROM sync_capture
+                 WHERE table_id = {} AND deleted = 1 AND held_until_ms IS NOT NULL
+                 ORDER BY row_key",
+                MEMOS_TABLE.0
+            ),
+        )
+        .await;
+        let memo = self.rng.pick(&memos).cloned();
+        let label = self.words();
+        match (self.rng.below(7), memo) {
+            (4, Some(memo)) => {
+                let id = self.next_id("line", index);
+                let sql = format!(
+                    "INSERT INTO fixture_memo_lines (id, memo_id, body) VALUES ({}, {}, {})",
+                    quoted(&id),
+                    quoted(&memo),
+                    quoted(&label)
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+            (5, Some(memo)) => {
+                let tag = self.rng.pick(&["red", "green", "blue"]).copied();
+                let Some(tag) = tag else {
+                    return;
+                };
+                let sql = format!(
+                    "INSERT INTO fixture_memo_tags (memo_id, tag, sync_key) VALUES ({}, {}, {})",
+                    quoted(&memo),
+                    quoted(tag),
+                    quoted(&memo_tag_key(&memo, tag))
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+            (1, Some(memo)) => {
+                let sql = format!(
+                    "UPDATE fixture_memos SET label = {} WHERE id = {}",
+                    quoted(&label),
+                    quoted(&memo)
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+            (2, Some(memo)) => {
+                let lease = 1 + self.rng.next() % (2 * MAX_HOLD_MS);
+                let replica = &mut self.replicas[index];
+                let now = replica.now_ms;
+                let mut tx = sqlx::Connection::begin(&mut replica.conn).await.unwrap();
+                sqlx::query("DELETE FROM fixture_memos WHERE id = ?")
+                    .bind(&memo)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                hold::hold_deletes(
+                    &replica.engine,
+                    &mut tx,
+                    MEMOS_TABLE,
+                    &[&memo],
+                    now,
+                    now + lease,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            }
+            (3, _) => {
+                let Some(memo) = self.rng.pick(&held).cloned() else {
+                    return;
+                };
+                let replica = &mut self.replicas[index];
+                let now = replica.now_ms;
+                let mut tx = sqlx::Connection::begin(&mut replica.conn).await.unwrap();
+                let live = hold::release_hold(&mut tx, MEMOS_TABLE, &[&memo], now)
+                    .await
+                    .unwrap();
+                if live {
+                    sqlx::query("INSERT INTO fixture_memos (id, label) VALUES (?, ?)")
+                        .bind(&memo)
+                        .bind(&label)
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                }
+                tx.commit().await.unwrap();
+            }
+            _ => {
+                let id = self.next_id("memo", index);
+                let sql = format!(
+                    "INSERT INTO fixture_memos (id, label) VALUES ({}, {})",
+                    quoted(&id),
+                    quoted(&label)
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+        }
+    }
+
+    /// SQL that replaces a list's entries with new ones, each with a fresh id and usually a
+    /// membership the replica holds.
+    fn entries_sql(&mut self, index: usize, list: &str, members: &[String]) -> String {
+        let mut sql = format!(
+            "DELETE FROM fixture_list_entries WHERE list_id = {};",
+            quoted(list)
+        );
+        for ordinal in 0..self.rng.below(MAX_LIST_ENTRIES + 1) {
+            let id = self.next_id("entry", index);
+            let note = if self.rng.chance(50) {
+                quoted(&self.words())
+            } else {
+                "NULL".into()
+            };
+            let member = match self.rng.pick(members) {
+                Some(key) if self.rng.chance(60) => quoted(key),
+                _ => "NULL".into(),
+            };
+            sql.push_str(&format!(
+                "INSERT INTO fixture_list_entries (list_id, ordinal, entry_id, body, note, member_key)
+                 VALUES ({}, {ordinal}, {}, {}, {note}, {member});",
+                quoted(list),
+                quoted(&id),
+                quoted(&self.words())
+            ));
+        }
+        sql
+    }
+
+    /// One local edit of fixture lists: create a list with entries, retitle it, reverse its
+    /// entries keeping their ids, replace its entries, or delete it. Removing a membership that
+    /// an entry names removes the entry here and hides it on replicas that still hold the
+    /// list's older value.
+    async fn edit_lists(&mut self, index: usize, now: String) {
+        let lists = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_lists ORDER BY id",
+        )
+        .await;
+        let members = ids(
+            &mut self.replicas[index],
+            "SELECT sync_key FROM fixture_memberships ORDER BY sync_key",
+        )
+        .await;
+        let list = self.rng.pick(&lists).cloned();
+        let sql = match (self.rng.below(5), list) {
+            (1, Some(list)) => format!(
+                "UPDATE fixture_lists SET title = {} WHERE id = {}",
+                quoted(&self.words()),
+                quoted(&list)
+            ),
+            (2, Some(list)) => {
+                let list = quoted(&list);
+                format!(
+                    "UPDATE fixture_list_entries SET ordinal = -1 - ordinal WHERE list_id = {list};
+                     UPDATE fixture_list_entries SET ordinal = ordinal +
+                         (SELECT count(*) FROM fixture_list_entries WHERE list_id = {list})
+                     WHERE list_id = {list};"
+                )
+            }
+            (3, Some(list)) => self.entries_sql(index, &list, &members),
+            (4, Some(list)) => format!("DELETE FROM fixture_lists WHERE id = {}", quoted(&list)),
+            _ => {
+                let id = self.next_id("list", index);
+                let entries = self.entries_sql(index, &id, &members);
+                format!(
+                    "INSERT INTO fixture_lists (id, created_at, title) VALUES ({}, {now}, {});
+                     {entries}",
+                    quoted(&id),
+                    quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// SQL that replaces a board's cards and their checks with new ones, each with a fresh id;
+    /// a card may name an item the replica holds.
+    fn cards_sql(&mut self, index: usize, board: &str, items: &[String]) -> String {
+        let mut sql = format!(
+            "DELETE FROM fixture_board_cards WHERE board_id = {};",
+            quoted(board)
+        );
+        for ordinal in 0..self.rng.below(BOARD_CARDS.max_rows + 1) {
+            let id = self.next_id("card", index);
+            let item = match self.rng.pick(items) {
+                Some(item) if self.rng.chance(50) => quoted(item),
+                _ => "NULL".into(),
+            };
+            sql.push_str(&format!(
+                "INSERT INTO fixture_board_cards (board_id, ordinal, card_id, title, item_id)
+                 VALUES ({}, {ordinal}, {}, {}, {item});",
+                quoted(board),
+                quoted(&id),
+                quoted(&self.words())
+            ));
+            for check in 0..self.rng.below(BOARD_CHECKS.max_rows + 1) {
+                let id = self.next_id("check", index);
+                sql.push_str(&format!(
+                    "INSERT INTO fixture_board_checks (board_id, card_ordinal, ordinal, check_id, done)
+                     VALUES ({}, {ordinal}, {check}, {}, {});",
+                    quoted(board),
+                    quoted(&id),
+                    u8::from(self.rng.chance(50))
+                ));
+            }
+        }
+        sql
+    }
+
+    /// One local edit of fixture boards, whose owner, stage, and cards merge as one coupled
+    /// value with the later stage winning: create a board with cards, advance its stage, change
+    /// its owner, replace its cards, toggle a check, or delete it.
+    async fn edit_boards(&mut self, index: usize, now: String) {
+        let boards = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_boards ORDER BY id",
+        )
+        .await;
+        let items = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_items ORDER BY id",
+        )
+        .await;
+        let checks = ids(
+            &mut self.replicas[index],
+            "SELECT check_id FROM fixture_board_checks ORDER BY check_id",
+        )
+        .await;
+        let board = self.rng.pick(&boards).cloned();
+        let sql = match (self.rng.below(6), board) {
+            (1, Some(board)) => format!(
+                "UPDATE fixture_boards SET stage = min(stage + 1, {MAX_BOARD_STAGE})
+                 WHERE id = {}",
+                quoted(&board)
+            ),
+            (2, Some(board)) => format!(
+                "UPDATE fixture_boards SET owner_id = {} WHERE id = {}",
+                self.rng
+                    .pick(&items)
+                    .map_or_else(|| "NULL".into(), |item| quoted(item)),
+                quoted(&board)
+            ),
+            (3, Some(board)) => self.cards_sql(index, &board, &items),
+            (4, Some(_)) => {
+                let Some(check) = self.rng.pick(&checks) else {
+                    return;
+                };
+                format!(
+                    "UPDATE fixture_board_checks SET done = 1 - done WHERE check_id = {}",
+                    quoted(check)
+                )
+            }
+            (5, Some(board)) => format!("DELETE FROM fixture_boards WHERE id = {}", quoted(&board)),
+            _ => {
+                let id = self.next_id("board", index);
+                let cards = self.cards_sql(index, &id, &items);
+                format!(
+                    "INSERT INTO fixture_boards (id, created_at, owner_id, stage, handle)
+                     VALUES ({}, {now}, NULL, 0, {});
+                     {cards}",
+                    quoted(&id),
+                    quoted(&format!("{BOARD_HANDLE_PREFIX}{id}"))
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture approval overrides, whose hook settles an explicit policy
+    /// that wins over a stricter inherited one: create an override, set or clear its policy,
+    /// change the fallback it inherits, or delete it.
+    async fn edit_overrides(&mut self, index: usize, now: String) {
+        let overrides = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_overrides ORDER BY id",
+        )
+        .await;
+        let rng = &mut self.overrides.rng;
+        let policy = match rng.below(3) {
+            0 => "NULL".to_string(),
+            1 => quoted(ASK),
+            _ => quoted(UNATTENDED),
+        };
+        let fallback = quoted(if rng.chance(50) { ASK } else { UNATTENDED });
+        let sql = match (rng.below(8), rng.pick(&overrides)) {
+            (0..=3, Some(id)) => format!(
+                "UPDATE fixture_overrides SET policy = {policy} WHERE id = {}",
+                quoted(id)
+            ),
+            (4..=5, Some(id)) => format!(
+                "UPDATE fixture_overrides SET fallback = {fallback} WHERE id = {}",
+                quoted(id)
+            ),
+            (6, Some(id)) => format!("DELETE FROM fixture_overrides WHERE id = {}", quoted(id)),
+            _ => {
+                self.overrides.created += 1;
+                format!(
+                    "INSERT INTO fixture_overrides (id, created_at, fallback, policy)
+                     VALUES ({}, {now}, {fallback}, {policy})",
+                    quoted(&format!("override-{index}-{}", self.overrides.created))
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture links and their ends: create an end whose label may collide,
+    /// link ends and a parent link, or delete an end or a link. Deleting clears references to
+    /// it, and colliding ends redirect every reference column of a link.
+    async fn edit_links(&mut self, index: usize) {
+        let ends = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_cycle_a ORDER BY id",
+        )
+        .await;
+        let links = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_links ORDER BY id",
+        )
+        .await;
+        let end = self.rng.pick(&ends).map(|id| quoted(id));
+        let link = self.rng.pick(&links).map(|id| quoted(id));
+        let sql = match (self.rng.below(5), end, link) {
+            (0, _, _) => {
+                let id = self.next_id("end", index);
+                format!(
+                    "INSERT INTO fixture_cycle_a (id, label) VALUES ({}, {})",
+                    quoted(&id),
+                    quoted(self.rng.pick(TAG_NAMES).unwrap())
+                )
+            }
+            (1, end, parent) => {
+                let id = self.next_id("link", index);
+                format!(
+                    "INSERT INTO fixture_links (id, note, left_id, parent_id)
+                     VALUES ({}, {}, {}, {})",
+                    quoted(&id),
+                    quoted(&self.words()),
+                    end.unwrap_or("NULL".into()),
+                    parent.unwrap_or("NULL".into())
+                )
+            }
+            (2, end, Some(link)) => format!(
+                "UPDATE fixture_links SET left_id = {} WHERE id = {link}",
+                end.unwrap_or("NULL".into())
+            ),
+            (3, Some(end), _) => format!("DELETE FROM fixture_cycle_a WHERE id = {end}"),
+            (4, _, Some(link)) => format!("DELETE FROM fixture_links WHERE id = {link}"),
+            _ => return,
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of a derived-key membership of an item in an end: add it, remove it,
+    /// change its role, or remove and add it again. Every device derives the same key for the
+    /// same pair, so devices add and remove one shared row. Edits usually target a membership
+    /// the replica holds; an add may create its item or its end, whose label may collide.
+    async fn edit_memberships(&mut self, index: usize, now: String) {
+        let held = ids(
+            &mut self.replicas[index],
+            "SELECT item_id || ' ' || end_id FROM fixture_memberships ORDER BY sync_key",
+        )
+        .await;
+        let mut parents = String::new();
+        let (item, end) = match self.rng.pick(&held) {
+            Some(pair) if self.rng.chance(60) => {
+                let (item, end) = pair.split_once(' ').expect("membership pairs hold a space");
+                (item.to_string(), end.to_string())
+            }
+            _ => {
+                let item = self.member_parent(index, "item", &mut parents).await;
+                let end = self.member_parent(index, "end", &mut parents).await;
+                (item, end)
+            }
+        };
+        let key = quoted(&membership_key(&item, &end));
+        let add = format!(
+            "{parents}INSERT INTO fixture_memberships (item_id, end_id, sync_key, created_at, role)
+             VALUES ({}, {}, {key}, {now}, {});",
+            quoted(&item),
+            quoted(&end),
+            quoted(self.rng.pick(WORDS).unwrap())
+        );
+        let remove = format!("DELETE FROM fixture_memberships WHERE sync_key = {key};");
+        let sql = match self.rng.below(4) {
+            0 => add,
+            1 => remove,
+            2 => format!(
+                "UPDATE fixture_memberships SET role = {} WHERE sync_key = {key}",
+                quoted(self.rng.pick(WORDS).unwrap())
+            ),
+            _ => format!("{remove} {add}"),
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of the node tree: create a node, move it, relabel it, or delete it with
+    /// its subtree. Like the app, a replica refuses a move into the node's own subtree or below
+    /// the maximum depth, so cycles and overly deep rows arise only from concurrent moves.
+    async fn edit_nodes(&mut self, index: usize) {
+        let pairs = ids(
+            &mut self.replicas[index],
+            "SELECT id || ' ' || coalesce(parent_id, '') FROM fixture_nodes ORDER BY id",
+        )
+        .await;
+        let parents: BTreeMap<String, String> = pairs
+            .iter()
+            .filter_map(|pair| pair.split_once(' '))
+            .map(|(id, parent)| (id.to_string(), parent.to_string()))
+            .collect();
+        let nodes: Vec<String> = parents.keys().cloned().collect();
+        let node = self.rng.pick(&nodes).cloned();
+        let target = self
+            .rng
+            .pick(&nodes)
+            .cloned()
+            .filter(|_| self.rng.chance(70));
+        let position = quoted(&rank(self.rng.below(8) as u32));
+        // Moves dominate once a few nodes exist, so concurrent moves meet often.
+        let kind = if nodes.len() < 3 {
+            0
+        } else {
+            self.rng.below(6)
+        };
+        let sql = match (kind, node) {
+            (1..=3, Some(node)) => {
+                let fits = target.as_deref().is_none_or(|target| {
+                    !is_within(&parents, target, &node)
+                        && depth(&parents, target) + 1 + height(&parents, &node)
+                            <= usize::from(NODE_MAX_DEPTH)
+                });
+                if !fits {
+                    return;
+                }
+                format!(
+                    "UPDATE fixture_nodes SET parent_id = {}, position = {position}
+                     WHERE id = {}",
+                    target.as_deref().map_or("NULL".to_string(), quoted),
+                    quoted(&node)
+                )
+            }
+            (4, Some(node)) => format!(
+                "UPDATE fixture_nodes SET label = {} WHERE id = {}",
+                quoted(&self.words()),
+                quoted(&node)
+            ),
+            (5, Some(node)) => format!("DELETE FROM fixture_nodes WHERE id = {}", quoted(&node)),
+            _ => {
+                if target
+                    .as_deref()
+                    .is_some_and(|target| depth(&parents, target) >= usize::from(NODE_MAX_DEPTH))
+                {
+                    return;
+                }
+                let id = self.next_id("node", index);
+                format!(
+                    "INSERT INTO fixture_nodes (id, parent_id, position, label)
+                     VALUES ({}, {}, {position}, {})",
+                    quoted(&id),
+                    target.as_deref().map_or("NULL".to_string(), quoted),
+                    quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of the acyclic edge set between items: add an edge, possibly with a new
+    /// item, or remove one. Like the app, a replica refuses an edge that closes a cycle in its
+    /// own state, so cycles arise only from concurrent adds.
+    async fn edit_edges(&mut self, index: usize) {
+        let held = ids(
+            &mut self.replicas[index],
+            "SELECT from_id || ' ' || to_id FROM fixture_edges ORDER BY sync_key",
+        )
+        .await;
+        let edges: Vec<(String, String)> = held
+            .iter()
+            .filter_map(|pair| pair.split_once(' '))
+            .map(|(from, to)| (from.to_string(), to.to_string()))
+            .collect();
+        if let Some((from, to)) = self.rng.pick(&edges).cloned()
+            && self.rng.chance(40)
+        {
+            let sql = format!(
+                "DELETE FROM fixture_edges WHERE sync_key = {}",
+                quoted(&edge_key(&from, &to))
+            );
+            self.replicas[index].try_exec(&sql).await;
+            return;
+        }
+        // Joining the shared items makes concurrent adds close cycles often.
+        let ends = ids(
+            &mut self.replicas[index],
+            &format!("SELECT id FROM fixture_items WHERE id LIKE '{SHARED_ITEM}%' ORDER BY id"),
+        )
+        .await;
+        let mut parents = String::new();
+        let (from, to) = match (self.rng.pick(&ends).cloned(), self.rng.pick(&ends).cloned()) {
+            (Some(from), Some(to)) if self.rng.chance(60) => (from, to),
+            _ => {
+                let from = self.member_parent(index, "item", &mut parents).await;
+                let to = self.member_parent(index, "item", &mut parents).await;
+                (from, to)
+            }
+        };
+        if from == to || reaches(&edges, &to, &from) {
+            return;
+        }
+        let sql = format!(
+            "{parents}INSERT INTO fixture_edges (from_id, to_id, sync_key) VALUES ({}, {}, {});",
+            quoted(&from),
+            quoted(&to),
+            quoted(&edge_key(&from, &to))
+        );
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// Items and a flat tree of nodes every replica holds before the first step, so concurrent
+    /// moves and edge adds meet on the same rows.
+    async fn share_rows(&mut self) {
+        let now = iso_time(self.replicas[0].now_ms);
+        let mut sql = String::new();
+        for at in 0..SHARED_ROWS {
+            sql.push_str(&format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('{SHARED_ITEM}{at}', {now}, 'shared', 0);
+                 INSERT INTO fixture_nodes (id, parent_id, position, label)
+                 VALUES ('node-0-shared-{at}', NULL, {}, 'shared');",
+                quoted(&rank(at as u32))
+            ));
+        }
+        self.replicas[0].exec(&sql).await;
+        self.quiesce().await;
+    }
+
+    /// An item or end id for a membership: an existing one, or a new one whose insert is
+    /// appended to `parents`.
+    async fn member_parent(&mut self, index: usize, kind: &str, parents: &mut String) -> String {
+        let table = if kind == "item" {
+            "fixture_items"
+        } else {
+            "fixture_cycle_a"
+        };
+        let existing = ids(
+            &mut self.replicas[index],
+            &format!("SELECT id FROM {table} ORDER BY id"),
+        )
+        .await;
+        if let Some(id) = self.rng.pick(&existing)
+            && self.rng.chance(70)
+        {
+            return id.clone();
+        }
+        let id = self.next_id(kind, index);
+        let now = iso_time(self.replicas[index].now_ms);
+        parents.push_str(&if kind == "item" {
+            format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {now}, {}, 0);",
+                quoted(&id),
+                quoted(&self.words())
+            )
+        } else {
+            format!(
+                "INSERT INTO fixture_cycle_a (id, label) VALUES ({}, {});",
+                quoted(&id),
+                quoted(self.rng.pick(TAG_NAMES).unwrap())
+            )
+        });
+        id
+    }
+
+    /// Fixture marks exist only on the replica that created the marked item, because the gated
+    /// trigger that writes them stays silent while operations apply.
+    async fn assert_marks_stay_local(&mut self) {
+        for replica in self
+            .replicas
+            .iter_mut()
+            .chain(std::iter::once(&mut self.hub))
+        {
+            let prefix = format!("item-{}-", replica.index);
+            for item in ids(replica, "SELECT item_id FROM fixture_item_marks").await {
+                assert!(
+                    item.starts_with(&prefix),
+                    "replica {} marked {item} while applying",
+                    replica.index
+                );
+            }
+        }
     }
 
     /// Exchanges operations between an online replica and the hub over the unreliable network.
@@ -558,7 +1557,7 @@ impl Sim {
         match crashing(&mut self.rng, replica, RECOVERY_FAILPOINTS, &mut close).await {
             Ok(_) => {}
             Err(SyncError::WriterInactive(_)) => {
-                replica.rotate();
+                replica.recover_inactive().await;
                 crashing(&mut self.rng, replica, RECOVERY_FAILPOINTS, close)
                     .await
                     .unwrap();
@@ -567,36 +1566,200 @@ impl Sim {
         }
     }
 
-    /// The hub unlinks a replica's current writer at the last operation it applied.
-    async fn revoke(&mut self, index: usize) {
-        let target: WriterId = self.replicas[index].writer();
-        let applied = self.hub.applied_vector().await.get(&target);
-        if applied == 0 {
+    /// A spare enrolled device catches up with the hub, writes an item the hub stores, then
+    /// creates another and edits the first while the hub removes it. The hub stores those late
+    /// operations but excludes them, offering them as late changes. The spare leaves the run;
+    /// its writes before the cutoff stay in every replica, and every replica derives the same
+    /// late changes.
+    async fn remove_spare(&mut self) {
+        let index = self.replicas.len() + 1 + self.spares;
+        if index >= ENROLLED_DEVICES {
             return;
         }
+        self.spares += 1;
+        let mut spare = Replica::new(index, self.rng.next()).await;
+        spare.now_ms = self.hub.now_ms;
+        let insert = |id: String, label: String, now: &str| {
+            format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {now}, {}, 0)",
+                quoted(&id),
+                quoted(&label)
+            )
+        };
+        let now = iso_time(spare.now_ms);
+        let kept = self.next_id("item", index);
+        let sql = insert(kept.clone(), self.words(), &now);
+        assert!(spare.try_exec(&sql).await);
+        seal(&mut self.rng, &mut spare).await;
+        send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+        let kept_label = self
+            .hub
+            .scalar_text(&format!(
+                "SELECT label FROM fixture_items WHERE id = {}",
+                quoted(&kept)
+            ))
+            .await;
+
+        // Edits the spare makes while the hub removes it arrive past its cutoff.
+        let late = self.next_id("item", index);
+        let sql = insert(late.clone(), self.words(), &now);
+        assert!(spare.try_exec(&sql).await);
+        let sql = format!(
+            "UPDATE fixture_items SET label = {} WHERE id = {}",
+            quoted(&self.words()),
+            quoted(&kept)
+        );
+        assert!(spare.try_exec(&sql).await);
+        seal(&mut self.rng, &mut spare).await;
+
+        let device = spare.device_id.clone();
         let hub = &mut self.hub;
-        let result = hub
-            .engine
-            .seal_revoke(
-                &mut hub.conn,
-                &hub.ctx,
-                target,
-                applied,
-                RevokeReason::Revoked,
-                &mut hub.identity.local(),
-                hub.now_ms,
+        let revision = crashing(
+            &mut self.rng,
+            hub,
+            SEQUENCE_FAILPOINTS,
+            async |r: &mut Replica| r.remove(&device).await,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("hub failed to remove {device}: {error:?}"));
+        assert!(revision > 0);
+
+        // The hub stores the late operations but excludes them: the created item stays hidden
+        // and the kept item keeps its label.
+        send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+        let hidden = self
+            .hub
+            .count(&format!(
+                "SELECT count(*) FROM fixture_items WHERE id = {}",
+                quoted(&late)
+            ))
+            .await;
+        assert_eq!(
+            hidden, 0,
+            "a late item of removed device {device} is visible"
+        );
+        let label = self
+            .hub
+            .scalar_text(&format!(
+                "SELECT label FROM fixture_items WHERE id = {}",
+                quoted(&kept)
+            ))
+            .await;
+        assert!(
+            kept_label.is_none() || label == kept_label,
+            "a late edit of removed device {device} applied"
+        );
+        assert!(
+            self.hub
+                .engine
+                .late_changes(&mut self.hub.conn, &self.hub.ctx)
+                .await
+                .unwrap()
+                .iter()
+                .any(|change| change.row_key == late),
+            "the late item of removed device {device} is not offered"
+        );
+    }
+
+    /// A spare enrolled device and a copy of its installation each write an item at the same
+    /// sequence of their shared writer. The hub stores one branch and forwards it to a replica,
+    /// then stores the other as fork evidence and excludes both. Each copy learns of the fork from
+    /// the hub, re-seals its branch with a successor, and sends it again; both copies then leave
+    /// the run. Replicas that applied the first branch exclude it once evidence reaches them.
+    async fn fork_spare(&mut self, index: usize) {
+        let spare_index = self.replicas.len() + 1 + self.spares;
+        if spare_index >= ENROLLED_DEVICES {
+            return;
+        }
+        self.spares += 1;
+        let mut spare = Replica::new(spare_index, self.rng.next()).await;
+        spare.now_ms = self.hub.now_ms;
+        // The copy is made after the genesis, which a fork cannot replace.
+        acknowledge(&mut self.rng, &mut spare).await;
+        let mut copy = spare.clone_device().await;
+        let forked = spare.writer();
+        let now = iso_time(spare.now_ms);
+        let mut items = Vec::new();
+        for installation in [&mut spare, &mut copy] {
+            let item = self.next_id("item", spare_index);
+            let sql = format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {now}, {}, 0)",
+                quoted(&item),
+                quoted(&self.words())
+            );
+            assert!(installation.try_exec(&sql).await);
+            seal(&mut self.rng, installation).await;
+            items.push(item);
+        }
+        assert_eq!(
+            spare.stored_vector().await.get(&forked),
+            copy.stored_vector().await.get(&forked),
+            "both copies sealed at the same sequence"
+        );
+
+        send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+        if !self.offline[index] {
+            send(
+                &mut self.rng,
+                &mut self.hub,
+                &mut self.replicas[index],
+                true,
             )
             .await;
-        match result {
-            Ok(_) | Err(SyncError::InvalidRevoke(_)) => {}
-            Err(error) => panic!("hub failed to revoke: {error:?}"),
+        }
+        let ops = copy.own_ops().await;
+        let outcomes = self.hub.receive(&ops).await;
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, StoreOutcome::Refused(StoreRefusal::Fork { .. }))),
+            "the hub did not find the fork of spare {spare_index}"
+        );
+        apply_all(&mut self.rng, &mut self.hub).await;
+        for item in &items {
+            assert_eq!(
+                self.hub
+                    .count(&format!(
+                        "SELECT count(*) FROM fixture_items WHERE id = {}",
+                        quoted(item)
+                    ))
+                    .await,
+                0,
+                "a branch of forked spare {spare_index} is visible"
+            );
+        }
+
+        for installation in [&mut spare, &mut copy] {
+            installation.take_evidence(&mut self.hub).await;
+            apply_all(&mut self.rng, installation).await;
+            assert_ne!(
+                installation.writer(),
+                forked,
+                "a forked copy did not re-seal"
+            );
+            send(&mut self.rng, installation, &mut self.hub, true).await;
+        }
+        for item in &items {
+            assert_eq!(
+                self.hub
+                    .count(&format!(
+                        "SELECT count(*) FROM fixture_items WHERE id = {}",
+                        quoted(item)
+                    ))
+                    .await,
+                1,
+                "a re-sealed item of spare {spare_index} is missing"
+            );
         }
     }
 
     async fn step(&mut self) {
         self.advance_clocks();
         let index = self.rng.below(self.replicas.len());
-        match self.rng.below(100) {
+        let action = self.rng.below(100);
+        match action {
             0..=39 => self.edit(index).await,
             40..=64 => {
                 if !self.offline[index] {
@@ -607,19 +1770,141 @@ impl Sim {
             75..=81 => self.resolve(index).await,
             82..=88 => self.recover(index).await,
             89..=96 => self.offline[index] = !self.offline[index],
-            _ => self.revoke(index).await,
+            97..=98 => self.remove_spare().await,
+            _ => self.fork_spare(index).await,
         }
-        for replica in &mut self.replicas {
-            replica.check_invariants().await;
+        // Only exchanges change what the hub or a replica acknowledged or applied.
+        if (40..65).contains(&action) {
+            let stable = self.assert_stability().await;
+            if self.rng.chance(COMPACTION_PERCENT) {
+                self.compact(index, &stable).await;
+            }
         }
+        // A step, with its compaction, changes only the replica that acted and the hub.
+        self.replicas[index].check_invariants().await;
         self.hub.check_invariants().await;
+        // Hydrating every version is slow, so only a step that ran the engine checks it, and
+        // only on the replica that acted. Local edits elide nothing and are read back by the
+        // engine step that follows them.
+        if (40..89).contains(&action) || action >= 97 {
+            self.replicas[index].check_version_values().await;
+        }
+        self.assert_marks_stay_local().await;
     }
 
-    /// Reconnects everyone and exchanges over a reliable network until nothing changes.
+    /// Stability the hub computes over every replica stays within what each replica and the
+    /// hub applied, and no replica counts as dormant while the run lasts. Returns the stable
+    /// vector.
+    async fn assert_stability(&mut self) -> VersionVector {
+        let devices: Vec<CountedDevice> = (0..self.replicas.len())
+            .map(|index| CountedDevice {
+                device_id: device_id(index),
+                linked_at_ms: Some(START_MS),
+                anchor: false,
+            })
+            .collect();
+        let hub = &mut self.hub;
+        let stability = hub
+            .engine
+            .stability(&mut hub.conn, &hub.ctx, &devices, hub.now_ms)
+            .await
+            .unwrap();
+        assert!(hub.applied_vector().await.dominates(&stability.stable));
+        for (replica, device) in self.replicas.iter_mut().zip(&stability.devices) {
+            assert_eq!(
+                device.standing,
+                DeviceStanding::Counted,
+                "replica {} is not counted",
+                replica.index
+            );
+            assert!(
+                replica.applied_vector().await.dominates(&stability.stable),
+                "replica {} lacks a stable operation",
+                replica.index
+            );
+        }
+        stability.stable
+    }
+
+    /// Compacts the hub up to `stable` and, unless it is the replica that never compacts, the
+    /// replica that just exchanged, the way a pass ends. The replica records the vector the hub
+    /// reported and caps its current writer at the head the hub holds with the same hash.
+    async fn compact(&mut self, index: usize, stable: &VersionVector) {
+        let batch = 1 + self.rng.below(16);
+        let hub = &mut self.hub;
+        compact(&mut self.rng, hub, stable, batch).await;
+        if index == NEVER_COMPACTS || self.offline[index] {
+            return;
+        }
+        let replica = &mut self.replicas[index];
+        replica
+            .engine
+            .record_stable(&mut replica.conn, &replica.ctx, stable)
+            .await
+            .unwrap();
+        let own: BTreeSet<WriterId> = ids(
+            replica,
+            &format!(
+                "SELECT lower(hex(writer_id)) FROM sync_writers WHERE device_id = {}",
+                quoted(&device_id(index))
+            ),
+        )
+        .await
+        .iter()
+        .map(|hex| WriterId::from_hex(hex).unwrap())
+        .collect();
+        let writer = replica.writer();
+        let confirmed = confirmed_head(&mut self.hub, replica, writer).await;
+        let limit = compaction_limit(stable, &own, confirmed.map(|seq| (writer, seq)));
+        compact(&mut self.rng, &mut self.replicas[index], &limit, batch).await;
+    }
+
+    /// Each writer's acknowledgements are at least the acknowledgement interval apart, and
+    /// the hub stored some.
+    async fn assert_acknowledgements_bounded(&mut self) {
+        for replica in &mut self.replicas {
+            let sql = format!(
+                "SELECT hex(o.writer_id) || ' ' || o.stored_at_ms FROM sync_ops o
+                 JOIN sync_writers w ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+                 WHERE w.device_id = {} AND o.kind = 3 ORDER BY o.writer_id, o.seq",
+                quoted(&device_id(replica.index))
+            );
+            let rows = ids(replica, &sql).await;
+            let mut previous: Option<(String, u64)> = None;
+            for row in rows {
+                let (writer, at) = row.split_once(' ').unwrap();
+                let at: u64 = at.parse().unwrap();
+                if let Some((last_writer, last_at)) = &previous
+                    && last_writer == writer
+                {
+                    // One seal splits an acknowledgement over several headers when more
+                    // writers advanced than one header lists, all stored at the same time.
+                    assert!(
+                        at == *last_at || at - last_at >= ACKNOWLEDGEMENT_INTERVAL_MS,
+                        "replica {} acknowledged twice within the interval",
+                        replica.index
+                    );
+                }
+                previous = Some((writer.to_string(), at));
+            }
+        }
+        let hub_acknowledgements = ids(
+            &mut self.hub,
+            "SELECT CAST(seq AS TEXT) FROM sync_ops WHERE kind = 3",
+        )
+        .await;
+        assert!(!hub_acknowledgements.is_empty(), "nobody acknowledged");
+    }
+
+    /// Lets every deletion hold expire, reconnects everyone, and exchanges over a reliable
+    /// network until nothing changes.
     async fn quiesce(&mut self) {
+        self.advance_clocks_by(MAX_HOLD_MS);
         self.offline.fill(false);
         for _ in 0..32 {
             let mut changed = false;
+            // The anchor republishes groups of operations it excludes, so it seals too.
+            seal(&mut self.rng, &mut self.hub).await;
             for index in 0..self.replicas.len() {
                 seal(&mut self.rng, &mut self.replicas[index]).await;
                 changed |= send(
@@ -640,7 +1925,13 @@ impl Sim {
                 .await;
             }
             let expected = self.hub.stored_vector().await;
-            let mut same = true;
+            let hub = self
+                .hub
+                .engine
+                .status(&mut self.hub.conn, &self.hub.ctx)
+                .await
+                .unwrap();
+            let mut same = hub.pending_captures == 0;
             for replica in &mut self.replicas {
                 let status = replica
                     .engine
@@ -679,7 +1970,40 @@ impl Sim {
         panic!("replicas did not quiesce:\n{}", states.join("\n"));
     }
 
+    /// Every override policy on the hub satisfies the fixture hook's settle rule: no retained
+    /// version resolves stricter than the winner, whose value the domain row holds.
+    async fn assert_overrides_settled(&mut self) {
+        let hub = &mut self.hub;
+        let rows: Vec<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, fallback, policy FROM fixture_overrides ORDER BY id")
+                .fetch_all(&mut hub.conn)
+                .await
+                .unwrap();
+        for (key, fallback, policy) in rows {
+            let versions = merge::versions(&hub.engine, &mut hub.conn, OVERRIDES_TABLE, &key)
+                .await
+                .unwrap();
+            let resolved = |value: &Value| match value.fields().first() {
+                Some(Field::Text(policy)) => policy_rank(policy),
+                _ => policy_rank(&fallback),
+            };
+            let strictest = versions
+                .iter()
+                .filter(|version| version.group == override_group::POLICY)
+                .map(|version| resolved(&version.value))
+                .max()
+                .unwrap_or(0);
+            let shown = policy.as_deref().unwrap_or(fallback.as_str());
+            assert_eq!(
+                policy_rank(shown),
+                strictest,
+                "override {key} shows a looser policy than a concurrent version"
+            );
+        }
+    }
+
     async fn assert_converged(&mut self) {
+        self.assert_overrides_settled().await;
         let expected = self.hub.dump().await;
         for replica in &mut self.replicas {
             assert_eq!(
@@ -694,6 +2018,7 @@ impl Sim {
             .iter_mut()
             .chain(std::iter::once(&mut self.hub))
         {
+            replica.check_version_values().await;
             let status = replica
                 .engine
                 .status(&mut replica.conn, &replica.ctx)
@@ -729,10 +2054,19 @@ impl Sim {
 async fn run(seed: u64) {
     let _guard = SeedGuard(seed);
     let mut sim = Sim::new(seed).await;
+    sim.share_rows().await;
     for _ in 0..STEPS {
         sim.step().await;
     }
     sim.quiesce().await;
+    sim.assert_converged().await;
+    sim.assert_acknowledgements_bounded().await;
+    // Every replica compacts what is stable at quiescence and still matches the replica that
+    // never compacts.
+    let stable = sim.assert_stability().await;
+    for index in 0..sim.replicas.len() {
+        sim.compact(index, &stable).await;
+    }
     sim.assert_converged().await;
 }
 
@@ -745,18 +2079,40 @@ fn number(variable: &str) -> Option<u64> {
     )
 }
 
-fn seeds() -> std::ops::Range<u64> {
-    if let Some(seed) = number(SEED_VARIABLE) {
-        return seed..seed + 1;
-    }
-    0..number(SEEDS_VARIABLE).unwrap_or(DEFAULT_SEEDS)
+/// The seeds of one shard: every seed whose remainder by `SHARDS` is `shard`, so the shards
+/// together run each seed exactly once and share the seeds' uneven costs.
+fn seeds(shard: u64) -> impl Iterator<Item = u64> {
+    let all = match number(SEED_VARIABLE) {
+        Some(seed) => seed..seed + 1,
+        None => 0..number(SEEDS_VARIABLE).unwrap_or(DEFAULT_SEEDS),
+    };
+    all.filter(move |seed| seed % SHARDS == shard)
 }
 
-#[test]
-fn seeded_runs_converge_after_partitions_crashes_and_revocations() {
+fn run_shard(shard: u64) {
     block_on(async {
-        for seed in seeds() {
+        for seed in seeds(shard) {
             run(seed).await;
         }
     });
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_0() {
+    run_shard(0);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_1() {
+    run_shard(1);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_2() {
+    run_shard(2);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_3() {
+    run_shard(3);
 }

@@ -4,7 +4,7 @@ use crate::{data_sources, databases};
 
 async fn seed_snapshot_hierarchy(pool: &SqlitePool) -> (&'static str, &'static str, &'static str) {
     seed_project(pool).await;
-    sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
+    sqlx::query("UPDATE notes_blocks SET text = json_object('rich_text', json_extract(?, '$.rich_text')) WHERE id = ?")
         .bind(crate::writes::default_text_payload("First version").to_string())
         .bind(BLOCK_ID)
         .execute(pool)
@@ -64,17 +64,28 @@ fn database_subitems_history_rejects_corrupt_cycles_and_foreign_edges_without_re
  {
     crate::test_block_on(async {
         let pool = migrated_pool().await;
-        let (source, parent, child) = seed_snapshot_hierarchy(&pool).await;
+        let (_, parent, child) = seed_snapshot_hierarchy(&pool).await;
         insert_project_page(&pool, LATER_PAGE_ID, LATER_BLOCK_ID, "Outside project").await;
-        sqlx::query("UPDATE notes_pages SET properties = json_remove(properties, '$.__ganbaru_project_id') WHERE id = ?")
-            .bind(LATER_PAGE_ID).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE notes_pages SET project_id = NULL WHERE id = ?")
+            .bind(LATER_PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
         for (index, invalid_parent) in [child, LATER_PAGE_ID, PAGE_ID].into_iter().enumerate() {
             if invalid_parent == child {
-                sqlx::query("INSERT INTO notes_data_source_row_hierarchy(row_page_id, data_source_id, parent_row_page_id) VALUES (?, ?, ?)")
-                    .bind(parent).bind(source).bind(child).execute(&pool).await.unwrap();
+                sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+                    .bind(child)
+                    .bind(parent)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
             } else {
-                sqlx::query("UPDATE notes_data_source_row_hierarchy SET parent_row_page_id = ? WHERE row_page_id = ?")
-                    .bind(invalid_parent).bind(child).execute(&pool).await.unwrap();
+                sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+                    .bind(invalid_parent)
+                    .bind(child)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
             }
             let invalid_version = create_checkpoint(
                 &pool,
@@ -87,13 +98,17 @@ fn database_subitems_history_rejects_corrupt_cycles_and_foreign_edges_without_re
             .await
             .unwrap()
             .unwrap();
-            sqlx::query("DELETE FROM notes_data_source_row_hierarchy WHERE row_page_id = ?")
+            sqlx::query("UPDATE notes_pages SET parent_row_page_id = NULL WHERE id = ?")
                 .bind(parent)
                 .execute(&pool)
                 .await
                 .unwrap();
-            sqlx::query("UPDATE notes_data_source_row_hierarchy SET parent_row_page_id = ? WHERE row_page_id = ?")
-                .bind(parent).bind(child).execute(&pool).await.unwrap();
+            sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+                .bind(parent)
+                .bind(child)
+                .execute(&pool)
+                .await
+                .unwrap();
             let current_title = format!("Current child {index}");
             sqlx::query("UPDATE notes_pages SET title = ? WHERE id = ?")
                 .bind(&current_title)
@@ -113,14 +128,19 @@ fn database_subitems_history_rejects_corrupt_cycles_and_foreign_edges_without_re
                     .await
                     .unwrap();
             assert_eq!(unchanged, current_title);
-            let retained_parent: String = sqlx::query_scalar("SELECT parent_row_page_id FROM notes_data_source_row_hierarchy WHERE row_page_id = ?")
-                .bind(child).fetch_one(&pool).await.unwrap();
-            assert_eq!(retained_parent, parent);
-            let edges: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_source_row_hierarchy")
+            let retained_parent: String =
+                sqlx::query_scalar("SELECT parent_row_page_id FROM notes_pages WHERE id = ?")
+                    .bind(child)
                     .fetch_one(&pool)
                     .await
                     .unwrap();
+            assert_eq!(retained_parent, parent);
+            let edges: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM notes_pages WHERE parent_row_page_id IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             assert_eq!(edges, 1);
         }
     });
@@ -131,7 +151,7 @@ fn database_subitems_history_restores_canonical_edges_and_copies_moved_graphs_in
     crate::test_block_on(async {
         let pool = migrated_pool().await;
         seed_project(&pool).await;
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
+        sqlx::query("UPDATE notes_blocks SET text = json_object('rich_text', json_extract(?, '$.rich_text')) WHERE id = ?")
             .bind(crate::writes::default_text_payload("First version").to_string())
             .bind(BLOCK_ID)
             .execute(&pool)
@@ -202,22 +222,24 @@ fn database_subitems_history_restores_canonical_edges_and_copies_moved_graphs_in
         restore::restore_version(&pool, PROJECT_ID, &version.id)
             .await
             .unwrap();
-        let restored_parent: String = sqlx::query_scalar(
-            "SELECT parent_row_page_id FROM notes_data_source_row_hierarchy WHERE row_page_id = ?",
-        )
-        .bind(child_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let restored_parent: String =
+            sqlx::query_scalar("SELECT parent_row_page_id FROM notes_pages WHERE id = ?")
+                .bind(child_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(restored_parent, parent_id);
 
         // Moving the owning note outside this project leaves its graph intact, so restore inserts a copy with new identities.
-        sqlx::query("UPDATE notes_pages SET properties = json_remove(properties, '$.__ganbaru_project_id') WHERE id = ?")
-            .bind(PAGE_ID).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE notes_pages SET project_id = NULL WHERE id = ?")
+            .bind(PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
         restore::restore_version(&pool, PROJECT_ID, &version.id)
             .await
             .unwrap();
-        let edges: Vec<(String, String, String)> = sqlx::query_as("SELECT data_source_id, row_page_id, parent_row_page_id FROM notes_data_source_row_hierarchy ORDER BY data_source_id")
+        let edges: Vec<(String, String, String)> = sqlx::query_as("SELECT parent_data_source_id, id, parent_row_page_id FROM notes_pages WHERE parent_row_page_id IS NOT NULL ORDER BY parent_data_source_id")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(edges.len(), 2);
         assert!(
@@ -233,6 +255,15 @@ fn database_subitems_history_restores_canonical_edges_and_copies_moved_graphs_in
             .unwrap();
         assert_ne!(copied.1, child_id);
         assert_ne!(copied.2, parent_id);
+        // A copied database keeps sharing its id with its `child_database` block.
+        let databases: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, block_id FROM notes_databases ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(databases.len(), 2);
+        assert!(databases.iter().all(|(id, block_id)| id == block_id));
+        assert!(databases.iter().any(|(id, _)| id != database_id));
         let shared_ownership: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM notes_pages WHERE id IN (?, ?) AND parent_data_source_id = ?",
         )

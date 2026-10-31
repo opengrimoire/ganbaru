@@ -40,6 +40,23 @@ pub fn validate_comment_body_rich_text(
     if !has_attachments && rich_text_items_plain_text(rich_text).trim().is_empty() {
         return Err("comment rich_text must not be empty".to_string());
     }
+    validate_comment_text_size(rich_text)
+}
+
+/// Prefix of the refusal for a comment whose stored text exceeds the sync text bound; the
+/// frontend recognizes it to show a localized message.
+const COMMENT_TOO_LARGE_CODE: &str = "notes-comment-too-large";
+
+/// Refuses a comment whose stored rich text JSON could not replicate. The stored plain text is
+/// part of that JSON, so it is never larger.
+fn validate_comment_text_size(rich_text: &[Value]) -> Result<(), String> {
+    let bytes = Value::Array(rich_text.to_vec()).to_string().len();
+    if bytes > ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES {
+        return Err(format!(
+            "{COMMENT_TOO_LARGE_CODE}: comment text is {bytes} bytes, above the {} byte limit",
+            ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES
+        ));
+    }
     Ok(())
 }
 pub fn validate_rich_text_item(value: &Value) -> Result<(), String> {

@@ -23,6 +23,7 @@ chrono = { workspace = true }
 ganbaru-atomic-files = { workspace = true }
 ganbaru-chat-contracts = { workspace = true }
 ganbaru-chat-providers = { workspace = true, optional = true }
+ganbaru-sync-contracts = { workspace = true }
 ganbaru-working-folders = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
@@ -39,4 +40,4 @@ dunce = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { workspace = true }
+ganbaru-db = { workspace = true, features = ["test-support"] }

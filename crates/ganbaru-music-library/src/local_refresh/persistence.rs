@@ -2,8 +2,10 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::path::Path;
 
 use super::super::*;
-use super::helpers::{map_conflict, new_item_id, now_ms, stable_id, validate_request};
+use super::helpers::{map_conflict, new_item_id, now_ms, validate_request};
 use super::traversal::LocalMediaEvidence;
+use crate::identity::stable_id;
+use crate::local_scan::{self, LocalScanValues};
 
 #[derive(Debug, sqlx::FromRow)]
 struct RefreshJobRow {
@@ -161,9 +163,8 @@ pub(super) async fn prepare(
     sqlx::query(
         "UPDATE music_source_collections
          SET refresh_state = 'queued', last_refresh_error_code = NULL,
-             updated_at_ms = ?, version = version + 1 WHERE id = ?",
+             version = version + 1 WHERE id = ?",
     )
-    .bind(request.requested_at_ms)
     .bind(&request.collection_id)
     .execute(&mut *transaction)
     .await
@@ -378,6 +379,77 @@ pub(super) async fn next_media_batch(
     .map_err(|error| MusicLibraryError::database("load pending media batch", error))
 }
 
+/// Records media whose stored size and modification time match this device's observation and
+/// returns the paths that still need inspection.
+pub(super) async fn record_unchanged_batch(
+    pool: &SqlitePool,
+    request: &MusicLocalRefreshRequest,
+    generation: i64,
+    observed: Vec<(String, Option<super::traversal::MediaStat>)>,
+) -> MusicLibraryResult<Vec<String>> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| MusicLibraryError::database("begin unchanged music batch", error))?;
+    let mut changed = Vec::new();
+    let mut unchanged_count = 0_i64;
+    for (relative_path, stat) in observed {
+        let stored =
+            local_scan::load_location_stat(&mut transaction, &request.root_id, &relative_path)
+                .await?;
+        let unchanged = match (stored, stat) {
+            (Some(stored), Some(stat)) => {
+                stored.matches(Some(stat.file_size_bytes), stat.modified_at_ms)
+            }
+            _ => false,
+        };
+        if !unchanged
+            || !local_scan::record_unchanged_location(
+                &mut transaction,
+                &request.collection_id,
+                &request.root_id,
+                &relative_path,
+                generation,
+                None,
+                request.requested_at_ms,
+            )
+            .await?
+        {
+            changed.push(relative_path);
+            continue;
+        }
+        sqlx::query(
+            "UPDATE music_refresh_job_entries SET state = 'processed'
+             WHERE job_id = ? AND relative_path = ? AND entry_kind = 'media'",
+        )
+        .bind(&request.job_id)
+        .bind(&relative_path)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("finish unchanged media entry", error))?;
+        unchanged_count += 1;
+    }
+    if unchanged_count > 0 {
+        sqlx::query(
+            "UPDATE music_refresh_jobs
+             SET processed_count = processed_count + ?,
+                 status_message = 'Cataloging discovered media.', updated_at_ms = ?
+             WHERE id = ? AND state = 'running'",
+        )
+        .bind(unchanged_count)
+        .bind(now_ms())
+        .bind(&request.job_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("update music catalog progress", error))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| MusicLibraryError::database("commit unchanged music batch", error))?;
+    Ok(changed)
+}
+
 pub(super) async fn reconcile_batch(
     pool: &SqlitePool,
     request: &MusicLocalRefreshRequest,
@@ -393,40 +465,38 @@ pub(super) async fn reconcile_batch(
     for media in evidence {
         let (item_id, strong_hash, ambiguous) =
             resolve_item_identity(&mut transaction, request, media).await?;
-        upsert_item(
+        let values = scan_values(media, strong_hash.as_deref());
+        let availability = if ambiguous { "ambiguous" } else { "available" };
+        let updated_at_ms = now_ms();
+        local_scan::upsert_scanned_item(
             &mut transaction,
             &item_id,
-            media,
+            &values,
+            availability,
             request.requested_at_ms,
-            ambiguous,
+            updated_at_ms,
         )
         .await?;
-        upsert_location(
+        local_scan::upsert_scanned_location(
             &mut transaction,
-            request,
-            generation,
+            &request.root_id,
             &item_id,
-            media,
-            strong_hash.as_deref(),
-            ambiguous,
+            &values,
+            availability,
+            generation,
+            request.requested_at_ms,
+            updated_at_ms,
         )
         .await?;
-        sqlx::query(
-            "INSERT INTO music_source_collection_items
-                (collection_id, item_id, first_discovered_at_ms, last_seen_generation,
-                 missing_from_latest_snapshot)
-             VALUES (?, ?, ?, ?, 0)
-             ON CONFLICT(collection_id, item_id) DO UPDATE SET
-                last_seen_generation = excluded.last_seen_generation,
-                missing_from_latest_snapshot = 0",
+        local_scan::link_collection_item(
+            &mut transaction,
+            &request.collection_id,
+            &item_id,
+            None,
+            generation,
+            request.requested_at_ms,
         )
-        .bind(&request.collection_id)
-        .bind(&item_id)
-        .bind(request.requested_at_ms)
-        .bind(generation)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("save local source provenance", error))?;
+        .await?;
         sqlx::query(
             "UPDATE music_refresh_job_entries SET state = 'processed'
              WHERE job_id = ? AND relative_path = ? AND entry_kind = 'media'",
@@ -536,52 +606,14 @@ pub(super) async fn finalize_success(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin complete music refresh", error))?;
-    sqlx::query(
-        "UPDATE music_local_locations
-         SET availability = 'missing', updated_at_ms = ?
-         WHERE root_id = ? AND COALESCE(last_seen_generation, 0) < ?",
+    local_scan::mark_unseen(
+        &mut transaction,
+        &request.collection_id,
+        &request.root_id,
+        generation,
     )
-    .bind(finished_at_ms)
-    .bind(&request.root_id)
-    .bind(generation)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("mark absent local music", error))?;
-    sqlx::query(
-        "UPDATE music_source_collection_items
-         SET missing_from_latest_snapshot = 1
-         WHERE collection_id = ? AND last_seen_generation < ?",
-    )
-    .bind(&request.collection_id)
-    .bind(generation)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("mark absent source provenance", error))?;
-    sqlx::query(
-        "UPDATE music_library_items AS item
-         SET availability = CASE
-             WHEN EXISTS (
-                SELECT 1 FROM music_local_locations AS location
-                WHERE location.item_id = item.id AND location.availability = 'available'
-             ) THEN 'available'
-             WHEN EXISTS (
-                SELECT 1 FROM music_local_locations AS location
-                WHERE location.item_id = item.id AND location.availability = 'ambiguous'
-             ) THEN 'ambiguous'
-             ELSE 'missing'
-         END,
-         updated_at_ms = ?, version = version + 1
-         WHERE item.source_kind = 'local-file'
-           AND EXISTS (
-                SELECT 1 FROM music_local_locations AS location
-                WHERE location.item_id = item.id AND location.root_id = ?
-           )",
-    )
-    .bind(finished_at_ms)
-    .bind(&request.root_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("reconcile local item availability", error))?;
+    .await?;
+    local_scan::reconcile_item_availability(&mut transaction, &request.root_id).await?;
     sqlx::query(
         "UPDATE music_refresh_jobs
          SET state = 'completed', absence_determined = 1,
@@ -599,11 +631,10 @@ pub(super) async fn finalize_success(
          SET refresh_state = 'idle', last_successful_refresh_at_ms = ?,
              previous_successful_refresh_at_ms = last_successful_refresh_at_ms,
              last_refresh_error_code = NULL, snapshot_generation = ?,
-             updated_at_ms = ?, version = version + 1 WHERE id = ?",
+             version = version + 1 WHERE id = ?",
     )
     .bind(finished_at_ms)
     .bind(generation)
-    .bind(finished_at_ms)
     .bind(&request.collection_id)
     .execute(&mut *transaction)
     .await
@@ -669,14 +700,13 @@ pub(super) async fn finish_incomplete(
     sqlx::query(
         "UPDATE music_source_collections
          SET refresh_state = ?, last_refresh_error_code = 'refresh-incomplete',
-             updated_at_ms = ?, version = version + 1
+             version = version + 1
          WHERE id = ? AND NOT EXISTS (
             SELECT 1 FROM music_refresh_jobs AS newer
             WHERE newer.source_collection_id = ? AND newer.generation > ?
          )",
     )
     .bind(source_state)
-    .bind(finished_at_ms)
     .bind(&request.collection_id)
     .bind(&request.collection_id)
     .bind(progress.generation)
@@ -721,15 +751,15 @@ async fn resolve_item_identity(
         })?;
         if stored_path != media.relative_path {
             sqlx::query(
-                "UPDATE music_local_locations SET relative_path = ?
-                 WHERE root_id = ? AND relative_path = ?",
+                "DELETE FROM music_local_locations WHERE root_id = ? AND relative_path = ?",
             )
-            .bind(&media.relative_path)
             .bind(&request.root_id)
             .bind(stored_path)
             .execute(&mut **transaction)
             .await
-            .map_err(|error| map_conflict("normalize local music path", error))?;
+            .map_err(|error| {
+                MusicLibraryError::database("replace unnormalized music location", error)
+            })?;
         }
         if keeper.as_ref().is_some_and(|(root_id, relative_path)| {
             root_id == &request.root_id && relative_path.replace('\\', "/") == media.relative_path
@@ -737,94 +767,33 @@ async fn resolve_item_identity(
             return Ok((item_id, None, false));
         }
     }
-    Ok((new_item_id(request, media), None, false))
+    let item_id = crate::identity::creatable_key(
+        transaction,
+        crate::identity::RetirableTable::Items,
+        new_item_id(request, media),
+    )
+    .await?;
+    Ok((item_id, None, false))
 }
 
-async fn upsert_item(
-    transaction: &mut Transaction<'_, Sqlite>,
-    item_id: &str,
-    media: &LocalMediaEvidence,
-    discovered_at_ms: i64,
-    ambiguous: bool,
-) -> MusicLibraryResult<()> {
-    sqlx::query(
-        "INSERT INTO music_library_items
-            (id, identity_key, source_kind, media_kind, original_title, original_artist,
-             original_album, original_track_number, original_artwork_identity, duration_ms,
-             availability, discovered_at_ms, updated_at_ms)
-         VALUES (?, ?, 'local-file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-            media_kind = excluded.media_kind,
-            original_title = excluded.original_title,
-            original_artist = excluded.original_artist,
-            original_album = excluded.original_album,
-            original_track_number = excluded.original_track_number,
-            original_artwork_identity = excluded.original_artwork_identity,
-            duration_ms = excluded.duration_ms,
-            availability = excluded.availability,
-            updated_at_ms = excluded.updated_at_ms,
-            version = music_library_items.version + 1",
-    )
-    .bind(item_id)
-    .bind(format!("local:{item_id}"))
-    .bind(media.media_kind.as_ref())
-    .bind(&media.title)
-    .bind(&media.artist)
-    .bind(&media.album)
-    .bind(media.track_number)
-    .bind(&media.original_artwork_identity)
-    .bind(media.duration_ms)
-    .bind(if ambiguous { "ambiguous" } else { "available" })
-    .bind(discovered_at_ms)
-    .bind(now_ms())
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| map_conflict("save discovered music item", error))?;
-    Ok(())
-}
-
-async fn upsert_location(
-    transaction: &mut Transaction<'_, Sqlite>,
-    request: &MusicLocalRefreshRequest,
-    generation: i64,
-    item_id: &str,
-    media: &LocalMediaEvidence,
-    strong_hash: Option<&str>,
-    ambiguous: bool,
-) -> MusicLibraryResult<()> {
-    let location_id = stable_id("location", &[&request.root_id, &media.relative_path]);
-    sqlx::query(
-        "INSERT INTO music_local_locations
-            (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,
-             lightweight_fingerprint, strong_fingerprint, availability,
-             last_seen_generation, first_seen_at_ms, updated_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(root_id, relative_path) DO UPDATE SET
-            item_id = excluded.item_id,
-            file_size_bytes = excluded.file_size_bytes,
-            modified_at_ms = excluded.modified_at_ms,
-            lightweight_fingerprint = excluded.lightweight_fingerprint,
-            strong_fingerprint = excluded.strong_fingerprint,
-            availability = excluded.availability,
-            last_seen_generation = excluded.last_seen_generation,
-            updated_at_ms = excluded.updated_at_ms",
-    )
-    .bind(location_id)
-    .bind(item_id)
-    .bind(&request.root_id)
-    .bind(&media.relative_path)
-    .bind(media.file_size_bytes)
-    .bind(media.modified_at_ms)
-    .bind(&media.lightweight_fingerprint)
-    .bind(strong_hash)
-    .bind(if ambiguous { "ambiguous" } else { "available" })
-    .bind(generation)
-    .bind(request.requested_at_ms)
-    .bind(now_ms())
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| map_conflict("save discovered music location", error))?;
-    Ok(())
+fn scan_values<'a>(
+    media: &'a LocalMediaEvidence,
+    strong_fingerprint: Option<&'a str>,
+) -> LocalScanValues<'a> {
+    LocalScanValues {
+        relative_path: &media.relative_path,
+        media_kind: media.media_kind.as_ref(),
+        title: &media.title,
+        artist: &media.artist,
+        album: &media.album,
+        track_number: media.track_number,
+        duration_ms: media.duration_ms,
+        artwork_identity: media.original_artwork_identity.as_deref(),
+        file_size_bytes: Some(media.file_size_bytes),
+        modified_at_ms: media.modified_at_ms,
+        lightweight_fingerprint: &media.lightweight_fingerprint,
+        strong_fingerprint,
+    }
 }
 
 async fn insert_issue(

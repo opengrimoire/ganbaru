@@ -21,16 +21,16 @@ afterEach(async () => {
 
 /** Mount the real numeric editor with a canonical value that changes only after successful writes. */
 function renderNumber() {
-  const field: CellProps["projectCustomFields"][number] = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};
+  const field: CellProps["projectCustomFields"][number] = {id: "points", projectId: "project", name: "Points", fieldType: "number", orderKey: "100", icon: null, createdAt: "", updatedAt: ""};
   const save = vi.fn<CellProps["onSaveCustomFieldValue"]>().mockResolvedValue(undefined);
   const noop = () => undefined;
   const props: CellProps = {
     column: "custom:points",
-    task: {id: "task", projectId: "project", sectionId: "section", statusId: "status", title: "Task", description: "", priority: "none", taskType: "task", sectionSortOrder: 0, statusSortOrder: 0, milestone: false, createdAt: "", updatedAt: ""},
+    task: {id: "task", projectId: "project", sectionId: "section", statusId: "status", title: "Task", description: "", priority: "none", taskType: "task", sectionOrderKey: "0", statusOrderKey: "0", milestone: false, createdAt: "", updatedAt: ""},
     status: undefined, statuses: [], priorities: [], statusMenuOpen: false, priorityMenuOpen: false, startDateMenuOpen: false, dueDateMenuOpen: false,
     projectCustomFields: [field], scheduled: null, blockedByCount: 0, blocksCount: 0,
     estimateLabel: String, customFieldDisplayValue: () => "1234.5", customFieldOptions: () => [], customFieldOptionValues: () => [],
-    customFieldValue: () => ({taskId: "task", fieldId: "points", numberValue: 1234.5, updatedAt: ""}),
+    customFieldValue: () => ({taskId: "task", fieldId: "points", numberValue: "1234.5", updatedAt: ""}),
     onSaveCustomFieldValue: save, onToggleStatusMenu: noop, onSetStatus: noop, onTogglePriorityMenu: noop, onSetPriority: noop,
     onToggleStartDateMenu: noop, onCloseStartDateMenu: noop, onSetStartDate: noop, onClearStartDate: noop, onSetStartTime: noop, onClearStartTime: noop,
     onToggleDueDateMenu: noop, onCloseDueDateMenu: noop, onSetDueDate: noop, onClearDueDate: noop, onSetDueTime: noop, onClearDueTime: noop,
@@ -71,7 +71,7 @@ describe("Projects numeric cell drafts", () => {
     input.blur();
     await vi.waitFor(() => expect(input.disabled).toBe(false));
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({id: "task"}), expect.objectContaining({id: "points"}), expect.objectContaining({numberValue: 31.5}));
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({id: "task"}), expect.objectContaining({id: "points"}), expect.objectContaining({numberValue: "31.5"}));
     expect(input.value).toBe("31.5");
     expect(document.querySelector('[role="alert"]')).toBeNull();
   });

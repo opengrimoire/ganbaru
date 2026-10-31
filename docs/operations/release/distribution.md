@@ -41,6 +41,10 @@ The release workflow builds a signed universal APK for direct installation and a
 
 Android release acceptance must verify signature, application identity, coexistence with the `.dev` build, offline startup, data behavior, and the supported ABI set.
 
+## Sync relay
+
+Each release attaches static musl builds of the self-hosted sync relay for Linux on x86_64 and aarch64 (`ganbaru-sync-relay_<version>_linux_<arch>`), built on native runners for each architecture and covered by the signed `SHA256SUMS`. After the release is published, a separate job verifies those binaries against the signature and publishes a multi-architecture image to `ghcr.io/<owner>/ganbaru-sync-relay:<version>` from `crates/ganbaru-sync-relay/Containerfile`: a `scratch` image that runs the binary as user 65532 with one `/data` volume and port 43823. There is no `latest` tag; the job summary records the index digest, and operators should pull by that digest. The relay has no self-update.
+
 ## Recovery boundaries
 
 - Losing the Tauri private key breaks trust for the desktop updater until users install through a separately trusted path.

@@ -61,7 +61,8 @@ struct Context {
     generation: u64,
     vault_id: String,
     root_path: PathBuf,
-    ownership: vault::ownership::VaultOwnershipStatus,
+    device_id: String,
+    rules_revision: u64,
     config: Value,
     limits: limits::LimitsConfig,
     observation: accounting::Observation,
@@ -75,10 +76,6 @@ impl Context {
     fn validate_binding(&self, app: &tauri::AppHandle) -> Result<(), String> {
         if vault::active_vault_id(app)? != self.vault_id
             || vault::active_vault_path(app)? != self.root_path
-            || app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&self.vault_id)?
-                != self.ownership
         {
             return Err("Distractions vault context changed".into());
         }
@@ -96,8 +93,7 @@ impl Context {
     /// Guard projection publication, which stays valid while the vault and rules are unchanged.
     fn validate_configuration(&self, app: &tauri::AppHandle) -> Result<(), String> {
         self.validate_binding(app)?;
-        let config = limits_read::config_at(&self.root_path.join(VAULT_CONFIG_FILE))?;
-        if config.get("distractions") != self.config.get("distractions") {
+        if !rule_store::is_current(self.rules_revision) {
             return Err("Distractions configuration changed".into());
         }
         Ok(())
@@ -142,6 +138,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             attempts: HashMap::new(),
             notifications: Vec::new(),
             last_error: None,
+            published_rules: None,
         };
         loop {
             tokio::select! {
@@ -355,18 +352,19 @@ struct Owner {
     control: Arc<Control>,
     foreground: Arc<Mutex<(Instant, DistractionsForegroundDesktopAppStatus)>>,
     accounting: accounting::Accounting,
-    binding: Option<(u64, String, u64)>,
+    binding: Option<(u64, String)>,
     session: Option<String>,
     pending: Option<Pending>,
     attempts: HashMap<String, Instant>,
     notifications: Vec<Instant>,
     last_error: Option<String>,
+    published_rules: Option<(PathBuf, Value)>,
 }
 
 impl Owner {
     async fn flush_pending(&mut self) -> Result<(), String> {
         if let Some(pending) = &self.pending {
-            crate::distractions::linked::enqueue_native_samples(
+            crate::distractions::spool::enqueue_native_samples(
                 &self.app,
                 &pending.vault_id,
                 &pending.device_id,
@@ -399,16 +397,29 @@ impl Owner {
             return Ok(());
         }
         let app = self.app.clone();
+        let available = tauri::async_runtime::spawn_blocking(move || {
+            vault::available_active_vault_path(&app).map(|path| path.is_some())
+        })
+        .await
+        .map_err(|error| format!("desktop vault check worker: {error}"))??;
+        if !available {
+            self.accounting.clear();
+            self.binding = None;
+            return Ok(());
+        }
+        let rules = rule_store::snapshot(&self.app).await?;
+        let app = self.app.clone();
         let control = self.control.clone();
         let context = tauri::async_runtime::spawn_blocking(move || {
             let Some(root_path) = vault::available_active_vault_path(&app)? else {
                 return Ok(None);
             };
             let vault_id = vault::active_vault_id(&app)?;
-            let ownership = app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?;
-            let config = limits_read::config_at(&root_path.join(VAULT_CONFIG_FILE))?;
+            if vault_id != rules.vault_id {
+                return Err("Distractions vault changed while its rules were read".into());
+            }
+            let device_id = vault::ensure_device_id(&app)?;
+            let config = rules.root;
             let limits = limits::parse_config(&config)?;
             let phase = read_fresh_runtime_state(&state_path(&app)?, now_utc());
             let catalog = desktop_catalog_index();
@@ -451,7 +462,8 @@ impl Owner {
                 generation,
                 vault_id,
                 root_path,
-                ownership,
+                device_id,
+                rules_revision: rules.revision,
                 config,
                 limits,
                 observation,
@@ -471,14 +483,14 @@ impl Owner {
             self.binding = None;
             return Ok(());
         };
-        if self.session.is_none() {
-            self.session = Some(crate::distractions::linked::new_accounting_session()?);
+        self.publish_rules_file(&context).await;
+        if let Err(error) = self.ingest_block_events(&context).await {
+            eprintln!("native Distractions block event import: {error}");
         }
-        let binding = (
-            generation,
-            context.vault_id.clone(),
-            context.ownership.generation,
-        );
+        if self.session.is_none() {
+            self.session = Some(crate::distractions::spool::new_accounting_session()?);
+        }
+        let binding = (generation, context.vault_id.clone());
         if self.binding.as_ref() != Some(&binding) {
             self.accounting.clear();
             self.attempts.clear();
@@ -487,7 +499,7 @@ impl Owner {
         let identity = format!(
             "{}|{}|{}",
             context.vault_id,
-            context.ownership.device_id,
+            context.device_id,
             self.session
                 .as_deref()
                 .ok_or("desktop interval session is unavailable")?
@@ -501,7 +513,7 @@ impl Owner {
         if !rows.is_empty() {
             self.pending = Some(Pending {
                 vault_id: context.vault_id.clone(),
-                device_id: context.ownership.device_id.clone(),
+                device_id: context.device_id.clone(),
                 rows,
             });
             self.flush_pending().await?;
@@ -522,6 +534,59 @@ impl Owner {
             Ok(())
         })?;
         self.enforce(context, projection.totals).await
+    }
+
+    /// Moves the block events the browser host spooled into the vault. A failure leaves them
+    /// spooled for the next observation.
+    async fn ingest_block_events(&self, context: &Context) -> Result<(), String> {
+        let device_id = &context.device_id;
+        if !crate::distractions::spool::has_pending_block_events(
+            &self.app,
+            &context.vault_id,
+            device_id,
+        )
+        .await?
+        {
+            return Ok(());
+        }
+        let _permit = self
+            .app
+            .state::<vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
+        context.validate_binding(&self.app)?;
+        let pool = crate::db::connect_vault(&self.app).await?;
+        context.validate_binding(&self.app)?;
+        crate::distractions::spool::ingest_block_events(
+            &self.app,
+            &pool,
+            &context.vault_id,
+            device_id,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Writes the rules file the browser host reads when the vault or its rules changed since
+    /// the last write. A failed write is logged and retried on the next observation so browser
+    /// publication never holds back desktop enforcement.
+    async fn publish_rules_file(&mut self, context: &Context) {
+        let published = (context.root_path.clone(), context.config.clone());
+        if self.published_rules.as_ref() == Some(&published) {
+            return;
+        }
+        let app = self.app.clone();
+        let (root_path, config) = published.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let contents = state_files::rules_file_contents(&root_path, &config)?;
+            state_files::write_text_file_atomically(&state_files::rules_path(&app)?, &contents)
+        })
+        .await
+        .map_err(|error| format!("browser rules file worker: {error}"))
+        .and_then(|result| result);
+        match result {
+            Ok(()) => self.published_rules = Some(published),
+            Err(error) => eprintln!("native Distractions browser rules file: {error}"),
+        }
     }
 
     async fn enforce(
@@ -570,6 +635,7 @@ impl Owner {
                 let mut guard = None;
                 let signalled = process_control::close_desktop_process_checked(
                     &app,
+                    &context.config,
                     DistractionsCloseDesktopAppRequest {
                         process_id: observed.process_id,
                         process_name: observed.process_name.clone(),
@@ -613,7 +679,7 @@ impl Owner {
                     guard = None;
                     guard = Some(control.current(context.generation)?);
                     context.validate(&app)?;
-                    let authorization = load_close_authorization(&app, &identity)?;
+                    let authorization = load_close_authorization(&app, &context.config, &identity)?;
                     validate_names_authorized(
                         foreground_status_match_names(current),
                         &authorization,
@@ -631,28 +697,25 @@ impl Owner {
             }
         }
         for (observed, limit_name) in closed {
-            if context.ownership.can_write {
-                let _permit = self
-                    .app
-                    .state::<vault::ownership::VaultOwnershipManager>()
-                    .acquire_managed_write(&context.vault_id)?;
-                context.validate_binding(&self.app)?;
-                let pool = crate::db::connect_vault(&self.app).await?;
-                context.validate_binding(&self.app)?;
-                let event =
-                    usage::normalize_desktop_block_event(DistractionsDesktopBlockEventInput {
-                        app_name: observed.app_name.clone(),
-                        process_name: Some(observed.process_name),
-                        process_id: Some(observed.process_id),
-                    })?;
-                usage::insert_desktop_block_event(
-                    &pool,
-                    event,
-                    context.phase.as_ref(),
-                    &now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-                )
-                .await?;
-            }
+            let _permit = self
+                .app
+                .state::<vault::write_fence::VaultWriteFence>()
+                .acquire_managed_write()?;
+            context.validate_binding(&self.app)?;
+            let pool = crate::db::connect_vault(&self.app).await?;
+            context.validate_binding(&self.app)?;
+            let event = usage::normalize_desktop_block_event(DistractionsDesktopBlockEventInput {
+                app_name: observed.app_name.clone(),
+                process_name: Some(observed.process_name),
+                process_id: Some(observed.process_id),
+            })?;
+            usage::insert_desktop_block_event(
+                &pool,
+                event,
+                context.phase.as_ref(),
+                &now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
+            )
+            .await?;
             self.notify(observed.app_name, limit_name);
         }
         Ok(())

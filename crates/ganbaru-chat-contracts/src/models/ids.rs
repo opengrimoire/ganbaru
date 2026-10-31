@@ -1,16 +1,18 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::fmt;
 
+/// Byte limit of device-local and provider identifiers.
 const MAX_IDENTIFIER_BYTES: usize = 1_024;
+/// Byte limit of organizational identifiers, which become replicated row keys and must fit the
+/// sync engine's row key bound.
+pub const MAX_ORGANIZATIONAL_IDENTIFIER_BYTES: usize = 128;
 
-fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
+fn validate_identifier(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
     if value.is_empty() {
         return Err(format!("{label} is required"));
     }
-    if value.len() > MAX_IDENTIFIER_BYTES {
-        return Err(format!(
-            "{label} exceeds the {MAX_IDENTIFIER_BYTES} byte limit"
-        ));
+    if value.len() > max_bytes {
+        return Err(format!("{label} exceeds the {max_bytes} byte limit"));
     }
     if value.chars().any(char::is_control) {
         return Err(format!("{label} contains a control character"));
@@ -20,13 +22,16 @@ fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
 
 macro_rules! chat_identifier {
     ($name:ident, $label:literal) => {
+        chat_identifier!($name, $label, MAX_IDENTIFIER_BYTES);
+    };
+    ($name:ident, $label:literal, $max_bytes:expr) => {
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(String);
 
         impl $name {
             pub fn new(value: impl Into<String>) -> Result<Self, String> {
                 let value = value.into();
-                validate_identifier(&value, $label)?;
+                validate_identifier(&value, $label, $max_bytes)?;
                 Ok(Self(value))
             }
 
@@ -75,17 +80,46 @@ macro_rules! chat_identifier {
 }
 
 pub use ganbaru_working_folders::{ProjectWorkingFolderId, UtcTimestamp};
-chat_identifier!(ChatChannelId, "Chat channel ID");
-chat_identifier!(ChatParticipantId, "Chat participant ID");
-chat_identifier!(ChatConversationId, "Chat conversation ID");
-chat_identifier!(ChatConversationItemId, "Chat conversation item ID");
-chat_identifier!(ChatMessageRevisionId, "Chat message revision ID");
-chat_identifier!(ChatReplyThreadId, "Chat reply thread ID");
+chat_identifier!(
+    ChatChannelId,
+    "Chat channel ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatParticipantId,
+    "Chat participant ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatConversationId,
+    "Chat conversation ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatConversationItemId,
+    "Chat conversation item ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatMessageRevisionId,
+    "Chat message revision ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatReplyThreadId,
+    "Chat reply thread ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
 chat_identifier!(
     ChatTeammatePolicyRevisionId,
-    "Chat teammate policy revision ID"
+    "Chat teammate policy revision ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
-chat_identifier!(ChatWorkAssignmentId, "Chat work assignment ID");
+chat_identifier!(
+    ChatWorkAssignmentId,
+    "Chat work assignment ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
 chat_identifier!(ChatAgentRunId, "Chat agent run ID");
 chat_identifier!(ChatThreadId, "Chat thread ID");
 chat_identifier!(ChatTurnId, "Chat turn ID");
@@ -96,13 +130,26 @@ chat_identifier!(ChatPlanId, "Chat plan ID");
 chat_identifier!(ChatAttachmentId, "Chat attachment ID");
 chat_identifier!(ChatEventId, "Chat event ID");
 chat_identifier!(ChatCommandId, "Chat command ID");
-chat_identifier!(ChatScheduledMessageId, "Chat scheduled message ID");
-chat_identifier!(ChatAccessProfileId, "Chat access profile ID");
+chat_identifier!(
+    ChatScheduledMessageId,
+    "Chat scheduled message ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
+chat_identifier!(
+    ChatAccessProfileId,
+    "Chat access profile ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
 chat_identifier!(
     ChatAccessProfileRevisionId,
-    "Chat access profile revision ID"
+    "Chat access profile revision ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
 );
-chat_identifier!(ChatMessageReferenceId, "Chat message reference ID");
+chat_identifier!(
+    ChatMessageReferenceId,
+    "Chat message reference ID",
+    MAX_ORGANIZATIONAL_IDENTIFIER_BYTES
+);
 chat_identifier!(
     ChatAuthorizationRevisionId,
     "Chat authorization revision ID"
@@ -124,3 +171,22 @@ chat_identifier!(ProviderRequestId, "provider request ID");
 chat_identifier!(ProviderTaskId, "provider task ID");
 chat_identifier!(ContinuationGroupId, "continuation group ID");
 chat_identifier!(ModelId, "model ID");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn organizational_ids_fit_the_row_key_bound_while_local_ids_keep_theirs() {
+        let organizational = "c".repeat(MAX_ORGANIZATIONAL_IDENTIFIER_BYTES);
+        assert!(ChatConversationId::new(organizational.clone()).is_ok());
+        assert!(ChatConversationId::new(format!("{organizational}c")).is_err());
+        assert!(ChatReplyThreadId::new(format!("{organizational}c")).is_err());
+
+        let local = "t".repeat(MAX_IDENTIFIER_BYTES);
+        assert!(ChatThreadId::new(local.clone()).is_ok());
+        assert!(ChatThreadId::new(format!("{local}t")).is_err());
+        assert!(ChatConversationId::new("").is_err());
+        assert!(ChatConversationId::new("conversation:\n").is_err());
+    }
+}

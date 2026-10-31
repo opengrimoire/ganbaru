@@ -1,6 +1,6 @@
 # Sync merge rules
 
-**Status: Reference.** These rules are implemented in source for Quick notes, the first replicated domain. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
+**Status: Reference.** These rules are implemented in the sync engine for every replicated domain; a test-only fixture domain exercises the shapes no production domain uses yet. Delivery, writers, and table classes are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
 
 ## Model
 
@@ -8,8 +8,9 @@
 - **Field group.** The unit of merging inside a row: one column, or several columns that must change together. A write changes whole groups.
 - **Version.** One writer's value of one group of one row. A replica keeps at most one version per writer per group.
 - **Supersession.** A new version removes exactly the versions its causal context covers. The remaining versions of a group are mutually concurrent.
-- **Winner.** The version materialized into the domain table, chosen by the group's merge kind. Versions with equal value hashes are never a conflict.
+- **Winner.** The version materialized into the domain table, chosen by the group's merge kind. Versions with equal value hashes are never a conflict. Sealing skips a captured group whose value hashes to its uncontested winner, since writing it again changes nothing; a group forced by a conflict resolution is always written.
 - **Causal readiness.** An operation applies only after its writer's previous operation and every operation its context depends on. Validation depends only on the operation's bytes and the current manifest, never on local state or arrival order. An operation from a newer manifest version is held, and a new version may only add tables and groups or loosen rules, so an operation valid under one version stays valid under later ones.
+- **Apply group.** Consecutive operations of one writer that apply in one transaction or not at all, because their changes only hold together. Each operation of a group but the last says in its header that the group continues. The group ends at an operation that does not continue, at its 64th operation, or at the operation whose envelope bytes reach 1 MiB, whatever the header says, so every receiver forms the same groups from the same operations. Nothing of a group applies until every operation of it is stored and ready; an operation the selected state excludes, or one past its writer's cutoff, ends the group before it. A chain is a run of one writer's operations that each say the next continues, which the bounds cut into several groups. No group of a chain applies until the whole chain is stored and closed; its groups then apply in order. On a receiver that can seal, every repair waits between two of its groups, and after its last group the rows it touched are repaired, at most 4,096 of them per transaction together with the rows that reference them. A receiver that can seal starts one chain at a time, each once the rows the previous one deferred were repaired. Of the chains that could start, the one whose last operation the receiver stored first starts, then the writer id, never the clock, so a writer cannot keep another writer's chain waiting. A chain closes at an operation that does not continue, before its writer's cutoff, an excluded operation, or an operation held as invalid, and at its 256th operation; a missing operation or a hold for a newer format or manifest keeps it open.
 
 The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A replica adopts remote clocks only up to one minute past its own time. The clock never decides what is superseded or kept, only which concurrent version is displayed. Clocks are a tiebreak, not authorization, and never cause rejection: a paired writer that advances its clock wins concurrent ties until real time catches up. That is accepted because the writer already holds write authority, its operations are signed and attributable, its device can be revoked, and merges stay deterministic. Refusing far-future clocks at the hub would strand honest writers whose clock was once wrong, since later operations of the writer cannot be admitted past a refused one.
 
@@ -24,10 +25,26 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Position | Greatest `(clock, writer)` over an order key; rows sort by `(order_key, id)` | Note and tag order |
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
+| Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | Project dependencies, tag links, custom field values |
+| Tree | A reference into its own table and a position, each won as above, then deterministic [cycle and depth repair](#trees-and-acyclic-edge-sets) | Project tasks (parent, depth 1) |
+| Acyclic edge set | Existence registers of a derived-key edge table; an edge that closes a cycle is severed | Project task dependencies |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
+- There is no counter kind. Usage and statistics are rows keyed by device and bucket, each written by one device and merged with `Max`, so concurrent increments never meet in one version.
 - A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
+
+## Trees and acyclic edge sets
+
+A tree table nests rows through a reference group into the table itself and orders siblings with a position group, so a move writes only the moved row's parent and order key. Because each row has one parent, every cycle among winning parents is a simple loop, broken at the row whose winning parent version has the greatest `(clock, writer)`, with the greater row key breaking a tie within one operation. Then every row deeper than the table's maximum depth is detached, which gives the same result as repeatedly moving the deepest row to the root. A detached row materializes as a root and keeps its order key, and a replica that can seal writes its parent as null. Detaching depends only on merge state, so replicas that cannot seal show the same tree. A replicated move log is not used, because every replica would have to undo and replay moves in one total order.
+
+An acyclic edge set is a derived-key table whose rows are directed edges between two rows of one table, such as dependencies. Edges count while they exist and both ends are shown, taken in ascending `(clock, writer)` of their winning existence version, then row key. An edge whose end already reaches its start through the edges taken before it is severed: it is hidden and surfaced as a conflict of its existence group until an edge of the cycle is removed. Severing seals nothing, so it undoes itself once the cycle is gone.
+
+## Derived keys
+
+A derived-key table keys each row by its natural identity, such as a membership's two ends, so every device derives the same key for the same row and adding it again must work after a removal. The manifest names the key prefix and the input columns in derivation order, and a change that writes every group of such a row is invalid unless its key equals the key derived from those values; a table keyed by a fixed natural key, such as preferences, declares no prefix and no inputs. Such a table has a hidden existence register instead of tombstones: a local insert or update writes 1, a delete writes 0, and the domain row is deleted while the winner is 0 and inserted again when it returns to 1. A local insert of a key the space already knows writes every group, immutable ones included, so the re-added row carries its new values. Immutable groups hold only key columns, the re-create guard does not apply, and a derived-key table never redirects or repairs duplicates. A derived-key row whose existence winner is 0 counts as deleted for references to it.
+
+A table with a composite primary key replicates under a `sync_key` text column derived from the primary key columns, which form its required immutable identity group. A reference in that identity group is never redirected: while its target is hidden as a duplicate or not live, the row is hidden instead.
 
 ## Order keys
 
@@ -35,20 +52,72 @@ Order keys are variable-length base62 strings compared by bytes. The first chara
 
 When two rows end up with equal keys, which concurrent placement can cause, the row id breaks the tie. A later local placement between two equal neighbors re-keys only the run of rows equal to the lower neighbor. When keys would exceed their length bound, the local command re-keys the whole group, which is an ordinary write.
 
+Append-only timelines, such as Chat conversation items, take a key after the last row the writing device has seen and never move. Concurrent or offline posts can share a key or land before rows another device already read, so readers order by `(order_key, id)` and compare cursors with that same pair.
+
 ## Deletion and recovery
 
 - A deletion is a tombstone carrying the causal context of its operation. A tombstoned row is deleted from the domain table, its key is never reused, and older operations never resurrect it.
 - The tombstoned row keeps its versions as retained state. A retained version of a recoverable group that no tombstone's context covers is an edit the deletion did not see. Such a row is a recovery entry, regardless of whether the edit arrived before or after the deletion.
 - Restoring creates a new row from the winning retained values. Restoring and discarding both seal a tombstone whose context covers every retained version, which closes the entry on every replica.
+- A live row is hidden by cascade when a cascading reference, followed through cascading references of other live rows, reaches a deleted root: a tombstoned row without a redirect, a removed derived-key row, or a severed edge. A table whose primary key is itself a cascading foreign key to an earlier table declares that table as its key parent, and its row is hidden and recovered with the parent row of the same key, as through a cascading reference. A reference cycle hides nothing on its own. Hiding is a pure function of merge state; a replica that can seal also tombstones each hidden row with a cause naming its root, while a hidden derived-key row stays live in merge state.
+- A tombstone naming a cause covers what the cause's deletion covers, because a repair sealed later may have seen edits the user's deletion did not. A row hidden by cascade is checked against its root's coverage, so a child edited concurrently with its parent's deletion is offered for recovery.
+- Recovery groups rows under their root: a row deleted by the user is its own root, and a row deleted or hidden by cascade belongs to the root its cause or its cascade reaches. One entry offers the root with every descendant holding an unseen edit, and restoring or discarding it closes the whole group.
 - A tombstone can redirect references to a row with a lower key. A reference to a tombstoned row follows the lowest redirect among its tombstones, or resolves to null when there is none. Redirects always point to lower keys, so chains terminate.
+
+## Publication
+
+- A table may declare a publication predicate over its own columns, such as a message that replicates once it is sent. Rows that fail it are drafts: they stay on the device that wrote them and are never captured. The write that first satisfies the predicate captures the row as a create with every group.
+- Publication is monotonic: a guard refuses a local write that makes a published row fail the predicate again. A merged winner that fails it is an invalid row, hidden like a row hidden by cascade.
+- A child table may publish with a predicate table through an immutable cascading reference. Its rows follow the parent: they are drafts while the parent is, they are captured with every group when the parent publishes, and they are hidden while the parent is. A child may declare that a null reference publishes at once, as a row with no parent; its column is then nullable, and `NOT NULL` otherwise. The reference still cascades, never `ON DELETE SET NULL`: clearing it would publish a deleted parent's pending children through a foreign key action, and a receiver's merged reference could disagree with the local one. Replicated references to a predicate table from any other table are refused, since they could name a draft.
+- Capture seeding treats existing rows the same way: only rows that satisfy the predicate, or whose parent does, are seeded.
+
+## Deletion holds
+
+- A table may hold deletes for domain Undo. Domain code holds a local delete in the transaction that deletes the row, for at most 10 seconds; sealing leaves the delete local until the lease ends.
+- Undo inside the lease checks that the hold still exists, then inserts the row again with its key. The capture becomes an ordinary write, so no tombstone is ever sealed and no recovery entry appears. Undo after the lease refuses, because the delete may already be sealed and published keys are never reused.
+- Published rows the delete removes through `ON DELETE CASCADE`, at any depth and in derived-key tables too, share the lease. Undo checks the hold of the rows it deleted and inserts them again with their children, so no tombstone or existence removal is sealed for any of them; expiry seals the whole set, with the children's tombstones naming their cause. Restoring the parent with changed values but without its children seals the children's deletes at once, because materializing the parent would otherwise bring them back. A parent restored unchanged seals nothing, so its children's deletes stay held until the lease ends.
+- The same lease may also hold rows the deleting transaction inserts in tables that hold deletes, such as the Calendar archive of a deleted event, together with their cascading children. Undo removes them again, so nothing about them is ever published; expiry seals each as one create. A held insert seals early in the same cases as a held delete, and also when a constraint over its table must read it.
+- A held delete seals early whenever a remote operation or a merge would write its row or a row cascading with it, so merge state and the domain table never disagree. Quiescing before a snapshot bootstrap or backup and revoking the local writer also end every hold.
+
+## References
+
+- A reference column holds a row key of any replicated table, including its own table and tables listed after it. A reference group holds one such column; register and immutable groups may also declare several, each resolved like a reference group while the group's value merges as a whole.
+- Each reference declares the delete action of its foreign key: clear to null or cascade. An immutable reference cascades, because clearing would change an immutable column. A row whose cascading reference no longer resolves is hidden by cascade, as described in [Deletion and recovery](#deletion-and-recovery).
+- Tables are listed in dependency order: a table needing another table's rows (a reference, an owned child's foreign key, or a trigger visible to the applier that reads it) comes after it, unless both lie in one strongly connected component, which is listed contiguously. Foreign keys are deferred while the engine applies, so a reference cycle materializes within its component in one batch. Owned and applier-visible dependencies read rows statement by statement, so they never lie on a cycle.
+- Deleting a materialized row rematerializes the rows in every table whose references named it, because the foreign key action clears or cascades them at once.
+
+## Owned tables
+
+- An owned table holds child rows whose ordered list is the value of one immutable, register, or coupled group of the owner. A domain may keep its own codec for the list; otherwise the generic codec encodes each row's declared typed columns in order. Real numbers never travel in replicated columns.
+- Owned rows are keyed by owner and ordinal, and materialize writes ordinals from zero without gaps, rewriting a stored list whose ordinals have gaps. A nested owned table keys its rows by owner, parent row ordinal, and its own ordinal, and its rows travel inside their parent row's value, so they follow the parent row when the list reorders.
+- An id column of an owned row is a unique data column, reinserted unchanged. Uniqueness is validated within one owner's value only, so domain code must mint fresh ids: two owners holding the same id cannot both materialize.
+- An owned row may name rows of other tables. While a target is missing, deleted, or hidden, materialize skips the row with its nested rows and numbers the rest from zero; the row stays in the group value and returns with its target. Domain code that deletes such a target locally numbers the remaining owned rows from zero again, as materialize writes them.
+- Foreign keys into an owned table come only from its owner, its own rows, or its nested tables.
+
+## Materialize hooks
+
+A domain may register a hook for a replicated table. It runs in the engine transaction after materialization with the keys of every changed row of that table, deleted rows included, and a change sink whose notices apply and seal reports return so the app can refresh. Hooks maintain hook columns and derived tables. A hook column is never captured, has no foreign key, is nullable or has a default, and is excluded from codecs and summaries; domain code keeps it current for local edits.
+
+A hook may also settle named register or coupled groups without owned tables or duplicate-repaired columns, for a winner that a static priority cannot rank, such as an inherited value whose resolution is stricter than a concurrent explicit one. A settled reference column must name a row one of the versions names, and is written resolved as a winner's would be, so a row hidden since resolves to null. For every live row the pass decided whose named group keeps several concurrent versions, the engine passes the hook those versions (values read back when elided, clocks, writers, and the winner) before the hooks run. A returned value that differs from the winner is written to the domain row and captured as a local edit, which the next seal publishes causally after every version the hook saw; the hook never writes itself. Determinism rule: the decision depends only on the versions and on replicated rows, so every device that decides the same versions writes the same value, and concurrent equal settles converge without a conflict; deciding them again writes nothing, since a value equal to the winner is never written. A hook returns nothing while the winner satisfies its rule, so each device settles a decided conflict at most once. The settled value must rank, under the static priority, at least as high as every version it decided, so a concurrent settle or edit cannot reverse it and a group that holds only settled values never needs another settle; a rule that reads device-local state, or settles on a value the priority ranks lower, lets devices with different rows write different values, and a clock-ranked register can then settle back and forth. A pass settles only when its call could seal the capture and no chain of apply groups is open, so the last pass of a chain settles on the state the whole chain leaves. Devices that cannot seal or whose connection guards the table, rows with a pending local capture, and values that break the group's rules or a constraint of the domain table (reported as invalid rows) are skipped, so apply never fails on a settle, and a crash before the seal leaves the capture for the next one.
 
 ## Unique values
 
-Live rows whose winning values collide on a declared unique column set form a class. Only the lowest key is materialized; the others are hidden, and references to them resolve to the kept row. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.
+A unique column set equal to the non-empty inputs of a derived key needs no resolution, because the row key already makes those values unique. Live rows whose winning values collide on any other declared unique column set form a class. Rows hidden for another reason (by cascade, severing, removal, or publication) never keep a class, so a deleted or hidden row cannot take a surviving row down with it. The remaining rows are taken in key order: a row that collides under any rule with a row already shown is hidden behind the lowest such row, and every other row is shown, so a table with several unique rules never hides a row behind a hidden one. References to a hidden duplicate resolve to its kept row. Because the rows hidden for other reasons can depend on the duplicates, the choice repeats until they settle, and falls back to ignoring them after a fixed number of rounds. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.
 
 ## Conflicts
 
-A conflict is a surfaced group of a live row with two or more versions whose values differ. Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
+A conflict is a surfaced group of a live row with two or more versions whose values differ, or the existence group of a [severed edge](#trees-and-acyclic-edge-sets). Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
+
+## Authorization and exclusion
+
+The authorization log's format, roles, and bounds are owned by [Device linking and synchronization](../../data/sync.md#writers); this section states the pure rules every replica derives from the records it stores.
+
+- **Chain selection.** Every authorization record that passes its intrinsic checks is kept in a content-addressed record store. Selection walks the tree of stored records whose rules hold at their parent and keeps the effective entry of highest rank: kit handover count, then anchor epoch, then lowest epoch root hash, then revision, then lowest entry hash. The result depends only on the stored set, never on arrival order or the delivering peer.
+- **Contests.** Each epoch instance has the handovers out of it as candidates; an entry of the instance that revokes a candidate's signer or target objects to it. A candidate on the ancestry of the highest ranked kit handover wins, then a lone unobjected candidate, then a candidate every other contestant (and, for objections, the instance's anchor) yielded to. Otherwise the instance freezes at the common ancestor of the candidates' parents. A provable fork of a writer that carries the instance's records freezes it too. While frozen, devices that an entry past the freeze removes are held: their operations are stored but not applied.
+- **Exclusion.** A selected removal names a cutoff per writer of the removed device. Every replica but the removed device holds that writer's operations past the cutoff as invalid, removes the merge effects of those already applied, and restores the versions they superseded unless the superseded version's own operation is excluded, its writer has a later version of the group, or a remaining version saw it. Operations of other writers stay applied, so an honest operation that saw an excluded one keeps its effects. Reselecting a chain without the removal classifies the operations again and reverts the exclusion.
+- **Fork exclusion.** Two operations of one writer at one sequence with different hashes, both signed by its key, are fork evidence. Every replica but the writer's own device excludes both branches past the shared prefix in the same way, and a fork leaves no late changes.
+- **Displaced versions.** A member keeps the versions an operation superseded while that operation's writer belongs to neither the anchor nor the local device and the anchor has not confirmed storing it, since only such an operation can still fall past a cutoff. The anchor keeps none; after a handover or a fork it seals again the current value of every live group an excluded operation wrote, so members that kept nothing converge with those that restored.
+- **Late changes.** Excluded operations fold commutatively into one late change per row and removal: the strongest kind (created, then deletion, then values), the union of groups written, and per group the latest value by clock, then writer, then sequence. A row the removed device created stays hidden until restored. An admin decides each row through a `resolve late` entry, and the first decision on a row stays. Restoring first seals, with the admin's own writer, the late values no current version is newer than: a create of every group for a created row or one no published state knows, a deletion for a late deletion, otherwise ordinary writes. Discarding writes no values.
 
 ## Worked examples
 
@@ -88,12 +157,48 @@ If P later renames `t7` concurrently with the repair, the rename is discarded wi
 3. Z's order group now has two concurrent versions. The winner is greatest `(clock, writer)`, P's key, so every replica shows X, Z, Y. Order is silent, so no conflict appears.
 4. If A had moved X and P had moved Y into the same slot, both would get keys from the same neighbors and could be equal. They sort by id, identically on every replica, and nothing else moves.
 
+### Project subtask depth and dependency cycles
+
+1. Tasks T, U, and V are top-level. Offline, A makes T a subtask of U, and P makes U a subtask of V. Each write is valid alone because tasks nest one level deep.
+2. After exchange, T sits under U and U under V, which is two levels. The tree repair detaches the deepest task, T, to the root, and a replica that can seal writes its parent as null. Every replica shows U under V and T at the root.
+3. Separately, A adds the dependency "T blocks U" and P adds "U blocks T". Each is a derived-key row with its own key, so neither overwrites the other. Taken in ascending `(clock, writer)`, the later edge closes the cycle and is hidden. Projects shows it as removed to break a cycle. Nothing is sealed, so removing the other edge brings it back.
+
+### Deleted status against move
+
+1. A deletes status S while P, offline, moves task K into S.
+2. Referenced settings rows are never tombstoned except with their project: A's delete sets `deleted_at`. The two writes touch different groups and both apply.
+3. K stays in S. S is hidden from pickers and settings but still shown where K uses it, so no task points at a missing row.
+
+### Revocation against widening
+
+1. A removes teammate T from channel C while P, offline, widens T's membership in C to full history.
+2. Both writes touch the membership's access group. The merge ranks a removal above any widening, whatever the clocks say.
+3. T ends removed on both devices. When the rows apply on T's executing device, it revokes T's active authorizations in C and stops their runs. Re-adding T is an edit made after seeing the removal, so it wins.
+
 ### Fork re-seal
 
 1. Desktop A's disk is cloned to a second machine C, including the writer key and record. Both continue with writer W after its seq 30.
-2. C pushes W's seq 31. The hub already stores a different seq 31 from A and refuses with `fork`. A clone whose chain has the same length as the hub's is found through the probe in the hello request instead.
-3. C fetches W's operation hashes from the hub and compares them with its own chain from seq 1. The chains agree through seq 30.
-4. C creates successor writer W2, removes W's operations past seq 30 from its own merge state, and re-seals them under W2 with their original clocks, manifest versions, and causal contexts. Its local view of W stops at seq 30.
-5. The hub keeps A's operations under W, and receives C's changes under W2. Every change from both machines survives and converges like any concurrent edits.
+2. C pushes W's seq 31. The hub already stores a different seq 31 from A, refuses with `fork`, and stores both signed operations as fork evidence. A clone whose chain has the same length as the hub's is found through the probe in the hello request instead.
+3. The evidence travels to every member. Every replica but the device's own installations excludes both branches of W past seq 30 and restores what they displaced; the anchor seals again the current value of every live group the branch it stored wrote.
+4. A and C each create a successor writer, remove W's operations past seq 30 from their own merge state, and re-seal them under the successor with their original clocks, manifest versions, and causal contexts.
+5. Every replica receives both successors. Every change from both machines survives and converges like any concurrent edits; a copy destroyed before it re-seals loses its branch.
 
 The re-seal is refused when an operation from another writer already depends on one of the operations being replaced, because renaming them would change what that writer saw.
+
+### Removal against offline edits
+
+1. Phone P, offline, edits note N's title (seq 41) and then its body (seq 42). The anchor A has stored P's writer through seq 40, and desktop D has received seq 41 from P on the LAN.
+2. An admin removes P. A sequences the removal with cutoff 40, its stored sequence for P's writer.
+3. D applies the removal: seq 41 is excluded, its title version is removed, and the title it superseded comes back. Seq 42 later reaches D through a peer that had not yet applied the removal and is held as excluded without applying. Both leave one late change for N with the title and body values.
+4. The admin restores the late change. The restore seals the late title and body under the admin's own writer, which every replica applies as ordinary writes, and the `resolve late` entry closes the late change everywhere. Had the admin discarded it, N would keep the values from before seq 41.
+
+### Late-created row
+
+1. Removed phone P had created quick note Q past its cutoff. Members that held the creation now hide Q, and members that never stored it do not know Q at all.
+2. Q appears as a late change of kind created. Restoring seals a create of every group under the admin's writer, so Q reappears on every replica. An honest edit another device made to Q after seeing it keeps its effects once Q is restored.
+
+### Two admins removing each other
+
+1. Admin desktops A and B both take the anchor from the same head, and each handover's epoch removes the other.
+2. Every replica that holds both chains sees two candidates out of one instance and freezes the log at that head, whichever chain it received first. Neither removal applies; both desktops are held, so their later operations are stored but not applied.
+3. B yields, naming A's handover. The instance now has one candidate every other contestant yielded to, so A's branch is selected on every replica and B's removal applies with its cutoff. Without a yield, the printed recovery kit decides.

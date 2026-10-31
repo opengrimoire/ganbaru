@@ -26,6 +26,7 @@
   import type { MusicReviewController } from "$lib/music/review/controller.svelte";
   import type { MusicReviewWorkspaceViewState } from "$lib/music/builder/view-state";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
+  import { itemBindingProblem } from "$lib/music/sources/binding-status";
   import type { MusicIssue, MusicItemListEntry } from "$lib/music/library/contracts";
   import {
     isMusicReviewEditableTarget,
@@ -70,6 +71,7 @@
     issue = null,
     repairAvailable = true,
     onRepairIssue = () => undefined,
+    onChooseFolder = () => undefined,
     viewState = $bindable(),
   }: {
     items: MusicItemListEntry[];
@@ -96,6 +98,8 @@
     issue?: MusicIssue | null;
     repairAvailable?: boolean;
     onRepairIssue?: (issue: MusicIssue) => void;
+    /** Chooses the folder of a local root that has none on this device. */
+    onChooseFolder?: (rootId: string) => void;
     viewState: MusicReviewWorkspaceViewState;
   } = $props();
 
@@ -160,6 +164,7 @@
   const ignoreActive = $derived(selectionMode ? selectionAllIgnored : item?.reviewState === "ignored");
   const ignoreActionLabel = $derived(ignoreActive ? t("music.builder.stopIgnoring") : t("music.builder.ignore"));
   const detail = $derived(inspector.detail?.item.id === item?.id ? inspector.detail : null);
+  const unboundRootId = $derived(item && itemBindingProblem(item, sources.bindings) === "unbound" ? item.localRootId : null);
   const checkedIds = $derived(new Set(detail?.memberships.map((membership) => membership.playlistId) ?? []));
   const membershipSignature = $derived([...checkedIds].sort().join("\n"));
   const membershipsChanged = $derived(Boolean(item)
@@ -229,6 +234,7 @@
   }
 
   function attentionLabel(): string {
+    if (unboundRootId) return t("music.builder.notOnThisDevice");
     if (detail?.item.availability !== "available") return availabilityLabel();
     return issue?.message ?? "";
   }
@@ -614,11 +620,11 @@
           <div class="min-w-0">
             <h2 class="truncate text-base font-semibold">{previewTitle}</h2>
             <p class="mt-0.5 truncate text-xs text-muted-foreground">{previewArtist}</p>
-            {#if detail && (detail.item.availability !== "available" || issue)}
+            {#if detail && (unboundRootId || detail.item.availability !== "available" || issue)}
               <div class="mt-1 flex min-w-0 items-center gap-1.5 text-[0.65rem]">
                 <TriangleAlert size={12} class="shrink-0 text-destructive" />
                 <span class="min-w-0 truncate text-muted-foreground">{attentionLabel()}</span>
-                {#if issue?.actionRequired && repairAvailable}<button type="button" onclick={() => onRepairIssue(issue)} class="shrink-0 font-semibold text-primary hover:underline">{t("music.builder.repair")}</button>{/if}
+                {#if unboundRootId}<button type="button" onclick={() => onChooseFolder(unboundRootId)} class="shrink-0 font-semibold text-primary hover:underline">{t("music.builder.chooseFolder")}</button>{:else if issue?.actionRequired && repairAvailable}<button type="button" onclick={() => onRepairIssue(issue)} class="shrink-0 font-semibold text-primary hover:underline">{t("music.builder.repair")}</button>{/if}
               </div>
             {/if}
           </div>

@@ -14,7 +14,11 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
-import { listenForProjectChanges, publishProjectChanges } from "$lib/projects/window-sync";
+import { projectOrderRanks } from "$lib/projects/order";
+import { PROJECTS_SYNC_CHANGE_KEY, listenForProjectChanges, projectsStillLoaded, publishProjectChanges } from "$lib/projects/window-sync";
+import { onProjectsSyncChanged } from "$lib/projects/sync-events";
+import { projectConflicts } from "./project-conflicts.svelte";
+import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import { applyCalendarEventProjectAssignments } from "$lib/projects/calendar-assignments";
 import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 import {
@@ -223,10 +227,11 @@ function isViewStarred(view: ProjectView): boolean {
 
 /** Orders groups or projects by the global Projects sidebar order. */
 function sortedForSidebar<T extends Project | ProjectGroup>(items: readonly T[], starred?: (item: T) => boolean): T[] {
+  const ranks = projectOrderRanks(items);
   return sortSidebarItems(
     items,
     getPreferences().projectsSidebarOrder,
-    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: item.sortOrder }),
+    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: ranks.get(item.id) }),
     starred,
   );
 }
@@ -669,7 +674,19 @@ async function refreshTaskDetail(projectId: string, taskId: string): Promise<Pro
   return detail.task;
 }
 
+let listeningForSyncRecovery = false;
+
+/** Reload what sync recovery restored or discarded from this window's settings, as for any other window's change. */
+function listenForSyncRecovery(): void {
+  if (listeningForSyncRecovery) return;
+  listeningForSyncRecovery = true;
+  onProjectsSyncChanged(() => {
+    void refreshFromOtherWindow(new Set([PROJECTS_SYNC_CHANGE_KEY]));
+  });
+}
+
 function listenForOtherWindows(): void {
+  listenForSyncRecovery();
   if (listeningForOtherWindows) return;
   listeningForOtherWindows = true;
   void listenForProjectChanges((projectIds) => {
@@ -681,12 +698,15 @@ function listenForOtherWindows(): void {
 }
 
 /**
- * Show what another window committed. Changed projects no pane shows reload when next selected; the shown ones
- * reload quietly once local commands settle, and again if this window commits while they read.
+ * Show what another window committed or sync applied. Changed projects no pane shows reload when next selected; the
+ * shown ones reload quietly once local commands settle, and again if this window commits while they read. Task
+ * reminders reschedule from the changed dates.
  */
 function refreshFromOtherWindow(projectIds: ReadonlySet<string>): Promise<void> {
-  const shown = new Set(shownProjectIds());
-  loadedProjectIds = loadedProjectIds.filter((projectId) => shown.has(projectId) || !projectIds.has(projectId));
+  const shown = new Set(shownProjectIds().filter((projectId): projectId is string => Boolean(projectId)));
+  loadedProjectIds = projectsStillLoaded(loadedProjectIds, shown, projectIds);
+  projectConflicts.invalidate();
+  invalidateProjectTaskReminderSchedule();
   if (otherWindowRefresh) {
     otherWindowRefreshQueued = true;
     return otherWindowRefresh;
@@ -748,7 +768,13 @@ const actions = createProjectStoreActions({
   ensureProjectData,
   ensureTaskDetailData,
   refreshTaskDetail,
-  onCommitted: (mutation) => publishProjectChanges(mutation, shownProjectIds()),
+  onCommitted: (mutation) => {
+    // Adding or removing a dependency changes whether a hidden one can be added back without a cycle.
+    if (mutation.changed.dependencies.length > 0 || mutation.removals.some((removal) => removal.kind === "dependency")) {
+      projectConflicts.invalidate();
+    }
+    publishProjectChanges(mutation, shownProjectIds());
+  },
 });
 
 function createProjectsStore(pane: ProjectsPane) {
@@ -759,6 +785,8 @@ function createProjectsStore(pane: ProjectsPane) {
     sectionsForProjectIncludingInactive,
     statusesForProject,
     prioritiesForProject,
+    taskStatusesForProject,
+    taskPrioritiesForProject,
     tasksForProject,
     tasksForProjectIncludingArchived,
     topLevelTasksForSection,
@@ -1017,6 +1045,8 @@ function createProjectsStore(pane: ProjectsPane) {
     sectionsForProjectIncludingInactive,
     statusesForProject,
     prioritiesForProject,
+    taskStatusesForProject,
+    taskPrioritiesForProject,
     tasksForProject,
     tasksForProjectIncludingArchived,
     topLevelTasksForSection,

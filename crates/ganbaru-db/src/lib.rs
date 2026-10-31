@@ -23,39 +23,39 @@ pub enum DatabaseAccessMode {
     ReadOnly,
     /// Full write access with migrations applied at open.
     ReadWrite,
-    /// A writable connection without migrations whose connection hook restricts writes, used by
-    /// replicas that write replicated tables while the rest of the vault stays read-only.
-    Guarded,
 }
 
 /// Future returned by a [`ConnectionHook`].
 pub type ConnectionHookFuture<'c> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'c>>;
 
-/// Setup that runs on every new writable connection, with the access mode of its pool.
+/// Setup that runs on every new writable connection.
 ///
-/// Pools may recycle their connection, so per-connection state such as TEMP triggers and
-/// commit hooks belongs here instead of in a one-time initialization.
-pub type ConnectionHook = Arc<
-    dyn for<'c> Fn(&'c mut SqliteConnection, DatabaseAccessMode) -> ConnectionHookFuture<'c>
-        + Send
-        + Sync,
->;
+/// Pools may recycle their connection, so per-connection state such as commit hooks belongs
+/// here instead of in a one-time initialization.
+pub type ConnectionHook =
+    Arc<dyn for<'c> Fn(&'c mut SqliteConnection) -> ConnectionHookFuture<'c> + Send + Sync>;
 
 /// Wraps a hook function, fixing the higher-ranked signature that closures cannot infer.
 pub fn connection_hook<F>(hook: F) -> ConnectionHook
 where
-    F: for<'c> Fn(&'c mut SqliteConnection, DatabaseAccessMode) -> ConnectionHookFuture<'c>
-        + Send
-        + Sync
-        + 'static,
+    F: for<'c> Fn(&'c mut SqliteConnection) -> ConnectionHookFuture<'c> + Send + Sync + 'static,
 {
     Arc::new(hook)
 }
 
+/// Future returned by a [`MigratedHook`].
+pub type MigratedHookFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+
+/// Data conversion that runs on every read-write pool after its migrations, before the pool
+/// is returned to any writer.
+///
+/// Conversions that SQL migrations cannot express, such as keys computed in Rust, belong here.
+/// The hook runs on every read-write open, so it must be idempotent and cheap when there is
+/// nothing to convert.
+pub type MigratedHook = Arc<dyn Fn(SqlitePool) -> MigratedHookFuture + Send + Sync>;
+
 struct RegisteredPool {
     access: DatabaseAccessMode,
-    /// Whether a guarded request opened this pool read-only because the schema differs.
-    guarded_fallback: bool,
     pool: SqlitePool,
 }
 
@@ -67,9 +67,26 @@ struct RegisteredPool {
 pub struct DatabasePoolRegistry {
     pools: Arc<Mutex<HashMap<PathBuf, RegisteredPool>>>,
     hook: Arc<std::sync::RwLock<Option<ConnectionHook>>>,
+    migrated_hook: Arc<std::sync::RwLock<Option<MigratedHook>>>,
 }
 
 impl DatabasePoolRegistry {
+    /// Sets the hook that later read-write opens run after their migrations.
+    pub fn set_migrated_hook(&self, hook: Option<MigratedHook>) {
+        let mut slot = self
+            .migrated_hook
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = hook;
+    }
+
+    fn migrated_hook(&self) -> Option<MigratedHook> {
+        self.migrated_hook
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Sets the hook that later writable connections run. Open pools keep their connections
     /// until they are closed.
     pub fn set_connection_hook(&self, hook: Option<ConnectionHook>) {
@@ -94,8 +111,7 @@ impl DatabasePoolRegistry {
             .map(|(pool, _)| pool)
     }
 
-    /// Connects to an existing authorized SQLite path without write access. An open guarded
-    /// pool for the path is returned instead, because a path holds one pool at a time.
+    /// Connects to an existing authorized SQLite path without write access.
     pub async fn connect_path_read_only(
         &self,
         path: impl AsRef<Path>,
@@ -103,18 +119,6 @@ impl DatabasePoolRegistry {
         self.connect_path_with_access(path, DatabaseAccessMode::ReadOnly)
             .await
             .map(|(pool, _)| pool)
-    }
-
-    /// Connects to an existing authorized SQLite path in guarded mode, without migrations.
-    ///
-    /// When the database schema differs from the embedded migration set, the pool reopens
-    /// read-only instead, and the returned mode says so.
-    pub async fn connect_path_guarded(
-        &self,
-        path: impl AsRef<Path>,
-    ) -> Result<(SqlitePool, DatabaseAccessMode), String> {
-        self.connect_path_with_access(path, DatabaseAccessMode::Guarded)
-            .await
     }
 
     /// Access mode of the open pool for a path.
@@ -134,37 +138,26 @@ impl DatabasePoolRegistry {
         let path = path.as_ref().to_path_buf();
         let mut pools = self.pools.lock().await;
         if let Some(registered) = pools.get(&path) {
-            let reusable = registered.access == access
-                || (access == DatabaseAccessMode::ReadOnly
-                    && registered.access == DatabaseAccessMode::Guarded)
-                || (access == DatabaseAccessMode::Guarded && registered.guarded_fallback);
-            if !reusable {
+            if registered.access != access {
                 return Err("database access changed; close the existing pool first".to_string());
             }
             return Ok((registered.pool.clone(), registered.access));
         }
 
-        let mut effective = access;
-        let mut pool = self.open(&path, access).await?;
-        if access == DatabaseAccessMode::Guarded && validate_current_schema(&pool).await.is_err() {
-            close_pool(&pool).await?;
-            effective = DatabaseAccessMode::ReadOnly;
-            pool = self.open(&path, effective).await?;
-        }
+        let pool = self.open(&path, access).await?;
         pools.insert(
             path,
             RegisteredPool {
-                access: effective,
-                guarded_fallback: access != effective,
+                access,
                 pool: pool.clone(),
             },
         );
-        Ok((pool, effective))
+        Ok((pool, access))
     }
 
     async fn open(&self, path: &Path, access: DatabaseAccessMode) -> Result<SqlitePool, String> {
-        if access != DatabaseAccessMode::ReadOnly {
-            restrict_database_files(path, access == DatabaseAccessMode::ReadWrite);
+        if access == DatabaseAccessMode::ReadWrite {
+            restrict_database_files(path);
         }
         let mut options = hardened_options(
             SqliteConnectOptions::new()
@@ -178,19 +171,16 @@ impl DatabasePoolRegistry {
                 .create_if_missing(true)
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(SqliteSynchronous::Full),
-            DatabaseAccessMode::Guarded => options
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Full),
         };
         let mut pool_options = SqlitePoolOptions::new().max_connections(1);
-        if access != DatabaseAccessMode::ReadOnly
+        if access == DatabaseAccessMode::ReadWrite
             && let Some(hook) = self.connection_hook()
         {
             pool_options = pool_options.after_connect(
                 move |conn: &mut SqliteConnection, _: PoolConnectionMetadata| {
                     let hook = hook.clone();
                     Box::pin(async move {
-                        hook(conn, access)
+                        hook(conn)
                             .await
                             .map_err(|error| sqlx::Error::Configuration(error.into()))
                     })
@@ -208,6 +198,9 @@ impl DatabasePoolRegistry {
                     // catalog is checked before migration writes can reach its triggers.
                     validate_schema_catalog(&pool).await?;
                     run_migrations(&pool).await?;
+                    if let Some(hook) = self.migrated_hook() {
+                        hook(pool.clone()).await?;
+                    }
                     sqlx::raw_sql("PRAGMA optimize")
                         .execute(&pool)
                         .await
@@ -219,7 +212,6 @@ impl DatabasePoolRegistry {
                         .await
                         .map_err(|error| format!("enable query-only database access: {error}"))?;
                 }
-                DatabaseAccessMode::Guarded => {}
             }
             Ok::<(), String>(())
         }
@@ -373,9 +365,11 @@ pub async fn validate_schema_catalog(pool: &SqlitePool) -> Result<usize, String>
 
 const MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 
-async fn read_schema_catalog(pool: &SqlitePool) -> Result<SchemaCatalog, String> {
+async fn read_schema_catalog<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+) -> Result<SchemaCatalog, String> {
     let rows = sqlx::query("SELECT type, name, tbl_name, sql FROM main.sqlite_schema")
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(|error| format!("read database schema: {error}"))?;
     let mut catalog = SchemaCatalog::new();
@@ -429,12 +423,34 @@ async fn validate_migration_prefix(pool: &SqlitePool) -> Result<Vec<i64>, String
     Ok(versions)
 }
 
-/// Builds, or returns the cached, catalog of an empty database migrated through `version`.
+/// Returns the version of the last embedded up migration.
+fn latest_migration_version() -> Option<i64> {
+    up_migrations().last().map(|migration| migration.version)
+}
+
+/// Returns the cached catalog of an empty database migrated through `version`, or computes it.
+///
+/// The catalog for the complete embedded chain comes from the committed snapshot when it was
+/// built from exactly that chain; any other version runs the migrations on an empty database.
 async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
     let mut catalogs = REFERENCE_CATALOGS.lock().await;
     if let Some(catalog) = catalogs.get(&version) {
         return Ok(catalog.clone());
     }
+    let committed = (latest_migration_version() == Some(version))
+        .then(schema_snapshot::committed_catalog)
+        .flatten();
+    let catalog = Arc::new(match committed {
+        Some(catalog) => catalog,
+        None => build_reference_catalog(version).await?,
+    });
+    catalogs.insert(version, catalog.clone());
+    Ok(catalog)
+}
+
+/// Runs the embedded migrations through `version` on an empty in-memory database and reads its
+/// catalog.
+async fn build_reference_catalog(version: i64) -> Result<SchemaCatalog, String> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(hardened_options(
@@ -451,9 +467,21 @@ async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
     }
     .await;
     pool.close().await;
-    let catalog = Arc::new(built?);
-    catalogs.insert(version, catalog.clone());
-    Ok(catalog)
+    built
+}
+
+/// Records the reference catalog of a database that every embedded migration built from empty,
+/// so test fixtures that already built the schema do not build it again for validation.
+#[cfg(any(test, feature = "test-support"))]
+async fn remember_reference_catalog(conn: &mut SqliteConnection) -> Result<(), String> {
+    let version = latest_migration_version().ok_or_else(|| "no embedded migrations".to_string())?;
+    let catalog = Arc::new(read_schema_catalog(conn).await?);
+    REFERENCE_CATALOGS
+        .lock()
+        .await
+        .entry(version)
+        .or_insert(catalog);
+    Ok(())
 }
 
 /// Suffixes of the files SQLite keeps beside a database, which it creates with the
@@ -466,14 +494,12 @@ const DATABASE_FILE_SUFFIXES: [&str; 4] = ["", "-wal", "-shm", "-journal"];
 /// existing one loses group and other access. A vault on a file system without Unix
 /// permissions, such as a FAT or exFAT drive, refuses the change; the vault still opens there
 /// because its location is the user's choice, and the refusal is reported on standard error.
-fn restrict_database_files(path: &Path, create: bool) {
-    if create {
-        match ganbaru_atomic_files::create_private_file(path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            // The connection reports any other creation failure with its open error.
-            Err(_) => return,
-        }
+fn restrict_database_files(path: &Path) {
+    match ganbaru_atomic_files::create_private_file(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        // The connection reports any other creation failure with its open error.
+        Err(_) => return,
     }
     for suffix in DATABASE_FILE_SUFFIXES {
         let mut file = path.as_os_str().to_owned();
@@ -498,6 +524,11 @@ fn hardened_options(options: SqliteConnectOptions) -> SqliteConnectOptions {
         .pragma("trusted_schema", "OFF")
         .pragma("cell_size_check", "ON")
 }
+
+mod schema_snapshot;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 #[doc(hidden)]
 pub mod __private {

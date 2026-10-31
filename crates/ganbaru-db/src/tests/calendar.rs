@@ -195,3 +195,37 @@ fn deleting_calendar_event_preserves_pomodoro_segments() {
         assert_eq!(event_id, None);
     });
 }
+
+#[test]
+fn deleting_a_calendar_deletes_its_events_and_imported_objects() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO calendars (id, name, source) VALUES ('imported', 'Imported', 'ics');
+             INSERT INTO calendar_events (id, title, start_time, end_time, calendar_id)
+             VALUES ('event-1', 'Plain', '2026-05-23T11:00:00Z', '2026-05-23T12:00:00Z', 'imported');
+             INSERT INTO icalendar_objects
+                (id, import_id, calendar_id, source_kind, source_name, source_fingerprint,
+                 created_at, updated_at)
+             VALUES ('object-1', 'import-1', 'imported', 'import-file', 'a.ics', 'fingerprint-a',
+                     '2026-05-23T00:00:00Z', '2026-05-23T00:00:00Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM calendars WHERE id = 'imported'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM calendar_events)
+                  + (SELECT COUNT(*) FROM icalendar_objects)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
+    });
+}

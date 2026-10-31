@@ -59,16 +59,10 @@ pub async fn apply_property_action(
     .await?
     .ok_or_else(|| "requesting table view not found".to_string())?;
     data_sources::views::prepare_view_mutation_tx(&mut tx, &view, "Database property").await?;
-    let source: String = sqlx::query_scalar(
-        "SELECT properties FROM notes_data_sources WHERE id = ? AND in_trash = 0",
-    )
-    .bind(data_source_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|error| format!("load property action source: {error}"))?
-    .ok_or_else(|| "data source not found".to_string())?;
-    let mut properties: Value = serde_json::from_str(&source)
-        .map_err(|error| format!("read property action schema: {error}"))?;
+    let mut properties =
+        crate::property_storage::load_active_data_source_properties(&mut tx, data_source_id)
+            .await?
+            .ok_or_else(|| "data source not found".to_string())?;
     let object = properties
         .as_object_mut()
         .ok_or_else(|| "data source properties must be an object".to_string())?;
@@ -385,18 +379,14 @@ async fn detach_inverse_relation_tx(
         detach_dual_property(properties, &synced_id);
         return Ok(());
     }
-    let target: Option<String> = sqlx::query_scalar(
-        "SELECT properties FROM notes_data_sources WHERE id = ? AND in_trash = 0",
+    let Some(mut target) = crate::property_storage::load_active_data_source_properties(
+        tx,
+        &config.target_data_source_id,
     )
-    .bind(&config.target_data_source_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|error| format!("load reciprocal relation source: {error}"))?;
-    let Some(target) = target else {
+    .await?
+    else {
         return Ok(());
     };
-    let mut target: Value = serde_json::from_str(&target)
-        .map_err(|error| format!("read reciprocal relation schema: {error}"))?;
     let Some(target_object) = target.as_object_mut() else {
         return Err("data source properties must be an object".to_string());
     };
@@ -410,12 +400,17 @@ async fn detach_inverse_relation_tx(
         false,
     )
     .await?;
+    crate::property_storage::write_data_source_properties(
+        tx,
+        &config.target_data_source_id,
+        &target,
+    )
+    .await?;
     sqlx::query(
         "UPDATE notes_data_sources
-         SET properties = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
-    .bind(target.to_string())
     .bind(&config.target_data_source_id)
     .execute(&mut **tx)
     .await
@@ -460,14 +455,14 @@ async fn apply_row_change_tx(
                     property_conversion::insert_value(row, &property.key, value);
                 }
             }
-            property_conversion::save_rows_tx(tx, &rows).await
+            property_conversion::save_rows_tx(tx, &rows, &property_id).await
         }
         RowChange::Remove { key, property_id } => {
             let mut rows = property_conversion::load_rows_tx(tx, data_source_id).await?;
             rows.retain_mut(|row| {
                 property_conversion::remove_value(row, &key, &property_id).is_some()
             });
-            property_conversion::save_rows_tx(tx, &rows).await
+            property_conversion::save_rows_tx(tx, &rows, &property_id).await
         }
     }
 }

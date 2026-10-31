@@ -6,7 +6,9 @@ async fn pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     seed(&pool).await;
     pool
 }
@@ -14,8 +16,8 @@ async fn pool() -> SqlitePool {
 async fn seed(pool: &SqlitePool) {
     sqlx::raw_sql(r#"
         INSERT INTO calendars (id, name, source) VALUES ('export', 'Current name', 'local'), ('other', 'Other', 'local');
-        INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
-            VALUES ('object', 'export', 'import-file', 'source', 'request', 'now', 'now');
+        INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at, import_id)
+            VALUES ('object', 'export', 'import-file', 'source', 'request', 'now', 'now', 'import');
         INSERT INTO icalendar_components (id, object_id, parent_component_id, calendar_id, component_type, preservation_status, created_at, updated_at)
             VALUES ('root', 'object', NULL, 'export', 'vcalendar', 'lossless', 'now', 'now'),
                    ('live', 'object', 'root', 'export', 'vevent', 'lossless', 'now', 'now'),
@@ -41,15 +43,15 @@ async fn seed(pool: &SqlitePool) {
         INSERT INTO calendar_event_organizers (event_id, name, email) VALUES ('event', 'Organizer', 'owner@example.test');
         INSERT INTO calendar_event_overrides (id, parent_event_id, recurrence_id, title, icalendar_component_id)
             VALUES ('override', 'event', '2026-10-05', 'Moved', 'exception');
-        INSERT INTO calendar_event_override_extended_properties (id, override_id, property_key, property_value)
-            VALUES ('override-extension', 'override', 'X-OVERRIDE', 'yes');
+        INSERT INTO calendar_event_override_extended_properties (id, event_id, override_id, property_key, property_value)
+            VALUES ('override-extension', 'event', 'override', 'X-OVERRIDE', 'yes');
         INSERT INTO icalendar_component_properties (id, component_id, name, value_type)
             VALUES ('property', 'live', 'x-preserved', 'text'), ('todo-property', 'todo', 'summary', 'text'),
                    ('zone-property', 'zone', 'tzid', 'text');
-        INSERT INTO icalendar_property_parameters (id, property_id, name) VALUES ('parameter', 'property', 'x-param');
-        INSERT INTO icalendar_value_nodes (id, property_id, parameter_id, value_kind, text_value)
-            VALUES ('text', 'property', NULL, 'text', 'original'), ('param-text', NULL, 'parameter', 'text', 'kept'),
-                   ('todo-text', 'todo-property', NULL, 'text', 'Task'), ('zone-text', 'zone-property', NULL, 'text', 'Custom/Zone');
+        INSERT INTO icalendar_property_parameters (id, component_id, property_id, name) VALUES ('parameter', 'live', 'property', 'x-param');
+        INSERT INTO icalendar_value_nodes (id, component_id, property_id, parameter_id, value_kind, text_value)
+            VALUES ('text', 'live', 'property', NULL, 'text', 'original'), ('param-text', 'live', 'property', 'parameter', 'text', 'kept'),
+                   ('todo-text', 'todo', 'todo-property', NULL, 'text', 'Task'), ('zone-text', 'zone', 'zone-property', NULL, 'text', 'Custom/Zone');
         INSERT INTO icalendar_component_projection_warnings (id, component_id, message) VALUES ('warning', 'live', 'Preserved extension');
     "#).execute(pool).await.unwrap();
 }
@@ -64,10 +66,10 @@ fn archive_storage_custody_does_not_publish_its_components_or_method_in_local_ex
                     (id, source_event_id, archived_at, title, start_time, end_time, calendar_id, icalendar_component_id, created_at, updated_at)
                     SELECT id, id, '2026-10-02T10:00:00Z', title, start_time, end_time, calendar_id, icalendar_component_id, created_at, updated_at
                     FROM calendar_events WHERE id = 'event';
-                INSERT INTO calendar_event_archive_import_objects (archive_event_id, object_id) VALUES ('event', 'object');
+                INSERT INTO calendar_event_archive_import_objects (archive_event_id, object_id, sync_key) VALUES ('event', 'object', 'archive-object');
                 DELETE FROM calendar_events WHERE id = 'event';
-                INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
-                    VALUES ('standalone', 'local', 'import-file', 'standalone', 'publish', 'now', 'now');
+                INSERT INTO icalendar_objects (id, import_id, calendar_id, source_kind, source_name, source_fingerprint, method, created_at, updated_at)
+                    VALUES ('standalone', 'standalone', 'local', 'import-file', 'standalone.ics', 'standalone', 'publish', 'now', 'now');
                 INSERT INTO icalendar_components (id, object_id, parent_component_id, calendar_id, component_type, preservation_status, created_at, updated_at)
                     VALUES ('standalone-root', 'standalone', NULL, 'local', 'vcalendar', 'lossless', 'now', 'now'),
                            ('standalone-journal', 'standalone', 'standalone-root', 'local', 'vjournal', 'unsupported', 'now', 'now');
@@ -107,6 +109,116 @@ fn archive_storage_custody_does_not_publish_its_components_or_method_in_local_ex
             assert_eq!(restored.passthrough_components.len(), 2);
             assert!(restored.metadata.mixed_methods);
         }
+    });
+}
+
+/// One VCALENDAR object of `import` from `source`, holding a VTIMEZONE named `zone` and a
+/// VJOURNAL summarized `journal`, plus an unprojected VEVENT when `event` is set.
+fn import_object_sql(
+    object: &str,
+    import: &str,
+    source: &str,
+    zone: &str,
+    journal: &str,
+    event: bool,
+) -> String {
+    let event_component = if event {
+        format!(
+            ", ('{object}-event', '{object}', '{object}-root', 'local', 'vevent', 'lossless', 'now', 'now')"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "INSERT INTO icalendar_objects (id, import_id, calendar_id, source_kind, source_name, source_fingerprint, created_at, updated_at)
+            VALUES ('{object}', '{import}', 'local', 'import-file', '{source}', '{object}', 'now', 'now');
+         INSERT INTO icalendar_components (id, object_id, parent_component_id, calendar_id, component_type, preservation_status, created_at, updated_at)
+            VALUES ('{object}-root', '{object}', NULL, 'local', 'vcalendar', 'lossless', 'now', 'now'),
+                   ('{object}-zone', '{object}', '{object}-root', 'local', 'vtimezone', 'lossless', 'now', 'now'),
+                   ('{object}-journal', '{object}', '{object}-root', 'local', 'vjournal', 'unsupported', 'now', 'now')
+                   {event_component};
+         INSERT INTO icalendar_component_properties (id, component_id, name, value_type)
+            VALUES ('{object}-tzid', '{object}-zone', 'tzid', 'text'),
+                   ('{object}-summary', '{object}-journal', 'summary', 'text');
+         INSERT INTO icalendar_value_nodes (id, component_id, property_id, value_kind, text_value)
+            VALUES ('{object}-tzid-value', '{object}-zone', '{object}-tzid', 'text', '{zone}'),
+                   ('{object}-summary-value', '{object}-journal', '{object}-summary', 'text', '{journal}');"
+    )
+}
+
+/// Exported timezone ids and journal summaries of the local calendar.
+async fn exported_zones_and_journals(pool: &SqlitePool) -> (Vec<Value>, Vec<Value>) {
+    let snapshot = load_export_snapshot(pool, "local").await.unwrap();
+    let zones = snapshot
+        .timezones
+        .iter()
+        .map(|zone| zone[1][0][3].clone())
+        .collect();
+    let journals = snapshot
+        .passthrough_components
+        .iter()
+        .map(|journal| journal[1][0][3].clone())
+        .collect();
+    (zones, journals)
+}
+
+#[test]
+fn a_second_import_of_one_source_exports_only_the_linked_import() {
+    crate::test_support::block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
+        // Import A holds two VCALENDAR objects of one file; import B is the same file imported
+        // on another device, whose events duplicate repair dropped. Import C is another file.
+        let seed = [
+            import_object_sql("a-1", "import-a", "shared.ics", "Zone/A", "A1", true),
+            import_object_sql("a-2", "import-a", "shared.ics", "Zone/A2", "A2", false),
+            import_object_sql("b-1", "import-b", "shared.ics", "Zone/B", "B1", true),
+            import_object_sql("b-2", "import-b", "shared.ics", "Zone/B2", "B2", false),
+            import_object_sql("c-1", "import-c", "other.ics", "Zone/C", "C1", false),
+        ]
+        .concat();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(seed))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (zones, journals) = exported_zones_and_journals(&pool).await;
+        assert_eq!(zones.len(), 5, "with no linked object every import exports");
+        assert_eq!(journals.len(), 5);
+
+        sqlx::query(
+            "INSERT INTO calendar_events (id, title, start_time, end_time, calendar_id, icalendar_component_id)
+             VALUES ('event', 'Shared', '2026-10-02T09:00:00Z', '2026-10-02T10:00:00Z', 'local', 'a-1-event')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (mut zones, mut journals) = exported_zones_and_journals(&pool).await;
+        zones.sort_by_key(Value::to_string);
+        journals.sort_by_key(Value::to_string);
+        assert_eq!(
+            zones,
+            vec![
+                serde_json::json!("Zone/A"),
+                serde_json::json!("Zone/A2"),
+                serde_json::json!("Zone/C"),
+            ],
+            "every object of the linked import exports, the other import of its source does not"
+        );
+        assert_eq!(
+            journals,
+            vec![
+                serde_json::json!("A1"),
+                serde_json::json!("A2"),
+                serde_json::json!("C1"),
+            ]
+        );
     });
 }
 
@@ -269,6 +381,7 @@ fn export_snapshot_holds_one_revision_while_another_connection_commits() {
             UPDATE calendar_events SET title = 'After' WHERE id = 'event';
             UPDATE calendar_event_attendees SET email = 'after@example.test' WHERE id = 'attendee';
             UPDATE icalendar_value_nodes SET text_value = 'after' WHERE id = 'text';
+            DROP TRIGGER sync_immutable_icalendar_objects;
             UPDATE icalendar_objects SET method = 'PUBLISH' WHERE id = 'object'; COMMIT;",
         )
         .execute(&pool)

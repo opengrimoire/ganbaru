@@ -43,7 +43,7 @@ function emptySnapshot(): ProjectsSnapshot {
 const task: ProjectTask = {
   id: "task-1", projectId: "project-1", sectionId: "section-1", statusId: "status-1",
   title: "Before", description: "", priority: "none", taskType: "task",
-  sectionSortOrder: 1000, statusSortOrder: 1000, milestone: false,
+  sectionOrderKey: "a1", statusOrderKey: "a1", milestone: false,
   createdAt: "created", updatedAt: "before", detailLoaded: true,
 };
 
@@ -104,20 +104,20 @@ describe("createProjectStoreActions", () => {
     return { actions, readSnapshot: () => snapshot, reload, applyCalendarEventProjectAssignments, refreshTaskDetail, onCommitted };
   }
 
-  it("preserves settings draft identities and ranks when creating collection rows", async () => {
+  it("preserves settings draft identities and placements when creating collection rows", async () => {
     const dates = { createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z" };
-    vi.mocked(createProjectStatus).mockImplementation(async (entry) => ({ changed: { ...emptySnapshot(), statuses: [{ ...entry, ...dates }] }, removals: [], calendarEventProjectAssignments: [] }));
-    vi.mocked(createProjectPriority).mockImplementation(async (entry) => ({ changed: { ...emptySnapshot(), priorities: [{ ...entry, ...dates }] }, removals: [], calendarEventProjectAssignments: [] }));
-    vi.mocked(createProjectTag).mockImplementation(async (entry) => ({ changed: { ...emptySnapshot(), tags: [{ ...entry, ...dates, color: 8 as const }] }, removals: [], calendarEventProjectAssignments: [] }));
+    vi.mocked(createProjectStatus).mockImplementation(async (entry) => ({ changed: { ...emptySnapshot(), statuses: [{ ...entry, orderKey: "a1", ...dates }] }, removals: [], calendarEventProjectAssignments: [] }));
+    vi.mocked(createProjectPriority).mockImplementation(async (entry) => ({ changed: { ...emptySnapshot(), priorities: [{ ...entry, orderKey: "a1", ...dates }] }, removals: [], calendarEventProjectAssignments: [] }));
+    vi.mocked(createProjectTag).mockImplementation(async (entry) => ({ changed: { ...emptySnapshot(), tags: [{ ...entry, orderKey: "a1", ...dates, color: 8 as const }] }, removals: [], calendarEventProjectAssignments: [] }));
     const { actions, readSnapshot } = setup();
-    await actions.addStatus("project-1", "Ready", "active", 8, { id: "draft-status", sortOrder: 4 });
-    await actions.addPriority("project-1", "Medium", 8, { id: "draft-priority", sortOrder: 5 });
-    await actions.addTag("project-1", "Work", 8, { id: "draft-tag", sortOrder: 6 });
-    expect(createProjectStatus).toHaveBeenCalledWith(expect.objectContaining({ id: "draft-status", sortOrder: 4 }));
-    expect(createProjectPriority).toHaveBeenCalledWith(expect.objectContaining({ id: "draft-priority", sortOrder: 5 }));
-    expect(createProjectTag).toHaveBeenCalledWith(expect.objectContaining({ id: "draft-tag", sortOrder: 6 }));
+    await actions.addStatus("project-1", "Ready", "active", 8, { id: "draft-status", placement: { kind: "end" } });
+    await actions.addPriority("project-1", "Medium", 8, { id: "draft-priority", placement: { kind: "end" } });
+    await actions.addTag("project-1", "Work", 8, { id: "draft-tag", placement: { kind: "end" } });
+    expect(createProjectStatus).toHaveBeenCalledWith(expect.objectContaining({ id: "draft-status", placement: { kind: "end" } }));
+    expect(createProjectPriority).toHaveBeenCalledWith(expect.objectContaining({ id: "draft-priority", placement: { kind: "end" } }));
+    expect(createProjectTag).toHaveBeenCalledWith(expect.objectContaining({ id: "draft-tag", placement: { kind: "end" } }));
     expect(readSnapshot().tags[0].id).toBe("draft-tag");
-    await expect(actions.addTag("project-1", "Work", 8, { id: "another-draft", sortOrder: 7 })).rejects.toThrow("A tag with this name already exists");
+    await expect(actions.addTag("project-1", "Work", 8, { id: "another-draft" })).rejects.toThrow("A tag with this name already exists");
     expect(createProjectTag).toHaveBeenCalledOnce();
     expect((await actions.addTag("project-1", "Work"))?.id).toBe("draft-tag");
   });
@@ -169,15 +169,15 @@ describe("createProjectStoreActions", () => {
   });
 
   it("reorders from one loaded task and reconciles an unloaded native sibling", async () => {
-    const sibling = { ...task, id: "task-hidden", sectionSortOrder: 1000, revision: 2 };
+    const sibling = { ...task, id: "task-hidden", sectionOrderKey: "a1", revision: 2 };
     vi.mocked(reorderProjectItem).mockResolvedValue({ ...taskMutation(task), changed: {
-      ...emptySnapshot(), tasks: [{ ...task, sectionSortOrder: 2000, revision: 1 }, sibling],
+      ...emptySnapshot(), tasks: [{ ...task, sectionOrderKey: "a2", revision: 1 }, sibling],
     } });
     const context = setup();
     await context.actions.moveTaskInSection(task, 1);
     expect(reorderProjectItem).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       projectId: task.projectId, direction: 1,
-      item: { kind: "task", id: task.id, axis: "section", groupId: task.sectionId, parentTaskId: null, expectedOrder: 1000 },
+      item: { kind: "task", id: task.id, axis: "section", groupId: task.sectionId, parentTaskId: null, expectedOrderKey: "a1" },
     }));
     expect(context.readSnapshot().tasks.map((task) => task.id)).toEqual([task.id, sibling.id]);
     expect(updateProjectTask).not.toHaveBeenCalled();
@@ -185,14 +185,14 @@ describe("createProjectStoreActions", () => {
 
   it("retains reorder identity after failure and does not resurrect a later deleted field", async () => {
     const field = { id: "field-1", projectId: "project-1", name: "Field", fieldType: "text" as const,
-      sortOrder: 1000, icon: null, revision: 0, createdAt: "created", updatedAt: "updated" };
+      orderKey: "a1", icon: null, revision: 0, createdAt: "created", updatedAt: "updated" };
     const context = setup();
     vi.mocked(reorderProjectItem).mockRejectedValueOnce(new Error("lost response"));
     await expect(context.actions.moveCustomField(field, 1)).rejects.toThrow("lost response");
     const first = vi.mocked(reorderProjectItem).mock.calls[0][0];
     vi.mocked(deleteProjectCustomField).mockResolvedValue({ changed: emptySnapshot(), removals: [{ kind: "custom_field", id: field.id }], calendarEventProjectAssignments: [] });
     await context.actions.removeCustomField(field.id);
-    vi.mocked(reorderProjectItem).mockResolvedValue({ changed: { ...emptySnapshot(), customFields: [{ ...field, sortOrder: 2000, revision: 1 }] }, removals: [], calendarEventProjectAssignments: [] });
+    vi.mocked(reorderProjectItem).mockResolvedValue({ changed: { ...emptySnapshot(), customFields: [{ ...field, orderKey: "a2", revision: 1 }] }, removals: [], calendarEventProjectAssignments: [] });
     await context.actions.moveCustomField(field, 1);
     expect(vi.mocked(reorderProjectItem).mock.calls[1][0]).toEqual(first);
     expect(context.readSnapshot().customFields).toEqual([]);
@@ -200,7 +200,7 @@ describe("createProjectStoreActions", () => {
 
   it("skips duplicating a property when the new name is blank", async () => {
     const field = { id: "field-1", projectId: "project-1", name: "Field", fieldType: "text" as const,
-      sortOrder: 1000, icon: null, revision: 0, createdAt: "created", updatedAt: "updated" };
+      orderKey: "a1", icon: null, revision: 0, createdAt: "created", updatedAt: "updated" };
     const context = setup();
     await expect(context.actions.duplicateCustomField(field, "   ")).resolves.toBeUndefined();
     expect(createProjectCustomField).not.toHaveBeenCalled();
@@ -384,13 +384,13 @@ describe("project identity and lifecycle actions", () => {
 
   const dates = { createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
 
-  function group(id: string, sortOrder: number, hidden = false): ProjectGroup {
-    return { id, name: id, icon: "lucide:folder", sortOrder, collapsed: false, hiddenAt: hidden ? dates.createdAt : undefined, ...dates };
+  function group(id: string, orderKey: string, hidden = false): ProjectGroup {
+    return { id, name: id, icon: "lucide:folder", orderKey, collapsed: false, hiddenAt: hidden ? dates.createdAt : undefined, ...dates };
   }
 
   function project(overrides: Partial<Project> = {}): Project {
     return {
-      id: "project-1", groupId: "work", name: "Launch", icon: "lucide:folder", color: 8, sortOrder: 1000,
+      id: "project-1", groupId: "work", name: "Launch", icon: "lucide:folder", color: 8, orderKey: "a1",
       status: "active", defaultEventName: null, defaultEventTimeMode: "timed", defaultEventDurationMinutes: 60,
       defaultPomodoroMode: "preset", defaultPomodoroPresetKey: "adaptive", defaultIdleSettingsSource: "global",
       defaultIdlePauseEnabled: true, defaultIdleThresholdMinutes: 5, ...dates, ...overrides,
@@ -400,13 +400,13 @@ describe("project identity and lifecycle actions", () => {
   function setup(projects: Project[]) {
     let snapshot: ProjectsSnapshot = {
       ...emptySnapshot(),
-      groups: [group("work", 1000), group("home", 2000), group("archive", 3000, true)],
+      groups: [group("work", "a1"), group("home", "a2"), group("archive", "a3", true)],
       projects,
     };
     vi.mocked(updateProject).mockImplementation(async (update: ProjectUpdate) => ({
       changed: { ...emptySnapshot(), projects: [{
         ...projects.find((entry) => entry.id === update.id)!,
-        name: update.name, groupId: update.groupId, sortOrder: update.sortOrder, status: update.status,
+        name: update.name, groupId: update.groupId, status: update.status,
       }] },
       removals: [],
       calendarEventProjectAssignments: [],
@@ -445,9 +445,9 @@ describe("project identity and lifecycle actions", () => {
 
   it("moves a project to the end of another visible group", async () => {
     const launch = project();
-    const { actions } = setup([launch, project({ id: "project-2", groupId: "home", sortOrder: 4000, status: "archived" })]);
+    const { actions } = setup([launch, project({ id: "project-2", groupId: "home", orderKey: "a4", status: "archived" })]);
     await actions.moveProjectToGroup(launch, "home");
-    expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-1", groupId: "home", sortOrder: 5000 });
+    expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-1", groupId: "home", placement: { kind: "end" } });
   });
 
   it("refuses hidden groups", async () => {
@@ -473,7 +473,7 @@ describe("project identity and lifecycle actions", () => {
     vi.mocked(reorderProjectGroups).mockReturnValue(answer.promise);
     const pending = actions.reorderGroups(["home", "work"]);
     expect(reorderProjectGroups).toHaveBeenCalledExactlyOnceWith(["home", "work", "archive"]);
-    expect(readSnapshot().groups.map((entry) => [entry.id, entry.sortOrder])).toEqual([["work", 2000], ["home", 1000], ["archive", 3000]]);
+    expect(readSnapshot().groups.map((entry) => [entry.id, entry.orderKey])).toEqual([["work", "1"], ["home", "0"], ["archive", "2"]]);
     expect(readSnapshot().groups[0]?.updatedAt).toBe(dates.updatedAt);
     answer.resolve({ changed: emptySnapshot(), removals: [], calendarEventProjectAssignments: [] });
     await pending;
@@ -483,24 +483,24 @@ describe("project identity and lifecycle actions", () => {
     const { actions, readSnapshot } = setup([]);
     vi.mocked(reorderProjectGroups).mockRejectedValue(new Error("refused"));
     await expect(actions.reorderGroups(["home", "work"])).rejects.toThrow("refused");
-    expect(readSnapshot().groups.map((entry) => entry.sortOrder)).toEqual([1000, 2000, 3000]);
+    expect(readSnapshot().groups.map((entry) => entry.orderKey)).toEqual(["a1", "a2", "a3"]);
   });
 
   it("reorders the listed projects of one group around its hidden ones and restores them on failure", async () => {
     const { actions, readSnapshot } = setup([
-      project({ id: "a", sortOrder: 1000 }),
-      project({ id: "hidden", sortOrder: 2000, status: "hidden" }),
-      project({ id: "b", sortOrder: 3000 }),
-      project({ id: "elsewhere", groupId: "home", sortOrder: 500 }),
+      project({ id: "a", orderKey: "a1" }),
+      project({ id: "hidden", orderKey: "a2", status: "hidden" }),
+      project({ id: "b", orderKey: "a3" }),
+      project({ id: "elsewhere", groupId: "home", orderKey: "a0" }),
     ]);
     vi.mocked(reorderGroupProjects).mockResolvedValueOnce({ changed: emptySnapshot(), removals: [], calendarEventProjectAssignments: [] });
     await actions.reorderProjectsInGroup("work", ["b", "a"]);
     expect(reorderGroupProjects).toHaveBeenCalledExactlyOnceWith("work", ["b", "hidden", "a"]);
-    const orders = () => Object.fromEntries(readSnapshot().projects.map((entry) => [entry.id, entry.sortOrder]));
-    expect(orders()).toEqual({ a: 3000, hidden: 2000, b: 1000, elsewhere: 500 });
+    const orders = () => Object.fromEntries(readSnapshot().projects.map((entry) => [entry.id, entry.orderKey]));
+    expect(orders()).toEqual({ a: "2", hidden: "1", b: "0", elsewhere: "a0" });
 
     vi.mocked(reorderGroupProjects).mockRejectedValueOnce(new Error("refused"));
     await expect(actions.reorderProjectsInGroup("work", ["a", "b"])).rejects.toThrow("refused");
-    expect(orders()).toEqual({ a: 3000, hidden: 2000, b: 1000, elsewhere: 500 });
+    expect(orders()).toEqual({ a: "2", hidden: "1", b: "0", elsewhere: "a0" });
   });
 });

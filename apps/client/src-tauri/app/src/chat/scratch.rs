@@ -315,7 +315,7 @@ pub(crate) async fn generation_sources_readable_by(
 ) -> ChatResult<bool> {
     let mut connection = pool.acquire().await.map_err(persistence_error)?;
     let sources = sqlx::query(
-        "SELECT conversation_id, lower_ordinal
+        "SELECT conversation_id, lower_order_key
          FROM chat_scratch_generation_sources
          WHERE scratch_generation_id = ?",
     )
@@ -327,12 +327,14 @@ pub(crate) async fn generation_sources_readable_by(
         let conversation_id: String = source
             .try_get("conversation_id")
             .map_err(persistence_error)?;
-        let lower_ordinal: i64 = source.try_get("lower_ordinal").map_err(persistence_error)?;
+        let lower_order_key: String = source
+            .try_get("lower_order_key")
+            .map_err(persistence_error)?;
         if !participant_can_read_source(
             &mut connection,
             participant_id,
             &conversation_id,
-            lower_ordinal,
+            &lower_order_key,
         )
         .await?
         {
@@ -374,7 +376,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         return Ok(false);
     }
     let sources = sqlx::query(
-        "SELECT conversation_id, lower_ordinal, audience_revision
+        "SELECT conversation_id, lower_order_key, audience_revision
          FROM chat_scratch_generation_sources
          WHERE scratch_generation_id = ?",
     )
@@ -402,10 +404,10 @@ pub(crate) async fn generation_constraints_hold_in_connection(
          LEFT JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         LEFT JOIN chat_access_profile_revisions profile_revision
+         LEFT JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE membership.conversation_id = ?
            AND membership.removed_at IS NULL
            AND (
@@ -425,7 +427,9 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         let conversation_id: String = source
             .try_get("conversation_id")
             .map_err(persistence_error)?;
-        let lower_ordinal: i64 = source.try_get("lower_ordinal").map_err(persistence_error)?;
+        let lower_order_key: String = source
+            .try_get("lower_order_key")
+            .map_err(persistence_error)?;
         let audience_revision: i64 = source
             .try_get("audience_revision")
             .map_err(persistence_error)?;
@@ -434,14 +438,14 @@ pub(crate) async fn generation_constraints_hold_in_connection(
                 &mut *connection,
                 teammate_id,
                 &conversation_id,
-                lower_ordinal,
+                &lower_order_key,
             )
             .await?
             || !participant_can_read_source(
                 &mut *connection,
                 requester_participant_id,
                 &conversation_id,
-                lower_ordinal,
+                &lower_order_key,
             )
             .await?
         {
@@ -453,7 +457,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
                 &mut *connection,
                 &participant_id,
                 &conversation_id,
-                lower_ordinal,
+                &lower_order_key,
             )
             .await?
             {
@@ -468,7 +472,7 @@ async fn participant_can_read_source(
     connection: &mut SqliteConnection,
     participant_id: &str,
     conversation_id: &str,
-    lower_ordinal: i64,
+    lower_order_key: &str,
 ) -> ChatResult<bool> {
     sqlx::query_scalar(
         "SELECT EXISTS(
@@ -478,10 +482,10 @@ async fn participant_can_read_source(
            LEFT JOIN chat_teammate_channel_memberships channel_access
              ON channel_access.conversation_id = membership.conversation_id
             AND channel_access.teammate_id = membership.participant_id
+            AND channel_access.removed_at IS NULL
            LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           LEFT JOIN chat_access_profile_revisions profile_revision
+           LEFT JOIN chat_access_profile_effective_revisions profile_revision
              ON profile_revision.access_profile_id = profile.id
-            AND profile_revision.revision = profile.latest_revision
            WHERE membership.conversation_id = ?
              AND membership.participant_id = ?
              AND membership.removed_at IS NULL
@@ -503,8 +507,8 @@ async fn participant_can_read_source(
                      ELSE 'entire'
                    END = 'entire'
                    OR (
-                     channel_access.history_from_ordinal IS NOT NULL
-                     AND channel_access.history_from_ordinal <= ?
+                     channel_access.history_from_order_key IS NOT NULL
+                     AND channel_access.history_from_order_key <= ?
                    )
                  )
                )
@@ -513,7 +517,7 @@ async fn participant_can_read_source(
     )
     .bind(conversation_id)
     .bind(participant_id)
-    .bind(lower_ordinal)
+    .bind(lower_order_key)
     .fetch_one(&mut *connection)
     .await
     .map_err(persistence_error)
@@ -694,16 +698,17 @@ mod tests {
     const AUTHORIZATION: &str = "authorization:reuse";
     const TEAMMATE: &str = "participant:scratch-agent";
 
+    /// Returns the default channel conversation of the test project, whose id is derived.
+    fn destination_conversation() -> String {
+        ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+            .unwrap()
+            .0
+    }
+
     /// Builds a real-schema scratch assignment without disabling foreign keys or triggers.
     async fn pool_with_scratch_assignment(scope_owner: &str) -> SqlitePool {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
-        sqlx::query(
-            "UPDATE chat_conversations SET id = 'conversation:scratch'
-             WHERE project_id = 'project-chat' AND conversation_kind = 'channel'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let conversation = destination_conversation();
         for (id, name) in [
             (TEAMMATE, "Scratch agent"),
             ("participant:other-agent", "Other agent"),
@@ -734,25 +739,28 @@ mod tests {
         }
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:scratch', '{TEAMMATE}', 1, 'codex-personal', '{{}}', '{NOW}');
+                (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+             VALUES ('policy:scratch', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES ('conversation:scratch', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES ('{conversation}', '{TEAMMATE}', 'membership:scratch', 'member',
+                     '{NOW}', '{NOW}');
              INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, participate, history_boundary, created_at, updated_at)
-             VALUES ('conversation:scratch', '{TEAMMATE}', 'access-profile:conversation-only',
+             VALUES ('{conversation}', '{TEAMMATE}', 'channel-membership:scratch',
+                     'access-profile:conversation-only',
                      1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
-                (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item:scratch', 'conversation:scratch', 'message', 1, '{NOW}');
+                (id, conversation_id, item_kind, order_key, created_at)
+             VALUES ('item:scratch', '{conversation}', 'message', 'c000', '{NOW}');
              INSERT INTO chat_communication_messages
                 (item_id, author_participant_id, created_at)
              VALUES ('item:scratch', 'participant:local-owner', '{NOW}');
              INSERT INTO chat_reply_threads
                 (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
-             VALUES ('reply:scratch', 'conversation:scratch', 'item:scratch', '{NOW}', '{NOW}', '{NOW}');
+             VALUES ('reply:scratch', '{conversation}', 'item:scratch', '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
                 (id, reply_thread_id, teammate_id, triggering_message_item_id, state, created_at, updated_at)
              VALUES ('assignment:scratch', 'reply:scratch', '{TEAMMATE}', 'item:scratch',
@@ -786,7 +794,7 @@ mod tests {
                  execution_environment_id, resolved_runtime_approval_policy, scope_digest,
                  decision_state, created_at)
              VALUES ('{AUTHORIZATION}', 'assignment:scratch', 1, 'participant:local-owner',
-                     'policy:scratch', 1, 'conversation:scratch', 'access-profile-revision:conversation-only:1',
+                     'policy:scratch', 1, '{conversation}', 'access-profile-revision:conversation-only:1',
                      'environment:scratch', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_turns
                 (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)
@@ -806,13 +814,14 @@ mod tests {
     async fn retain_destination_source(pool: &SqlitePool) {
         let inserted = sqlx::query(
             "INSERT INTO chat_scratch_generation_sources
-                (scratch_generation_id, conversation_id, lower_ordinal, high_ordinal,
-                 audience_revision, created_at)
-             SELECT ?, conversation_id, 1, 1, revision, ?
-             FROM chat_conversation_audience_state WHERE conversation_id = 'conversation:scratch'",
+                (scratch_generation_id, conversation_id, lower_order_key, lower_item_id,
+                 high_order_key, high_item_id, audience_revision, created_at)
+             SELECT ?, conversation_id, 'c000', '', 'c000', 'item:scratch', revision, ?
+             FROM chat_conversation_audience_state WHERE conversation_id = ?",
         )
         .bind(GENERATION)
         .bind(NOW)
+        .bind(destination_conversation())
         .execute(pool)
         .await
         .unwrap();

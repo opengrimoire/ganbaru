@@ -6,10 +6,10 @@ function item(patch: Partial<MusicItemListEntry> = {}): MusicItemListEntry {
   return {
     id: "track-1", identityKey: "local:track-1", sourceKind: "local-file", mediaKind: "audio",
     title: "Track", artist: "Artist", album: "Album", localRootId: "root-1", relativePath: "album/track.flac",
-    originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "available",
+    originalArtworkIdentity: null, artworkOverride: null, youtubeResolutionState: null, durationMs: null, availability: "available",
     reviewState: "reviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 1,
     activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0, membershipId: "membership-1",
-    membershipPosition: 0, membershipWeight: "normal", membershipEnabled: true, membershipVersion: 1,
+    membershipOrderKey: "a0", membershipWeight: "normal", membershipEnabled: true, membershipVersion: 1,
     ...patch,
     sourceCollectionIds: patch.sourceCollectionIds ?? [],
   };
@@ -18,11 +18,16 @@ function item(patch: Partial<MusicItemListEntry> = {}): MusicItemListEntry {
 const bindings = [{ rootId: "root-1", folderPath: "/Music", status: "available" as const }];
 
 describe("music list artwork", () => {
-  it("prefers an explicit artwork override", () => {
-    expect(musicListArtworkSource(item({ artworkOverride: "/custom/cover.png" }), bindings)).toEqual({
-      kind: "file",
-      path: "/custom/cover.png",
+  it("prefers a managed artwork override from the vault", () => {
+    const reference = `music/artwork/${"b".repeat(64)}.webp`;
+    expect(musicListArtworkSource(item({ artworkOverride: reference }), bindings)).toEqual({
+      kind: "asset",
+      reference,
     });
+  });
+
+  it("never reads an override that is not a managed reference as a device path", () => {
+    expect(musicListArtworkSource(item({ artworkOverride: "/custom/cover.png" }), bindings)).toBeNull();
   });
 
   it("resolves scanner-detected sidecar artwork", () => {

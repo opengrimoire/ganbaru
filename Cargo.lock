@@ -9,13 +9,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aead"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1973cfbc1a2daf9cf550e74e1f088c28e7f7d8c1e1418fb6c9dc5184b7e84c99"
+dependencies = [
+ "crypto-common 0.2.2",
+ "inout 0.2.2",
+]
+
+[[package]]
 name = "aes"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
 dependencies = [
  "cfg-if",
- "cipher",
+ "cipher 0.4.4",
  "cpufeatures 0.2.17",
 ]
 
@@ -673,7 +683,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26b52a9543ae338f279b96b0b9fed9c8093744685043739079ce85cd58f289a6"
 dependencies = [
- "cipher",
+ "cipher 0.4.4",
 ]
 
 [[package]]
@@ -738,8 +748,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
+ "cipher 0.5.2",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+ "zeroize",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher 0.5.2",
+ "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -761,7 +786,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common 0.1.7",
- "inout",
+ "inout 0.1.4",
+]
+
+[[package]]
+name = "cipher"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8cf2a2c93cd704877c0858356ed03480ff301ee950b43f1cbe4573b088bfa6c"
+dependencies = [
+ "block-buffer 0.12.1",
+ "crypto-common 0.2.2",
+ "inout 0.2.2",
 ]
 
 [[package]]
@@ -1029,11 +1065,37 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
+]
+
+[[package]]
+name = "curve25519-dalek"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5eed333089e2e1c1ac8c6c0398e5e2497b4c9926ca6d0365ed1e099afa5bc23"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "curve25519-dalek-derive",
+ "fiat-crypto",
+ "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -1482,6 +1544,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fiat-crypto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
+
+[[package]]
 name = "field-offset"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1742,6 +1810,7 @@ dependencies = [
  "ganbaru-mobile-documents",
  "ganbaru-mobile-media",
  "ganbaru-mobile-notifications",
+ "ganbaru-mobile-sync",
  "ganbaru-tauri-app",
  "serde_json",
  "tauri",
@@ -1774,6 +1843,8 @@ dependencies = [
  "ganbaru-music",
  "ganbaru-pomodoro",
  "ganbaru-projects",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
  "jiff",
  "serde",
  "serde_json",
@@ -1792,6 +1863,7 @@ dependencies = [
  "ganbaru-chat-contracts",
  "ganbaru-chat-providers",
  "ganbaru-db",
+ "ganbaru-sync-contracts",
  "ganbaru-working-folders",
  "libc",
  "reqwest",
@@ -1857,6 +1929,7 @@ version = "0.1.5"
 dependencies = [
  "ganbaru-atomic-files",
  "libsqlite3-sys",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
@@ -1867,6 +1940,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "ganbaru-civil-time",
+ "ganbaru-db",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
  "jiff",
  "serde",
  "serde_json",
@@ -1887,6 +1963,7 @@ dependencies = [
  "qrcode",
  "quircs",
  "rcgen",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
@@ -1942,10 +2019,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-mobile-sync"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "ganbaru-music"
 version = "0.1.0"
 dependencies = [
  "ganbaru-db",
+ "ganbaru-sync-contracts",
  "serde",
  "sqlx",
  "tokio",
@@ -1955,10 +2042,15 @@ dependencies = [
 name = "ganbaru-music-library"
 version = "0.1.0"
 dependencies = [
+ "ganbaru-atomic-files",
  "ganbaru-db",
+ "ganbaru-image-metadata",
  "ganbaru-music",
  "ganbaru-projects",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
  "jiff",
+ "ring",
  "rodio",
  "serde",
  "serde_json",
@@ -2001,6 +2093,8 @@ dependencies = [
  "ganbaru-atomic-files",
  "ganbaru-db",
  "ganbaru-image-metadata",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
  "reqwest",
  "rustls",
  "serde",
@@ -2029,7 +2123,10 @@ dependencies = [
  "chrono",
  "ganbaru-db",
  "ganbaru-music",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
  "ganbaru-working-folders",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2056,10 +2153,13 @@ dependencies = [
 name = "ganbaru-sync"
 version = "0.1.0"
 dependencies = [
+ "ganbaru-calendar",
  "ganbaru-contacts",
  "ganbaru-db",
+ "ganbaru-notes",
  "ganbaru-sync-contracts",
  "serde",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
@@ -2068,9 +2168,34 @@ dependencies = [
 name = "ganbaru-sync-contracts"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
  "ganbaru-contacts",
+ "hpke",
  "ring",
  "sha2 0.10.9",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "ganbaru-sync-relay"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-atomic-files",
+ "ganbaru-contacts",
+ "ganbaru-db",
+ "ganbaru-handoff",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "ganbaru-sync-replica",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -2078,17 +2203,31 @@ name = "ganbaru-sync-replica"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "ganbaru-atomic-files",
+ "ganbaru-calendar",
  "ganbaru-contacts",
  "ganbaru-db",
  "ganbaru-handoff",
+ "ganbaru-music-library",
+ "ganbaru-notes",
+ "ganbaru-projects",
  "ganbaru-quick-notes",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
+ "ganbaru-sync-relay",
+ "ganbaru-themes",
  "keyring",
+ "rustix",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "socket2",
  "sqlx",
  "tokio",
+ "tokio-rustls",
+ "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -2115,6 +2254,7 @@ dependencies = [
  "ganbaru-mobile-documents",
  "ganbaru-mobile-media",
  "ganbaru-mobile-notifications",
+ "ganbaru-mobile-sync",
  "ganbaru-music",
  "ganbaru-music-library",
  "ganbaru-music-player",
@@ -2130,9 +2270,11 @@ dependencies = [
  "gtk",
  "hyper",
  "hyper-util",
+ "if-addrs",
  "jiff",
  "keyring",
  "libc",
+ "mdns-sd",
  "notify",
  "notify-rust",
  "objc2",
@@ -2173,6 +2315,9 @@ name = "ganbaru-themes"
 version = "0.1.0"
 dependencies = [
  "ganbaru-db",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "ring",
  "serde",
  "sqlx",
  "tokio",
@@ -2594,6 +2739,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "hpke"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5324110b02044183df000f0bd7d2d7e61f1000631508627e77f63983b6fdffb"
+dependencies = [
+ "aead",
+ "chacha20poly1305",
+ "getrandom 0.4.2",
+ "hkdf 0.13.0",
+ "hybrid-array",
+ "rand_core 0.10.1",
+ "sha2 0.11.1",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2876,6 +3039,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2948,6 +3121,15 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
+]
+
+[[package]]
+name = "inout"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
+dependencies = [
+ "hybrid-array",
 ]
 
 [[package]]
@@ -3389,6 +3571,20 @@ checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
  "digest 0.11.3",
+]
+
+[[package]]
+name = "mdns-sd"
+version = "0.21.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8562654710f72a9cbce4b0d5b7c366a2f94330ba1ce3740f15e932ea2d37b161"
+dependencies = [
+ "fastrand",
+ "flume",
+ "if-addrs",
+ "mio",
+ "socket-pktinfo",
+ "socket2",
 ]
 
 [[package]]
@@ -4241,6 +4437,16 @@ dependencies = [
  "pin-project-lite",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "poly1305"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e2d0073b297041425c7c3df6eb4792d598a15323fe63346852b092eca02904c"
+dependencies = [
+ "cpufeatures 0.3.0",
+ "universal-hash",
 ]
 
 [[package]]
@@ -5287,6 +5493,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "socket-pktinfo"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e8e43b4bdce7cff8a4d3f8025ee38fce5ca138fab868ebbf9529c81328fbf9d"
+dependencies = [
+ "libc",
+ "socket2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6804,6 +7021,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "universal-hash"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4987bdc12753382e0bec4a65c50738ffaabc998b9cdd1f952fb5f39b0048a96"
+dependencies = [
+ "crypto-common 0.2.2",
+ "ctutils",
+]
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7952,6 +8179,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
+name = "x25519-dalek"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.10.1",
+ "zeroize",
+]
+
+[[package]]
 name = "x509-parser"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8130,6 +8368,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "zerotrie"

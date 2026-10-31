@@ -84,14 +84,16 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        ganbaru_db::run_migrations(&pool).await.unwrap();
-        sqlx::query("INSERT INTO project_groups (id, name, icon, sort_order) VALUES ('group', 'Group', 'lucide:folder', 1)")
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO project_groups (id, name, icon, order_key) VALUES ('group', 'Group', 'lucide:folder', 'a1')")
             .execute(&pool)
             .await
             .unwrap();
         for project in ["project-a", "project-b"] {
             sqlx::query(
-                "INSERT INTO projects (id, group_id, name, sort_order) VALUES (?, 'group', ?, 1)",
+                "INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'group', ?, 'a1')",
             )
             .bind(project)
             .bind(project)

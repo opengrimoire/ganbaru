@@ -8,7 +8,7 @@ fn project_update_rejects_blank_automation_default_ids() {
         name: "Project A".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
-        sort_order: 100,
+        placement: None,
         status: "active".to_string(),
         default_event_name: None,
         default_event_time_mode: "timed".to_string(),
@@ -44,7 +44,7 @@ fn project_update_rejects_blank_default_event_name() {
         name: "Project A".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
-        sort_order: 100,
+        placement: None,
         status: "active".to_string(),
         default_event_name: Some(" ".to_string()),
         default_event_time_mode: "timed".to_string(),
@@ -79,7 +79,7 @@ fn valid_project_update() -> ProjectUpdate {
         name: "Renamed project".to_string(),
         icon: "lucide:folder".to_string(),
         color: None,
-        sort_order: 100,
+        placement: None,
         status: "active".to_string(),
         default_event_name: None,
         default_event_time_mode: "timed".to_string(),
@@ -118,30 +118,34 @@ fn project_settings_and_soundtrack_defaults_commit_atomically() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order)
-         VALUES ('group-a', 'Group A', 'lucide:folder', 100)",
+            "INSERT INTO project_groups (id, name, icon, order_key)
+         VALUES ('group-a', 'Group A', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-         VALUES ('project-a', 'group-a', 'Original project', 'lucide:folder', 100)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+         VALUES ('project-a', 'group-a', 'Original project', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-        "INSERT INTO music_playlists (id, name, icon, shuffle_enabled, repeat_mode, created_at_ms, updated_at_ms)
-         VALUES ('playlist-a', 'Focus', 'lucide:laptop', 1, 'off', 1, 1)",
+        "INSERT INTO music_playlists (id, name, icon, shuffle_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms)
+         VALUES ('playlist-a', 'Focus', 'lucide:laptop', 1, 'off', 'a0', 1, 1)",
     )
     .execute(&pool)
     .await
     .unwrap();
 
-        super::super::project_commands::update_project(&pool, valid_project_update())
-            .await
-            .unwrap();
+        super::super::project_commands::update_project(
+            &pool,
+            &std::env::temp_dir(),
+            valid_project_update(),
+        )
+        .await
+        .unwrap();
 
         let name: String = sqlx::query_scalar("SELECT name FROM projects WHERE id = 'project-a'")
             .fetch_one(&pool)
@@ -167,7 +171,7 @@ fn project_settings_and_soundtrack_defaults_commit_atomically() {
             invalid.music_assignments.as_ref().unwrap()[0].clone(),
         ]);
         assert!(
-            super::super::project_commands::update_project(&pool, invalid)
+            super::super::project_commands::update_project(&pool, &std::env::temp_dir(), invalid)
                 .await
                 .is_err()
         );

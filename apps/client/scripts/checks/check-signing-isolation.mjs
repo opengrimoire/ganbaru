@@ -32,6 +32,15 @@ const ALLOWED_SIGNING_ACTIONS = new Set([
   "actions/upload-artifact",
 ]);
 
+/** Actions a registry publication job may use; it only checks out scripts and runs Node. */
+const ALLOWED_REGISTRY_ACTIONS = new Set(["actions/checkout", "actions/setup-node"]);
+
+/** Command that checks downloaded release assets against the signed checksum manifest. */
+const SIGNED_CHECKSUM_VERIFY = /\brelease-checksums\.mjs verify\b/u;
+
+/** Commands that build or push a container image. */
+const IMAGE_PUBLISH_COMMAND = /\bdocker (?:build|push|buildx)\b/u;
+
 /** Fixture the scanner must reject, so a parser regression cannot pass silently. */
 const REJECTED_FIXTURE = `jobs:
   sign:
@@ -61,6 +70,29 @@ const CREDENTIAL_URL_FIXTURE = `jobs:
     steps:
       - name: remote
         run: git remote set-url origin "https://x-access-token:\${GITHUB_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git"
+`;
+
+/** Fixture with an action pinned by a movable tag, which the pin check must reject. */
+const UNPINNED_ACTION_FIXTURE = `jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v6
+`;
+
+/**
+ * Fixture of a registry publication job that enters the release environment, holds a signing
+ * secret, and pushes an image it never verified, which the registry check must reject.
+ */
+const REGISTRY_FIXTURE = `jobs:
+  image:
+    environment: release
+    permissions:
+      packages: write
+    steps:
+      - name: push
+        env:
+          KEY: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: docker push ghcr.io/example/relay:1
 `;
 
 /** Count leading spaces. */
@@ -193,6 +225,70 @@ export function credentialUrlViolations(text) {
   return violations;
 }
 
+/**
+ * Lists remote actions that are not pinned to a full commit SHA, since a tag or branch can be
+ * moved to code nobody reviewed.
+ *
+ * @param {string} text Workflow source.
+ * @returns {string[]} Human readable violations.
+ */
+export function unpinnedActionViolations(text) {
+  const violations = [];
+  for (const [job, lines] of workflowJobs(text)) {
+    for (const line of lines) {
+      const uses = /^\s*(?:- )?uses:\s*(\S+)/u.exec(line);
+      if (!uses || uses[1].startsWith("./")) continue;
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40}$/u.test(uses[1])) {
+        violations.push(`${job}: ${uses[1]} is not pinned to a full commit SHA`);
+      }
+    }
+  }
+  return violations;
+}
+
+/**
+ * Lists violations in jobs that can write to the package registry. Such a job must stay out of
+ * every environment and hold no signing secret, must not install or run workspace code, may use
+ * only checkout and setup-node, and must verify release assets against the signed checksum
+ * manifest before it builds or pushes an image.
+ *
+ * @param {string} text Workflow source.
+ * @returns {string[]} Human readable violations.
+ */
+export function registryPublicationViolations(text) {
+  const violations = [];
+  for (const [job, lines] of workflowJobs(text)) {
+    if (!lines.some((line) => /^\s*packages:\s*write\s*$/u.test(line))) continue;
+    if (lines.some((line) => /^\s*environment:/u.test(line))) {
+      violations.push(`${job}: publishes to the registry from an environment that may hold signing secrets`);
+    }
+    const body = lines.join("\n");
+    for (const match of body.matchAll(/\bsecrets\.([A-Za-z0-9_]+)/gu)) {
+      if (SIGNING_SECRET_PATTERN.test(match[1])) {
+        violations.push(`${job}: publishes to the registry while holding ${match[1]}`);
+      }
+    }
+    const commands = runCommands(lines);
+    for (const command of commands) {
+      for (const { label, pattern } of FORBIDDEN_COMMANDS) {
+        if (pattern.test(command)) violations.push(`${job}: runs ${label} with registry write access: ${command}`);
+      }
+    }
+    for (const line of lines) {
+      const uses = /^\s*(?:- )?uses:\s*([^@\s]+)/u.exec(line);
+      if (uses && !ALLOWED_REGISTRY_ACTIONS.has(uses[1])) {
+        violations.push(`${job}: uses ${uses[1]} with registry write access`);
+      }
+    }
+    const verified = commands.findIndex((command) => SIGNED_CHECKSUM_VERIFY.test(command));
+    const published = commands.findIndex((command) => IMAGE_PUBLISH_COMMAND.test(command));
+    if (verified < 0 || (published >= 0 && published < verified)) {
+      violations.push(`${job}: does not verify release assets against the signed checksums before publishing`);
+    }
+  }
+  return violations;
+}
+
 if (!signingIsolationViolations(REJECTED_FIXTURE).length) {
   throw new Error("Signing isolation check accepted its rejected fixture");
 }
@@ -201,6 +297,12 @@ if (!unverifiedDownloadViolations(UNVERIFIED_DOWNLOAD_FIXTURE).length) {
 }
 if (!credentialUrlViolations(CREDENTIAL_URL_FIXTURE).length) {
   throw new Error("Credential URL check accepted its rejected fixture");
+}
+if (!unpinnedActionViolations(UNPINNED_ACTION_FIXTURE).length) {
+  throw new Error("Action pin check accepted its unpinned fixture");
+}
+if (registryPublicationViolations(REGISTRY_FIXTURE).length < 3) {
+  throw new Error("Registry publication check accepted its rejected fixture");
 }
 
 const workflowPaths = readdirSync(path.join(REPO_ROOT, WORKFLOW_DIR))
@@ -235,7 +337,15 @@ const credentialFailed = reportViolations(
   "Workflow tokens must be passed per command, never stored in a remote URL:",
   credentialUrlViolations,
 );
-if (signingFailed || downloadFailed || credentialFailed) process.exit(1);
+const pinFailed = reportViolations(
+  "Actions must be pinned to a full commit SHA:",
+  unpinnedActionViolations,
+);
+const registryFailed = reportViolations(
+  "Registry publication must stay apart from signing secrets and publish only verified assets:",
+  registryPublicationViolations,
+);
+if (signingFailed || downloadFailed || credentialFailed || pinFailed || registryFailed) process.exit(1);
 console.log(
-  `${workflowPaths.length} workflows keep signing isolated, verify every download, and keep credentials out of URLs.`,
+  `${workflowPaths.length} workflows keep signing isolated, verify every download, keep credentials out of URLs, pin every action, and publish only verified images.`,
 );

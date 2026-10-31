@@ -26,7 +26,6 @@ internal class AcknowledgeEventsArgs {
 @InvokeArg
 internal class AccountingVaultArgs {
   lateinit var vaultId: String
-  var usageOnly: Boolean = false
 }
 
 internal fun launchableAppResponse(name: String, packageName: String): Map<String, String> = mapOf(
@@ -142,7 +141,7 @@ class MobileDistractionsPlugin(private val activity: Activity) : Plugin(activity
     val args = invoke.parseArgs(AccountingVaultArgs::class.java)
     Thread {
       try {
-        val events = DistractionsGuardianClient(activity).pendingEvents(args.vaultId, args.usageOnly)
+        val events = DistractionsGuardianClient(activity).pendingEvents(args.vaultId)
         invoke.resolveObject(events.map(JournalEvent::toResponse))
       } catch (error: Exception) {
         invoke.reject(error.message ?: "Failed to read mobile Distractions events")

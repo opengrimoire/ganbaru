@@ -211,6 +211,24 @@ fn save_project_icon_bytes<R: Runtime>(
     Ok(ProjectIconAsset { relative_path })
 }
 
+/// Content check of a project icon a sync peer sent: the bytes must be an icon image of the type
+/// the reference names.
+pub(crate) fn check_synced_project_icon(
+    asset: &ganbaru_sync::assets::AssetRef,
+    path: &Path,
+) -> Result<(), String> {
+    let bytes = read_file_capped(path, FinalSymlink::Refuse)?;
+    let kind = validate_project_icon_image(&bytes)?.kind;
+    if kind.mime_type() != asset.content_type() {
+        return Err(format!(
+            "the bytes are {} but the reference names {}",
+            kind.mime_type(),
+            asset.content_type()
+        ));
+    }
+    Ok(())
+}
+
 fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
     let bytes = read_regular_file_capped(path, PROJECT_ICON_MAX_BYTES as u64, final_symlink)
         .map_err(|error| match error.kind() {
@@ -832,6 +850,37 @@ mod tests {
     }
 
     #[test]
+    fn synced_project_icons_must_match_their_reference() {
+        use ganbaru_sync::assets::AssetRef;
+        use ganbaru_sync::manifest::vault::projects::ICON_CLASS;
+
+        let root =
+            std::env::temp_dir().join(format!("ganbaru-project-icon-check-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = png(64, 64);
+        let icon = root.join("icon.png");
+        fs::write(&icon, &bytes).unwrap();
+        let reference = |content_type: &str| {
+            AssetRef::new(
+                &ICON_CLASS,
+                hex_hash(&bytes),
+                content_type.to_string(),
+                bytes.len() as u32,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            check_synced_project_icon(&reference("image/png"), &icon),
+            Ok(())
+        );
+        assert!(check_synced_project_icon(&reference("image/webp"), &icon).is_err());
+        let svg = root.join("icon.svg");
+        fs::write(&svg, br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#).unwrap();
+        assert!(check_synced_project_icon(&reference("image/png"), &svg).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn project_icon_metadata_rejects_unsupported_icon_images() {
         let expected = project_icon_unsupported_type_error();
         assert_eq!(
@@ -1215,7 +1264,9 @@ mod reference_tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        ganbaru_db::run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
         // Reference rows are seeded without their owning pages and users.
         sqlx::raw_sql("PRAGMA foreign_keys=OFF")
             .execute(&pool)
@@ -1242,15 +1293,16 @@ mod reference_tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_custom_emojis (id, name, asset_path) VALUES ('e', 'e', ?1)",
+            "INSERT INTO project_custom_emojis (id, name, asset_path, order_key, asset_byte_size)
+             VALUES ('e', 'e', ?1, 'a1', 1)",
         )
         .bind(EMOJI_ICON)
         .execute(pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, payload)
-             VALUES ('b', 'p', 'page_id', 'p', 'callout', ?1)",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
+             VALUES ('b', 'p', 'page_id', 'p', 'callout', ?1, 'a0')",
         )
         .bind(format!(
             r#"{{"callout":{{"icon":{}}}}}"#,

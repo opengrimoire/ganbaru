@@ -4,8 +4,6 @@ use sqlx::SqlitePool;
 use sqlx::{Sqlite, Transaction};
 use std::collections::{HashMap, HashSet};
 
-const INTERCHANGE_FORMAT: &str = "ganbaru/music-playlists";
-const INTERCHANGE_VERSION: i64 = 1;
 const MAX_PLAYLISTS: usize = 500;
 const MAX_MEMBERSHIPS: usize = 10_000;
 type ImportedSnoozeKey = (String, String, Option<String>, i64, Option<i64>, String);
@@ -54,6 +52,7 @@ pub(super) async fn import_in_transaction(
         playlist_ids.insert(playlist.id.clone(), target_playlist_id.clone());
         result.playlist_count += 1;
         let mut playlist_item_ids = HashSet::<String>::new();
+        let mut ordered_item_ids = Vec::<String>::new();
         for (membership_index, membership) in playlist.memberships.iter().enumerate() {
             let item_id = import_item(
                 transaction,
@@ -61,12 +60,12 @@ pub(super) async fn import_in_transaction(
                 &mut item_ids,
                 &mut changed_items,
                 request,
-                operation_id,
             )
             .await?;
             if !playlist_item_ids.insert(item_id.clone()) {
                 continue;
             }
+            ordered_item_ids.push(item_id.clone());
             import_membership(
                 transaction,
                 &target_playlist_id,
@@ -79,6 +78,24 @@ pub(super) async fn import_in_transaction(
             .await?;
             result.membership_count += 1;
         }
+        remove_absent_memberships(
+            transaction,
+            &target_playlist_id,
+            &playlist_item_ids,
+            &mut changed_items,
+        )
+        .await?;
+        let ordered_item_ids = ordered_item_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        super::order::order_memberships(
+            transaction,
+            &target_playlist_id,
+            &ordered_item_ids,
+            request.imported_at,
+        )
+        .await?;
     }
     result.item_count = item_ids.len() as i64;
     if request.import_context_assignments {
@@ -96,9 +113,37 @@ pub(super) async fn import_in_transaction(
     Ok(result)
 }
 
+/// Deletes the playlist's memberships whose item the imported playlist no longer contains, so a
+/// replaced playlist keeps the rows it shares with the import.
+async fn remove_absent_memberships(
+    transaction: &mut Transaction<'_, Sqlite>,
+    playlist_id: &str,
+    kept_item_ids: &HashSet<String>,
+    changed_items: &mut HashSet<String>,
+) -> MusicLibraryResult<()> {
+    let stored: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, item_id FROM music_playlist_memberships WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("load replaced memberships", error))?;
+    for (membership_id, item_id) in stored {
+        if kept_item_ids.contains(&item_id) {
+            continue;
+        }
+        sqlx::query("DELETE FROM music_playlist_memberships WHERE id = ?")
+            .bind(&membership_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("remove replaced membership", error))?;
+        changed_items.insert(item_id);
+    }
+    Ok(())
+}
+
 pub(super) fn validate_import(request: &MusicInterchangeImportRequest) -> MusicLibraryResult<()> {
-    if request.document.format != INTERCHANGE_FORMAT
-        || request.document.version != INTERCHANGE_VERSION
+    if request.document.format != super::transfer_codec::FORMAT
+        || request.document.version != super::transfer_codec::VERSION
     {
         return Err(MusicLibraryError::validation(
             "document",
@@ -151,34 +196,23 @@ pub(super) fn validate_import(request: &MusicInterchangeImportRequest) -> MusicL
         )?;
         for membership in &playlist.memberships {
             validate_item(&membership.item, &root_ids)?;
-            if membership.position < 0
-                || membership.start_ms.is_some_and(|value| value < 0)
+            if membership.start_ms.is_some_and(|value| value < 0)
                 || membership.end_ms.is_some_and(|value| value < 0)
-                || membership
-                    .volume
-                    .is_some_and(|value| !(0.0..=1.0).contains(&value))
-                || membership
-                    .rate
-                    .is_some_and(|value| !(0.25..=2.0).contains(&value))
+                || validate_membership_volume_rate(membership.volume_milli, membership.rate_milli)
+                    .is_err()
             {
                 return Err(MusicLibraryError::validation(
                     "memberships",
                     "contains invalid playback settings",
                 ));
             }
-            let mut previous_end = None;
-            for range in &membership.skip_ranges {
-                if range.start_ms < 0
-                    || range.end_ms <= range.start_ms
-                    || previous_end.is_some_and(|end| range.start_ms < end)
-                {
-                    return Err(MusicLibraryError::validation(
-                        "memberships.skipRanges",
-                        "must be ordered and non-overlapping",
-                    ));
-                }
-                previous_end = Some(range.end_ms);
-            }
+            validate_skip_ranges(
+                membership
+                    .skip_ranges
+                    .iter()
+                    .map(|range| (range.start_ms, range.end_ms)),
+                "memberships.skipRanges",
+            )?;
         }
     }
     Ok(())
@@ -280,7 +314,8 @@ async fn import_playlist(
             .map(|playlist| playlist.icon)
             .unwrap_or(playlist.icon.trim());
         sqlx::query(
-            "UPDATE music_playlists SET name = ?, icon = ?, shuffle_enabled = ?, mix_enabled = ?, repeat_mode = ?, updated_at_ms = ?, version = version + 1 WHERE id = ?",
+            "UPDATE music_playlists SET name = ?, icon = ?, shuffle_enabled = ?, mix_enabled = ?, repeat_mode = ?, updated_at_ms = ?, version = version + 1
+             WHERE id = ? AND (name, icon, shuffle_enabled, mix_enabled, repeat_mode) IS NOT (?, ?, ?, ?, ?)",
         )
         .bind(protected_name)
         .bind(protected_icon)
@@ -289,25 +324,20 @@ async fn import_playlist(
         .bind(playlist.repeat_mode.as_ref())
         .bind(request.imported_at)
         .bind(&target_id)
+        .bind(protected_name)
+        .bind(protected_icon)
+        .bind(i64::from(playlist.shuffle_enabled))
+        .bind(i64::from(playlist.mix_enabled))
+        .bind(playlist.repeat_mode.as_ref())
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("replace imported playlist", error))?;
-        sqlx::query("DELETE FROM music_playlist_memberships WHERE playlist_id = ?")
-            .bind(&target_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("replace imported memberships", error))?;
-        sqlx::query("DELETE FROM music_playlist_intended_uses WHERE playlist_id = ?")
-            .bind(&target_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("replace imported intended uses", error)
-            })?;
     } else {
+        let tail = super::order::playlist_tail(transaction).await?;
+        let order_key = super::order::key_after(tail.as_deref())?;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms, version)
-             VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM music_playlists), ?, ?, 1)",
+            "INSERT INTO music_playlists (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
         )
         .bind(&target_id)
         .bind(playlist.name.trim())
@@ -315,22 +345,14 @@ async fn import_playlist(
         .bind(i64::from(playlist.shuffle_enabled))
         .bind(i64::from(playlist.mix_enabled))
         .bind(playlist.repeat_mode.as_ref())
+        .bind(order_key.as_str())
         .bind(request.imported_at)
         .bind(request.imported_at)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("import playlist", error))?;
     }
-    for intended_use in &playlist.intended_uses {
-        sqlx::query(
-            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use) VALUES (?, ?)",
-        )
-        .bind(&target_id)
-        .bind(intended_use.as_ref())
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("import playlist intended use", error))?;
-    }
+    super::writes::replace_intended_uses(transaction, &target_id, &playlist.intended_uses).await?;
     Ok(Some(target_id))
 }
 
@@ -340,7 +362,6 @@ async fn import_item(
     item_ids: &mut HashMap<String, String>,
     changed_items: &mut HashSet<String>,
     request: &MusicInterchangeImportRequest,
-    operation_id: &str,
 ) -> MusicLibraryResult<String> {
     if let Some(item_id) = item_ids.get(&item.identity_key) {
         return Ok(item_id.clone());
@@ -352,8 +373,23 @@ async fn import_item(
             .await
             .map_err(|error| MusicLibraryError::database("match imported music item", error))?;
     let is_new = existing.is_none();
-    let item_id = existing
-        .unwrap_or_else(|| format!("music-import:{}:item:{}", operation_id, item_ids.len()));
+    let item_id = match existing {
+        Some(item_id) => item_id,
+        None => {
+            let base = match &item.youtube_video_id {
+                Some(video_id) if item.source_kind == MusicLibrarySourceKind::YouTubeVideo => {
+                    super::identity::youtube_item_id(video_id)
+                }
+                _ => super::identity::import_item_id(&item.identity_key),
+            };
+            super::identity::creatable_key(
+                transaction,
+                super::identity::RetirableTable::Items,
+                base,
+            )
+            .await?
+        }
+    };
     if is_new {
         sqlx::query(
             "INSERT INTO music_library_items
@@ -382,7 +418,8 @@ async fn import_item(
         .map_err(|error| MusicLibraryError::database("import music item", error))?;
     } else if request.replace_item_descriptions {
         sqlx::query(
-            "UPDATE music_library_items SET original_title = ?, original_artist = ?, original_album = ?, duration_ms = ?, updated_at_ms = ?, version = version + 1 WHERE id = ?",
+            "UPDATE music_library_items SET original_title = ?, original_artist = ?, original_album = ?, duration_ms = ?, updated_at_ms = ?, version = version + 1
+             WHERE id = ? AND (original_title, original_artist, original_album, duration_ms) IS NOT (?, ?, ?, ?)",
         )
         .bind(bounded_item_description(&item.title))
         .bind(bounded_item_description(&item.artist))
@@ -390,43 +427,41 @@ async fn import_item(
         .bind(item.duration_ms)
         .bind(request.imported_at)
         .bind(&item_id)
+        .bind(bounded_item_description(&item.title))
+        .bind(bounded_item_description(&item.artist))
+        .bind(bounded_item_description(&item.album))
+        .bind(item.duration_ms)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("replace imported item description", error))?;
     }
     if is_new || request.replace_item_descriptions {
-        sqlx::query("DELETE FROM music_item_signals WHERE item_id = ?")
-            .bind(&item_id)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("replace imported signals", error))?;
-        for signal in &item.signals {
-            sqlx::query(
-                "INSERT INTO music_item_signals (item_id, signal, created_at_ms) VALUES (?, ?, ?)",
-            )
-            .bind(&item_id)
-            .bind(signal.as_ref())
-            .bind(request.imported_at)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|error| MusicLibraryError::database("import music signal", error))?;
-        }
+        super::writes::replace_item_signals(
+            transaction,
+            &item_id,
+            &item.signals,
+            request.imported_at,
+        )
+        .await?;
     }
-    for (location_index, location) in item.locations.iter().enumerate() {
+    for location in &item.locations {
+        let relative_path = super::identity::normalize_relative_path(&location.relative_path);
+        let location_id = super::identity::creatable_key(
+            transaction,
+            super::identity::RetirableTable::Locations,
+            super::identity::location_id(&location.root_id, &relative_path),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO music_local_locations
                 (id, item_id, root_id, relative_path, availability, first_seen_at_ms, updated_at_ms)
              VALUES (?, ?, ?, ?, 'missing', ?, ?)
              ON CONFLICT DO NOTHING",
         )
-        .bind(format!(
-            "music-import:{}:location:{}:{location_index}",
-            operation_id,
-            item_ids.len()
-        ))
+        .bind(&location_id)
         .bind(&item_id)
         .bind(&location.root_id)
-        .bind(&location.relative_path)
+        .bind(&relative_path)
         .bind(request.imported_at)
         .bind(request.imported_at)
         .execute(&mut **transaction)
@@ -448,44 +483,56 @@ async fn import_membership(
     request: &MusicInterchangeImportRequest,
 ) -> MusicLibraryResult<()> {
     let (playlist_index, membership_index, operation_id) = position;
-    let membership_id = format!(
-        "music-import:{}:membership:{playlist_index}:{membership_index}",
-        operation_id
-    );
-    sqlx::query(
-        "INSERT INTO music_playlist_memberships
-            (id, playlist_id, item_id, position, weight, enabled, start_ms, end_ms,
-             volume, rate, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM music_playlist_memberships WHERE playlist_id = ? AND item_id = ?",
     )
-    .bind(&membership_id)
     .bind(playlist_id)
     .bind(item_id)
-    .bind(membership.position)
-    .bind(membership.weight.as_ref())
-    .bind(i64::from(membership.enabled))
-    .bind(membership.start_ms)
-    .bind(membership.end_ms)
-    .bind(membership.volume)
-    .bind(membership.rate)
-    .bind(request.imported_at)
-    .bind(request.imported_at)
-    .execute(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("import playlist membership", error))?;
-    for (range_index, range) in membership.skip_ranges.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO music_membership_skip_ranges (id, membership_id, start_ms, end_ms, sort_order) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(format!("{membership_id}:range:{range_index}"))
-        .bind(&membership_id)
-        .bind(range.start_ms)
-        .bind(range.end_ms)
-        .bind(range_index as i64)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("import membership skip range", error))?;
-    }
+    .map_err(|error| MusicLibraryError::database("match imported membership", error))?;
+    let membership_id = match existing {
+        Some(membership_id) => {
+            update_imported_membership(transaction, &membership_id, membership, request).await?;
+            membership_id
+        }
+        None => {
+            let membership_id = super::identity::membership_id(playlist_id, item_id)?;
+            let tail = super::order::membership_tail(transaction, playlist_id).await?;
+            let order_key = super::order::key_after(tail.as_deref())?;
+            sqlx::query(
+                "INSERT INTO music_playlist_memberships
+                    (id, playlist_id, item_id, order_key, weight, enabled, start_ms, end_ms,
+                     volume_milli, rate_milli, created_at_ms, updated_at_ms, version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            )
+            .bind(&membership_id)
+            .bind(playlist_id)
+            .bind(item_id)
+            .bind(order_key.as_str())
+            .bind(membership.weight.as_ref())
+            .bind(i64::from(membership.enabled))
+            .bind(membership.start_ms)
+            .bind(membership.end_ms)
+            .bind(membership.volume_milli)
+            .bind(membership.rate_milli)
+            .bind(request.imported_at)
+            .bind(request.imported_at)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("import playlist membership", error))?;
+            membership_id
+        }
+    };
+    let skip_ranges = membership
+        .skip_ranges
+        .iter()
+        .map(|range| MusicMembershipSkipRangeWrite {
+            start_ms: range.start_ms,
+            end_ms: range.end_ms,
+        })
+        .collect::<Vec<_>>();
+    super::writes::replace_skip_ranges(transaction, &membership_id, &skip_ranges).await?;
     for (snooze_index, snooze) in membership.snoozes.iter().enumerate() {
         let mapped_playlist_id = if snooze.scope == MusicSnoozeScope::Playlist {
             Some(playlist_id)
@@ -506,7 +553,9 @@ async fn import_membership(
         sqlx::query(
             "INSERT INTO music_snoozes (id, item_id, scope, playlist_id, starts_at_ms, ends_at_ms, reason, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(format!("{membership_id}:snooze:{snooze_index}"))
+        .bind(format!(
+            "music-import:{operation_id}:snooze:{playlist_index}:{membership_index}:{snooze_index}"
+        ))
         .bind(item_id)
         .bind(snooze.scope.as_ref())
         .bind(mapped_playlist_id)
@@ -518,6 +567,46 @@ async fn import_membership(
         .await
         .map_err(|error| MusicLibraryError::database("import music snooze", error))?;
     }
+    Ok(())
+}
+
+/// Updates a replaced playlist's existing membership to the imported values, writing only when
+/// a value differs. Order follows the document and is written after all memberships. Break items
+/// are not part of the interchange document, so a replace clears them.
+async fn update_imported_membership(
+    transaction: &mut Transaction<'_, Sqlite>,
+    membership_id: &str,
+    membership: &MusicInterchangeMembership,
+    request: &MusicInterchangeImportRequest,
+) -> MusicLibraryResult<()> {
+    sqlx::query(
+        "UPDATE music_playlist_memberships
+         SET weight = ?, enabled = ?, start_ms = ?, end_ms = ?, volume_milli = ?, rate_milli = ?,
+             break_item_id = NULL, break_start_ms = NULL, break_end_ms = NULL,
+             break_volume_milli = NULL, break_rate_milli = NULL,
+             updated_at_ms = ?, version = version + 1
+         WHERE id = ?
+           AND (weight, enabled, start_ms, end_ms, volume_milli, rate_milli, break_item_id,
+                break_start_ms, break_end_ms, break_volume_milli, break_rate_milli)
+               IS NOT (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)",
+    )
+    .bind(membership.weight.as_ref())
+    .bind(i64::from(membership.enabled))
+    .bind(membership.start_ms)
+    .bind(membership.end_ms)
+    .bind(membership.volume_milli)
+    .bind(membership.rate_milli)
+    .bind(request.imported_at)
+    .bind(membership_id)
+    .bind(membership.weight.as_ref())
+    .bind(i64::from(membership.enabled))
+    .bind(membership.start_ms)
+    .bind(membership.end_ms)
+    .bind(membership.volume_milli)
+    .bind(membership.rate_milli)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("replace imported membership", error))?;
     Ok(())
 }
 
@@ -539,15 +628,24 @@ async fn import_assignments(
         sqlx::query(
             "INSERT INTO music_context_assignments
                 (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id,
-                 soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version,
+                 sync_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
              ON CONFLICT(owner_kind, owner_id, phase) DO UPDATE SET
                 behavior = excluded.behavior, playlist_id = excluded.playlist_id,
                 soundscape_preset_id = excluded.soundscape_preset_id,
                 soundscape_behavior = excluded.soundscape_behavior,
                 provenance_kind = excluded.provenance_kind,
                 provenance_id = excluded.provenance_id,
-                updated_at_ms = excluded.updated_at_ms, version = music_context_assignments.version + 1",
+                updated_at_ms = excluded.updated_at_ms, version = music_context_assignments.version + 1
+             WHERE (music_context_assignments.behavior, music_context_assignments.playlist_id,
+                    music_context_assignments.soundscape_preset_id,
+                    music_context_assignments.soundscape_behavior,
+                    music_context_assignments.provenance_kind,
+                    music_context_assignments.provenance_id)
+                IS NOT (excluded.behavior, excluded.playlist_id, excluded.soundscape_preset_id,
+                        excluded.soundscape_behavior, excluded.provenance_kind,
+                        excluded.provenance_id)",
         )
         .bind(assignment.owner_kind.as_ref())
         .bind(&assignment.owner_id)
@@ -559,6 +657,11 @@ async fn import_assignments(
         .bind(assignment.provenance_kind.as_ref())
         .bind(&assignment.provenance_id)
         .bind(imported_at)
+        .bind(ganbaru_music::sync_keys::assignment_key(
+            assignment.owner_kind.as_ref(),
+            &assignment.owner_id,
+            assignment.phase.as_ref(),
+        )?)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("import music context assignment", error))?;

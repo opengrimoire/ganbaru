@@ -39,7 +39,7 @@ fn exact_occurrence_history_separates_anchor_home_date_and_current_alias() {
         completed_run(&pool, "retargeted", "event-1::2026-05-30").await;
         sqlx::query("UPDATE pomodoro_runs SET current_occurrence_id = 'event-1::2026-06-02' WHERE id = 'retargeted'")
             .execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO pomodoro_pauses (id, segment_id, started_at, ended_at, reason) VALUES ('pause', 'later', '2026-05-29T00:05:00Z', '2026-05-29T00:06:00Z', 'manual')")
+        sqlx::query("INSERT INTO pomodoro_pauses (ordinal, segment_id, started_at, ended_at, reason) VALUES (0, 'later', '2026-05-29T00:05:00Z', '2026-05-29T00:06:00Z', 'manual')")
             .execute(&pool).await.unwrap();
         for (occurrence, run) in [
             ("event-1", "anchor"),

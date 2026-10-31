@@ -60,6 +60,7 @@ fn move_page_rejects_descendant_parent() {
                 title: "Nested".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -99,6 +100,7 @@ fn archiving_nested_page_hides_child_page_block() {
                 title: "Nested".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -128,6 +130,7 @@ async fn create_nested_page(pool: &SqlitePool, page_id: &str, block_id: &str, ti
             title: title.to_string(),
             parent: page_parent(PAGE_A),
             folder_id: None,
+            project_id: None,
             first_block_id: block_id.to_string(),
             after_block_id: None,
             properties: None,
@@ -220,5 +223,111 @@ fn page_history_restore_keeps_moved_child_pages_where_they_live() {
         let trashed_child_page =
             serde_json::to_value(reads::load_page(&pool, PAGE_C).await.unwrap()).unwrap();
         assert_eq!(trashed_child_page["page"]["in_trash"], false);
+    });
+}
+
+async fn append_paragraph(pool: &SqlitePool, page_id: &str, block_id: &str, text: &str) {
+    writes::append_block_children(
+        pool,
+        NoteAppendBlockChildren {
+            parent: page_parent(page_id),
+            after: None,
+            children: vec![block(block_id, "paragraph", paragraph_payload(text))],
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn set_paragraph(pool: &SqlitePool, block_id: &str, text: &str) {
+    writes::update_block(
+        pool,
+        block_id,
+        block_update("paragraph", paragraph_payload(text)),
+    )
+    .await
+    .unwrap();
+}
+
+async fn block_trash_state(pool: &SqlitePool, block_id: &str) -> Option<(String, i64)> {
+    sqlx::query_as("SELECT page_id, in_trash FROM notes_blocks WHERE id = ?")
+        .bind(block_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn page_history_restore_applies_the_snapshot_as_a_diff() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        set_paragraph(&pool, BLOCK_A, "Kept").await;
+        append_paragraph(&pool, PAGE_A, BLOCK_D, "Deleted later").await;
+        create_nested_page(&pool, PAGE_B, BLOCK_B, "Nested").await;
+        set_paragraph(&pool, BLOCK_B, "Nested body").await;
+        let mut tx = pool.begin().await.unwrap();
+        let snapshot_id = page_history::record_page_snapshot_tx(&mut tx, PAGE_A, "move_page")
+            .await
+            .unwrap()
+            .expect("the snapshot is recorded");
+        tx.commit().await.unwrap();
+
+        set_paragraph(&pool, BLOCK_A, "Edited").await;
+        sqlx::query("DELETE FROM notes_blocks WHERE id = ?")
+            .bind(BLOCK_D)
+            .execute(&pool)
+            .await
+            .unwrap();
+        append_paragraph(&pool, PAGE_A, BLOCK_E, "Added later").await;
+        create_nested_page(&pool, PAGE_C, BLOCK_C, "Added page").await;
+
+        let restored = page_history::restore_page_history_snapshot(&pool, PAGE_A, &snapshot_id)
+            .await
+            .unwrap();
+        let blocks = serde_json::to_value(restored).unwrap()["blocks"]["results"].clone();
+        let blocks = blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["id"], BLOCK_A);
+        assert_eq!(blocks[0]["paragraph"]["rich_text"][0]["plain_text"], "Kept");
+        assert_ne!(blocks[1]["id"], BLOCK_D);
+        assert_eq!(
+            blocks[1]["paragraph"]["rich_text"][0]["plain_text"],
+            "Deleted later"
+        );
+        assert_eq!(blocks[2]["id"], PAGE_B);
+        assert_eq!(blocks[2]["child_page"]["title"], "Nested");
+
+        assert_eq!(block_trash_state(&pool, BLOCK_D).await, None);
+        assert_eq!(
+            block_trash_state(&pool, BLOCK_E).await,
+            Some((PAGE_A.to_string(), 1))
+        );
+        assert_eq!(
+            block_trash_state(&pool, PAGE_C).await,
+            Some((PAGE_A.to_string(), 1))
+        );
+        let added_page_trashed: i64 =
+            sqlx::query_scalar("SELECT in_trash FROM notes_pages WHERE id = ?")
+                .bind(PAGE_C)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(added_page_trashed, 1);
+        assert_eq!(
+            block_trash_state(&pool, BLOCK_C).await,
+            Some((PAGE_C.to_string(), 0))
+        );
+
+        let nested_page =
+            serde_json::to_value(reads::load_page(&pool, PAGE_B).await.unwrap()).unwrap();
+        assert_eq!(nested_page["page"]["in_trash"], false);
+        let nested_blocks = nested_page["blocks"]["results"].as_array().unwrap();
+        assert_eq!(nested_blocks.len(), 1);
+        assert_eq!(nested_blocks[0]["id"], BLOCK_B);
+        assert_eq!(
+            nested_blocks[0]["paragraph"]["rich_text"][0]["plain_text"],
+            "Nested body"
+        );
     });
 }

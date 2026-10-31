@@ -25,7 +25,7 @@ vi.mock("$lib/stores/soundscape.svelte", () => {
 
 const playlist: MusicPlaylistSummary = {
   id: "reading", name: "Reading", icon: "music", shuffleEnabled: false,
-  mixEnabled: false, repeatMode: "off", intendedUses: [], sortOrder: 0,
+  mixEnabled: false, repeatMode: "off", intendedUses: [], orderKey: "a0",
   totalCount: 2, eligibleCount: 2, unavailableCount: 0, snoozedCount: 0,
   localCount: 2, onlineCount: 0, version: 1,
 };

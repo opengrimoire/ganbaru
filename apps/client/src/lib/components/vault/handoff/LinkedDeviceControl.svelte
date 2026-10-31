@@ -14,7 +14,6 @@
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { getVaultOwnership } from "$lib/vault/ownership.svelte";
 
   interface HandoffPanelProps {
     platform: "desktop" | "android";
@@ -44,7 +43,6 @@
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
   const settingsLauncher = getSettingsLauncher();
-  const ownership = getVaultOwnership();
   let status = $state<PairingStatus | null>(null);
   let open = $state(false);
   let panelLoading = $state(false);
@@ -64,7 +62,6 @@
     try {
       const next = await readPairingStatus();
       status = next;
-      await ownership.refresh();
       if (open && presentation === "mobile") {
         if (next.linked) void loadPanel();
         else void loadMobileLinkingScreen();
@@ -166,7 +163,6 @@
       if (next.linked) void loadPanel();
       else void loadMobileLinkingScreen();
     }
-    void ownership.refresh();
   }
 
   function handleMobileLinkingComplete(): void {
@@ -248,15 +244,6 @@
         aria-hidden="true"
       />
     </span>
-    {#if status?.linked && status.canWrite === false && !status.pendingTransfer}
-      <span
-        class={cn(
-          "absolute size-1.5 rounded-full bg-warning",
-          presentation === "desktop" ? "bottom-1 right-1" : "bottom-2 right-[calc(50%-0.8rem)]",
-        )}
-        aria-hidden="true"
-      ></span>
-    {/if}
   </button>
 
   {#if mobileLinking}

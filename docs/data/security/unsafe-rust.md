@@ -8,7 +8,7 @@ This page covers tracked, repository-owned Rust: libraries, binaries, platform-g
 
 Dependency-owned unsafe code, RustSec findings, and audit exceptions are separate concerns recorded in [Dependency audits](dependency-audits.md). A clean dependency audit does not prove first-party unsafe code sound, and the reverse is also true.
 
-Build scripts, examples, tracked generated Rust, `ganbaru-native-messaging`, and `ganbaru-linking-firewall` contain no first-party unsafe code. There are no unsafe traits or implementations, inline assembly, or macros that emit unsafe code. The only unsafe attributes are the `export_name` attributes on the Android JNI callbacks below.
+Build scripts, examples, tracked generated Rust, `ganbaru-native-messaging`, and `ganbaru-linking-firewall` contain no first-party unsafe code. There are no unsafe traits or implementations, inline assembly, or macros that emit unsafe code. The only unsafe attributes are the `export_name` attributes on the Android JNI callbacks and the background sync entry below.
 
 ## Policy
 
@@ -60,6 +60,18 @@ Each entry names the owning modules, why the boundary exists, its key safety inv
 **Replacement trigger:** The Tauri mobile bridge supplies an equivalent synchronous check at SDK consumption and asynchronous source admission.
 
 **Required validation:** Absent or duplicate registration, invalid IDs, live revocation, panic-on-drop payloads, late acknowledgement, cancellation during SDK execution, delayed source lookup, phase changes, ownership I/O contention, and freeze/resume replacement. ARM64 compilation with export and signature inspection. Physical stalled-thread, slow-provider, service destruction, and vault handoff acceptance is separate.
+
+### Android background sync entry
+
+**Owned module:** `apps/client/src-tauri/app/src/sync/headless.rs`.
+
+**Contract:** A JNI symbol matches Kotlin's static `SyncNative.runPass(String, String?): String?`. The WorkManager sync worker calls it to run a headless sync pass for the app config directory, optionally with discovered coordinator records, and receives a small JSON outcome. A second symbol, exported as `Java_org_opengrimoire_ganbaru_mobile_sync_SyncNative_registerKeystore`, matches Kotlin's static `SyncNative.registerKeystore(SyncKeystore)`; the plugin and the worker call it once per process after loading the library so Rust can seal key files with the Android Keystore through that object. It lives in the app crate because it calls the sync service; Tauri's asynchronous plugin bridge cannot reach Rust from a worker whose process has no webview.
+
+**Safety invariants:** The unsafe attribute only fixes the [exported name](https://doc.rust-lang.org/reference/abi.html#the-export_name-attribute); the body is safe Rust over the `jni` crate's transparent wrappers, so the signatures match `(JNIEnv*, jclass, jstring, jstring) -> jstring` and `(JNIEnv*, jclass, jobject) -> void`. The registered object is kept only as a `jni` global reference with the Java VM handle, and later key store calls attach the thread and run inside a bounded local frame through safe `jni` APIs. Local references are used only during the call and none are retained. A null key store object is refused. String lengths are checked in UTF-16 units before copying and in bytes after: the config directory is at most 4 KiB and must be an absolute path, and the records JSON is at most 16 KiB and 16 records with bounded fields; invalid input fails without running a pass. Provided records are visible to the dialer only for the duration of the pass. Every panic is contained, the payload is leaked, and the worker treats a `null` result as a failed pass. Shrinker rules preserve the class and method names.
+
+**Replacement trigger:** Tauri offers a supported way to run Rust from Android background work without a webview.
+
+**Required validation:** Config directory and records bounds, invalid record fields, outcome mapping, bounded repeated passes, record scoping, and panic-on-drop payloads, tested on the Linux host through the platform-neutral wrapper. ARM64 compilation with export and signature inspection, the instrumented Keystore round trip from a WorkManager worker, and physical background sync acceptance, are separate.
 
 ### Descriptor-relative Unix filesystem operations
 

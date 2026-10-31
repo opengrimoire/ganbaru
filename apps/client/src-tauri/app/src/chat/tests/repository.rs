@@ -82,13 +82,17 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-chat', 'Chat')")
-        .execute(&pool)
+    ganbaru_db::test_support::apply_migrated_template(&pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES ('project-chat', 'group-chat', 'Chat')",
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group-chat', 'Chat', 'a1')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-chat', 'group-chat', 'Chat', 'a1')",
     )
     .execute(&pool)
     .await
@@ -105,6 +109,15 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ganbaru_chat::project_defaults::ensure_project_chat_defaults(
+        &mut connection,
+        "project-chat",
+        &UtcTimestamp::new(NOW).unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(connection);
     sqlx::query(
         "INSERT INTO chat_threads
             (id, project_id, working_folder_id, title, provider_family_id, provider_instance_id,

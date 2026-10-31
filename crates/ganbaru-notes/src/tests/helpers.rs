@@ -15,10 +15,10 @@ pub(super) use crate::models::{
     NoteDataSourceTimelineViewUpdate, NoteDataSourceViewWindowRequest, NoteDatabaseCreate,
     NoteDuplicateBlock, NoteDuplicateBlocks, NoteDuplicatePage, NoteDuplicatedBlockId,
     NoteFolderCreate, NoteFolderUpdate, NoteHtmlExportRequest, NoteHtmlImportRequest,
-    NoteJsonGraphExportRequest, NoteLinkedDatabaseCreate, NoteLocalUserUpdate,
-    NoteMarkdownExportRequest, NoteMarkdownImportRequest, NoteMentionNotificationDeliveryUpdate,
-    NoteMoveBlock, NoteMoveBlocks, NoteMovePage, NoteNotionExportImportRequest,
-    NotePageAliasCreate, NotePageCreate, NotePageHistoryCopyBlocks, NotePageHistorySettingsUpdate,
+    NoteJsonGraphExportRequest, NoteLinkedDatabaseCreate, NoteMarkdownExportRequest,
+    NoteMarkdownImportRequest, NoteMentionNotificationDeliveryUpdate, NoteMoveBlock,
+    NoteMoveBlocks, NoteMovePage, NoteNotionExportImportRequest, NotePageAliasCreate,
+    NotePageCreate, NotePageHistoryCopyBlocks, NotePageHistorySettingsUpdate,
     NotePageTemplateApply, NotePageTemplateCreateFromPage, NotePageTemplateDuplicate,
     NotePageTemplateUpdate, NotePageUpdate, NoteParent, NoteSidebarPagesRequest,
     NoteSuggestionCreate, NoteTrashBlocks, NoteUnresolvedLinkResolve, NoteWorkspaceShellRequest,
@@ -73,8 +73,101 @@ pub(super) async fn migrated_memory_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
+}
+
+/// Reads the composed schema object of a data source.
+pub(super) async fn stored_schema(pool: &SqlitePool, data_source_id: &str) -> serde_json::Value {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::property_storage::load_data_source_properties(&mut connection, data_source_id)
+        .await
+        .unwrap()
+        .expect("data source exists")
+}
+
+/// Replaces the stored schema of a data source without the schema update validation.
+pub(super) async fn store_schema(
+    pool: &SqlitePool,
+    data_source_id: &str,
+    schema: &serde_json::Value,
+) {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::property_storage::write_data_source_properties(&mut connection, data_source_id, schema)
+        .await
+        .unwrap();
+}
+
+/// Reads the composed properties object of a page.
+pub(super) async fn stored_page_properties(pool: &SqlitePool, page_id: &str) -> serde_json::Value {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::page_property_storage::load_page_properties(&mut connection, page_id)
+        .await
+        .unwrap()
+        .expect("page exists")
+}
+
+/// Replaces the stored values of a page without the row update validation.
+pub(super) async fn store_page_properties(
+    pool: &SqlitePool,
+    page_id: &str,
+    properties: &serde_json::Value,
+) {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::page_property_storage::write_page_properties(&mut connection, page_id, properties)
+        .await
+        .unwrap();
+}
+
+/// Inserts a database row page with `properties` as its stored values, without the row create
+/// validation.
+pub(super) async fn insert_row_page(
+    pool: &SqlitePool,
+    id: &str,
+    data_source_id: &str,
+    title: &str,
+    properties: serde_json::Value,
+) {
+    insert_row_page_created_at(pool, id, data_source_id, title, None, properties).await;
+}
+
+/// Inserts a row page created at `created_time`, or now when it is `None`. Replicated rows keep
+/// their creation time, so a fixture sets it on insert.
+pub(super) async fn insert_row_page_created_at(
+    pool: &SqlitePool,
+    id: &str,
+    data_source_id: &str,
+    title: &str,
+    created_time: Option<&str>,
+    properties: serde_json::Value,
+) {
+    sqlx::query(
+        "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, created_time)
+         VALUES (?, 'data_source_id', ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))",
+    )
+    .bind(id)
+    .bind(data_source_id)
+    .bind(title)
+    .bind(created_time)
+    .execute(pool)
+    .await
+    .unwrap();
+    store_page_properties(pool, id, &properties).await;
+}
+
+/// Merges `entries` into the stored values of a page without the row update validation.
+pub(super) async fn merge_page_properties(
+    pool: &SqlitePool,
+    page_id: &str,
+    entries: serde_json::Value,
+) {
+    let mut properties = stored_page_properties(pool, page_id).await;
+    for (key, value) in entries.as_object().expect("entries are an object") {
+        properties[key] = value.clone();
+    }
+    store_page_properties(pool, page_id, &properties).await;
 }
 
 pub(super) fn workspace_parent() -> NoteParent {
@@ -630,6 +723,7 @@ pub(super) async fn create_page(pool: &SqlitePool, page_id: &str, block_id: &str
             title: "First page".to_string(),
             parent: workspace_parent(),
             folder_id: None,
+            project_id: None,
             first_block_id: block_id.to_string(),
             after_block_id: None,
             properties: None,

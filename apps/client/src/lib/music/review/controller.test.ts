@@ -27,7 +27,7 @@ const emptyLibraryApi: MusicLibraryControllerApi = {
 };
 
 const playlist = (): MusicPlaylistSummary => ({
-  id: "playlist", sortOrder: 0, name: "Focus", icon: "lucide:laptop", shuffleEnabled: true, mixEnabled: false, repeatMode: "all",
+  id: "playlist", orderKey: "a0", name: "Focus", icon: "lucide:laptop", shuffleEnabled: true, mixEnabled: false, repeatMode: "all",
   intendedUses: ["focus"], totalCount: 0, eligibleCount: 0, unavailableCount: 0,
   snoozedCount: 0, localCount: 0, onlineCount: 0, version: 1,
 });
@@ -47,17 +47,17 @@ const detail = (): MusicInspectorDetail => ({
 const listItem = (): MusicItemListEntry => ({
   id: "item", identityKey: "local:item", sourceKind: "local-file", mediaKind: "audio",
   title: "Track", artist: "Artist", album: "Album", localRootId: "root",
-  relativePath: "Track.flac", sourceCollectionIds: ["source"], originalArtworkIdentity: null, artworkOverride: null, durationMs: 1_000,
+  relativePath: "Track.flac", sourceCollectionIds: ["source"], originalArtworkIdentity: null, artworkOverride: null, youtubeResolutionState: null, durationMs: 1_000,
   availability: "available", reviewState: "unreviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1,
   playlistCount: 0, activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0,
-  membershipId: null, membershipPosition: null, membershipWeight: null,
+  membershipId: null, membershipOrderKey: null, membershipWeight: null,
   membershipEnabled: null, membershipVersion: null,
 });
 
 describe("MusicReviewController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    api.upsertMusicMemberships.mockResolvedValue([{ id: "membership", version: 1 }]);
+    api.upsertMusicMemberships.mockResolvedValue([{ id: "native-membership", version: 1 }]);
     api.removeMusicMemberships.mockResolvedValue(undefined);
     api.setMusicReviewState.mockResolvedValue({ id: "item", version: 2 });
   });
@@ -78,7 +78,7 @@ describe("MusicReviewController", () => {
     await library.undoLast();
     expect(inspector.detail.memberships).toHaveLength(0);
     expect(summary.totalCount).toBe(0);
-    expect(api.removeMusicMemberships).toHaveBeenCalledWith({ membershipIds: ["membership"] });
+    expect(api.removeMusicMemberships).toHaveBeenCalledWith({ membershipIds: ["native-membership"] });
   });
 
   it("serializes a rapid checked then unchecked intent for one playlist", async () => {
@@ -96,7 +96,7 @@ describe("MusicReviewController", () => {
     expect(inspector.detail.memberships).toHaveLength(0);
     expect(summary.totalCount).toBe(0);
     expect(api.upsertMusicMemberships).toHaveBeenCalledOnce();
-    expect(api.removeMusicMemberships).toHaveBeenCalledOnce();
+    expect(api.removeMusicMemberships).toHaveBeenCalledExactlyOnceWith({ membershipIds: ["native-membership"] });
   });
 
   it("keeps the requested next tree item selected while refreshing review state", async () => {

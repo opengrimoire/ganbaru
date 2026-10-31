@@ -26,7 +26,7 @@ A person is a key pair generated on their own device, in the same way device lin
 
 The card carries the display name and avatar color from Profile, never the full name or anything else in the vault, and is signed by the person key so a tampered card is rejected. A name holding control, bidirectional, or invisible characters is refused, both when a card is decoded and when Profile saves the name; zero-width joiners stay valid for emoji sequences and Persian and Indic scripts. Names from other people are displayed in a bidirectional isolate so they cannot reorder surrounding text. It also carries a delivery hint: today the private LAN address and certificate fingerprint of the vault's coordinator, later a self-hosted relay address, without changing the card format. It is shown in Settings as a QR code for phones and a copyable code for desktops, the same two forms device linking uses; the card needs a complete display name before it exists. Regenerating the card invalidates the previous one for new contact requests; existing contacts are unaffected.
 
-The person key is generated on the first device that can write the vault and follows the person to linked devices through [device linking](../../data/sync.md#contacts-and-contact-requests). The card is unavailable on a linked device until its key copy arrives.
+The person key is generated on the device that has no coordinator pin, normally the coordinator, and follows the person to linked devices through [device linking](../../data/sync.md#contacts-and-contact-requests). The card is unavailable on a linked device until its key copy arrives.
 
 What a contact sees of a person is limited to the display identity and to content inside spaces they share. Identity visibility follows the same boundaries as content, so a contact never learns which other spaces, contacts, or devices a person has.
 
@@ -43,7 +43,7 @@ Each permission has a duration: until revoked, for a fixed period, or once. A on
 
 Blocking a person removes them as a contact, rejects everything they send, and hides them from pickers. A blocked person receives no signal that they were blocked. Unblocking restores nothing automatically; a new contact request is required.
 
-Contacts are the person's own social graph and belong to the portable vault, so they follow the person across their linked devices.
+Contacts are the person's own social graph and belong to the portable vault, so they follow the person across their linked devices. Contacts, pending requests, and card regeneration can be changed on any linked device and reach the others automatically; a block made on any device wins over an accept made at the same time on another.
 
 ## Invitations
 

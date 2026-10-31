@@ -1,40 +1,52 @@
 //! Pinned client transport and shared resumable archive streaming.
 
-#[cfg(desktop)]
 mod server;
+#[cfg(all(test, desktop))]
+use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
+pub(crate) use ganbaru_sync_replica::service::dial_report::CoordinatorDialReport;
+use ganbaru_sync_replica::service::dial_report::{DialOutcome, record_dial};
+pub(crate) use ganbaru_sync_replica::service::peers::BundleSource;
+#[cfg(test)]
+use ganbaru_sync_replica::service::sync_peer;
+pub(crate) use server::{CoordinatorListener, LanAdmission, MemberServices, serve_member_listener};
 #[cfg(desktop)]
-pub(crate) use server::{CoordinatorServices, LanAdmission, serve_with_coordinator};
+pub(crate) use server::{
+    CoordinatorServices, EnrollmentSealer, MemberBundles, PreparedSnapshot, SnapshotPreparer,
+    SnapshotRequest, serve_with_coordinator,
+};
 
 use super::pairing::{
-    CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
+    CoordinatorPin, PairingManager, PinnedCharter, TlsIdentity, encode_certificate,
 };
 use super::protocol::{
-    BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
-    TRANSFER_CHUNK_BYTES, read_control, unix_time_ms, write_control,
+    BundleMetadata, ControlMessage, PROTOCOL_VERSION, PairingInvitation, TRANSFER_CHUNK_BYTES,
+    read_control, unix_time_ms, write_control,
 };
 use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use ganbaru_handoff::tls::PinnedServerVerifier;
+pub(crate) use ganbaru_sync_replica::serve::load_tls_identity;
+use ganbaru_sync_replica::serve::{
+    CONTROL_TIMEOUT, MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, timeout_control,
+};
+use rustls::pki_types::ServerName;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
-const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
 /// How long the coordinator holds an enrollment for its user before refusing it. The enrolling
 /// device waits longer, so it never gives up on a request the coordinator could still link.
 pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
+/// Stable code of the retryable rejection a device receives while the coordinator serves a
+/// vault copy to another device.
+pub(crate) const BUNDLE_BUSY_CODE: &str = "bundle_busy";
 
 #[derive(Clone, Default)]
 pub(crate) struct TransferCancellation {
@@ -51,116 +63,13 @@ impl TransferCancellation {
     }
 }
 
-#[derive(Debug)]
-struct PinnedServerVerifier {
-    fingerprint: String,
-    algorithms: WebPkiSupportedAlgorithms,
-}
-
-impl PinnedServerVerifier {
-    fn new(fingerprint: String) -> Self {
-        let provider = rustls::crypto::ring::default_provider();
-        Self {
-            fingerprint,
-            algorithms: provider.signature_verification_algorithms,
-        }
-    }
-}
-
-impl ServerCertVerifier for PinnedServerVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        if !intermediates.is_empty()
-            || certificate_fingerprint(end_entity.as_ref()) != self.fingerprint
-        {
-            return Err(rustls::Error::General(
-                "coordinator certificate does not match the pinned identity".to_string(),
-            ));
-        }
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls12_signature(message, certificate, signature, &self.algorithms)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        certificate: &CertificateDer<'_>,
-        signature: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls13_signature(message, certificate, signature, &self.algorithms)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.algorithms.supported_schemes()
-    }
-}
-
-async fn stream_file<W>(
-    writer: &mut W,
-    path: &Path,
-    offset: u64,
-    total_bytes: u64,
-) -> Result<(), String>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|error| format!("open transfer bundle: {error}"))?;
-    file.seek(std::io::SeekFrom::Start(offset))
-        .await
-        .map_err(|error| format!("seek transfer bundle: {error}"))?;
-    let mut remaining = total_bytes.saturating_sub(offset);
-    let mut buffer = vec![0_u8; TRANSFER_CHUNK_BYTES];
-    while remaining > 0 {
-        let chunk_bytes = usize::try_from(remaining.min(buffer.len() as u64))
-            .map_err(|_| "transfer chunk size overflow".to_string())?;
-        tokio::time::timeout(CHUNK_TIMEOUT, file.read_exact(&mut buffer[..chunk_bytes]))
-            .await
-            .map_err(|_| "reading the transfer bundle timed out".to_string())?
-            .map_err(|error| format!("read transfer bundle: {error}"))?;
-        tokio::time::timeout(CHUNK_TIMEOUT, writer.write_all(&buffer[..chunk_bytes]))
-            .await
-            .map_err(|_| "sending the transfer bundle timed out".to_string())?
-            .map_err(|error| format!("send transfer bundle: {error}"))?;
-        remaining -= chunk_bytes as u64;
-    }
-    writer
-        .flush()
-        .await
-        .map_err(|error| format!("flush transfer bundle: {error}"))
-}
-
-/// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
-/// the operating-system keyring.
-pub(crate) async fn load_tls_identity(
-    manager: &PairingManager,
-) -> Result<(String, TlsIdentity), String> {
-    let manager = manager.clone();
-    tokio::task::spawn_blocking(move || manager.identity())
-        .await
-        .map_err(|error| format!("load device linking key: {error}"))?
-}
-
 pub(crate) async fn enroll(
     manager: &PairingManager,
     invitation: &PairingInvitation,
     device_label: String,
     device_kind: super::protocol::DeviceKind,
+    sync_device_key: &ganbaru_sync_contracts::DevicePublicKey,
+    sync_admin_key: Option<&ganbaru_sync_contracts::AdminPublicKey>,
 ) -> Result<(), String> {
     invitation.validate(unix_time_ms())?;
     let endpoint = invitation
@@ -180,6 +89,8 @@ pub(crate) async fn enroll(
             device_label,
             device_kind,
             device_certificate: encode_certificate(&identity.certificate),
+            sync_device_key: super::protocol::encode_sync_device_key(sync_device_key),
+            sync_admin_key: sync_admin_key.map(super::protocol::encode_sync_admin_key),
         },
     ))
     .await?;
@@ -193,6 +104,8 @@ pub(crate) async fn enroll(
         ControlMessage::Enrolled {
             coordinator_device_id,
             coordinator_device_label,
+            charter,
+            person_key,
             ..
         } if coordinator_device_id == invitation.coordinator_device_id => {
             let coordinator_certificate = stream
@@ -201,10 +114,20 @@ pub(crate) async fn enroll(
                 .peer_certificates()
                 .and_then(|certificates| certificates.first())
                 .ok_or_else(|| "coordinator did not provide a certificate".to_string())?;
-            manager.record_coordinator(
+            // A device that pinned no charter could not tell its anchor from any other, so a
+            // reply without one is refused.
+            let (Some(charter), Some(person_key)) = (charter, person_key) else {
+                return Err("the coordinator linked this device without a sync charter".to_string());
+            };
+            let charter = Some(PinnedCharter {
+                charter,
+                person_key,
+            });
+            manager.record_enrolled(
                 invitation,
                 coordinator_certificate.as_ref(),
                 coordinator_device_label,
+                charter,
             )
         }
         ControlMessage::Error { message, .. } => Err(message),
@@ -212,96 +135,136 @@ pub(crate) async fn enroll(
     }
 }
 
+/// An open connection to `source`, and the coordinator pin whose revocation answers on it are
+/// honored. A member cannot revoke this device's link, so its answers are read plainly.
+async fn open_source(
+    manager: &PairingManager,
+    source: &BundleSource,
+) -> Result<(PinnedStream, Option<CoordinatorPin>), String> {
+    match source {
+        BundleSource::Coordinator => {
+            let coordinator = manager
+                .coordinator_pin()?
+                .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+            let (_, identity) = load_tls_identity(manager).await?;
+            let stream = dial_coordinator(manager, &coordinator, identity).await?;
+            Ok((stream, Some(coordinator)))
+        }
+        BundleSource::Member {
+            endpoints,
+            fingerprint,
+            ..
+        } => Ok((
+            connect_member_endpoints(manager, endpoints, fingerprint).await?,
+            None,
+        )),
+        BundleSource::Server(target) | BundleSource::Recovery { target, .. } => {
+            let (_, identity) = load_tls_identity(manager).await?;
+            let stream = ganbaru_sync_replica::anchor_link::dial_server(
+                target,
+                Some(identity),
+                ganbaru_sync_replica::service::RELAY_LOOPBACK,
+            )
+            .await?;
+            Ok((stream, None))
+        }
+    }
+}
+
+/// The vault a copy from `source` belongs to: the one this device is pinned to, or the one a
+/// recovery names, since a recovering desktop has no pin.
+fn bundle_vault_id(manager: &PairingManager, source: &BundleSource) -> Result<String, String> {
+    if let BundleSource::Recovery { vault_id, .. } = source {
+        return Ok(vault_id.clone());
+    }
+    manager
+        .coordinator_pin()?
+        .map(|pin| pin.vault_id)
+        .ok_or_else(|| "this device is not linked to a coordinator".to_string())
+}
+
+async fn read_source_response<R>(
+    manager: &PairingManager,
+    coordinator: Option<&CoordinatorPin>,
+    reader: &mut R,
+) -> Result<ControlMessage, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    match coordinator {
+        Some(coordinator) => read_authenticated_response(manager, coordinator, reader).await,
+        None => timeout_control(read_control(reader)).await,
+    }
+}
+
+async fn source_exchange(
+    manager: &PairingManager,
+    source: &BundleSource,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    let (mut stream, coordinator) = open_source(manager, source).await?;
+    timeout_control(write_control(&mut stream, &message)).await?;
+    read_source_response(manager, coordinator.as_ref(), &mut stream).await
+}
+
+/// Asks `source` to prepare a vault copy for this device. A source that is serving another
+/// device answers with a retryable busy error, which is retried until the coordination wait ends.
 pub(crate) async fn request_bundle(
     manager: &PairingManager,
+    source: &BundleSource,
     compatibility: super::protocol::HandoffCompatibility,
-    generation: u64,
-    purpose: BundlePurpose,
     cancellation: &TransferCancellation,
 ) -> Result<BundleMetadata, String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+    let vault_id = bundle_vault_id(manager, source)?;
     let device_id = manager.device_id()?;
     let started = tokio::time::Instant::now();
     loop {
         if cancellation.is_cancelled() {
             return Err("transfer was cancelled".to_string());
         }
-        match authenticated_exchange(
+        match source_exchange(
             manager,
+            source,
             ControlMessage::RequestBundle {
                 protocol_version: PROTOCOL_VERSION,
                 compatibility: compatibility.clone(),
-                vault_id: coordinator.vault_id.clone(),
+                vault_id: vault_id.clone(),
                 device_id: device_id.clone(),
-                generation,
-                purpose,
             },
         )
         .await?
         {
-            ControlMessage::BundlePrepared {
-                metadata,
-                purpose: offered_purpose,
-            } if offered_purpose == purpose
-                && metadata.vault_id == coordinator.vault_id
-                && metadata.device_id == device_id
-                && metadata.generation >= generation
-                && (purpose != BundlePurpose::Ownership || metadata.generation > generation) =>
+            ControlMessage::BundlePrepared { metadata }
+                if metadata.vault_id == vault_id && metadata.device_id == device_id =>
             {
                 return Ok(metadata);
             }
-            ControlMessage::BundlePending { .. }
-                if started.elapsed() < BUNDLE_COORDINATION_WAIT =>
-            {
+            ControlMessage::Error {
+                code,
+                retryable: true,
+                ..
+            } if code == BUNDLE_BUSY_CODE && started.elapsed() < BUNDLE_COORDINATION_WAIT => {
                 tokio::time::sleep(BUNDLE_COORDINATION_POLL_INTERVAL).await;
             }
-            ControlMessage::BundlePending { .. } => {
-                return Err("the current owner did not return the vault in time".to_string());
-            }
             ControlMessage::Error { message, .. } => return Err(message),
-            _ => return Err("coordinator returned an invalid prepared bundle".to_string()),
+            _ => {
+                return Err(format!(
+                    "{} returned an invalid prepared bundle",
+                    source.describe()
+                ));
+            }
         }
-    }
-}
-
-pub(crate) async fn commit_staged_ownership(
-    manager: &PairingManager,
-    metadata: BundleMetadata,
-) -> Result<(String, u64), String> {
-    match authenticated_exchange(
-        manager,
-        ControlMessage::CommitStagedOwnership {
-            metadata: metadata.clone(),
-        },
-    )
-    .await?
-    {
-        ControlMessage::OwnershipGrant {
-            vault_id,
-            transfer_id,
-            owner_device_id,
-            generation,
-            ..
-        } if vault_id == metadata.vault_id
-            && transfer_id == metadata.transfer_id
-            && owner_device_id == metadata.device_id
-            && generation == metadata.generation =>
-        {
-            Ok((owner_device_id, generation))
-        }
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid ownership grant".to_string()),
     }
 }
 
 pub(crate) async fn cancel_prepared_transfer(
     manager: &PairingManager,
+    source: &BundleSource,
     transfer_id: &str,
 ) -> Result<(), String> {
-    match authenticated_exchange(
+    match source_exchange(
         manager,
+        source,
         ControlMessage::CancelTransfer {
             transfer_id: transfer_id.to_string(),
         },
@@ -312,23 +275,26 @@ pub(crate) async fn cancel_prepared_transfer(
             transfer_id: cancelled,
         } if cancelled == transfer_id => Ok(()),
         ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid cancellation response".to_string()),
+        _ => Err(format!(
+            "{} returned an invalid cancellation response",
+            source.describe()
+        )),
     }
 }
 
 pub(crate) async fn acknowledge_activation(
     manager: &PairingManager,
+    source: &BundleSource,
     pending: &super::pairing::PendingAcknowledgement,
 ) -> Result<(), String> {
-    match authenticated_exchange(
+    match source_exchange(
         manager,
+        source,
         ControlMessage::ActivationComplete {
             protocol_version: PROTOCOL_VERSION,
             vault_id: pending.vault_id.clone(),
             device_id: pending.device_id.clone(),
             transfer_id: pending.transfer_id.clone(),
-            generation: pending.generation,
-            purpose: pending.purpose,
         },
     )
     .await?
@@ -339,159 +305,10 @@ pub(crate) async fn acknowledge_activation(
             Ok(())
         }
         ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid activation acknowledgement".to_string()),
-    }
-}
-
-pub(crate) async fn upload_bundle(
-    manager: &PairingManager,
-    metadata: BundleMetadata,
-    source_device_id: String,
-    purpose: BundlePurpose,
-) -> Result<(), String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    if metadata.device_id != coordinator.device_id || metadata.vault_id != coordinator.vault_id {
-        return Err("outgoing bundle does not target the linked coordinator".to_string());
-    }
-    let (_, archive_path) = manager.outgoing_snapshot_paths(&metadata.transfer_id)?;
-    super::protocol::validate_staging_file(&archive_path, &metadata)?;
-    let endpoint = coordinator
-        .endpoint
-        .parse()
-        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_pinned(
-        endpoint,
-        &coordinator.certificate_fingerprint,
-        Some(identity),
-    )
-    .await?;
-    timeout_control(write_control(
-        &mut stream,
-        &ControlMessage::UploadBundle {
-            metadata: metadata.clone(),
-            source_device_id,
-            purpose,
-        },
-    ))
-    .await?;
-    let offset = match read_authenticated_response(manager, &coordinator, &mut stream).await? {
-        ControlMessage::ResumeAt { offset } if offset <= metadata.archive_bytes => offset,
-        ControlMessage::Error { message, .. } => return Err(message),
-        _ => return Err("coordinator returned an invalid upload offset".to_string()),
-    };
-    stream_file(&mut stream, &archive_path, offset, metadata.archive_bytes).await?;
-    timeout_control(write_control(
-        &mut stream,
-        &ControlMessage::BundleComplete {
-            transfer_id: metadata.transfer_id.clone(),
-        },
-    ))
-    .await?;
-    match read_authenticated_response(manager, &coordinator, &mut stream).await? {
-        ControlMessage::BundleStaged { transfer_id } if transfer_id == metadata.transfer_id => {
-            Ok(())
-        }
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator did not accept the uploaded bundle".to_string()),
-    }
-}
-
-pub(crate) async fn commit_uploaded_ownership(
-    manager: &PairingManager,
-    metadata: BundleMetadata,
-    source_device_id: String,
-) -> Result<(), String> {
-    match authenticated_exchange(
-        manager,
-        ControlMessage::CommitUploadedOwnership {
-            metadata: metadata.clone(),
-            source_device_id,
-        },
-    )
-    .await?
-    {
-        ControlMessage::ActivationAcknowledged { transfer_id }
-            if transfer_id == metadata.transfer_id =>
-        {
-            Ok(())
-        }
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid ownership acknowledgement".to_string()),
-    }
-}
-
-pub(crate) async fn probe_coordinator(
-    manager: &PairingManager,
-    compatibility: super::protocol::HandoffCompatibility,
-    generation: u64,
-) -> Result<Option<BundlePurpose>, String> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let device_id = manager.device_id()?;
-    match authenticated_exchange(
-        manager,
-        ControlMessage::RefreshRequest {
-            protocol_version: PROTOCOL_VERSION,
-            compatibility,
-            vault_id: coordinator.vault_id,
-            device_id,
-            generation,
-        },
-    )
-    .await?
-    {
-        ControlMessage::RefreshStatus {
-            generation: returned,
-            requested_upload,
-            ..
-        } if returned >= generation => Ok(requested_upload),
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid refresh status".to_string()),
-    }
-}
-
-#[cfg(any(target_os = "android", all(test, not(target_os = "ios"))))]
-pub(crate) async fn exchange_distractions(
-    manager: &PairingManager,
-    samples: Vec<super::protocol::DistractionsSampleMessage>,
-    acknowledged_peer_sample_ids: Vec<String>,
-    owner_snapshot: Vec<super::protocol::DistractionsSampleMessage>,
-) -> Result<
-    (
-        Vec<String>,
-        Vec<super::protocol::DistractionsSampleMessage>,
-        Vec<super::protocol::DistractionsSampleMessage>,
-    ),
-    String,
-> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let device_id = manager.device_id()?;
-    match authenticated_exchange(
-        manager,
-        ControlMessage::DistractionsExchange {
-            protocol_version: PROTOCOL_VERSION,
-            vault_id: coordinator.vault_id,
-            device_id,
-            samples,
-            acknowledged_peer_sample_ids,
-            owner_snapshot,
-        },
-    )
-    .await?
-    {
-        ControlMessage::DistractionsAcknowledged {
-            acknowledged_sample_ids,
-            peer_samples,
-            combined_samples,
-        } => Ok((acknowledged_sample_ids, peer_samples, combined_samples)),
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid Distractions response".to_string()),
+        _ => Err(format!(
+            "{} returned an invalid activation acknowledgement",
+            source.describe()
+        )),
     }
 }
 
@@ -527,22 +344,97 @@ pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<Contr
     .await
 }
 
-/// The vault and device ids a sync exchange presents, or `None` on a device that is not linked
-/// to a coordinator.
-pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, String)>, String> {
-    let Some(coordinator) = manager.coordinator_pin()? else {
-        return Ok(None);
-    };
-    let device_id = manager.device_id()?;
-    Ok(Some((coordinator.vault_id, device_id)))
-}
-
-/// Sends one sync message to the coordinator over the linked-device identity.
+/// Sends one sync message to the coordinator over the linked-device identity. A sync state
+/// response also refreshes the coordinator endpoints this device remembers.
 pub(crate) async fn sync_request(
     manager: &PairingManager,
     message: ControlMessage,
 ) -> Result<ControlMessage, String> {
-    authenticated_exchange(manager, message).await
+    let response = authenticated_exchange(manager, message).await?;
+    if let ControlMessage::SyncState { members, .. } = &response {
+        record_reported_contact(manager, members);
+    }
+    Ok(response)
+}
+
+/// Sends one sync message to the member listener whose certificate has `fingerprint`, the one
+/// its enrollment recorded in the selected log, trying `endpoints` in order until one answers.
+/// Each endpoint gets [`MEMBER_CONNECT_TIMEOUT`] to accept, so stale or false endpoints ahead of
+/// a live one cost little.
+pub(crate) async fn member_sync_request(
+    manager: &PairingManager,
+    endpoints: &[String],
+    fingerprint: &str,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    let mut stream = connect_member_endpoints(manager, endpoints, fingerprint).await?;
+    timeout_control(write_control(&mut stream, &message)).await?;
+    timeout_control(read_control(&mut stream)).await
+}
+
+/// Connects to the member listener whose certificate has `fingerprint`, trying `endpoints` in
+/// order until one completes the handshake.
+async fn connect_member_endpoints(
+    manager: &PairingManager,
+    endpoints: &[String],
+    fingerprint: &str,
+) -> Result<PinnedStream, String> {
+    let (_, identity) = load_tls_identity(manager).await?;
+    let mut failures = Vec::new();
+    for endpoint in endpoints {
+        let address = match endpoint.parse::<SocketAddr>() {
+            Ok(address) => address,
+            Err(error) => {
+                failures.push(format!("{endpoint}: {error}"));
+                continue;
+            }
+        };
+        match connect_member(address, fingerprint, identity.clone()).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => failures.push(format!("{endpoint}: {error}")),
+        }
+    }
+    Err(if failures.is_empty() {
+        "no endpoint is known for this member".to_string()
+    } else {
+        format!("reach member: {}", failures.join("; "))
+    })
+}
+
+/// The endpoints `members` reports for `device_id`, in reported order and within the bound a
+/// coordinator pin keeps.
+pub(crate) fn endpoints_of(
+    members: &[super::protocol::MemberEndpoint],
+    device_id: &str,
+) -> Vec<String> {
+    members
+        .iter()
+        .filter(|member| member.device_id == device_id)
+        .map(|member| member.endpoint.clone())
+        .take(super::protocol::MAX_COORDINATOR_ENDPOINTS)
+        .collect()
+}
+
+/// Remembers the contact a coordinator reported in a sync state: the endpoints it reported for
+/// itself. A failure only delays address refresh until the next exchange,
+/// so it is logged instead of failing the sync.
+fn record_reported_contact(manager: &PairingManager, members: &[super::protocol::MemberEndpoint]) {
+    let recorded = manager.coordinator_pin().and_then(|coordinator| {
+        let Some(coordinator) = coordinator else {
+            return Ok(false);
+        };
+        manager.record_coordinator_contact(
+            &coordinator.vault_id,
+            &coordinator.certificate_fingerprint,
+            super::pairing::CoordinatorContact {
+                last_endpoint: None,
+                reported_endpoints: Some(endpoints_of(members, &coordinator.device_id)),
+            },
+        )
+    });
+    if let Err(error) = recorded {
+        eprintln!("record the coordinator contact from a sync state: {error}");
+    }
 }
 
 async fn authenticated_exchange(
@@ -552,17 +444,8 @@ async fn authenticated_exchange(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let endpoint = coordinator
-        .endpoint
-        .parse()
-        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_pinned(
-        endpoint,
-        &coordinator.certificate_fingerprint,
-        Some(identity),
-    )
-    .await?;
+    let mut stream = dial_coordinator(manager, &coordinator, identity).await?;
     timeout_control(write_control(&mut stream, &message)).await?;
     read_authenticated_response(manager, &coordinator, &mut stream).await
 }
@@ -587,39 +470,91 @@ where
 
 pub(crate) async fn download_bundle(
     manager: &PairingManager,
+    source: &BundleSource,
     metadata: BundleMetadata,
     cancellation: &TransferCancellation,
 ) -> Result<PathBuf, String> {
-    download_bundle_inner(manager, metadata, cancellation, None).await
+    download_bundle_inner(manager, source, metadata, cancellation, None).await
+}
+
+/// A vault copy downloaded from one source.
+#[derive(Debug)]
+pub(crate) struct FetchedBundle {
+    pub source: BundleSource,
+    pub metadata: BundleMetadata,
+    pub archive: PathBuf,
+}
+
+/// Fetches a vault copy from the first of `sources` that serves one, trying them in order. A
+/// member that prepared a copy it could not deliver is asked to release it. When every source
+/// fails, the first source's error is returned, since the device this one enrolled with comes
+/// first. A cancelled transfer tries no further source.
+pub(crate) async fn fetch_bundle(
+    manager: &PairingManager,
+    sources: &[BundleSource],
+    compatibility: super::protocol::HandoffCompatibility,
+    cancellation: &TransferCancellation,
+) -> Result<FetchedBundle, String> {
+    let mut first_error = None;
+    for source in sources {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        match fetch_from(manager, source, compatibility.clone(), cancellation).await {
+            Ok(fetched) => return Ok(fetched),
+            Err(error) => {
+                eprintln!("vault copy from {} failed: {error}", source.describe());
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| "transfer was cancelled".to_string()))
+}
+
+async fn fetch_from(
+    manager: &PairingManager,
+    source: &BundleSource,
+    compatibility: super::protocol::HandoffCompatibility,
+    cancellation: &TransferCancellation,
+) -> Result<FetchedBundle, String> {
+    let metadata = request_bundle(manager, source, compatibility.clone(), cancellation).await?;
+    if let Err(error) = super::protocol::ensure_compatible(&compatibility, &metadata.compatibility)
+    {
+        let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;
+        return Err(error);
+    }
+    match download_bundle(manager, source, metadata.clone(), cancellation).await {
+        Ok(archive) => Ok(FetchedBundle {
+            source: source.clone(),
+            metadata,
+            archive,
+        }),
+        Err(error) => {
+            // The coordinator keeps a copy it prepared so the download can resume; a member or
+            // server holds one copy at a time and is released for the next device.
+            if !matches!(source, BundleSource::Coordinator) {
+                let _ = cancel_prepared_transfer(manager, source, &metadata.transfer_id).await;
+            }
+            Err(error)
+        }
+    }
 }
 
 #[cfg(all(test, desktop))]
-mod tests;
+pub(crate) mod tests;
 
 async fn download_bundle_inner(
     manager: &PairingManager,
+    source: &BundleSource,
     metadata: BundleMetadata,
     cancellation: &TransferCancellation,
     stop_after_bytes: Option<u64>,
 ) -> Result<PathBuf, String> {
     metadata.validate()?;
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    if coordinator.vault_id != metadata.vault_id {
+    if bundle_vault_id(manager, source)? != metadata.vault_id {
         return Err("transfer belongs to a different vault".to_string());
     }
-    let endpoint = coordinator
-        .endpoint
-        .parse()
-        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_pinned(
-        endpoint,
-        &coordinator.certificate_fingerprint,
-        Some(identity),
-    )
-    .await?;
+    let (mut stream, coordinator) = open_source(manager, source).await?;
     timeout_control(write_control(
         &mut stream,
         &ControlMessage::DownloadBundle {
@@ -627,10 +562,15 @@ async fn download_bundle_inner(
         },
     ))
     .await?;
-    match read_authenticated_response(manager, &coordinator, &mut stream).await? {
+    match read_source_response(manager, coordinator.as_ref(), &mut stream).await? {
         ControlMessage::BundleMetadata { metadata: offered } if offered == metadata => {}
         ControlMessage::Error { message, .. } => return Err(message),
-        _ => return Err("coordinator returned inconsistent transfer metadata".to_string()),
+        _ => {
+            return Err(format!(
+                "{} returned inconsistent transfer metadata",
+                source.describe()
+            ));
+        }
     }
 
     let (partial_path, metadata_path, complete_path) =
@@ -722,8 +662,9 @@ fn prepare_partial(
     Ok(0)
 }
 
-/// Loopback peers exist only when two development instances link on one machine.
-const LOOPBACK_DIAL: LoopbackPolicy = if cfg!(debug_assertions) {
+/// Loopback peers exist only when two development instances link on one machine, so release
+/// builds neither dial nor admit them.
+const LOOPBACK_PEERS: LoopbackPolicy = if cfg!(debug_assertions) {
     LoopbackPolicy::Allow
 } else {
     LoopbackPolicy::Reject
@@ -736,7 +677,7 @@ fn authorize_endpoint(endpoint: SocketAddr) -> Result<(), String> {
         IpAddr::V6(target) => ipv6_source_for(target),
         IpAddr::V4(_) => None,
     };
-    authorize_dial_target(endpoint, LOOPBACK_DIAL, on_link_source)
+    authorize_dial_target(endpoint, LOOPBACK_PEERS, on_link_source)
         .map_err(|error| format!("refuse device connection: {error}"))
 }
 
@@ -751,12 +692,42 @@ fn ipv6_source_for(target: Ipv6Addr) -> Option<Ipv6Addr> {
     }
 }
 
+type PinnedStream = tokio_rustls::client::TlsStream<TcpStream>;
+
+/// Connects to one endpoint whose certificate must match `fingerprint`, such as an invitation or
+/// a contact card. Linked devices reach their coordinator through [`connect_coordinator`].
 async fn connect_pinned(
     endpoint: SocketAddr,
     fingerprint: &str,
     identity: Option<TlsIdentity>,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+) -> Result<PinnedStream, String> {
     authorize_endpoint(endpoint)?;
+    let config = pinned_client_config(fingerprint, identity)?;
+    pinned_handshake(endpoint, config, TLS_HANDSHAKE_TIMEOUT)
+        .await
+        .map_err(|failure| failure.error)
+}
+
+/// Connects to the member listener at `endpoint` whose certificate must match `fingerprint`,
+/// presenting this device's `identity`.
+async fn connect_member(
+    endpoint: SocketAddr,
+    fingerprint: &str,
+    identity: TlsIdentity,
+) -> Result<PinnedStream, String> {
+    authorize_endpoint(endpoint)?;
+    let config = pinned_client_config(fingerprint, Some(identity))?;
+    pinned_handshake(endpoint, config, MEMBER_CONNECT_TIMEOUT)
+        .await
+        .map_err(|failure| failure.error)
+}
+
+/// TLS 1.3 client configuration that accepts only the certificate with `fingerprint` and
+/// presents `identity` when one is given.
+fn pinned_client_config(
+    fingerprint: &str,
+    identity: Option<TlsIdentity>,
+) -> Result<Arc<rustls::ClientConfig>, String> {
     let verifier = Arc::new(PinnedServerVerifier::new(fingerprint.to_string()));
     let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .dangerous()
@@ -767,27 +738,318 @@ async fn connect_pinned(
             .map_err(|error| format!("configure device TLS identity: {error}"))?,
         None => builder.with_no_client_auth(),
     };
-    let socket = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, TcpStream::connect(endpoint))
-        .await
-        .map_err(|_| "coordinator connection timed out".to_string())?
-        .map_err(|error| format!("connect to coordinator: {error}"))?;
-    let server_name = ServerName::try_from("ganbaru-coordinator.local")
-        .map_err(|_| "coordinator TLS name is invalid".to_string())?;
-    tokio::time::timeout(
-        TLS_HANDSHAKE_TIMEOUT,
-        TlsConnector::from(Arc::new(config)).connect(server_name, socket),
-    )
-    .await
-    .map_err(|_| "coordinator TLS handshake timed out".to_string())?
-    .map_err(|error| format!("establish pinned TLS connection: {error}"))
+    Ok(Arc::new(config))
 }
 
-async fn timeout_control<T>(
-    future: impl std::future::Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    tokio::time::timeout(CONTROL_TIMEOUT, future)
+/// Opens a TCP connection to an authorized `endpoint` within `connect_timeout` and completes the
+/// pinned TLS handshake.
+async fn pinned_handshake(
+    endpoint: SocketAddr,
+    config: Arc<rustls::ClientConfig>,
+    connect_timeout: Duration,
+) -> Result<PinnedStream, HandshakeFailure> {
+    let socket = tokio::time::timeout(connect_timeout, TcpStream::connect(endpoint))
         .await
-        .map_err(|_| "handoff control message timed out".to_string())?
+        .map_err(|_| HandshakeFailure::other("coordinator connection timed out"))?
+        .map_err(|error| HandshakeFailure {
+            local_network_denied: error.kind() == std::io::ErrorKind::PermissionDenied,
+            error: format!("connect to coordinator: {error}"),
+        })?;
+    let server_name = ServerName::try_from("ganbaru-coordinator.local")
+        .map_err(|_| HandshakeFailure::other("coordinator TLS name is invalid"))?;
+    tokio::time::timeout(
+        TLS_HANDSHAKE_TIMEOUT,
+        TlsConnector::from(config).connect(server_name, socket),
+    )
+    .await
+    .map_err(|_| HandshakeFailure::other("coordinator TLS handshake timed out"))?
+    .map_err(|error| HandshakeFailure::other(format!("establish pinned TLS connection: {error}")))
+}
+
+/// Why a pinned handshake failed.
+#[derive(Debug)]
+struct HandshakeFailure {
+    error: String,
+    /// The system refused the connection with a permission error, as Android does when the app
+    /// may not reach the local network.
+    local_network_denied: bool,
+}
+
+impl HandshakeFailure {
+    /// A failure that is not a refused local network permission.
+    fn other(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            local_network_denied: false,
+        }
+    }
+}
+
+/// How long one coordinator candidate gets to accept a TCP connection.
+const COORDINATOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long one member endpoint gets to accept a TCP connection.
+const MEMBER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the resolver waits on pending candidates before it also dials the next one.
+const COORDINATOR_DIAL_STAGGER: Duration = Duration::from_millis(250);
+/// Most coordinator candidates one dial considers.
+const MAX_COORDINATOR_CANDIDATES: usize = 12;
+/// Most coordinator candidates dialed at once, kept below the coordinator's pending connection
+/// limit per source address so a race never refuses itself.
+const MAX_CONCURRENT_COORDINATOR_DIALS: usize = 4;
+
+/// Connects to the pinned coordinator over the first candidate endpoint that completes the
+/// pinned handshake, and remembers that endpoint for the next dial.
+///
+/// Candidates are the last endpoint that worked, the endpoints the coordinator reported, the
+/// `discovered` endpoints, and the invitation endpoint, in that order. A new candidate is dialed
+/// whenever the pending ones have not finished within [`COORDINATOR_DIAL_STAGGER`] or one fails,
+/// so a stale address costs a short delay instead of a full timeout.
+///
+/// When every candidate fails, it awaits `discover` once and dials the endpoints it returns that
+/// were not tried yet. `discover` does nothing until then. How the dial ended is recorded for
+/// [`coordinator_dial_report`](ganbaru_sync_replica::service::dial_report::coordinator_dial_report).
+async fn connect_coordinator(
+    manager: &PairingManager,
+    coordinator: &CoordinatorPin,
+    identity: TlsIdentity,
+    discovered: &[SocketAddr],
+    discover: impl std::future::Future<Output = Vec<SocketAddr>>,
+) -> Result<PinnedStream, String> {
+    let (candidates, mut failures) =
+        coordinator_candidates(coordinator, discovered, authorize_endpoint);
+    let config = pinned_client_config(&coordinator.certificate_fingerprint, Some(identity))?;
+    let mut reached =
+        race_coordinator_candidates(candidates.clone(), config.clone(), &mut failures).await;
+    let mut discovery_found_nothing = false;
+    if reached.is_none() {
+        let discovered = discover.await;
+        discovery_found_nothing = discovered.is_empty();
+        let untried = untried_discovered_endpoints(
+            &discovered,
+            &candidates,
+            authorize_endpoint,
+            &mut failures,
+        );
+        if !untried.is_empty() {
+            reached = race_coordinator_candidates(untried, config, &mut failures).await;
+        }
+    }
+    let outcome = match &reached {
+        Some((_, endpoint)) => DialOutcome::Reached(*endpoint),
+        None => DialOutcome::Failed {
+            local_network_denied: failures.iter().any(|failure| failure.local_network_denied),
+            discovery_found_nothing,
+        },
+    };
+    record_dial(coordinator, outcome);
+    finish_coordinator_dial(manager, coordinator, reached, failures)
+}
+
+/// Connects to the pinned coordinator through [`connect_coordinator`] with the endpoints a recent
+/// discovery found, browsing the local network for it when no candidate answers.
+async fn dial_coordinator(
+    manager: &PairingManager,
+    coordinator: &CoordinatorPin,
+    identity: TlsIdentity,
+) -> Result<PinnedStream, String> {
+    let remembered = remembered_discovered_endpoints(coordinator).await;
+    connect_coordinator(
+        manager,
+        coordinator,
+        identity,
+        &remembered,
+        discover_coordinator_endpoints(coordinator),
+    )
+    .await
+}
+
+/// Endpoints a recent discovery found for `coordinator`.
+#[cfg(desktop)]
+async fn remembered_discovered_endpoints(coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    super::discovery::remembered_endpoints(coordinator).await
+}
+
+/// Endpoints of `coordinator` among the records the running background sync pass was given.
+#[cfg(target_os = "android")]
+async fn remembered_discovered_endpoints(coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    crate::sync::headless::provided_endpoints(coordinator)
+}
+
+#[cfg(all(not(desktop), not(target_os = "android")))]
+async fn remembered_discovered_endpoints(_coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    Vec::new()
+}
+
+/// Browses the local network for `coordinator` when its pin allows it.
+#[cfg(desktop)]
+async fn discover_coordinator_endpoints(coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    super::discovery::discover_coordinator(coordinator).await
+}
+
+#[cfg(not(desktop))]
+async fn discover_coordinator_endpoints(_coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    Vec::new()
+}
+
+/// The `discovered` endpoints that are not among the `tried` ones, in order and without
+/// repeats. Endpoints `authorize` refuses are recorded in `failures` and never dialed.
+fn untried_discovered_endpoints(
+    discovered: &[SocketAddr],
+    tried: &[SocketAddr],
+    authorize: impl Fn(SocketAddr) -> Result<(), String>,
+    failures: &mut Vec<DialFailure>,
+) -> Vec<SocketAddr> {
+    let mut untried = Vec::new();
+    for endpoint in discovered {
+        if tried.contains(endpoint) || untried.contains(endpoint) {
+            continue;
+        }
+        match authorize(*endpoint) {
+            Ok(()) => untried.push(*endpoint),
+            Err(error) => failures.push(DialFailure::new(endpoint.to_string(), error)),
+        }
+    }
+    untried
+}
+
+/// Remembers the endpoint that answered for the next dial, or reports why none did.
+fn finish_coordinator_dial(
+    manager: &PairingManager,
+    coordinator: &CoordinatorPin,
+    reached: Option<(PinnedStream, SocketAddr)>,
+    failures: Vec<DialFailure>,
+) -> Result<PinnedStream, String> {
+    let (stream, endpoint) = reached.ok_or_else(|| coordinator_dial_error(failures))?;
+    let contact = super::pairing::CoordinatorContact {
+        last_endpoint: Some(endpoint.to_string()),
+        ..Default::default()
+    };
+    if let Err(error) = manager.record_coordinator_contact(
+        &coordinator.vault_id,
+        &coordinator.certificate_fingerprint,
+        contact,
+    ) {
+        eprintln!("record the coordinator endpoint that answered: {error}");
+    }
+    Ok(stream)
+}
+
+/// Why one coordinator endpoint was not used.
+#[derive(Debug)]
+struct DialFailure {
+    endpoint: String,
+    error: String,
+    /// The system refused the connection with a permission error.
+    local_network_denied: bool,
+}
+
+impl DialFailure {
+    /// A failure of `endpoint` that is not a refused local network permission.
+    fn new(endpoint: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            error: error.into(),
+            local_network_denied: false,
+        }
+    }
+}
+
+/// The distinct endpoints worth dialing for `coordinator`, best first, and the reasons the
+/// others were left out. Endpoints `authorize` refuses are never dialed.
+fn coordinator_candidates(
+    coordinator: &CoordinatorPin,
+    discovered: &[SocketAddr],
+    authorize: impl Fn(SocketAddr) -> Result<(), String>,
+) -> (Vec<SocketAddr>, Vec<DialFailure>) {
+    let stored = coordinator
+        .last_endpoint
+        .iter()
+        .chain(&coordinator.reported_endpoints)
+        .map(|endpoint| (endpoint.clone(), endpoint.parse::<SocketAddr>()));
+    let discovered = discovered
+        .iter()
+        .map(|endpoint| (endpoint.to_string(), Ok(*endpoint)));
+    let invitation = std::iter::once((
+        coordinator.endpoint.clone(),
+        coordinator.endpoint.parse::<SocketAddr>(),
+    ));
+    let mut candidates = Vec::new();
+    let mut failures = Vec::new();
+    for (text, parsed) in stored.chain(discovered).chain(invitation) {
+        let Ok(endpoint) = parsed else {
+            failures.push(DialFailure::new(text, "coordinator endpoint is invalid"));
+            continue;
+        };
+        if candidates.contains(&endpoint) {
+            continue;
+        }
+        if candidates.len() == MAX_COORDINATOR_CANDIDATES {
+            break;
+        }
+        match authorize(endpoint) {
+            Ok(()) => candidates.push(endpoint),
+            Err(error) => failures.push(DialFailure::new(text, error)),
+        }
+    }
+    (candidates, failures)
+}
+
+/// Dials `candidates` with staggered starts and returns the first pinned stream, or `None` once
+/// every candidate failed, with each failure appended to `failures`. Dropping the pending dials
+/// closes their connections.
+async fn race_coordinator_candidates(
+    candidates: Vec<SocketAddr>,
+    config: Arc<rustls::ClientConfig>,
+    failures: &mut Vec<DialFailure>,
+) -> Option<(PinnedStream, SocketAddr)> {
+    let mut queued = candidates.into_iter();
+    let mut dials = tokio::task::JoinSet::new();
+    loop {
+        if dials.len() < MAX_CONCURRENT_COORDINATOR_DIALS
+            && let Some(endpoint) = queued.next()
+        {
+            let config = config.clone();
+            dials.spawn(async move {
+                let result = pinned_handshake(endpoint, config, COORDINATOR_CONNECT_TIMEOUT).await;
+                (endpoint, result)
+            });
+        }
+        let can_dial_more =
+            !queued.as_slice().is_empty() && dials.len() < MAX_CONCURRENT_COORDINATOR_DIALS;
+        tokio::select! {
+            finished = dials.join_next() => match finished {
+                None => return None,
+                Some(Ok((endpoint, Ok(stream)))) => return Some((stream, endpoint)),
+                Some(Ok((endpoint, Err(failure)))) => failures.push(DialFailure {
+                    endpoint: endpoint.to_string(),
+                    error: failure.error,
+                    local_network_denied: failure.local_network_denied,
+                }),
+                Some(Err(error)) => failures.push(DialFailure::new(
+                    "coordinator dial",
+                    format!("dial task stopped: {error}"),
+                )),
+            },
+            () = tokio::time::sleep(COORDINATOR_DIAL_STAGGER), if can_dial_more => {}
+        }
+    }
+}
+
+/// The error for a coordinator no candidate reached. A single failure keeps its own message so
+/// callers can still recognize it; several are joined behind a summary.
+fn coordinator_dial_error(mut failures: Vec<DialFailure>) -> String {
+    match failures.len() {
+        0 => "the coordinator has no endpoint to connect to".to_string(),
+        1 => failures.remove(0).error,
+        _ => {
+            let details = failures
+                .iter()
+                .map(|failure| format!("{}: {}", failure.endpoint, failure.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("could not connect to the coordinator at any known endpoint: {details}")
+        }
+    }
 }
 
 fn fs_rename(source: &Path, target: &Path) -> Result<(), String> {

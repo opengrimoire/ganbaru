@@ -238,7 +238,7 @@ pub async fn music_library_reorder_playlists(
     app: tauri::AppHandle,
     db_url: String,
     request: MusicPlaylistsReorder,
-) -> MusicLibraryResult<Vec<MusicWriteReceipt>> {
+) -> MusicLibraryResult<Vec<MusicOrderReceipt>> {
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
@@ -299,10 +299,11 @@ pub async fn music_library_set_metadata_overrides(
     db_url: String,
     request: MusicMetadataOverrideWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
+    let vault_root = crate::vault::active_vault_path(&app).map_err(connection_error)?;
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::writes::set_metadata_overrides(&pool, request).await
+    ganbaru_music_library::writes::set_metadata_overrides(&pool, &vault_root, request).await
 }
 
 #[tauri::command]
@@ -432,7 +433,7 @@ pub async fn music_library_save_advanced_membership(
     app: tauri::AppHandle,
     db_url: String,
     request: MusicAdvancedMembershipWrite,
-) -> MusicLibraryResult<MusicWriteReceipt> {
+) -> MusicLibraryResult<MusicAdvancedMembershipReceipt> {
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
@@ -852,14 +853,19 @@ pub async fn music_library_set_soundscape_preset_level(
     app: tauri::AppHandle,
     db_url: String,
     preset_id: String,
-    level: f64,
+    level_milli: i64,
     updated_at_ms: i64,
 ) -> MusicLibraryResult<MusicSoundscapePreset> {
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::soundscape_presets::set_level(&pool, &preset_id, level, updated_at_ms)
-        .await
+    ganbaru_music_library::soundscape_presets::set_level(
+        &pool,
+        &preset_id,
+        level_milli,
+        updated_at_ms,
+    )
+    .await
 }
 
 #[cfg(desktop)]

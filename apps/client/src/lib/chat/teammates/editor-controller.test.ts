@@ -42,7 +42,6 @@ function teammate(id = "participant:atlas", revision = 1): ChatAiTeammateRead {
     },
     channelCount: 0,
     activeAssignmentCount: 0,
-    hasDurableHistory: false,
   };
 }
 

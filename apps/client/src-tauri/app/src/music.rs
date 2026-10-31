@@ -36,6 +36,7 @@ pub(crate) mod session;
 pub(crate) mod soundscape;
 #[cfg(desktop)]
 pub(crate) mod soundscape_paths;
+pub(crate) mod sync;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod youtube;
 
@@ -46,6 +47,8 @@ pub(crate) use media_server::setup_youtube_host;
 use ganbaru_music_library::artwork::{
     extract_embedded_artwork, find_track_artwork, sniff_image_content_type as artwork_content_type,
 };
+#[cfg(not(target_os = "ios"))]
+use ganbaru_music_library::managed_artwork;
 #[cfg(desktop)]
 use ganbaru_music_library::media::{MEDIA_EXTENSIONS, is_supported_media_path};
 
@@ -322,31 +325,100 @@ pub async fn music_pick_soundscape_file(app: tauri::AppHandle) -> Result<Option<
     Ok(selected.map(|path| path.to_string_lossy().into_owned()))
 }
 
+/// Lets the user pick an image and copies it into the active vault as managed artwork.
+/// Returns the managed reference an artwork override stores, or `None` when canceled.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn music_pick_artwork_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let selected = tauri::async_runtime::spawn_blocking(move || {
-        let picker = app
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
             .dialog()
             .file()
             .set_title("Select playlist artwork")
-            .add_filter(
-                "Images",
-                &["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"],
-            );
-        pick_granted_file(&app, picker)
+            .add_filter("Images", &managed_artwork::ARTWORK_EXTENSIONS)
+            .blocking_pick_file()
+            .map(dialog_path)
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+        let bytes = read_bounded_artwork(&path, u64::from(managed_artwork::MAX_ARTWORK_BYTES))?;
+        import_managed_artwork(&app, &bytes).map(Some)
     })
     .await
-    .map_err(|error| format!("artwork file picker failed: {error}"))??;
-    Ok(selected.map(|path| path.to_string_lossy().into_owned()))
+    .map_err(|error| format!("artwork file picker failed: {error}"))?
 }
 
+/// Lets the user pick an image and copies it into the active vault as managed artwork.
+/// Returns the managed reference an artwork override stores, or `None` when canceled.
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub async fn music_pick_artwork_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use ganbaru_mobile_media::MobileMediaExt;
 
-    app.mobile_media().pick_artwork_file().await
+    let Some(uri) = app.mobile_media().pick_artwork_file().await? else {
+        return Ok(None);
+    };
+    let data_url = app
+        .mobile_media()
+        .artwork_data_url(&uri, false, u64::from(managed_artwork::MAX_ARTWORK_BYTES))
+        .await?
+        .ok_or_else(|| "selected artwork is unavailable".to_string())?;
+    let bytes = decode_image_data_url(&data_url)?;
+    tauri::async_runtime::spawn_blocking(move || import_managed_artwork(&app, &bytes).map(Some))
+        .await
+        .map_err(|error| format!("artwork import task failed: {error}"))?
+}
+
+/// Decodes the base64 payload of an image data URL.
+#[cfg(target_os = "android")]
+fn decode_image_data_url(data_url: &str) -> Result<Vec<u8>, String> {
+    use base64::{Engine as _, engine::general_purpose};
+
+    let (header, payload) = data_url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(','))
+        .ok_or_else(|| "selected artwork is not an image".to_string())?;
+    if !header.ends_with(";base64") {
+        return Err("selected artwork is not an image".to_string());
+    }
+    general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|error| format!("selected artwork could not be decoded: {error}"))
+}
+
+/// Copies verified image bytes into the Music artwork class of the active vault and returns
+/// the managed reference.
+#[cfg(not(target_os = "ios"))]
+fn import_managed_artwork(app: &tauri::AppHandle, bytes: &[u8]) -> Result<String, String> {
+    let vault_root = crate::vault::active_writable_vault_path(app)?;
+    managed_artwork::import_artwork(&vault_root, bytes)
+        .map(|artwork| artwork.reference)
+        .map_err(|error| error.to_string())
+}
+
+/// Reads managed artwork of the active vault as a data URL after checking that the file
+/// matches the digest and type its reference names.
+#[cfg(not(target_os = "ios"))]
+#[tauri::command]
+pub async fn music_artwork_asset_data_url(
+    app: tauri::AppHandle,
+    reference: String,
+) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+
+    let vault_root = crate::vault::active_vault_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let artwork = managed_artwork::read_artwork(&vault_root, &reference)
+            .map_err(|error| error.to_string())?;
+        Ok(format!(
+            "data:{};base64,{}",
+            artwork.content_type,
+            general_purpose::STANDARD.encode(artwork.bytes)
+        ))
+    })
+    .await
+    .map_err(|error| format!("artwork loading task failed: {error}"))?
 }
 
 #[cfg(desktop)]
@@ -798,6 +870,7 @@ mod tests {
         for (file, command) in [
             ("media_server.rs", "music_register_media_file"),
             ("media_server.rs", "music_register_embedded_artwork"),
+            ("media_server.rs", "music_register_artwork_asset"),
             ("player.rs", "media_player_probe"),
         ] {
             let source =

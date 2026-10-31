@@ -49,7 +49,9 @@ async fn pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -64,7 +66,7 @@ async fn seed_root(pool: &SqlitePool) {
     sqlx::query(
         "INSERT INTO music_source_collections
             (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
-         VALUES ('collection-1', 'local-root', 'root:1', 'Soundtracks', 'root-1', 1, 1)",
+         VALUES ('collection-1', 'local-root', 'local-root:root-1', 'Soundtracks', 'root-1', 1, 1)",
     )
     .execute(pool)
     .await
@@ -109,8 +111,8 @@ async fn seed_location(
     .unwrap();
     sqlx::query(
         "INSERT INTO music_source_collection_items
-            (collection_id, item_id, first_discovered_at_ms)
-         VALUES ('collection-1', ?, 1)",
+            (collection_id, item_id, first_discovered_at_ms, sync_key)
+         VALUES ('collection-1', ?, 1, lower(hex(randomblob(16))))",
     )
     .bind(item_id)
     .execute(pool)
@@ -161,16 +163,16 @@ fn relink_plan_classifies_and_applies_reorganized_partial_roots() {
         )
         .await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
-             VALUES ('playlist-1', 'Focus', 1, 1)",
+            "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Focus', 'a0', 1, 1)",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-             VALUES ('membership-1', 'playlist-1', 'item-likely', 0, 1, 1)",
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('membership-1', 'playlist-1', 'item-likely', 'a0', 1, 1)",
         )
         .execute(&pool)
         .await
@@ -221,6 +223,16 @@ fn relink_plan_classifies_and_applies_reorganized_partial_roots() {
                 ("item-likely".to_string(), "moved/likely.mp3".to_string()),
                 ("item-missing".to_string(), "missing.mp3".to_string()),
             ]
+        );
+        let relinked_location: String = sqlx::query_scalar(
+            "SELECT id FROM music_local_locations WHERE item_id = 'item-likely'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            relinked_location,
+            crate::identity::location_id("root-1", "moved/likely.mp3")
         );
         let membership_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM music_playlist_memberships WHERE item_id = 'item-likely'",

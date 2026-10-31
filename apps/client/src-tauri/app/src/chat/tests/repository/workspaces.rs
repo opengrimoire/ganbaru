@@ -68,12 +68,6 @@ fn project_archive_preserves_chat_and_project_deletion_removes_linked_threads() 
         .await
         .unwrap();
         assert_eq!(folder_archived_at, None);
-        assert!(
-            sqlx::query("DELETE FROM projects WHERE id = 'project-chat'")
-                .execute(&pool)
-                .await
-                .is_err()
-        );
         assert_eq!(
             resolve_project_deletion(
                 &pool,

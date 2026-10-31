@@ -15,23 +15,41 @@
 use std::io;
 
 use ganbaru_contacts::PersonPublicKey;
-use ganbaru_sync_contracts::{SignedCertificate, SpaceId, WriterId, WriterKeyPair};
+use ganbaru_sync_contracts::{
+    DeviceKeyPair, Digest32, EncryptionPublicKey, KeyEnvelope, SignedCertificate, SpaceId,
+    SpaceKey, WriterId, WriterKeyPair,
+};
 use sqlx::SqliteConnection;
 
+pub mod acknowledge;
 pub mod adapter;
+pub mod assets;
+pub mod codec;
 pub mod devices;
 pub mod domains;
 pub mod error;
-pub mod guards;
+pub mod hold;
+pub mod hooks;
 pub mod local;
 pub mod manifest;
+pub mod relay;
+pub mod seed;
+pub mod stability;
 pub mod triggers;
 
 mod apply;
+mod authorization;
+mod compact;
 mod conflicts;
+mod edges;
+mod exclusion;
+mod fork;
+mod hydrate;
 mod log;
 mod materialize;
 mod merge;
+mod publication;
+mod records;
 mod recovery;
 mod repair;
 mod reseal;
@@ -39,40 +57,61 @@ mod seal;
 mod sql;
 mod status;
 mod store;
+mod tree;
 mod validate;
+mod visibility;
 
 #[cfg(test)]
 mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
-pub use apply::{ApplyReport, ClockWarning, ResealNeeded};
-pub use conflicts::{ConflictDetail, ConflictRow, ConflictVersion, OPEN_CONFLICT_MASK_SQL};
+pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
+pub use authorization::{
+    AuthorizationStorage, AuthorizationView, CandidateKind, ContestAction, ContestCandidate,
+    ContestCause, ContestEntry, ContestInstance, ContestObjection, ContestRejection, ContestRole,
+    ContestView, ContestYield, ContestsView, EnrolledDevice, ForkedWriter, HandoverPoint, KitPoint,
+    KitPointPlace, LosingRemoval, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
+    RecordEnvelope, RecordPage, RecordRole, RecordWants, StoredSpaceKey,
+};
+pub use compact::{
+    COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
+};
+pub use conflicts::{
+    ConflictDetail, ConflictRow, ConflictVersion, OPEN_CONFLICT_MASK_SQL, OpenConflict,
+};
 pub use devices::{DeviceNames, DeviceRef};
 pub use error::{SyncError, SyncResult};
-pub use local::{CarryReport, LocalWriterHead};
+pub use exclusion::{
+    LateChange, LateKind, MAX_EXCLUDED_ENTRIES_PER_WRITER, MAX_EXCLUDED_PER_WRITER,
+};
+pub use fork::{EvidenceOutcome, EvidenceRefusal, ForkEvidence};
+pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
-pub use recovery::RecoveryEntry;
+pub use records::WriterRetirement;
+pub use recovery::{MAX_UNSEEN_PRESENTATIONS, RecoveryDescendant, RecoveryEntry};
+pub use relay::{RelayKeys, open_space_keys};
 pub use reseal::ResealReport;
-pub use seal::{InvalidRow, SealReport};
+pub use seal::{
+    InvalidRow, MAX_BYTES_PER_SEAL, MAX_CHANGES_PER_SEAL, MAX_OPS_PER_SEAL, SealReport,
+};
 pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};
 pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 
-use domains::quick_notes::QuickNotesAdapter;
+use domains::{vault_adapters, vault_hooks};
+pub use hooks::{
+    ChangeNotice, ChangeSink, ConcurrentVersion, HookError, HookFuture, Hooks, MaterializeHook,
+    SettleFuture, rebuild_every_key,
+};
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
 
-/// The space an engine call works in, the person key every writer must be certified by, and the
-/// device allowed to revoke writers.
+/// The space an engine call works in and the person key that signs its charter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaceContext {
     /// Replication space of the vault.
     pub space: SpaceId,
-    /// Trust anchor: the person key of the vault owner.
-    pub anchor: PersonPublicKey,
-    /// Device id of the coordinator, the only device whose writers may issue revocations.
-    /// A linked replica uses its pinned coordinator; the coordinator and an unlinked vault use
-    /// their own device id.
-    pub coordinator_device_id: String,
+    /// Person key of the vault owner, which signs the space charter.
+    pub person_key: PersonPublicKey,
 }
 
 /// Makes a writer sequence durable before an operation with it is signed, so a restored or
@@ -80,16 +119,51 @@ pub struct SpaceContext {
 pub trait SequenceReservation: Send {
     /// Ensures sequences up to `seq` are reserved, advancing the durable reservation if needed.
     fn ensure_reserved(&mut self, seq: u64) -> io::Result<()>;
+
+    /// Records the epoch, authorization revision, and entry hash the anchor is about to seal
+    /// under the charter its log starts from, before it signs the entry, so a database restored
+    /// behind the record can be told apart from one that never sequenced that far. The seal can
+    /// still roll back, so the record may run ahead of the database by this one entry. The
+    /// default records nothing.
+    fn reserve_entry(
+        &mut self,
+        charter: Digest32,
+        epoch: u32,
+        revision: u64,
+        entry_hash: Digest32,
+    ) -> io::Result<()> {
+        let _ = (charter, epoch, revision, entry_hash);
+        Ok(())
+    }
 }
 
 /// The local writer an engine call may seal with.
 pub struct LocalWriter<'a> {
     /// Writer signing key.
     pub key: &'a WriterKeyPair,
-    /// Certificate binding the key to the space anchor.
+    /// Certificate binding the key to an enrolled device key.
     pub certificate: &'a SignedCertificate,
     /// Durable sequence reservation of the writer record.
     pub reservation: &'a mut dyn SequenceReservation,
+    /// The keys an anchor seals key epochs and key envelopes with, `None` on an installation
+    /// that holds no encryption key. An anchor without them refuses removals, recovery changes,
+    /// and device keys once the space has a key epoch.
+    pub keys: Option<&'a dyn SpaceKeyHolder>,
+}
+
+/// The keys of the local installation that an anchor needs to rotate the space key. Plaintext
+/// space keys opened with them stay in memory and are dropped after the call that needed them.
+pub trait SpaceKeyHolder: Send + Sync {
+    /// The device signing key of the installation, which signs the key epochs it seals.
+    fn device_key(&self) -> &DeviceKeyPair;
+
+    /// The encryption key the installation publishes in its device key entry.
+    fn encryption_key(&self) -> EncryptionPublicKey;
+
+    /// Opens `envelope` as the key of epoch `epoch` of `space` with an encryption key the
+    /// installation holds, its device encryption key or a recovery key, or `None` when none
+    /// opens it.
+    fn open(&self, space: &SpaceId, epoch: u32, envelope: &KeyEnvelope) -> Option<SpaceKey>;
 }
 
 impl LocalWriter<'_> {
@@ -99,32 +173,100 @@ impl LocalWriter<'_> {
     }
 }
 
-/// The sync engine: a manifest and the domain adapters it names.
+/// The sync engine: a manifest, the domain adapters it names, and the hooks the app registers.
 #[derive(Debug)]
 pub struct Engine {
     manifest: &'static Manifest,
     adapters: Adapters,
+    hooks: Hooks,
+    /// Enrollments of every stored chain, for the last stored entry set a genesis was checked
+    /// against.
+    enrolled: authorization::EnrolledCache,
+    /// Operation bodies read last for elided values.
+    bodies: hydrate::BodyCache,
 }
 
 impl Engine {
-    /// An engine for a manifest, refusing a manifest that names an unregistered adapter.
-    pub fn new(manifest: &'static Manifest, adapters: Adapters) -> SyncResult<Self> {
+    /// An engine for a manifest, its domain adapters, and its hooks. Refuses a manifest that
+    /// fails [`Manifest::validate`], names an unregistered adapter, leaves a registered adapter
+    /// unnamed, an adapter asset group the table lacks or whose domain declares no asset class,
+    /// a hook of a table the manifest does not replicate, or a hook that settles a group it may
+    /// not, see [`MaterializeHook::settled_groups`].
+    pub fn with(manifest: &'static Manifest, adapters: Adapters, hooks: Hooks) -> SyncResult<Self> {
+        manifest.validate().map_err(SyncError::InvalidManifest)?;
+        if let Some(table) = hooks
+            .tables()
+            .find(|table| manifest.table(*table).is_none())
+        {
+            return Err(SyncError::InvalidManifest(format!(
+                "a hook is registered for unknown table {}",
+                table.0
+            )));
+        }
         for table in manifest.tables {
-            if let Some(name) = table.adapter {
-                if adapters.get(name).is_none() {
-                    return Err(SyncError::UnregisteredAdapter(name));
+            for group in hooks.settled_groups(table) {
+                if let Some(problem) = hooks::settle_problem(table, *group) {
+                    return Err(SyncError::InvalidManifest(format!(
+                        "the hook of {} settles group {}: it {problem}",
+                        table.name,
+                        group.get()
+                    )));
                 }
             }
         }
-        Ok(Self { manifest, adapters })
+        for table in manifest.tables {
+            if let Some(name) = table.adapter
+                && adapters.get(name).is_none()
+            {
+                return Err(SyncError::InvalidManifest(format!(
+                    "adapter {name} is not registered"
+                )));
+            }
+        }
+        for domain in manifest.domains {
+            for table in domain.tables {
+                let Some(adapter) = table.adapter.and_then(|name| adapters.get(name)) else {
+                    continue;
+                };
+                let groups = adapter.asset_groups(table.id);
+                if groups.iter().any(|group| table.group(*group).is_none()) {
+                    return Err(SyncError::InvalidManifest(format!(
+                        "adapter of {} names an unknown asset group",
+                        table.name
+                    )));
+                }
+                if !groups.is_empty() && domain.assets.is_empty() {
+                    return Err(SyncError::InvalidManifest(format!(
+                        "{} has asset groups but {} declares no asset class",
+                        table.name, domain.name
+                    )));
+                }
+            }
+        }
+        for name in adapters.names() {
+            if !manifest
+                .tables
+                .iter()
+                .any(|table| table.adapter == Some(name))
+            {
+                return Err(SyncError::InvalidManifest(format!(
+                    "adapter {name} is registered but no table names it"
+                )));
+            }
+        }
+        Ok(Self {
+            manifest,
+            adapters,
+            hooks,
+            enrolled: authorization::EnrolledCache::default(),
+            bodies: hydrate::BodyCache::default(),
+        })
     }
 
-    /// The engine for the vault manifest with its built-in adapters.
+    /// The engine for the vault manifest with its built-in adapters and hooks.
     pub fn vault() -> Self {
-        Self {
-            manifest: &VAULT_MANIFEST,
-            adapters: Adapters::new().with(Box::new(QuickNotesAdapter)),
-        }
+        Self::with(&VAULT_MANIFEST, vault_adapters(), vault_hooks())
+            .expect("the vault manifest and its adapters should agree")
     }
 
     /// The manifest the engine replicates.
@@ -138,12 +280,16 @@ impl Engine {
     }
 
     /// Creates the personal space of a vault if it does not exist and returns its id.
+    ///
+    /// Refuses with [`SyncError::PendingKey`] while a replicated row still holds a `pending:`
+    /// placeholder key.
     pub async fn init_space(
         &self,
         conn: &mut SqliteConnection,
         vault_id: &str,
         now_ms: u64,
     ) -> SyncResult<SpaceId> {
+        self.refuse_pending_keys(conn).await?;
         let space = SpaceId::personal(vault_id);
         sqlx::query(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms) VALUES (?, ?, ?)
@@ -163,5 +309,13 @@ impl Engine {
             Some(bytes) if bytes == space.as_bytes() => Ok(space),
             _ => Err(error::corrupt("sync space does not match the vault id")),
         }
+    }
+
+    /// Refuses when a replicated row holds a `pending:` placeholder key.
+    async fn refuse_pending_keys(&self, conn: &mut SqliteConnection) -> SyncResult<()> {
+        for table in self.manifest().tables {
+            seed::refuse_pending_key(conn, table).await?;
+        }
+        Ok(())
     }
 }

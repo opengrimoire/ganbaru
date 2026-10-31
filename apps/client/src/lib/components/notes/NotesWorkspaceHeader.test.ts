@@ -69,7 +69,7 @@ const group = {
   id: "group-1",
   name: "Routine",
   icon: "repeat",
-  sortOrder: 0,
+  orderKey: "a0",
   collapsed: false,
   createdAt: "2026-07-26T12:00:00.000Z",
   updatedAt: "2026-07-26T12:00:00.000Z",
@@ -80,7 +80,7 @@ const project = {
   groupId: group.id,
   name: "Learning",
   icon: "graduation-cap",
-  sortOrder: 0,
+  orderKey: "a0",
   status: "active" as const,
   defaultEventName: null,
   defaultEventTimeMode: "timed" as const,
@@ -114,7 +114,8 @@ const page: NotesPage = {
   archived: false,
   icon: null,
   cover: null,
-  properties: { __ganbaru_project_id: project.id },
+  project_id: project.id,
+  properties: {},
   url: null,
   public_url: null,
   source_provider: null,
@@ -201,11 +202,11 @@ describe("NotesWorkspaceHeader", () => {
   it("shows group, project, main note, and sub-note in order", () => {
     const parent = createProvisionalNotesPage({
       id: "main", title: "Main note", first_block_id: "main-body", folder_id: null,
-      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+      parent: { type: "workspace", workspace: true }, project_id: project.id,
     }).page;
     const child = createProvisionalNotesPage({
       id: "child", title: "Sub-note", first_block_id: "child-body", folder_id: null,
-      parent: { type: "page_id", page_id: parent.id }, properties: parent.properties,
+      parent: { type: "page_id", page_id: parent.id }, project_id: parent.project_id,
     }).page;
     const header = setup(child, [parent, child]);
     const labels = Array.from(header.querySelectorAll("button")).map((button) => button.textContent?.trim());
@@ -216,7 +217,7 @@ describe("NotesWorkspaceHeader", () => {
   it("shows the entire database owner path", () => {
     const loaded = createProvisionalNotesPage({
       id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
-      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+      parent: { type: "workspace", workspace: true }, project_id: project.id,
     });
     const database = applyBlockUpdate(loaded.blocks.results[0], {
       type: "child_database", child_database: { title: "Book list", database_id: "database" },
@@ -239,11 +240,11 @@ describe("NotesWorkspaceHeader", () => {
   it("shows only the project in the mobile switcher and keeps the note path out of the header", () => {
     const parent = createProvisionalNotesPage({
       id: "main", title: "Main note", first_block_id: "main-body", folder_id: null,
-      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+      parent: { type: "workspace", workspace: true }, project_id: project.id,
     }).page;
     const child = createProvisionalNotesPage({
       id: "child", title: "Sub-note", first_block_id: "child-body", folder_id: null,
-      parent: { type: "page_id", page_id: parent.id }, properties: parent.properties,
+      parent: { type: "page_id", page_id: parent.id }, project_id: parent.project_id,
     }).page;
     const header = setup(child, [parent, child], true);
     const switchers = header.querySelectorAll<HTMLButtonElement>("[data-mobile-context-switcher]");
@@ -293,7 +294,7 @@ describe("NotesWorkspaceHeader", () => {
   it("returns from a mobile database to its owner note without calling project home", () => {
     const loaded = createProvisionalNotesPage({
       id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
-      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+      parent: { type: "workspace", workspace: true }, project_id: project.id,
     });
     const database = applyBlockUpdate(loaded.blocks.results[0], {
       type: "child_database", child_database: { title: "Book list", database_id: "database" },
@@ -312,7 +313,7 @@ describe("NotesWorkspaceHeader", () => {
   it("updates the existing breadcrumb from an acknowledged database rename", () => {
     const loaded = createProvisionalNotesPage({
       id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
-      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+      parent: { type: "workspace", workspace: true }, project_id: project.id,
     });
     const database = applyBlockUpdate(loaded.blocks.results[0], {
       type: "child_database", child_database: { title: "Book list", database_id: "database" },
@@ -329,7 +330,7 @@ describe("NotesWorkspaceHeader", () => {
   it("branches a note into its databases and preselects a view from the nested hover panels", async () => {
     const owner = createProvisionalNotesPage({
       id: page.id, title: "Reading", first_block_id: "body", folder_id: folder.id,
-      parent: page.parent, properties: page.properties,
+      parent: page.parent, project_id: page.project_id,
     }).page;
     const database: NotesNavigationDatabase = { id: "database", page_id: owner.id, title: "Book list", data_source_id: "source" };
     notesState.store.navigationDatabases = [database];
@@ -363,7 +364,7 @@ describe("NotesWorkspaceHeader", () => {
   it("keeps search in the directly opened project panel while cascading into notes", async () => {
     const owner = createProvisionalNotesPage({
       id: page.id, title: "Reading", first_block_id: "body", folder_id: null,
-      parent: page.parent, properties: page.properties,
+      parent: page.parent, project_id: page.project_id,
     }).page;
     const header = setup(owner);
     await tick();
@@ -384,7 +385,7 @@ describe("NotesWorkspaceHeader", () => {
   it("opens saved views when hovering the database breadcrumb and has no creation button", async () => {
     const loaded = createProvisionalNotesPage({
       id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
-      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+      parent: { type: "workspace", workspace: true }, project_id: project.id,
     });
     const database = applyBlockUpdate(loaded.blocks.results[0], {
       type: "child_database", child_database: { title: "Book list", database_id: "database", data_source_id: "source" },

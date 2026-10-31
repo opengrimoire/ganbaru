@@ -1,36 +1,51 @@
-use super::{
-    NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, context, create_vault, person,
-};
+use super::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, create_vault, person};
 use crate::assets::{
-    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetTransfer, INVALID_ASSET, ImageStore,
-    MAX_ASSET_PASS_BYTES, VaultImages,
+    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetTransfer, ContentAddressedStore,
+    INVALID_ASSET, MAX_ASSET_PASS_BYTES,
 };
+use crate::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
 use crate::client::{
-    ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
+    self, ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
-use crate::hub::{HubVault, OpenHubVault, SyncHub};
-use crate::recovery::{RecoveryAction, RecoveryChoice};
+use crate::hub::{
+    BOOTSTRAP_REQUIRED, HubContact, HubContactSource, HubProposals, HubStability, HubVault,
+    OpenHubVault, SyncHub,
+};
+use crate::outbox::Outbox;
+use crate::quarantine::PullSkips;
+use crate::recovery::{
+    RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
+};
 use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::{
-    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncRefusalCode,
+    ControlMessage, MemberEndpoint, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES,
+    SyncAsset, SyncRefusalCode,
 };
-use ganbaru_quick_notes::images::{self, ReferencedImage};
-use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
-use ganbaru_sync::{Engine, SpaceContext};
+use ganbaru_quick_notes::images;
+use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::local;
+use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
+use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
+use ganbaru_sync::{Engine, EvidenceOutcome, SpaceContext};
+use ganbaru_sync::{LocalWriter, SequenceReservation};
 use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
-use ganbaru_sync_contracts::op::RevokeReason;
-use ganbaru_sync_contracts::{VersionVector, WriterId};
-use sqlx::SqlitePool;
+use ganbaru_sync_contracts::{
+    AdminKeyPair, DeviceKeyPair, DeviceKind, ProposalRejection, RecoverySeed, SignedCertificate,
+    SpaceId, VersionVector, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+};
+use sha2::{Digest as _, Sha256};
+use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 
 const HUB_DEVICE: &str = "device-hub";
 const PHONE_DEVICE: &str = "device-phone";
+const TABLET_DEVICE: &str = "device-tablet";
 
 /// Calls the hub directly, validating both frames as the transport would.
 struct DirectTransport(SyncHub);
@@ -51,14 +66,142 @@ struct Replica {
     pool: SqlitePool,
     ctx: SpaceContext,
     writer: ActiveWriter,
-    images: Arc<dyn ImageStore>,
+    engine: Engine,
+    assets: Arc<dyn AssetStore>,
+    device_id: String,
+}
+
+/// The device key of a test device, derived from its id.
+fn device_key(device_id: &str) -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&Sha256::digest(device_id.as_bytes()).into()).expect("device seed")
+}
+
+/// The recovery seed whose kit founds the space of [`HUB_DEVICE`].
+fn hub_recovery_seed() -> RecoverySeed {
+    RecoverySeed::from_bytes([22; 32])
+}
+
+/// The anchor keys of [`HUB_DEVICE`].
+fn hub_keys() -> AnchorKeys {
+    AnchorKeys {
+        device: device_key(HUB_DEVICE),
+        admin: AdminKeyPair::from_seed(&[21; 32]).expect("admin seed"),
+        recovery: hub_recovery_seed().public_keys().expect("recovery keys"),
+    }
+}
+
+/// A reservation that never needs to persist, for writers that seal only during setup.
+struct Unreserved;
+
+impl SequenceReservation for Unreserved {
+    fn ensure_reserved(&mut self, _seq: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Database image of a vault whose space [`HUB_DEVICE`] founded as its anchor, with the phone
+/// and the tablet enrolled by an earlier writer of the hub.
+static SHARED_VAULT: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+fn shared_image() -> std::sync::MutexGuard<'static, Option<Vec<u8>>> {
+    SHARED_VAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn shared_vault_image() -> Vec<u8> {
+    if let Some(image) = shared_image().as_ref() {
+        return image.clone();
+    }
+    let directory = TestDirectory::new("shared-vault");
+    let registry = DatabasePoolRegistry::default();
+    let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+    let mut conn = acquire(&pool).await;
+    let engine = Engine::vault();
+    engine
+        .init_space(&mut conn, VAULT_ID, NOW_MS)
+        .await
+        .expect("initialize space");
+    let ctx = local::space_context(&mut conn, VAULT_ID)
+        .await
+        .expect("read space")
+        .expect("space context");
+    let anchor = hub_keys();
+    let founding = Founding {
+        device_id: HUB_DEVICE,
+        tls_fingerprint: [23; 32],
+        discovery_key: [24; 32],
+        person: &person(),
+        now_ms: NOW_MS,
+    };
+    ensure_charter(&engine, &mut conn, &ctx, &anchor, &founding)
+        .await
+        .expect("found space");
+    let key = WriterKeyPair::from_seed(&[25; 32]).expect("writer seed");
+    let certificate: SignedCertificate = sign_certificate(
+        &WriterCertificate {
+            writer_key: key.public_key(),
+            device_id: HUB_DEVICE.to_string(),
+            device_key: anchor.device.public_key(),
+            created_at_ms: i64::try_from(NOW_MS).expect("clock"),
+            predecessor: None,
+        },
+        &anchor.device,
+    )
+    .expect("certify authority writer");
+    let mut reservation = Unreserved;
+    for (device_id, fingerprint) in [(PHONE_DEVICE, 26), (TABLET_DEVICE, 30)] {
+        let mut writer = LocalWriter {
+            key: &key,
+            certificate: &certificate,
+            reservation: &mut reservation,
+            keys: None,
+        };
+        let enrollment = Enrollment {
+            device_id: device_id.to_string(),
+            device_key: device_key(device_id).public_key(),
+            tls_fingerprint: [fingerprint; 32],
+            label: device_id.to_string(),
+            device_kind: DeviceKind::Mobile,
+        };
+        authority::enroll(
+            &engine,
+            &mut conn,
+            &ctx,
+            &anchor.admin,
+            &mut writer,
+            enrollment,
+            NOW_MS,
+        )
+        .await
+        .expect("enroll device");
+    }
+    let image = conn
+        .serialize(None)
+        .await
+        .expect("serialize shared vault")
+        .to_vec();
+    drop(conn);
+    drop(pool);
+    registry.close_all().await.expect("close shared vault");
+    shared_image().get_or_insert(image).clone()
 }
 
 impl Replica {
+    /// Hash of the charter this replica holds, which its proposals name.
+    async fn charter(&self) -> ganbaru_sync_contracts::Digest32 {
+        let mut conn = acquire(&self.pool).await;
+        authority::charter_hash(&self.engine, &mut conn, &self.ctx)
+            .await
+            .expect("charter")
+    }
+
     async fn new(label: &str, device_id: &str) -> Self {
         let directory = TestDirectory::new(label);
         let registry = DatabasePoolRegistry::default();
-        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let path = directory.path().join("vault.sqlite");
+        std::fs::write(&path, shared_vault_image().await).expect("write shared vault");
+        let pool = registry.connect_path(&path).await.expect("open vault");
         Self::open(directory, registry, pool, device_id).await
     }
 
@@ -68,27 +211,56 @@ impl Replica {
         pool: SqlitePool,
         device_id: &str,
     ) -> Self {
-        let ctx = context(&mut *acquire(&pool).await, HUB_DEVICE).await;
+        let ctx = local::space_context(&mut *acquire(&pool).await, VAULT_ID)
+            .await
+            .expect("read space")
+            .expect("space context");
         let writer = create_writer(
             &directory.files(),
             &directory.keys(),
             SuccessorPlan::default(),
-            &person(),
+            &device_key(device_id),
             device_id,
             NOW_MS,
         )
         .expect("create writer");
-        let images: Arc<dyn ImageStore> = Arc::new(VaultImages {
-            root: directory.path().to_path_buf(),
-        });
+        let assets: Arc<dyn AssetStore> = Arc::new(
+            ContentAddressedStore::new(directory.path().to_path_buf())
+                .with_check(&IMAGES_CLASS, images::check_synced_image),
+        );
         Self {
-            images,
+            engine: Engine::vault(),
+            assets,
             directory,
             registry,
             pool,
             ctx,
             writer,
+            device_id: device_id.to_string(),
         }
+    }
+
+    /// Removes `device_id` through this replica's writer, signed with the hub's admin key.
+    async fn remove(&mut self, device_id: &str) -> Result<u64, String> {
+        let mut conn = acquire(&self.pool).await;
+        let revision = authority::remove(
+            &self.engine,
+            &mut conn,
+            &self.ctx,
+            &hub_keys().admin,
+            &mut self.writer.local(),
+            device_id,
+            NOW_MS,
+        )
+        .await?;
+        let seq = self
+            .engine
+            .stored_vector(&mut conn, &self.ctx)
+            .await
+            .expect("stored vector")
+            .get(&self.writer.id());
+        self.writer.committed(seq).expect("record commit");
+        Ok(revision)
     }
 
     async fn seal_note(&mut self, id: &str) -> u64 {
@@ -118,13 +290,15 @@ impl Replica {
         seq
     }
 
+    /// Applies every received operation, over as many transactions as the apply caps take.
     async fn apply(&mut self) {
         let mut conn = acquire(&self.pool).await;
-        let report = Engine::vault()
+        while Engine::vault()
             .apply(&mut conn, &self.ctx, Some(&mut self.writer.local()), NOW_MS)
             .await
-            .expect("apply");
-        assert!(!report.more, "test logs apply in one round");
+            .expect("apply")
+            .more
+        {}
     }
 
     async fn stored(&self) -> VersionVector {
@@ -132,6 +306,18 @@ impl Replica {
             .stored_vector(&mut *acquire(&self.pool).await, &self.ctx)
             .await
             .expect("stored vector")
+    }
+
+    /// Compacts every applied operation below each writer's head, and returns how many bodies
+    /// it dropped.
+    async fn compact(&self) -> usize {
+        let limit = self.stored().await;
+        let mut conn = acquire(&self.pool).await;
+        Engine::vault()
+            .compact(&mut conn, &self.ctx, &limit)
+            .await
+            .expect("compact")
+            .compacted
     }
 
     async fn has_note(&self, id: &str) -> bool {
@@ -176,7 +362,40 @@ impl Replica {
             ctx: &self.ctx,
             writer: Some(active),
             own_writers,
+            quarantined: &BTreeSet::new(),
+            pull_skips: None,
             max_bytes,
+            listening: &[],
+            records: None,
+        }
+        .exchange()
+        .await
+    }
+
+    /// Exchanges as an installation that quarantined `quarantined`, remembering what its pulls
+    /// turned away in `skips`.
+    async fn exchange_quarantining<T: SyncTransport>(
+        &self,
+        transport: &T,
+        ids: &PeerIds,
+        quarantined: &BTreeSet<String>,
+        skips: &PullSkips,
+    ) -> Result<Exchange, String> {
+        let engine = Engine::vault();
+        let own_writers = self.writer.own_writers();
+        ClientSession {
+            transport,
+            ids,
+            engine: &engine,
+            pool: &self.pool,
+            ctx: &self.ctx,
+            writer: Some(self.writer.id()),
+            own_writers: &own_writers,
+            quarantined,
+            pull_skips: Some(skips),
+            max_bytes: MAX_EXCHANGE_BYTES,
+            listening: &[],
+            records: None,
         }
         .exchange()
         .await
@@ -188,9 +407,9 @@ impl Replica {
     }
 
     /// Stores an image file and adds it to a note, without sealing.
-    async fn add_image(&self, note_id: &str, sort_order: i64, bytes: &[u8]) -> ReferencedImage {
+    async fn add_image(&self, note_id: &str, sort_order: i64, bytes: &[u8]) -> AssetRef {
+        images::import_image(self.directory.path(), bytes).expect("import image");
         let image = reference(bytes);
-        images::store_image(self.directory.path(), &image, bytes).expect("store image");
         sqlx::query(
             "INSERT INTO quick_note_images
                 (note_id, sort_order, sha256, content_type, byte_size, width, height)
@@ -198,8 +417,8 @@ impl Replica {
         )
         .bind(note_id)
         .bind(sort_order)
-        .bind(image.file().sha256())
-        .bind(image.file().content_type())
+        .bind(image.sha256())
+        .bind(image.content_type())
         .bind(image.byte_size())
         .execute(&self.pool)
         .await
@@ -207,8 +426,25 @@ impl Replica {
         image
     }
 
-    fn image_bytes(&self, image: &ReferencedImage) -> Option<Vec<u8>> {
-        images::read_image(self.directory.path(), image.file()).ok()
+    fn asset_bytes(&self, asset: &AssetRef) -> Option<Vec<u8>> {
+        std::fs::read(asset.path(self.directory.path())).ok()
+    }
+
+    /// Names of every entry in the directory of a class, temporary files included.
+    fn class_entries(&self) -> Vec<String> {
+        match std::fs::read_dir(IMAGES_CLASS.directory(self.directory.path())) {
+            Ok(entries) => entries
+                .map(|entry| {
+                    entry
+                        .expect("asset entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("list assets: {error}"),
+        }
     }
 
     async fn upload(
@@ -249,8 +485,9 @@ impl Replica {
         AssetSession {
             transport,
             ids,
+            engine: &self.engine,
             pool: &self.pool,
-            store: &self.images,
+            store: &self.assets,
             max_bytes,
         }
     }
@@ -263,27 +500,63 @@ fn phone_ids() -> PeerIds {
     }
 }
 
-/// A hub serving the replica's vault, with the change signal its service would bump.
-fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
+/// Opens the replica's vault as the vault a hub serves.
+fn open_hub(replica: &Replica) -> OpenHubVault {
+    open_hub_quarantining(replica, BTreeSet::new())
+}
+
+/// Opens the replica's vault as a hub that quarantined `quarantined`.
+fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
     let pool = replica.pool.clone();
-    let images = Arc::clone(&replica.images);
-    let open: OpenHubVault = Arc::new(move || {
+    let assets = Arc::clone(&replica.assets);
+    let device_id = replica.device_id.clone();
+    Arc::new(move || {
         let pool = pool.clone();
-        let images = Arc::clone(&images);
+        let assets = Arc::clone(&assets);
+        let quarantined = quarantined.clone();
+        let device_id = device_id.clone();
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
-                device_id: HUB_DEVICE.to_string(),
-                images,
+                assets,
+                quarantined,
+                device_id,
             }))
         })
-    });
+    })
+}
+
+/// A hub serving the replica's vault, with the change signal its service would bump.
+fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
     let changes = watch::Sender::new(0);
-    (
-        DirectTransport(SyncHub::new(open, changes.clone())),
-        changes,
-    )
+    let hub = SyncHub::new(open_hub(replica), changes.clone())
+        .with_contact(contact_source(test_contact()));
+    (DirectTransport(hub), changes)
+}
+
+/// The contact a test hub reports.
+fn test_contact() -> HubContact {
+    HubContact {
+        members: ["192.168.1.20:43821", "[fd00::20]:43821"]
+            .into_iter()
+            .map(|endpoint| MemberEndpoint {
+                device_id: HUB_DEVICE.to_string(),
+                endpoint: endpoint.to_string(),
+                observed_ms: 1_700_000_000_000,
+            })
+            .collect(),
+    }
+}
+
+fn contact_source(contact: HubContact) -> HubContactSource {
+    Arc::new(move |vault_id| {
+        if vault_id == VAULT_ID {
+            Ok(contact.clone())
+        } else {
+            Err("no linked device uses this vault".to_string())
+        }
+    })
 }
 
 fn done(exchange: Exchange) -> Exchanged {
@@ -337,6 +610,127 @@ fn exchange_pushes_and_pulls_until_both_replicas_hold_every_operation() {
                 .expect("exchange"),
         );
         assert_eq!((again.pushed, again.pulled), (0, 0));
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// A transport that counts the operations pulls download.
+struct CountingTransport<'a> {
+    inner: &'a DirectTransport,
+    pulled: std::sync::atomic::AtomicUsize,
+}
+
+impl SyncTransport for CountingTransport<'_> {
+    async fn request(&self, message: ControlMessage) -> Result<ControlMessage, String> {
+        let response = self.inner.request(message).await?;
+        if let ControlMessage::SyncOps { ops, .. } = &response {
+            self.pulled
+                .fetch_add(ops.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_client_pulls_a_quarantined_backlog_once_until_the_quarantine_changes() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-pull-skips", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-pull-skips", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-pull-skips", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        phone.seal_note("note-phone-1").await;
+        phone.seal_note("note-phone-2").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("push"),
+        );
+
+        let counting = CountingTransport {
+            inner: &transport,
+            pulled: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let tablet_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: TABLET_DEVICE.to_string(),
+        };
+        let quarantined = BTreeSet::from([PHONE_DEVICE.to_string()]);
+        let skips = PullSkips::default();
+        let first = done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &quarantined, &skips)
+                .await
+                .expect("first exchange"),
+        );
+        assert_eq!(first.problem, None);
+        let downloaded = counting.pulled.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(downloaded > 0);
+        assert_eq!(tablet.stored().await.get(&phone.writer.id()), 0);
+
+        done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &quarantined, &skips)
+                .await
+                .expect("second exchange"),
+        );
+        assert_eq!(
+            counting.pulled.load(std::sync::atomic::Ordering::Relaxed),
+            downloaded,
+            "the turned away backlog is not downloaded again"
+        );
+
+        // Lifting the quarantine forgets the skips, so the operations arrive.
+        done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &BTreeSet::new(), &skips)
+                .await
+                .expect("exchange after lifting"),
+        );
+        assert_eq!(
+            tablet.stored().await.get(&phone.writer.id()),
+            phone.stored().await.get(&phone.writer.id())
+        );
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_hub_stores_nothing_from_a_quarantined_device_until_the_quarantine_lifts() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-quarantine", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-quarantine", PHONE_DEVICE).await;
+        let quarantining = DirectTransport(
+            SyncHub::new(
+                open_hub_quarantining(&hub_replica, BTreeSet::from([PHONE_DEVICE.to_string()])),
+                watch::Sender::new(0),
+            )
+            .with_contact(contact_source(test_contact())),
+        );
+        hub_replica.seal_note("note-hub").await;
+        phone.seal_note("note-phone").await;
+
+        // The exchange still completes: the phone pulls, and the hub skips what it pushes.
+        let exchanged = phone.exchange(&quarantining, &phone_ids()).await;
+        assert!(exchanged.is_ok(), "{exchanged:?}");
+        hub_replica.apply().await;
+        phone.apply().await;
+        assert!(phone.has_note("note-hub").await);
+        assert!(!hub_replica.has_note("note-phone").await);
+        assert_eq!(
+            hub_replica.stored().await.get(&phone.writer.id()),
+            0,
+            "no operation of the quarantined device is stored"
+        );
+
+        // Lifting the quarantine lets the same operations arrive.
+        let (lifted, _changes) = hub(&hub_replica);
+        converge(&mut hub_replica, &mut phone, &lifted).await;
+        assert!(hub_replica.has_note("note-phone").await);
+        assert_eq!(phone.stored().await, hub_replica.stored().await);
         hub_replica.close().await;
         phone.close().await;
     });
@@ -420,6 +814,269 @@ fn wait_returns_once_the_hub_stores_new_operations() {
 }
 
 #[test]
+fn sync_states_carry_the_coordinator_contact_from_its_source() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-contact", HUB_DEVICE).await;
+        hub_replica.seal_note("note-hub").await;
+        let (transport, _changes) = hub(&hub_replica);
+        let hello = ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            manifest_version: Engine::vault().manifest().version,
+            stored: Vec::new(),
+            probe: None,
+            listening: vec!["192.168.1.40:43821".to_string()],
+        };
+        let wait = ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            known: Vec::new(),
+        };
+        let expected = test_contact();
+        for request in [hello.clone(), wait] {
+            match transport.request(request).await.expect("sync state") {
+                ControlMessage::SyncState { members, .. } => {
+                    assert_eq!(members, expected.members);
+                }
+                other => panic!("expected a sync state, got {other:?}"),
+            }
+        }
+
+        let hints = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = hints.clone();
+        let hinted = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0))
+            .with_contact(contact_source(test_contact()))
+            .with_peer_hints(Arc::new(
+                move |vault: &str, device: &str, listening: &[String]| {
+                    recorded.lock().expect("hints").push((
+                        vault.to_string(),
+                        device.to_string(),
+                        listening.to_vec(),
+                    ));
+                },
+            ));
+        assert!(matches!(
+            hinted.respond(hello.clone()).await,
+            ControlMessage::SyncState { .. }
+        ));
+        assert_eq!(
+            *hints.lock().expect("hints"),
+            [(
+                VAULT_ID.to_string(),
+                PHONE_DEVICE.to_string(),
+                vec!["192.168.1.40:43821".to_string()]
+            )],
+            "a hello hands the member's listener endpoints to the peer book"
+        );
+
+        let silent = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0));
+        assert_eq!(
+            error_code(silent.respond(hello.clone()).await),
+            "sync_unavailable",
+            "a hub without a contact source answers no state"
+        );
+        let public = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0)).with_contact(
+            contact_source(HubContact {
+                members: vec![MemberEndpoint {
+                    device_id: HUB_DEVICE.to_string(),
+                    endpoint: "203.0.113.5:43821".to_string(),
+                    observed_ms: 1,
+                }],
+            }),
+        );
+        assert_eq!(
+            error_code(public.respond(hello).await),
+            "sync_failed",
+            "a contact outside the wire bounds fails the request, not the frame"
+        );
+        hub_replica.close().await;
+    });
+}
+
+#[test]
+fn sync_states_report_the_published_stability_within_what_the_hub_stores() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-stable", HUB_DEVICE).await;
+        let phone = Replica::new("phone-stable", PHONE_DEVICE).await;
+        let sealed = hub_replica.seal_note("note-hub").await;
+        let stability = HubStability::default();
+        let transport = DirectTransport(
+            SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0))
+                .with_contact(contact_source(test_contact()))
+                .with_stability(stability.clone()),
+        );
+
+        let unpublished = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(unpublished.stable.is_empty());
+        assert!(!unpublished.bootstrap_required);
+
+        let hub_writer = hub_replica.writer.id();
+        let unknown = WriterId::from_bytes([9; ganbaru_sync_contracts::ids::ID_BYTES]);
+        stability.publish(
+            VAULT_ID,
+            [(hub_writer, sealed + 5), (unknown, 3)]
+                .into_iter()
+                .collect(),
+        );
+        let published = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        let expected: VersionVector = [(hub_writer, sealed)].into_iter().collect();
+        assert_eq!(
+            published.stable, expected,
+            "stability never exceeds what the hub stores"
+        );
+
+        stability.publish("other-vault", expected.clone());
+        assert!(stability.stable(VAULT_ID).is_empty());
+        stability.publish(VAULT_ID, expected);
+        stability.clear();
+        assert!(stability.stable(VAULT_ID).is_empty());
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_matching_probe_confirms_the_head_of_the_active_writer() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-confirm", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-confirm", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let sealed = phone.seal_note("note-phone").await;
+        let first = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(first.confirmed, None, "the hub held nothing at the probe");
+        let second = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(second.confirmed, Some((phone.writer.id(), sealed)));
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_device_behind_compacted_operations_bootstraps_and_keeps_pushing() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-compacted", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-compacted", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-compacted", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-1").await;
+        hub_replica.seal_note("note-2").await;
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.seal_note("note-3").await;
+        assert!(hub_replica.compact().await > 0);
+
+        // The tablet holds every compacted operation, so it pulls the rest as before.
+        let caught_up = done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(!caught_up.bootstrap_required);
+        assert_eq!(caught_up.problem, None);
+        assert_eq!(tablet.stored().await, hub_replica.stored().await);
+
+        // The phone lacks them: it still pushes its own work but pulls nothing.
+        phone.seal_note("note-phone").await;
+        let behind = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(behind.bootstrap_required);
+        assert!(behind.pushed > 0);
+        assert_eq!(behind.pulled, 0);
+        hub_replica.apply().await;
+        assert!(hub_replica.has_note("note-phone").await);
+        tablet.apply().await;
+
+        // A pull that ignores the signal is refused with the bootstrap code.
+        let pull = ControlMessage::SyncPull {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            known: crate::wire::vector_to_wire(&phone.stored().await),
+            max_bytes: u32::try_from(SYNC_PAGE_BYTES).expect("page size fits"),
+        };
+        match transport.request(pull).await.expect("pull answer") {
+            ControlMessage::Error {
+                code, retryable, ..
+            } => {
+                assert_eq!(code, BOOTSTRAP_REQUIRED);
+                assert!(!retryable);
+            }
+            other => panic!("expected a bootstrap refusal, got {other:?}"),
+        }
+
+        // The hub's wait answers carry the same signal for the phone only.
+        for (ids, known, expected) in [
+            (phone_ids(), phone.stored().await, true),
+            (tablet_ids(), tablet.stored().await, false),
+        ] {
+            let request = ControlMessage::SyncWait {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: ids.device_id.clone(),
+                known: crate::wire::vector_to_wire(&known),
+            };
+            match transport.request(request).await.expect("wait answer") {
+                ControlMessage::SyncState {
+                    bootstrap_required, ..
+                } => assert_eq!(bootstrap_required, expected, "{}", ids.device_id),
+                other => panic!("expected a sync state, got {other:?}"),
+            }
+        }
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_fork_inside_compacted_operations_is_refused_as_a_bootstrap() {
+    let writer = WriterId::from_bytes([4; ganbaru_sync_contracts::ids::ID_BYTES]);
+    let compacted: VersionVector = [(writer, 5)].into_iter().collect();
+    let refusal = |seq| {
+        crate::hub::refusal_to_wire(
+            ganbaru_sync::StoreRefusal::Fork { seq },
+            writer,
+            seq,
+            &compacted,
+        )
+        .code
+    };
+    assert_eq!(refusal(5), SyncRefusalCode::BootstrapRequired);
+    assert_eq!(refusal(6), SyncRefusalCode::Fork);
+}
+
+#[test]
 fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
     block_on(async {
         let mut hub_replica = Replica::new("hub-refuse", HUB_DEVICE).await;
@@ -441,19 +1098,11 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
             vault_id: VAULT_ID.to_string(),
             device_id: "device-other".to_string(),
         };
-        let refused = done(
-            phone
-                .exchange(&transport, &impostor)
-                .await
-                .expect("exchange"),
-        );
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("UnknownWriter")),
-            "{refused:?}"
-        );
+        let error = phone
+            .exchange(&transport, &impostor)
+            .await
+            .expect_err("a device the log never enrolled is refused");
+        assert!(error.contains("member_unknown"), "{error}");
         assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), 0);
 
         done(
@@ -462,96 +1111,231 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
                 .await
                 .expect("exchange"),
         );
-        // A revocation keeps every applied operation, so the hub applies the genesis first.
+        // A removal keeps every operation the anchor stored before it.
         hub_replica.apply().await;
         let cutoff = hub_replica.stored().await.get(&phone.writer.id());
         assert!(cutoff > 0);
-        {
-            let mut conn = acquire(&hub_replica.pool).await;
-            let seq = Engine::vault()
-                .seal_revoke(
-                    &mut conn,
-                    &hub_replica.ctx,
-                    phone.writer.id(),
-                    cutoff,
-                    RevokeReason::Revoked,
-                    &mut hub_replica.writer.local(),
-                    NOW_MS,
-                )
-                .await
-                .expect("revoke")
-                .last_seq
-                .expect("revocation sealed");
-            hub_replica.writer.committed(seq).expect("record commit");
-        }
+        hub_replica
+            .remove(PHONE_DEVICE)
+            .await
+            .expect("remove the phone");
+        // A removed device reaches no hub service, so nothing past the cutoff arrives from it.
         phone.seal_note("note-after-unlink").await;
-        let refused = done(
-            phone
-                .exchange(&transport, &phone_ids())
-                .await
-                .expect("exchange"),
-        );
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("Revoked")),
-            "{refused:?}"
-        );
+        let error = phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect_err("a removed device is refused");
+        assert!(error.contains("member_removed"), "{error}");
         assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), cutoff);
+        hub_replica.apply().await;
+        assert!(!hub_replica.has_note("note-after-unlink").await);
         hub_replica.close().await;
         phone.close().await;
     });
 }
 
 #[test]
-fn hub_refuses_a_revocation_from_a_linked_device() {
+fn only_the_anchor_sequences_authorization_entries() {
     block_on(async {
-        let mut hub_replica = Replica::new("hub-revoke", HUB_DEVICE).await;
-        let mut phone = Replica::new("phone-revoke", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica);
-        hub_replica.seal_note("note-hub").await;
-        converge(&mut hub_replica, &mut phone, &transport).await;
-        let target = hub_replica.writer.id();
-        let cutoff = phone.stored().await.get(&target);
-        assert!(cutoff > 0);
+        let mut hub_replica = Replica::new("hub-anchor-only", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-anchor-only", PHONE_DEVICE).await;
+        let before = phone.stored().await;
+        // A modified build on the phone signs a removal with an admin key it does not hold.
+        let error = phone
+            .remove(HUB_DEVICE)
+            .await
+            .expect_err("a member cannot sequence");
+        assert!(
+            error.contains(&ProposalRejection::NotAnchor.to_string()),
+            "{error}"
+        );
+        assert_eq!(phone.stored().await, before);
+        hub_replica
+            .remove(PHONE_DEVICE)
+            .await
+            .expect("the anchor removes");
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
 
-        // A modified build on the phone treats itself as the coordinator.
-        phone.ctx.coordinator_device_id = PHONE_DEVICE.to_string();
-        let seq = {
-            let mut conn = acquire(&phone.pool).await;
-            Engine::vault()
-                .seal_revoke(
+/// A hub that answers every proposal with a final rejection, as a compromised coordinator that
+/// does not anchor could.
+struct RejectingHub;
+
+impl SyncTransport for RejectingHub {
+    async fn request(&self, _message: ControlMessage) -> Result<ControlMessage, String> {
+        Ok(crate::wire::proposed_to_wire(Err(
+            ProposalRejection::DeviceRemoved,
+        )))
+    }
+}
+
+#[test]
+fn only_the_anchor_settles_a_final_rejection() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-final-rejection", HUB_DEVICE).await;
+        let phone = Replica::new("phone-final-rejection", PHONE_DEVICE).await;
+        let removal = authority::propose(
+            hub_replica.ctx.space,
+            hub_replica.charter().await,
+            &hub_keys().admin,
+            authority::remove_entry(TABLET_DEVICE),
+            NOW_MS,
+        )
+        .expect("sign removal");
+        let mut outbox = Outbox::load(&phone.directory.files().outbox_path()).expect("outbox");
+        outbox.add(removal.clone()).expect("queue removal");
+        // The device the proposal removes answers as a hub, but the selected log names another
+        // anchor, so only the anchor's answer settles the proposal.
+        for answering in [TABLET_DEVICE, HUB_DEVICE] {
+            client::prune_and_replay_outbox(
+                &phone.engine,
+                &phone.pool,
+                &phone.ctx,
+                &RejectingHub,
+                &phone_ids(),
+                &mut outbox,
+                answering,
+            )
+            .await
+            .expect("replay");
+            let rejection = outbox.get(&removal.hash()).expect("kept").rejection;
+            let expected = (answering == HUB_DEVICE).then_some(ProposalRejection::DeviceRemoved);
+            assert_eq!(rejection, expected, "answered by {answering}");
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-proposals", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-proposals", PHONE_DEVICE).await;
+        let laptop = Enrollment {
+            device_id: "device-laptop".to_string(),
+            device_key: device_key("device-laptop").public_key(),
+            tls_fingerprint: [27; 32],
+            label: "Laptop".to_string(),
+            device_kind: DeviceKind::Desktop,
+        };
+        let enroll = authority::propose(
+            hub_replica.ctx.space,
+            hub_replica.charter().await,
+            &hub_keys().admin,
+            authority::enroll_entry(laptop),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+
+        // A hub without the anchor service answers that it is not the anchor.
+        let (plain, _changes) = hub(&hub_replica);
+        assert_eq!(
+            client::propose(&plain, &phone_ids(), &enroll)
+                .await
+                .expect("answer"),
+            Err(ProposalRejection::NotAnchor)
+        );
+
+        // The anchor service sequences what the hub hands it with its own writer.
+        let anchor_writer = Arc::new(tokio::sync::Mutex::new(
+            create_writer(
+                &hub_replica.directory.files(),
+                &hub_replica.directory.keys(),
+                SuccessorPlan::default(),
+                &device_key(HUB_DEVICE),
+                HUB_DEVICE,
+                NOW_MS,
+            )
+            .expect("anchor writer"),
+        ));
+        let (pool, ctx) = (hub_replica.pool.clone(), hub_replica.ctx.clone());
+        let sequence: HubProposals = Arc::new(move |proposal| {
+            let (pool, ctx, writer) = (pool.clone(), ctx.clone(), Arc::clone(&anchor_writer));
+            Box::pin(async move {
+                let mut writer = writer.lock().await;
+                let mut conn = acquire(&pool).await;
+                let engine = Engine::vault();
+                let outcome = authority::sequence(
+                    &engine,
                     &mut conn,
-                    &phone.ctx,
-                    target,
-                    cutoff,
-                    RevokeReason::Revoked,
-                    &mut phone.writer.local(),
+                    &ctx,
+                    &mut writer.local(),
+                    &proposal,
                     NOW_MS,
                 )
-                .await
-                .expect("revoke")
-                .last_seq
-                .expect("revocation sealed")
-        };
-        phone.writer.committed(seq).expect("record commit");
-        let refused = done(
-            phone
-                .exchange(&transport, &phone_ids())
-                .await
-                .expect("exchange"),
+                .await?;
+                let seq = engine
+                    .stored_vector(&mut conn, &ctx)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .get(&writer.id());
+                writer.committed(seq)?;
+                Ok(outcome)
+            })
+        });
+        let changes = watch::Sender::new(0);
+        let transport = DirectTransport(
+            SyncHub::new(open_hub(&hub_replica), changes.clone())
+                .with_contact(contact_source(test_contact()))
+                .with_proposals(sequence),
         );
-        assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("Invalid")),
-            "{refused:?}"
+
+        let path = phone.directory.files().outbox_path();
+        let mut outbox = Outbox::load(&path).expect("empty outbox");
+        let duplicate = authority::propose(
+            hub_replica.ctx.space,
+            hub_replica.charter().await,
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: PHONE_DEVICE.to_string(),
+                device_key: device_key(PHONE_DEVICE).public_key(),
+                tls_fingerprint: [28; 32],
+                label: PHONE_DEVICE.to_string(),
+                device_kind: DeviceKind::Mobile,
+            }),
+            NOW_MS,
+        )
+        .expect("sign duplicate");
+        outbox.add(enroll.clone()).expect("queue enrollment");
+        outbox.add(duplicate.clone()).expect("queue duplicate");
+        let sequenced = client::replay_outbox(&transport, &phone_ids(), &mut outbox, true)
+            .await
+            .expect("replay");
+        assert_eq!(sequenced, 1);
+        assert_eq!(*changes.borrow(), 1, "a sequenced proposal wakes waits");
+        assert_eq!(
+            outbox.entries()[1].rejection,
+            Some(ProposalRejection::AlreadyEnrolled)
         );
-        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), seq - 1);
-        hub_replica.apply().await;
-        assert!(hub_replica.has_note("note-hub").await);
+        // Replaying again is idempotent: the anchor answers the revision it already holds.
+        assert_eq!(
+            client::replay_outbox(&transport, &phone_ids(), &mut outbox, true)
+                .await
+                .expect("replay again"),
+            1
+        );
+        assert_eq!(outbox.pending(), vec![enroll.clone()]);
+
+        // Once the exchange brings the entry and the pass applies it, pruning drops the proposal.
+        phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("exchange");
+        phone.apply().await;
+        let mut conn = acquire(&phone.pool).await;
+        outbox
+            .prune(&phone.engine, &mut conn, &phone.ctx)
+            .await
+            .expect("prune");
+        drop(conn);
+        assert!(outbox.pending().is_empty());
+        assert_eq!(
+            Outbox::load(&path).expect("reload").entries(),
+            outbox.entries()
+        );
         hub_replica.close().await;
         phone.close().await;
     });
@@ -570,7 +1354,7 @@ fn hub_refuses_a_device_past_its_writer_limit() {
                     &phone.directory.files(),
                     &phone.directory.keys(),
                     SuccessorPlan::default(),
-                    &person(),
+                    &device_key(PHONE_DEVICE),
                     PHONE_DEVICE,
                     NOW_MS,
                 )
@@ -590,7 +1374,7 @@ fn hub_refuses_a_device_past_its_writer_limit() {
             &phone.directory.files(),
             &phone.directory.keys(),
             SuccessorPlan::default(),
-            &person(),
+            &device_key(PHONE_DEVICE),
             PHONE_DEVICE,
             NOW_MS,
         )
@@ -717,14 +1501,554 @@ fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
                 .expect("exchange after re-seal"),
         );
         assert_eq!(exchanged.problem, None);
+
+        // The clone's offer gave the hub fork evidence, so it excludes both branches.
+        hub_replica.apply().await;
+        assert!(!hub_replica.has_note("note-original").await);
+        assert!(hub_replica.has_note("note-clone").await);
         assert_eq!(clone.stored().await, hub_replica.stored().await);
 
+        // The original learns the fork from the hub's state and re-seals its own branch.
+        let fork = match original
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("exchange")
+        {
+            Exchange::Fork(fork) => fork,
+            Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+        };
+        assert_eq!(fork.writer, forked_writer);
+        assert_eq!(fork.keep_through, shared);
+        original.writer = create_writer(
+            &original.directory.files(),
+            &original.directory.keys(),
+            SuccessorPlan::default(),
+            &device_key(PHONE_DEVICE),
+            PHONE_DEVICE,
+            NOW_MS,
+        )
+        .expect("create successor");
+        {
+            let mut conn = acquire(&original.pool).await;
+            let report = Engine::vault()
+                .reseal_fork(
+                    &mut conn,
+                    &original.ctx,
+                    fork.writer,
+                    fork.keep_through,
+                    &mut original.writer.local(),
+                    NOW_MS,
+                )
+                .await
+                .expect("re-seal fork");
+            let seq = report.seal.last_seq.expect("re-sealed operations");
+            original.writer.committed(seq).expect("record commit");
+        }
+        let original_writers = BTreeSet::from([forked_writer, original.writer.id()]);
+        let exchanged = done(
+            original
+                .exchange_with(
+                    &transport,
+                    &phone_ids(),
+                    original.writer.id(),
+                    &original_writers,
+                    MAX_EXCHANGE_BYTES,
+                )
+                .await
+                .expect("exchange after re-seal"),
+        );
+        assert_eq!(exchanged.problem, None);
         hub_replica.apply().await;
         assert!(hub_replica.has_note("note-original").await);
         assert!(hub_replica.has_note("note-clone").await);
         hub_replica.close().await;
         original.close().await;
         clone.close().await;
+    });
+}
+
+#[test]
+fn fork_evidence_travels_between_members_through_the_hub() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-evidence", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-evidence", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-evidence", TABLET_DEVICE).await;
+        let (transport, changes) = hub(&hub_replica);
+        let shared = phone.seal_note("note-shared").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+
+        // Two copies of the phone's writer seal different operations at the next sequence.
+        let phone_path = phone.directory.path().join("vault.sqlite");
+        drop(phone.pool);
+        phone.registry.close_all().await.expect("close phone");
+        let clone_directory = TestDirectory::new("phone-evidence-clone");
+        let clone_path = clone_directory.path().join("vault.sqlite");
+        copy_database(&phone_path, &clone_path);
+        phone.pool = phone
+            .registry
+            .connect_path(&phone_path)
+            .await
+            .expect("reopen phone");
+        let clone_registry = DatabasePoolRegistry::default();
+        let clone_pool = clone_registry
+            .connect_path(&clone_path)
+            .await
+            .expect("open clone");
+        let forked_seq = phone.seal_note("note-a").await;
+        let mut clone_conn = acquire(&clone_pool).await;
+        add_note(&mut clone_conn, "note-b").await;
+        Engine::vault()
+            .seal(
+                &mut clone_conn,
+                &phone.ctx,
+                &mut phone.writer.local(),
+                NOW_MS,
+            )
+            .await
+            .expect("seal clone");
+        let writer = phone.writer.id();
+        let first = Engine::vault()
+            .operation_at(
+                &mut *acquire(&phone.pool).await,
+                &phone.ctx,
+                writer,
+                forked_seq,
+            )
+            .await
+            .expect("read operation")
+            .expect("phone operation");
+        let second = Engine::vault()
+            .operation_at(&mut clone_conn, &phone.ctx, writer, forked_seq)
+            .await
+            .expect("read operation")
+            .expect("clone operation");
+        drop(clone_conn);
+        clone_pool.close().await;
+        clone_registry.close_all().await.expect("close clone");
+
+        // The tablet holds evidence the hub lacks and offers it.
+        let outcome = Engine::vault()
+            .store_fork_evidence(
+                &mut *acquire(&tablet.pool).await,
+                &tablet.ctx,
+                &first,
+                &second,
+                NOW_MS,
+            )
+            .await
+            .expect("store evidence");
+        assert_eq!(outcome, EvidenceOutcome::Stored);
+        let before = *changes.borrow();
+        let exchanged = done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(exchanged.problem, None);
+        assert!(
+            *changes.borrow() > before,
+            "stored evidence wakes waiting peers"
+        );
+        let hub_forked = Engine::vault()
+            .forked_writers(&mut *acquire(&hub_replica.pool).await, &hub_replica.ctx)
+            .await
+            .expect("hub forked writers");
+        assert_eq!(hub_forked, vec![(writer, forked_seq)]);
+        hub_replica.apply().await;
+
+        // Another installation pulls the writer's prefix and then the evidence, in one exchange.
+        let late = Replica::new("tablet-evidence-late", TABLET_DEVICE).await;
+        let exchanged = done(
+            late.exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(exchanged.problem, None);
+        let mut conn = acquire(&late.pool).await;
+        let evidence = Engine::vault()
+            .fork_evidence(&mut conn, &late.ctx, writer)
+            .await
+            .expect("read evidence")
+            .expect("forwarded evidence");
+        assert_eq!(evidence.keep_through(), shared);
+        drop(conn);
+        // A second exchange asks for nothing it already holds.
+        let exchanged = done(
+            late.exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(exchanged.problem, None);
+
+        // The phone that owns the writer learns its fork the same way.
+        let fork = match phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("exchange")
+        {
+            Exchange::Fork(fork) => fork,
+            Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+        };
+        assert_eq!((fork.writer, fork.keep_through), (writer, shared));
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+        late.close().await;
+    });
+}
+
+/// A hub, the phone that owns a forked writer, and a tablet, all holding one branch of that
+/// writer through a sequence past the fork, with both operations at the fork in hand.
+struct ForkedVault {
+    hub: Replica,
+    phone: Replica,
+    tablet: Replica,
+    transport: DirectTransport,
+    writer: WriterId,
+    fork_seq: u64,
+    pair: [Vec<u8>; 2],
+}
+
+impl ForkedVault {
+    async fn new(name: &str) -> Self {
+        let mut hub_replica = Replica::new(&format!("hub-{name}"), HUB_DEVICE).await;
+        let mut phone = Replica::new(&format!("phone-{name}"), PHONE_DEVICE).await;
+        let mut tablet = Replica::new(&format!("tablet-{name}"), TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        phone.seal_note("note-shared").await;
+
+        let phone_path = phone.directory.path().join("vault.sqlite");
+        drop(phone.pool);
+        phone.registry.close_all().await.expect("close phone");
+        let clone_directory = TestDirectory::new(&format!("phone-{name}-clone"));
+        let clone_path = clone_directory.path().join("vault.sqlite");
+        copy_database(&phone_path, &clone_path);
+        phone.pool = phone
+            .registry
+            .connect_path(&phone_path)
+            .await
+            .expect("reopen phone");
+        let clone_registry = DatabasePoolRegistry::default();
+        let clone_pool = clone_registry
+            .connect_path(&clone_path)
+            .await
+            .expect("open clone");
+        let fork_seq = phone.seal_note("note-a").await;
+        let mut clone_conn = acquire(&clone_pool).await;
+        add_note(&mut clone_conn, "note-b").await;
+        Engine::vault()
+            .seal(
+                &mut clone_conn,
+                &phone.ctx,
+                &mut phone.writer.local(),
+                NOW_MS,
+            )
+            .await
+            .expect("seal clone");
+        let writer = phone.writer.id();
+        let first = Engine::vault()
+            .operation_at(
+                &mut *acquire(&phone.pool).await,
+                &phone.ctx,
+                writer,
+                fork_seq,
+            )
+            .await
+            .expect("read operation")
+            .expect("phone operation");
+        let second = Engine::vault()
+            .operation_at(&mut clone_conn, &phone.ctx, writer, fork_seq)
+            .await
+            .expect("read operation")
+            .expect("clone operation");
+        drop(clone_conn);
+        clone_pool.close().await;
+        clone_registry.close_all().await.expect("close clone");
+
+        phone.seal_note("note-c").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.apply().await;
+        phone.apply().await;
+        tablet.apply().await;
+        Self {
+            hub: hub_replica,
+            phone,
+            tablet,
+            transport,
+            writer,
+            fork_seq,
+            pair: [first, second],
+        }
+    }
+
+    /// Offers the pair to `replica`, as evidence arriving from a peer.
+    async fn offer(&self, replica: &Replica) -> EvidenceOutcome {
+        Engine::vault()
+            .store_fork_evidence(
+                &mut *acquire(&replica.pool).await,
+                &replica.ctx,
+                &self.pair[0],
+                &self.pair[1],
+                NOW_MS,
+            )
+            .await
+            .expect("store evidence")
+    }
+
+    async fn forked(&self, replica: &Replica) -> Vec<(WriterId, u64)> {
+        Engine::vault()
+            .forked_writers(&mut *acquire(&replica.pool).await, &replica.ctx)
+            .await
+            .expect("forked writers")
+    }
+
+    async fn close(self) {
+        self.hub.close().await;
+        self.phone.close().await;
+        self.tablet.close().await;
+    }
+}
+
+#[test]
+fn evidence_the_compacted_hub_refuses_sends_its_holder_to_a_fresh_copy() {
+    block_on(async {
+        let mut vault = ForkedVault::new("compacted-hub").await;
+        assert!(vault.hub.compact().await > 0);
+        assert_eq!(
+            vault.offer(&vault.tablet).await,
+            EvidenceOutcome::Stored,
+            "the tablet still holds both bodies"
+        );
+
+        let offered = done(
+            vault
+                .tablet
+                .exchange(&vault.transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(offered.problem, None);
+        assert!(vault.forked(&vault.hub).await.is_empty());
+
+        vault.tablet.apply().await;
+        let cut = done(
+            vault
+                .tablet
+                .exchange(&vault.transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(cut.problem, None);
+        assert!(cut.bootstrap_required);
+        assert_eq!(cut.pulled, 0);
+        vault.hub.apply().await;
+        assert!(vault.hub.has_note("note-a").await);
+        vault.close().await;
+    });
+}
+
+#[test]
+fn a_member_that_compacted_past_the_hubs_cut_takes_a_fresh_copy() {
+    block_on(async {
+        let mut vault = ForkedVault::new("compacted-member").await;
+        assert!(vault.tablet.compact().await > 0);
+        assert_eq!(vault.offer(&vault.hub).await, EvidenceOutcome::Stored);
+        vault.hub.apply().await;
+
+        let exchanged = done(
+            vault
+                .tablet
+                .exchange(&vault.transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(exchanged.bootstrap_required);
+        assert_eq!(exchanged.problem, None);
+        assert!(vault.forked(&vault.tablet).await.is_empty());
+        vault.tablet.apply().await;
+        assert!(vault.tablet.has_note("note-a").await);
+        vault.close().await;
+    });
+}
+
+#[test]
+fn a_writers_device_that_compacted_past_the_hubs_cut_takes_a_fresh_copy() {
+    block_on(async {
+        let mut vault = ForkedVault::new("compacted-own").await;
+        assert!(vault.phone.compact().await > 0);
+        assert_eq!(vault.offer(&vault.hub).await, EvidenceOutcome::Stored);
+        vault.hub.apply().await;
+        assert_eq!(
+            vault.forked(&vault.hub).await,
+            vec![(vault.writer, vault.fork_seq)]
+        );
+
+        let exchanged = done(
+            vault
+                .phone
+                .exchange(&vault.transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(exchanged.bootstrap_required);
+        assert!(vault.forked(&vault.phone).await.is_empty());
+        vault.close().await;
+    });
+}
+
+/// The hub of a member listener on `replica`: it serves exchanges but sequences no proposal and
+/// forwards none, and it reports the anchor's remembered contact.
+fn member_hub(replica: &Replica) -> DirectTransport {
+    DirectTransport(
+        SyncHub::new(open_hub(replica), watch::Sender::new(0))
+            .with_contact(contact_source(test_contact()))
+            .with_relayed_geneses(),
+    )
+}
+
+#[test]
+fn a_member_hub_relays_the_genesis_of_another_member() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-relay", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-relay", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-relay", TABLET_DEVICE).await;
+        let (anchor, _changes) = hub(&hub_replica);
+        phone.seal_note("note-phone-relayed").await;
+        done(
+            phone
+                .exchange(&anchor, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.seal_note("note-hub-relayed").await;
+        let hub_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: HUB_DEVICE.to_string(),
+        };
+
+        // The coordinator's hub takes a genesis only from the device it certifies.
+        let strict = DirectTransport(
+            SyncHub::new(open_hub(&tablet), watch::Sender::new(0))
+                .with_contact(contact_source(test_contact())),
+        );
+        let refused = done(
+            hub_replica
+                .exchange(&strict, &hub_ids)
+                .await
+                .expect("exchange with a strict hub"),
+        );
+        assert_eq!(refused.refusal, Some(SyncRefusalCode::UnknownWriter));
+        assert!(!tablet.stored().await.dominates(&phone.stored().await));
+
+        // A member hub relays the phone's genesis the hub pushes, so the tablet holds every
+        // writer the hub holds after one exchange.
+        let relayed = done(
+            hub_replica
+                .exchange(&member_hub(&tablet), &hub_ids)
+                .await
+                .expect("exchange with the tablet"),
+        );
+        assert_eq!(relayed.problem, None);
+        assert_eq!(tablet.stored().await, hub_replica.stored().await);
+        tablet.apply().await;
+        assert!(tablet.has_note("note-phone-relayed").await);
+        assert!(tablet.has_note("note-hub-relayed").await);
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn two_members_exchange_while_the_anchor_is_offline() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-peers", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-peers", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-peers", TABLET_DEVICE).await;
+        let (anchor, _changes) = hub(&hub_replica);
+        for (replica, ids) in [(&phone, phone_ids()), (&tablet, tablet_ids())] {
+            done(replica.exchange(&anchor, &ids).await.expect("exchange"));
+        }
+        let anchor_vector = hub_replica.stored().await;
+        hub_replica.close().await;
+
+        // The anchor is gone; the phone and the tablet reach each other's member listeners.
+        phone.seal_note("note-phone-offline").await;
+        tablet.seal_note("note-tablet-offline").await;
+        let exchanged = done(
+            phone
+                .exchange(&member_hub(&tablet), &phone_ids())
+                .await
+                .expect("exchange with the tablet"),
+        );
+        assert_eq!(exchanged.problem, None);
+        assert!(exchanged.pushed > 0 && exchanged.pulled > 0);
+        assert_eq!(phone.stored().await, tablet.stored().await);
+        assert!(phone.stored().await.dominates(&anchor_vector));
+        phone.apply().await;
+        tablet.apply().await;
+        for replica in [&phone, &tablet] {
+            assert!(replica.has_note("note-phone-offline").await);
+            assert!(replica.has_note("note-tablet-offline").await);
+        }
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_new_installation_takes_the_anchor_chain_from_a_member_before_other_writers() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-chain-first", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-chain-first", PHONE_DEVICE).await;
+        let (anchor, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-anchor").await;
+        phone.seal_note("note-phone").await;
+        done(
+            phone
+                .exchange(&anchor, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.close().await;
+
+        // A tablet installation that never met the anchor pulls everything from the phone in
+        // one exchange: arrival order puts the anchor's chain before the geneses it enrolled,
+        // so no writer is refused as unknown or unenrolled.
+        let tablet = Replica::new("tablet-chain-first", TABLET_DEVICE).await;
+        let exchanged = done(
+            tablet
+                .exchange(&member_hub(&phone), &tablet_ids())
+                .await
+                .expect("exchange with the phone"),
+        );
+        assert_eq!(exchanged.problem, None);
+        assert_eq!(tablet.stored().await, phone.stored().await);
+        phone.close().await;
+        tablet.close().await;
     });
 }
 
@@ -843,6 +2167,138 @@ fn a_resolved_title_conflict_closes_on_both_replicas() {
     });
 }
 
+/// A user theme write whose live content uses `blend_canvas` and whose seed never varies.
+fn theme_write(id: &str, blend_canvas: &str) -> ganbaru_themes::UserThemeWrite {
+    let palette: Vec<_> = (0..32)
+        .map(|slot| serde_json::json!({ "slot": slot, "value": "#aaaaaa" }))
+        .collect();
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "displayName": "Forest",
+        "iconLabel": "dark",
+        "seedIconLabel": "dark",
+        "blendCanvas": blend_canvas,
+        "seedBlendCanvas": "#101010",
+        "derivationEngineVersion": 2,
+        "calendarDefaultMode": "app-canvas",
+        "calendarDefaultCustom": "#202020",
+        "seedCalendarDefaultMode": "app-canvas",
+        "seedCalendarDefaultCustom": "#202020",
+        "tokens": [{ "kind": "source", "key": "canvas", "value": blend_canvas, "isolated": false }],
+        "palette": palette,
+        "seedTokens": [{ "kind": "source", "key": "canvas", "value": "#101010", "isolated": false }],
+        "seedPalette": palette,
+    }))
+    .expect("theme write")
+}
+
+async fn theme_json(replica: &Replica, id: &str) -> serde_json::Value {
+    let theme = ganbaru_themes::load_one(&replica.pool, id)
+        .await
+        .expect("load theme");
+    serde_json::to_value(theme).expect("serialize theme")
+}
+
+#[test]
+fn concurrent_theme_saves_surface_one_conflict_that_closes_on_both_replicas() {
+    block_on(async {
+        let mut hub_replica = Replica::new("theme-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("theme-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        ganbaru_themes::insert(&hub_replica.pool, &theme_write("theme-1", "#111111"))
+            .await
+            .expect("insert theme");
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        ganbaru_themes::replace_content(&hub_replica.pool, &theme_write("theme-1", "#222222"))
+            .await
+            .expect("hub save");
+        ganbaru_themes::record_dismissal(&hub_replica.pool, "theme-1", 5)
+            .await
+            .expect("hub dismissal");
+        hub_replica.seal().await;
+        ganbaru_themes::replace_content(&phone.pool, &theme_write("theme-1", "#333333"))
+            .await
+            .expect("phone save");
+        ganbaru_themes::record_dismissal(&phone.pool, "theme-1", 3)
+            .await
+            .expect("phone dismissal");
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        let hub_theme = theme_json(&hub_replica, "theme-1").await;
+        let phone_theme = theme_json(&phone, "theme-1").await;
+        assert_eq!(hub_theme["theme"]["has_conflict"], true);
+        assert_eq!(phone_theme["theme"]["has_conflict"], true);
+        assert_eq!(hub_theme["theme"], phone_theme["theme"]);
+        assert_eq!(hub_theme["tokens"], phone_theme["tokens"]);
+        assert_eq!(phone_theme["theme"]["seed_blend_canvas"], "#101010");
+        assert_eq!(phone_theme["seedTokens"][0]["value"], "#101010");
+        for replica in [&hub_replica, &phone] {
+            let dismissals = ganbaru_themes::load_dismissals(&replica.pool)
+                .await
+                .expect("load dismissals");
+            let dismissals = serde_json::to_value(dismissals).expect("serialize dismissals");
+            assert_eq!(dismissals[0]["engine_version"], 5);
+        }
+
+        let conflict = ganbaru_themes::conflict_from_pool(
+            &phone.pool,
+            VAULT_ID,
+            &ganbaru_sync::DeviceNames::new(PHONE_DEVICE, HashMap::new()),
+            "theme-1",
+        )
+        .await
+        .expect("read conflict");
+        let conflict = serde_json::to_value(conflict).expect("serialize conflict");
+        let versions = conflict["versions"].as_array().expect("versions");
+        assert_eq!(versions.len(), 2);
+        let own = versions
+            .iter()
+            .find(|version| version["device"]["ownDevice"] == true)
+            .expect("own version");
+        assert_eq!(own["blendCanvas"], "#333333");
+        assert_eq!(own["palette"].as_array().map(Vec::len), Some(32));
+        let displayed = versions
+            .iter()
+            .find(|version| version["displayed"] == true)
+            .expect("displayed version");
+        assert_eq!(
+            displayed["blendCanvas"],
+            phone_theme["theme"]["blend_canvas"]
+        );
+        let other = versions
+            .iter()
+            .find(|version| version["displayed"] == false)
+            .expect("hidden version");
+
+        let resolution = serde_json::from_value(serde_json::json!({
+            "id": "theme-1",
+            "choice": { "kind": "version", "version": other["version"] },
+        }))
+        .expect("resolution");
+        let resolved =
+            ganbaru_themes::resolve_from_pool(&phone.pool, VAULT_ID, resolution, NOW_MS + 1)
+                .await
+                .expect("resolve conflict");
+        let resolved = serde_json::to_value(resolved).expect("serialize resolution");
+        assert_eq!(resolved["theme"]["blend_canvas"], other["blendCanvas"]);
+        assert_eq!(resolved["theme"]["has_conflict"], false);
+
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            let theme = theme_json(replica, "theme-1").await;
+            assert_eq!(theme["theme"]["blend_canvas"], other["blendCanvas"]);
+            assert_eq!(theme["tokens"][0]["value"], other["blendCanvas"]);
+            assert_eq!(theme["theme"]["has_conflict"], false);
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
 #[test]
 fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
     block_on(async {
@@ -874,6 +2330,7 @@ fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
             &phone.pool,
             &phone.ctx,
             &mut phone.writer,
+            &restorers(),
             &RecoveryChoice {
                 table: NOTES_TABLE,
                 row_key: "note-2".to_string(),
@@ -890,6 +2347,257 @@ fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
         for replica in [&hub_replica, &phone] {
             assert!(replica.has_note(&restored).await);
             assert!(!replica.has_note("note-2").await);
+            assert!(recovery_titles(replica).await.is_empty());
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_restore_whose_close_fails_leaves_no_restored_row_and_the_offer_open() {
+    block_on(async {
+        let mut hub_replica = Replica::new("atomic-restore-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("atomic-restore-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-4").await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        hub_replica
+            .edit("DELETE FROM quick_notes WHERE id = ?", "note-4")
+            .await;
+        phone
+            .edit(
+                "UPDATE quick_notes SET title = 'Kept edit' WHERE id = ?",
+                "note-4",
+            )
+            .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        let offer = vec![("note-4".to_string(), "Kept edit".to_string())];
+        assert_eq!(recovery_titles(&phone).await, offer);
+
+        let choice = RecoveryChoice {
+            table: NOTES_TABLE,
+            row_key: "note-4".to_string(),
+            action: RecoveryAction::Restore,
+        };
+        let foreign = SpaceContext {
+            space: SpaceId::personal("another-vault"),
+            ..phone.ctx.clone()
+        };
+        let error = crate::recovery::close(
+            &Engine::vault(),
+            &phone.pool,
+            &foreign,
+            &mut phone.writer,
+            &restorers(),
+            &choice,
+            NOW_MS + 1,
+        )
+        .await
+        .expect_err("closing in another space fails");
+        assert!(error.contains("close recovery offer"), "{error}");
+        let notes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM quick_notes")
+            .fetch_one(&phone.pool)
+            .await
+            .expect("count notes");
+        assert_eq!(notes, 0);
+        assert_eq!(recovery_titles(&phone).await, offer);
+
+        let restored = crate::recovery::close(
+            &Engine::vault(),
+            &phone.pool,
+            &phone.ctx,
+            &mut phone.writer,
+            &restorers(),
+            &choice,
+            NOW_MS + 2,
+        )
+        .await
+        .expect("restore")
+        .expect("restored note id");
+        let notes: Vec<String> = sqlx::query_scalar("SELECT id FROM quick_notes")
+            .fetch_all(&phone.pool)
+            .await
+            .expect("list notes");
+        assert_eq!(notes, [restored]);
+        assert!(recovery_titles(&phone).await.is_empty());
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// Runs a local multi-statement edit and seals it.
+async fn edit_sql(replica: &mut Replica, sql: String) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(&replica.pool)
+        .await
+        .expect("edit");
+    replica.seal().await;
+}
+
+/// The derived row key of a Music table for `parts`, in its key input order.
+fn music_key(table: &ganbaru_sync::manifest::TableSpec, parts: &[&str]) -> String {
+    let prefix = table
+        .derived_key
+        .as_ref()
+        .and_then(|derived| derived.prefix)
+        .expect("derived key prefix");
+    ganbaru_sync_contracts::derived_key(prefix, parts)
+        .expect("derived key")
+        .into_string()
+}
+
+/// One text column of `sql`, in row order.
+async fn music_texts(replica: &Replica, sql: String) -> Vec<String> {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&replica.pool)
+        .await
+        .expect("read music rows")
+}
+
+/// Restores a recovered Music playlist through its domain persistence, as the app does.
+fn restore_music_playlist(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_music_library::recovery::restore_recovered_playlist(
+            conn,
+            &row.values,
+            &row.descendants,
+            i64::try_from(NOW_MS + 1).expect("restore time"),
+        )
+        .await
+        .map_err(|error| error.to_string())
+    })
+}
+
+#[test]
+fn a_restored_music_playlist_keeps_concurrent_membership_skip_range_and_intended_use_edits() {
+    block_on(async {
+        use ganbaru_sync::manifest::vault::music::{INTENDED_USES, MEMBERSHIPS, PLAYLISTS};
+        let mut hub_replica = Replica::new("music-recovery-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("music-recovery-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let playlist = "music-playlist-recovered";
+        let item = "music-item-recovered";
+        let membership = music_key(&MEMBERSHIPS, &[playlist, item]);
+        let order_key = ganbaru_sync_contracts::OrderKey::rank(0)
+            .expect("order key")
+            .into_string();
+        edit_sql(
+            &mut hub_replica,
+            format!(
+                "INSERT INTO music_library_items
+                    (id, identity_key, source_kind, media_kind, original_title, discovered_at_ms,
+                     updated_at_ms)
+                 VALUES ('{item}', 'local:{item}', 'local-file', 'audio', 'Song', {NOW_MS}, {NOW_MS});
+                 INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms, order_key)
+                 VALUES ('{playlist}', 'Focus mix', {NOW_MS}, {NOW_MS}, '{order_key}');
+                 INSERT INTO music_playlist_memberships
+                    (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+                 VALUES ('{membership}', '{playlist}', '{item}', '{order_key}', {NOW_MS}, {NOW_MS});
+                 INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES ('{membership}', 0, 1000, 2000);
+                 INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+                 VALUES ('{playlist}', 'focus', '{focus}');",
+                focus = music_key(&INTENDED_USES, &[playlist, "focus"]),
+            ),
+        )
+        .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        edit_sql(
+            &mut hub_replica,
+            format!("DELETE FROM music_playlists WHERE id = '{playlist}'"),
+        )
+        .await;
+        edit_sql(
+            &mut phone,
+            format!(
+                "UPDATE music_playlist_memberships SET weight = 'more-often'
+                 WHERE id = '{membership}';
+                 INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES ('{membership}', 1, 5000, 6000);
+                 INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+                 VALUES ('{playlist}', 'reading', '{reading}');",
+                reading = music_key(&INTENDED_USES, &[playlist, "reading"]),
+            ),
+        )
+        .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                recovery_titles(replica).await,
+                [(playlist.to_string(), "Focus mix".to_string())]
+            );
+        }
+
+        let restored = crate::recovery::close(
+            &Engine::vault(),
+            &hub_replica.pool,
+            &hub_replica.ctx,
+            &mut hub_replica.writer,
+            &RecoveryRestorers::new().with(&PLAYLISTS, restore_music_playlist),
+            &RecoveryChoice {
+                table: PLAYLISTS.id,
+                row_key: playlist.to_string(),
+                action: RecoveryAction::Restore,
+            },
+            NOW_MS + 1,
+        )
+        .await
+        .expect("restore")
+        .expect("restored playlist id");
+        assert_ne!(restored, playlist);
+
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT name || '|' || icon FROM music_playlists WHERE id = '{restored}'"
+                    )
+                )
+                .await,
+                ["Focus mix|lucide:list-music"]
+            );
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT item_id || '|' || weight FROM music_playlist_memberships
+                         WHERE playlist_id = '{restored}'"
+                    )
+                )
+                .await,
+                [format!("{item}|more-often")]
+            );
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT skip.start_ms || '-' || skip.end_ms
+                         FROM music_membership_skip_ranges AS skip
+                         JOIN music_playlist_memberships AS membership
+                           ON membership.id = skip.membership_id
+                         WHERE membership.playlist_id = '{restored}'
+                         ORDER BY skip.ordinal"
+                    )
+                )
+                .await,
+                ["1000-2000", "5000-6000"]
+            );
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT intended_use FROM music_playlist_intended_uses
+                         WHERE playlist_id = '{restored}' ORDER BY intended_use"
+                    )
+                )
+                .await,
+                ["focus", "reading"]
+            );
             assert!(recovery_titles(replica).await.is_empty());
         }
         hub_replica.close().await;
@@ -923,6 +2631,7 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
             &hub_replica.pool,
             &hub_replica.ctx,
             &mut hub_replica.writer,
+            &restorers(),
             &RecoveryChoice {
                 table: NOTES_TABLE,
                 row_key: "note-3".to_string(),
@@ -943,8 +2652,6 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
         phone.close().await;
     });
 }
-
-const TABLET_DEVICE: &str = "device-tablet";
 
 fn tablet_ids() -> PeerIds {
     PeerIds {
@@ -967,10 +2674,21 @@ fn png(len: usize, seed: u8) -> Vec<u8> {
     bytes
 }
 
-fn reference(bytes: &[u8]) -> ReferencedImage {
+/// Restores a recovered Quick note through its domain persistence, as the app does.
+fn restore_note(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move { ganbaru_quick_notes::restore_recovered(conn, &row.values).await })
+}
+
+/// The Quick notes restorer, registered as the app registers it.
+fn restorers() -> RecoveryRestorers {
+    RecoveryRestorers::new().with(&NOTES, restore_note)
+}
+
+fn reference(bytes: &[u8]) -> AssetRef {
     let image = serde_json::to_value(images::describe_image(bytes).expect("describe image"))
         .expect("serialize image");
-    ReferencedImage::new(
+    AssetRef::new(
+        &IMAGES_CLASS,
         image["sha256"].as_str().expect("digest").to_string(),
         image["contentType"]
             .as_str()
@@ -981,7 +2699,7 @@ fn reference(bytes: &[u8]) -> ReferencedImage {
     .expect("reference image")
 }
 
-fn put(image: &ReferencedImage, offset: u32, bytes: &[u8]) -> ControlMessage {
+fn put(image: &AssetRef, offset: u32, bytes: &[u8]) -> ControlMessage {
     ControlMessage::SyncAssetPut {
         protocol_version: PROTOCOL_VERSION,
         vault_id: VAULT_ID.to_string(),
@@ -1007,7 +2725,7 @@ fn received(response: ControlMessage) -> u32 {
 }
 
 #[test]
-fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
+fn assets_travel_through_the_hub_ahead_of_the_rows_that_reference_them() {
     block_on(async {
         let hub_replica = Replica::new("images-hub", HUB_DEVICE).await;
         let mut phone = Replica::new("images-phone", PHONE_DEVICE).await;
@@ -1033,7 +2751,7 @@ fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
             (uploaded.uploaded, uploaded.more, uploaded.problem),
             (2, false, None)
         );
-        assert_eq!(hub_replica.image_bytes(&large_image), Some(large.clone()));
+        assert_eq!(hub_replica.asset_bytes(&large_image), Some(large.clone()));
         done(
             phone
                 .exchange(&transport, &phone_ids())
@@ -1057,14 +2775,14 @@ fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
                 .expect("exchange"),
         );
         tablet.apply().await;
-        assert_eq!(tablet.image_bytes(&large_image), None);
+        assert_eq!(tablet.asset_bytes(&large_image), None);
         let mut tablet_memory = AssetMemory::default();
         let downloaded = tablet
             .download(&transport, &tablet_ids(), &mut tablet_memory)
             .await;
         assert_eq!((downloaded.downloaded, downloaded.problem), (2, None));
-        assert_eq!(tablet.image_bytes(&large_image), Some(large));
-        assert_eq!(tablet.image_bytes(&small_image), Some(small));
+        assert_eq!(tablet.asset_bytes(&large_image), Some(large));
+        assert_eq!(tablet.asset_bytes(&small_image), Some(small));
         let again = tablet
             .download(&transport, &tablet_ids(), &mut tablet_memory)
             .await;
@@ -1077,7 +2795,7 @@ fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
 }
 
 #[test]
-fn image_transfers_stop_at_their_byte_bound_and_resume() {
+fn assets_stop_transferring_at_the_pass_byte_bound_and_resume() {
     block_on(async {
         let hub_replica = Replica::new("bound-hub", HUB_DEVICE).await;
         let phone = Replica::new("bound-phone", PHONE_DEVICE).await;
@@ -1097,7 +2815,7 @@ fn image_transfers_stop_at_their_byte_bound_and_resume() {
 }
 
 #[test]
-fn the_hub_verifies_uploads_and_reports_missing_images() {
+fn the_hub_verifies_asset_uploads_and_reports_missing_assets() {
     block_on(async {
         let hub_replica = Replica::new("verify-hub", HUB_DEVICE).await;
         let (transport, _changes) = hub(&hub_replica);
@@ -1124,7 +2842,8 @@ fn the_hub_verifies_uploads_and_reports_missing_images() {
             .await
             .expect("put");
         assert_eq!(error_code(refused), INVALID_ASSET);
-        assert_eq!(hub_replica.image_bytes(&image), None);
+        assert_eq!(hub_replica.asset_bytes(&image), None);
+        assert_eq!(hub_replica.class_entries(), Vec::<String>::new());
 
         // A chunk that does not continue the pending upload learns where to restart.
         let (head, tail) = bytes.split_at(SYNC_ASSET_CHUNK_BYTES);
@@ -1139,7 +2858,7 @@ fn the_hub_verifies_uploads_and_reports_missing_images() {
             .await
             .expect("put");
         assert_eq!(received(stored), image.byte_size());
-        assert_eq!(hub_replica.image_bytes(&image), Some(bytes.clone()));
+        assert_eq!(hub_replica.asset_bytes(&image), Some(bytes.clone()));
         let held = transport.request(put(&image, 0, head)).await.expect("put");
         assert_eq!(received(held), image.byte_size());
         match transport.request(get).await.expect("get") {
@@ -1153,7 +2872,45 @@ fn the_hub_verifies_uploads_and_reports_missing_images() {
 }
 
 #[test]
-fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
+fn the_hub_refuses_assets_outside_their_registered_class_before_staging() {
+    block_on(async {
+        let hub_replica = Replica::new("class-hub", HUB_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let bytes = png(64, 5);
+        let image = reference(&bytes);
+        let put_wire = |asset: SyncAsset| ControlMessage::SyncAssetPut {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            asset,
+            offset: 0,
+            data: bytes_to_wire(&bytes),
+        };
+
+        let unregistered = SyncAsset {
+            class: "unregistered/files".to_string(),
+            ..asset_to_wire(&image)
+        };
+        let refused = transport
+            .request(put_wire(unregistered))
+            .await
+            .expect("put");
+        assert_eq!(error_code(refused), "invalid_sync_request");
+
+        let oversized = SyncAsset {
+            byte_size: IMAGES_CLASS.max_bytes + 1,
+            ..asset_to_wire(&image)
+        };
+        let refused = transport.request(put_wire(oversized)).await.expect("put");
+        assert_eq!(error_code(refused), "invalid_sync_request");
+        assert_eq!(hub_replica.class_entries(), Vec::<String>::new());
+        assert_eq!(hub_replica.asset_bytes(&image), None);
+        hub_replica.close().await;
+    });
+}
+
+#[test]
+fn a_replica_refuses_damaged_assets_from_the_hub() {
     block_on(async {
         let mut hub_replica = Replica::new("damaged-hub", HUB_DEVICE).await;
         let mut tablet = Replica::new("damaged-tablet", TABLET_DEVICE).await;
@@ -1161,8 +2918,7 @@ fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
         add_note(&mut *acquire(&hub_replica.pool).await, "note-images").await;
         let image = hub_replica.add_image("note-images", 0, &png(80, 4)).await;
         hub_replica.seal().await;
-        let path =
-            images::image_path(hub_replica.directory.path(), image.file()).expect("image path");
+        let path = image.path(hub_replica.directory.path());
         let mut damaged = std::fs::read(&path).expect("read image");
         *damaged.last_mut().expect("bytes") ^= 0xff;
         std::fs::write(&path, damaged).expect("damage image");
@@ -1186,7 +2942,8 @@ fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
                 .is_some_and(|problem| problem.contains("do not match")),
             "{refused:?}"
         );
-        assert_eq!(tablet.image_bytes(&image), None);
+        assert_eq!(tablet.asset_bytes(&image), None);
+        assert_eq!(tablet.class_entries(), Vec::<String>::new());
         let skipped = tablet
             .download(&transport, &tablet_ids(), &mut memory)
             .await;
@@ -1195,3 +2952,766 @@ fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
         tablet.close().await;
     });
 }
+
+/// Public key of the person the contacts tests add.
+const PEER_KEY: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
+const CONTACTS_AT: &str = "2026-10-07T12:00:00.000Z";
+const REQUEST_EXPIRES_AT: &str = "2026-10-14T12:00:00.000Z";
+
+/// Runs a contact update that binds the peer key as `?1` and the change time as `?2`.
+async fn update_contact(replica: &Replica, sql: &'static str) {
+    sqlx::query(sql)
+        .bind(PEER_KEY)
+        .bind(CONTACTS_AT)
+        .execute(&replica.pool)
+        .await
+        .expect("contacts write");
+}
+
+async fn insert_contact(replica: &Replica, state: &str) {
+    let blocked_at = (state == "blocked").then_some(CONTACTS_AT);
+    sqlx::query(
+        "INSERT INTO contacts (id, public_key, display_name, state, blocked_at, created_at, updated_at)
+         VALUES ('contact-' || ?1, ?1, 'Ana', ?2, ?3, ?4, ?4)",
+    )
+    .bind(PEER_KEY)
+    .bind(state)
+    .bind(blocked_at)
+    .bind(CONTACTS_AT)
+    .execute(&replica.pool)
+    .await
+    .expect("insert contact");
+}
+
+async fn insert_request(replica: &Replica, id: &str, direction: &str) {
+    sqlx::query(
+        "INSERT INTO contact_requests
+         (id, direction, public_key, display_name, card, card_digest, expires_at, created_at,
+          updated_at)
+         VALUES (?, ?, ?, 'Ana', 'Y2FyZA', ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(direction)
+    .bind(PEER_KEY)
+    .bind("0".repeat(64))
+    .bind(REQUEST_EXPIRES_AT)
+    .bind(CONTACTS_AT)
+    .bind(CONTACTS_AT)
+    .execute(&replica.pool)
+    .await
+    .expect("insert request");
+}
+
+async fn contact_standing(replica: &Replica) -> Option<(String, String)> {
+    sqlx::query_as("SELECT state, invite_trust FROM contacts WHERE public_key = ?")
+        .bind(PEER_KEY)
+        .fetch_optional(&replica.pool)
+        .await
+        .expect("read contact")
+}
+
+async fn request_states(replica: &Replica) -> Vec<(String, String)> {
+    sqlx::query_as("SELECT id, state FROM contact_requests ORDER BY id")
+        .fetch_all(&replica.pool)
+        .await
+        .expect("read requests")
+}
+
+#[test]
+fn a_block_outranks_a_concurrent_accept_and_trust_edit() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-block-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-block-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+
+        insert_contact(&hub_replica, "blocked").await;
+        hub_replica.seal().await;
+        insert_contact(&phone, "active").await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("blocked".to_string(), "not_allowed".to_string())),
+                "a block made while the other device accepted wins"
+            );
+        }
+
+        update_contact(
+            &hub_replica,
+            "UPDATE contacts SET state = 'active', blocked_at = NULL, accepted_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        update_contact(
+            &hub_replica,
+            "UPDATE contacts SET state = 'blocked', blocked_at = ?2 WHERE public_key = ?1",
+        )
+        .await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET invite_trust = 'until_revoked', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("blocked".to_string(), "not_allowed".to_string())),
+                "a trust edit never lifts a concurrent block"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// Gives the peer the removed standing, as removing or unblocking a contact does.
+const REMOVE_CONTACT: &str = "UPDATE contacts
+     SET state = 'removed', invite_trust = 'not_allowed', invite_trust_expires_at = NULL,
+         message_trust = 'not_allowed', message_trust_expires_at = NULL, accepted_at = NULL,
+         blocked_at = NULL, updated_at = ?2
+     WHERE public_key = ?1";
+
+#[test]
+fn removing_and_adding_one_person_on_two_devices_settles_on_one_row() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-readd-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-readd-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        insert_contact(&hub_replica, "active").await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        update_contact(&hub_replica, REMOVE_CONTACT).await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        assert_eq!(
+            contact_standing(&phone).await,
+            Some(("removed".to_string(), "not_allowed".to_string()))
+        );
+
+        update_contact(
+            &phone,
+            "UPDATE contacts SET state = 'active', accepted_at = ?2, updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM contacts")
+                .fetch_one(&replica.pool)
+                .await
+                .expect("count contacts");
+            assert_eq!(count, 1, "the person comes back as the same row");
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("active".to_string(), "not_allowed".to_string())),
+                "an add made after the removal arrived revives the contact"
+            );
+        }
+
+        update_contact(&hub_replica, REMOVE_CONTACT).await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET invite_trust = 'until_revoked', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("removed".to_string(), "not_allowed".to_string())),
+                "a concurrent trust edit never revives a removed contact"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_block_survives_a_concurrent_removal() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-block-remove-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-block-remove-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        insert_contact(&hub_replica, "active").await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        update_contact(&hub_replica, REMOVE_CONTACT).await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET state = 'blocked', blocked_at = ?2, updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("blocked".to_string(), "not_allowed".to_string())),
+                "a removal on one device never drops a block made on another"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_concurrent_trust_narrowing_beats_a_widening() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-narrow-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-narrow-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        insert_contact(&hub_replica, "active").await;
+        update_contact(
+            &hub_replica,
+            "UPDATE contacts SET invite_trust = 'seven_days', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        update_contact(
+            &hub_replica,
+            "UPDATE contacts SET invite_trust = 'until_revoked', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET invite_trust = 'not_allowed', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("active".to_string(), "not_allowed".to_string())),
+                "a revocation made while another device widened trust stands"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn the_higher_card_revision_wins_a_concurrent_regeneration() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-card-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-card-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        sqlx::query(
+            "INSERT INTO contact_card (key, card_nonce, card_revision, updated_at)
+             VALUES ('card', 'AAAAAAAAAAAAAAAAAAAAAA', 1, ?)",
+        )
+        .bind(CONTACTS_AT)
+        .execute(&hub_replica.pool)
+        .await
+        .expect("insert card");
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        let rotate = |nonce: &'static str| {
+            sqlx::query(
+                "UPDATE contact_card SET card_nonce = ?, card_revision = card_revision + 1
+                 WHERE key = 'card'",
+            )
+            .bind(nonce)
+        };
+        rotate("BBBBBBBBBBBBBBBBBBBBBB")
+            .execute(&hub_replica.pool)
+            .await
+            .expect("hub rotate");
+        rotate("CCCCCCCCCCCCCCCCCCCCCC")
+            .execute(&hub_replica.pool)
+            .await
+            .expect("hub rotate again");
+        hub_replica.seal().await;
+        rotate("DDDDDDDDDDDDDDDDDDDDDD")
+            .execute(&phone.pool)
+            .await
+            .expect("phone rotate");
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            let card: (String, i64) =
+                sqlx::query_as("SELECT card_nonce, card_revision FROM contact_card")
+                    .fetch_one(&replica.pool)
+                    .await
+                    .expect("read card");
+            assert_eq!(card, ("CCCCCCCCCCCCCCCCCCCCCC".to_string(), 3));
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn duplicate_pending_requests_both_survive_and_a_concurrent_delete_beats_an_answer() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-requests-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-requests-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+
+        insert_request(&hub_replica, "request-hub", "sent").await;
+        hub_replica.seal().await;
+        insert_request(&phone, "request-phone", "sent").await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        let pending = vec![
+            ("request-hub".to_string(), "pending".to_string()),
+            ("request-phone".to_string(), "pending".to_string()),
+        ];
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(request_states(replica).await, pending);
+        }
+
+        insert_request(&hub_replica, "request-received", "received").await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        hub_replica
+            .edit(
+                "DELETE FROM contact_requests WHERE id = ?",
+                "request-received",
+            )
+            .await;
+        phone
+            .edit(
+                "UPDATE contact_requests SET state = 'accepted' WHERE id = ?",
+                "request-received",
+            )
+            .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                request_states(replica).await,
+                pending,
+                "the deleted request stays deleted"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// Records the first seal of the dense benchmark Music library, sealed in batches until no
+/// capture remains. No budget applies; the time is recorded with the sync budgets.
+#[test]
+#[ignore = "timings are meaningful only in the release profile"]
+fn first_seal_of_the_dense_music_library_is_recorded() {
+    block_on(async {
+        let mut replica = Replica::new("dense-music-seal", HUB_DEVICE).await;
+        let summary = ganbaru_music_library::fixtures::seed_dense_music_fixture(&replica.pool)
+            .await
+            .expect("seed dense music library");
+        // The fixture's Calendar events join the migration-seeded calendar, which vault open
+        // captures before the service starts.
+        Engine::vault()
+            .seed_captures(&mut *acquire(&replica.pool).await, NOW_MS)
+            .await
+            .expect("seed captures");
+        let (mut batches, mut ops, mut changes) = (0_usize, 0_usize, 0_usize);
+        let started = std::time::Instant::now();
+        loop {
+            let mut conn = acquire(&replica.pool).await;
+            let report = Engine::vault()
+                .seal(&mut conn, &replica.ctx, &mut replica.writer.local(), NOW_MS)
+                .await
+                .expect("seal");
+            if let Some(seq) = report.last_seq {
+                replica.writer.committed(seq).expect("record commit");
+            }
+            batches += 1;
+            ops += report.sealed_ops;
+            changes += report.changes;
+            if !report.more {
+                break;
+            }
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "first seal of the dense Music library ({} items): {elapsed:?} over {batches} \
+             batches, {ops} operations, {changes} changes",
+            summary.item_count
+        );
+        assert!(changes > summary.item_count);
+        replica.close().await;
+    });
+}
+
+#[test]
+fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
+    use crate::reset;
+    use crate::writer::{SyncKey, SyncKeyStore, read_record};
+    block_on(async {
+        let mut hub = Replica::new("reset-sync-state", HUB_DEVICE).await;
+        hub.seal_note("note-before-reset").await;
+        let files = hub.directory.files();
+        let keys = hub.directory.keys();
+        let old_writer = hub.writer.record().writer_id.clone();
+        std::fs::create_dir_all(files.vault_directory()).expect("vault sync directory");
+        std::fs::write(files.outbox_path(), b"[]").expect("write outbox");
+        std::fs::write(files.carry_path(), b"carry").expect("write carry bundle");
+        let old_charter = hub
+            .engine
+            .charter(&mut *acquire(&hub.pool).await, &hub.ctx)
+            .await
+            .expect("read charter")
+            .expect("charter");
+        let old_enroll = authority::propose(
+            hub.ctx.space,
+            old_charter.hash(),
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: "device-laptop".to_string(),
+                device_key: device_key("device-laptop").public_key(),
+                tls_fingerprint: [27; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+        let old_remove = authority::propose(
+            hub.ctx.space,
+            old_charter.hash(),
+            &hub_keys().admin,
+            authority::remove_entry(PHONE_DEVICE),
+            NOW_MS,
+        )
+        .expect("sign removal");
+
+        reset::reset_database(&mut *acquire(&hub.pool).await)
+            .await
+            .expect("reset database");
+        reset::remove_installation_state(&files, &keys).expect("remove installation state");
+
+        assert!(
+            read_record(&files.record_path())
+                .expect("read record")
+                .is_none()
+        );
+        assert!(!files.outbox_path().exists() && !files.carry_path().exists());
+        assert!(
+            keys.read(VAULT_ID, SyncKey::Writer(&old_writer))
+                .expect("read writer key")
+                .is_none()
+        );
+
+        let mut conn = acquire(&hub.pool).await;
+        hub.engine
+            .init_space(&mut conn, VAULT_ID, NOW_MS + 1)
+            .await
+            .expect("initialize space");
+        hub.engine
+            .refuse_legacy_state(&mut conn, &hub.ctx)
+            .await
+            .expect("the reset space is current");
+        hub.engine
+            .seed_captures(&mut conn, NOW_MS + 1)
+            .await
+            .expect("seed captures");
+        let founding = Founding {
+            device_id: HUB_DEVICE,
+            tls_fingerprint: [23; 32],
+            discovery_key: [24; 32],
+            person: &person(),
+            now_ms: NOW_MS + 1,
+        };
+        let charter = ensure_charter(&hub.engine, &mut conn, &hub.ctx, &hub_keys(), &founding)
+            .await
+            .expect("found the space again");
+        assert_ne!(
+            charter, old_charter,
+            "phones pinned the old charter and pair again"
+        );
+        let view = hub
+            .engine
+            .authorization(&mut conn, &hub.ctx)
+            .await
+            .expect("read authorization")
+            .expect("authorization view");
+        assert_eq!(view.anchor_device_id, HUB_DEVICE);
+        assert!(
+            view.devices
+                .iter()
+                .all(|device| device.device_id == HUB_DEVICE),
+            "devices the old space enrolled pair again"
+        );
+        drop(conn);
+
+        hub.writer = create_writer(
+            &files,
+            &keys,
+            SuccessorPlan::default(),
+            &device_key(HUB_DEVICE),
+            HUB_DEVICE,
+            NOW_MS + 1,
+        )
+        .expect("create writer");
+        hub.seal().await;
+        let mut conn = acquire(&hub.pool).await;
+        for replayed in [&old_enroll, &old_remove] {
+            assert_eq!(
+                authority::sequence(
+                    &hub.engine,
+                    &mut conn,
+                    &hub.ctx,
+                    &mut hub.writer.local(),
+                    replayed,
+                    NOW_MS + 2,
+                )
+                .await
+                .expect("sequence"),
+                Err(ProposalRejection::WrongSpace),
+                "a proposal signed for the old charter does not replay into the new one"
+            );
+        }
+        assert_eq!(
+            local::pending_captures(&mut conn).await.expect("captures"),
+            0
+        );
+        let published: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_rows WHERE row_key = ?")
+            .bind("note-before-reset")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("read rows");
+        assert_eq!(published, 1, "the note is published again");
+        drop(conn);
+        hub.close().await;
+    });
+}
+
+#[test]
+fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_start() {
+    use crate::reset;
+    use crate::writer::{WriterCheck, check_writer, read_record, read_stored_writer};
+    block_on(async {
+        // The crash lands before the installation state goes, or after the outbox went but
+        // before the record and the writer keys did.
+        for outbox_removed in [false, true] {
+            let label = format!("reset-interrupted-{outbox_removed}");
+            let mut hub = Replica::new(&label, HUB_DEVICE).await;
+            hub.seal_note("note-before-reset").await;
+            let files = hub.directory.files();
+            let keys = hub.directory.keys();
+            let old_charter = hub.charter().await;
+            {
+                let mut conn = acquire(&hub.pool).await;
+                authority::enroll(
+                    &hub.engine,
+                    &mut conn,
+                    &hub.ctx,
+                    &hub_keys().admin,
+                    &mut hub.writer.local(),
+                    Enrollment {
+                        device_id: "laptop-before-reset".to_string(),
+                        device_key: device_key("laptop-before-reset").public_key(),
+                        tls_fingerprint: [27; 32],
+                        label: "Laptop".to_string(),
+                        device_kind: DeviceKind::Desktop,
+                    },
+                    NOW_MS,
+                )
+                .await
+                .expect("sequence an enrollment before the reset");
+            }
+            let recorded = hub
+                .writer
+                .record()
+                .sequenced
+                .clone()
+                .expect("the anchor recorded its high-water");
+            assert_eq!(recorded.charter(), Some(old_charter));
+            let mut outbox = Outbox::load(&files.outbox_path()).expect("empty outbox");
+            outbox
+                .add(
+                    authority::propose(
+                        hub.ctx.space,
+                        old_charter,
+                        &hub_keys().admin,
+                        authority::remove_entry(PHONE_DEVICE),
+                        NOW_MS,
+                    )
+                    .expect("sign removal"),
+                )
+                .expect("queue removal");
+
+            // A database without a charter beside a record naming a high-water was restored from
+            // before founding, so only the Reset's first step lets a new charter be founded.
+            let record = || read_record(&files.record_path()).expect("read record");
+            assert!(reset::refuse_refounding(record().as_ref()).is_err());
+            reset::forget_high_water(&files).expect("forget the high-water");
+            assert_eq!(record().and_then(|record| record.sequenced), None);
+            reset::refuse_refounding(record().as_ref()).expect("the reset may found anew");
+            reset::reset_database(&mut *acquire(&hub.pool).await)
+                .await
+                .expect("reset database");
+            if outbox_removed {
+                Outbox::remove(&files.outbox_path()).expect("remove outbox");
+            }
+
+            let mut conn = acquire(&hub.pool).await;
+            hub.engine
+                .init_space(&mut conn, VAULT_ID, NOW_MS + 1)
+                .await
+                .expect("initialize space");
+            hub.engine
+                .refuse_legacy_state(&mut conn, &hub.ctx)
+                .await
+                .expect("the reset space is current");
+            hub.engine
+                .seed_captures(&mut conn, NOW_MS + 1)
+                .await
+                .expect("seed captures");
+            let founding = Founding {
+                device_id: HUB_DEVICE,
+                tls_fingerprint: [23; 32],
+                discovery_key: [24; 32],
+                person: &person(),
+                now_ms: NOW_MS + 1,
+            };
+            ensure_charter(&hub.engine, &mut conn, &hub.ctx, &hub_keys(), &founding)
+                .await
+                .expect("found the space again");
+            let stored = read_stored_writer(&files, &keys).expect("read stored writer");
+            assert!(stored.is_some(), "the crash left the old record");
+            let check = check_writer(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &files,
+                &device_key(HUB_DEVICE).public_key(),
+                stored,
+            )
+            .await
+            .expect("check writer");
+            let WriterCheck::Successor(plan) = check else {
+                panic!("the cleared space lacks the recorded writer");
+            };
+            drop(conn);
+            hub.writer = create_writer(
+                &files,
+                &keys,
+                plan,
+                &device_key(HUB_DEVICE),
+                HUB_DEVICE,
+                NOW_MS + 1,
+            )
+            .expect("create successor");
+            assert_eq!(
+                hub.writer.record().sequenced,
+                None,
+                "a high-water of the cleared log never reads as a restore"
+            );
+            let new_charter = hub.charter().await;
+            assert_ne!(
+                new_charter, old_charter,
+                "the reset founded another charter"
+            );
+            // A record that still named the old charter is cleared against the new one.
+            let mut kept = hub.writer.record().clone();
+            kept.sequenced = Some(recorded.clone());
+            crate::writer::write_record(&files.record_path(), &kept).expect("write record");
+            let stored = read_stored_writer(&files, &keys).expect("read stored writer");
+            let mut conn = acquire(&hub.pool).await;
+            let WriterCheck::Ready(writer) = check_writer(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &files,
+                &device_key(HUB_DEVICE).public_key(),
+                stored,
+            )
+            .await
+            .expect("check writer") else {
+                panic!("the successor still matches its chain");
+            };
+            drop(conn);
+            hub.writer = *writer;
+            hub.writer
+                .settle_sequenced(None)
+                .expect("settle without a charter");
+            assert!(
+                hub.writer.record().sequenced.is_some(),
+                "a space without a charter keeps the high-water"
+            );
+            hub.writer
+                .settle_sequenced(Some(new_charter))
+                .expect("settle against the new charter");
+            assert_eq!(hub.writer.record().sequenced, None);
+            let stored = std::fs::read_to_string(files.record_path()).expect("read record");
+            assert!(
+                !stored.contains("\"sequenced\""),
+                "the cleared high-water is durable"
+            );
+
+            let mut outbox = Outbox::load(&files.outbox_path()).expect("load outbox");
+            let mut conn = acquire(&hub.pool).await;
+            let sequenced = authority::sequence_outbox(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &mut hub.writer.local(),
+                &mut outbox,
+                &Default::default(),
+                &Default::default(),
+                NOW_MS + 2,
+            )
+            .await
+            .expect("sequence outbox");
+            assert_eq!(sequenced, 0, "the old proposal does not replay");
+            assert!(
+                outbox
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.rejection == Some(ProposalRejection::WrongSpace)),
+                "a proposal for the old charter is refused for good"
+            );
+            drop(conn);
+
+            hub.seal().await;
+            let mut conn = acquire(&hub.pool).await;
+            let published: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sync_rows WHERE row_key = ?")
+                    .bind("note-before-reset")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("read rows");
+            assert_eq!(published, 1, "the successor publishes the note again");
+            drop(conn);
+            hub.close().await;
+        }
+    });
+}
+
+mod calendar_conflicts;
+mod calendar_recovery;
+mod flood;
+mod handover;
+mod notes_conflicts;
+mod notes_recovery;
+mod projects_conflicts;
+mod projects_recovery;
+mod records;
+mod relay;

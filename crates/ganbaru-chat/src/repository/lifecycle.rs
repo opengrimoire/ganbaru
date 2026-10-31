@@ -1,6 +1,9 @@
 use crate::models::{ChatError, ChatErrorCode, ChatResult, ChatThreadId, UtcTimestamp};
 use sqlx::SqlitePool;
 
+/// The prefix of an attachment file cleanup job ID, followed by the attachment ID.
+pub(super) const ATTACHMENT_CLEANUP_ID_PREFIX: &str = "cleanup:attachment:";
+
 pub async fn rename_thread(
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
@@ -190,7 +193,7 @@ pub async fn permanently_delete_thread(
             enqueue_cleanup(
                 &mut transaction,
                 CleanupRequest {
-                    id: &format!("cleanup:attachment:{attachment_id}"),
+                    id: &format!("{ATTACHMENT_CLEANUP_ID_PREFIX}{attachment_id}"),
                     thread_id: Some(thread_id.as_str()),
                     kind: "attachment_file",
                     target: &relative_path,

@@ -35,9 +35,7 @@ fn value_in(row: &Value, key: &str, values: &HashSet<String>) -> bool {
 }
 
 fn page_project_id(row: &Value) -> Option<&str> {
-    row.get("properties")
-        .and_then(Value::as_object)
-        .and_then(|properties| properties.get(crate::PAGE_PROJECT_ID_PROPERTY))
+    row.get("project_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -185,13 +183,18 @@ fn row_is_selected(table: &str, row: &Value, scope: &ProjectScope) -> bool {
         "notes_blocks" => value_in(row, "id", &scope.block_ids),
         "notes_databases" => value_in(row, "id", &scope.database_ids),
         "notes_data_sources" => value_in(row, "id", &scope.data_source_ids),
+        "notes_data_source_properties" | "notes_data_source_property_options" => {
+            value_in(row, "data_source_id", &scope.data_source_ids)
+        }
         "notes_database_views" => {
             value_in(row, "database_id", &scope.database_ids)
                 || value_in(row, "data_source_id", &scope.data_source_ids)
         }
         "notes_data_source_templates" => value_in(row, "id", &scope.data_source_template_ids),
-        "notes_data_source_row_hierarchy" => {
-            value_in(row, "data_source_id", &scope.data_source_ids)
+        "notes_page_property_values" => value_in(row, "page_id", &scope.page_ids),
+        "notes_relation_edges" => {
+            value_in(row, "source_page_id", &scope.page_ids)
+                || value_in(row, "target_page_id", &scope.page_ids)
         }
         "notes_data_source_template_blocks" => {
             value_in(row, "template_id", &scope.data_source_template_ids)

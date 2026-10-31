@@ -1,13 +1,217 @@
 //! Recovery offers of the active vault. Listing reads the engine directly; restoring and
 //! discarding seal with the local writer, so the service runs them inside a pass.
 
+use std::sync::LazyLock;
+
+use ganbaru_sync::manifest::vault::{
+    calendar, chat, distractions, music, notes, projects, quick_notes, themes,
+};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
-    RecoveryAction, RecoveryChoice, close, recoverable_table,
+    RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
 use serde::Serialize;
+use sqlx::SqliteConnection;
 use tauri::{AppHandle, Runtime};
-use tokio::sync::oneshot;
+
+/// Restorers of the domains whose rows can root a recovery offer, one line per table.
+static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
+    RecoveryRestorers::new()
+        .with(&quick_notes::NOTES, restore_quick_note)
+        .with(&themes::THEMES, restore_theme)
+        .with(&music::PLAYLISTS, restore_music_playlist)
+        .with(&music::ITEMS, refuse_music_item)
+        .with(&projects::GROUPS, restore_projects_row)
+        .with(&projects::PROJECTS, restore_projects_row)
+        .with(&projects::SECTIONS, restore_projects_row)
+        .with(&projects::STATUSES, restore_projects_row)
+        .with(&projects::TASKS, restore_projects_row)
+        .with(&calendar::CALENDARS, restore_calendar)
+        .with(&calendar::OBJECTS, refuse_calendar_source)
+        .with(&calendar::COMPONENTS, refuse_calendar_source)
+        .with(&calendar::EVENTS, restore_calendar_event)
+        .with(&distractions::SETTINGS, refuse_distraction_settings)
+        .with(
+            &distractions::CUSTOM_CATEGORIES,
+            restore_distraction_category,
+        )
+        .with(&distractions::USAGE_LIMITS, restore_usage_limit)
+        .with(&chat::PARTICIPANTS, refuse_chat_row)
+        .with(&chat::TEAMMATES, refuse_chat_row)
+        .with(&chat::CONVERSATIONS, refuse_chat_row)
+        .with(&chat::CHANNELS, refuse_chat_row)
+        .with(&chat::ITEMS, refuse_chat_row)
+        .with(&chat::MESSAGES, refuse_chat_row)
+        .with(&notes::PAGES, restore_notes_row)
+        .with(&notes::BLOCKS, restore_notes_row)
+        .with(&notes::DATABASES, restore_notes_row)
+        .with(&notes::DATA_SOURCES, restore_notes_row)
+        .with(&notes::DATA_SOURCE_TEMPLATES, restore_notes_row)
+        .with(&notes::PAGE_TEMPLATES, restore_notes_row)
+        .with(&notes::THREADS, restore_notes_row)
+        .with(&notes::COMMENTS, restore_notes_row)
+});
+
+/// The recovery restorers of the vault domains.
+pub(crate) fn restorers() -> &'static RecoveryRestorers {
+    &RESTORERS
+}
+
+/// Restores a deleted Quick note as a new note. Notes have no cascade descendants, so a
+/// recovered note that carries some was grouped by a manifest this version does not know.
+fn restore_quick_note(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        if !row.descendants.is_empty() {
+            return Err("a recovered quick note has deleted descendants".to_string());
+        }
+        ganbaru_quick_notes::restore_recovered(conn, &row.values).await
+    })
+}
+
+/// Restores a deleted theme as a new theme. Its token and palette rows are owned by the theme
+/// row rather than cascade descendants, so a recovered theme that carries some was grouped by
+/// a manifest this version does not know.
+fn restore_theme(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        if !row.descendants.is_empty() {
+            return Err("a recovered theme has deleted descendants".to_string());
+        }
+        ganbaru_themes::restore_recovered(conn, &row.values).await
+    })
+}
+
+/// Restores a deleted playlist as a new playlist with copies of its deleted intended uses and
+/// memberships.
+fn restore_music_playlist(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_music_library::recovery::restore_recovered_playlist(
+            conn,
+            &row.values,
+            &row.descendants,
+            now_ms,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    })
+}
+
+/// Refuses to restore a deleted library item. An item's key is derived from its source, so it
+/// comes back by adding that source again; its offer, which a concurrent membership edit opens,
+/// can only be discarded.
+fn refuse_music_item(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("a deleted Music library item comes back by adding its source again".to_string())
+    })
+}
+
+/// Restores a deleted group, project, section, status, or task as a new row with copies of its
+/// deleted descendants. A refused restore keeps its offer discardable.
+fn restore_projects_row(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_projects::recovery::restore_recovered_row(
+            conn,
+            row.table,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
+/// Restores a deleted event as a new event with its task links; its calendar becomes Local when
+/// the retained one is gone.
+fn restore_calendar_event(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_event(
+            conn,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
+/// Restores the deleted events of a removed calendar into Local. The calendar itself comes back
+/// by adding or subscribing to it again.
+fn restore_calendar(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_calendar(conn, &row.descendants).await
+    })
+}
+
+/// Refuses to restore preserved iCalendar source data, which comes back by importing the file
+/// again; its offer can only be discarded.
+fn refuse_calendar_source(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("preserved iCalendar data comes back by importing the file again".to_string())
+    })
+}
+
+/// Refuses to restore the distraction settings row, which is seeded and never deleted.
+fn refuse_distraction_settings(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async { Err("distraction settings are never deleted".to_string()) })
+}
+
+/// Refuses to restore a deleted Chat row. Chat archives participants, teammates, channels, and
+/// messages, with the timeline items that hold them, instead of deleting them, so a row is deleted only with its project. Restoring the
+/// project restores none of its Chat rows: the restored project has a new id and starts with a
+/// new, empty default channel. The offer of a Chat row can only be discarded, and the project's
+/// offer shows the text of posts written unseen by the deletion so it can be copied first.
+fn refuse_chat_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err(
+            "a deleted Chat row is not restored, not even with its project, so it can only be \
+             discarded"
+                .to_string(),
+        )
+    })
+}
+
+/// Restores a deleted Notes page, block, data source, template, comment thread, or comment as a
+/// new row with copies of its deleted Notes descendants. A database comes back with the block
+/// that holds it, and a device that does not write Notes refuses; a refused restore keeps its
+/// offer discardable.
+fn restore_notes_row(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_notes::recovery::restore_recovered_row(
+            conn,
+            row.table,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
+/// Restores a deleted custom distraction category as a new category with its deleted hosts.
+fn restore_distraction_category(
+    conn: &mut SqliteConnection,
+    row: RecoveredRow,
+) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_distractions::config::recovery::restore_recovered_category(
+            conn,
+            &row.values,
+            &row.descendants,
+            now_ms,
+        )
+        .await
+    })
+}
+
+/// Restores a deleted usage limit as a new limit with its retained budget and entries.
+fn restore_usage_limit(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_distractions::config::recovery::restore_recovered_limit(conn, &row.values, now_ms)
+            .await
+    })
+}
 
 /// A deleted row with edits the deletion did not see.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -18,32 +222,36 @@ pub(crate) struct RecoveryEntryView {
     pub row_key: String,
     pub title: String,
     pub preview: String,
+    /// Deleted descendants that restoring the row brings back with it.
+    pub descendants: usize,
+    /// Title and preview of deleted descendants of another domain written or edited unseen by
+    /// the deletion, such as Chat posts, which restoring the row does not bring back.
+    pub unseen: Vec<RecoveryTextView>,
+    /// Unseen rows past the ones listed in `unseen`.
+    pub unseen_omitted: usize,
     /// Device of the newest unseen edit.
     pub device: DeviceRef,
     /// When that edit was made, in Unix milliseconds.
     pub edited_at_ms: u64,
 }
 
-/// A recovery action waiting for the service, which owns the local writer.
-pub(crate) struct RecoveryRequest {
-    pub choice: RecoveryChoice,
-    /// Receives the id of the restored row, if any.
-    pub reply: oneshot::Sender<Result<Option<String>, String>>,
+/// Title and preview of one deleted row in a recovery offer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct RecoveryTextView {
+    pub title: String,
+    pub preview: String,
 }
 
 /// Recovery offers of the active vault, newest edit first.
 pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryEntryView>, String> {
-    let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
-        return Ok(Vec::new());
-    };
+    let pool = crate::db::connect_active_vault_for_sync(app).await?;
     let vault_id = crate::vault::active_vault_id(app)?;
     let engine = Engine::vault();
     let mut conn = pool
         .acquire()
         .await
         .map_err(|error| format!("acquire sync connection: {error}"))?;
-    let coordinator = super::service::coordinator_device_id(app, &vault_id)?;
-    let Some(ctx) = local::space_context(&mut conn, &vault_id, &coordinator)
+    let Some(ctx) = local::space_context(&mut conn, &vault_id)
         .await
         .map_err(|error| format!("read sync space: {error}"))?
     else {
@@ -64,6 +272,16 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
                 row_key: entry.row_key,
                 title: entry.presentation.title,
                 preview: entry.presentation.preview,
+                descendants: entry.descendants,
+                unseen: entry
+                    .unseen
+                    .into_iter()
+                    .map(|presentation| RecoveryTextView {
+                        title: presentation.title,
+                        preview: presentation.preview,
+                    })
+                    .collect(),
+                unseen_omitted: entry.unseen_omitted,
                 device: devices.describe(&entry.device_id),
                 edited_at_ms: entry.clock.physical_ms(),
             })
@@ -76,4 +294,22 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
             .then_with(|| left.row_key.cmp(&right.row_key))
     });
     Ok(views)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every device writes every domain, so every table that can root an offer needs a restorer.
+    #[test]
+    fn sync_recovery_restorers_cover_every_table_that_can_root_an_offer() {
+        let manifest = Engine::vault().manifest();
+        let mut roots: Vec<&str> = manifest
+            .recovery_root_tables()
+            .into_iter()
+            .map(|table| table.name)
+            .collect();
+        roots.sort_unstable();
+        assert_eq!(restorers().tables().collect::<Vec<_>>(), roots);
+    }
 }

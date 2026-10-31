@@ -1,8 +1,6 @@
 import type {
   dataFolderError as enDataFolderError,
   language as enLanguage,
-  vaultOwnership as enVaultOwnership,
-  vaultOwnershipPrompt as enVaultOwnershipPrompt,
   vaultHandoff as enVaultHandoff,
   vaultSetup as enVaultSetup,
 } from "../en/vault";
@@ -59,6 +57,10 @@ export const dataFolderError = {
     "No es una carpeta de Ganbaru. Elige la de tu instalación anterior.",
   notFound:
     "No se encontró la carpeta. Elige otra o importa una existente.",
+  openElsewhere:
+    "Esta carpeta está abierta en otra app de Ganbaru. Cierra esa app o elige otra carpeta.",
+  linkedAndroid:
+    "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego restaura.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {
@@ -68,24 +70,6 @@ export const language = {
   englishOption: "Inglés",
   spanishOption: "Español",
 } as const satisfies MessageShape<typeof enLanguage>;
-
-export const vaultOwnership = {
-  recovery: "Esta bóveda necesita recuperar la transferencia antes de poder modificarse.",
-} as const satisfies MessageShape<typeof enVaultOwnership>;
-
-export const vaultOwnershipPrompt = {
-  title: (device: string) => `${device} es el dispositivo principal`,
-  description: "Solo el dispositivo principal puede hacer cambios.",
-  replicaDescription: "Las notas rápidas siguen editables aquí y se sincronizan con tus dispositivos. Solo el dispositivo principal puede cambiar todo lo demás.",
-  continueReadOnly: "Continuar en solo lectura",
-  switching: "Cambiando a este dispositivo...",
-  replacementTitle: "¿Reemplazar los datos actuales de este dispositivo?",
-  replacementAndroid:
-    "Este teléfono tiene una bóveda de Ganbaru separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru guardará una copia completa en Descargas antes de reemplazarla.",
-  replacementDesktop:
-    "Esta computadora tiene una bóveda de Ganbaru separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru conservará una copia de recuperación junto a la carpeta actual de Ganbaru antes de reemplazarla.",
-  replacementConfirm: "Reemplazar con la bóveda vinculada",
-} as const satisfies MessageShape<typeof enVaultOwnershipPrompt>;
 
 export const vaultHandoff = {
   heading: "Dispositivos vinculados",
@@ -122,12 +106,8 @@ export const vaultHandoff = {
     "Esta versión de desarrollo para Linux no puede usar el asistente de firewall empaquetado. Usa una versión empaquetada o configura el firewall manualmente para vincular un teléfono.",
   notLinked: "No hay dispositivos vinculados",
   devicesHeading: "Dispositivos",
-  linkedTo: (device: string) => `Vinculado con ${device}`,
   desktopDevice: "Computadora",
   androidDevice: "Teléfono",
-  anotherDevice: "Otro dispositivo",
-  transferPending: "Hay una transferencia de la bóveda pendiente de terminar.",
-  linkPhone: "Vincular teléfono",
   linkToDesktop: "Vincular con computadora",
   createQr: "Mostrar código QR de vinculación",
   linkAnotherDevice: "Vincular otro dispositivo",
@@ -166,34 +146,55 @@ export const vaultHandoff = {
   cameraStarting: "Iniciando cámara",
   notNow: "Ahora no",
   continue: "Continuar",
-  deviceLabel: "Teléfono",
-  useHere: "Cambiar a este dispositivo",
-  refreshCopy: "Obtener los últimos cambios",
+  serverRecovery: {
+    open: "Recuperar desde un servidor ancla",
+    description: "Si perdiste todos tus dispositivos, ingresa el código de configuración que imprimió tu servidor ancla y tu kit de recuperación. Esta computadora se convierte en administradora y copia la bóveda a una carpeta nueva.",
+    codeLabel: "Código de configuración del servidor",
+    kitLabel: "Código del kit de recuperación",
+    action: "Recuperar bóveda",
+    recovering: "Recuperando bóveda…",
+    errors: {
+      code: "El servidor rechazó este código de configuración. Imprime uno nuevo en el servidor e inténtalo de nuevo.",
+      kit: "Este código del kit de recuperación está mal escrito. Revisa cada grupo.",
+      rejected: "El servidor rechazó este kit de recuperación. Puede pertenecer a otra bóveda.",
+      noVault: "Este servidor aún no ejecuta ninguna bóveda.",
+      alreadyOpen: "Esta bóveda ya está abierta en este dispositivo.",
+      failed: "No se pudo recuperar la bóveda. Comprueba que el servidor esté en marcha e inténtalo de nuevo con un código de configuración nuevo y el mismo kit.",
+    },
+  },
+  copyHere: "Copiar la bóveda a este dispositivo",
+  copyHereDescription: "Este dispositivo está vinculado. Copia aquí la bóveda vinculada para empezar a sincronizarla.",
+  copied: "La bóveda vinculada ya está en este dispositivo.",
+  copyInProgress: "La bóveda vinculada ya se está copiando a este dispositivo.",
+  firstCopyTitle: "¿Copiar la bóveda vinculada a este dispositivo?",
+  firstCopyAndroid:
+    "La bóveda vinculada reemplaza la bóveda de este teléfono, cuyos datos no se pueden combinar con ella. Ganbaru guarda una copia de la bóveda reemplazada en este teléfono, que puedes exportar o eliminar en Ajustes > Datos.",
+  firstCopyDesktop:
+    "Ganbaru copia la bóveda vinculada en su propia carpeta de esta computadora. Tu bóveda actual no cambia y sigue en la lista de bóvedas.",
+  firstCopyConfirm: "Copiar bóveda",
+  linkFolder: "Carpeta para la bóveda vinculada",
+  linkFolderDefault: "Ubicación predeterminada",
+  chooseLinkFolder: "Elegir carpeta",
+  useDefaultLinkFolder: "Usar predeterminada",
   retry: "Reintentar",
   cancel: "Cancelar transferencia",
   unlink: "Desvincular dispositivo",
   unlinkTitle: "¿Desvincular este dispositivo?",
   unlinkMessage:
-    "El propietario actual no cambiará. Una copia de solo lectura seguirá así hasta que la recuperes explícitamente.",
-  recover: "Recuperar esta copia local",
-  recoverTitle: "¿Usar esta copia como una bóveda separada?",
+    "El dispositivo deja de sincronizarse con esta bóveda. Cada dispositivo conserva los datos que ya tiene.",
+  recover: "Conservar esta copia como bóveda propia",
+  recoverTitle: "¿Conservar esta copia como bóveda propia?",
   recoverMessage:
-    "Usa esto solo si el dispositivo propietario ya no está disponible. Ambas copias se conservan, este dispositivo podrá escribir y los dispositivos se desvincularán. Los cambios posteriores no se combinarán automáticamente.",
-  workingOwnership: "Preparando este dispositivo...",
-  workingRefresh: "Obteniendo los últimos cambios...",
-  workingRequest: "Esperando al otro dispositivo...",
-  linked: "Dispositivo vinculado.",
+    "Usa esto solo si la computadora coordinadora ya no volverá a estar disponible. Este dispositivo olvida a su coordinador y a sus dispositivos vinculados, y conserva esta copia como su propia bóveda. Los cambios hechos en otros dispositivos ya no se sincronizarán con ella.",
+  workingCopy: "Copiando la bóveda vinculada a este dispositivo...",
   linkedSuccessfully: (device: string) => `${device} se vinculó correctamente.`,
   linkedLabel: "vinculado",
-  refreshed: "Se recibieron los últimos cambios.",
-  requestSent: "Se envió la solicitud. Mantén ambas apps abiertas en la misma red.",
   unlinked: "Dispositivo desvinculado.",
   revokedByCoordinator:
-    "Este dispositivo fue desvinculado por la computadora coordinadora. Su copia local seguirá siendo de solo lectura a menos que la recuperes como una bóveda separada.",
-  recovered: "Esta copia local ahora es una bóveda separada con escritura.",
+    "Este dispositivo fue desvinculado por la computadora coordinadora. Su copia de la bóveda se queda en este dispositivo, pero ya no se sincroniza.",
+  recovered: "Esta copia ahora es una bóveda propia en este dispositivo.",
   localBackup:
-    "Antes de que la bóveda de la computadora reemplace datos de Android por primera vez, Ganbaru guarda una copia recuperable en Descargas.",
-  sameNetwork: "Mantén ambas apps abiertas en la misma red local.",
+    "Cuando la bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda una copia de la reemplazada en Ajustes > Datos.",
   failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
   blockerTerminal: "Cierra las terminales de Chat en ejecución antes de mover la bóveda.",
@@ -207,10 +208,13 @@ export const vaultHandoff = {
     "Hay otra bóveda abierta en este dispositivo, así que la vinculación está en pausa. Vuelve a abrir la bóveda vinculada para reanudarla.",
   coordinatorVaultInactive:
     "La computadora coordinadora tiene otra bóveda abierta. Abre allí la bóveda vinculada y reintenta.",
-  ownershipChurnLimit:
-    "La edición cambió de dispositivo demasiadas veces en la última hora. Espera un rato y vuelve a cambiar de dispositivo.",
+  replacedVaultBackupFailed:
+    "La bóveda vinculada no se copió porque este dispositivo no tiene espacio para guardar una copia de su bóveda actual. Libera espacio y reintenta.",
+  linkFolderNotEmpty: "La carpeta elegida no está vacía. Elige una carpeta vacía para la bóveda vinculada.",
+  linkFolderInsideVault:
+    "La carpeta elegida está dentro de otra bóveda. Elige una carpeta fuera de cualquier bóveda para la bóveda vinculada.",
   bundleRequestLimit:
-    "Este dispositivo pidió la bóveda demasiadas veces en la última hora. Espera un rato y vuelve a actualizar o a cambiar de dispositivo.",
+    "Este dispositivo pidió la bóveda demasiadas veces en la última hora. Espera un rato y vuelve a intentarlo.",
   deviceKeyMissing:
     "Falta la clave de vinculación de este dispositivo en el llavero del sistema. Desvincula este dispositivo y vuelve a vincularlo.",
   deviceKeyUnavailable:
@@ -221,7 +225,5 @@ export const vaultHandoff = {
     "La computadora coordinadora está atendiendo demasiadas conexiones en este momento. Espera un momento y reintenta.",
   unreachable:
     "Este dispositivo no pudo comunicarse con la computadora coordinadora. Mantén ambas aplicaciones abiertas en la misma red local y reintenta.",
-  ownerUnreachable:
-    "El dispositivo principal no está disponible. Mantenlo abierto en la misma red local y vuelve a intentarlo.",
   unknownError: "Error desconocido",
 } as const satisfies MessageShape<typeof enVaultHandoff>;

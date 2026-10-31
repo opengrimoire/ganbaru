@@ -6,7 +6,8 @@ use std::path::{Component, Path};
 
 pub(crate) const MAX_BULK_MEMBERSHIPS: usize = 500;
 pub(crate) const MAX_REVIEW_SELECTION_ITEMS: usize = 20_000;
-const MAX_ID_BYTES: usize = 200;
+/// Longest Music row key, matching the sync engine row key bound.
+pub(crate) const MAX_ID_BYTES: usize = 128;
 const MAX_NAME_CHARS: usize = 200;
 const MAX_ICON_CHARS: usize = 500;
 const MAX_REASON_CHARS: usize = 500;
@@ -15,6 +16,19 @@ const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
 pub(crate) const MAX_ITEM_WINDOW: i64 = 200;
 pub(crate) const MAX_SUMMARY_WINDOW: i64 = 500;
 const MAX_SEARCH_CHARS: usize = 300;
+/// Most skip ranges one membership holds, matching the schema ordinal bound.
+pub(crate) const MAX_SKIP_RANGES: usize = 64;
+/// Membership volume override in thousandths of full volume.
+pub(crate) const MEMBERSHIP_VOLUME_MILLI: std::ops::RangeInclusive<i64> = 0..=1_000;
+/// Membership rate override in thousandths of normal speed.
+pub(crate) const MEMBERSHIP_RATE_MILLI: std::ops::RangeInclusive<i64> = 250..=2_000;
+/// Stored thousandths per whole playback multiplier.
+const THOUSANDTHS_PER_UNIT: f64 = 1_000.0;
+
+/// Stored integer thousandths as the playback multiplier that audio output applies.
+pub fn from_thousandths(value: i64) -> f64 {
+    value as f64 / THOUSANDTHS_PER_UNIT
+}
 /// Longest stored original title, artist, or album, which the schema also enforces. Longer tag or
 /// import text is truncated rather than rejected, so a crafted file never blocks a scan or import.
 pub const MAX_ITEM_DESCRIPTION_CHARS: usize = 500;
@@ -61,7 +75,7 @@ fn validate_optional_text(value: &str, field: &str, max_chars: usize) -> MusicLi
     Ok(())
 }
 
-fn validate_name(value: &str) -> MusicLibraryResult<()> {
+pub(crate) fn validate_name(value: &str) -> MusicLibraryResult<()> {
     if value.trim().is_empty() {
         return Err(MusicLibraryError::validation("name", "is required"));
     }
@@ -96,38 +110,38 @@ fn validate_relative_path(value: &str) -> MusicLibraryResult<()> {
     Ok(())
 }
 
+/// Validates a collection save and returns its derived identity key.
 pub(crate) fn validate_collection_write(
     collection: &MusicCollectionWrite,
-) -> MusicLibraryResult<()> {
-    validate_id(&collection.id, "id")?;
-    validate_id(&collection.identity_key, "identityKey")?;
+) -> MusicLibraryResult<String> {
     validate_name(&collection.name)?;
     validate_timestamp(collection.updated_at_ms, "updatedAt")?;
-    match collection.kind {
-        MusicCollectionKind::LocalRoot
-            if collection.local_root_id.is_none() || collection.youtube_playlist_id.is_some() =>
-        {
-            Err(MusicLibraryError::validation(
-                "localRootId",
-                "a local collection requires only a logical root id",
-            ))
+    match (
+        collection.kind,
+        &collection.local_root_id,
+        &collection.youtube_playlist_id,
+    ) {
+        (MusicCollectionKind::LocalRoot, Some(root_id), None) => {
+            validate_id(root_id, "localRootId")?;
+            Ok(crate::identity::local_root_identity_key(root_id))
         }
-        MusicCollectionKind::YouTubePlaylist
-            if collection.youtube_playlist_id.is_none() || collection.local_root_id.is_some() =>
-        {
-            Err(MusicLibraryError::validation(
-                "youtubePlaylistId",
-                "a YouTube collection requires only a playlist id",
-            ))
+        (MusicCollectionKind::LocalRoot, _, _) => Err(MusicLibraryError::validation(
+            "localRootId",
+            "a local collection requires only a logical root id",
+        )),
+        (MusicCollectionKind::YouTubePlaylist, None, Some(playlist_id)) => {
+            validate_id(playlist_id, "youtubePlaylistId")?;
+            Ok(crate::identity::youtube_playlist_identity_key(playlist_id))
         }
-        _ => Ok(()),
+        (MusicCollectionKind::YouTubePlaylist, _, _) => Err(MusicLibraryError::validation(
+            "youtubePlaylistId",
+            "a YouTube collection requires only a playlist id",
+        )),
     }
 }
 
 pub(crate) fn validate_local_root_create(root: &MusicLocalRootCreate) -> MusicLibraryResult<()> {
     validate_id(&root.root_id, "rootId")?;
-    validate_id(&root.collection_id, "collectionId")?;
-    validate_id(&root.identity_key, "identityKey")?;
     validate_name(&root.name)?;
     validate_timestamp(root.created_at_ms, "createdAt")
 }
@@ -136,7 +150,6 @@ pub(crate) fn validate_local_root_create(root: &MusicLocalRootCreate) -> MusicLi
 pub(crate) fn validate_item_repair_apply(request: &MusicItemRepairApply) -> MusicLibraryResult<()> {
     validate_id(&request.item_id, "itemId")?;
     validate_id(&request.root_id, "rootId")?;
-    validate_id(&request.location_id, "locationId")?;
     validate_name(&request.root_name)?;
     validate_id(
         &request.expected_strong_fingerprint,
@@ -207,19 +220,40 @@ fn validate_unique_intended_uses(uses: &[MusicIntendedUse]) -> MusicLibraryResul
     Ok(())
 }
 
+/// Checks optional membership volume and rate overrides against their thousandths ranges.
+pub(crate) fn validate_membership_volume_rate(
+    volume_milli: Option<i64>,
+    rate_milli: Option<i64>,
+) -> MusicLibraryResult<()> {
+    if volume_milli.is_some_and(|volume| !MEMBERSHIP_VOLUME_MILLI.contains(&volume)) {
+        return Err(MusicLibraryError::validation(
+            "volumeMilli",
+            format!(
+                "must be between {} and {}",
+                MEMBERSHIP_VOLUME_MILLI.start(),
+                MEMBERSHIP_VOLUME_MILLI.end()
+            ),
+        ));
+    }
+    if rate_milli.is_some_and(|rate| !MEMBERSHIP_RATE_MILLI.contains(&rate)) {
+        return Err(MusicLibraryError::validation(
+            "rateMilli",
+            format!(
+                "must be between {} and {}",
+                MEMBERSHIP_RATE_MILLI.start(),
+                MEMBERSHIP_RATE_MILLI.end()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_membership_write(
     membership: &MusicMembershipWrite,
 ) -> MusicLibraryResult<()> {
-    validate_id(&membership.id, "id")?;
     validate_id(&membership.playlist_id, "playlistId")?;
     validate_id(&membership.item_id, "itemId")?;
     validate_timestamp(membership.updated_at_ms, "updatedAt")?;
-    if membership.position < 0 {
-        return Err(MusicLibraryError::validation(
-            "position",
-            "must be zero or greater",
-        ));
-    }
     if membership.start_ms.is_some_and(|value| value < 0)
         || membership.end_ms.is_some_and(|value| value < 0)
         || matches!((membership.start_ms, membership.end_ms), (Some(start), Some(end)) if end < start)
@@ -229,24 +263,7 @@ pub(crate) fn validate_membership_write(
             "must not be earlier than the non-negative start",
         ));
     }
-    if membership
-        .volume
-        .is_some_and(|volume| !(0.0..=1.0).contains(&volume))
-    {
-        return Err(MusicLibraryError::validation(
-            "volume",
-            "must be between 0 and 1",
-        ));
-    }
-    if membership
-        .rate
-        .is_some_and(|rate| !(0.25..=2.0).contains(&rate))
-    {
-        return Err(MusicLibraryError::validation(
-            "rate",
-            "must be between 0.25 and 2",
-        ));
-    }
+    validate_membership_volume_rate(membership.volume_milli, membership.rate_milli)?;
     if membership
         .expected_version
         .is_some_and(|version| version <= 0)
@@ -588,7 +605,6 @@ pub(crate) fn validate_metadata_override_write(
         ("titleOverride", &request.title_override, 500_usize),
         ("artistOverride", &request.artist_override, 500_usize),
         ("albumOverride", &request.album_override, 500_usize),
-        ("artworkOverride", &request.artwork_override, 2_048_usize),
     ] {
         if let Some(value) = value {
             if value.trim().is_empty() || value.len() > maximum {
@@ -598,6 +614,10 @@ pub(crate) fn validate_metadata_override_write(
                 ));
             }
         }
+    }
+    if let Some(reference) = &request.artwork_override {
+        crate::managed_artwork::parse_artwork_reference(reference)
+            .map_err(|error| MusicLibraryError::validation("artworkOverride", error.to_string()))?;
     }
     validate_timestamp(request.updated_at_ms, "updatedAt")
 }
@@ -632,30 +652,42 @@ pub(crate) fn validate_advanced_membership_write(
     request: &MusicAdvancedMembershipWrite,
 ) -> MusicLibraryResult<()> {
     validate_membership_write(&request.membership)?;
+    validate_skip_ranges(
+        request
+            .skip_ranges
+            .iter()
+            .map(|range| (range.start_ms, range.end_ms)),
+        "skipRanges",
+    )
+}
+
+/// Checks that skip ranges are at most [`MAX_SKIP_RANGES`], non-empty, ordered, and
+/// non-overlapping, so each range's ordinal is its index.
+pub(crate) fn validate_skip_ranges(
+    ranges: impl ExactSizeIterator<Item = (i64, i64)>,
+    field: &str,
+) -> MusicLibraryResult<()> {
+    if ranges.len() > MAX_SKIP_RANGES {
+        return Err(MusicLibraryError::validation(
+            field,
+            format!("must contain at most {MAX_SKIP_RANGES} ranges"),
+        ));
+    }
     let mut previous_end = None;
-    let mut ids = HashSet::new();
-    for (index, range) in request.skip_ranges.iter().enumerate() {
-        validate_id(&range.id, "skipRanges.id")?;
-        if range.membership_id != request.membership.id {
+    for (start_ms, end_ms) in ranges {
+        if start_ms < 0 || end_ms <= start_ms {
             return Err(MusicLibraryError::validation(
-                "skipRanges.membershipId",
-                "must match membership.id",
+                field,
+                "must contain ranges with endMs greater than a non-negative startMs",
             ));
         }
-        if !ids.insert(&range.id) || range.start_ms < 0 || range.end_ms <= range.start_ms {
+        if previous_end.is_some_and(|end| start_ms < end) {
             return Err(MusicLibraryError::validation(
-                "skipRanges",
-                "must contain unique ranges with endMs greater than startMs",
+                field,
+                "must be ordered and non-overlapping",
             ));
         }
-        if range.sort_order != index as i64 || previous_end.is_some_and(|end| range.start_ms < end)
-        {
-            return Err(MusicLibraryError::validation(
-                "skipRanges",
-                "must be ordered, contiguous in sort order, and non-overlapping",
-            ));
-        }
-        previous_end = Some(range.end_ms);
+        previous_end = Some(end_ms);
     }
     Ok(())
 }

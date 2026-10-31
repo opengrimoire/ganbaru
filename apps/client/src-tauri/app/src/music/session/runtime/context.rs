@@ -88,7 +88,9 @@ pub(super) async fn test_pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -210,7 +212,7 @@ impl Owner {
         &mut self,
         activation: ContextActivation,
         mut transaction: Transaction<'_, Sqlite>,
-        permit: crate::vault::ownership::ManagedVaultWritePermit,
+        permit: crate::vault::write_fence::ManagedVaultWritePermit,
         action: Option<(&str, &str)>,
     ) -> MusicLibraryResult<bool> {
         if self.state.owner == SessionOwner::Review {
@@ -491,7 +493,7 @@ impl Owner {
         &mut self,
         soundscape: super::context_soundscape::PreparedSoundscape,
         activation: ContextActivation,
-        permit: crate::vault::ownership::ManagedVaultWritePermit,
+        permit: crate::vault::write_fence::ManagedVaultWritePermit,
     ) -> MusicLibraryResult<()> {
         if let Err(error) = self
             .deliver_context_soundscape(soundscape, activation, permit)

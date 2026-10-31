@@ -1,5 +1,7 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "./NotesLoadingSkeleton.svelte";
+  import NotesBlockEditConflicts from "./conflicts/NotesBlockEditConflicts.svelte";
+  import NotesPageFieldConflicts from "./conflicts/NotesPageFieldConflicts.svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import {
     beginLazyComponentLoad,
@@ -46,6 +48,8 @@
     notesDocumentEndFocusIsCurrent,
   } from "$lib/notes/editor/focus";
   import { notesTextSelectionFromEditableRoot } from "$lib/notes/editor/selection";
+  import { notesCaretAfterRefresh, type NotesCaret } from "$lib/notes/editor/block-rebase";
+  import { notesConflicts } from "$lib/stores/notes-conflicts.svelte";
   import {
     formatNotesActivityDate,
     formatNotesActivityTime,
@@ -207,6 +211,13 @@
   let lastHandledTitleFocusRequestId = 0;
 
   const page = $derived(notes.loadedPage);
+  const fieldConflictCount = $derived(notesConflicts.read(page?.id)?.conflicts.length ?? 0);
+
+  $effect(() => {
+    void notesConflicts.revision;
+    const pageId = page?.id;
+    if (pageId) void notesConflicts.ensure(pageId);
+  });
   const editablePageTitle = $derived(page ? notesPageTitle(page, "") : "");
   const currentPageTitle = $derived(page ? notesPageTitle(page, t("notes.untitled")) : t("notes.untitled"));
   const pageIconLabel = $derived(pageIconScreenReaderText(page?.icon ?? null));
@@ -563,6 +574,61 @@
       return () => { cancelled = true; };
     });
   }
+
+  /** The caret in a text block and the block order it was read in, kept so a refresh that removes the block moves it. */
+  let lastCaret: { pageId: string; caret: NotesCaret; order: string[] } | null = null;
+
+  function readEditingCaret(): NotesCaret | null {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !editorRoot?.contains(active)) return null;
+    const blockId = active.dataset.notesBlockId;
+    if (!blockId) return null;
+    const selection = notesTextSelectionFromEditableRoot(active);
+    return { blockId, start: selection?.start ?? 0, end: selection?.end ?? 0 };
+  }
+
+  /** Forgets the caret when the user moves focus away, keeping it only when a refresh replaced the focused block. */
+  function forgetCaretOnLeave(event: FocusEvent): void {
+    const left = event.target;
+    if (!(left instanceof HTMLElement)) return;
+    queueMicrotask(() => {
+      if (left.isConnected) lastCaret = null;
+    });
+  }
+
+  function rememberEditingCaret(): void {
+    const caret = readEditingCaret();
+    const pageId = notes.loadedPage?.id;
+    if (caret && pageId) lastCaret = { pageId, caret, order: notes.flatBlockOutlines.map((item) => item.outline.id) };
+  }
+
+  $effect(() => {
+    if (!editorRoot) return;
+    const root = editorRoot;
+    document.addEventListener("selectionchange", rememberEditingCaret);
+    root.addEventListener("focusout", forgetCaretOnLeave);
+    return () => {
+      document.removeEventListener("selectionchange", rememberEditingCaret);
+      root.removeEventListener("focusout", forgetCaretOnLeave);
+    };
+  });
+
+  $effect(() => {
+    const order = notes.flatBlockOutlines.map((item) => item.outline.id);
+    untrack(() => {
+      const remembered = lastCaret;
+      if (!remembered || readEditingCaret()) return;
+      // Focus elsewhere means the user left the editor, so a refresh does not pull it back.
+      if (document.activeElement && document.activeElement !== document.body) return;
+      lastCaret = null;
+      if (remembered.pageId !== notes.loadedPage?.id) return;
+      const next = notesCaretAfterRefresh(remembered.caret, remembered.order, order, (blockId) => {
+        const block = notes.blockById(blockId);
+        return block ? blockPlainText(block).length : 0;
+      });
+      if (next) notes.focusBlock(next.blockId, { start: next.start, end: next.end });
+    });
+  });
 
   onMount(() => {
     activityNowMs = Date.now();
@@ -1112,6 +1178,21 @@
         copy={false}
         onDismiss={() => notes.dismissEditorConflict()}
       />
+    {/if}
+    {#if page && (notes.blockConflicts.length > 0 || fieldConflictCount > 0)}
+      <div class="flex max-h-2/5 shrink-0 flex-col gap-2 overflow-y-auto border-b border-border px-4 py-2">
+        <NotesBlockEditConflicts
+          conflicts={notes.blockConflicts}
+          refusals={notes.heldEditRefusals}
+          onResolve={notes.resolveBlockConflict}
+        />
+        <NotesPageFieldConflicts
+          pageId={page.id}
+          properties={page.properties}
+          blockOrder={notes.flatBlockOutlines.map((item) => item.outline.id)}
+          onResolved={() => notes.refreshAfterSync()}
+        />
+      </div>
     {/if}
     {#snippet discussionsTrigger()}
       <button

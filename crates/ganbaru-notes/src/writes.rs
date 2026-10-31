@@ -17,6 +17,7 @@ mod parents;
 mod payloads;
 mod sort;
 
+pub(crate) use block_commands::update_block_tx;
 pub use block_commands::{
     append_block_children, trash_block, trash_blocks, update_block, update_block_if_unchanged,
 };
@@ -28,11 +29,12 @@ pub(crate) use page_duplicates::{insert_child_page_copy, plan_child_page_copy};
 pub use page_lifecycle::{
     archive_page, move_page, permanently_delete_page, purge_expired_trashed_pages, trash_page,
 };
+pub(crate) use pages::update_page_tx;
 pub use pages::{create_child_page_from_block, create_page, update_page};
 pub use parents::{
-    MAX_BLOCK_DEPTH, ParentTarget, parent_target_from_block_row, refresh_parent_has_children,
-    resolve_block_parent, touch_page, validate_page_parent_exists,
+    MAX_BLOCK_DEPTH, ParentTarget, parent_target_from_block_row, resolve_block_parent, touch_page,
+    touch_parent_block, validate_page_parent_exists,
 };
 pub(crate) use parents::{block_nesting_error, validate_block_for_parent};
 pub use payloads::{default_text_payload, page_title_properties, rich_text};
-pub use sort::next_sort_orders;
+pub use sort::next_order_keys;

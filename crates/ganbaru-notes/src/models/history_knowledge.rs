@@ -277,8 +277,15 @@ impl NoteSearchResultDto {
         status: String,
         anchor: Option<NoteCommentAnchorRow>,
         snippet: String,
+        local_author_name: &str,
     ) -> Result<Self, String> {
-        let display_name = parse_json(comment.display_name.clone(), "comment display name")?;
+        let display_name = parse_json(
+            crate::local_user::resolved_display_name_json(
+                comment.display_name.as_deref(),
+                local_author_name,
+            ),
+            "comment display name",
+        )?;
         Ok(Self {
             object: "search_result",
             id: format!("comment:{}", comment.id),

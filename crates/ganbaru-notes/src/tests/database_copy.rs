@@ -105,11 +105,12 @@ fn database_copy_across_notes_keeps_schema_views_rows_templates_and_self_relatio
             .into_iter()
             .enumerate()
         {
-            sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, configuration, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, configuration, order_key) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 .bind(format!("98989898-9898-4989-8989-{index:012}"))
                 .bind(DATABASE_A).bind(DATA_SOURCE_A).bind(view_type).bind(view_type)
                 .bind(json!({"type": view_type, (view_type): {"property_order": ["title", "priority"]}}).to_string())
-                .bind((index + 1) as f64).execute(&pool).await.unwrap();
+                .bind(ganbaru_sync_contracts::OrderKey::rank(u32::try_from(index + 1).unwrap()).unwrap().into_string())
+                .execute(&pool).await.unwrap();
         }
         let copied = serde_json::to_value(
             databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
@@ -176,7 +177,7 @@ fn database_copy_across_notes_keeps_schema_views_rows_templates_and_self_relatio
         assert_eq!(stored["properties"]["Related"]["relation"][0]["id"], row);
         assert_eq!(stored["properties"]["Priority"]["id"], priority);
         assert_eq!(stored["properties"]["Priority"]["select"]["id"], option);
-        let link: (String, String, String) = sqlx::query_as("SELECT source_property_id, target_page_id, target_data_source_id FROM notes_data_source_relation_links WHERE source_page_id = ?")
+        let link: (String, String, String) = sqlx::query_as("SELECT source_property_id, target_page_id, target_data_source_id FROM notes_relation_links WHERE source_page_id = ?")
             .bind(&row).fetch_one(&pool).await.unwrap();
         assert_eq!(link, (relation.into(), row.clone(), source.into()));
         let views: i64 =
@@ -246,6 +247,7 @@ async fn add_nested_graph(pool: &SqlitePool) {
             title: "Nested note".into(),
             parent: page_parent(PAGE_B),
             folder_id: None,
+            project_id: None,
             first_block_id: BLOCK_E.into(),
             after_block_id: None,
             properties: None,
@@ -462,8 +464,8 @@ fn database_replacement_is_atomic_and_missing_or_structural_targets_leave_no_obj
         request.parent = None;
         request.after_block_id = None;
         request.replace_block_id = Some(BLOCK_C.into());
-        let original_order: f64 =
-            sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let original_order: String =
+            sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
                 .bind(BLOCK_C)
                 .fetch_one(&pool)
                 .await
@@ -471,7 +473,7 @@ fn database_replacement_is_atomic_and_missing_or_structural_targets_leave_no_obj
         databases::create_linked_database_view(&pool, request)
             .await
             .unwrap();
-        let order: f64 = sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let order: String = sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
             .bind(BLOCK_C)
             .fetch_one(&pool)
             .await
@@ -691,6 +693,7 @@ fn copying_a_cut_note_preserves_nested_database_graphs() {
                 title: "Containing note".into(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_E.into(),
                 after_block_id: None,
                 properties: None,
@@ -885,7 +888,7 @@ fn duplicating_imported_database_placeholders_preserves_the_placeholder_without_
         .unwrap();
         let page = copied["page"]["id"].as_str().unwrap();
         let payload: String = sqlx::query_scalar(
-            "SELECT payload FROM notes_blocks WHERE page_id = ? AND type = 'child_database'",
+            "SELECT json_patch(attrs, text) FROM notes_blocks WHERE page_id = ? AND type = 'child_database'",
         )
         .bind(page)
         .fetch_one(&pool)
@@ -904,7 +907,7 @@ fn duplicating_imported_database_placeholders_preserves_the_placeholder_without_
 }
 
 #[test]
-fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relation_references() {
+fn copying_database_rows_preserves_assets_and_literal_values_and_drops_uncopied_relation_targets() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         seed_database(&pool).await;
@@ -955,8 +958,16 @@ fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relatio
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.Literal', json(?)) WHERE id = ?")
-            .bind(json!({"id": "literal", "type": "email", "email": "high"}).to_string()).bind(PAGE_B).execute(&pool).await.unwrap();
+        let mut schema = stored_schema(&pool, DATA_SOURCE_A).await;
+        schema["Literal"] =
+            json!({"id": "literal", "name": "Literal", "type": "email", "email": {}});
+        store_schema(&pool, DATA_SOURCE_A, &schema).await;
+        merge_page_properties(
+            &pool,
+            PAGE_B,
+            json!({"Literal": {"id": "literal", "type": "email", "email": "high"}}),
+        )
+        .await;
         let copied = serde_json::to_value(
             databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
                 .await
@@ -968,22 +979,82 @@ fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relatio
             serde_json::to_value(reads::get_page(&pool, &row, false).await.unwrap()).unwrap();
         assert_eq!(page["properties"]["Literal"]["email"], "high");
         assert_eq!(
-            page["properties"]["Related"]["relation"][1]["id"],
-            COMMENT_B
+            page["properties"]["Related"]["relation"],
+            json!([{"id": row}]),
+            "a trashed row the copy does not include is not a row of the copied data source"
         );
         let links: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notes_data_source_relation_links WHERE source_page_id = ?",
+            "SELECT COUNT(*) FROM notes_relation_links WHERE source_page_id = ?",
         )
         .bind(&row)
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(links, 1);
-        let pins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ? AND owner_type = 'block' AND page_id = ?")
+        let pins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'block' AND page_id = ?")
             .bind(asset).bind(&row).fetch_one(&pool).await.unwrap();
         assert_eq!(pins, 1);
         writes::trash_block(&pool, DATABASE_A, true).await.unwrap();
         assert!(reads::get_page(&pool, &row, false).await.is_ok());
+    });
+}
+
+#[test]
+fn copying_a_database_drops_links_to_archived_rows_instead_of_failing() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        seed_database(&pool).await;
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: COMMENT_B.into(),
+                title: "Archived target".into(),
+                first_block_id: COMMENT_C.into(),
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_B,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "related".into(),
+                value: json!([PAGE_B, COMMENT_B]),
+            },
+        )
+        .await
+        .unwrap();
+        writes::archive_page(&pool, COMMENT_B, true).await.unwrap();
+
+        let copied = serde_json::to_value(
+            databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let row: String = sqlx::query_scalar(
+            "SELECT id FROM notes_pages WHERE parent_data_source_id = ? AND title = 'First row'",
+        )
+        .bind(copied["data_source"]["id"].as_str().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let page =
+            serde_json::to_value(reads::get_page(&pool, &row, false).await.unwrap()).unwrap();
+        assert_eq!(
+            page["properties"]["Related"]["relation"],
+            json!([{"id": row}])
+        );
+        let source =
+            serde_json::to_value(reads::get_page(&pool, PAGE_B, false).await.unwrap()).unwrap();
+        assert_eq!(
+            source["properties"]["Related"]["relation"],
+            json!([{"id": PAGE_B}, {"id": COMMENT_B}]),
+            "the source row keeps its link to the archived row"
+        );
     });
 }
 
@@ -1082,19 +1153,20 @@ fn multi_source_database_copy_remaps_inverse_relations_with_overlapping_schema_i
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         seed_database(&pool).await;
-        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, properties) VALUES (?, ?, 'Second source', ?)")
-            .bind(DATA_SOURCE_B).bind(DATABASE_A).bind(json!({
+        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title) VALUES (?, ?, 'Second source')")
+            .bind(DATA_SOURCE_B).bind(DATABASE_A).execute(&pool).await.unwrap();
+        store_schema(&pool, DATA_SOURCE_B, &json!({
                 "Name": {"id": "title", "name": "Name", "type": "title", "title": {}},
                 "Priority": {"id": "priority", "name": "Priority", "type": "select", "select": {
                     "options": [{"id": "high", "name": "High", "color": "red"}]}},
                 "Related": {"id": "related", "name": "Related", "type": "relation", "relation": {
                     "data_source_id": DATA_SOURCE_A, "dual_property": {"synced_property_id": "related", "synced_property_name": "Related"}}}
-            }).to_string()).execute(&pool).await.unwrap();
+            })).await;
         sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type) VALUES (?, ?, ?, 'Second table', 'table')")
             .bind(DATABASE_VIEW_B).bind(DATABASE_A).bind(DATA_SOURCE_B).execute(&pool).await.unwrap();
-        sqlx::query("UPDATE notes_data_sources SET properties = json_set(properties, '$.Related.relation', json(?)) WHERE id = ?")
-            .bind(json!({"data_source_id": DATA_SOURCE_B, "dual_property": {"synced_property_id": "related", "synced_property_name": "Related"}}).to_string())
-            .bind(DATA_SOURCE_A).execute(&pool).await.unwrap();
+        let mut schema_a = stored_schema(&pool, DATA_SOURCE_A).await;
+        schema_a["Related"]["relation"] = json!({"data_source_id": DATA_SOURCE_B, "dual_property": {"synced_property_id": "related", "synced_property_name": "Related"}});
+        store_schema(&pool, DATA_SOURCE_A, &schema_a).await;
         data_sources::rows::create_data_source_row_page(
             &pool,
             DATA_SOURCE_B,
@@ -1107,8 +1179,6 @@ fn multi_source_database_copy_remaps_inverse_relations_with_overlapping_schema_i
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.Related.relation', json(?)) WHERE id = ?")
-            .bind(json!([{"id": COMMENT_A}]).to_string()).bind(PAGE_B).execute(&pool).await.unwrap();
         data_sources::layouts::table::update_data_source_row_property(
             &pool,
             DATA_SOURCE_B,
@@ -1123,12 +1193,18 @@ fn multi_source_database_copy_remaps_inverse_relations_with_overlapping_schema_i
         databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
             .await
             .unwrap();
-        let sources: Vec<(String, String)> =
-            sqlx::query_as("SELECT id, properties FROM notes_data_sources WHERE database_id = ?")
-                .bind(DATABASE_B)
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let source_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM notes_data_sources WHERE database_id = ? ORDER BY rowid",
+        )
+        .bind(DATABASE_B)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let mut sources = Vec::new();
+        for id in source_ids {
+            let schema = stored_schema(&pool, &id).await.to_string();
+            sources.push((id, schema));
+        }
         assert_eq!(sources.len(), 2);
         let schema_a: Value = serde_json::from_str(&sources[0].1).unwrap();
         let schema_b: Value = serde_json::from_str(&sources[1].1).unwrap();

@@ -9,8 +9,8 @@ use crate::models::{
     NoteMarkdownImportDiagnosticDto, NoteMarkdownImportDto, NoteMarkdownImportRequest, NoteParent,
 };
 use crate::transfers::import_writer::{
-    ImportBlock, ImportedPageCreate, count_import_blocks, create_imported_page,
-    validate_import_block_depth,
+    ImportBlock, ImportedPageCreate, MAX_UNSUPPORTED_RAW_BYTES, count_import_blocks,
+    create_imported_page, validate_import_block_depth,
 };
 use crate::validation::{MAX_TABLE_WIDTH, validate_block_payload, validate_parent};
 use serde_json::{Value, json};
@@ -753,7 +753,14 @@ fn rich_text(text: &str, url: Option<&str>) -> Value {
     })
 }
 
+/// Keeps unmapped Markdown as an `unsupported` block with its raw source.
+///
+/// Source too large for the block attribute bound becomes a paragraph of the raw text instead, so
+/// the import splitter can spread it over several bounded blocks without dropping it.
 fn unsupported_block(line: i64, raw: &str, warning: &str) -> ImportBlock {
+    if raw.len() > MAX_UNSUPPORTED_RAW_BYTES {
+        return markdown_block("paragraph", text_payload(raw), line, Vec::new());
+    }
     markdown_block(
         "unsupported",
         json!({

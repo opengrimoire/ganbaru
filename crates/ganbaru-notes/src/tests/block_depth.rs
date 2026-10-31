@@ -11,12 +11,12 @@ fn chain_id(level: i64) -> String {
 async fn insert_paragraph_chain(pool: &SqlitePool) {
     sqlx::query(
         "WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM ids WHERE n < ?)
-         INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, parent_block_id, type, payload, plain_text, sort_order)
+         INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, parent_block_id, type, text, plain_text, order_key)
          SELECT printf('d0000000-0000-4000-8000-%012d', n), ?,
             CASE WHEN n = 1 THEN 'page_id' ELSE 'block_id' END,
             CASE WHEN n = 1 THEN ? END,
             CASE WHEN n = 1 THEN NULL ELSE printf('d0000000-0000-4000-8000-%012d', n - 1) END,
-            'paragraph', '{\"rich_text\":[]}', '', n FROM ids",
+            'paragraph', '{\"rich_text\":[]}', '', 'a0' FROM ids",
     )
     .bind(CHAIN_DEPTH)
     .bind(PAGE_A)

@@ -53,7 +53,7 @@ import {
 /** A local source this device cannot scan until the user chooses its folder. */
 export interface UnlinkedMusicSource {
   collection: MusicSourceCollection;
-  /** `needs-relink` when no folder was chosen on this device, `missing` when the chosen folder is gone. */
+  /** `unbound` when no folder was chosen on this device, `missing` when the chosen folder is gone. */
   status: Exclude<LocalRootBindingStatus, "available">;
 }
 
@@ -176,7 +176,6 @@ export class MusicSourcesController {
         };
         const preview = await this.api.resolveYouTube(source, signal);
         await this.api.saveYouTubePlaylist({
-          collectionId: collection.id,
           playlistId: collection.youtubePlaylistId,
           name: collection.name,
           videoIds: preview.videoIds,
@@ -360,12 +359,9 @@ export class MusicSourcesController {
     const trimmedName = name.trim();
     if (!trimmedName) throw new Error("Enter a source name.");
     const rootId = this.id();
-    const collectionId = this.id();
     const createdAtMs = this.now();
-    await this.api.createRoot({
+    const { id: collectionId } = await this.api.createRoot({
       rootId,
-      collectionId,
-      identityKey: `local-root:${rootId}`,
       name: trimmedName,
       createdAtMs,
     });
@@ -409,9 +405,7 @@ export class MusicSourcesController {
     if (!collection) throw new Error("The music source is unavailable.");
     if (!trimmedName) throw new Error("Enter a source name.");
     await this.api.saveCollection({
-      id: collection.id,
       kind: collection.kind,
-      identityKey: collection.identityKey,
       name: trimmedName,
       localRootId: collection.localRootId,
       youtubePlaylistId: collection.youtubePlaylistId,
@@ -468,9 +462,7 @@ export class MusicSourcesController {
       return preview.videoId;
     }
     if (!preview.playlistId || preview.videoIds.length === 0) throw new Error("The playlist has no available videos.");
-    const collectionId = this.id();
-    await this.api.saveYouTubePlaylist({
-      collectionId,
+    const { collectionId } = await this.api.saveYouTubePlaylist({
       playlistId: preview.playlistId,
       name: name.trim() || preview.title || preview.playlistId,
       videoIds: preview.videoIds,
@@ -575,12 +567,10 @@ export class MusicSourcesController {
     if (!this.vaultId || !this.itemRepairPreview) throw new Error("No item repair preview is ready.");
     const preview = this.itemRepairPreview;
     const rootId = this.id();
-    const locationId = this.id();
     const rootName = musicFolderDisplayName(preview.folderPath);
-    await this.api.applyItemRepair({
+    const { id: locationId } = await this.api.applyItemRepair({
       itemId: preview.itemId,
       rootId,
-      locationId,
       rootName,
       folderPath: preview.folderPath,
       relativePath: preview.relativePath,

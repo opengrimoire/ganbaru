@@ -102,7 +102,8 @@ describe("normalizeContactsError", () => {
     expect(normalizeContactsError({ code: "teapot", message: "no" }).code).toBe("failed");
     expect(normalizeContactsError(new Error("boom")).code).toBe("failed");
     expect(normalizeContactsError("plain").message).toBe("plain");
-    const typed = new ContactsError("read_only", "ro");
+    expect(normalizeContactsError({ code: "read_only", message: "ro" }).code).toBe("failed");
+    const typed = new ContactsError("identity_unavailable", "pending");
     expect(normalizeContactsError(typed)).toBe(typed);
   });
 });

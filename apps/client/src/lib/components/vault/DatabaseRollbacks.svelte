@@ -9,7 +9,6 @@
   import {
     dismissDatabaseRollback,
     formatVaultError,
-    getVaultOwnershipStatus,
     listDatabaseRollbacks,
     pendingFlaggedRollbacks,
     restoreDatabaseRollback,
@@ -30,7 +29,6 @@
     "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55 dark:bg-transparent";
 
   let rollbacks = $state<DatabaseRollback[]>([]);
-  let canRestore = $state(true);
   let pendingRollback = $state<DatabaseRollback | null>(null);
   let busy = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -41,11 +39,6 @@
       rollbacks = await listDatabaseRollbacks();
     } catch (cause: unknown) {
       error = formatVaultError(cause, "general", t);
-    }
-    try {
-      canRestore = (await getVaultOwnershipStatus()).canWrite;
-    } catch {
-      canRestore = true;
     }
   }
 
@@ -106,9 +99,6 @@
     <div class="px-1">
       <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.data.rollbacksHeading")}</h2>
       <p class="mt-0.5 text-[0.8rem] leading-5 text-muted-foreground">{t("settings.data.rollbacksDescription")}</p>
-      {#if !canRestore}
-        <p class="mt-0.5 text-[0.8rem] leading-5 text-muted-foreground">{t("settings.data.rollbackNeedsOwnership")}</p>
-      {/if}
     </div>
 
     {#each flagged as rollback (rollback.id)}
@@ -129,7 +119,7 @@
           <button
             type="button"
             onclick={() => pendingRollback = rollback}
-            disabled={busy !== null || !canRestore}
+            disabled={busy !== null}
             class={buttonClass}
           >
             <RotateCcw size={14} strokeWidth={1.9} class="shrink-0" />
@@ -149,7 +139,7 @@
           <button
             type="button"
             onclick={() => pendingRollback = rollback}
-            disabled={busy !== null || !canRestore}
+            disabled={busy !== null}
             class={buttonClass}
           >
             {#if busy === rollback.id}

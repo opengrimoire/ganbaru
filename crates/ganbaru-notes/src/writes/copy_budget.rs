@@ -52,7 +52,10 @@ impl CopyBudget {
         id: &str,
     ) -> Result<(), String> {
         let bytes: i64 = sqlx::query_scalar(
-            "SELECT length(CAST(title AS BLOB)) + length(CAST(properties AS BLOB))
+            "SELECT length(CAST(title AS BLOB))
+                + coalesce((SELECT sum(length(CAST(stored_value.value AS BLOB)))
+                    FROM notes_page_property_values AS stored_value
+                    WHERE stored_value.page_id = notes_pages.id), 0)
                 + coalesce(length(CAST(icon AS BLOB)), 0)
                 + coalesce(length(CAST(cover AS BLOB)), 0)
                 + coalesce(length(CAST(source_provider AS BLOB)), 0)
@@ -140,7 +143,7 @@ impl CopyBudget {
                 SELECT bytes FROM selected_threads
                 UNION ALL
                 SELECT length(CAST(comment.rich_text AS BLOB)) + length(CAST(comment.plain_text AS BLOB))
-                    + length(CAST(comment.created_by AS BLOB)) + length(CAST(comment.display_name AS BLOB))
+                    + length(CAST(comment.created_by AS BLOB)) + COALESCE(length(CAST(comment.display_name AS BLOB)), 0)
                     + length(CAST(comment.attachments AS BLOB))
                 FROM notes_comments AS comment JOIN selected_threads ON comment.thread_id = selected_threads.id
                 LIMIT ?

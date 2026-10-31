@@ -2,14 +2,16 @@
 
 use crate::db;
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_chat::conversion::{conversation_cursor_key, membership_key};
+use ganbaru_chat::ids::new_id;
+use ganbaru_chat::project_defaults;
 use ganbaru_chat_contracts::models::{
     ChatChannelId, ChatChannelRead, ChatConversationId, ChatError, ChatErrorCode, ChatResult,
     ChatWorkAssignmentState, UtcTimestamp,
 };
 use serde::Deserialize;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 const LOCAL_PARTICIPANT_ID: &str = "participant:local-owner";
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -44,7 +46,9 @@ pub async fn chat_list_channels(
     archived: bool,
 ) -> ChatResult<Vec<ChatChannelRead>> {
     validate_project_id(&project_id)?;
-    read_channels(&chat_pool(app, db_url).await?, Some(&project_id), archived).await
+    let pool = chat_pool(app, db_url).await?;
+    ensure_chat_defaults(&pool, ChatDefaultsScope::Project(&project_id)).await?;
+    read_channels(&pool, Some(&project_id), archived).await
 }
 
 #[tauri::command]
@@ -52,7 +56,9 @@ pub async fn chat_list_navigation_channels(
     app: tauri::AppHandle,
     db_url: String,
 ) -> ChatResult<Vec<ChatChannelRead>> {
-    read_channels(&chat_pool(app, db_url).await?, None, false).await
+    let pool = chat_pool(app, db_url).await?;
+    ensure_chat_defaults(&pool, ChatDefaultsScope::AllProjects).await?;
+    read_channels(&pool, None, false).await
 }
 
 #[tauri::command]
@@ -78,7 +84,7 @@ pub async fn chat_create_channel(
     require_active_project(&pool, &request.project_id).await?;
     let now = now_timestamp()?;
     let conversation_id =
-        ChatConversationId::new(new_id("conversation")).map_err(identifier_error)?;
+        ChatConversationId::new(new_id("conversation")?).map_err(identifier_error)?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_conversations
@@ -110,11 +116,15 @@ pub async fn chat_create_channel(
     .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_conversation_memberships
-            (conversation_id, participant_id, membership_role, created_at, updated_at)
-         VALUES (?, ?, 'owner', ?, ?)",
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES (?, ?, ?, 'owner', ?, ?)",
     )
     .bind(conversation_id.as_str())
     .bind(LOCAL_PARTICIPANT_ID)
+    .bind(sync_key(membership_key(
+        conversation_id.as_str(),
+        LOCAL_PARTICIPANT_ID,
+    ))?)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -189,35 +199,96 @@ pub async fn chat_set_channel_read(
     let pool = chat_pool(app, db_url).await?;
     let channel = read_channel(&pool, &channel_id).await?;
     let now = now_timestamp()?;
-    let ordinal = if read {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT coalesce(max(ordinal), 0)
-             FROM chat_conversation_items
-             WHERE conversation_id = ? AND reply_thread_id IS NULL",
-        )
-        .bind(channel.conversation_id.as_str())
-        .fetch_one(&pool)
-        .await
-        .map_err(persistence_error)?
+    if read {
+        mark_conversation_read(&pool, &channel.conversation_id, LOCAL_PARTICIPANT_ID, &now).await?;
     } else {
-        0
+        mark_conversation_unread(&pool, &channel.conversation_id, LOCAL_PARTICIPANT_ID, &now)
+            .await?;
+    }
+    read_channel(&pool, &channel_id).await
+}
+
+/// Advances a participant's read cursor of a conversation to its last root item.
+///
+/// The cursor never moves backward and the row is not rewritten when the position does not
+/// grow, because sync merges read cursors as a maximum.
+pub(crate) async fn mark_conversation_read(
+    pool: &SqlitePool,
+    conversation_id: &ChatConversationId,
+    participant_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let last = sqlx::query_as::<_, (String, String)>(
+        "SELECT order_key, id FROM chat_conversation_items
+         WHERE conversation_id = ? AND reply_thread_id IS NULL
+         ORDER BY order_key DESC, id DESC LIMIT 1",
+    )
+    .bind(conversation_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    let Some((order_key, item_id)) = last else {
+        return Ok(());
     };
     sqlx::query(
         "INSERT INTO chat_conversation_read_cursors
-            (conversation_id, participant_id, last_read_root_ordinal, updated_at)
-         VALUES (?, ?, ?, ?)
+            (conversation_id, participant_id, sync_key, last_read_order_key,
+             last_read_item_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(conversation_id, participant_id) DO UPDATE SET
-            last_read_root_ordinal = excluded.last_read_root_ordinal,
-            updated_at = excluded.updated_at",
+            last_read_order_key = excluded.last_read_order_key,
+            last_read_item_id = excluded.last_read_item_id,
+            updated_at = excluded.updated_at
+         WHERE (excluded.last_read_order_key, excluded.last_read_item_id)
+             > (last_read_order_key, last_read_item_id)",
     )
-    .bind(channel.conversation_id.as_str())
-    .bind(LOCAL_PARTICIPANT_ID)
-    .bind(ordinal)
+    .bind(conversation_id.as_str())
+    .bind(participant_id)
+    .bind(sync_key(conversation_cursor_key(
+        conversation_id.as_str(),
+        participant_id,
+    ))?)
+    .bind(order_key)
+    .bind(item_id)
     .bind(now.as_str())
-    .execute(&pool)
+    .execute(pool)
     .await
     .map_err(persistence_error)?;
-    read_channel(&pool, &channel_id).await
+    Ok(())
+}
+
+/// Resets a participant's read cursor of a conversation to nothing read.
+///
+/// This is the one write that moves a cursor backward. Sync merges read cursors as a maximum,
+/// so a device that has read further keeps its position, and a later read on any device
+/// replaces the reset.
+async fn mark_conversation_unread(
+    pool: &SqlitePool,
+    conversation_id: &ChatConversationId,
+    participant_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "INSERT INTO chat_conversation_read_cursors
+            (conversation_id, participant_id, sync_key, last_read_order_key,
+             last_read_item_id, updated_at)
+         VALUES (?, ?, ?, '', '', ?)
+         ON CONFLICT(conversation_id, participant_id) DO UPDATE SET
+            last_read_order_key = '',
+            last_read_item_id = '',
+            updated_at = excluded.updated_at",
+    )
+    .bind(conversation_id.as_str())
+    .bind(participant_id)
+    .bind(sync_key(conversation_cursor_key(
+        conversation_id.as_str(),
+        participant_id,
+    ))?)
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 pub(crate) async fn read_channel(
@@ -301,13 +372,14 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
                AND item.reply_thread_id IS NULL
                AND item.item_kind = 'message'
                AND message.deleted_at IS NULL
-               AND message.author_participant_id != '{LOCAL_PARTICIPANT_ID}'
-               AND item.ordinal > coalesce((
-                    SELECT cursor.last_read_root_ordinal
-                    FROM chat_conversation_read_cursors cursor
+               AND message.author_participant_id IS NOT '{LOCAL_PARTICIPANT_ID}'
+               AND NOT EXISTS (
+                    SELECT 1 FROM chat_conversation_read_cursors cursor
                     WHERE cursor.conversation_id = channel.conversation_id
                       AND cursor.participant_id = '{LOCAL_PARTICIPANT_ID}'
-               ), 0)) AS unread_count,
+                      AND (cursor.last_read_order_key, cursor.last_read_item_id)
+                          >= (item.order_key, item.id)
+               )) AS unread_count,
             (SELECT revision.normalized_markdown
              FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
@@ -316,7 +388,7 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
              WHERE item.conversation_id = channel.conversation_id
                AND item.reply_thread_id IS NULL
                AND message.deleted_at IS NULL
-             ORDER BY item.ordinal DESC LIMIT 1) AS latest_preview,
+             ORDER BY item.order_key DESC, item.id DESC LIMIT 1) AS latest_preview,
             (SELECT assignment.state
              FROM chat_work_assignments assignment
              JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
@@ -579,6 +651,49 @@ pub(crate) async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResu
     })
 }
 
+/// Projects whose Chat defaults a command creates before it reads. A missing project or working
+/// folder leaves nothing to create.
+pub(crate) enum ChatDefaultsScope<'a> {
+    /// One project.
+    Project(&'a str),
+    /// The project that owns a working folder.
+    #[cfg(desktop)]
+    WorkingFolder(&'a str),
+    /// Every project.
+    AllProjects,
+}
+
+/// Creates missing default channels and current-folder execution environments for `scope`.
+pub(crate) async fn ensure_chat_defaults(
+    pool: &SqlitePool,
+    scope: ChatDefaultsScope<'_>,
+) -> ChatResult<()> {
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let ensured = match scope {
+        ChatDefaultsScope::Project(project_id) => {
+            project_defaults::ensure_project_chat_defaults(&mut transaction, project_id, &now).await
+        }
+        #[cfg(desktop)]
+        ChatDefaultsScope::WorkingFolder(working_folder_id) => {
+            project_defaults::ensure_working_folder_chat_defaults(
+                &mut transaction,
+                working_folder_id,
+                &now,
+            )
+            .await
+        }
+        ChatDefaultsScope::AllProjects => {
+            project_defaults::ensure_all_project_chat_defaults(&mut transaction, &now).await
+        }
+    };
+    match ensured {
+        Ok(()) => transaction.commit().await.map_err(persistence_error),
+        Err(error) if error.code == ChatErrorCode::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn now_timestamp() -> ChatResult<UtcTimestamp> {
     timestamp(DateTime::<Utc>::from(SystemTime::now()).to_rfc3339_opts(SecondsFormat::Millis, true))
 }
@@ -611,6 +726,17 @@ pub(crate) fn u64_value(value: i64) -> ChatResult<u64> {
     })
 }
 
+/// Maps a failed `sync_key` derivation, which only an id outside the row key bounds causes.
+pub(crate) fn sync_key(derived: Result<String, String>) -> ChatResult<String> {
+    derived.map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Validation,
+            "Chat identifiers are too long to save",
+            false,
+        )
+    })
+}
+
 pub(crate) fn persistence_error(_error: sqlx::Error) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
@@ -627,61 +753,200 @@ pub(crate) fn identifier_error(_error: String) -> ChatError {
     )
 }
 
-fn new_id(prefix: &str) -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}:{nanos:032x}{sequence:016x}")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::read_channel;
-    use ganbaru_chat_contracts::models::ChatChannelId;
+    use super::{LOCAL_PARTICIPANT_ID, mark_conversation_read, read_channel, timestamp};
+    use ganbaru_chat_contracts::models::{ChatChannelId, ChatConversationId};
 
     const NOW: &str = "2026-10-20T12:00:00.000Z";
+    const LATER: &str = "2026-10-20T12:05:00.000Z";
+
+    async fn project_channel(pool: &sqlx::SqlitePool) -> (ChatChannelId, ChatConversationId) {
+        let (channel_id, conversation_id): (String, String) = sqlx::query_as(
+            "SELECT id, conversation_id FROM chat_channels WHERE project_id = 'project-chat'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (
+            ChatChannelId::new(channel_id).unwrap(),
+            ChatConversationId::new(conversation_id).unwrap(),
+        )
+    }
+
+    async fn seed_teammate_messages(
+        pool: &sqlx::SqlitePool,
+        conversation_id: &ChatConversationId,
+        messages: &[(&str, &str, bool)],
+    ) {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT OR IGNORE INTO chat_participants
+                (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant:teammate', 'ai_teammate', 'Teammate', '{NOW}', '{NOW}');"
+        )))
+        .execute(pool)
+        .await
+        .unwrap();
+        for (item_id, order_key, deleted) in messages {
+            let deleted_at = deleted.then_some(NOW);
+            let revision_id = format!("revision:{item_id}");
+            sqlx::query(
+                "INSERT INTO chat_conversation_items
+                    (id, conversation_id, item_kind, order_key, created_at)
+                 VALUES (?, ?, 'message', ?, ?)",
+            )
+            .bind(item_id)
+            .bind(conversation_id.as_str())
+            .bind(order_key)
+            .bind(NOW)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO chat_communication_messages
+                    (item_id, author_participant_id, deleted_at, created_at)
+                 VALUES (?, 'participant:teammate', ?, ?)",
+            )
+            .bind(item_id)
+            .bind(deleted_at)
+            .bind(NOW)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO chat_communication_message_revisions
+                    (id, message_item_id, normalized_markdown, created_at)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(&revision_id)
+            .bind(item_id)
+            .bind(format!("Text of {item_id}"))
+            .bind(NOW)
+            .execute(pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?",
+            )
+            .bind(&revision_id)
+            .bind(item_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    async fn local_cursor(
+        pool: &sqlx::SqlitePool,
+        conversation_id: &ChatConversationId,
+    ) -> (String, String, String) {
+        sqlx::query_as(
+            "SELECT last_read_order_key, last_read_item_id, updated_at
+             FROM chat_conversation_read_cursors
+             WHERE conversation_id = ? AND participant_id = ?",
+        )
+        .bind(conversation_id.as_str())
+        .bind(LOCAL_PARTICIPANT_ID)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn channel_summaries_leave_out_deleted_messages() {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
-        let (channel_id, conversation_id): (String, String) = sqlx::query_as(
-            "SELECT id, conversation_id FROM chat_channels WHERE project_id = 'project-chat'",
+        let (channel_id, conversation_id) = project_channel(&pool).await;
+        seed_teammate_messages(
+            &pool,
+            &conversation_id,
+            &[("item:kept", "c000", false), ("item:deleted", "c001", true)],
         )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES ('participant:teammate', 'ai_teammate', 'Teammate', '{NOW}', '{NOW}');
-             INSERT INTO chat_conversation_items
-                (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item:kept', '{conversation_id}', 'message', 1, '{NOW}'),
-                    ('item:deleted', '{conversation_id}', 'message', 2, '{NOW}');
-             INSERT INTO chat_communication_messages
-                (item_id, author_participant_id, deleted_at, created_at)
-             VALUES ('item:kept', 'participant:teammate', NULL, '{NOW}'),
-                    ('item:deleted', 'participant:teammate', '{NOW}', '{NOW}');
-             INSERT INTO chat_communication_message_revisions
-                (id, message_item_id, revision, normalized_markdown, created_at)
-             VALUES ('revision:kept', 'item:kept', 1, 'Kept text', '{NOW}'),
-                    ('revision:deleted', 'item:deleted', 1, 'Deleted text', '{NOW}');
-             UPDATE chat_communication_messages SET current_revision_id = 'revision:' ||
-                substr(item_id, 6);"
-        )))
+        .await;
+
+        let channel = read_channel(&pool, &channel_id).await.unwrap();
+
+        assert_eq!(channel.latest_preview.as_deref(), Some("Text of item:kept"));
+        assert_eq!(channel.message_count, 1);
+        assert_eq!(channel.unread_count, 1);
+    }
+
+    #[tokio::test]
+    async fn unread_counts_break_equal_order_keys_by_item_id() {
+        let pool = crate::chat::tests::repository::pool_with_thread().await;
+        let (channel_id, conversation_id) = project_channel(&pool).await;
+        seed_teammate_messages(
+            &pool,
+            &conversation_id,
+            &[("item:a", "c000", false), ("item:b", "c000", false)],
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO chat_conversation_read_cursors
+                (conversation_id, participant_id, sync_key, last_read_order_key,
+                 last_read_item_id, updated_at)
+             VALUES (?, ?, 'cursor-test', 'c000', 'item:a', ?)",
+        )
+        .bind(conversation_id.as_str())
+        .bind(LOCAL_PARTICIPANT_ID)
+        .bind(NOW)
         .execute(&pool)
         .await
         .unwrap();
 
-        let channel = read_channel(&pool, &ChatChannelId::new(channel_id).unwrap())
+        let channel = read_channel(&pool, &channel_id).await.unwrap();
+
+        assert_eq!(channel.unread_count, 1);
+        assert_eq!(channel.latest_preview.as_deref(), Some("Text of item:b"));
+    }
+
+    #[tokio::test]
+    async fn read_cursor_never_moves_backward_or_rewrites_an_unchanged_position() {
+        let pool = crate::chat::tests::repository::pool_with_thread().await;
+        let (channel_id, conversation_id) = project_channel(&pool).await;
+        seed_teammate_messages(
+            &pool,
+            &conversation_id,
+            &[("item:a", "c000", false), ("item:b", "c000", false)],
+        )
+        .await;
+        let now = timestamp(NOW.to_owned()).unwrap();
+        let later = timestamp(LATER.to_owned()).unwrap();
+
+        mark_conversation_read(&pool, &conversation_id, LOCAL_PARTICIPANT_ID, &now)
             .await
             .unwrap();
+        assert_eq!(
+            local_cursor(&pool, &conversation_id).await,
+            ("c000".to_owned(), "item:b".to_owned(), NOW.to_owned())
+        );
 
-        assert_eq!(channel.latest_preview.as_deref(), Some("Kept text"));
-        assert_eq!(channel.message_count, 1);
-        assert_eq!(channel.unread_count, 1);
+        mark_conversation_read(&pool, &conversation_id, LOCAL_PARTICIPANT_ID, &later)
+            .await
+            .unwrap();
+        assert_eq!(
+            local_cursor(&pool, &conversation_id).await,
+            ("c000".to_owned(), "item:b".to_owned(), NOW.to_owned())
+        );
+
+        sqlx::query(
+            "UPDATE chat_conversation_read_cursors
+             SET last_read_order_key = 'c900', last_read_item_id = 'item:remote'
+             WHERE conversation_id = ?",
+        )
+        .bind(conversation_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        mark_conversation_read(&pool, &conversation_id, LOCAL_PARTICIPANT_ID, &later)
+            .await
+            .unwrap();
+        assert_eq!(
+            local_cursor(&pool, &conversation_id).await,
+            ("c900".to_owned(), "item:remote".to_owned(), NOW.to_owned())
+        );
+        assert_eq!(
+            read_channel(&pool, &channel_id).await.unwrap().unread_count,
+            0
+        );
     }
 }

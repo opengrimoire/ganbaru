@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  NOTES_PAGE_PROJECT_ID_PROPERTY,
   mergeNotesNavigationPages,
   notesPageMatchesProject,
   notesPageProjectId,
-  notesPageProjectProperties,
   notesPagesForProject,
 } from "./project-membership";
 import type { NotesPage } from "./types";
@@ -21,9 +19,8 @@ function page(id: string, projectId?: string): NotesPage {
     archived: false,
     icon: null,
     cover: null,
-    properties: projectId
-      ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId }
-      : {},
+    project_id: projectId ?? null,
+    properties: {},
     url: null,
     public_url: null,
     source_provider: null,
@@ -69,12 +66,5 @@ describe("notes project membership", () => {
       current,
       destinationOnly,
     ]);
-  });
-
-  it("builds create properties only when a project is selected", () => {
-    expect(notesPageProjectProperties(" project-a ")).toEqual({
-      [NOTES_PAGE_PROJECT_ID_PROPERTY]: "project-a",
-    });
-    expect(notesPageProjectProperties(null)).toBeUndefined();
   });
 });

@@ -7,13 +7,15 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use super::history::{current_timestamp, insert_task_field_change_event, status_is_terminal};
 use super::models::{ProjectTaskChangeEventRow, ProjectTaskRow, ProjectsMutationRows};
-use super::mutations::{ensure_priority_matches_project, next_task_sort_order};
+use super::mutations::{
+    ensure_priority_is_live, ensure_priority_matches_project, task_status_order,
+};
+use super::order::OrderPlacement;
 use super::validation::require_non_empty;
 
 const MAX_SELECTED_TASKS: usize = 1_000;
 const MAX_CHANGED_TASKS: i64 = 10_000;
 const MAX_RECEIPT_BYTES: usize = 32 * 1024 * 1024;
-const TASK_ORDER_SPACING: f64 = 1_000.0;
 
 /// The field value shown when the user chose the action. Unrelated fields may change freely.
 #[derive(Deserialize, Serialize)]
@@ -135,10 +137,13 @@ pub async fn apply_task_bulk(
         }
     }
     let now = current_timestamp(&mut tx).await?;
-    let mut next_order = match &request.change {
+    match &request.change {
         TaskBulkChange::Status { status_id } => {
             let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM project_statuses WHERE id = ? AND project_id = ?)",
+                "SELECT EXISTS(
+                     SELECT 1 FROM project_statuses
+                     WHERE id = ? AND project_id = ? AND deleted_at IS NULL
+                 )",
             )
             .bind(status_id)
             .bind(&request.project_id)
@@ -148,23 +153,15 @@ pub async fn apply_task_bulk(
             if !exists {
                 return Err("status does not belong to project".to_string());
             }
-            next_task_sort_order(
-                &mut tx,
-                "status_id",
-                &request.project_id,
-                status_id,
-                "status_sort_order",
-            )
-            .await?
         }
         TaskBulkChange::Priority { priority } => {
             ensure_priority_matches_project(&mut tx, &request.project_id, priority).await?;
-            0.0
+            ensure_priority_is_live(&mut tx, &request.project_id, priority).await?;
         }
-        TaskBulkChange::Archive { .. } => 0.0,
-    };
+        TaskBulkChange::Archive { .. } => {}
+    }
     for row in &mut rows {
-        apply_field_change(&mut tx, row, &request.change, &now, &mut next_order).await?;
+        apply_field_change(&mut tx, row, &request.change, &now).await?;
     }
     let mut response_bytes = serde_json::to_vec(&rows)
         .map_err(|e| format!("measure bulk task rows: {e}"))?
@@ -356,7 +353,6 @@ async fn apply_field_change(
     row: &mut ProjectTaskRow,
     change: &TaskBulkChange,
     now: &str,
-    next_order: &mut f64,
 ) -> Result<(), String> {
     let (field, old, new, event_type) = match change {
         TaskBulkChange::Status { status_id } => {
@@ -377,12 +373,12 @@ async fn apply_field_change(
                     .fetch_one(&mut **tx)
                     .await
                     .map_err(|e| e.to_string())?;
+            let status_order_key =
+                task_status_order(&row.project_id, status_id, row.parent_task_id.as_deref())
+                    .place(tx, &row.id, &OrderPlacement::End)
+                    .await?;
             row.status_id.clone_from(status_id);
-            row.status_sort_order = *next_order;
-            *next_order += TASK_ORDER_SPACING;
-            if !row.status_sort_order.is_finite() || !next_order.is_finite() {
-                return Err("task ordering exceeds the supported range".to_string());
-            }
+            row.status_order_key = status_order_key.into_string();
             row.completed_at = if terminal {
                 row.completed_at.clone().or_else(|| Some(now.to_string()))
             } else {
@@ -419,11 +415,11 @@ async fn apply_field_change(
         }
     };
     sqlx::query(
-        "UPDATE project_tasks SET status_id = ?, status_sort_order = ?, completed_at = ?,
-         priority = ?, archived_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE project_tasks SET status_id = ?, status_order_key = ?, completed_at = ?,
+         priority = ?, archived_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(&row.status_id)
-    .bind(row.status_sort_order)
+    .bind(&row.status_order_key)
     .bind(&row.completed_at)
     .bind(&row.priority)
     .bind(&row.archived_at)

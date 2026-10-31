@@ -86,6 +86,10 @@
   </div>
 
   </div>
+  {#await import("$lib/components/projects/conflicts/ProjectDependencyConflicts.svelte") then module}
+    {@const ProjectDependencyConflicts = module.default}
+    <ProjectDependencyConflicts projectId={task.projectId} taskId={task.id} />
+  {/await}
   <Select inline appearance="quiet" contentAlign="start" class="w-full" value=""
     triggerLabel={t("projects.detail.addBlockedBy")} ariaLabel={t("projects.detail.addBlockedBy")}
     options={dependencyCandidates.map((candidate) => ({ value: candidate.id, label: candidate.title }))}

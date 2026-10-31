@@ -165,15 +165,7 @@ impl Metadata {
             .preservation
             .nodes
             .iter()
-            .filter(|row| {
-                row.property_id
-                    .as_ref()
-                    .is_some_and(|id| property_ids.contains_key(id))
-                    || row
-                        .parameter_id
-                        .as_ref()
-                        .is_some_and(|id| parameter_ids.contains_key(id))
-            })
+            .filter(|row| property_ids.contains_key(&row.property_id))
             .collect();
         let node_ids: BTreeMap<_, _> = nodes
             .iter()
@@ -276,6 +268,7 @@ impl Metadata {
             };
             let mut row = source.clone();
             row.id.clone_from(id);
+            row.component_id = component_ids[&row.component_id].clone();
             row.property_id = property_ids[&row.property_id].clone();
             result.parameters.push(row);
         }
@@ -295,7 +288,8 @@ impl Metadata {
                 }
                 let mut row = source.clone();
                 row.id = node_ids[&row.id].clone();
-                row.property_id = mapped(&property_ids, &row.property_id)?;
+                row.component_id = component_ids[&row.component_id].clone();
+                row.property_id = property_ids[&row.property_id].clone();
                 row.parameter_id = mapped(&parameter_ids, &row.parameter_id)?;
                 row.parent_node_id = mapped(&node_ids, &row.parent_node_id)?;
                 result.nodes.push(row);
@@ -374,6 +368,7 @@ impl Metadata {
         }
         for row in &mut self.override_properties {
             row.id = copied_id(target, "override-property", &row.id)?;
+            row.event_id.clone_from(target);
             row.override_id = overrides
                 .get(&row.override_id)
                 .cloned()
@@ -434,7 +429,7 @@ impl PreparedCopy {
         target: &str,
     ) -> Result<(), String> {
         for row in self.objects {
-            insert_row!(connection, "icalendar_objects", row, { id, calendar_id, source_kind, source_name, source_fingerprint, prodid, version, method, calendar_scale, created_at, updated_at });
+            insert_row!(connection, "icalendar_objects", row, { id, import_id, calendar_id, source_kind, source_name, source_fingerprint, prodid, version, method, calendar_scale, created_at, updated_at });
         }
         for row in self.diagnostics {
             insert_row!(connection, "icalendar_object_diagnostics", row, { id, object_id, message, sort_order });
@@ -446,10 +441,10 @@ impl PreparedCopy {
             insert_row!(connection, "icalendar_component_properties", row, { id, component_id, name, value_type, sort_order });
         }
         for row in self.parameters {
-            insert_row!(connection, "icalendar_property_parameters", row, { id, property_id, name, sort_order });
+            insert_row!(connection, "icalendar_property_parameters", row, { id, component_id, property_id, name, sort_order });
         }
         for row in self.nodes {
-            insert_row!(connection, "icalendar_value_nodes", row, { id, property_id, parameter_id, parent_node_id, sort_order, value_kind, object_key, text_value, number_value, boolean_value });
+            insert_row!(connection, "icalendar_value_nodes", row, { id, component_id, property_id, parameter_id, parent_node_id, sort_order, value_kind, object_key, text_value, number_value, boolean_value });
         }
         for row in self.warnings {
             insert_row!(connection, "icalendar_component_projection_warnings", row, { id, component_id, message, sort_order });
@@ -470,7 +465,7 @@ impl PreparedCopy {
             insert_row!(connection, "calendar_event_organizers", row, { event_id, name, email });
         }
         for row in self.task_links {
-            insert_row!(connection, "project_task_event_links", row, { task_id, event_id, link_kind, created_at });
+            row.insert(connection).await?;
         }
         sqlx::query("UPDATE calendar_events SET icalendar_component_id = ? WHERE id = ?")
             .bind(self.component_id)

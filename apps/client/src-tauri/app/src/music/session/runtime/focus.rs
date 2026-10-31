@@ -38,7 +38,7 @@ impl Owner {
         if self
             .vault_id
             .as_deref()
-            .is_none_or(|vault_id| !effect.matches_vault_authority(vault_id, self.vault_generation))
+            .is_none_or(|vault_id| effect.vault_id != *vault_id)
         {
             return Ok(());
         }
@@ -210,7 +210,8 @@ impl Owner {
     }
 
     async fn pause_with_focus(&self) -> MusicLibraryResult<bool> {
-        self.music_preference("musicPauseOnPomodoroPause").await
+        self.music_preference("preferences.musicPauseOnPomodoroPause")
+            .await
     }
 
     pub(super) async fn apply_focus_assignment(

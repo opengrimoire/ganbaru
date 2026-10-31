@@ -224,14 +224,15 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(navigation_guard::init())
-        .manage(db::DatabaseState::default())
+        .manage(db::vault_pools().clone())
         .manage(updates::PendingUpdate::default())
-        .manage(vault::ownership::VaultOwnershipManager::default())
+        .manage(vault::write_fence::VaultWriteFence::default())
+        .manage(vault::preferences::PreferencesState::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::CoordinatorLifecycle::default())
+        .manage(vault::handoff::MemberListenerLifecycle::default())
         .manage(vault::handoff::enrollment_approval::EnrollmentApprovals::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
-        .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
         .manage(crate::sync::SyncSubscribers::default())
         .manage(notes::notion_api_import::NotionApiImportCancellations::default())
@@ -239,6 +240,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(pomodoro::overlay::PomodoroOverlayState::default())
         .manage(music::player::MediaPlayerState::default())
         .manage(music::soundscape::SoundscapeEngineState::default())
+        .manage(music::sync::RootRefreshScheduler::default())
         .manage(chat::settings_commands::ChatSettingsState::default())
         .manage(chat::provider_files::ProviderFileState::default())
         .manage(chat::internal_mcp::InternalMcpRegistry::default())
@@ -355,6 +357,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::provider_files::chat_read_provider_files,
             chat::provider_files::chat_save_provider_file,
             chat::channels::chat_list_channels,
+            chat::conflicts::chat_conflicts,
+            chat::conflicts::chat_resolve_conflict,
             chat::channels::chat_list_navigation_channels,
             chat::channels::chat_read_channel,
             chat::channels::chat_create_channel,
@@ -366,7 +370,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_teammate,
             chat::organization::chat_create_teammate,
             chat::organization::chat_archive_teammate,
-            chat::organization::chat_delete_unused_teammate,
             chat::organization::access::chat_list_access_profiles,
             chat::organization::access::chat_create_access_profile,
             chat::organization::access::chat_duplicate_access_profile,
@@ -398,6 +401,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_search_messages,
             chat::organization::chat_cancel_assignment,
             chat::organization::chat_retry_assignment,
+            chat::organization::chat_start_mentioned_assignment,
             chat::organization::chat_recover_assignment_dispatch_jobs,
             chat::threads::chat_list_thread_window,
             chat::threads::chat_read_thread_shell,
@@ -480,6 +484,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             music::music_pick_artwork_file,
             music::music_pick_and_read_interchange_file,
             music::music_artwork_data_url,
+            music::music_artwork_asset_data_url,
             music::music_embedded_artwork_data_url,
             music::library::commands::music_library_start_local_refresh,
             music::library::commands::music_library_refresh_progress,
@@ -549,6 +554,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             music::music_pick_media_file,
             music::music_pick_soundscape_file,
             music::media_server::music_register_embedded_artwork,
+            music::media_server::music_register_artwork_asset,
             music::media_server::music_register_media_file,
             music::media_server::music_retain_hosted_media,
             music::media_server::music_unregister_hosted_media,
@@ -603,7 +609,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::database_rollback::vault_database_rollbacks,
             vault::database_rollback::vault_restore_database_rollback,
             vault::database_rollback::vault_dismiss_database_rollback,
-            vault::ownership::vault_ownership_status,
+            vault::vault_lock::vault_lock_status,
             vault::handoff::handoff_create_pairing_invitation,
             #[cfg(target_os = "linux")]
             vault::handoff::handoff_grant_network_access,
@@ -615,11 +621,13 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::handoff_suggested_device_label,
             vault::handoff::handoff_pairing_status,
             vault::handoff::handoff_unlink,
-            vault::handoff::handoff_recover_local_copy,
             vault::handoff::handoff_respond_enrollment,
-            vault::handoff::handoff_request_owner_bundle,
-            vault::handoff::receiver::handoff_receive_desktop_bundle,
+            vault::handoff::receiver::handoff_request_bootstrap,
+            vault::handoff::handoff_recover_local_copy,
+            vault::handoff::receiver::vault_link_status,
             vault::handoff::receiver::handoff_cancel_receive,
+            vault::handoff::receiver::handoff_pick_link_folder,
+            vault::handoff::receiver::handoff_reset_link_folder,
             vault::vault_pick_create,
             vault::vault_pick_open,
             vault::vault_reveal_active,
@@ -629,6 +637,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_pick_and_write_ics_export,
             vault::vault_pick_and_read_theme_json,
             vault::vault_pick_and_write_theme_json,
+            vault::vault_pick_and_write_recovery_kit,
+            vault::encrypted_backup::vault_backup_to_file,
+            vault::encrypted_backup::vault_inspect_backup,
+            vault::encrypted_backup::vault_restore_backup,
             calendar::reads::calendar_load_window,
             calendar::reads::calendar_load_native_window,
             calendar::reads::calendar_load_native_focus_window,
@@ -646,8 +658,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             calendar::calendars::calendar_add_calendar,
             calendar::calendars::calendar_set_visibility,
             calendar::calendars::calendar_remove_calendar,
+            calendar::conflicts::calendar_conflicts,
+            calendar::conflicts::calendar_resolve_conflict,
             themes::themes_load_all,
             pomodoro::pomodoro_load_segments_for_events,
+            pomodoro::focus_device_activity,
             pomodoro::native_runtime::focus_snapshot,
             pomodoro::native_runtime::focus_command,
             pomodoro::native_runtime::focus_idle_overlay_visible,
@@ -696,6 +711,12 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::relationship_commands::projects_link_task_event,
             projects::relationship_commands::projects_unlink_task_event,
             projects::relationship_commands::projects_search_linkable_events,
+            projects::conflicts::projects_conflicts,
+            projects::conflicts::projects_resolve_conflict,
+            notes::conflicts::notes_conflicts,
+            notes::conflicts::notes_resolve_conflict,
+            notes::conflicts::notes_preview_mismatched_value,
+            notes::conflicts::notes_settle_mismatched_value,
             projects::relationship_commands::projects_create_task_dependency,
             projects::relationship_commands::projects_delete_task_dependency,
             projects::task_commands::projects_update_task,
@@ -742,7 +763,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_pick_and_write_json_graph,
             notes::notes_pick_and_write_agent_bridge,
             notes::notes_local_user,
-            notes::notes_update_local_user,
             notes::notes_list_page_templates,
             notes::notes_create_page_template_from_page,
             notes::notes_apply_page_template,
@@ -881,7 +901,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             quick_notes::quick_notes_paste_clipboard_image,
             quick_notes::quick_notes_import_dropped_images,
             quick_notes::quick_notes_download_image,
-            quick_notes::quick_notes_collect_images,
             crate::sync::commands::sync_status,
             crate::sync::commands::sync_subscribe,
             crate::sync::commands::sync_unsubscribe,
@@ -890,6 +909,32 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_recovery_list,
             crate::sync::commands::sync_recovery_restore,
             crate::sync::commands::sync_recovery_discard,
+            crate::sync::commands::sync_reset_state,
+            crate::sync::commands::sync_quarantine_list,
+            crate::sync::commands::sync_quarantine_device,
+            crate::sync::commands::sync_quarantine_lift,
+            crate::sync::anchor_server::sync_recover_through_server,
+            crate::sync::commands::sync_take_anchor,
+            crate::sync::commands::sync_promote_device,
+            crate::sync::commands::sync_regenerate_recovery_kit,
+            crate::sync::commands::sync_recovery_kit_state,
+            crate::sync::commands::sync_create_recovery_kit,
+            crate::sync::commands::sync_recovery_kit_saved,
+            crate::sync::commands::sync_use_recovery_kit,
+            crate::sync::commands::sync_force_anchor,
+            crate::sync::commands::sync_contest_yield,
+            crate::sync::commands::sync_contest_object,
+            crate::sync::commands::sync_contests,
+            crate::sync::commands::sync_records_resume,
+            crate::sync::commands::sync_authority,
+            crate::sync::commands::sync_outbox_list,
+            crate::sync::commands::sync_late_changes,
+            crate::sync::commands::sync_late_change_restore,
+            crate::sync::commands::sync_late_change_discard,
+            crate::sync::server::sync_add_server,
+            crate::sync::server::sync_remove_server,
+            crate::sync::server::sync_server_status,
+            crate::sync::commands::sync_remove_device,
             contacts::contacts_list,
             contacts::contacts_local_card,
             contacts::contacts_regenerate_card,
@@ -919,6 +964,16 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             distractions::limits_read::distractions_load_usage_projection,
             distractions::catalog::distractions_list_desktop_apps,
             distractions::commands::distractions_open_extension_install_docs,
+            distractions::rule_commands::distractions_rules_load,
+            distractions::rule_commands::distractions_rules_set_mode,
+            distractions::rule_commands::distractions_rules_set_enabled,
+            distractions::rule_commands::distractions_rules_add_hosts,
+            distractions::rule_commands::distractions_rules_add_desktop_app,
+            distractions::rule_commands::distractions_rules_add_mobile_app,
+            distractions::rule_commands::distractions_rules_remove,
+            distractions::rule_commands::distractions_rules_save_custom_category,
+            distractions::rule_commands::distractions_rules_save_usage_limit,
+            distractions::rule_commands::distractions_rules_reset,
             themes::themes_insert,
             themes::themes_replace_content,
             themes::themes_delete,
@@ -927,12 +982,13 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             themes::themes_rename,
             themes::themes_reset_token_to_seed,
             themes::themes_reset_to_seed,
+            themes::themes_conflict,
+            themes::themes_resolve_conflict,
         ])
         .setup(|app| {
             if let Err(error) = vault::secure_app_config_dir(app.handle()) {
                 eprintln!("app config directory permissions are unchanged: {error}");
             }
-            vault::ownership::initialize(app.handle())?;
             vault::handoff::initialize(app.handle());
             crate::sync::setup(app.handle());
             if let Err(error) = vault::handoff::start_desktop(app.handle()) {
@@ -940,7 +996,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             }
             clear_distractions_enforcement_state_best_effort(app.handle(), "during startup");
             schedule_main_window_reveal_fallback(app.handle());
-            chat::revocation::start_startup_recovery(app.handle());
+            app.manage(chat::sync::RevocationWaker::new(app.handle().clone()));
+            app.manage(chat::sync::AssignmentWaker::new(app.handle().clone()));
+            chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());
@@ -960,6 +1018,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
     let exit_cleanup_state =
         std::sync::Arc::new(std::sync::atomic::AtomicU8::new(EXIT_CLEANUP_IDLE));
     app.run(move |app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            crate::sync::release_runtime_handle();
+            // A restart spawns the next process before this one ends, so it must find the vault free.
+            vault::vault_lock::process_vault_lock().release();
+        }
         if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
             let cleanup_state = exit_cleanup_state.load(std::sync::atomic::Ordering::Acquire);
             if code != Some(tauri::RESTART_EXIT_CODE) && cleanup_state != EXIT_CLEANUP_COMPLETE {
@@ -1014,11 +1077,19 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             app_handle
                 .state::<vault::handoff::CoordinatorLifecycle>()
                 .stop();
+            app_handle
+                .state::<vault::handoff::MemberListenerLifecycle>()
+                .stop_now();
             clear_distractions_enforcement_state_best_effort(app_handle, "before app exit");
             if let Err(error) = tauri::async_runtime::block_on(
                 distractions::runtime::stop_for_vault_handoff(app_handle),
             ) {
                 eprintln!("Distractions shutdown flush failed: {error}");
+            }
+            if let Err(error) = tauri::async_runtime::block_on(
+                distractions::usage_totals::flush_active_vault(app_handle),
+            ) {
+                eprintln!("Distractions usage totals exit flush failed: {error}");
             }
         }
     });

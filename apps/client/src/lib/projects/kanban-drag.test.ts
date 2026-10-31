@@ -1,66 +1,77 @@
 import { describe, expect, it } from "vitest";
-import { projectKanbanDropSortOrder, type ProjectKanbanDragTask } from "./kanban-drag";
+import { projectKanbanDropPlacement } from "./kanban-drag";
 
-function task(id: string, statusSortOrder: number): ProjectKanbanDragTask {
-  return { id, statusSortOrder };
+function tasks(...ids: string[]): { id: string }[] {
+  return ids.map((id) => ({ id }));
 }
 
-describe("projectKanbanDropSortOrder", () => {
-  it("places a card between visual neighbors in ascending order", () => {
-    expect(projectKanbanDropSortOrder({
-      orderedTasks: [task("a", 1000), task("b", 2000), task("c", 3000)],
+describe("projectKanbanDropPlacement", () => {
+  it("places a card after its visual predecessor in ascending order", () => {
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("a", "b", "c"),
       draggedTaskId: "dragged",
       overTaskId: "b",
       position: "after",
       sortDirection: "asc",
-    })).toBe(2500);
+    })).toEqual({ kind: "after", id: "b" });
   });
 
   it("places a card before the first visual card in ascending order", () => {
-    expect(projectKanbanDropSortOrder({
-      orderedTasks: [task("a", 1000), task("b", 2000)],
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("a", "b"),
       draggedTaskId: "dragged",
       overTaskId: "a",
       position: "before",
       sortDirection: "asc",
-    })).toBe(500);
+    })).toEqual({ kind: "before", id: "a" });
   });
 
   it("appends a card in ascending order when no target card is supplied", () => {
-    expect(projectKanbanDropSortOrder({
-      orderedTasks: [task("a", 1000), task("b", 2000)],
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("a", "b"),
       draggedTaskId: "dragged",
       sortDirection: "asc",
-    })).toBe(3000);
+    })).toEqual({ kind: "after", id: "b" });
   });
 
-  it("places a card between visual neighbors in descending order", () => {
-    expect(projectKanbanDropSortOrder({
-      orderedTasks: [task("c", 3000), task("b", 2000), task("a", 1000)],
+  it("appends to an empty column", () => {
+    expect(projectKanbanDropPlacement({ orderedTasks: [], draggedTaskId: "dragged", sortDirection: "asc" })).toEqual({ kind: "end" });
+  });
+
+  it("swaps native before and after in descending order", () => {
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("c", "b", "a"),
       draggedTaskId: "dragged",
       overTaskId: "b",
       position: "after",
       sortDirection: "desc",
-    })).toBe(1500);
-  });
-
-  it("places a card before the first visual card in descending order", () => {
-    expect(projectKanbanDropSortOrder({
-      orderedTasks: [task("b", 2000), task("a", 1000)],
+    })).toEqual({ kind: "before", id: "b" });
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("b", "a"),
       draggedTaskId: "dragged",
       overTaskId: "b",
       position: "before",
       sortDirection: "desc",
-    })).toBe(3000);
+    })).toEqual({ kind: "after", id: "b" });
   });
 
   it("ignores the dragged card when calculating a same-column insertion", () => {
-    expect(projectKanbanDropSortOrder({
-      orderedTasks: [task("a", 1000), task("dragged", 2000), task("b", 3000)],
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("a", "dragged", "b"),
       draggedTaskId: "dragged",
       overTaskId: "b",
       position: "after",
       sortDirection: "asc",
-    })).toBe(4000);
+    })).toEqual({ kind: "after", id: "b" });
+  });
+
+  it("returns null when a card is dropped back into its own slot", () => {
+    expect(projectKanbanDropPlacement({
+      orderedTasks: tasks("a", "dragged", "b"),
+      draggedTaskId: "dragged",
+      overTaskId: "a",
+      position: "after",
+      sortDirection: "asc",
+    })).toBeNull();
   });
 });

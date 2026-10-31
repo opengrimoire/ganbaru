@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-connectivityStatus"
+description = "Enables the connectivityStatus command without any pre-configured scope."
+commands.allow = ["connectivityStatus"]
+
+[[permission]]
+identifier = "deny-connectivityStatus"
+description = "Denies the connectivityStatus command without any pre-configured scope."
+commands.deny = ["connectivityStatus"]

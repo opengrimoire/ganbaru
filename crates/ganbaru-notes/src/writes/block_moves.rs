@@ -2,11 +2,11 @@ use super::block_comments::update_block_comment_thread_pages;
 use super::block_tree::{load_block_row_tx, load_blocks_by_ids, normalize_selection_root_ids};
 use super::parents::{
     ParentTarget, block_subtree_height, ensure_block_nesting_fits, parent_target_from_block_row,
-    refresh_parent_has_children, resolve_block_parent, touch_page, validate_block_for_parent,
+    resolve_block_parent, touch_page, touch_parent_block, validate_block_for_parent,
 };
-use super::sort::{next_sort_orders, sort_order_before, sort_orders_before};
+use super::sort::moved_order_keys;
 use crate::models::{NoteBlockDto, NoteMoveBlock, NoteMoveBlocks, NotePaginatedBlockList};
-use crate::validation::{require_uuid, validate_parent, validate_sort_order};
+use crate::validation::{require_uuid, validate_parent};
 use crate::{page_history, project_history, reads};
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -63,12 +63,15 @@ pub(super) async fn move_block_tx(
     if request.after.is_some() && request.before.is_some() {
         return Err("move request cannot include both after and before".to_string());
     }
-    let sort_order = if let Some(before) = request.before.as_deref() {
-        sort_order_before(tx, &new_parent, before).await?
-    } else {
-        next_sort_orders(tx, &new_parent, request.after.as_deref(), 1).await?[0]
-    };
-    validate_sort_order(sort_order)?;
+    let order_key = moved_order_keys(
+        tx,
+        &new_parent,
+        request.after.as_deref(),
+        request.before.as_deref(),
+        &[block_id],
+    )
+    .await?
+    .remove(0);
     if record_history {
         page_history::record_page_snapshot_tx(tx, &current.page_id, "move_block").await?;
     }
@@ -83,7 +86,7 @@ pub(super) async fn move_block_tx(
              parent_type = ?,
              parent_page_id = ?,
              parent_block_id = ?,
-             sort_order = ?,
+             order_key = ?,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND in_trash = 0",
     )
@@ -91,24 +94,26 @@ pub(super) async fn move_block_tx(
     .bind(new_parent.parent_type)
     .bind(&new_parent.parent_page_id)
     .bind(&new_parent.parent_block_id)
-    .bind(sort_order)
+    .bind(&order_key)
     .bind(block_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("move notes block: {e}"))?;
     sqlx::query(
-        "WITH RECURSIVE subtree(id) AS (
-            SELECT id FROM notes_blocks WHERE parent_block_id = ?
-            UNION ALL
-            SELECT notes_blocks.id
+        "WITH RECURSIVE subtree(id, depth) AS (
+            SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ?
+            UNION
+            SELECT notes_blocks.id, subtree.depth + 1
             FROM notes_blocks
             JOIN subtree ON notes_blocks.parent_block_id = subtree.id
+            WHERE subtree.depth < ?
          )
          UPDATE notes_blocks
          SET page_id = ?
          WHERE id IN (SELECT id FROM subtree)",
     )
     .bind(block_id)
+    .bind(crate::writes::MAX_BLOCK_DEPTH)
     .bind(&new_parent.page_id)
     .execute(&mut **tx)
     .await
@@ -121,6 +126,7 @@ pub(super) async fn move_block_tx(
                  parent_page_id = ?,
                  parent_block_id = ?,
                  parent_data_source_id = NULL,
+                 child_block_id = id,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
@@ -133,11 +139,10 @@ pub(super) async fn move_block_tx(
         .map_err(|e| format!("move notes child page parent: {e}"))?;
     }
     refresh_moved_database_parents(tx, block_id).await?;
-    let project_id =
-        project_history::resolve_project_id_for_page_tx(tx, &new_parent.page_id).await?;
-    super::database_lifecycle::adopt_block_project(tx, block_id, project_id.as_deref()).await?;
-    refresh_parent_has_children(tx, &old_parent).await?;
-    refresh_parent_has_children(tx, &new_parent).await?;
+    project_history::mark_page_dirty_tx(tx, &new_parent.page_id, "Move Notes content", true)
+        .await?;
+    touch_parent_block(tx, &old_parent).await?;
+    touch_parent_block(tx, &new_parent).await?;
     touch_page(tx, &new_parent.page_id).await?;
     if old_parent.page_id != new_parent.page_id {
         touch_page(tx, &old_parent.page_id).await?;
@@ -189,17 +194,15 @@ pub async fn move_blocks(
         ensure_not_moving_into_self(&mut tx, &row.id, &new_parent).await?;
         ensure_not_moving_into_subtree_page(&mut tx, &row.id, &new_parent.page_id).await?;
     }
-    let sort_orders = if let Some(before) = request.before.as_deref() {
-        sort_orders_before(&mut tx, &new_parent, before, root_rows.len()).await?
-    } else {
-        next_sort_orders(
-            &mut tx,
-            &new_parent,
-            request.after.as_deref(),
-            root_rows.len(),
-        )
-        .await?
-    };
+    let moving_ids: Vec<&str> = root_rows.iter().map(|row| row.id.as_str()).collect();
+    let order_keys = moved_order_keys(
+        &mut tx,
+        &new_parent,
+        request.after.as_deref(),
+        request.before.as_deref(),
+        &moving_ids,
+    )
+    .await?;
     let mut history_page_ids = HashSet::from([new_parent.page_id.clone()]);
     for row in &root_rows {
         history_page_ids.insert(row.page_id.clone());
@@ -207,15 +210,14 @@ pub async fn move_blocks(
     for page_id in history_page_ids {
         page_history::record_page_snapshot_tx(&mut tx, &page_id, "move_blocks").await?;
     }
-    for (row, sort_order) in root_rows.iter().zip(sort_orders) {
-        validate_sort_order(sort_order)?;
+    for (row, order_key) in root_rows.iter().zip(order_keys) {
         sqlx::query(
             "UPDATE notes_blocks
              SET page_id = ?,
                  parent_type = ?,
                  parent_page_id = ?,
                  parent_block_id = ?,
-                 sort_order = ?,
+                 order_key = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND in_trash = 0",
         )
@@ -223,24 +225,26 @@ pub async fn move_blocks(
         .bind(new_parent.parent_type)
         .bind(&new_parent.parent_page_id)
         .bind(&new_parent.parent_block_id)
-        .bind(sort_order)
+        .bind(&order_key)
         .bind(&row.id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("move notes block: {e}"))?;
         sqlx::query(
-            "WITH RECURSIVE subtree(id) AS (
-                SELECT id FROM notes_blocks WHERE parent_block_id = ?
-                UNION ALL
-                SELECT notes_blocks.id
+            "WITH RECURSIVE subtree(id, depth) AS (
+                SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ?
+                UNION
+                SELECT notes_blocks.id, subtree.depth + 1
                 FROM notes_blocks
                 JOIN subtree ON notes_blocks.parent_block_id = subtree.id
+                WHERE subtree.depth < ?
              )
              UPDATE notes_blocks
              SET page_id = ?
              WHERE id IN (SELECT id FROM subtree)",
         )
         .bind(&row.id)
+        .bind(crate::writes::MAX_BLOCK_DEPTH)
         .bind(&new_parent.page_id)
         .execute(&mut *tx)
         .await
@@ -253,6 +257,7 @@ pub async fn move_blocks(
                      parent_page_id = ?,
                      parent_block_id = ?,
                      parent_data_source_id = NULL,
+                     child_block_id = id,
                      last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE id = ?",
             )
@@ -266,19 +271,17 @@ pub async fn move_blocks(
         }
     }
     for parent in &old_parents {
-        refresh_parent_has_children(&mut tx, parent).await?;
+        touch_parent_block(&mut tx, parent).await?;
         if parent.page_id != new_parent.page_id {
             touch_page(&mut tx, &parent.page_id).await?;
         }
     }
-    let project_id =
-        project_history::resolve_project_id_for_page_tx(&mut tx, &new_parent.page_id).await?;
     for root in &root_ids {
         refresh_moved_database_parents(&mut tx, root).await?;
-        super::database_lifecycle::adopt_block_project(&mut tx, root, project_id.as_deref())
-            .await?;
     }
-    refresh_parent_has_children(&mut tx, &new_parent).await?;
+    project_history::mark_page_dirty_tx(&mut tx, &new_parent.page_id, "Move Notes content", true)
+        .await?;
+    touch_parent_block(&mut tx, &new_parent).await?;
     touch_page(&mut tx, &new_parent.page_id).await?;
     tx.commit()
         .await
@@ -298,16 +301,18 @@ pub(super) async fn ensure_not_moving_into_self(
         return Err("block cannot be moved under itself".to_string());
     }
     let descendant: Option<i64> = sqlx::query_scalar(
-        "WITH RECURSIVE subtree(id) AS (
-            SELECT id FROM notes_blocks WHERE parent_block_id = ?
-            UNION ALL
-            SELECT notes_blocks.id
+        "WITH RECURSIVE subtree(id, depth) AS (
+            SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ?
+            UNION
+            SELECT notes_blocks.id, subtree.depth + 1
             FROM notes_blocks
             JOIN subtree ON notes_blocks.parent_block_id = subtree.id
+            WHERE subtree.depth < ?
          )
          SELECT 1 FROM subtree WHERE id = ? LIMIT 1",
     )
     .bind(block_id)
+    .bind(crate::writes::MAX_BLOCK_DEPTH)
     .bind(parent_block_id)
     .fetch_optional(&mut **tx)
     .await
@@ -329,16 +334,18 @@ pub(super) async fn ensure_insert_anchor_outside_selection(
     require_uuid(anchor_id, "anchor")?;
     for root_id in root_ids {
         let inside_subtree: Option<i64> = sqlx::query_scalar(
-            "WITH RECURSIVE subtree(id) AS (
-                SELECT id FROM notes_blocks WHERE id = ?
-                UNION ALL
-                SELECT notes_blocks.id
+            "WITH RECURSIVE subtree(id, depth) AS (
+                SELECT id, 1 FROM notes_blocks WHERE id = ?
+                UNION
+                SELECT notes_blocks.id, subtree.depth + 1
                 FROM notes_blocks
                 JOIN subtree ON notes_blocks.parent_block_id = subtree.id
+                WHERE subtree.depth < ?
              )
              SELECT 1 FROM subtree WHERE id = ? LIMIT 1",
         )
         .bind(root_id)
+        .bind(crate::writes::MAX_BLOCK_DEPTH)
         .bind(anchor_id)
         .fetch_optional(&mut **tx)
         .await
@@ -356,24 +363,30 @@ pub(super) async fn ensure_not_moving_into_subtree_page(
     destination_page_id: &str,
 ) -> Result<(), String> {
     let is_subtree_page: Option<i64> = sqlx::query_scalar(
-        "WITH RECURSIVE subtree(kind, id) AS (
-            SELECT 'block', id FROM notes_blocks WHERE id = ?
+        "WITH RECURSIVE subtree(kind, id, depth) AS (
+            SELECT 'block', id, 0 FROM notes_blocks WHERE id = ?
             UNION
-            SELECT 'block', block.id FROM notes_blocks AS block JOIN subtree AS parent
-                ON (parent.kind = 'block' AND block.parent_block_id = parent.id)
-                OR (parent.kind = 'page' AND block.page_id = parent.id)
+            SELECT 'block', block.id, parent.depth + 1 FROM notes_blocks AS block JOIN subtree AS parent
+                ON ((parent.kind = 'block' AND block.parent_block_id = parent.id)
+                OR (parent.kind = 'page' AND block.page_id = parent.id))
+                AND parent.depth < ?
             UNION
-            SELECT 'page', page.id FROM notes_pages AS page JOIN subtree AS parent
-                ON (parent.kind = 'block' AND (page.id = parent.id OR page.parent_block_id = parent.id))
+            SELECT 'page', page.id, parent.depth + 1 FROM notes_pages AS page JOIN subtree AS parent
+                ON ((parent.kind = 'block' AND (page.id = parent.id OR page.parent_block_id = parent.id))
                 OR (parent.kind = 'page' AND page.parent_page_id = parent.id)
-                OR (parent.kind = 'source' AND page.parent_data_source_id = parent.id)
+                OR (parent.kind = 'source' AND page.parent_data_source_id = parent.id))
+                AND parent.depth < ?
             UNION
-            SELECT 'source', source.id FROM notes_data_sources AS source JOIN subtree AS parent
+            SELECT 'source', source.id, parent.depth + 1 FROM notes_data_sources AS source JOIN subtree AS parent
                 ON parent.kind = 'block' AND source.database_id = parent.id
+                AND parent.depth < ?
          )
          SELECT 1 FROM subtree WHERE kind = 'page' AND id = ? LIMIT 1",
     )
     .bind(block_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(destination_page_id)
     .fetch_optional(&mut **tx)
     .await
@@ -388,15 +401,16 @@ async fn refresh_moved_database_parents(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     root_id: &str,
 ) -> Result<(), String> {
-    sqlx::query("WITH RECURSIVE subtree(id) AS (
-        SELECT id FROM notes_blocks WHERE id = ? UNION
-        SELECT block.id FROM notes_blocks AS block JOIN subtree ON block.parent_block_id = subtree.id
+    sqlx::query("WITH RECURSIVE subtree(id, depth) AS (
+        SELECT id, 1 FROM notes_blocks WHERE id = ? UNION
+        SELECT block.id, subtree.depth + 1 FROM notes_blocks AS block JOIN subtree ON block.parent_block_id = subtree.id
+        WHERE subtree.depth < ?
     ) UPDATE notes_databases SET
         parent_type = (SELECT parent_type FROM notes_blocks WHERE id = notes_databases.id),
         parent_page_id = (SELECT parent_page_id FROM notes_blocks WHERE id = notes_databases.id),
         parent_block_id = (SELECT parent_block_id FROM notes_blocks WHERE id = notes_databases.id),
         last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id IN (SELECT id FROM subtree)")
-        .bind(root_id).execute(&mut **tx).await.map_err(|e| format!("refresh moved Notes database placement: {e}"))?;
+        .bind(root_id).bind(crate::writes::MAX_BLOCK_DEPTH).execute(&mut **tx).await.map_err(|e| format!("refresh moved Notes database placement: {e}"))?;
     Ok(())
 }

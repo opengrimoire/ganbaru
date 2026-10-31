@@ -298,13 +298,28 @@ pub(crate) async fn send_turn(
         }
     };
     if let Some(binding) = origin.run() {
-        ganbaru_chat::agent_runs::settle_launch(
+        let settlement = ganbaru_chat::agent_runs::settle_launch(
             &pool,
             binding,
             launch_error.as_ref(),
             &now_timestamp()?,
         )
         .await?;
+        if settlement == ganbaru_chat::agent_runs::LaunchSettlement::Superseded {
+            mcp_registry.revoke_run_scope(&thread_id).await;
+            if let Err(error) = owner
+                .stop_session(
+                    false,
+                    operation_context("settled-assignment-launch", PROVIDER_START_TIMEOUT),
+                )
+                .await
+            {
+                eprintln!(
+                    "Chat thread {} could not stop the run of a settled assignment: {error}",
+                    thread_id.as_str()
+                );
+            }
+        }
     }
     let result = SendChatTurnResult {
         thread: reads::read_thread_shell(&pool, &thread_id).await?,
@@ -380,6 +395,11 @@ async fn resolve_turn_target(
                 }
             }
             let logical_workspace = workspaces::read_workspace(pool, working_folder_id).await?;
+            crate::chat::channels::ensure_chat_defaults(
+                pool,
+                crate::chat::channels::ChatDefaultsScope::WorkingFolder(working_folder_id.as_str()),
+            )
+            .await?;
             let scope = read_active_device_scope(app).map_err(device_state_error)?;
             let authorized = crate::chat::workspace::commands::authorize_working_folder(
                 app,
@@ -701,8 +721,8 @@ pub(super) async fn load_internal_mcp_scope(
     .ok_or_else(|| provider_authority_error("Assignment authority is no longer active"))?;
     let channel_rows = sqlx::query(
         "SELECT source_handle, message_reference_id, conversation_id, label_snapshot,
-                lower_ordinal, high_ordinal, source_revision_cutoff_id,
-                destination_audience_revision
+                lower_order_key, lower_item_id, high_order_key, high_item_id,
+                source_revision_cutoff_id, destination_audience_revision
          FROM chat_assignment_authorized_channel_sources
          WHERE authorization_revision_id = ? ORDER BY conversation_id",
     )
@@ -727,6 +747,7 @@ pub(super) async fn load_internal_mcp_scope(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = live.conversation_id
           AND channel_access.teammate_id = live.teammate_id
+          AND channel_access.removed_at IS NULL
          WHERE frozen.authorization_revision_id = ?
          ORDER BY frozen.working_folder_id",
     )
@@ -780,8 +801,10 @@ pub(super) async fn load_internal_mcp_scope(
                         .map_err(scope_row_error)?,
                     conversation_id: row.try_get("conversation_id").map_err(scope_row_error)?,
                     label_snapshot: row.try_get("label_snapshot").map_err(scope_row_error)?,
-                    lower_ordinal: row_u64(&row, "lower_ordinal")?,
-                    high_ordinal: row_u64(&row, "high_ordinal")?,
+                    lower_order_key: row.try_get("lower_order_key").map_err(scope_row_error)?,
+                    lower_item_id: row.try_get("lower_item_id").map_err(scope_row_error)?,
+                    high_order_key: row.try_get("high_order_key").map_err(scope_row_error)?,
+                    high_item_id: row.try_get("high_item_id").map_err(scope_row_error)?,
                     source_revision_cutoff_id: row
                         .try_get("source_revision_cutoff_id")
                         .map_err(scope_row_error)?,

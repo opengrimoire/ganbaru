@@ -47,7 +47,7 @@ A table owns table-row children whose cells are rich-text arrays; the parent sto
 
 ## Media, files, and web references
 
-Media and file blocks use explicit source objects. New remote references require HTTPS and a type compatible with the block. Supported YouTube links can be stored for video blocks but are opened explicitly rather than embedded. Local attachments become managed assets with content-derived identity and reference ownership. Imported provider-hosted or upload references remain placeholders and are never fetched silently; replacing one is an explicit user action.
+Media and file blocks use explicit source objects. New remote references require HTTPS and a type compatible with the block. Supported YouTube links can be stored for video blocks but are opened explicitly rather than embedded. Local attachments become managed assets with content-derived identity and reference ownership, up to 50 MB each, and their bytes reach linked devices with the block; until they arrive, the block shows the file as missing. Imported provider-hosted or upload references remain placeholders and are never fetched silently; replacing one is an explicit user action.
 
 Bookmark, link-preview, and embed blocks store the original safe URL and a local caption. Bookmarks accept web, email, telephone, and application links such as `obsidian://`, and reject only `javascript:`, `data:`, `vbscript:`, and `file:`. Embeds and link previews describe loadable content, so they accept only `http` and `https`, plus the scheme-less and `host:port` drafts saved while the user types. Cards derive from URL parts only. No remote page metadata is fetched automatically, which preserves privacy and avoids hidden network access.
 

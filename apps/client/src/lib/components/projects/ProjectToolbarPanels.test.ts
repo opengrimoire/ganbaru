@@ -160,10 +160,10 @@ describe("Project collection configuration", () => {
 
   it("retains status, custom field, sort, and direction choices across detail page navigation", async () => {
     const onClose = vi.fn();
-    store.options = [{ id: "risk-high", fieldId: "risk", name: "High risk", sortOrder: 0, createdAt: "", updatedAt: "" }];
+    store.options = [{ id: "risk-high", fieldId: "risk", name: "High risk", orderKey: "0", createdAt: "", updatedAt: "" }];
     await open(toolbarProps("filters", {
       onClose,
-      projectCustomFields: [{ id: "risk", projectId: "project-one", name: "Risk", fieldType: "select", sortOrder: 0, icon: null, createdAt: "", updatedAt: "" }],
+      projectCustomFields: [{ id: "risk", projectId: "project-one", name: "Risk", fieldType: "select", orderKey: "0", icon: null, createdAt: "", updatedAt: "" }],
     }));
     await navigate("Status");
     await choose("Open");

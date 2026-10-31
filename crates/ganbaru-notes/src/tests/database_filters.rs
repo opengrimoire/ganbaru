@@ -49,15 +49,14 @@ async fn filter_pool() -> SqlitePool {
     .enumerate()
     {
         let tags = json!([{ "id": "tag", "name": "Tag", "color": "blue" }, { "id": "tag", "name": "Tag", "color": "blue" }]);
-        sqlx::query("INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, properties, created_time) VALUES (?, 'data_source_id', ?, ?, ?, '2026-09-30T12:00:00Z')")
-            .bind(format!("60000000-0000-4000-8000-{index:012}"))
-            .bind(DATA_SOURCE_A).bind(title).bind(json!({
+        let row_id = format!("60000000-0000-4000-8000-{index:012}");
+        insert_row_page_created_at(&pool, &row_id, DATA_SOURCE_A, title, Some("2026-09-30T12:00:00Z"), json!({
                 "Name": { "id": "title", "type": "title", "title": [{ "type": "text", "plain_text": title, "text": { "content": title, "link": null } }] },
                 "Amount's value": { "id": "amount", "type": "number", "number": amount },
                 "Due": { "id": "due", "type": "date", "date": if due.is_null() { Value::Null } else { json!({ "start": due, "end": null, "time_zone": null }) } },
                 "Done": { "id": "done", "type": "checkbox", "checkbox": checked },
                 "Tags": { "id": "tags", "type": "multi_select", "multi_select": tags }
-            }).to_string()).execute(&pool).await.unwrap();
+            })).await;
     }
     pool
 }
@@ -82,11 +81,12 @@ fn table_update(filters: Value) -> NoteDataSourceTableViewUpdate {
 }
 
 async fn set_filter_row_title(pool: &SqlitePool, index: usize, title: &str) {
-    sqlx::query("UPDATE notes_pages SET title = ?, properties = json_set(properties, '$.Name.title', json(?)) WHERE id = ?")
+    sqlx::query("UPDATE notes_pages SET title = ? WHERE id = ?")
         .bind(title)
-        .bind(json!([{ "type": "text", "plain_text": title, "text": { "content": title, "link": null } }]).to_string())
         .bind(format!("60000000-0000-4000-8000-{index:012}"))
-        .execute(pool).await.unwrap();
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 async fn view_csv(pool: &SqlitePool) -> crate::models::NoteDataSourceCsvExportDto {
@@ -165,12 +165,7 @@ fn database_filters_match_ascii_case_only_in_sql_and_csv_export() {
 fn database_filters_use_relation_ids_for_empty_target_titles_in_sql_and_csv_export() {
     crate::test_block_on(async {
         let pool = filter_pool().await;
-        let raw_schema: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let raw_schema = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
         let mut properties: Value = serde_json::from_str(&raw_schema).unwrap();
         properties.as_object_mut().unwrap().insert(
             "Related".to_string(),
@@ -275,10 +270,12 @@ fn database_filters_use_explicit_unicode_whitespace_for_sql_and_export_emptiness
             let details = json!({ "id": "details", "type": "rich_text", "rich_text":
                 if text.is_empty() { json!([]) } else { json!([{ "type": "text", "plain_text": text, "text": { "content": text, "link": null } }]) }
             });
-            sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.Details', json(?)) WHERE id = ?")
-                .bind(details.to_string())
-                .bind(format!("60000000-0000-4000-8000-{index:012}"))
-                .execute(&pool).await.unwrap();
+            merge_page_properties(
+                &pool,
+                &format!("60000000-0000-4000-8000-{index:012}"),
+                json!({ "Details": details }),
+            )
+            .await;
         }
         for (condition, expected_titles) in [
             ("is_empty", vec!["Alpha", "Beta", "Gamma"]),
@@ -674,12 +671,7 @@ fn database_filters_use_numeric_and_date_types_and_reject_invalid_writes_atomica
 fn database_filter_reconciliation_and_group_counts_preserve_query_meaning_and_range() {
     crate::test_block_on(async {
         let pool = filter_pool().await;
-        let source: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let source = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
         let schema =
             data_sources::views::view_schema(&serde_json::from_str(&source).unwrap()).unwrap();
         let window_schema = data_sources::window::table_properties_from_view(&schema);
@@ -722,11 +714,13 @@ fn database_filter_reconciliation_and_group_counts_preserve_query_meaning_and_ra
             { "property_id": "done", "condition": "unchecked", "value": null }
         ] })
         );
-        let raw: crate::models::NotePageRow =
-            sqlx::query_as("SELECT * FROM notes_pages WHERE title = 'Alpha'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let raw: crate::models::NotePageRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM notes_pages AS page WHERE page.title = 'Alpha'",
+            crate::structure::page_row_columns("page")
+        )))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert!(data_sources::window::row_matches_filters(
             &raw,
             &window_schema,
@@ -783,15 +777,13 @@ fn database_windows_filter_sort_and_group_properties_named_with_json_path_charac
             } else {
                 json!([])
             };
-            sqlx::query("INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, ?, ?)")
-                .bind(format!("60000000-0000-4000-8000-{index:012}"))
-                .bind(DATA_SOURCE_A).bind(title).bind(json!({
+            insert_row_page(&pool, &format!("60000000-0000-4000-8000-{index:012}"), DATA_SOURCE_A, title, json!({
                     "Name": { "id": "title", "type": "title", "title": [{ "type": "text", "plain_text": title, "text": { "content": title, "link": null } }] },
                     amount: { "id": "amount", "type": "number", "number": value },
                     done: { "id": "done", "type": "checkbox", "checkbox": checked },
                     due: { "id": "due", "type": "date", "date": { "start": format!("2026-10-0{}", index + 1), "end": null, "time_zone": null } },
                     tags: { "id": "tags", "type": "multi_select", "multi_select": row_tags }
-                }).to_string()).execute(&pool).await.unwrap();
+                })).await;
         }
         let update = serde_json::from_value(json!({
             "filter": [

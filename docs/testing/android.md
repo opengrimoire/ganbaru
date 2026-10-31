@@ -58,7 +58,7 @@ The rule under test: Calendar alarms are reminders, and only committed native ex
 - A due commitment while the Activity is absent or the PC is off produces a reminder and no run or focus history.
 - A late explicit start records its actual start, not the Calendar boundary.
 - Phase deadlines, missed break returns, and repeated recovery create no extra focus phases. A late alarm for a closed phase never replaces a newer phase's ongoing notification.
-- A delayed Guardian phase publication is rejected after the run stops or vault ownership changes, including after process death and in a minified release build.
+- A delayed Guardian phase publication is rejected after the run stops or the vault is replaced, including after process death and in a minified release build.
 - Changing notification language never supplies execution state or recovers a run from notification storage.
 - Foreground-service start, ongoing notification, pause, resume, stop, process recreation, and event deadline.
 - Tap routing validates identifiers and opens the correct context.
@@ -76,7 +76,7 @@ The native owner holds the queue and decoder; the WebView is only a projection.
 - During slow loads or a blocked document provider, pause, seek, stop, change items, switch vaults, change Focus phase, and destroy the service. The newest intent wins, old callbacks are ignored, a stopped decoder never reloads, and resolver work stays bounded.
 - After service loss, the selected track and position are retained and explicit Play resumes the same track.
 - Another app calling `stopService` on the playback service leaves playback running. Removing the task while paused still stops the service, and removing it while playing keeps playback in the foreground.
-- A vault handoff waits for playback to actually stop or reports a timeout; the old vault's canceled playback never resumes.
+- A vault replacement waits for playback to actually stop or reports a timeout; the old vault's canceled playback never resumes.
 - Desktop audio, soundscapes, path reveal, and loopback media capabilities are absent.
 
 ## Distraction blocker
@@ -94,13 +94,25 @@ The native owner holds the queue and decoder; the WebView is only a projection.
 
 Runtime cases without the WebView are in [Distraction blocker runtime acceptance](distractions.md).
 
-## Vault handoff pairing
+## Device linking pairing
 
 - Grant and deny camera access from the user-initiated QR pairing scanner.
 - Camera capture stops after a code is decoded, the scanner is canceled, or the pairing surface closes.
 - Malformed, expired, replayed, and wrong-vault invitations cannot enroll the phone.
 - Pairing and later authenticated reconnects work on a private LAN without internet access.
-- Run the complete [local vault handoff acceptance](vault-handoff.md).
+- Run the complete [device linking acceptance](device-linking.md).
+
+## Background sync
+
+- A change made on the phone reaches the coordinator after the app leaves the foreground, on Android 12 or newer and on Android 10 (no expedited work there).
+- With the app swiped away, the periodic pass exchanges within about 15 minutes on Wi-Fi, and no pass runs on cellular alone.
+- Joining a Wi-Fi network or changing addresses while the process runs triggers a pass; after a reboot, the periodic pass resumes without opening the app.
+- When the coordinator moved to another address while the phone was closed, a background pass finds it through discovery and exchanges.
+- Turning airplane mode off with changes waiting and the app closed runs a pass once the network returns.
+- Opening the app while a background pass runs opens no second database pool, shows no error, and shows fresh status after the pass.
+- Unlinking cancels both background jobs; force-stop stops them until the app opens again.
+- Background restriction and the restricted standby bucket are reported as degraded connectivity.
+- The installed APK's merged manifest declares no WorkManager foreground service, and no foreground service notification ever appears for sync.
 
 ## Security and artifact checks
 

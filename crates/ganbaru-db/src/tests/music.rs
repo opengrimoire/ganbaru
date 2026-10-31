@@ -1,4 +1,4 @@
-use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
+use super::helpers::migrated_memory_pool;
 use crate::run_migrations;
 use sqlx::Row;
 
@@ -7,8 +7,8 @@ fn repeated_migration_startup_preserves_music_data() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, icon, created_at_ms, updated_at_ms)
-             VALUES ('playlist-1', 'Deep focus', 'emoji:🎧', 1, 1)",
+            "INSERT INTO music_playlists (id, name, icon, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Deep focus', 'emoji:🎧', 'a0', 1, 1)",
         )
         .execute(&pool)
         .await
@@ -58,6 +58,11 @@ fn canonical_music_schema_keeps_device_paths_out_of_logical_roots() {
             "idx_music_local_locations_root_availability",
             "idx_music_source_collection_items_order",
             "idx_music_playlist_memberships_order",
+            "idx_music_playlist_memberships_break_item",
+            "idx_music_playlists_order",
+            "idx_music_listening_statistics_item",
+            "music_playlists_order_key_insert",
+            "music_playlist_memberships_order_key_insert",
             "idx_music_snoozes_active_item",
             "idx_music_recent_selections_playlist",
             "idx_music_library_items_review_deferred_until",
@@ -114,8 +119,8 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
-             VALUES ('playlist-1', 'Focus', 1700000000000, 1700000000000)",
+            "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Focus', 'a0', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
         .await
@@ -135,8 +140,8 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
         .unwrap();
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-             VALUES ('membership-1', 'playlist-1', 'item-1', 0, 1700000000000, 1700000000000)",
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('membership-1', 'playlist-1', 'item-1', 'a0', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
         .await
@@ -144,8 +149,8 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
 
         let duplicate_membership = sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-             VALUES ('membership-2', 'playlist-1', 'item-1', 1, 1700000000000, 1700000000000)",
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('membership-2', 'playlist-1', 'item-1', 'a1', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
         .await;
@@ -192,14 +197,30 @@ fn default_playlists_have_a_complete_order_without_memberships_or_obsolete_resum
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        let sort_orders: Vec<i64> =
-            sqlx::query_scalar("SELECT sort_order FROM music_playlists ORDER BY sort_order")
+        let order: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, order_key FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
         assert_eq!(playlists, 11);
         assert_eq!(memberships, 0);
-        assert_eq!(sort_orders, (0..11).collect::<Vec<_>>());
+        assert_eq!(
+            order.first().map(|(id, _)| id.as_str()),
+            Some("playlist-default-start-of-day")
+        );
+        assert_eq!(
+            order.last().map(|(id, _)| id.as_str()),
+            Some("playlist-default-commute")
+        );
+        let keys = order
+            .iter()
+            .map(|(_, key)| key.as_str())
+            .collect::<Vec<_>>();
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            keys.iter()
+                .all(|key| key.len() == 4 && key.starts_with('c'))
+        );
 
         let obsolete_tables: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'music_playback_states'",
@@ -212,8 +233,8 @@ fn default_playlists_have_a_complete_order_without_memberships_or_obsolete_resum
 fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let presets: Vec<(String, String, f64, String, f64)> = sqlx::query_as(
-            "SELECT p.id, p.name, p.level, s.soundscape_id, s.level
+        let presets: Vec<(String, String, i64, String, i64, String)> = sqlx::query_as(
+            "SELECT p.id, p.name, p.level_milli, s.soundscape_id, s.level_milli, s.order_key
              FROM music_soundscape_presets p JOIN music_soundscape_preset_sounds s ON s.preset_id = p.id
              ORDER BY p.id",
         )
@@ -226,23 +247,26 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
                 (
                     "preset-generated-brown-noise".into(),
                     "Rain (soft)".into(),
-                    1.25,
+                    1250,
                     "generated-brown-noise".into(),
-                    1.0
+                    1000,
+                    "c000".into()
                 ),
                 (
                     "preset-generated-pink-noise".into(),
                     "Rain (moderate)".into(),
-                    0.75,
+                    750,
                     "generated-pink-noise".into(),
-                    1.0
+                    1000,
+                    "c000".into()
                 ),
                 (
                     "preset-generated-white-noise".into(),
                     "Rain (heavy)".into(),
-                    0.5,
+                    500,
                     "generated-white-noise".into(),
-                    1.0
+                    1000,
+                    "c000".into()
                 ),
             ]
         );
@@ -283,90 +307,166 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
         .await;
         assert!(duplicate_generated.is_err());
         for sql in [
-            "UPDATE music_soundscape_presets SET level = 2.1",
-            "UPDATE music_soundscape_preset_sounds SET level = 1.1",
-            "UPDATE music_soundscape_preset_sounds SET level = -0.1",
+            "UPDATE music_soundscape_presets SET level_milli = 2001",
+            "UPDATE music_soundscape_preset_sounds SET level_milli = 1001",
+            "UPDATE music_soundscape_preset_sounds SET level_milli = -1",
+            "UPDATE music_soundscape_preset_sounds SET order_key = ''",
         ] {
             assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
         }
+        let pending_preset_sounds: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_soundscape_preset_sounds WHERE sync_key GLOB 'pending:*'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pending_preset_sounds, 0,
+            "seeded preset sounds carry their derived keys"
+        );
     });
 }
 
 #[test]
-fn preset_mix_migration_turns_sound_choices_into_presets() {
+fn deleting_a_break_item_keeps_its_range_and_deleting_a_preset_clears_it() {
     super::block_on(async {
-        const BEFORE_PRESET_MIXES: i64 = 20261019120000;
-        let pool = memory_pool_migrated_through(BEFORE_PRESET_MIXES).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO music_soundscapes (id, source_kind, name, icon, availability, created_at_ms, updated_at_ms)
-                 VALUES ('loop-1', 'local-loop', 'Thunder', 'lucide:cloud-lightning', 'available', 1, 1);
-             INSERT INTO music_context_assignments
-                 (owner_kind, owner_id, phase, behavior, soundscape_id, provenance_kind, updated_at_ms, soundscape_behavior)
-                 VALUES ('project-default', 'project-1', 'focus', 'inherit', 'loop-1', 'explicit', 1, 'play-selected'),
-                        ('project-default', 'project-1', 'short-break', 'inherit', 'generated-pink-noise', 'explicit', 1, 'play-selected'),
-                        ('project-default', 'project-1', 'long-break', 'inherit', 'removed-sound', 'explicit', 1, 'play-selected');
-             UPDATE music_soundscape_state SET active_soundscape_id = 'generated-brown-noise', desired_playing = 1, volume = 0.4;",
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1),
+                    ('item-2', 'local:2', 'local-file', 'available', 'reviewed', 1, 1);
+             INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Playlist', 'a0', 1, 1);
+             INSERT INTO music_playlist_memberships
+                (id, playlist_id, item_id, order_key, break_item_id, break_start_ms, break_end_ms,
+                 created_at_ms, updated_at_ms)
+             VALUES ('membership-1', 'playlist-1', 'item-1', 'a0', 'item-2', 1000, 2000, 1, 1);
+             UPDATE music_soundscape_state SET active_preset_id = 'preset-generated-pink-noise';
+             DELETE FROM music_library_items WHERE id = 'item-2';
+             DELETE FROM music_soundscape_presets WHERE id = 'preset-generated-pink-noise';",
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        run_migrations(&pool).await.unwrap();
+        let cleared: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT break_item_id, break_start_ms FROM music_playlist_memberships
+             WHERE id = 'membership-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cleared, (None, Some(1000)));
+        let active: Option<String> = sqlx::query_scalar(
+            "SELECT active_preset_id FROM music_soundscape_state WHERE singleton = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(active, None);
+        let orphaned_sounds: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_soundscape_preset_sounds
+             WHERE preset_id = 'preset-generated-pink-noise'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(orphaned_sounds, 0);
+    });
+}
 
-        let assignments: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT phase, soundscape_preset_id FROM music_context_assignments ORDER BY phase",
+#[test]
+fn music_sync_shape_rejects_missing_keys_bad_ranges_and_extra_skips() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1);
+             INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('p', 'P', 'a0', 1, 1);
+             INSERT INTO music_playlist_memberships
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('m', 'p', 'item-1', 'a0', 1, 1);
+             INSERT INTO music_listening_statistics
+                (device_id, item_id, play_count, updated_at_ms, sync_key)
+             VALUES ('device-a', 'item-1', 2, 1, 'statistics-a'), ('device-b', 'item-1', 3, 1, 'statistics-b');",
         )
-        .fetch_all(&pool)
+        .execute(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            assignments,
-            vec![
-                ("focus".into(), Some("preset-loop-1".into())),
-                ("long-break".into(), Some("preset-removed-sound".into())),
-                (
-                    "short-break".into(),
-                    Some("preset-generated-pink-noise".into())
-                ),
-            ]
-        );
-        let local: (String, String, String) = sqlx::query_as(
-            "SELECT p.name, p.icon, s.soundscape_id FROM music_soundscape_presets p
-             JOIN music_soundscape_preset_sounds s ON s.preset_id = p.id WHERE p.id = 'preset-loop-1'",
+
+        for sql in [
+            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms) VALUES ('q', 'Q', 1, 1)",
+            "UPDATE music_playlists SET order_key = '' WHERE id = 'p'",
+            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, created_at_ms, updated_at_ms)
+             VALUES ('n', 'p', 'item-1', 1, 1)",
+            "UPDATE music_playlist_memberships SET order_key = '' WHERE id = 'm'",
+            "UPDATE music_playlist_memberships SET volume_milli = 1001",
+            "UPDATE music_playlist_memberships SET rate_milli = 249",
+            "UPDATE music_playlist_memberships SET break_start_ms = 10, break_end_ms = 5",
+            "UPDATE music_playlist_memberships SET break_rate_milli = 2001",
+            "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+             VALUES ('m', 64, 0, 1)",
+            "INSERT INTO music_listening_statistics (device_id, item_id, updated_at_ms, sync_key)
+             VALUES (' ', 'item-1', 1, 'statistics-blank')",
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms)
+             VALUES ('item-1', 'calm', 1)",
+        ] {
+            assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
+        }
+        let total: i64 = sqlx::query_scalar(
+            "SELECT SUM(play_count) FROM music_listening_statistics WHERE item_id = 'item-1'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            local,
-            (
-                "Thunder".into(),
-                "lucide:cloud-lightning".into(),
-                "loop-1".into()
+        assert_eq!(total, 5);
+    });
+}
+
+#[test]
+fn artwork_overrides_require_a_managed_reference_with_its_size() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let reference = format!("music/artwork/{}.png", "a".repeat(64));
+
+        for (artwork, size) in [
+            (Some("/home/user/cover.png"), Some(10)),
+            (Some(reference.as_str()), None),
+            (None, Some(10)),
+            (Some(reference.as_str()), Some(0)),
+            (Some(reference.as_str()), Some(10_485_761)),
+        ] {
+            let result = sqlx::query(
+                "UPDATE music_library_items
+                 SET artwork_override = ?, artwork_override_byte_size = ? WHERE id = 'item-1'",
             )
-        );
-        let dangling: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM music_soundscape_presets WHERE id = 'preset-removed-sound'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(dangling, 0);
-        let state: (Option<String>, i64) = sqlx::query_as(
-            "SELECT active_preset_id, desired_playing FROM music_soundscape_state WHERE singleton = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(state, (Some("preset-generated-brown-noise".into()), 1));
-        let removed_columns: i64 = sqlx::query_scalar(
-            "SELECT
-                (SELECT COUNT(*) FROM pragma_table_info('music_context_assignments') WHERE name = 'soundscape_id')
-                + (SELECT COUNT(*) FROM pragma_table_info('calendar_event_archive_music_assignments') WHERE name = 'soundscape_id')",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(removed_columns, 0);
+            .bind(artwork)
+            .bind(size)
+            .execute(&pool)
+            .await;
+            assert!(result.is_err(), "{artwork:?} {size:?}");
+        }
+        for (artwork, size) in [(Some(reference.as_str()), Some(10_485_760)), (None, None)] {
+            sqlx::query(
+                "UPDATE music_library_items
+                 SET artwork_override = ?, artwork_override_byte_size = ? WHERE id = 'item-1'",
+            )
+            .bind(artwork)
+            .bind(size)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
     });
 }

@@ -8,6 +8,7 @@ use crate::chat::channels::{
 use crate::chat::device_state::update_active_device_scope;
 use crate::chat::scratch;
 use ganbaru_chat::coordination::contracts::*;
+use ganbaru_chat::ids::new_id;
 use ganbaru_chat_contracts::models::*;
 use sqlx::SqlitePool;
 
@@ -120,7 +121,7 @@ pub async fn chat_cleanup_scratch(
     let job_id = match existing_job_id {
         Some(value) => ChatScratchCleanupJobId::new(value).map_err(identifier_error)?,
         None => {
-            ChatScratchCleanupJobId::new(new_id("scratch-cleanup")).map_err(identifier_error)?
+            ChatScratchCleanupJobId::new(new_id("scratch-cleanup")?).map_err(identifier_error)?
         }
     };
     let now = now_timestamp()?;
@@ -399,18 +400,6 @@ async fn mark_cleanup_failed(
         .map_err(persistence_error)?;
     }
     transaction.commit().await.map_err(persistence_error)
-}
-
-fn new_id(prefix: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{prefix}:{:x}:{sequence:x}", nanos)
 }
 
 fn device_state_error<T>(_error: T) -> ChatError {

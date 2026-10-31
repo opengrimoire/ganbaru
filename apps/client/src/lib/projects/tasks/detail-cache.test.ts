@@ -6,8 +6,8 @@ function detail(id: string, updatedAt: string, description = ""): ProjectTaskDet
   return {
     task: {
       id, projectId: "project", sectionId: "section", statusId: "status", title: id,
-      description, priority: "normal", taskType: "task", sectionSortOrder: 0,
-      statusSortOrder: 0, milestone: false, createdAt: "2026-01-01", updatedAt,
+      description, priority: "normal", taskType: "task", sectionOrderKey: "0",
+      statusOrderKey: "0", milestone: false, createdAt: "2026-01-01", updatedAt,
     },
     relatedTasks: [], checklistItems: [], tags: [], taskTagLinks: [], customFields: [],
     customFieldOptions: [], customFieldValues: [], customFieldOptionValues: [],

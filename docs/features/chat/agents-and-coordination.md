@@ -6,7 +6,7 @@ Ganbaru coordinates work through durable conversations, explicit assignments, an
 
 ## Participants and agents
 
-A participant is the local person, a persistent AI agent, or (planned) a human collaborator. An agent has a stable identity, role, and instructions independent of provider and model. Changing its provider or model creates a new policy revision, not a new participant, and its history stays intact.
+A participant is the local person, a persistent AI agent, or (planned) a human collaborator. An agent has a stable identity, role, and instructions independent of provider and model. Changing its provider or model creates a new policy revision, not a new participant, and its history stays intact. An agent is archived and restored rather than deleted, because its identity is shared with other devices of the vault.
 
 An agent's policy selects the provider instance, model and options, effort, and approval mode. Its configuration state reports when it needs setup, its provider is unavailable, or it lacks folder access.
 
@@ -24,6 +24,8 @@ Effective authority is the intersection of these ceilings, resolved by [Chat acc
 Ordinary messages never invoke every visible agent. Work starts through an explicit mention or, in the future, a typed assignment, a documented workflow, or a user-approved scheduled action. Mentions distinguish reference from invocation: naming an agent in prose is not enough, and an actionable invocation is visible before execution begins.
 
 An invocation creates a work assignment in a reply thread, linked to its triggering message and any previous assignment. Assignments move through queued, working, waiting for an answer, waiting for approval, ready for review, completed, failed, or cancelled. A settled assignment run (completed, failed, or cancelled) ignores later provider events, so a late or replayed event cannot reopen it or change how it ended. A reply in an assignment thread continues with that thread's latest teammate without a new mention, so review feedback reaches the agent that did the work; this requires the teammate to still participate in the channel, and removing it stops implicit continuation. Only the local owner posts today; when other people can post, a reply continues an assignment only within its author's own authority (planned).
+
+Assignments sync between linked devices, and each one runs on a single device: the teammate's home device (the device that created it) while that device can still write Chat, or the desktop where the mention was posted. When the executing device stops writing Chat, as after an unlink or a revoked writer, a device that can write Chat takes over its active work at startup: work that had not started moves over, and started work fails with a reason so Retry can run it again. Start takes over a mention only while its work is still active; finished work is never rerun. When the mention arrives on another device first, that device shows it without starting work; a desktop can start it there instead (the Start action in the timeline is planned). Any device can review, complete, or cancel an assignment, and cancelling it elsewhere stops the run on the device that executes it. Scheduled messages sync too and are sent by the device that scheduled them; other devices can cancel them, and an edit made elsewhere while the message is being sent is lost, since the sent message keeps the sending device's text.
 
 ## Resolution before work starts
 

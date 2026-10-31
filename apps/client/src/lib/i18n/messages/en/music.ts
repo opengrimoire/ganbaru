@@ -165,6 +165,14 @@ export const music = {
       removeMessage: (name: string) => `Remove ${name}? Projects and events that use it will show it as unavailable until you pick another soundscape.`,
     },
   },
+  sync: {
+    playlistUntitled: "Untitled playlist",
+    playlistRecoveryNote: "Restoring creates a new playlist with the songs that were added to it on another device.",
+    playlistRestored: "Playlist restored with its new songs",
+    playlistRestoreFailed: "The playlist could not be restored",
+    itemUntitled: "Untitled track",
+    itemRecoveryNote: "This track was removed from the library on another device. Its edits cannot be restored, so they can only be discarded.",
+  },
   builder: {
     defaultPlaylist: {
       startOfDay: "Start of the day!",
@@ -304,7 +312,8 @@ export const music = {
     addLocalFolderHint: "Add a folder to browse its music here.",
     addYouTubeLinkHint: "Add a video or playlist link to browse it here.",
     noSourceItems: "Nothing here yet",
-    unlinkedSourceFolder: (name: string) => `${name} is not linked to a folder on this device yet.`,
+    notOnThisDevice: "Not on this device",
+    unlinkedSourceFolder: (name: string) => `${name} is not on this device yet. Choose its folder to play it here.`,
     missingSourceFolder: (name: string) => `The folder for ${name} cannot be found on this device.`,
     sourceLocation: "Source location",
     renameSource: "Rename source",
@@ -481,7 +490,7 @@ export const music = {
     playlistReorderPickedUp: (name: string) => `${name} picked up. Use the arrow keys to move it, then press Space to place it.`,
     playlistReorderCancelled: "Playlist reorder cancelled.",
     playlistReorderFailed: "The playlist order could not be saved. Your previous order was restored.",
-    deletePlaylistWarning: (name: string) => `Deleting ${name} removes its memberships and repairs every current assignment in the same transaction.`,
+    deletePlaylistWarning: (name: string) => `Deleting ${name} removes its memberships. Phase assignments move to the replacement; project and event assignments fall back to no playlist.`,
     projectAssignments: "Project assignments",
     eventAssignments: "Event assignments",
     contextAssignments: "Phase assignments",

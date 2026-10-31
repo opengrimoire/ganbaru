@@ -1,3 +1,4 @@
+use crate::block_storage::{BlockRowInsert, SiblingPositions, insert_block_row};
 use crate::models::{
     NoteBlockRow, NoteLoadedPage, NotePageTemplateApply, NotePageTemplateBlockRow,
     NotePageTemplateCreateFromPage, NotePageTemplateDto, NotePageTemplateDuplicate,
@@ -5,14 +6,12 @@ use crate::models::{
 };
 use crate::validation::{
     plain_text_from_payload, require_uuid, validate_block_payload, validate_parent,
-    validate_sort_order,
 };
 use crate::{page_history, reads};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
-
-const DEFAULT_BLOCK_SORT_STEP: f64 = 1000.0;
 
 struct TemplatePageParent {
     parent_page_id: Option<String>,
@@ -93,6 +92,17 @@ pub async fn apply_page_template(
     ) {
         return Err("page templates can only create workspace pages or subpages".to_string());
     }
+    let project_id = request
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if project_id.is_some() && !matches!(&request.parent, NoteParent::Workspace { .. }) {
+        return Err("template subpages take their parent page project".to_string());
+    }
+    if let Some(project_id) = project_id {
+        crate::project_history::ensure_project_baseline_for_mutation(pool, project_id).await?;
+    }
     let title_override = request
         .title
         .as_deref()
@@ -102,6 +112,9 @@ pub async fn apply_page_template(
         .begin()
         .await
         .map_err(|e| format!("begin notes page template apply: {e}"))?;
+    if let Some(project_id) = project_id {
+        crate::structure::require_page_project_tx(&mut tx, project_id).await?;
+    }
     let template = load_template_row(&mut tx, &template_id).await?;
     let blocks = load_template_block_rows(&mut tx, &template_id).await?;
     let parent = resolve_page_template_parent(&mut tx, &request.parent).await?;
@@ -114,7 +127,6 @@ pub async fn apply_page_template(
     let mut reserved_ids = HashSet::new();
     let page_id = new_note_id(&mut tx, &mut reserved_ids).await?;
     let title = title_override.unwrap_or_else(|| template.name.clone());
-    let properties = properties_with_title(&template.properties, &title)?;
     let (parent_type, parent_page_id, parent_block_id) = parent_columns(&request.parent);
     sqlx::query(
         "INSERT INTO notes_pages (
@@ -122,19 +134,27 @@ pub async fn apply_page_template(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
+            project_id,
             title,
-            properties,
             icon,
             cover
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&page_id)
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(crate::structure::nested_page_block_id(
+        parent_type,
+        &page_id,
+    ))
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        project_id,
+    ))
     .bind(&title)
-    .bind(properties.to_string())
     .bind(&template.icon)
     .bind(&template.cover)
     .execute(&mut *tx)
@@ -152,6 +172,7 @@ pub async fn apply_page_template(
     if let Some(parent) = &parent {
         touch_page(&mut tx, &parent.parent_page_id).await?;
     }
+    crate::project_history::mark_page_dirty_tx(&mut tx, &page_id, &title, false).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes page template apply: {e}"))?;
@@ -344,11 +365,12 @@ async fn load_active_page_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<SourcePageSnapshot, String> {
-    sqlx::query_as::<_, SourcePageSnapshot>(
-        "SELECT properties, icon, cover
-         FROM notes_pages
-         WHERE id = ? AND in_trash = 0 AND archived = 0",
-    )
+    sqlx::query_as::<_, SourcePageSnapshot>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} AS properties, page.icon, page.cover
+         FROM notes_pages AS page
+         WHERE page.id = ? AND page.in_trash = 0 AND page.archived = 0",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await
@@ -367,23 +389,23 @@ async fn replace_template_blocks_from_page(
         .await
         .map_err(|e| format!("clear notes page template blocks: {e}"))?;
     let source_blocks = load_page_block_subtree_rows(tx, source_page_id).await?;
-    for block in &source_blocks {
+    for (ordinal, block) in (0_i64..).zip(&source_blocks) {
         validate_block_payload(
             &block.block_type,
             &serde_json::from_str(&block.payload)
                 .map_err(|e| format!("parse notes source block payload: {e}"))?,
         )?;
-        insert_source_block_snapshot(tx, template_id, block).await?;
+        insert_source_block_snapshot(tx, template_id, block, ordinal).await?;
     }
-    Ok(())
+    ensure_template_content_size_tx(tx, TemplateKind::Page, template_id).await
 }
 
 async fn insert_source_block_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     template_id: &str,
     block: &NoteBlockRow,
+    ordinal: i64,
 ) -> Result<(), String> {
-    validate_sort_order(block.sort_order)?;
     let (parent_type, parent_block_id): (&str, Option<&str>) = if block.parent_type == "page_id" {
         ("template", None)
     } else {
@@ -407,7 +429,7 @@ async fn insert_source_block_snapshot(
             type,
             payload,
             plain_text,
-            sort_order
+            ordinal
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -419,7 +441,7 @@ async fn insert_source_block_snapshot(
     .bind(&block.block_type)
     .bind(&block.payload)
     .bind(&block.plain_text)
-    .bind(block.sort_order)
+    .bind(ordinal)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("snapshot notes page template block: {e}"))?;
@@ -441,7 +463,7 @@ async fn insert_template_block_snapshot(
             type,
             payload,
             plain_text,
-            sort_order
+            ordinal
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -453,7 +475,7 @@ async fn insert_template_block_snapshot(
     .bind(&block.block_type)
     .bind(&block.payload)
     .bind(&block.plain_text)
-    .bind(block.sort_order)
+    .bind(block.ordinal)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("copy notes page template block: {e}"))?;
@@ -471,6 +493,7 @@ async fn insert_template_blocks_as_page_blocks(
         let duplicate_id = new_note_id(tx, reserved_ids).await?;
         block_ids.insert(block.id.clone(), duplicate_id);
     }
+    let mut positions = SiblingPositions::default();
     for block in blocks {
         let duplicate_id = block_ids
             .get(&block.id)
@@ -489,33 +512,26 @@ async fn insert_template_blocks_as_page_blocks(
                 .ok_or_else(|| "template child block parent was not cloned".to_string())?;
             ("block_id", None, Some(duplicate_parent_id))
         };
-        validate_sort_order(block.sort_order)?;
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
+        let order_key = positions.next_order_key(parent_block_id.as_deref())?;
+        let payload: Value = serde_json::from_str(&block.payload)
+            .map_err(|e| format!("parse notes page template block payload: {e}"))?;
+        insert_block_row(
+            tx,
+            BlockRowInsert {
+                id: &duplicate_id,
                 page_id,
                 parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                parent_page_id: parent_page_id.as_deref(),
+                parent_block_id: parent_block_id.as_deref(),
+                block_type: &block.block_type,
+                payload: &payload,
+                plain_text: &block.plain_text,
+                order_key: &order_key,
+                source_provider: None,
+                source_object_id: None,
+                source_last_edited_time: None,
+            },
         )
-        .bind(&duplicate_id)
-        .bind(page_id)
-        .bind(parent_type)
-        .bind(parent_page_id)
-        .bind(parent_block_id.as_deref())
-        .bind(block.has_children)
-        .bind(&block.block_type)
-        .bind(&block.payload)
-        .bind(&block.plain_text)
-        .bind(block.sort_order)
-        .execute(&mut **tx)
         .await
         .map_err(|e| format!("apply notes page template block: {e}"))?;
         if block.block_type == "child_page" {
@@ -567,8 +583,8 @@ async fn insert_applied_child_page(
             parent_type,
             parent_page_id,
             parent_block_id,
-            title,
-            properties
+            child_block_id,
+            title
          )
          VALUES (?, ?, ?, ?, ?, ?)",
     )
@@ -576,8 +592,8 @@ async fn insert_applied_child_page(
     .bind(page_parent_type)
     .bind(parent_page_id)
     .bind(block_parent_block_id.as_deref())
+    .bind(page_id)
     .bind(&title)
-    .bind(page_title_properties(&title).to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create template child page: {e}"))?;
@@ -591,28 +607,26 @@ async fn insert_default_page_block(
 ) -> Result<(), String> {
     let block_id = new_note_id(tx, reserved_ids).await?;
     let payload = default_text_payload("");
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
+    let order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: &block_id,
             page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+            parent_type: "page_id",
+            parent_page_id: Some(page_id),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &payload,
+            plain_text: &plain_text_from_payload("paragraph", &payload),
+            order_key: &order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(block_id)
-    .bind(page_id)
-    .bind(page_id)
-    .bind(payload.to_string())
-    .bind(plain_text_from_payload("paragraph", &payload))
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("create template page initial block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("create template page initial block: {e}"))
 }
 
 async fn insert_parent_child_page_block(
@@ -621,32 +635,40 @@ async fn insert_parent_child_page_block(
     title: &str,
     parent: &TemplatePageParent,
 ) -> Result<(), String> {
-    let sort_order = next_page_child_sort_order(tx, &parent.parent_page_id).await?;
-    validate_sort_order(sort_order)?;
+    let Some(parent_page_id) = parent.parent_page_id.as_deref() else {
+        return Ok(());
+    };
+    let target = crate::writes::ParentTarget {
+        parent_type: "page_id",
+        parent_page_id: Some(parent_page_id.to_string()),
+        parent_block_id: None,
+        parent_block_type: None,
+        page_id: parent_page_id.to_string(),
+    };
+    let order_key = crate::writes::next_order_keys(tx, &target, None, 1)
+        .await?
+        .pop()
+        .ok_or_else(|| "template page child block order key is missing".to_string())?;
     let payload = child_page_payload(title);
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'child_page', ?, ?, ?)",
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: page_id,
+            page_id: parent_page_id,
+            parent_type: "page_id",
+            parent_page_id: Some(parent_page_id),
+            parent_block_id: None,
+            block_type: "child_page",
+            payload: &payload,
+            plain_text: &plain_text_from_payload("child_page", &payload),
+            order_key: &order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(page_id)
-    .bind(&parent.parent_page_id)
-    .bind(&parent.parent_page_id)
-    .bind(payload.to_string())
-    .bind(plain_text_from_payload("child_page", &payload))
-    .bind(sort_order)
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("create template page child block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("create template page child block: {e}"))
 }
 
 async fn resolve_page_template_parent(
@@ -680,22 +702,119 @@ async fn resolve_page_template_parent(
     }
 }
 
+/// Upper bound on the encoded size of one template: its row plus every snapshot block.
+///
+/// A template replicates as one owned snapshot, so the whole snapshot must fit one operation.
+pub const MAX_TEMPLATE_CONTENT_BYTES: i64 = 256 * 1024;
+
+/// Upper bound on the number of snapshot blocks of one template, as sync declares it.
+pub use ganbaru_sync::manifest::vault::notes::MAX_TEMPLATE_BLOCKS;
+
+/// The template tables whose snapshots share [`MAX_TEMPLATE_CONTENT_BYTES`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TemplateKind {
+    Page,
+    DataSource,
+}
+
+/// Rejects a saved template whose row and snapshot blocks exceed [`MAX_TEMPLATE_CONTENT_BYTES`].
+pub(crate) async fn ensure_template_content_size_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    kind: TemplateKind,
+    template_id: &str,
+) -> Result<(), String> {
+    let query = match kind {
+        TemplateKind::Page => {
+            "SELECT
+                (SELECT length(CAST(id AS BLOB)) + length(CAST(name AS BLOB))
+                        + length(CAST(properties AS BLOB))
+                        + coalesce(length(CAST(source_page_id AS BLOB)), 0)
+                        + coalesce(length(CAST(icon AS BLOB)), 0)
+                        + coalesce(length(CAST(cover AS BLOB)), 0)
+                 FROM notes_page_templates WHERE id = ?1)
+              + (SELECT coalesce(sum(length(CAST(id AS BLOB)) + length(CAST(parent_type AS BLOB))
+                        + coalesce(length(CAST(parent_block_id AS BLOB)), 0)
+                        + length(CAST(type AS BLOB)) + length(CAST(payload AS BLOB))
+                        + length(CAST(plain_text AS BLOB))), 0)
+                 FROM notes_page_template_blocks WHERE template_id = ?1)"
+        }
+        TemplateKind::DataSource => {
+            "SELECT
+                (SELECT length(CAST(id AS BLOB)) + length(CAST(name AS BLOB))
+                        + length(CAST(properties AS BLOB))
+                        + length(CAST(data_source_id AS BLOB))
+                        + coalesce(length(CAST(source_page_id AS BLOB)), 0)
+                 FROM notes_data_source_templates WHERE id = ?1)
+              + (SELECT coalesce(sum(length(CAST(id AS BLOB)) + length(CAST(parent_type AS BLOB))
+                        + coalesce(length(CAST(parent_block_id AS BLOB)), 0)
+                        + length(CAST(type AS BLOB)) + length(CAST(payload AS BLOB))
+                        + length(CAST(plain_text AS BLOB))), 0)
+                 FROM notes_data_source_template_blocks WHERE template_id = ?1)"
+        }
+    };
+    let bytes: Option<i64> = sqlx::query_scalar(query)
+        .bind(template_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("measure notes template size: {e}"))?;
+    let bytes = bytes.ok_or_else(|| "notes template not found".to_string())?;
+    if bytes > MAX_TEMPLATE_CONTENT_BYTES {
+        return Err(format!(
+            "template content is {bytes} bytes, above the {MAX_TEMPLATE_CONTENT_BYTES} byte limit"
+        ));
+    }
+    let blocks_table = match kind {
+        TemplateKind::Page => "notes_page_template_blocks",
+        TemplateKind::DataSource => "notes_data_source_template_blocks",
+    };
+    let block_types = serde_json::to_string(crate::validation::NOTE_BLOCK_TYPES)
+        .map_err(|e| format!("encode notes block types: {e}"))?;
+    let (count, duplicates, misplaced, invalid): (i64, i64, i64, i64) =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT
+                COUNT(*),
+                COUNT(*) - COUNT(DISTINCT id),
+                COALESCE(SUM(CASE
+                    WHEN parent_type = 'template' AND parent_block_id IS NULL THEN 0
+                    WHEN parent_type = 'block_id' AND EXISTS (
+                        SELECT 1 FROM {blocks_table} AS parent
+                        WHERE parent.template_id = block.template_id
+                          AND parent.id = block.parent_block_id
+                    ) THEN 0
+                    ELSE 1 END), 0),
+                COALESCE(SUM(
+                    type NOT IN (SELECT value FROM json_each(?2))
+                    OR NOT json_valid(payload)
+                ), 0)
+             FROM {blocks_table} AS block
+             WHERE block.template_id = ?1"
+        )))
+        .bind(template_id)
+        .bind(block_types)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("check notes template blocks: {e}"))?;
+    if invalid > 0 {
+        return Err("template blocks must have a known type and a JSON payload".into());
+    }
+    let max_blocks = MAX_TEMPLATE_BLOCKS as i64;
+    if count > max_blocks {
+        return Err(format!(
+            "template has {count} blocks, above the {max_blocks} block limit"
+        ));
+    }
+    if duplicates > 0 || misplaced > 0 {
+        return Err("template blocks must have unique ids and parents inside the template".into());
+    }
+    Ok(())
+}
+
 async fn load_template_block_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     template_id: &str,
 ) -> Result<Vec<NotePageTemplateBlockRow>, String> {
     sqlx::query_as::<_, NotePageTemplateBlockRow>(
-        "WITH RECURSIVE subtree(id, path) AS (
-            SELECT id, printf('%020.6f:%s', sort_order, id)
-            FROM notes_page_template_blocks
-            WHERE template_id = ? AND parent_type = 'template'
-            UNION ALL
-            SELECT child.id, subtree.path || '/' || printf('%020.6f:%s', child.sort_order, child.id)
-            FROM notes_page_template_blocks AS child
-            JOIN subtree ON child.parent_block_id = subtree.id
-            WHERE child.template_id = ?
-         )
-         SELECT
+        "SELECT
             block.template_id,
             block.id,
             block.parent_type,
@@ -704,80 +823,49 @@ async fn load_template_block_rows(
             block.type AS block_type,
             block.payload,
             block.plain_text,
-            block.sort_order,
+            block.ordinal,
             block.created_time,
             block.last_edited_time
          FROM notes_page_template_blocks AS block
-         JOIN subtree ON subtree.id = block.id
          WHERE block.template_id = ?
-         ORDER BY subtree.path ASC",
+         ORDER BY block.ordinal ASC",
     )
-    .bind(template_id)
-    .bind(template_id)
     .bind(template_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load notes page template blocks: {e}"))
 }
 
-async fn load_page_block_subtree_rows(
+pub(crate) async fn load_page_block_subtree_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<Vec<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "WITH RECURSIVE subtree(id, path) AS (
-            SELECT id, printf('%020.6f:%s', sort_order, id)
+    // A space separates each order key from its id and a slash separates levels. Both sort below
+    // every order key and id character, so the path order is the depth-first sibling order.
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "WITH RECURSIVE subtree(id, path, depth) AS (
+            SELECT id, order_key || ' ' || id, 1
             FROM notes_blocks
             WHERE parent_type = 'page_id' AND parent_page_id = ? AND in_trash = 0
-            UNION ALL
-            SELECT child.id, subtree.path || '/' || printf('%020.6f:%s', child.sort_order, child.id)
+            UNION
+            SELECT child.id,
+                   subtree.path || '/' || child.order_key || ' ' || child.id,
+                   subtree.depth + 1
             FROM notes_blocks AS child
             JOIN subtree ON child.parent_block_id = subtree.id
-            WHERE child.in_trash = 0
+            WHERE child.in_trash = 0 AND subtree.depth < ?
          )
-         SELECT
-            notes_blocks.id,
-            notes_blocks.page_id,
-            notes_blocks.parent_type,
-            notes_blocks.parent_page_id,
-            notes_blocks.parent_block_id,
-            notes_blocks.has_children,
-            notes_blocks.in_trash,
-            notes_blocks.type AS block_type,
-            notes_blocks.payload,
-            notes_blocks.plain_text,
-            notes_blocks.sort_order,
-            notes_blocks.source_provider,
-            notes_blocks.source_object_id,
-            notes_blocks.source_last_edited_time,
-            notes_blocks.created_time,
-            notes_blocks.last_edited_time
-         FROM notes_blocks
+         SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        " FROM notes_blocks
          JOIN subtree ON subtree.id = notes_blocks.id
          ORDER BY subtree.path ASC",
-    )
+    ))
     .bind(page_id)
+    .bind(crate::writes::MAX_BLOCK_DEPTH)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load notes page blocks for template: {e}"))
-}
-
-async fn next_page_child_sort_order(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    parent_page_id: &Option<String>,
-) -> Result<f64, String> {
-    let max_order: Option<f64> = sqlx::query_scalar(
-        "SELECT MAX(sort_order)
-         FROM notes_blocks
-         WHERE parent_type = 'page_id'
-           AND parent_page_id = ?
-           AND in_trash = 0",
-    )
-    .bind(parent_page_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|e| format!("load notes template parent sort order: {e}"))?;
-    Ok(max_order.unwrap_or(0.0) + DEFAULT_BLOCK_SORT_STEP)
 }
 
 async fn touch_page(
@@ -868,33 +956,6 @@ fn normalize_optional_page_title(value: &str) -> Result<String, String> {
         return Err("page title must not contain control characters".to_string());
     }
     Ok(title.to_string())
-}
-
-fn properties_with_title(properties: &str, title: &str) -> Result<Value, String> {
-    let mut value: Value = serde_json::from_str(properties)
-        .map_err(|e| format!("parse page template properties: {e}"))?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "page template properties must be an object".to_string())?;
-    object.insert(
-        "title".to_string(),
-        json!({
-            "id": "title",
-            "type": "title",
-            "title": [rich_text(title)]
-        }),
-    );
-    Ok(value)
-}
-
-fn page_title_properties(title: &str) -> Value {
-    json!({
-        "title": {
-            "id": "title",
-            "type": "title",
-            "title": [rich_text(title)]
-        }
-    })
 }
 
 fn child_page_payload(title: &str) -> Value {

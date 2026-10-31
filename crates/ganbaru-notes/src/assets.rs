@@ -4,7 +4,7 @@ pub mod page_covers;
 pub mod page_icons;
 
 use serde_json::{Map, Value};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 use std::path::{Component, Path};
 
@@ -37,16 +37,228 @@ pub struct ManagedAssetWrite<'a> {
     pub missing_at: Option<&'a str>,
 }
 
+/// The stored identity of a managed asset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedAssetRecord {
+    /// `{class}:{sha256}`, where the class is the managed directory.
+    pub id: String,
+    /// The path the asset row keeps. Bytes recorded again under another name keep the first path.
+    pub asset_path: String,
+}
+
+/// Refuses synced bytes whose detected content type differs from the one the reference names.
+pub(crate) fn ensure_synced_content_type(
+    detected: &str,
+    asset: &ganbaru_sync::assets::AssetRef,
+) -> Result<(), String> {
+    if detected != asset.content_type() {
+        return Err(format!(
+            "the bytes are {detected} but the reference names {}",
+            asset.content_type()
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the asset id for content stored under `relative_path`.
+pub fn managed_asset_id(relative_path: &str, sha256: &str) -> Result<String, String> {
+    let relative_path = relative_path.trim();
+    let class = [
+        ASSET_PAGE_ICON_PREFIX,
+        ASSET_PAGE_COVER_PREFIX,
+        ASSET_FILE_PREFIX,
+    ]
+    .iter()
+    .find(|prefix| relative_path.starts_with(**prefix))
+    .map(|prefix| prefix.trim_end_matches('/'))
+    .ok_or_else(|| {
+        "notes asset path must stay under a managed Notes asset directory".to_string()
+    })?;
+    Ok(format!("{class}:{}", sha256.trim()))
+}
+
+/// The sorted, distinct asset ids of the managed files the JSON documents `documents` name,
+/// as a JSON array. A managed file is any object with a `ganbaru_asset_path` under a Notes
+/// asset directory and a `sha256`, whatever else it holds, so the list errs toward naming more.
+/// Documents that are not JSON name nothing.
+pub(crate) fn json_documents_asset_ids<'a>(
+    documents: impl IntoIterator<Item = &'a str>,
+) -> Result<String, String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for document in documents {
+        if let Ok(json) = serde_json::from_str::<Value>(document) {
+            collect_json_asset_ids(&json, &mut ids);
+        }
+    }
+    serde_json::to_string(&ids).map_err(|e| format!("serialize notes asset ids: {e}"))
+}
+
+fn collect_json_asset_ids(json: &Value, ids: &mut std::collections::BTreeSet<String>) {
+    match json {
+        Value::Object(object) => {
+            let path = object.get("ganbaru_asset_path").and_then(Value::as_str);
+            let sha256 = object.get("sha256").and_then(Value::as_str);
+            if let (Some(path), Some(sha256)) = (path, sha256)
+                && let Ok(id) = managed_asset_id(path, sha256)
+            {
+                ids.insert(id);
+            }
+            for nested in object.values() {
+                collect_json_asset_ids(nested, ids);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_json_asset_ids(item, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// How a reference refresh treats the asset rows its references name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetRecording {
+    /// A local write: records or refreshes each named asset row and refuses a malformed
+    /// reference.
+    Upsert,
+    /// A sync apply: references only asset rows that already exist and skips a malformed
+    /// reference, since asset rows replicate on their own and a remote row is never refused.
+    Existing,
+}
+
+impl AssetRecording {
+    /// `parsed`, or nothing when a sync apply meets a malformed reference.
+    fn lenient<T: Default>(self, parsed: Result<T, String>) -> Result<T, String> {
+        match (self, parsed) {
+            (Self::Existing, Err(_)) => Ok(T::default()),
+            (_, parsed) => parsed,
+        }
+    }
+}
+
+/// The asset row `asset` names, recorded first on a local write. A sync apply resolves only a
+/// row that exists, by the id its reference derives, and only when that row's own path and
+/// digest derive the same id, so a replicated row whose id disagrees with its content is never
+/// referenced.
+async fn record_asset_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    asset: ManagedAssetWrite<'_>,
+    recording: AssetRecording,
+) -> Result<Option<ManagedAssetRecord>, String> {
+    if recording == AssetRecording::Upsert {
+        return upsert_managed_asset_tx(tx, asset).await.map(Some);
+    }
+    let Ok(id) = managed_asset_id(asset.relative_path, asset.sha256) else {
+        return Ok(None);
+    };
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT id, asset_path, sha256 FROM notes_assets WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| format!("load notes asset: {e}"))?;
+    Ok(row.and_then(|(id, asset_path, sha256)| {
+        managed_asset_id(&asset_path, &sha256)
+            .is_ok_and(|derived| derived == id)
+            .then_some(ManagedAssetRecord { id, asset_path })
+    }))
+}
+
+/// The row id and digest a reference to `relative_path` resolves by: a managed file is named
+/// by its digest whatever its extension, so two paths of the same bytes in one class name one
+/// row. A path whose stem is not a digest resolves by path alone and yields `None`.
+fn asset_lookup_keys(relative_path: &str) -> Option<(String, String)> {
+    let relative_path = relative_path.trim();
+    let file_name = relative_path.rsplit('/').next()?;
+    let stem = file_name
+        .split_once('.')
+        .map_or(file_name, |(stem, _)| stem);
+    if stem.len() != 64
+        || !stem
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    let id = managed_asset_id(relative_path, stem).ok()?;
+    Some((id, stem.to_string()))
+}
+
+/// The asset row a reference names.
+pub(crate) struct ResolvedAsset {
+    pub(crate) id: String,
+    pub(crate) asset_path: String,
+    pub(crate) content_type: String,
+    pub(crate) byte_size: i64,
+}
+
+/// The asset row a reference to `relative_path` names: the row stored under that path, or else
+/// the row of the same class and digest. Either way the row's id must be the class and digest
+/// of its own path and content, since references resolve rows by that id. The same bytes
+/// recorded or replicated under two content types share one row and one path, so a reference
+/// may name a path no row holds.
+pub(crate) async fn resolve_asset_row(
+    pool: &SqlitePool,
+    relative_path: &str,
+) -> Result<Option<ResolvedAsset>, String> {
+    let relative_path = relative_path.trim();
+    let (id, sha256) = asset_lookup_keys(relative_path).unwrap_or_default();
+    let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, asset_path, sha256, content_type, byte_size FROM notes_assets
+         WHERE asset_path = ?1 OR (id = ?2 AND sha256 = ?3)
+         ORDER BY asset_path = ?1 DESC",
+    )
+    .bind(relative_path)
+    .bind(&id)
+    .bind(&sha256)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load notes asset: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .find(|(id, asset_path, sha256, _, _)| {
+            managed_asset_id(asset_path, sha256).is_ok_and(|derived| derived == *id)
+        })
+        .map(
+            |(id, asset_path, _, content_type, byte_size)| ResolvedAsset {
+                id,
+                asset_path,
+                content_type,
+                byte_size,
+            },
+        ))
+}
+
+/// Records a managed asset and returns the row it resolves to.
+///
+/// Rows are named by class and content digest, so the same bytes recorded twice share one row and
+/// keep the first path. A path that already names a row with other bytes resolves to that row,
+/// because the path is what stored payloads name.
 pub async fn upsert_managed_asset_tx(
     tx: &mut Transaction<'_, Sqlite>,
     asset: ManagedAssetWrite<'_>,
-) -> Result<(), String> {
+) -> Result<ManagedAssetRecord, String> {
     let kind = validate_managed_asset(&asset)?;
+    let relative_path = asset.relative_path.trim();
+    let id = managed_asset_id(relative_path, asset.sha256)?;
     let original_name = asset
         .original_name
         .map(str::trim)
         .filter(|name| !name.is_empty());
-    sqlx::query(
+    let existing_path_id: Option<String> =
+        sqlx::query_scalar("SELECT id FROM notes_assets WHERE asset_path = ?")
+            .bind(relative_path)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| format!("load notes asset by path: {e}"))?;
+    if let Some(existing_id) = existing_path_id.filter(|existing_id| *existing_id != id) {
+        return Ok(ManagedAssetRecord {
+            id: existing_id,
+            asset_path: relative_path.to_string(),
+        });
+    }
+    let row = sqlx::query(
         "INSERT INTO notes_assets (
             id,
             asset_path,
@@ -60,20 +272,23 @@ pub async fn upsert_managed_asset_tx(
             missing_at
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(asset_path)
+         ON CONFLICT(id)
          DO UPDATE SET
-            kind = excluded.kind,
             source_type = excluded.source_type,
             original_name = COALESCE(excluded.original_name, notes_assets.original_name),
-            content_type = excluded.content_type,
-            byte_size = excluded.byte_size,
-            sha256 = excluded.sha256,
-            storage_state = excluded.storage_state,
-            missing_at = excluded.missing_at,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            storage_state = CASE
+                WHEN notes_assets.asset_path = excluded.asset_path THEN excluded.storage_state
+                ELSE notes_assets.storage_state
+            END,
+            missing_at = CASE
+                WHEN notes_assets.asset_path = excluded.asset_path THEN excluded.missing_at
+                ELSE notes_assets.missing_at
+            END,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         RETURNING id, asset_path",
     )
-    .bind(asset.relative_path.trim())
-    .bind(asset.relative_path.trim())
+    .bind(&id)
+    .bind(relative_path)
     .bind(kind)
     .bind(asset.source_type.trim())
     .bind(original_name)
@@ -82,12 +297,21 @@ pub async fn upsert_managed_asset_tx(
     .bind(asset.sha256.trim())
     .bind(asset.storage_state.trim())
     .bind(asset.missing_at.map(str::trim))
-    .execute(&mut **tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| format!("record notes asset: {e}"))?;
-    Ok(())
+    Ok(ManagedAssetRecord {
+        id: row
+            .try_get("id")
+            .map_err(|e| format!("read notes asset id: {e}"))?,
+        asset_path: row
+            .try_get("asset_path")
+            .map_err(|e| format!("read notes asset path: {e}"))?,
+    })
 }
 
+/// Records whether the file of the asset row a reference to `relative_path` names is present.
+/// A path no row resolves to changes nothing.
 pub async fn mark_managed_asset_storage_state(
     pool: &SqlitePool,
     relative_path: &str,
@@ -99,6 +323,9 @@ pub async fn mark_managed_asset_storage_state(
     } else {
         ASSET_STATE_AVAILABLE
     };
+    let Some(asset) = resolve_asset_row(pool, relative_path).await? else {
+        return Ok(());
+    };
     sqlx::query(
         "UPDATE notes_assets
          SET storage_state = ?,
@@ -107,11 +334,11 @@ pub async fn mark_managed_asset_storage_state(
                 ELSE NULL
              END,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE asset_path = ?",
+         WHERE id = ?",
     )
     .bind(storage_state)
     .bind(if missing { 1_i64 } else { 0_i64 })
-    .bind(relative_path.trim())
+    .bind(&asset.id)
     .execute(pool)
     .await
     .map_err(|e| format!("update {context} asset storage state: {e}"))?;
@@ -127,28 +354,32 @@ pub async fn sync_page_asset_references_tx(
     cover: Option<&Value>,
 ) -> Result<(), String> {
     if icon_is_set {
-        replace_page_asset_reference_tx(
-            tx,
-            page_id,
-            "page_icon",
-            icon,
-            "icon",
-            ASSET_PAGE_ICON_PREFIX,
-        )
-        .await?;
+        replace_page_asset_reference_tx(tx, page_id, PageAsset::Icon, icon, AssetRecording::Upsert)
+            .await?;
     }
     if cover_is_set {
         replace_page_asset_reference_tx(
             tx,
             page_id,
-            "page_cover",
+            PageAsset::Cover,
             cover,
-            "cover",
-            ASSET_PAGE_COVER_PREFIX,
+            AssetRecording::Upsert,
         )
         .await?;
     }
     Ok(())
+}
+
+/// Replaces the icon and cover references of a page whose row a sync apply changed.
+pub async fn refresh_synced_page_asset_references_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+    icon: Option<&Value>,
+    cover: Option<&Value>,
+) -> Result<(), String> {
+    let recording = AssetRecording::Existing;
+    replace_page_asset_reference_tx(tx, page_id, PageAsset::Icon, icon, recording).await?;
+    replace_page_asset_reference_tx(tx, page_id, PageAsset::Cover, cover, recording).await
 }
 
 pub async fn sync_block_asset_reference_tx(
@@ -157,6 +388,44 @@ pub async fn sync_block_asset_reference_tx(
     page_id: &str,
     block_type: &str,
     payload: &Value,
+) -> Result<(), String> {
+    record_block_asset_reference_tx(
+        tx,
+        block_id,
+        page_id,
+        block_type,
+        payload,
+        AssetRecording::Upsert,
+    )
+    .await
+}
+
+/// Replaces the asset reference of a block whose row a sync apply changed.
+pub async fn refresh_synced_block_asset_reference_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    block_id: &str,
+    page_id: &str,
+    block_type: &str,
+    payload: &Value,
+) -> Result<(), String> {
+    record_block_asset_reference_tx(
+        tx,
+        block_id,
+        page_id,
+        block_type,
+        payload,
+        AssetRecording::Existing,
+    )
+    .await
+}
+
+async fn record_block_asset_reference_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    block_id: &str,
+    page_id: &str,
+    block_type: &str,
+    payload: &Value,
+    recording: AssetRecording,
 ) -> Result<(), String> {
     sqlx::query(
         "DELETE FROM notes_asset_references
@@ -170,18 +439,26 @@ pub async fn sync_block_asset_reference_tx(
     let (role, asset) = if block_type == "callout" {
         (
             "callout_icon",
-            page_local_file_asset(payload.get("icon"), "callout.icon", ASSET_PAGE_ICON_PREFIX)?,
+            recording.lenient(page_local_file_asset(
+                payload.get("icon"),
+                "callout.icon",
+                ASSET_PAGE_ICON_PREFIX,
+            ))?,
         )
     } else if matches!(block_type, "image" | "video" | "audio" | "file" | "pdf") {
-        ("block_file", media_local_file_asset(payload, block_type)?)
+        (
+            "block_file",
+            recording.lenient(media_local_file_asset(payload, block_type))?,
+        )
     } else {
         ("block_file", None)
     };
     let Some(asset) = asset else {
         return Ok(());
     };
-    let asset_path = asset.relative_path.trim().to_string();
-    upsert_managed_asset_tx(tx, asset).await?;
+    let Some(record) = record_asset_tx(tx, asset, recording).await? else {
+        return Ok(());
+    };
     sqlx::query(
         "INSERT INTO notes_asset_references (
             asset_id,
@@ -198,7 +475,7 @@ pub async fn sync_block_asset_reference_tx(
             block_id = excluded.block_id,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
     )
-    .bind(asset_path)
+    .bind(&record.id)
     .bind(block_id)
     .bind(page_id)
     .bind(block_id)
@@ -213,19 +490,30 @@ pub async fn sync_current_data_source_property_asset_references_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<(), String> {
-    let properties: String = sqlx::query_scalar(
-        "SELECT properties
-         FROM notes_data_sources
-         WHERE id = ? AND in_trash = 0",
-    )
-    .bind(data_source_id.trim())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| format!("load notes data source properties for asset references: {e}"))?
-    .ok_or_else(|| "data source not found".to_string())?;
-    let schema_properties: Value = serde_json::from_str(&properties)
-        .map_err(|e| format!("parse data source properties for asset references: {e}"))?;
+    let schema_properties =
+        crate::property_storage::load_active_data_source_properties(tx, data_source_id.trim())
+            .await?
+            .ok_or_else(|| "data source not found".to_string())?;
     sync_data_source_property_asset_references_tx(tx, data_source_id, &schema_properties).await
+}
+
+/// Replaces the file property references of a data source whose properties or row values a
+/// sync apply changed. A data source that no longer exists keeps none.
+pub async fn refresh_synced_data_source_property_asset_references_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+) -> Result<(), String> {
+    let schema_properties =
+        crate::property_storage::load_active_data_source_properties(tx, data_source_id.trim())
+            .await?
+            .unwrap_or_else(|| Value::Object(Map::new()));
+    record_data_source_property_asset_references_tx(
+        tx,
+        data_source_id,
+        &schema_properties,
+        AssetRecording::Existing,
+    )
+    .await
 }
 
 pub async fn sync_data_source_property_asset_references_tx(
@@ -233,11 +521,26 @@ pub async fn sync_data_source_property_asset_references_tx(
     data_source_id: &str,
     schema_properties: &Value,
 ) -> Result<(), String> {
+    record_data_source_property_asset_references_tx(
+        tx,
+        data_source_id,
+        schema_properties,
+        AssetRecording::Upsert,
+    )
+    .await
+}
+
+async fn record_data_source_property_asset_references_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+    schema_properties: &Value,
+    recording: AssetRecording,
+) -> Result<(), String> {
     let data_source_id = data_source_id.trim();
     if data_source_id.is_empty() {
         return Err("data_source_id is required".to_string());
     }
-    let property_ids = file_property_ids(schema_properties)?;
+    let property_ids = recording.lenient(file_property_ids(schema_properties))?;
     sqlx::query(
         "DELETE FROM notes_asset_references
          WHERE owner_type = 'data_source_property'
@@ -252,27 +555,35 @@ pub async fn sync_data_source_property_asset_references_tx(
     if property_ids.is_empty() {
         return Ok(());
     }
-    let rows = sqlx::query_as::<_, (String,)>(
-        "SELECT properties
-         FROM notes_pages
-         WHERE parent_type = 'data_source_id'
-           AND parent_data_source_id = ?",
-    )
+    let rows = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} AS properties
+         FROM notes_pages AS page
+         WHERE page.parent_type = 'data_source_id'
+           AND page.parent_data_source_id = ?",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .bind(data_source_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load notes row properties for asset references: {e}"))?;
-    let mut seen_asset_paths = HashSet::new();
+    let mut seen_asset_ids = HashSet::new();
     for (row_properties,) in rows {
-        let properties: Value = serde_json::from_str(&row_properties)
-            .map_err(|e| format!("parse row properties for asset references: {e}"))?;
+        let properties: Value = recording.lenient(
+            serde_json::from_str(&row_properties)
+                .map_err(|e| format!("parse row properties for asset references: {e}")),
+        )?;
         for property_id in &property_ids {
-            for asset in data_source_property_local_file_assets(&properties, property_id)? {
-                let asset_path = asset.relative_path.trim().to_string();
-                if !seen_asset_paths.insert(asset_path.clone()) {
+            let assets = recording.lenient(data_source_property_local_file_assets(
+                &properties,
+                property_id,
+            ))?;
+            for asset in assets {
+                let Some(record) = record_asset_tx(tx, asset, recording).await? else {
+                    continue;
+                };
+                if !seen_asset_ids.insert(record.id.clone()) {
                     continue;
                 }
-                upsert_managed_asset_tx(tx, asset).await?;
                 sqlx::query(
                     "INSERT INTO notes_asset_references (
                         asset_id,
@@ -284,7 +595,7 @@ pub async fn sync_data_source_property_asset_references_tx(
                      )
                      VALUES (?, 'data_source_property', ?, ?, ?, 'property_file')",
                 )
-                .bind(asset_path)
+                .bind(&record.id)
                 .bind(data_source_id)
                 .bind(data_source_id)
                 .bind(property_id)
@@ -303,6 +614,34 @@ pub async fn sync_comment_asset_references_tx(
     comment_id: &str,
     attachments: &[Value],
 ) -> Result<(), String> {
+    record_comment_asset_references_tx(tx, page_id, comment_id, attachments, AssetRecording::Upsert)
+        .await
+}
+
+/// Replaces the attachment references of a comment whose row a sync apply changed.
+pub async fn refresh_synced_comment_asset_references_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+    comment_id: &str,
+    attachments: &[Value],
+) -> Result<(), String> {
+    record_comment_asset_references_tx(
+        tx,
+        page_id,
+        comment_id,
+        attachments,
+        AssetRecording::Existing,
+    )
+    .await
+}
+
+async fn record_comment_asset_references_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+    comment_id: &str,
+    attachments: &[Value],
+    recording: AssetRecording,
+) -> Result<(), String> {
     sqlx::query(
         "DELETE FROM notes_asset_references
          WHERE owner_type = 'comment' AND owner_id = ? AND role = 'comment_attachment'",
@@ -312,16 +651,19 @@ pub async fn sync_comment_asset_references_tx(
     .await
     .map_err(|e| format!("clear notes comment asset references: {e}"))?;
 
-    let mut seen_asset_paths = HashSet::new();
+    let mut seen_asset_ids = HashSet::new();
     for (index, attachment) in attachments.iter().enumerate() {
-        let Some(asset) = comment_attachment_local_file_asset(attachment, index)? else {
+        let Some(asset) =
+            recording.lenient(comment_attachment_local_file_asset(attachment, index))?
+        else {
             continue;
         };
-        let asset_path = asset.relative_path.trim().to_string();
-        if !seen_asset_paths.insert(asset_path.clone()) {
+        let Some(record) = record_asset_tx(tx, asset, recording).await? else {
+            continue;
+        };
+        if !seen_asset_ids.insert(record.id.clone()) {
             continue;
         }
-        upsert_managed_asset_tx(tx, asset).await?;
         sqlx::query(
             "INSERT INTO notes_asset_references (
                 asset_id,
@@ -333,7 +675,7 @@ pub async fn sync_comment_asset_references_tx(
              )
              VALUES (?, 'comment', ?, ?, ?, 'comment_attachment')",
         )
-        .bind(asset_path)
+        .bind(&record.id)
         .bind(comment_id.trim())
         .bind(page_id.trim())
         .bind(comment_id.trim())
@@ -344,14 +686,44 @@ pub async fn sync_comment_asset_references_tx(
     Ok(())
 }
 
+/// The page icon or cover, with its reference role, field name, and asset directory.
+#[derive(Clone, Copy)]
+enum PageAsset {
+    Icon,
+    Cover,
+}
+
+impl PageAsset {
+    fn role(self) -> &'static str {
+        match self {
+            Self::Icon => "page_icon",
+            Self::Cover => "page_cover",
+        }
+    }
+
+    fn field(self) -> &'static str {
+        match self {
+            Self::Icon => "icon",
+            Self::Cover => "cover",
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Icon => ASSET_PAGE_ICON_PREFIX,
+            Self::Cover => ASSET_PAGE_COVER_PREFIX,
+        }
+    }
+}
+
 async fn replace_page_asset_reference_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
-    role: &str,
+    asset: PageAsset,
     value: Option<&Value>,
-    field: &str,
-    expected_prefix: &str,
+    recording: AssetRecording,
 ) -> Result<(), String> {
+    let role = asset.role();
     sqlx::query(
         "DELETE FROM notes_asset_references
          WHERE owner_type = 'page' AND owner_id = ? AND role = ?",
@@ -362,11 +734,14 @@ async fn replace_page_asset_reference_tx(
     .await
     .map_err(|e| format!("clear notes page asset reference: {e}"))?;
 
-    let Some(asset) = page_local_file_asset(value, field, expected_prefix)? else {
+    let Some(asset) =
+        recording.lenient(page_local_file_asset(value, asset.field(), asset.prefix()))?
+    else {
         return Ok(());
     };
-    let asset_path = asset.relative_path.trim().to_string();
-    upsert_managed_asset_tx(tx, asset).await?;
+    let Some(record) = record_asset_tx(tx, asset, recording).await? else {
+        return Ok(());
+    };
     sqlx::query(
         "INSERT INTO notes_asset_references (
             asset_id,
@@ -380,7 +755,7 @@ async fn replace_page_asset_reference_tx(
          DO UPDATE SET
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
     )
-    .bind(asset_path)
+    .bind(&record.id)
     .bind(page_id)
     .bind(page_id)
     .bind(role)
@@ -756,6 +1131,28 @@ mod tests {
             storage_state: ASSET_STATE_AVAILABLE,
             missing_at: None,
         }
+    }
+
+    #[test]
+    fn json_documents_name_the_managed_files_nested_anywhere_in_them() {
+        let sha = "c".repeat(64);
+        let blocks = format!(
+            r#"[{{"payload":{{"file":{{"sha256":"{sha}",
+                "ganbaru_asset_path":"notes/files/{sha}.docx"}}}}}},
+               {{"payload":{{"file":{{"sha256":"{sha}",
+                "ganbaru_asset_path":"notes/files/{sha}.pdf"}}}}}},
+               {{"payload":{{"file":{{"sha256":"{sha}",
+                "ganbaru_asset_path":"elsewhere/{sha}.pdf"}}}}}}]"#
+        );
+        let icon = format!(
+            r#"{{"file":{{"sha256":"{sha}","ganbaru_asset_path":"notes/page-icons/{sha}.png"}}}}"#
+        );
+        assert_eq!(
+            json_documents_asset_ids([blocks.as_str(), icon.as_str(), "not json"]).unwrap(),
+            format!(r#"["notes/files:{sha}","notes/page-icons:{sha}"]"#),
+            "an old extension names the same file, and a path outside Notes names none"
+        );
+        assert_eq!(json_documents_asset_ids(["{}"]).unwrap(), "[]");
     }
 
     #[test]

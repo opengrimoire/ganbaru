@@ -1,16 +1,21 @@
 //! Semantic adjacent moves over canonical siblings, committed with durable retry receipts.
+//!
+//! A move places the item directly before or after its visible neighbour, so it usually writes one order key.
+//! Order-only writes change neither the revision nor `updated_at`.
 
 use serde::{Deserialize, Serialize};
 use sqlx::{AssertSqlSafe, Sqlite, SqlitePool, Transaction};
 
+use super::custom_fields::{custom_field_option_order, custom_field_order};
 use super::models::{
     ProjectCustomFieldOptionRow, ProjectCustomFieldRow, ProjectTaskRow, ProjectsMutationRows,
 };
+use super::mutations::{task_section_order, task_status_order};
+use super::order::{OrderGroup, OrderPlacement};
 use super::validation::require_non_empty;
 
 const MAX_SIBLINGS: i64 = 10_000;
 const MAX_RECEIPT_BYTES: usize = 32 * 1024 * 1024;
-const ORDER_SPACING: i64 = 1_000;
 const MAX_ID_BYTES: i64 = 256;
 const MAX_REQUEST_BYTES: usize = 4_096;
 const TASK_TEXT_COLUMNS: &[&str] = &[
@@ -23,6 +28,8 @@ const TASK_TEXT_COLUMNS: &[&str] = &[
     "description",
     "priority",
     "task_type",
+    "section_order_key",
+    "status_order_key",
     "due_date",
     "due_time",
     "start_date",
@@ -46,8 +53,8 @@ pub enum TaskOrderAxis {
 impl TaskOrderAxis {
     fn columns(self) -> (&'static str, &'static str) {
         match self {
-            Self::Section => ("section_id", "section_sort_order"),
-            Self::Status => ("status_id", "status_sort_order"),
+            Self::Section => ("section_id", "section_order_key"),
+            Self::Status => ("status_id", "status_order_key"),
         }
     }
 }
@@ -66,16 +73,16 @@ pub enum ReorderItem {
         axis: TaskOrderAxis,
         group_id: String,
         parent_task_id: Option<String>,
-        expected_order: f64,
+        expected_order_key: String,
     },
     CustomField {
         id: String,
-        expected_order: i64,
+        expected_order_key: String,
     },
     CustomFieldOption {
         id: String,
         field_id: String,
-        expected_order: i64,
+        expected_order_key: String,
     },
 }
 
@@ -160,43 +167,27 @@ pub async fn reorder_item(
             axis,
             group_id,
             parent_task_id,
-            expected_order,
+            expected_order_key,
         } => {
-            let changes = task_placement_changes(
+            let changed = move_task(
                 &mut tx,
                 request,
                 id,
                 *axis,
                 group_id,
                 parent_task_id.as_deref(),
-                *expected_order,
+                expected_order_key,
             )
             .await?;
-            let (_, order_column) = axis.columns();
-            for (id, order) in &changes {
-                sqlx::query(AssertSqlSafe(format!("UPDATE project_tasks SET {order_column} = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")))
-                    .bind(order).bind(id).execute(&mut *tx).await.map_err(|error| format!("reorder project task: {error}"))?;
-            }
-            let ids = serde_json::to_string(&changes.iter().map(|(id, _)| id).collect::<Vec<_>>())
-                .map_err(|error| format!("encode reordered tasks: {error}"))?;
-            let text_bytes = TASK_TEXT_COLUMNS
-                .iter()
-                .map(|column| format!("coalesce(length(CAST({column} AS BLOB)), 0)"))
-                .collect::<Vec<_>>()
-                .join(" + ");
-            let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum({text_bytes}), 0) FROM project_tasks WHERE id IN (SELECT value FROM json_each(?))")))
-                .bind(&ids).fetch_one(&mut *tx).await.map_err(|error| format!("measure reordered task result: {error}"))?;
-            if bytes > (MAX_RECEIPT_BYTES / 6) as i64 {
-                return Err("project reorder result exceeds the byte limit".to_string());
-            }
-            let tasks = sqlx::query_as::<_, ProjectTaskRow>("SELECT * FROM project_tasks WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id")
-                .bind(ids).fetch_all(&mut *tx).await.map_err(|error| format!("read reordered tasks: {error}"))?;
             ReorderReceipt {
-                tasks,
+                tasks: read_reordered_tasks(&mut tx, &changed).await?,
                 ..ReorderReceipt::default()
             }
         }
-        ReorderItem::CustomField { id, expected_order } => {
+        ReorderItem::CustomField {
+            id,
+            expected_order_key,
+        } => {
             check_schema_sibling_ids(
                 &mut tx,
                 "project_custom_fields",
@@ -204,14 +195,12 @@ pub async fn reorder_item(
                 &request.project_id,
             )
             .await?;
-            let rows: Vec<(String, i64)> = sqlx::query_as("SELECT id, sort_order FROM project_custom_fields WHERE project_id = ? ORDER BY sort_order, name, id LIMIT ?")
-                .bind(&request.project_id).bind(MAX_SIBLINGS + 1).fetch_all(&mut *tx).await.map_err(|error| format!("read custom field order: {error}"))?;
-            let changes = integer_order_changes(rows, id, *expected_order, request.direction)?;
-            check_schema_result_size(&mut tx, "project_custom_fields", &changes).await?;
+            let order = custom_field_order(&request.project_id);
+            let changed =
+                move_schema_row(&mut tx, &order, id, expected_order_key, request.direction).await?;
+            check_schema_result_size(&mut tx, "project_custom_fields", &changed).await?;
             let mut fields = Vec::new();
-            for (id, order) in changes {
-                sqlx::query("UPDATE project_custom_fields SET sort_order = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-                    .bind(order).bind(&id).execute(&mut *tx).await.map_err(|error| format!("reorder custom field: {error}"))?;
+            for id in changed {
                 fields.push(
                     sqlx::query_as::<_, ProjectCustomFieldRow>(
                         "SELECT * FROM project_custom_fields WHERE id = ?",
@@ -230,8 +219,19 @@ pub async fn reorder_item(
         ReorderItem::CustomFieldOption {
             id,
             field_id,
-            expected_order,
+            expected_order_key,
         } => {
+            let owned: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM project_custom_fields WHERE id = ? AND project_id = ?",
+            )
+            .bind(field_id)
+            .bind(&request.project_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| format!("read custom field option owner: {error}"))?;
+            if owned == 0 {
+                return Err("reordered item no longer belongs to the selected group".to_string());
+            }
             check_schema_sibling_ids(
                 &mut tx,
                 "project_custom_field_options",
@@ -239,14 +239,12 @@ pub async fn reorder_item(
                 field_id,
             )
             .await?;
-            let rows: Vec<(String, i64)> = sqlx::query_as("SELECT option.id, option.sort_order FROM project_custom_field_options AS option JOIN project_custom_fields AS field ON field.id = option.field_id WHERE field.project_id = ? AND field.id = ? ORDER BY option.sort_order, option.name, option.id LIMIT ?")
-                .bind(&request.project_id).bind(field_id).bind(MAX_SIBLINGS + 1).fetch_all(&mut *tx).await.map_err(|error| format!("read custom field option order: {error}"))?;
-            let changes = integer_order_changes(rows, id, *expected_order, request.direction)?;
-            check_schema_result_size(&mut tx, "project_custom_field_options", &changes).await?;
+            let order = custom_field_option_order(field_id);
+            let changed =
+                move_schema_row(&mut tx, &order, id, expected_order_key, request.direction).await?;
+            check_schema_result_size(&mut tx, "project_custom_field_options", &changed).await?;
             let mut options = Vec::new();
-            for (id, order) in changes {
-                sqlx::query("UPDATE project_custom_field_options SET sort_order = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-                    .bind(order).bind(&id).execute(&mut *tx).await.map_err(|error| format!("reorder custom field option: {error}"))?;
+            for id in changed {
                 options.push(
                     sqlx::query_as::<_, ProjectCustomFieldOptionRow>(
                         "SELECT * FROM project_custom_field_options WHERE id = ?",
@@ -280,23 +278,22 @@ pub async fn reorder_item(
     Ok(receipt.into())
 }
 
-async fn task_placement_changes(
+/// Moves a task past its visible neighbour on one axis and returns the ids whose key was written. Archived
+/// siblings stay in the order group but are not neighbours.
+async fn move_task(
     tx: &mut Transaction<'_, Sqlite>,
     request: &ProjectReorderRequest,
     id: &str,
     axis: TaskOrderAxis,
     group_id: &str,
     parent_task_id: Option<&str>,
-    expected_order: f64,
-) -> Result<Vec<(String, f64)>, String> {
-    if !expected_order.is_finite() {
-        return Err("task order must be finite".to_string());
-    }
+    expected_order_key: &str,
+) -> Result<Vec<String>, String> {
     let (group_column, order_column) = axis.columns();
     if matches!(axis, TaskOrderAxis::Status) && parent_task_id.is_some() {
         return Err("subtasks use their parent ordering lane".to_string());
     }
-    let current_order: Option<f64> = sqlx::query_scalar(AssertSqlSafe(format!(
+    let current_key: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
         "SELECT {order_column} FROM project_tasks WHERE id = ? AND project_id = ?
          AND {group_column} = ? AND parent_task_id IS ? AND archived_at IS NULL",
     )))
@@ -307,9 +304,9 @@ async fn task_placement_changes(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| format!("validate selected task placement: {error}"))?;
-    let current_order =
-        current_order.ok_or("reordered item no longer belongs to the selected group")?;
-    if current_order != expected_order {
+    let current_key =
+        current_key.ok_or("reordered item no longer belongs to the selected group")?;
+    if current_key != expected_order_key {
         return Err("item order changed since selection".to_string());
     }
     let (records, maximum_id_bytes): (i64, i64) = sqlx::query_as(AssertSqlSafe(format!(
@@ -328,50 +325,77 @@ async fn task_placement_changes(
     if records > MAX_SIBLINGS || maximum_id_bytes > MAX_ID_BYTES {
         return Err("project reorder exceeds the sibling identity limit".to_string());
     }
-    let rows: Vec<(String, f64)> = sqlx::query_as(AssertSqlSafe(format!(
+    let rows: Vec<(String, String)> = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT id, {order_column} FROM project_tasks WHERE project_id = ? AND (? OR {group_column} = ?)
-         AND parent_task_id IS ? AND archived_at IS NULL ORDER BY {order_column}, created_at, id LIMIT ?",
+         AND parent_task_id IS ? AND archived_at IS NULL ORDER BY {order_column}, id LIMIT ?",
     ))).bind(&request.project_id).bind(parent_task_id.is_some()).bind(group_id).bind(parent_task_id).bind(MAX_SIBLINGS + 1)
         .fetch_all(&mut **tx).await.map_err(|error| format!("read canonical task siblings: {error}"))?;
-    let Some((index, target)) = adjacent_indices(&rows, id, expected_order, request.direction)?
+    let Some(placement) = adjacent_placement(&rows, id, expected_order_key, request.direction)?
     else {
         return Ok(Vec::new());
     };
-    if rows.iter().any(|(_, order)| !order.is_finite()) {
-        return Err("canonical task order is not finite".to_string());
+    let order = match axis {
+        TaskOrderAxis::Section => task_section_order(&request.project_id, group_id, parent_task_id),
+        TaskOrderAxis::Status => task_status_order(&request.project_id, group_id, None),
+    };
+    order.move_row_reporting(tx, id, &placement).await
+}
+
+/// Reads the moved tasks after bounding the size of their variable-length columns.
+async fn read_reordered_tasks(
+    tx: &mut Transaction<'_, Sqlite>,
+    changed: &[String],
+) -> Result<Vec<ProjectTaskRow>, String> {
+    let ids = serde_json::to_string(changed)
+        .map_err(|error| format!("encode reordered tasks: {error}"))?;
+    let text_bytes = TASK_TEXT_COLUMNS
+        .iter()
+        .map(|column| format!("coalesce(length(CAST({column} AS BLOB)), 0)"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum({text_bytes}), 0) FROM project_tasks WHERE id IN (SELECT value FROM json_each(?))")))
+        .bind(&ids).fetch_one(&mut **tx).await.map_err(|error| format!("measure reordered task result: {error}"))?;
+    if bytes > (MAX_RECEIPT_BYTES / 6) as i64 {
+        return Err("project reorder result exceeds the byte limit".to_string());
     }
-    if !rows.windows(2).any(|pair| pair[0].1 == pair[1].1) {
-        return Ok(vec![
-            (rows[index].0.clone(), rows[target].1),
-            (rows[target].0.clone(), rows[index].1),
-        ]);
-    }
-    let mut reordered = rows;
-    reordered.swap(index, target);
-    Ok(reordered
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, (id, old))| {
-            let next = (index as i64 + 1) * ORDER_SPACING;
-            (old != next as f64).then_some((id, next as f64))
-        })
-        .collect())
+    sqlx::query_as::<_, ProjectTaskRow>(
+        "SELECT * FROM project_tasks WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id",
+    )
+    .bind(ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| format!("read reordered tasks: {error}"))
+}
+
+/// Moves a custom field or option past its neighbour and returns the ids whose key was written.
+async fn move_schema_row(
+    tx: &mut Transaction<'_, Sqlite>,
+    order: &OrderGroup<'_>,
+    id: &str,
+    expected_order_key: &str,
+    direction: i8,
+) -> Result<Vec<String>, String> {
+    let rows = order.rows(tx).await?;
+    let Some(placement) = adjacent_placement(&rows, id, expected_order_key, direction)? else {
+        return Ok(Vec::new());
+    };
+    order.move_row_reporting(tx, id, &placement).await
 }
 
 /// Check variable-size values before reading complete rows into the receipt.
 async fn check_schema_result_size(
     tx: &mut Transaction<'_, Sqlite>,
     table: &'static str,
-    changes: &[(String, i64)],
+    changed: &[String],
 ) -> Result<(), String> {
-    let ids = serde_json::to_string(&changes.iter().map(|(id, _)| id).collect::<Vec<_>>())
+    let ids = serde_json::to_string(changed)
         .map_err(|error| format!("encode reordered schema identities: {error}"))?;
     let owner_bytes = if table == "project_custom_fields" {
         "length(CAST(project_id AS BLOB)) + length(CAST(field_type AS BLOB))"
     } else {
         "length(CAST(field_id AS BLOB))"
     };
-    let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum(length(CAST(name AS BLOB)) + length(CAST(id AS BLOB)) + length(CAST(created_at AS BLOB)) + length(CAST(updated_at AS BLOB)) + {owner_bytes}), 0) FROM {table} WHERE id IN (SELECT value FROM json_each(?))")))
+    let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum(length(CAST(name AS BLOB)) + length(CAST(id AS BLOB)) + length(CAST(order_key AS BLOB)) + length(CAST(created_at AS BLOB)) + length(CAST(updated_at AS BLOB)) + {owner_bytes}), 0) FROM {table} WHERE id IN (SELECT value FROM json_each(?))")))
         .bind(ids).fetch_one(&mut **tx).await.map_err(|error| format!("measure reordered schema result: {error}"))?;
     if bytes > (MAX_RECEIPT_BYTES / 6) as i64 {
         return Err("project reorder result exceeds the byte limit".to_string());
@@ -401,38 +425,14 @@ async fn check_schema_sibling_ids(
     Ok(())
 }
 
-fn integer_order_changes(
-    mut rows: Vec<(String, i64)>,
+/// The placement that moves `id` one step in `direction` among `rows`, sorted by `(order_key, id)`, or `None` at
+/// either end.
+fn adjacent_placement(
+    rows: &[(String, String)],
     id: &str,
-    expected: i64,
+    expected_order_key: &str,
     direction: i8,
-) -> Result<Vec<(String, i64)>, String> {
-    let Some((index, target)) = adjacent_indices(&rows, id, expected, direction)? else {
-        return Ok(Vec::new());
-    };
-    if !rows.windows(2).any(|pair| pair[0].1 == pair[1].1) {
-        return Ok(vec![
-            (rows[index].0.clone(), rows[target].1),
-            (rows[target].0.clone(), rows[index].1),
-        ]);
-    }
-    rows.swap(index, target);
-    Ok(rows
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, (id, old))| {
-            let next = (index as i64 + 1) * ORDER_SPACING;
-            (old != next).then_some((id, next))
-        })
-        .collect())
-}
-
-fn adjacent_indices<T: PartialEq>(
-    rows: &[(String, T)],
-    id: &str,
-    expected: T,
-    direction: i8,
-) -> Result<Option<(usize, usize)>, String> {
+) -> Result<Option<OrderPlacement>, String> {
     if rows.len() > MAX_SIBLINGS as usize {
         return Err("project reorder exceeds the sibling limit".to_string());
     }
@@ -440,11 +440,51 @@ fn adjacent_indices<T: PartialEq>(
         .iter()
         .position(|(row_id, _)| row_id == id)
         .ok_or("reordered item no longer belongs to the selected group")?;
-    if rows[index].1 != expected {
+    if rows[index].1 != expected_order_key {
         return Err("item order changed since selection".to_string());
     }
     Ok(index
         .checked_add_signed(isize::from(direction))
-        .filter(|target| *target < rows.len())
-        .map(|target| (index, target)))
+        .and_then(|target| rows.get(target))
+        .map(|(target_id, _)| {
+            let id = target_id.clone();
+            if direction < 0 {
+                OrderPlacement::Before { id }
+            } else {
+                OrderPlacement::After { id }
+            }
+        }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows() -> Vec<(String, String)> {
+        ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.to_string(), format!("k{index}")))
+            .collect()
+    }
+
+    #[test]
+    fn order_key_adjacent_placement_names_the_neighbour() {
+        assert_eq!(
+            adjacent_placement(&rows(), "b", "k1", -1).unwrap(),
+            Some(OrderPlacement::Before { id: "a".into() })
+        );
+        assert_eq!(
+            adjacent_placement(&rows(), "b", "k1", 1).unwrap(),
+            Some(OrderPlacement::After { id: "c".into() })
+        );
+        assert_eq!(adjacent_placement(&rows(), "a", "k0", -1).unwrap(), None);
+        assert_eq!(adjacent_placement(&rows(), "c", "k2", 1).unwrap(), None);
+    }
+
+    #[test]
+    fn order_key_adjacent_placement_refuses_a_stale_or_missing_item() {
+        assert!(adjacent_placement(&rows(), "b", "k0", 1).is_err());
+        assert!(adjacent_placement(&rows(), "z", "k0", 1).is_err());
+    }
 }

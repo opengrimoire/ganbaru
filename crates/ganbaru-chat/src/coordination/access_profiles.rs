@@ -108,7 +108,7 @@ mod tests {
         assert!(profile_revision_is_expansion(
             ChatChannelCapabilities::default(),
             &ChatHistoryBoundary::FromGrant {
-                lower_ordinal: Some(12),
+                lower_order_key: Some("c00C".to_owned()),
             },
             ChatFolderCapability::Read,
             ChatChannelCapabilities::default(),

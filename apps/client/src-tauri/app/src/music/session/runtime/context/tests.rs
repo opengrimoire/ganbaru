@@ -4,7 +4,7 @@ use super::*;
 async fn native_music_context_preserves_canonical_event_identifiers_containing_occurrence_delimiters()
  {
     let pool = test_pool().await;
-    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms) VALUES ('event-override', 'event::source', 'focus', 'pause-music', 'explicit', 1)")
+    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, sync_key) VALUES ('event-override', 'event::source', 'focus', 'pause-music', 'explicit', 1, lower(hex(randomblob(16))))")
         .execute(&pool).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
     assert!(
@@ -25,7 +25,13 @@ async fn native_music_context_preserves_canonical_event_identifiers_containing_o
 async fn native_music_context_rejects_oversized_persisted_references_before_loading_assignment_text()
  {
     let pool = test_pool().await;
-    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms) VALUES ('event-override', 'event', 'focus', 'play-automatically', ?, 'explicit', 1)")
+    // Writers cannot store an oversized reference, so the sync value bounds are dropped to stand
+    // in for a vault written by another tool.
+    sqlx::query("DROP TRIGGER sync_values_music_context_assignments_insert")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms, sync_key) VALUES ('event-override', 'event', 'focus', 'play-automatically', ?, 'explicit', 1, lower(hex(randomblob(16))))")
         .bind("x".repeat(MAX_CONTEXT_REFERENCE_BYTES as usize + 1)).execute(&pool).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
     assert!(
@@ -53,7 +59,7 @@ async fn native_music_context_resolves_precedence_for_every_committed_phase_and_
             ("work-environment", "environment"),
             ("event-override", "event"),
         ] {
-            sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms) VALUES (?, ?, ?, 'pause-music', 'explicit', 1)")
+            sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, sync_key) VALUES (?, ?, ?, 'pause-music', 'explicit', 1, lower(hex(randomblob(16))))")
                 .bind(owner).bind(id).bind(phase.as_ref()).execute(&pool).await.unwrap();
             let mut connection = pool.acquire().await.unwrap();
             let resolved = resolve_assignment(&mut connection, "event", phase)
@@ -104,7 +110,7 @@ async fn native_music_context_resolves_precedence_for_every_committed_phase_and_
 #[tokio::test]
 async fn native_music_context_never_inherits_another_event_or_phase_assignment() {
     let pool = test_pool().await;
-    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms) VALUES ('event-override', 'other', 'focus', 'pause-music', 'explicit', 1), ('event-override', 'event', 'short-break', 'pause-music', 'explicit', 1)")
+    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, sync_key) VALUES ('event-override', 'other', 'focus', 'pause-music', 'explicit', 1, lower(hex(randomblob(16)))), ('event-override', 'event', 'short-break', 'pause-music', 'explicit', 1, lower(hex(randomblob(16))))")
         .execute(&pool).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
     assert!(
@@ -118,9 +124,9 @@ async fn native_music_context_never_inherits_another_event_or_phase_assignment()
 #[tokio::test]
 async fn native_music_context_takes_music_and_sound_from_different_layers() {
     let pool = test_pool().await;
-    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, soundscape_behavior, soundscape_preset_id, provenance_kind, updated_at_ms) VALUES
-        ('event-snapshot', 'event', 'focus', 'play-automatically', 'project-playlist', 'play-selected', 'project-preset', 'copied-project', 1),
-        ('event-override', 'event', 'focus', 'pause-music', NULL, 'inherit', NULL, 'explicit', 1)")
+    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, soundscape_behavior, soundscape_preset_id, provenance_kind, updated_at_ms, sync_key) VALUES
+        ('event-snapshot', 'event', 'focus', 'play-automatically', 'project-playlist', 'play-selected', 'project-preset', 'copied-project', 1, lower(hex(randomblob(16)))),
+        ('event-override', 'event', 'focus', 'pause-music', NULL, 'inherit', NULL, 'explicit', 1, lower(hex(randomblob(16))))")
         .execute(&pool).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
     let resolved = resolve_assignment(&mut connection, "event", MusicActivityPhase::Focus)

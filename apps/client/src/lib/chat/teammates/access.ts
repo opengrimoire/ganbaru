@@ -110,7 +110,7 @@ export function applyAccessProfileToScope(
   channelIds: ReadonlySet<string>,
   profile: {
     id: string;
-    revision: number;
+    revisionId: string;
     maximumFolderCapability: ChatFolderCapability;
   },
 ): ChatTeammateChannelAccessInput[] {
@@ -118,7 +118,7 @@ export function applyAccessProfileToScope(
     ? {
         ...channel,
         accessProfileId: profile.id,
-        accessProfileRevision: profile.revision,
+        accessProfileRevisionId: profile.revisionId,
         folderGrants: channel.folderGrants.filter((grant) => folderCapabilityFits(
           grant.capability,
           profile.maximumFolderCapability,
@@ -221,9 +221,9 @@ export function teammateAccessNeedsConfirmation(
 function normalizeHistoryBoundary(boundary: ChatHistoryBoundary): ChatHistoryBoundary {
   return boundary.kind === "entire"
     ? { kind: "entire" }
-    : boundary.lowerOrdinal === undefined
+    : boundary.lowerOrderKey === undefined
       ? { kind: "fromGrant" }
-      : { kind: "fromGrant", lowerOrdinal: boundary.lowerOrdinal };
+      : { kind: "fromGrant", lowerOrderKey: boundary.lowerOrderKey };
 }
 
 /** Returns all configuration errors that must block an atomic access save. */

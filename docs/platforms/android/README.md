@@ -16,16 +16,17 @@ The current source is substantially implemented but the Android product is not y
 
 | Capability | Current Android state |
 | --- | --- |
-| App-private vault, first use, import, portable backup, and restore | Implemented in source |
+| App-private vault, first use, import, encrypted backup, and restore | Implemented in source |
 | Calendar, Projects, Notes, Quick notes, Settings, Themes, and localization | Implemented through shared responsive surfaces |
 | Explicit Pomodoro starts, commitment reminders, accepted-phase service and recovery | Implemented in source |
 | Music library and selected-tree local audio through Media3 | Implemented in source |
 | Provider-free Chat channels, messages, replies, search, drafts, and scheduling | Implemented through the shared responsive workspace |
 | Local coding-agent processes, PTYs, Git, terminals, and working folders | Intentionally unavailable |
 | Selected-app distraction usage limits and Home redirection | Implemented in source; policy and physical acceptance remain |
-| Local multi-device linking, whole-vault ownership handoff, and read-only refresh | Implemented in source; physical multi-device acceptance remains |
+| Local multi-device linking, snapshot bootstrap, and concurrent sync | Implemented in source; physical multi-device acceptance remains |
 | Browser filtering on Android | Planned |
-| Concurrent sync, remote execution, diary, and sleep alarm | Planned |
+| Concurrent sync of replicated domains, with WorkManager background passes, coordinator discovery through NSD, and a member listener while the app is in the foreground | Implemented in source; Android build and physical multi-device acceptance remain |
+| Concurrent sync of the remaining domains, remote execution, diary, and sleep alarm | Planned |
 
 ## Product boundary
 

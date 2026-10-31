@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use crate::identity::stable_id;
 use sqlx::{Row, SqlitePool, Transaction};
 use std::collections::{HashSet, VecDeque};
 use std::fs;
@@ -448,10 +448,9 @@ pub async fn apply_plan(
         .await
         .map_err(|error| MusicLibraryError::database("begin relink apply", error))?;
     sqlx::query(
-        "UPDATE music_local_locations SET availability = 'missing', updated_at_ms = ?
-         WHERE root_id = ?",
+        "UPDATE music_local_locations SET availability = 'missing'
+         WHERE root_id = ? AND availability IS NOT 'missing'",
     )
-    .bind(request.applied_at)
     .bind(&summary.root_id)
     .execute(&mut *transaction)
     .await
@@ -494,19 +493,17 @@ pub async fn apply_plan(
         let relative_path = entry.candidate_relative_path.as_deref().ok_or_else(|| {
             MusicLibraryError::conflict("a selected relink entry has no replacement path")
         })?;
-        sqlx::query(
-            "UPDATE music_local_locations
-             SET relative_path = ?, file_size_bytes = ?, lightweight_fingerprint = ?,
-                 availability = 'available', updated_at_ms = ? WHERE id = ?",
+        relink_location(
+            &mut transaction,
+            &summary.root_id,
+            &location_id,
+            item_id,
+            relative_path,
+            entry.file_size_bytes,
+            entry.lightweight_fingerprint.as_deref(),
+            request.applied_at,
         )
-        .bind(relative_path)
-        .bind(entry.file_size_bytes)
-        .bind(entry.lightweight_fingerprint)
-        .bind(request.applied_at)
-        .bind(location_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| map_plan_conflict("apply relink mapping", error))?;
+        .await?;
         sqlx::query(
             "UPDATE music_relink_plan_entries
              SET resolved_item_id = ?, resolved_at_ms = ? WHERE id = ?",
@@ -518,21 +515,7 @@ pub async fn apply_plan(
         .await
         .map_err(|error| MusicLibraryError::database("resolve relink entry", error))?;
     }
-    sqlx::query(
-        "UPDATE music_library_items AS item SET availability = CASE
-             WHEN EXISTS (SELECT 1 FROM music_local_locations AS location
-                          WHERE location.item_id = item.id AND location.availability = 'available')
-             THEN 'available' ELSE 'missing' END,
-             updated_at_ms = ?, version = version + 1
-         WHERE item.source_kind = 'local-file' AND EXISTS (
-             SELECT 1 FROM music_local_locations AS location
-             WHERE location.item_id = item.id AND location.root_id = ?)",
-    )
-    .bind(request.applied_at)
-    .bind(&summary.root_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("reconcile relink item availability", error))?;
+    crate::local_scan::reconcile_item_availability(&mut transaction, &summary.root_id).await?;
     sqlx::query(
         "UPDATE music_relink_plans SET state = 'applied', updated_at_ms = ?
          WHERE id = ? AND state = 'ready'",
@@ -545,10 +528,9 @@ pub async fn apply_plan(
     sqlx::query(
         "UPDATE music_source_collections SET refresh_state = 'partial',
              last_refresh_error_code = 'refresh-required-after-relink',
-             updated_at_ms = ?, version = version + 1
+             version = version + 1
          WHERE local_root_id = ?",
     )
-    .bind(request.applied_at)
     .bind(&summary.root_id)
     .execute(&mut *transaction)
     .await
@@ -570,6 +552,86 @@ struct ApplyEntry {
     candidate_item_ids: Vec<String>,
     file_size_bytes: Option<i64>,
     lightweight_fingerprint: Option<String>,
+}
+
+/// Points a prior location at its replacement file. The path is part of the location key, so a
+/// new path removes the prior location and adds one keyed by the new path.
+#[allow(clippy::too_many_arguments)]
+async fn relink_location(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    root_id: &str,
+    location_id: &str,
+    item_id: &str,
+    relative_path: &str,
+    file_size_bytes: Option<i64>,
+    lightweight_fingerprint: Option<&str>,
+    applied_at: i64,
+) -> MusicLibraryResult<()> {
+    let stored_path: Option<String> =
+        sqlx::query_scalar("SELECT relative_path FROM music_local_locations WHERE id = ?")
+            .bind(location_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("load relink location", error))?;
+    let Some(stored_path) = stored_path else {
+        return Err(MusicLibraryError::conflict(
+            "a selected relink location no longer exists",
+        ));
+    };
+    if stored_path == relative_path {
+        sqlx::query(
+            "UPDATE music_local_locations
+             SET lightweight_fingerprint = COALESCE(?, lightweight_fingerprint),
+                 updated_at_ms = ?
+             WHERE id = ? AND lightweight_fingerprint IS NOT COALESCE(?, lightweight_fingerprint)",
+        )
+        .bind(lightweight_fingerprint)
+        .bind(applied_at)
+        .bind(location_id)
+        .bind(lightweight_fingerprint)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| map_plan_conflict("apply relink mapping", error))?;
+        sqlx::query(
+            "UPDATE music_local_locations SET file_size_bytes = ?, availability = 'available'
+             WHERE id = ?",
+        )
+        .bind(file_size_bytes)
+        .bind(location_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("observe relink location", error))?;
+        return Ok(());
+    }
+    sqlx::query("DELETE FROM music_local_locations WHERE id = ?")
+        .bind(location_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("remove prior relink location", error))?;
+    let relinked_id = crate::identity::creatable_key(
+        transaction,
+        crate::identity::RetirableTable::Locations,
+        crate::identity::location_id(root_id, relative_path),
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO music_local_locations
+            (id, item_id, root_id, relative_path, file_size_bytes, lightweight_fingerprint,
+             availability, first_seen_at_ms, updated_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, 'available', ?, ?)",
+    )
+    .bind(&relinked_id)
+    .bind(item_id)
+    .bind(root_id)
+    .bind(relative_path)
+    .bind(file_size_bytes)
+    .bind(lightweight_fingerprint)
+    .bind(applied_at)
+    .bind(applied_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| map_plan_conflict("apply relink mapping", error))?;
+    Ok(())
 }
 
 async fn load_apply_entries(
@@ -731,16 +793,6 @@ fn normalize_relative(root: &Path, path: &Path) -> MusicLibraryResult<String> {
         })
         .collect::<MusicLibraryResult<Vec<_>>>()
         .map(|components| components.join("/"))
-}
-
-fn stable_id(kind: &str, values: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(kind.as_bytes());
-    for value in values {
-        hasher.update([0]);
-        hasher.update(value.as_bytes());
-    }
-    format!("music-{kind}-{:x}", hasher.finalize())
 }
 
 fn map_plan_conflict(context: &str, error: sqlx::Error) -> MusicLibraryError {

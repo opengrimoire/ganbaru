@@ -28,7 +28,7 @@ function tag(id: string, name: string): ProjectTag {
     id,
     projectId: "project-a",
     name,
-    sortOrder: 0,
+    orderKey: "0",
     createdAt: TIMESTAMP,
     updatedAt: TIMESTAMP,
   };
@@ -102,9 +102,9 @@ describe("draft projections", () => {
         { id: "two", title: "Draft", completed: false },
       ],
     }), "draft", TIMESTAMP);
-    expect(items.map((item) => [item.id, item.taskId, item.sortOrder, item.completedAt])).toEqual([
-      ["one", "draft", 0, TIMESTAMP],
-      ["two", "draft", 1, undefined],
+    expect(items.map((item) => [item.id, item.taskId, item.orderKey, item.completedAt])).toEqual([
+      ["one", "draft", "0000000000", TIMESTAMP],
+      ["two", "draft", "0000000001", undefined],
     ]);
   });
 

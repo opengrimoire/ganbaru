@@ -763,21 +763,27 @@ fn owned_server_reports_early_exit_timeout_and_oversized_output() {
 
     crate::test_block_on(async {
         let directory = TestDirectory::new("owned-server-failures");
-        for (name, script, expected_code) in [
+        // Only the startup timeout case may expire; the others must fail on their own on a loaded
+        // machine.
+        let unhurried = Duration::from_secs(30);
+        for (name, script, expected_code, timeout) in [
             (
                 "early-exit",
                 "#!/bin/sh\necho 'startup failed' >&2\nexit 7\n",
                 ChatErrorCode::TransportUnavailable,
+                unhurried,
             ),
             (
                 "startup-timeout",
                 "#!/bin/sh\nwhile :; do /bin/sleep 1; done\n",
                 ChatErrorCode::Timeout,
+                Duration::from_millis(75),
             ),
             (
                 "oversized-output",
                 "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 17000 ]; do printf x; i=$((i + 1)); done\n/bin/sleep 1\n",
                 ChatErrorCode::TransportUnavailable,
+                unhurried,
             ),
         ] {
             let executable = directory.path().join(name);
@@ -785,12 +791,9 @@ fn owned_server_reports_early_exit_timeout_and_oversized_output() {
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
             let mut configuration = configuration(json!({ "mode": "local" }));
             configuration.executable = executable.to_string_lossy().into_owned();
-            let result = OwnedOpenCodeServer::start_with_timeout(
-                &configuration,
-                directory.path(),
-                Duration::from_millis(75),
-            )
-            .await;
+            let result =
+                OwnedOpenCodeServer::start_with_timeout(&configuration, directory.path(), timeout)
+                    .await;
             let error = match result {
                 Ok(mut server) => {
                     server.stop().await.unwrap();

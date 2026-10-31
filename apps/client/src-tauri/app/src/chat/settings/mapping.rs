@@ -1,5 +1,5 @@
 use super::runtime_approval::{pending_portable_items, runtime_review_reads};
-use super::{device_state_error, provider_not_found_error, store::read_chat_config};
+use super::{device_state_error, provider_not_found_error, read_chat_config};
 use crate::chat::device_state::{ChatProviderDeviceState, read_active_device_scope};
 use crate::chat::settings_commands::ProviderInstanceRead;
 use ganbaru_chat_contracts::config::ChatPortableProviderConfig;

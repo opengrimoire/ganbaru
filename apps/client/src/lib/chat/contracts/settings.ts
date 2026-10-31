@@ -1,4 +1,4 @@
-import type { ChatVaultConfig } from "./config";
+import type { ChatConfiguration } from "./config";
 import type { ChatThreadId } from "./common";
 import type {
   ProviderFamilyMetadataRead,
@@ -26,7 +26,7 @@ export interface ProviderInstanceRead {
 }
 
 export interface ChatSettingsRead {
-  configuration: ChatVaultConfig;
+  configuration: ChatConfiguration;
   providerFamilies: ProviderFamilyMetadataRead[];
   providerInstances: ProviderInstanceRead[];
   credentialStoreAvailability: CredentialStoreAvailability;

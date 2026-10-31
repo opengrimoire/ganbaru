@@ -908,22 +908,25 @@ mod tests {
                     "{label} plan did not use an index: {details}"
                 );
             }
-            for (table, index) in [
+            for (table, order, index) in [
                 (
                     "calendar_event_notifications",
+                    "sort_order",
                     "idx_calendar_event_notifications_event",
                 ),
                 (
                     "calendar_event_exdates",
-                    "idx_calendar_event_exdates_event_date",
+                    "occurrence_date",
+                    "sqlite_autoindex_calendar_event_exdates_1",
                 ),
                 (
                     "calendar_event_rdates",
-                    "idx_calendar_event_rdates_event_start",
+                    "occurrence_start",
+                    "sqlite_autoindex_calendar_event_rdates_1",
                 ),
             ] {
                 let sql = format!(
-                    "EXPLAIN QUERY PLAN SELECT event_id FROM {table} WHERE event_id IN ('event-a', 'event-b') ORDER BY event_id, sort_order"
+                    "EXPLAIN QUERY PLAN SELECT event_id FROM {table} WHERE event_id IN ('event-a', 'event-b') ORDER BY event_id, {order}"
                 );
                 let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
                     .fetch_all(&pool)
@@ -949,9 +952,9 @@ mod tests {
             sqlx::query(
                 "INSERT INTO icalendar_objects
                     (id, calendar_id, source_kind, source_name, source_fingerprint,
-                     created_at, updated_at)
+                     created_at, updated_at, import_id)
                  VALUES ('object-1', 'local', 'import-file', 'source.ics',
-                         'fingerprint', '2026-05-09', '2026-05-09')",
+                         'fingerprint', '2026-05-09', '2026-05-09', 'import-1')",
             )
             .execute(&pool)
             .await
@@ -976,17 +979,17 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO icalendar_value_nodes
-                    (id, property_id, sort_order, value_kind)
-                 VALUES ('value-1', 'property-1', 0, 'object')",
+                    (id, component_id, property_id, sort_order, value_kind)
+                 VALUES ('value-1', 'component-1', 'property-1', 0, 'object')",
             )
             .execute(&pool)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO icalendar_value_nodes
-                    (id, property_id, parent_node_id, sort_order, value_kind,
+                    (id, component_id, property_id, parent_node_id, sort_order, value_kind,
                      object_key, text_value)
-                 VALUES ('value-1-freq', 'property-1', 'value-1', 0, 'text',
+                 VALUES ('value-1-freq', 'component-1', 'property-1', 'value-1', 0, 'text',
                          'freq', 'DAILY')",
             )
             .execute(&pool)
@@ -994,10 +997,10 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO icalendar_value_nodes
-                    (id, property_id, parent_node_id, sort_order, value_kind,
+                    (id, component_id, property_id, parent_node_id, sort_order, value_kind,
                      object_key, number_value)
-                 VALUES ('value-1-count', 'property-1', 'value-1', 1, 'number',
-                         'count', 3)",
+                 VALUES ('value-1-count', 'component-1', 'property-1', 'value-1', 1, 'number',
+                         'count', '3')",
             )
             .execute(&pool)
             .await
@@ -1009,7 +1012,7 @@ mod tests {
                 component,
                 json!([
                     "vevent",
-                    [["rrule", {}, "recur", { "freq": "DAILY", "count": 3.0 }]],
+                    [["rrule", {}, "recur", { "freq": "DAILY", "count": 3 }]],
                     []
                 ]),
             );
@@ -1075,7 +1078,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        ganbaru_db::run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
         pool
     }
 }

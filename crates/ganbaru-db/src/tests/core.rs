@@ -4,7 +4,7 @@ use sqlx::Row;
 
 const BASELINE_SCHEMA: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/migrations/20261004220000_baseline_schema.sql"
+    "/migrations/20261031060000_baseline_schema.sql"
 ));
 /// Count the embedded forward migrations so fresh-install checks follow the actual registry.
 fn expected_migration_count() -> i64 {
@@ -61,6 +61,7 @@ fn fresh_database_applies_clean_baseline() {
             "chat_channels",
             "chat_participants",
             "contacts_local_identity",
+            "contact_card",
             "contacts",
             "contact_requests",
             "chat_conversations",
@@ -77,7 +78,6 @@ fn fresh_database_applies_clean_baseline() {
             "music_source_collections",
             "music_source_collection_items",
             "music_playlist_memberships",
-            "music_membership_break_items",
             "music_snoozes",
             "music_listening_statistics",
             "music_recent_selections",
@@ -89,11 +89,9 @@ fn fresh_database_applies_clean_baseline() {
             "music_search_fts",
             "notes_pages",
             "notes_blocks",
-            "notes_data_source_row_hierarchy",
-            "idx_notes_data_source_row_hierarchy_parent",
-            "notes_row_hierarchy_detach_moved_page",
+            "notes_block_view_state",
+            "idx_notes_pages_parent_row",
             "notes_search_fts",
-            "notes_folders_validate_parent_insert",
             "idx_notes_project_history_dirty_deadlines",
         ] {
             let exists: Option<i64> =
@@ -113,6 +111,9 @@ fn fresh_database_applies_clean_baseline() {
             "project_view_preferences_rebuild",
             "notes_blocks_next",
             "notes_pages_next",
+            "notes_row_hierarchy_detach_moved_page",
+            "notes_folders_validate_parent_insert",
+            "notes_pages_validate_folder_update",
             "notes_page_history_settings_next",
             "music_playlist_tracks",
             "music_track_skip_ranges",
@@ -124,6 +125,10 @@ fn fresh_database_applies_clean_baseline() {
             "music_soundscape_active_selections",
             "music_soundscape_locations",
             "idx_music_soundscape_locations_device",
+            "music_membership_break_items",
+            "idx_music_membership_break_items_item",
+            "idx_music_playlists_sort",
+            "idx_music_listening_statistics_last_played",
         ] {
             let exists: Option<i64> =
                 sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE name = ?")
@@ -229,6 +234,13 @@ fn schema_normalizes_domain_storage_with_explicit_receipt_and_runtime_envelopes(
             ("music_session_checkpoints", "checkpoint_json"),
             ("music_session_receipts", "result_json"),
             ("calendar_edit_receipts", "result_json"),
+            // Desktop process names replicate with the app name they belong to as one value,
+            // a bounded list of plain strings with no identity of its own.
+            ("distractions_app_rules", "match_names_json"),
+            (
+                "distractions_usage_limit_entries",
+                "desktop_app_match_names_json",
+            ),
         ];
         let mut observed_envelopes = std::collections::BTreeSet::new();
         for row in rows {
@@ -272,16 +284,16 @@ fn schema_allows_only_one_open_pause_per_segment() {
         .unwrap();
 
         sqlx::query(
-            "INSERT INTO pomodoro_pauses (id, segment_id, started_at, reason)
-             VALUES ('pause-1', 'segment-1', '2026-05-23T09:10:00Z', 'manual')",
+            "INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, reason)
+             VALUES ('segment-1', 0, '2026-05-23T09:10:00Z', 'manual')",
         )
         .execute(&pool)
         .await
         .unwrap();
 
         let second_open_pause = sqlx::query(
-            "INSERT INTO pomodoro_pauses (id, segment_id, started_at, reason)
-             VALUES ('pause-2', 'segment-1', '2026-05-23T09:15:00Z', 'idle')",
+            "INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, reason)
+             VALUES ('segment-1', 1, '2026-05-23T09:15:00Z', 'idle')",
         )
         .execute(&pool)
         .await;

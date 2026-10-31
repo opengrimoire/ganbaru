@@ -1,16 +1,25 @@
 //! Installation-level helpers around the engine: the space context of a vault, retained group
-//! values, the local writer high-water check, snapshot preparation, and carry-forward of
-//! operations across a database replacement.
+//! values, the local writer high-water check, snapshot preparation, carry-forward of operations
+//! across a database replacement, and the restore of device state into that replacement.
+
+mod restore;
+
+pub use restore::{LocalRestoreReport, restore_local_state};
+#[cfg(test)]
+pub(crate) use restore::{read_only_uri, repair_foreign_keys};
 
 use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
-    Envelope, GroupId, Seq, SpaceId, TableId, Value, VersionVector, WriterId, WriterPublicKey,
+    AdminPublicKey, EncryptionPublicKey, Envelope, GroupId, RecoveryPublicKeys, Seq, SpaceId,
+    TableId, Value, VersionVector, WriterId, WriterPublicKey,
 };
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
-use crate::error::{SyncResult, corrupt};
+use crate::error::{SyncError, SyncResult, corrupt};
+use crate::hooks::Notices;
 use crate::log::{self, WriterState};
-use crate::{Engine, SpaceContext, StoreOutcome, sql};
+use crate::manifest::Manifest;
+use crate::{Engine, SpaceContext, StoreOutcome, hydrate, sql};
 
 /// Most operations one carry-forward store transaction takes.
 const IMPORT_CHUNK: usize = 256;
@@ -50,18 +59,15 @@ pub async fn space_anchor(conn: &mut SqliteConnection) -> SyncResult<Option<Pers
         .transpose()
 }
 
-/// The space context of a vault: its personal space anchored at the person key of
-/// `contacts_local_identity`, with revocations authorized for `coordinator_device_id`, or
-/// `None` while the vault has no person identity.
+/// The space context of a vault: its personal space, whose charter the person key of
+/// `contacts_local_identity` signs, or `None` while the vault has no person identity.
 pub async fn space_context(
     conn: &mut SqliteConnection,
     vault_id: &str,
-    coordinator_device_id: &str,
 ) -> SyncResult<Option<SpaceContext>> {
-    Ok(space_anchor(conn).await?.map(|anchor| SpaceContext {
+    Ok(space_anchor(conn).await?.map(|person_key| SpaceContext {
         space: SpaceId::personal(vault_id),
-        anchor,
-        coordinator_device_id: coordinator_device_id.to_string(),
+        person_key,
     }))
 }
 
@@ -75,22 +81,42 @@ pub async fn has_pending_captures(conn: &mut SqliteConnection) -> SyncResult<boo
 
 /// Every retained version value of one group of a table, for live and tombstoned rows alike:
 /// the values that open conflicts and recovery offers can still bring back.
+/// An elided value is read back from the domain row or the operation that wrote it.
 pub async fn retained_group_values(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     table: TableId,
     group: GroupId,
 ) -> SyncResult<Vec<Value>> {
-    let values: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT value FROM sync_register_versions WHERE table_id = ? AND group_id = ?",
+    let spec = engine
+        .manifest()
+        .table(table)
+        .ok_or(SyncError::InvalidRequest("unknown table"))?;
+    let rows = sqlx::query(
+        "SELECT row_key, writer_id, seq, value_hash, value FROM sync_register_versions
+         WHERE table_id = ? AND group_id = ?",
     )
     .bind(i64::from(table.0))
     .bind(i64::from(group.get()))
     .fetch_all(&mut *conn)
     .await?;
-    values
-        .iter()
-        .map(|value| Value::decode(value).map_err(|_| corrupt("stored value does not decode")))
-        .collect()
+    let mut values = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let value = match row.try_get::<Option<Vec<u8>>, _>(4)? {
+            Some(value) => {
+                Value::decode(&value).map_err(|_| corrupt("stored value does not decode"))?
+            }
+            None => {
+                let key: String = row.try_get(0)?;
+                let writer = log::writer_id(&row.try_get::<Vec<u8>, _>(1)?)?;
+                let seq = log::stored_u64(row.try_get(2)?, "version sequence")?;
+                let hash = log::digest(&row.try_get::<Vec<u8>, _>(3)?)?;
+                hydrate::elided_value(engine, conn, spec, &key, group, writer, seq, &hash).await?
+            }
+        };
+        values.push(value);
+    }
+    Ok(values)
 }
 
 /// Number of local captures that wait to be sealed.
@@ -108,10 +134,136 @@ pub async fn reset_applying(conn: &mut SqliteConnection) -> SyncResult<()> {
     Ok(())
 }
 
-/// Prepares a snapshot copy for another installation: captures belong to the installation
-/// that made them, so the copy drops any that could not be sealed, and the apply flag is clear.
-pub async fn prepare_snapshot_copy(conn: &mut SqliteConnection) -> SyncResult<()> {
+/// Clears every engine table in one transaction, which is the database half of Reset sync state
+/// on the coordinator: the space, its charter and authorization log, writers, operations, row
+/// state, captures, the record of seeded tables, and device-bound engine state. Domain rows and
+/// the apply flag row stay, so the next vault open founds a new space and republishes every
+/// current row through [`crate::seed::seed_captures`].
+pub async fn reset_sync_state(conn: &mut SqliteConnection) -> SyncResult<()> {
     let mut tx = conn.begin().await?;
+    sql::begin_engine_write(&mut tx).await?;
+    for table in crate::manifest::SYNC_TABLES
+        .iter()
+        .chain(crate::manifest::SYNC_LOCAL_TABLES)
+        .filter(|table| !RESET_KEEPS.contains(*table))
+    {
+        sqlx::query(AssertSqlSafe(format!("DELETE FROM {}", sql::ident(table))))
+            .execute(&mut *tx)
+            .await?;
+    }
+    sql::set_applying(&mut tx, false).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Engine tables [`reset_sync_state`] keeps: the singleton whose flag domain triggers read,
+/// and the public keys of the recovery kit the user saved, which founds the next space too.
+pub const RESET_KEEPS: &[&str] = &["sync_apply_state", RECOVERY_KIT_TABLE];
+
+/// The singleton engine table holding the public keys of the vault's recovery kit.
+const RECOVERY_KIT_TABLE: &str = "sync_recovery_kit";
+
+/// The public keys of the vault's recovery kit, `None` before a kit exists. Founding a space
+/// names the recovery admin key in its charter, and the anchor publishes the recovery
+/// encryption key in the space's first recovery key entry.
+pub async fn recovery_kit_keys(
+    conn: &mut SqliteConnection,
+) -> SyncResult<Option<RecoveryPublicKeys>> {
+    let row = sqlx::query(
+        "SELECT recovery_admin_key, recovery_encryption_key FROM sync_recovery_kit WHERE id = 1",
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let admin: Vec<u8> = row.try_get("recovery_admin_key")?;
+    let encryption: Vec<u8> = row.try_get("recovery_encryption_key")?;
+    let admin: [u8; 32] = admin
+        .try_into()
+        .map_err(|_| corrupt("stored recovery admin key has the wrong length"))?;
+    let encryption: [u8; 32] = encryption
+        .try_into()
+        .map_err(|_| corrupt("stored recovery encryption key has the wrong length"))?;
+    Ok(Some(RecoveryPublicKeys {
+        admin: AdminPublicKey::from_bytes(admin),
+        encryption: EncryptionPublicKey::from_bytes(encryption)
+            .map_err(|error| corrupt(format!("stored recovery encryption key: {error}")))?,
+    }))
+}
+
+/// Records `keys` as the public keys of the vault's recovery kit, replacing any earlier kit's.
+pub async fn store_recovery_kit_keys(
+    conn: &mut SqliteConnection,
+    keys: &RecoveryPublicKeys,
+    now_ms: u64,
+) -> SyncResult<()> {
+    let created_at_ms = i64::try_from(now_ms)
+        .map_err(|_| SyncError::InvalidRequest("the clock is out of range"))?;
+    sqlx::query(
+        "INSERT INTO sync_recovery_kit (id, recovery_admin_key, recovery_encryption_key, created_at_ms)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+             recovery_admin_key = excluded.recovery_admin_key,
+             recovery_encryption_key = excluded.recovery_encryption_key,
+             created_at_ms = excluded.created_at_ms",
+    )
+    .bind(keys.admin.as_bytes().as_slice())
+    .bind(keys.encryption.as_bytes().as_slice())
+    .bind(created_at_ms)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Writes the rows readers of `Local` tables require, keeping any the device already has.
+pub(crate) async fn write_local_seeds(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+) -> SyncResult<()> {
+    for seed in manifest.local_seeds() {
+        sqlx::query(AssertSqlSafe(seed)).execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
+/// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
+/// emptied, keeping only their seeded rows at new-vault values, and every `Local` column is reset
+/// to its materialization value, because device state belongs to the device that wrote it;
+/// captures belong to the installation that made them, so the copy drops any that could not be
+/// sealed; and the apply flag is clear.
+///
+/// The resets run with the apply flag set, so gated domain triggers and capture stay quiet.
+pub async fn prepare_snapshot_copy(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+) -> SyncResult<()> {
+    manifest.validate().map_err(SyncError::InvalidManifest)?;
+    let mut tx = conn.begin().await?;
+    sql::set_applying(&mut tx, true).await?;
+    for table in manifest.local {
+        sqlx::query(AssertSqlSafe(format!("DELETE FROM {}", sql::ident(table))))
+            .execute(&mut *tx)
+            .await?;
+    }
+    write_local_seeds(&mut tx, manifest).await?;
+    for table in manifest.tables {
+        if table.local_columns.is_empty() {
+            continue;
+        }
+        let assignments = table
+            .local_columns
+            .iter()
+            .map(|column| format!("{} = {}", sql::ident(column.name), column.materialize))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sqlx::query(AssertSqlSafe(format!(
+            "UPDATE {} SET {assignments}",
+            sql::ident(table.name)
+        )))
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query("DELETE FROM sync_capture")
         .execute(&mut *tx)
         .await?;
@@ -121,6 +273,30 @@ pub async fn prepare_snapshot_copy(conn: &mut SqliteConnection) -> SyncResult<()
 }
 
 impl Engine {
+    /// Runs every registered hook in full rebuild mode in one engine write, so capture stays
+    /// quiet and a failure leaves the vault unchanged. Run on a closed vault whose derived
+    /// state was never computed; what the hooks report is dropped, because nothing is
+    /// listening yet.
+    pub async fn rebuild_derived_state(&self, conn: &mut SqliteConnection) -> SyncResult<()> {
+        let mut tx = conn.begin().await?;
+        sql::begin_engine_write(&mut tx).await?;
+        let mut notices = Notices::default();
+        for table in self.manifest.tables {
+            let Some(hook) = self.hooks.get(table.id) else {
+                continue;
+            };
+            hook.rebuild_all(&mut tx, table, &mut notices)
+                .await
+                .map_err(|error| SyncError::Hook {
+                    table: table.name,
+                    error,
+                })?;
+        }
+        sql::set_applying(&mut tx, false).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The stored state of the writer a key derives, verifying its head operation.
     pub async fn local_writer_head(
         &self,

@@ -14,7 +14,9 @@ async fn migrated_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -376,8 +378,10 @@ fn local_paths_remain_distinct_even_when_content_matches() {
         .fetch_one(&pool)
         .await
         .unwrap();
+        // Identity repair runs when a file is inspected, so the stored observation is cleared to
+        // make the incremental refresh inspect it again.
         sqlx::query(
-            "UPDATE music_local_locations SET item_id = ?
+            "UPDATE music_local_locations SET item_id = ?, modified_at_ms = NULL
              WHERE root_id = 'root-3' AND relative_path = 'Copied theme.mp3'",
         )
         .bind(&root_1_item)
@@ -450,23 +454,39 @@ fn refresh_normalizes_cross_platform_separators_without_collapsing_path_case() {
         let first = request("path-first", &root, 1_700_000_000_000);
         prepare(&pool, &first).await.unwrap();
         run_prepared(&pool, first).await.unwrap();
-        sqlx::query(
-            "UPDATE music_local_locations SET relative_path = 'Album\\Track.mp3'
-             WHERE root_id = 'root-1'",
+        crate::test_support::execute_as_sync_apply(
+            &pool,
+            &[
+                "INSERT INTO music_local_locations
+                    (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,
+                     lightweight_fingerprint, strong_fingerprint, availability,
+                     last_seen_generation, first_seen_at_ms, updated_at_ms)
+                 SELECT 'unnormalized-location', item_id, root_id, 'Album\\Track.mp3',
+                     file_size_bytes, modified_at_ms, lightweight_fingerprint,
+                     strong_fingerprint, availability, last_seen_generation, first_seen_at_ms,
+                     updated_at_ms
+                 FROM music_local_locations WHERE root_id = 'root-1'",
+                "DELETE FROM music_local_locations
+                 WHERE root_id = 'root-1' AND id <> 'unnormalized-location'",
+            ],
         )
-        .execute(&pool)
-        .await
-        .unwrap();
+        .await;
         let second = request("path-second", &root, 1_700_000_100_000);
         prepare(&pool, &second).await.unwrap();
         run_prepared(&pool, second).await.unwrap();
-        let locations: Vec<String> = sqlx::query_scalar(
-            "SELECT relative_path FROM music_local_locations WHERE root_id = 'root-1'",
+        let locations: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, relative_path FROM music_local_locations WHERE root_id = 'root-1'",
         )
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(locations, vec!["Album/Track.mp3"]);
+        assert_eq!(
+            locations,
+            vec![(
+                crate::identity::location_id("root-1", "Album/Track.mp3"),
+                "Album/Track.mp3".to_string()
+            )]
+        );
 
         #[cfg(not(target_os = "windows"))]
         {
@@ -614,6 +634,96 @@ fn partial_refresh_keeps_unseen_locations_available_and_reports_uncertainty() {
         .await
         .unwrap();
         assert_eq!(unseen_availability, "available");
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+type StoredScanRow = (String, String, i64, i64, String, i64, Option<i64>, String);
+
+async fn stored_scan_rows(pool: &SqlitePool) -> Vec<StoredScanRow> {
+    sqlx::query_as(
+        "SELECT item.id, item.original_title, item.updated_at_ms, item.version,
+                location.id, location.updated_at_ms, location.last_seen_generation,
+                location.availability
+         FROM music_library_items AS item
+         JOIN music_local_locations AS location ON location.item_id = item.id
+         ORDER BY location.relative_path",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn capture_count(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM sync_capture")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn unchanged_rescan_writes_only_device_observations() {
+    crate::test_support::block_on(async {
+        let pool = migrated_pool().await;
+        seed_root(&pool).await;
+        let root = temporary_root("incremental");
+        fs::write(root.join("first.mp3"), id3_title("First")).unwrap();
+        fs::write(root.join("second.mp3"), id3_title("Second")).unwrap();
+        let first = request("incremental-1", &root, 1_700_000_000_000);
+        prepare(&pool, &first).await.unwrap();
+        run_prepared(&pool, first).await.unwrap();
+        let before = stored_scan_rows(&pool).await;
+        assert_eq!(before.len(), 2);
+        assert_eq!(
+            before[0].0,
+            crate::identity::local_item_id("root-1", "first.mp3")
+        );
+        assert_eq!(
+            before[0].4,
+            crate::identity::location_id("root-1", "first.mp3")
+        );
+
+        assert!(capture_count(&pool).await > 0);
+        sqlx::query("DELETE FROM sync_capture")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        fs::remove_file(root.join("second.mp3")).unwrap();
+        let second = request("incremental-2", &root, 1_700_000_100_000);
+        prepare(&pool, &second).await.unwrap();
+        let completed = run_prepared(&pool, second).await.unwrap();
+        assert_eq!(completed.processed_count, 1);
+        assert_eq!(
+            capture_count(&pool).await,
+            0,
+            "device observations are local and capture nothing"
+        );
+        let after = stored_scan_rows(&pool).await;
+        let portable = |row: &StoredScanRow| {
+            (
+                row.0.clone(),
+                row.1.clone(),
+                row.2,
+                row.3,
+                row.4.clone(),
+                row.5,
+            )
+        };
+        assert_eq!(
+            after.iter().map(portable).collect::<Vec<_>>(),
+            before.iter().map(portable).collect::<Vec<_>>()
+        );
+        assert_eq!(after[0].6, Some(completed.generation));
+        assert_eq!(after[0].7, "available");
+        assert_eq!(after[1].7, "missing");
+        let item_availability: Vec<String> = sqlx::query_scalar(
+            "SELECT availability FROM music_library_items ORDER BY original_title",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(item_availability, vec!["available", "missing"]);
         fs::remove_dir_all(root).unwrap();
     });
 }

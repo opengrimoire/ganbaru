@@ -1,6 +1,6 @@
 # Focus authority and evidence
 
-**Status: Partial.** A native owner on desktop and Android drives admission, transactional execution, adaptive decisions, recovery, and accepted-phase publication. Physical platform acceptance remains open. Linked-device ownership, remote commands, and live companion status are planned.
+**Status: Partial.** A native owner on desktop and Android drives admission, transactional execution, adaptive decisions, recovery, and accepted-phase publication. Physical platform acceptance remains open. Each linked device runs its own sessions, and closed runs and device activity replicate. Live companion status is planned.
 
 ## Independent facts
 
@@ -13,6 +13,7 @@ A timer measures an accepted interval; it does not prove productive work. Calend
 - Desktop automatic starts require an eligible Calendar event and a new native activity observation showing input at or after the event boundary and no older than 15 seconds. Missing, malformed, future, or stale observations cannot authorize execution. While a due commitment waits for activity, the owner rechecks every 15 seconds. Manual start remains available when the source is unavailable.
 - Android starts only through explicit user action. Calendar alarms carry reminder data only, never a run ID, phase plan, or running flag. Permission denial never starts a session.
 - A run publishes running state only after its initial write commits. A failed write leaves no executing timer. A late start uses its actual acceptance time.
+- Desktop automatic admission skips an occurrence that a fresh activity row of another linked device is focusing on. An explicit start is never filtered; the UI names the other device and its event and asks for confirmation first. Replicated rows never start, stop, or change a run on this device.
 - A finished break waiting for return is not an accepted phase. Waiting for any duration cannot start focus; the user must accept the return ("Ready to return").
 
 Rationale: without these rules, a phone alarm or a desktop that was off at event start could fabricate focus history and drive the distraction blocker or Music as if the user were working.
@@ -40,7 +41,7 @@ Rationale: desktop crashes leave no trustworthy evidence of what happened after 
 
 Notifications, overlays, tray, sounds, Music, the distraction blocker, and Android Guardian are effects of committed state, never inputs to it.
 
-- Effects carry the Focus publication generation and the shared vault ownership generation, and are rechecked against current native authority immediately before delivery. Superseded, stopped, or different-run effects are dropped.
+- Effects carry the Focus publication generation and the active vault generation, and are rechecked against current native authority immediately before delivery. Superseded, stopped, or different-run effects are dropped.
 - Effect validity is a monotonic lease (15 seconds) clipped to the accepted phase and event deadlines. Return wait, failed, stopped, and expired phases cannot authorize phase-dependent rules.
 - Effect delivery runs in a separate worker that coalesces to the latest request. A slow or failing platform operation never delays execution; it retries with its own backoff and reports a pending-delivery diagnostic.
 - Android notifications describe only the current accepted phase. At its deadline they remind the user to return; they cannot advance to another phase. Alarm and committed-completion delivery share one receipt so a boundary alert fires once.
@@ -48,24 +49,15 @@ Notifications, overlays, tray, sounds, Music, the distraction blocker, and Andro
 
 ## Vault lifecycle
 
-Vault selection, replacement, and handoff freeze the native owner before closing pools, using the shared [vault operation boundary](../../data/architecture.md). Freeze immediately revokes effect admission, waits up to ten seconds for the owner and five seconds for the delivery worker, and fails quiescence on timeout instead of abandoning work. Lifecycle revisions prevent an earlier freeze or resume from overriding a later one. After resume, idle warnings must be shown and acknowledged again.
+Vault selection, replacement, and snapshot bootstrap freeze the native owner before closing pools, using the shared [vault operation boundary](../../data/architecture.md). Freeze immediately revokes effect admission, waits up to ten seconds for the owner and five seconds for the delivery worker, and fails quiescence on timeout instead of abandoning work. Lifecycle revisions prevent an earlier freeze or resume from overriding a later one. After resume, idle warnings must be shown and acknowledged again.
 
 ## Idle grace
 
 Idle failure is measured from the first committed visibility acknowledgement of the current warning, using the owner's monotonic clock. Missing visibility or a failed acknowledgement write cannot consume the user's grace period. See [Idle detection](idle-detection.md).
 
-## Planned: device controller ownership
+## Linked devices
 
-A linked vault will have one explicitly selected focus controller, defaulting to the pairing desktop. This is separate from coordination among windows on one device. Disconnection never elects a replacement; the current controller may continue offline. An unlinked phone supports explicit local sessions.
-
-A live handoff must:
-
-1. Commit final state and fence further execution under the old ownership epoch.
-2. Issue a transfer identifying the recipient and checkpoint.
-3. Persist the transfer on the recipient before it executes.
-4. Retry the same transfer after lost acknowledgements without reactivating the old controller.
-
-Lost-device recovery creates a new generation. Records recovered from the old generation remain historical evidence and receive overlap review. Remote commands require command ID, ownership epoch, expected run revision, and expiry. Only an acknowledged committed result is success; expired commands cannot run after reconnection. Replication must never cause native execution.
+Each linked device runs its own native owner and writes only its own runs, so Focus works the same on every linked device. A run replicates once closed, and the device activity row is rewritten in the same transaction as each start, phase change, pause, resume, and stop, never on heartbeat. A running row expires 10 minutes after its planned phase end and a paused row 30 minutes after the pause began, so a device that goes silent stops blocking admission elsewhere. Expiry is compared with the reading device's clock, so clock skew between devices shortens or lengthens that window. Activity is advisory: it never counts as activity evidence for this device. There is no controller ownership and no remote control: a device never starts, stops, or retargets another device's run, and replication never causes native execution.
 
 ## Planned: companion freshness
 

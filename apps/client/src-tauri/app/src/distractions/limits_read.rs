@@ -18,16 +18,6 @@ pub(crate) struct UsageProjection {
     foreground_status: DistractionsForegroundDesktopAppStatus,
 }
 
-pub(super) fn config_at(path: &Path) -> Result<Value, String> {
-    if !path
-        .try_exists()
-        .map_err(|error| format!("inspect usage configuration: {error}"))?
-    {
-        return Ok(serde_json::json!({}));
-    }
-    authorization::read_bounded_authorization_config(path)
-}
-
 /// Read the owner's last accepted projection without scheduling observation or enforcement work.
 #[tauri::command]
 pub fn distractions_load_usage_projection<R: Runtime>(
@@ -36,7 +26,7 @@ pub fn distractions_load_usage_projection<R: Runtime>(
     runtime::usage_projection(&app)
 }
 
-/// Derive exhaustion from persisted configuration and usage, never from a frontend total.
+/// Derive exhaustion from the vault's rules and usage, never from a frontend total.
 pub(super) async fn derive_usage_projection<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UsageProjection, String> {
@@ -46,11 +36,14 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
     let publication_token = runtime::publication_token(&app)?;
     let vault_id = vault::active_vault_id(&app)?;
     let database_path = vault::active_database_path(&app)?;
-    let config_path = vault::active_vault_path(&app)?.join(VAULT_CONFIG_FILE);
-    let path = config_path.clone();
+    let rules = rule_store::snapshot(&app).await?;
+    if rules.vault_id != vault_id {
+        return Err("native usage vault changed before its rules were read".into());
+    }
+    let rules_revision = rules.revision;
     let (config_root, config, local_date, checked_at) =
         tauri::async_runtime::spawn_blocking(move || {
-            let root = config_at(&path)?;
+            let root = rules.root;
             let config = parse_config(&root)?;
             let zone = ganbaru_civil_time::system_zone()?;
             let checked_at = now_utc();
@@ -64,54 +57,41 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         .await
         .map_err(|error| format!("native usage configuration worker: {error}"))??;
     let week = week_start(&local_date)?;
-    let status = app
-        .state::<vault::ownership::VaultOwnershipManager>()
-        .status(&vault_id)?;
-    // Without budgets there is nothing to total. Spooled samples stay bounded and
-    // drain on the first read after a budget exists or during handoff.
+    let device_id = vault::ensure_device_id(&app)?;
+    // Without budgets there is nothing to total. Spooled samples stay bounded and drain on the
+    // first read after a budget exists, on exit, or before a vault snapshot.
     let sources = if config.items.is_empty() {
         Vec::new()
-    } else if status.can_write {
+    } else {
         let _write_permit = app
-            .state::<vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(&vault_id)?;
+            .state::<vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         if vault::active_vault_id(&app)? != vault_id
             || vault::active_database_path(&app)? != database_path
         {
             return Err("native usage vault changed before its read".into());
         }
         let pool = crate::db::connect_vault(&app).await?;
-        crate::distractions::linked::drain_local_spool(&app, &pool, &vault_id, &status.device_id)
-            .await?;
+        crate::distractions::usage_totals::drain_and_flush(
+            &app, &pool, &vault_id, &device_id, false,
+        )
+        .await?;
         let mut tx = pool
             .begin()
             .await
             .map_err(|error| format!("begin native usage snapshot: {error}"))?;
-        let sources = read_source_days(&mut tx, &week, &local_date).await?;
+        let sources = read_source_days(&mut tx, &device_id, &week, &local_date).await?;
         tx.commit()
             .await
             .map_err(|error| format!("finish native usage snapshot: {error}"))?;
         sources
-    } else {
-        crate::distractions::linked::accounting_source_days(
-            &app,
-            &vault_id,
-            &status.device_id,
-            &week,
-            &local_date,
-        )
-        .await?
     };
     let publication_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let totals = totals(&config, &sources, &local_date)?;
         if vault::active_vault_id(&publication_app)? != vault_id
             || vault::active_database_path(&publication_app)? != database_path
-            || publication_app
-                .state::<vault::ownership::VaultOwnershipManager>()
-                .status(&vault_id)?
-                != status
-            || config_at(&config_path)?.get("distractions") != config_root.get("distractions")
+            || !rule_store::is_current(rules_revision)
         {
             return Err("native usage context changed during the read".into());
         }

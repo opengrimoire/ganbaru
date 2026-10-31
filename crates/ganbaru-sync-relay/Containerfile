@@ -1,0 +1,30 @@
+# Ganbaru sync relay image: the static relay binary on an empty base, run as a non-root user
+# with one data volume and one port.
+#
+# The image is not built from source. The release workflow builds and signs the static musl
+# binaries, and the image job verifies them against the signed SHA256SUMS before it stages this
+# build context:
+#
+#   linux-amd64/ganbaru-sync-relay
+#   linux-arm64/ganbaru-sync-relay
+#   data/            (empty)
+#
+# Build one architecture with, for example:
+#   docker build --platform linux/amd64 -f Containerfile <context>
+#
+# The image has no RUN step, so building it for another architecture needs no emulation.
+FROM scratch
+
+ARG TARGETARCH
+
+COPY --chmod=0555 linux-${TARGETARCH}/ganbaru-sync-relay /usr/local/bin/ganbaru-sync-relay
+COPY --chown=65532:65532 --chmod=0700 data/ /data/
+
+# SQLite falls back to the working directory for temporary files when /tmp does not exist.
+WORKDIR /data
+USER 65532:65532
+VOLUME ["/data"]
+EXPOSE 43823
+
+ENTRYPOINT ["/usr/local/bin/ganbaru-sync-relay"]
+CMD ["serve", "--data-dir", "/data", "--listen", "0.0.0.0:43823"]

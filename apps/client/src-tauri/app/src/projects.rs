@@ -2,6 +2,7 @@
 //! reordering, scheduling, and validation live in `ganbaru-projects`; these commands authorize
 //! the active vault before calling it. Icon assets and working-folder device state stay here.
 
+pub(crate) mod conflicts;
 pub(crate) mod custom_fields;
 pub(crate) mod dependency_cascade;
 pub(crate) mod emojis;

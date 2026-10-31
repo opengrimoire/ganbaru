@@ -1,4 +1,3 @@
-use crate::run_migrations;
 use sqlx::{Row, SqlitePool};
 
 pub(super) async fn migrated_memory_pool() -> SqlitePool {
@@ -11,7 +10,9 @@ pub(super) async fn migrated_memory_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    crate::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -61,45 +62,45 @@ pub(super) fn assert_plan_uses(plan: &str, expected: &str) {
     );
 }
 
-/// Embedded migrations up to and including one version, for upgrade tests.
-#[derive(Debug)]
-struct MigrationsThrough(i64);
+/// One project with tasks, an archived external folder, soft-deleted statuses and priorities,
+/// and a Chat graph of teammates, assignments, authorizations, runs, and scratch that references
+/// the project and both working folders.
+const PROJECT_CHAT_GRAPH: &str = include_str!("project_chat_graph.sql");
 
-impl sqlx::migrate::MigrationSource<'static> for MigrationsThrough {
-    fn resolve(
-        self,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<sqlx::migrate::Migration>, sqlx::error::BoxDynError>,
-                > + Send,
-        >,
-    > {
-        let migrations = crate::MIGRATOR
-            .iter()
-            .filter(|migration| migration.version <= self.0)
-            .cloned()
-            .collect();
-        Box::pin(async move { Ok(migrations) })
-    }
+/// Loads the project and Chat graph.
+pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
+    sqlx::raw_sql(PROJECT_CHAT_GRAPH)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
-/// A memory pool migrated through `version`; `run_migrations` later applies the rest.
-pub(super) async fn memory_pool_migrated_through(version: i64) -> SqlitePool {
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    sqlx::raw_sql("PRAGMA foreign_keys=ON")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::migrate::Migrator::new(MigrationsThrough(version))
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
-    pool
+/// Creates the default channel of `project-routine-learning` with its owner membership, as
+/// Chat does on first use, since fresh vaults seed no conversations. Returns the conversation
+/// and channel ids.
+pub(super) async fn insert_default_channel(pool: &SqlitePool) -> (String, String) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversations
+            (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES ('conversation-default-learning', 'project-routine-learning', 'channel',
+                 '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
+                 '2026-10-23T00:00:00.000Z');
+         INSERT INTO chat_channels
+            (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+         VALUES ('channel-default-learning', 'project-routine-learning',
+                 'conversation-default-learning', 'general', 1, '2026-10-23T00:00:00.000Z',
+                 '2026-10-23T00:00:00.000Z');
+         INSERT INTO chat_conversation_memberships
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES ('conversation-default-learning', 'participant:local-owner',
+                 'membership-default-learning-owner', 'owner', '2026-10-23T00:00:00.000Z',
+                 '2026-10-23T00:00:00.000Z');",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    (
+        "conversation-default-learning".to_owned(),
+        "channel-default-learning".to_owned(),
+    )
 }

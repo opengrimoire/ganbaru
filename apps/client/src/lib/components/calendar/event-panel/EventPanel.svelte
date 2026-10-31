@@ -8,6 +8,9 @@
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import MeetingSection from "./MeetingSection.svelte";
   import PomodoroSection from "./PomodoroSection.svelte";
+  import EventConflictNotice from "$lib/components/calendar/conflicts/EventConflictNotice.svelte";
+  import { hasTimingConflict } from "$lib/calendar/conflicts";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import NotificationsSection from "./NotificationsSection.svelte";
   import RecurrenceSection from "./RecurrenceSection.svelte";
   import MusicSection from "./MusicSection.svelte";
@@ -242,6 +245,8 @@
   let musicLoadGeneration = 0;
   let musicSnapshotGeneration = 0;
   let musicOverrideGeneration = 0;
+  /** Id of the event, or of the series an occurrence belongs to, whose sync conflicts the panel shows. */
+  const conflictEventId = $derived(mode === "edit" && !parked && event ? event.recurringParentId ?? event.id : null);
   const musicAssignmentsDirty = $derived(
     musicAssignmentsReadyKey === session.lastInitKey
       && (!musicAssignmentDraftsEqual(musicSnapshots, savedMusicSnapshots)
@@ -1062,7 +1067,7 @@
         aria-label={t("common.close")}
         onclick={onClose}
         onpointerdown={(event) => event.stopPropagation()}
-        class="flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
+        class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
       >
         <X size={22} aria-hidden="true" />
       </button>
@@ -1383,6 +1388,10 @@
   <!-- Feature sections -->
   <div class="shrink-0 flex flex-col gap-1.5 px-4 py-1.5">
 
+      {#if conflictEventId}
+        <EventConflictNotice eventId={conflictEventId} blocked={externalDirty} onResolved={onClose} />
+      {/if}
+
       <!-- 1) Meeting -->
       {#if showHeavySections}
         <MeetingSection
@@ -1427,6 +1436,7 @@
           expanded={openSection === "pomodoro"}
           readonlyInteractive={pomodoroReadOnlyInteractive}
           idleDetectionAvailable={nativeIdleDetectionAvailable}
+          timingConflict={conflictEventId !== null && hasTimingConflict(calendarConflicts.all, conflictEventId)}
           onToggle={() => handleToggle("pomodoro")}
           onExpand={() => handleExpand("pomodoro")}
           onChange={() => session.emitChange()} />

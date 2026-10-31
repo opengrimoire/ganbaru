@@ -191,17 +191,18 @@ where
     Ok(true)
 }
 
-/// Recheck runtime authority immediately before each process signal.
+/// Recheck runtime authority and the `config` rules immediately before each process signal.
 #[cfg(target_os = "linux")]
 pub(super) fn close_desktop_process_checked<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    config: &Value,
     request: DistractionsCloseDesktopAppRequest,
     mut before_close: impl FnMut() -> Result<(), String>,
 ) -> Result<bool, String> {
     let mut controller = SystemDesktopProcessController;
     close_desktop_process_with(&request, &mut controller, |observed| {
         before_close()?;
-        let authorization = load_close_authorization(app, &request.rule_identity)?;
+        let authorization = load_close_authorization(app, config, &request.rule_identity)?;
         validate_names_authorized(observed.match_names.clone(), &authorization)
     })
 }
@@ -209,6 +210,7 @@ pub(super) fn close_desktop_process_checked<R: Runtime>(
 #[cfg(not(target_os = "linux"))]
 pub(super) fn close_desktop_process_checked<R: Runtime>(
     _app: &tauri::AppHandle<R>,
+    _config: &Value,
     _request: DistractionsCloseDesktopAppRequest,
     _before_close: impl FnMut() -> Result<(), String>,
 ) -> Result<bool, String> {

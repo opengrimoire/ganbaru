@@ -1,5 +1,4 @@
 use super::*;
-use ganbaru_db::run_migrations;
 use sqlx::sqlite::SqlitePoolOptions;
 
 /// Runs persistence tests on a single-thread runtime without platform initialization.
@@ -17,7 +16,9 @@ async fn pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -889,77 +890,6 @@ fn imported_images_are_content_addressed_and_verified_on_read() {
 }
 
 #[test]
-fn cleanup_keeps_referenced_retained_and_recent_files() {
-    block_on(async {
-        let pool = pool().await;
-        let vault = vault_dir("cleanup");
-        let [live, retained, orphan] = [1, 2, 3].map(|seed| {
-            images::import_image(&vault, &png(40 + u32::from(seed), 30, seed)).unwrap()
-        });
-        let mut created = note("note", "body");
-        created.images = vec![live.clone()];
-        create_from_pool(&pool, created).await.unwrap();
-
-        // A version that an open conflict or recovery offer still holds.
-        let encoded = ganbaru_sync::domains::quick_notes::encode_images(&[
-            ganbaru_sync::domains::quick_notes::NoteImage::from(&retained),
-        ])
-        .unwrap();
-        let value = Value::new(vec![Field::Blob(encoded)]).unwrap();
-        sqlx::query(
-            "INSERT INTO sync_rows (table_id, row_key, state) VALUES (2, 'gone', 'tombstoned')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO sync_register_versions
-                 (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
-             VALUES (2, 'gone', ?, zeroblob(16), 1, 0, zeroblob(32), ?)",
-        )
-        .bind(i64::from(note_group::IMAGES.get()))
-        .bind(value.encode())
-        .execute(&pool)
-        .await
-        .unwrap();
-        let dir = images::images_dir(&vault);
-        std::fs::write(dir.join(".stale.png.0000.tmp"), b"partial").unwrap();
-
-        let now = std::time::SystemTime::now();
-        assert_eq!(
-            images::collect_unreferenced_images_before(&pool, &vault, now)
-                .await
-                .unwrap(),
-            0
-        );
-        let later = now + std::time::Duration::from_secs(2 * 24 * 60 * 60);
-        assert_eq!(
-            images::collect_unreferenced_images_before(&pool, &vault, later)
-                .await
-                .unwrap(),
-            2
-        );
-        for kept in [&live, &retained] {
-            assert!(images::read_image(&vault, &file_of(kept)).is_ok());
-        }
-        assert_eq!(
-            images::read_image(&vault, &file_of(&orphan)),
-            Err(QuickNoteImageError::Unavailable)
-        );
-
-        trash_from_pool(&pool, &revision("note", 1)).await.unwrap();
-        delete_permanently_from_pool(&pool, "note").await.unwrap();
-        assert_eq!(
-            images::collect_unreferenced_images_before(&pool, &vault, later)
-                .await
-                .unwrap(),
-            1
-        );
-        std::fs::remove_dir_all(&vault).unwrap();
-    });
-}
-
-#[test]
 fn restoring_a_recovered_note_keeps_its_images() {
     block_on(async {
         let pool = pool().await;
@@ -972,151 +902,46 @@ fn restoring_a_recovered_note_keeps_its_images() {
             note_group::IMAGES,
             Value::new(vec![Field::Blob(encoded)]).unwrap(),
         )];
-        let id = restore_recovered(&pool, &values).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        let id = restore_recovered(&mut conn, &values).await.unwrap();
+        drop(conn);
         let restored = load_note_from_pool(&pool, &id).await.unwrap();
         assert_eq!(restored.images, [image(4), image(5)]);
     });
 }
 
-fn referenced(bytes: &[u8]) -> images::ReferencedImage {
-    let described = file_of(&images::describe_image(bytes).unwrap());
-    images::ReferencedImage::new(
-        described.sha256().to_string(),
-        described.content_type().to_string(),
+/// A synced reference naming `bytes` by their digest, with the given content type.
+fn synced(bytes: &[u8], content_type: &str) -> ganbaru_sync::assets::AssetRef {
+    let digest: String = ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    ganbaru_sync::assets::AssetRef::new(
+        &ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS,
+        digest,
+        content_type.to_string(),
         bytes.len() as u32,
     )
     .unwrap()
 }
 
 #[test]
-fn references_reject_bad_digests_types_and_sizes() {
-    let digest = "a".repeat(64);
-    assert!(images::ReferencedImage::new(digest.clone(), "image/png".into(), 10).is_ok());
-    assert_eq!(
-        images::ReferencedImage::new("../escape".into(), "image/png".into(), 10),
-        Err(QuickNoteImageError::Unsupported)
-    );
-    assert_eq!(
-        images::ReferencedImage::new(digest.clone(), "text/html".into(), 10),
-        Err(QuickNoteImageError::Unsupported)
-    );
-    assert_eq!(
-        images::ReferencedImage::new(digest.clone(), "image/png".into(), 0),
-        Err(QuickNoteImageError::Unsupported)
-    );
-    assert_eq!(
-        images::ReferencedImage::new(digest, "image/png".into(), images::MAX_IMAGE_BYTES + 1),
-        Err(QuickNoteImageError::TooLarge)
-    );
-}
-
-#[test]
-fn synced_images_are_held_read_in_chunks_and_stored_only_when_they_match() {
-    let source = vault_dir("sync-source");
-    let target = vault_dir("sync-target");
+fn synced_images_must_be_supported_images_of_their_referenced_type() {
+    let vault = vault_dir("synced-check");
+    let path = vault.join("received");
     let bytes = png(320, 200, 3);
-    let image = referenced(&bytes);
-    assert_eq!(images::holds_image(&source, &image), Ok(false));
-    images::import_image(&source, &bytes).unwrap();
-    assert_eq!(images::holds_image(&source, &image), Ok(true));
-
-    let mut assembled = Vec::new();
-    while assembled.len() < bytes.len() {
-        let chunk = images::read_image_chunk(&source, &image, assembled.len() as u32, 10).unwrap();
-        assert!(!chunk.is_empty() && chunk.len() <= 10);
-        assembled.extend(chunk);
-    }
-    assert_eq!(assembled, bytes);
+    std::fs::write(&path, &bytes).unwrap();
     assert_eq!(
-        images::read_image_chunk(&source, &image, bytes.len() as u32, 10),
-        Err(QuickNoteImageError::Unavailable)
+        images::check_synced_image(&synced(&bytes, "image/png"), &path),
+        Ok(())
     );
-    assert_eq!(
-        images::read_image_chunk(&target, &image, 0, 10),
-        Err(QuickNoteImageError::Unavailable)
-    );
+    let mislabeled = images::check_synced_image(&synced(&bytes, "image/jpeg"), &path);
+    assert!(mislabeled.unwrap_err().contains("image/jpeg"));
 
-    let other = png(320, 200, 4);
-    assert_eq!(
-        images::store_image(&target, &image, &other),
-        Err(QuickNoteImageError::Unavailable)
-    );
-    assert_eq!(
-        images::store_image(&target, &image, &bytes[..bytes.len() - 1]),
-        Err(QuickNoteImageError::Unavailable)
-    );
-    let mislabeled = images::ReferencedImage::new(
-        image.file().sha256().to_string(),
-        "image/jpeg".into(),
-        image.byte_size(),
-    )
-    .unwrap();
-    assert_eq!(
-        images::store_image(&target, &mislabeled, &bytes),
-        Err(QuickNoteImageError::Unavailable)
-    );
-    let mut text = b"not an image".to_vec();
-    text.resize(bytes.len(), b' ');
-    assert_eq!(
-        images::store_image(&target, &referenced_text(&text), &text),
-        Err(QuickNoteImageError::Unsupported)
-    );
-    assert_eq!(images::holds_image(&target, &image), Ok(false));
-
-    images::store_image(&target, &image, &bytes).unwrap();
-    assert_eq!(images::holds_image(&target, &image), Ok(true));
-    assert_eq!(images::read_image(&target, image.file()).unwrap(), bytes);
-
-    // A file of the wrong size is not held, so sync fetches it again.
-    let path = images::images_dir(&target).join(image.file().file_name().unwrap());
-    std::fs::write(&path, &bytes[..8]).unwrap();
-    assert_eq!(images::holds_image(&target, &image), Ok(false));
-    for vault in [source, target] {
-        std::fs::remove_dir_all(vault).unwrap();
-    }
-}
-
-/// A reference that names arbitrary bytes by their digest, as a hostile peer could send.
-fn referenced_text(bytes: &[u8]) -> images::ReferencedImage {
-    let digest: String = ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    images::ReferencedImage::new(digest, "image/png".into(), bytes.len() as u32).unwrap()
-}
-
-#[test]
-fn replacements_keep_the_verified_images_only_this_device_holds() {
-    let current = vault_dir("carry-current");
-    let replacement = vault_dir("carry-replacement");
-    let shared = png(100, 100, 1);
-    let local = png(100, 100, 2);
-    let damaged = png(100, 100, 3);
-    for bytes in [&shared, &local, &damaged] {
-        images::import_image(&current, bytes).unwrap();
-    }
-    images::import_image(&replacement, &shared).unwrap();
-    let damaged_path =
-        images::images_dir(&current).join(referenced(&damaged).file().file_name().unwrap());
-    std::fs::write(&damaged_path, png(100, 100, 4)).unwrap();
-    std::fs::write(images::images_dir(&current).join("notes.txt"), b"x").unwrap();
-
-    assert_eq!(images::carry_images(&current, &replacement), Ok(1));
-    assert_eq!(
-        images::read_image(&replacement, referenced(&local).file()).unwrap(),
-        local
-    );
-    assert_eq!(
-        images::holds_image(&replacement, &referenced(&damaged)),
-        Ok(false)
-    );
-    assert!(!images::images_dir(&replacement).join("notes.txt").exists());
-    assert_eq!(images::carry_images(&current, &replacement), Ok(0));
-
-    let empty = vault_dir("carry-empty");
-    assert_eq!(images::carry_images(&empty, &replacement), Ok(0));
-    for vault in [current, replacement, empty] {
-        std::fs::remove_dir_all(vault).unwrap();
-    }
+    let text = b"not an image at all".to_vec();
+    std::fs::write(&path, &text).unwrap();
+    let refused = images::check_synced_image(&synced(&text, "image/png"), &path);
+    assert!(refused.unwrap_err().contains("not a supported image"));
+    std::fs::remove_dir_all(vault).unwrap();
 }

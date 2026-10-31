@@ -670,13 +670,12 @@ async fn prepare_m3u(
         };
         memberships.push(MusicInterchangeMembership {
             item,
-            position: index as i64,
             weight: MusicWeight::Normal,
             enabled: true,
             start_ms: None,
             end_ms: None,
-            volume: None,
-            rate: None,
+            volume_milli: None,
+            rate_milli: None,
             skip_ranges: Vec::new(),
             snoozes: Vec::new(),
         });
@@ -684,7 +683,7 @@ async fn prepare_m3u(
     let name = source.playlist_name.trim();
     let document = MusicInterchangeDocument {
         format: codec::FORMAT.to_string(),
-        version: 1,
+        version: codec::VERSION,
         exported_at: source.selected_at_ms,
         roots: used_roots.into_values().collect(),
         playlists: vec![MusicInterchangePlaylist {
@@ -694,10 +693,10 @@ async fn prepare_m3u(
             } else {
                 name.to_string()
             },
-            icon: "lucide:list-music".to_string(),
+            icon: DEFAULT_PLAYLIST_ICON.to_string(),
             shuffle_enabled: false,
             mix_enabled: false,
-            repeat_mode: MusicRepeatMode::All,
+            repeat_mode: DEFAULT_PLAYLIST_REPEAT_MODE,
             intended_uses: Vec::new(),
             memberships,
         }],

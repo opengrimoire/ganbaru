@@ -2,7 +2,7 @@
 
 Ganbaru is an anti-procrastination and anti-burnout productivity app. It is free, local, open-source (AGPL 3.0), privacy-first, and lightweight, with opt-in AI. It is built with Tauri v2 (Rust) and Svelte 5 for Linux, Windows, and a pre-release Android implementation. macOS and iOS are future platform work.
 
-Features are highly interconnected. Calendar, Pomodoro, Projects, Notes, Chat with local coding agents, the distraction blocker, Music, Quick notes, themes, localization, and the Android shell exist and are still being completed. Concurrent sync covers Quick notes so far. The diary, sleep alarm, and work environments are planned; gamification is deferred. [docs/features/README.md](docs/features/README.md) owns the current status of each feature.
+Features are highly interconnected. Calendar, Pomodoro, Projects, Notes, Chat with local coding agents, the distraction blocker, Music, Quick notes, themes, localization, and the Android shell exist and are still being completed. Concurrent sync covers Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, Focus history with device activity, Chat organizational content, and Notes in full (structure, databases, comments and suggestions, and assets), editable on every linked device. The diary, sleep alarm, and work environments are planned; gamification is deferred. [docs/features/README.md](docs/features/README.md) owns the current status of each feature.
 
 ## Documentation
 
@@ -74,19 +74,19 @@ apps/
       app/: ganbaru-tauri-app library with Tauri commands, managed state, and platform integrations
         build.rs: emits the `desktop` and `mobile` cfg aliases used for platform gating
         src/runtime.rs, runtime/: desktop and mobile composition roots and handler registration tests
-        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, document transfer, Android backup and restore
-        src/vault/handoff/: LAN device linking and single-writer whole-vault handoff
+        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, portable and device preferences, document transfer, encrypted backup and restore
+        src/vault/handoff/: LAN device linking and snapshot bootstrap
         src/calendar.rs, calendar/: Calendar command adapters and the platform device-date source
         src/chat.rs, chat/: Chat command adapters, coordination, access profiles, internal MCP tools, checkpoints, previews, and provider settings
         src/notes.rs, notes/: Notes command adapters, working-Markdown composition, and asset authorization
         src/pomodoro.rs, pomodoro/: Focus command adapters, native execution runtime, idle probes, and timer overlays with enforcement
         src/projects.rs, projects/: Projects command adapters, icon assets, and working-folder device state
-        src/distractions.rs, distractions/: browser, desktop, Android, and linked-device blocking, observation, close authorization, and the usage spool
-        src/music.rs, music/: Music library command adapters, Android media inspection, native Music session, media controls, YouTube host, and soundscapes
+        src/distractions.rs, distractions/: browser, desktop, and Android blocking, observation, close authorization, the usage and block event spool ingestion, and replicated usage totals and block history
+        src/music.rs, music/: Music library command adapters, Android media inspection, native Music session, media controls, YouTube host, soundscapes, and post-apply sync hooks
         src/notifications.rs, notifications/: desktop native notifications and Android notification capabilities
         src/sound_effects.rs, system_command.rs: app sound effects and bounded fixed-command execution
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
-        src/sync.rs, sync/: sync service lifecycle, paired transport, Quick note image transfer, recovery listing, status, and sync commands
+        src/sync.rs, sync/: sync service host on the Tauri app, dialers, vault assets, recovery listing, status, and sync commands
         src/quick_notes.rs, quick_notes/: Quick notes command adapters and image file commands
         src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
@@ -110,26 +110,27 @@ crates/
   ganbaru-music-player/: Tauri-free desktop local media inspection and decoding worker that executes committed Music session effects
   ganbaru-projects/: Tauri-free Projects persistence, structure, tasks, history, custom fields, dependency cascades, reordering, Calendar scheduling rows, and validation
   ganbaru-calendar/: Tauri-free Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion
-  ganbaru-distractions/: Tauri-free distraction blocker contracts, application rules, usage limits, usage normalization, and elapsed accounting
+  ganbaru-distractions/: Tauri-free distraction blocker contracts, rule persistence, application rules, usage limits, usage normalization, elapsed accounting, daily usage totals, and block history
   ganbaru-notes/: Notes domain, persistence, transfers, history, assets, and bounded filesystem operations
   ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, errors, and protected workspace path rules
   ganbaru-chat-providers/: provider processes, transports, drivers, cancellation, and registry
   ganbaru-chat/: Chat persistence, runtime, Git workspaces, checkpoints, review, and application services
   ganbaru-working-folders/: Tauri-free working-folder IDs, bindings, and device-state operations
   ganbaru-contacts/: Tauri-free person key pairs, signed contact cards, request signatures, and trust kinds
-  ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, LAN-only dial targets, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and transfer state, and Linux firewall authorization
-  ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, writer certificates, order keys, and the signed operation format
-  ganbaru-sync/: Tauri-free sync engine with the replication manifest, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
-  ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange of operations and Quick note images
-  ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, and row validation
+  ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, TLS pin verifiers, LAN-only dial targets, DNS-SD discovery records and hourly member tags, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and snapshot copy state, and Linux firewall authorization
+  ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, device-signed writer certificates, the space charter, authorization log entries, recovery kit codes, order keys, the signed operation format, space key envelopes and chain links, and the encrypted backup format
+  ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, the authorization record store with chain selection and contests, removal exclusion and late changes, fork evidence, and the simulation harness
+  ganbaru-sync-replica/: Tauri-free replica sync with commit-signaling vault access, installation device and writer keys and record, the proposal outbox, quarantine, the peer book, anchor pin, and discovery keys, carry-forward, recovery offers, LAN hub, member, and client exchange of operations, authorization records, and managed assets, the relay client pass, managed asset collection, whole-vault archives, encrypted backup files, the pinned TLS listeners, and the sync service loop over a host trait
+  ganbaru-sync-relay/: self-hosted server binary: relay mode stores sealed records and asset chunks it cannot open, and anchor mode runs one vault as an always-on enrolled replica
+  ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
   ganbaru-linking-firewall/: root-run Linux helper binary for the device linking firewall rules, installed under /usr/lib/ganbaru/ and named by the PolicyKit policy
-  ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, and notifications
+  ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, notifications, and background sync with Android Keystore key wrapping
 extensions/chromium/: Chromium extension (manifest v3); chromium-dev/ is a generated, ignored dev copy
 Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, package.json: workspace configuration and root scripts
 ```
 
-Planned work without source directories yet includes the self-hosted sync relay, the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
+Planned work without source directories yet includes the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
 
 ## Ganbaru folder structure
 
@@ -138,22 +139,21 @@ Planned work without source directories yet includes the self-hosted sync relay,
 ```
 Ganbaru/
   vault.json: folder marker, id, display name, and schema version
-  config.json: folder-local preferences, UI state, and anti-distraction settings
-  ganbaru.sqlite: SQLite source of truth for structured data, Notes, and indexes
-  .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and handoff replacements, bounded and restorable from Settings > Data
+  vault.lock: device-local advisory lock that keeps a second Ganbaru process out of the vault; never archived
+  ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
+  .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and snapshot copy replacements, bounded and restorable from Settings > Data
   notes/daily/, notes/projects/: reserved note document directories
   notes/exports/: derivative Markdown exports (planned, not authoritative)
   diary/morning/, diary/evening/: dated diary entries (planned feature)
   projects/{project-id}/: managed working folder created for every project
   reports/: generated project status reports (planned feature)
-  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/)
+  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/, music/artwork/)
   templates/: reserved file-based project and methodology templates
-  .yjs/: reserved Yjs document state cache
 ```
 
-Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Desktop backups go to a user-selected path outside the vault. Android portable backups are exported to shared Downloads and restored through the system document picker.
+Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Backups are encrypted and open with the recovery kit. Desktop backups go to a user-selected path outside the vault. Android backups are exported to shared Downloads and restored through the system document picker.
 
-Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
+Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, device preferences per vault, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
 
 ## Key conventions
 
@@ -161,9 +161,9 @@ Tauri's platform app config directory stores device-local bootstrap and runtime 
 - **State management:** Svelte 5 runes (`$state`, `$derived`, `$effect`), no external state manager. Durable runtime authority (Calendar recurrence and mutations, Focus execution, Music sessions) lives in Rust; the frontend renders native projections.
 - **Data architecture:** documents (diary entries, project docs, reports, attachments) are files on disk and the file is the source of truth where its format is canonical; SQLite may index them. Structured data and document graphs (Notes pages and blocks, Calendar events, project tasks, Focus configs and runs) live in SQLite as the source of truth. Markdown for Notes is derivative import, export, or bridge output only.
 - **AI integration:** three opt-in paths. (1) Implemented: local coding-agent Chat in project channels over Rust-owned native provider sessions (Codex, Claude, Cursor, Grok, OpenCode), with durable SQLite history, project working folders, and a scoped ephemeral loopback MCP endpoint for application-owned host tools. That endpoint is infrastructure, not a participant identity. (2) Planned: a BYOK assistant for hosted and local user-configured providers. (3) Planned: a separately authorized MCP service for external AI clients. See `docs/features/ai/` and `docs/features/chat/`.
-- **Chat storage boundary:** organizational Chat state (channels, sessions, events, drafts, checkpoints, access profiles, authorization revisions, scratch scopes) lives in the vault SQLite database. Managed attachment bytes live under `assets/chat/attachments/`. Absolute folder paths, scratch paths, executables, provider homes, diagnostics, provider-native trust, and process state are device-local. Provider-native trust never widens organizational authority. Provider secrets live only behind operating-system credential references. See `docs/data/schema/chat.md` and `docs/data/security/chat.md`.
+- **Chat storage boundary:** organizational Chat state (channels, sessions, events, drafts, checkpoints, access profiles, authorization revisions, scratch scopes) lives in the vault SQLite database. Managed attachment bytes live under `assets/chat/attachments/`. Provider configuration, absolute folder paths, scratch paths, executables, provider homes, diagnostics, provider-native trust, and process state are device-local; Chat behavior is a portable preference. Provider-native trust never widens organizational authority. Provider secrets live only behind operating-system credential references. See `docs/data/schema/chat.md` and `docs/data/security/chat.md`.
 - **Localization:** user-facing UI text must use the typed i18n catalog. Language selectors show languages as autonyms (`English`, `Español`), while non-language options like system preference are localized. Dates, times, numbers, plurals, relative minutes, and lists use the locale helpers.
-- **Sync:** LAN device linking, single-writer whole-vault handoff, and concurrent Quick notes replication through the coordinator desktop (signed operation logs, installation writers, deterministic merges, conflicts, and recovery) are implemented in source, with physical multi-device acceptance pending. The rest of the vault stays single-writer on replicas. Concurrent sync of other domains, Yrs/Yjs text, anchored authority with LAN peer exchange, operation encryption, and the encrypted relay are planned. See `docs/data/sync.md`.
+- **Sync:** LAN device linking with snapshot bootstrap, and concurrent Quick notes, portable preferences, user themes, contacts, Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, Focus history with device activity, and Notes replication (structure, databases, comments and suggestions, and assets) through the coordinator desktop and directly between members on the LAN (signed operation logs, installation writers, deterministic merges, conflicts, and recovery), with anchored authority (an anchor-sequenced authorization log with admin keys, a recovery kit, removal cutoffs, late changes, quarantine, fork evidence, and anchor handover) and Android Keystore key wrapping, are implemented in source, with physical multi-device acceptance pending. Chat organizational content (identity, policy, conversations, memberships, working folder grants, messages, scheduled messages, and work assignments) also replicates and is editable on every linked device, with a concurrent removal, revocation, or narrowing winning over a concurrent widening; execution stays on one device. Every linked device writes every domain; there is no vault owner or read-only copy. Yrs/Yjs text is planned; the optional relay, with records encrypted end to end, and the always-on anchor are implemented in source. See `docs/data/sync.md`.
 - **Focus evidence:** Android Calendar alarms are reminders and cannot start runs or record later phases. Recovery uses only committed SQLite execution. Desktop automatic admission requires fresh local activity; explicit starts remain available.
 - **Branching and releases:** topic branches from `dev`, PRs back to `dev`. Direct pushes to `dev` or `main` are not normal workflow. `main`, `app-v*` tags, release approval, published releases, and package publication are controlled by organization admins for supply-chain safety. See `CONTRIBUTING.md`, `docs/operations/release/README.md`, and `docs/operations/repository-policy.md`.
 - **Pull requests:** for review work, create a neutral topic branch from current `dev` (for example `docs/github-templates` or `fix/calendar-import`; never tool, assistant, or vanity names in branches, commits, or PR titles). Open PRs into `dev` unless the user asks for a release PR. Creating a PR does not imply merging. Merge only when the user explicitly asks, or asks to complete the whole PR flow after checks pass; first confirm the PR is mergeable, required checks passed, and the branch is up to date. Release PRs from `dev` to `main` go through the `main` merge queue: do not update `dev` with `main`, do not enable auto-merge, and if `gh pr merge` tries auto-merge, use GitHub's queue action or the GraphQL `enqueuePullRequest` mutation. If a non-release branch is out of date, update it once, then merge if already authorized. After merging into `dev`, sync local `dev` to `origin/dev` and delete the merged topic branch locally and remotely. After merging into `main`, sync local `main` to `origin/main`. Do not keep backup branches unless asked.
@@ -228,7 +228,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - There are no external users yet. Old development vaults, internal exports, and device state need no compatibility, migration shims, or fallback readers. Keep one current internal format and require an explicit development reset for unsupported state. Preserve crash recovery, transaction rollback, external standards support, and platform-specific behavior.
 - Remove obsolete internal readers, writers, and unused code together. Keep fresh-vault schema construction and current schema invariants covered. Never delete or reset local vaults automatically as part of source cleanup.
 - Migrations live in `crates/ganbaru-db/migrations/` and are embedded by `ganbaru-db` through `sqlx::migrate!` (no manual registration). Name them `YYYYMMDDHHMMSS_description.sql` with a UTC timestamp.
-- `20261004220000_baseline_schema.sql` is the final pre-user baseline, approved by the maintainer on 2026-10-04 and edited in place on 2026-10-16 for the product rename. Earlier development databases are unsupported and must be recreated. Once a user-capable release can apply it, never edit it; add new timestamped migrations instead. Future baseline squashes require explicit maintainer approval.
+- `20261031060000_baseline_schema.sql` is the final pre-user baseline, approved by the maintainer on 2026-10-30. Earlier development databases are unsupported and must be recreated. Once a user-capable release can apply it, never edit it; add new timestamped migrations instead. Future baseline squashes require explicit maintainer approval.
 - SQLx validates applied migration checksums, so never rewrite an applied migration to fix a live install. Keep migrations idempotent and narrowly scoped when practical. Preserve user-authored values that still have meaning; only delete data that is obsolete or derivable from canonical data.
 - Keep `crates/ganbaru-db/src/lib.rs` focused on pool and migration services, schema and migration invariant tests in `crates/ganbaru-db/src/tests/`, and active-folder path authorization in `apps/client/src-tauri/app/src/db.rs`.
 - Never hardcode Ganbaru folder paths; read them from user configuration.

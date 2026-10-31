@@ -14,18 +14,24 @@ doctest = false
 workspace = true
 
 [dependencies]
+ganbaru-atomic-files = { workspace = true }
 ganbaru-db = { workspace = true }
+ganbaru-image-metadata = { workspace = true }
 ganbaru-music = { workspace = true }
 ganbaru-projects = { workspace = true }
+ganbaru-sync = { workspace = true }
+ganbaru-sync-contracts = { workspace = true }
 jiff = { workspace = true }
+ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
+tokio = { workspace = true }
 url = { workspace = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 rodio = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+ganbaru-db = { workspace = true, features = ["test-support"] }

@@ -51,7 +51,6 @@ fn native_phase_rules_are_bounded_by_accepted_phase_event_and_owner_validity() {
     let mut effect = CommittedFocusEffect {
         vault_id: "vault".into(),
         vault_generation: 47,
-        ownership_generation: 3,
         execution_revision: 6,
         run_id: Some("run".into()),
         segment_id: Some("segment".into()),
@@ -223,27 +222,6 @@ fn atomic_state_write_does_not_follow_predictable_temp_symlinks() {
             .is_symlink()
     );
     std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn oversized_authorization_config_is_rejected() {
-    let path = std::env::temp_dir().join(format!(
-        "ganbaru-distractions-oversized-{}.json",
-        std::process::id()
-    ));
-    std::fs::write(
-        &path,
-        vec![b' '; MAX_AUTHORIZATION_CONFIG_BYTES as usize + 1],
-    )
-    .unwrap();
-
-    assert_eq!(
-        read_bounded_authorization_config(&path)
-            .unwrap_err()
-            .to_string(),
-        "persisted distraction configuration is too large"
-    );
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

@@ -61,7 +61,7 @@ async fn list_views_tx(
     database_id: &str,
 ) -> Result<Vec<NoteDatabaseViewRow>, String> {
     let query = format!(
-        "SELECT {VIEW_COLUMNS} FROM notes_database_views WHERE database_id = ? ORDER BY sort_order ASC, created_time ASC, id ASC",
+        "SELECT {VIEW_COLUMNS} FROM notes_database_views WHERE database_id = ? ORDER BY order_key ASC, id ASC",
     );
     sqlx::query_as::<_, NoteDatabaseViewRow>(AssertSqlSafe(query.as_str()))
         .bind(database_id)
@@ -105,15 +105,10 @@ pub async fn duplicate_database_view(
     page_history::record_page_snapshot_tx(&mut tx, &page_id, "duplicate_database_view").await?;
     project_history::mark_page_dirty_tx(&mut tx, &page_id, "Duplicate database view", false)
         .await?;
-    let sort_order: f64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(sort_order) + 1, 1) FROM notes_database_views WHERE database_id = ?",
-    )
-    .bind(&request.database_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|error| format!("prepare Notes view order: {error}"))?;
+    let order_key =
+        crate::data_sources::views::next_view_order_key_tx(&mut tx, &request.database_id).await?;
     sqlx::query(
-        "INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, sort_order)
+        "INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, order_key)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&request.id)
@@ -124,7 +119,7 @@ pub async fn duplicate_database_view(
     .bind(&source.filter)
     .bind(&source.sorts)
     .bind(&source.configuration)
-    .bind(sort_order)
+    .bind(order_key)
     .execute(&mut *tx)
     .await
     .map_err(|error| format!("duplicate Notes database view: {error}"))?;
@@ -167,11 +162,22 @@ pub async fn reorder_database_views(
         page_history::record_page_snapshot_tx(&mut tx, &page_id, "reorder_database_views").await?;
         project_history::mark_page_dirty_tx(&mut tx, &page_id, "Reorder database views", false)
             .await?;
-        for (index, view_id) in view_ids.iter().enumerate() {
+        let existing: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, order_key FROM notes_database_views WHERE database_id = ?")
+                .bind(database_id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|error| format!("load Notes database view order: {error}"))?;
+        let desired: Vec<&str> = view_ids.iter().map(String::as_str).collect();
+        let keys = crate::property_storage::plan_order_keys(&existing, &desired)?;
+        for (view_id, current_key) in &existing {
+            let Some(key) = keys.get(view_id).filter(|key| *key != current_key) else {
+                continue;
+            };
             sqlx::query(
-                "UPDATE notes_database_views SET sort_order = ? WHERE database_id = ? AND id = ?",
+                "UPDATE notes_database_views SET order_key = ? WHERE database_id = ? AND id = ?",
             )
-            .bind((index + 1) as f64)
+            .bind(key)
             .bind(database_id)
             .bind(view_id)
             .execute(&mut *tx)
@@ -251,7 +257,7 @@ pub async fn delete_database_view(
         }
     }
     let replacement: Option<(String, String)> = sqlx::query_as(
-        "SELECT id, data_source_id FROM notes_database_views WHERE database_id = ? AND id <> ? ORDER BY CASE WHEN type = 'table' THEN 0 ELSE 1 END, sort_order ASC, created_time ASC, id ASC LIMIT 1",
+        "SELECT id, data_source_id FROM notes_database_views WHERE database_id = ? AND id <> ? ORDER BY CASE WHEN type = 'table' THEN 0 ELSE 1 END, order_key ASC, id ASC LIMIT 1",
     )
     .bind(database_id)
     .bind(view_id)
@@ -262,18 +268,20 @@ pub async fn delete_database_view(
         replacement.ok_or_else(|| "a database needs at least one view".to_string())?;
     page_history::record_page_snapshot_tx(&mut tx, &page_id, "delete_database_view").await?;
     project_history::mark_page_dirty_tx(&mut tx, &page_id, "Delete database view", false).await?;
-    let payload: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
+    let attrs: String = sqlx::query_scalar("SELECT attrs FROM notes_blocks WHERE id = ?")
         .bind(database_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|error| format!("load Notes database block: {error}"))?;
-    let mut payload: Value = serde_json::from_str(&payload)
+    let mut attrs: Value = serde_json::from_str(&attrs)
         .map_err(|error| format!("parse Notes database block: {error}"))?;
-    if payload.get("view_id").and_then(Value::as_str) == Some(view_id) {
-        payload["view_id"] = Value::String(replacement.0);
-        payload["data_source_id"] = Value::String(replacement.1);
-        sqlx::query("UPDATE notes_blocks SET payload = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-            .bind(payload.to_string())
+    if attrs.get("view_id").and_then(Value::as_str) == Some(view_id) {
+        attrs["view_id"] = Value::String(replacement.0);
+        attrs["data_source_id"] = Value::String(replacement.1);
+        let attrs = attrs.to_string();
+        crate::block_storage::check_block_content_bounds("child_database", &attrs, "{}")?;
+        sqlx::query("UPDATE notes_blocks SET attrs = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+            .bind(attrs)
             .bind(database_id)
             .execute(&mut *tx)
             .await

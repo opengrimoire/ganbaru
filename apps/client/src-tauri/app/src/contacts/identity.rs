@@ -10,6 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::{
     CARD_NONCE_BYTES, PersonKeyPair, PersonPublicKey, decode_nonce, encode_nonce, random_bytes,
 };
+#[cfg(any(mobile, test))]
+use ganbaru_handoff::key_wrap::{self, KeyWrapper};
 use sqlx::{FromRow, SqlitePool};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime};
@@ -17,8 +19,8 @@ use tauri::{AppHandle, Manager, Runtime};
 #[cfg(desktop)]
 const KEYRING_SERVICE: &str = "com.ganbaru.contacts";
 const KEY_REFERENCE_PREFIX: &str = "person-key:";
-#[cfg(mobile)]
-const KEY_DIRECTORY: &str = "contacts";
+/// Directory under the app config directory that holds the sealed person key copies on mobile.
+pub(crate) const KEY_DIRECTORY: &str = "contacts";
 #[cfg(desktop)]
 const KEY_UNAVAILABLE_CODE: &str = "key_unavailable";
 
@@ -63,9 +65,14 @@ pub(crate) struct IdentityRow {
     pub card_revision: i64,
 }
 
+/// The person identity with the current card state. An identity whose card row is missing reads
+/// as no identity; creation always writes both rows together.
 pub(crate) async fn load_identity_row(pool: &SqlitePool) -> Result<Option<IdentityRow>, String> {
     sqlx::query_as(
-        "SELECT public_key, card_nonce, card_revision FROM contacts_local_identity WHERE singleton = 1",
+        "SELECT i.public_key, c.card_nonce, c.card_revision
+         FROM contacts_local_identity i
+         JOIN contact_card c ON c.key = 'card'
+         WHERE i.singleton = 1",
     )
     .fetch_optional(pool)
     .await
@@ -116,6 +123,32 @@ pub(crate) async fn load_identity<R: Runtime>(
     identity_from_row(row, key.as_deref()).map(Some)
 }
 
+/// Writes the identity and its first card in one transaction.
+async fn insert_identity(
+    pool: &SqlitePool,
+    public_key: &str,
+    card_nonce: &str,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO contacts_local_identity (singleton, public_key, created_at) VALUES (1, ?, ?)",
+    )
+    .bind(public_key)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO contact_card (key, card_nonce, card_revision, updated_at)
+         VALUES ('card', ?, 1, ?)",
+    )
+    .bind(card_nonce)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
 /// Loads the identity, creating it on the first writable use of a vault that has none.
 pub(crate) async fn ensure_identity<R: Runtime>(
     app: &AppHandle<R>,
@@ -130,12 +163,6 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     if let Some(identity) = load_identity(app, pool).await? {
         return Ok(identity);
     }
-    let status = crate::vault::ownership::active_status(app)?;
-    if !status.can_write {
-        return Err(ContactsError::IdentityUnavailable(
-            "the vault owner creates the person identity".to_string(),
-        ));
-    }
     if app.state::<PairingManager>().coordinator_pin()?.is_some() {
         return Err(ContactsError::IdentityUnavailable(
             "the coordinator creates the person identity".to_string(),
@@ -149,15 +176,12 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     let public_key = key.public_key();
     store_key(app, pkcs8).await?;
     let now = super::store::format_time(super::store::now());
-    let inserted = sqlx::query(
-        "INSERT INTO contacts_local_identity (singleton, public_key, card_nonce, created_at, updated_at)
-         VALUES (1, ?, ?, ?, ?)",
+    let inserted = insert_identity(
+        pool,
+        &public_key.to_text(),
+        &encode_nonce(&card_nonce),
+        &now,
     )
-    .bind(public_key.to_text())
-    .bind(encode_nonce(&card_nonce))
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
     .await;
     if let Err(error) = inserted {
         let _ = remove_key(app).await;
@@ -216,32 +240,79 @@ fn key_path<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<std::path:
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    Ok(directory
+    Ok(person_key_path_in(&directory, vault_id))
+}
+
+/// The file that holds the device-local person key copy of `vault_id` on Android, inside the
+/// app config directory `config_dir`.
+#[cfg(any(mobile, test))]
+pub(crate) fn person_key_path_in(
+    config_dir: &std::path::Path,
+    vault_id: &str,
+) -> std::path::PathBuf {
+    config_dir
         .join(KEY_DIRECTORY)
-        .join(format!("{}.key", key_reference(vault_id).replace(':', "-"))))
+        .join(format!("{}.key", key_reference(vault_id).replace(':', "-")))
 }
 
-#[cfg(mobile)]
-fn read_key_sync(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("read person key: {error}")),
-    }
+/// The person key of `vault_id` sealed in the file at `path` when it matches `public_key`. It
+/// reads no vault database, so it is usable while the vault is quiesced.
+#[cfg(any(mobile, test))]
+pub(crate) fn person_key_file_matching(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+    public_key: &PersonPublicKey,
+) -> Result<Option<PersonKeyPair>, String> {
+    Ok(read_key_file(wrapper, path, vault_id)?
+        .and_then(|bytes| PersonKeyPair::from_pkcs8(&bytes).ok())
+        .filter(|key| key.public_key() == *public_key))
 }
 
-#[cfg(mobile)]
-fn write_key_sync(path: &std::path::Path, pkcs8: &[u8]) -> Result<(), String> {
-    crate::vault::handoff::pairing::write_private_file_atomically(path, pkcs8)
+/// The person key of `vault_id` sealed in the file at `path`, sealed with the vault's platform
+/// key.
+#[cfg(any(mobile, test))]
+fn read_key_file(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    key_wrap::read_protected_file(
+        wrapper,
+        &key_wrap::vault_keys_alias(vault_id),
+        &key_reference(vault_id),
+        path,
+    )
+    .map_err(|error| format!("read person key: {error}"))
+}
+
+/// Seals the person key `pkcs8` of `vault_id` into the file at `path`.
+#[cfg(any(mobile, test))]
+pub(crate) fn write_key_file(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+    pkcs8: &[u8],
+) -> Result<(), String> {
+    key_wrap::write_protected_file(
+        wrapper,
+        &key_wrap::vault_keys_alias(vault_id),
+        &key_reference(vault_id),
+        path,
+        pkcs8,
+    )
+    .map_err(|error| format!("store person key: {error}"))
 }
 
 #[cfg(mobile)]
 fn remove_key_sync(path: &std::path::Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove person key: {error}")),
-    }
+    key_wrap::remove_key_file(path).map_err(|error| format!("remove person key: {error}"))
+}
+
+/// The platform key that seals the person key on mobile.
+#[cfg(mobile)]
+fn platform_wrapper() -> std::sync::Arc<dyn KeyWrapper> {
+    crate::vault::process_managers::process_managers().key_wrapper()
 }
 
 async fn load_key<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Vec<u8>>, String> {
@@ -258,7 +329,10 @@ async fn load_key_for_vault<R: Runtime>(
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || read_key_sync(&path))
+        let wrapper = platform_wrapper();
+        tauri::async_runtime::spawn_blocking(move || {
+            read_key_file(wrapper.as_ref(), &path, &vault_id)
+        })
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?
@@ -271,7 +345,10 @@ async fn store_key<R: Runtime>(app: &AppHandle<R>, pkcs8: Vec<u8>) -> Result<(),
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || write_key_sync(&path, &pkcs8))
+        let wrapper = platform_wrapper();
+        tauri::async_runtime::spawn_blocking(move || {
+            write_key_file(wrapper.as_ref(), &path, &vault_id, &pkcs8)
+        })
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?

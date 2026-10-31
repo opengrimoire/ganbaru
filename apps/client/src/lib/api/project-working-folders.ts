@@ -143,10 +143,8 @@ export async function openProjectWorkingFolder(
 export async function removeProjectWorkingFolder(
   workingFolderId: ProjectWorkingFolderId,
 ): Promise<void> {
-  await invoke("projects_remove_working_folder", {
-    dbUrl: await ensureDbUrl(),
-    workingFolderId,
-  });
+  const dbUrl = await ensureDbUrl();
+  await invoke("projects_remove_working_folder", { dbUrl, workingFolderId });
 }
 
 export async function recreateManagedProjectWorkingFolder(

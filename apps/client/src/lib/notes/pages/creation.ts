@@ -15,6 +15,7 @@ export function createProvisionalNotesPage(
     last_edited_time: now,
     parent: request.parent,
     folder_id: request.folder_id,
+    project_id: request.project_id ?? null,
     in_trash: false,
     archived: false,
     icon: null,

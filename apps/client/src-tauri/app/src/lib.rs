@@ -37,12 +37,25 @@ mod tray;
 mod updates;
 mod vault;
 
+/// Makes ring the process TLS provider. `install_default` fails only when a provider is already
+/// set, and that one is ring as well: it is the only provider the workspace enables, and rustls
+/// config builders set it on first use. Android reaches this after that point, because a
+/// background sync pass can run before the first activity and each new activity starts the app
+/// again in the same process.
 fn install_default_tls_crypto_provider() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("the default TLS crypto provider must be installed only once during startup");
+    drop(rustls::crypto::ring::default_provider().install_default());
 }
 
 mod runtime;
 
 pub use runtime::run;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tls_provider_install_tolerates_an_installed_provider() {
+        super::install_default_tls_crypto_provider();
+        super::install_default_tls_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+}

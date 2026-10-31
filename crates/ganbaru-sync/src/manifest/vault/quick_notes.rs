@@ -2,10 +2,20 @@
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
-use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, GroupSpec, GroupStorage, MergeKind, OwnedTable, Resolution,
-    TableSpec, group_id,
+use crate::assets::AssetClass;
+
+use crate::domains::quick_notes::{
+    MAX_BODY_CHARS, MAX_CONTENT_TYPE_CHARS, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGES,
+    MAX_RUNS, SHA256_HEX_CHARS,
 };
+use crate::manifest::{
+    Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
+    LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, Resolution,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
+};
+
+/// Domain name for Quick notes.
+pub const DOMAIN_NAME: &str = "quick_notes";
 
 /// Domain adapter name for Quick notes.
 pub const ADAPTER: &str = "quick_notes";
@@ -14,6 +24,10 @@ pub const ADAPTER: &str = "quick_notes";
 pub const TAGS_TABLE: TableId = TableId(1);
 /// `quick_notes`.
 pub const NOTES_TABLE: TableId = TableId(2);
+/// Owned text runs of a note body.
+pub const RUNS_OWNED: &str = "quick_note_text_runs";
+/// Owned image references of a note.
+pub const IMAGES_OWNED: &str = "quick_note_images";
 
 /// Tag field groups.
 pub mod tag_group {
@@ -66,6 +80,7 @@ const fn plain(
         name,
         kind,
         storage: GroupStorage::Columns(columns),
+        references: &[],
         surfaced: false,
         recoverable: false,
         bumps_revision: false,
@@ -84,6 +99,7 @@ const fn content(
         name,
         kind,
         storage,
+        references: &[],
         surfaced,
         recoverable: true,
         bumps_revision: true,
@@ -107,6 +123,25 @@ const COLOR: &[ColumnSpec] = &[ColumnSpec {
     name: "color",
     ty: ColumnType::Integer { min: 0, max: 31 },
 }];
+
+/// A style flag of a text run.
+const fn flag(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Flag,
+    }
+}
+
+/// An image measure in `1..=max`.
+const fn positive(name: &'static str, max: u32) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Integer {
+            min: 1,
+            max: max as i64,
+        },
+    }
+}
 
 const TAG_GROUPS: [GroupSpec; 5] = [
     plain(
@@ -153,12 +188,31 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
         note_group::BODY,
         "body",
         MergeKind::Register,
-        GroupStorage::Owned(OwnedTable {
-            table: "quick_note_text_runs",
-            parent_column: "note_id",
-            order_column: "sort_order",
-            columns: &["content", "bold", "italic", "underline"],
-        }),
+        GroupStorage::Owned {
+            columns: &[],
+            tables: &[OwnedTable {
+                table: RUNS_OWNED,
+                parent_column: "note_id",
+                order: OwnedOrder::Ordinal("sort_order"),
+                columns: &[
+                    ColumnSpec {
+                        name: "content",
+                        ty: ColumnType::Text {
+                            max_chars: MAX_BODY_CHARS,
+                        },
+                    },
+                    flag("bold"),
+                    flag("italic"),
+                    flag("underline"),
+                ],
+                references: &[],
+                unique: &[],
+                max_rows: MAX_RUNS,
+                codec: OwnedCodec::Custom,
+                nested: &[],
+                bound: OwnedBound::Static,
+            }],
+        },
         true,
     ),
     content(
@@ -171,7 +225,10 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
     content(
         note_group::TAG,
         "tag",
-        MergeKind::Reference { table: TAGS_TABLE },
+        MergeKind::Reference {
+            table: TAGS_TABLE,
+            on_delete: OnDelete::SetNull,
+        },
         GroupStorage::Columns(&[ColumnSpec {
             name: "tag_id",
             ty: ColumnType::OptionalRowKey,
@@ -204,12 +261,37 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
         note_group::IMAGES,
         "images",
         MergeKind::Register,
-        GroupStorage::Owned(OwnedTable {
-            table: "quick_note_images",
-            parent_column: "note_id",
-            order_column: "sort_order",
-            columns: &["sha256", "content_type", "byte_size", "width", "height"],
-        }),
+        GroupStorage::Owned {
+            columns: &[],
+            tables: &[OwnedTable {
+                table: IMAGES_OWNED,
+                parent_column: "note_id",
+                order: OwnedOrder::Ordinal("sort_order"),
+                columns: &[
+                    ColumnSpec {
+                        name: "sha256",
+                        ty: ColumnType::Text {
+                            max_chars: SHA256_HEX_CHARS,
+                        },
+                    },
+                    ColumnSpec {
+                        name: "content_type",
+                        ty: ColumnType::Text {
+                            max_chars: MAX_CONTENT_TYPE_CHARS,
+                        },
+                    },
+                    positive("byte_size", MAX_IMAGE_BYTES),
+                    positive("width", MAX_IMAGE_DIMENSION),
+                    positive("height", MAX_IMAGE_DIMENSION),
+                ],
+                references: &[],
+                unique: &[],
+                max_rows: MAX_IMAGES,
+                codec: OwnedCodec::Custom,
+                nested: &[],
+                bound: OwnedBound::Static,
+            }],
+        },
         true,
     ),
 ];
@@ -222,6 +304,8 @@ pub const TAGS: TableSpec = TableSpec {
     groups: &TAG_GROUPS,
     local_columns: &[],
     derived_columns: &[],
+    hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[Resolution::DuplicateRepair {
         columns: &["name"],
@@ -229,6 +313,14 @@ pub const TAGS: TableSpec = TableSpec {
     }],
     redirects: true,
     adapter: None,
+    triggers: &[],
+    derived_key: None,
+    tree: None,
+    acyclic: None,
+    publish_when: None,
+    published_with: None,
+    key_parent: None,
+    holds_deletes: false,
 };
 
 /// `quick_notes`.
@@ -237,8 +329,13 @@ pub const NOTES: TableSpec = TableSpec {
     name: "quick_notes",
     key_column: "id",
     groups: &NOTE_GROUPS,
-    local_columns: &["revision"],
+    local_columns: &[LocalColumn {
+        name: "revision",
+        materialize: "1",
+    }],
     derived_columns: &["body_plain_text"],
+    hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: Some("revision"),
     resolutions: &[Resolution::WithinGroup {
         columns: &["pinned", "archived", "trashed_at"],
@@ -246,4 +343,42 @@ pub const NOTES: TableSpec = TableSpec {
     }],
     redirects: false,
     adapter: Some(ADAPTER),
+    triggers: &[
+        search_trigger("quick_notes_search_delete"),
+        search_trigger("quick_notes_search_insert"),
+        search_trigger("quick_notes_search_update"),
+    ],
+    derived_key: None,
+    tree: None,
+    acyclic: None,
+    publish_when: None,
+    published_with: None,
+    key_parent: None,
+    holds_deletes: false,
+};
+
+/// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.
+const fn search_trigger(name: &'static str) -> DomainTrigger {
+    DomainTrigger {
+        name,
+        policy: TriggerPolicy::DerivedIndex,
+    }
+}
+
+/// Image files that note image lists reference.
+pub const IMAGES_CLASS: AssetClass = AssetClass {
+    name: "quick-notes/images",
+    max_bytes: MAX_IMAGE_BYTES,
+};
+
+/// The Quick notes domain.
+pub const DOMAIN: DomainManifest = DomainManifest {
+    name: DOMAIN_NAME,
+    table_ids: TableIdRange { first: 1, last: 15 },
+    tables: &[TAGS, NOTES],
+    derived: &["quick_notes_search_fts"],
+    local: &[],
+    engine: &[],
+    unconverted: &[],
+    assets: &[IMAGES_CLASS],
 };

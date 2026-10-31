@@ -60,7 +60,9 @@ ganbaru-chat-providers = { workspace = true }
 ganbaru-music-player = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+if-addrs = { workspace = true }
 keyring = { workspace = true }
+mdns-sd = { workspace = true }
 notify = { workspace = true }
 notify-rust = { workspace = true }
 portable-pty = { workspace = true }
@@ -76,6 +78,8 @@ ganbaru-mobile-documents = { workspace = true }
 ganbaru-mobile-distractions = { workspace = true }
 ganbaru-mobile-media = { workspace = true }
 ganbaru-mobile-notifications = { workspace = true }
+ganbaru-mobile-sync = { workspace = true }
+rustix = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
@@ -105,5 +109,7 @@ objc2-web-kit = { workspace = true }
 
 [dev-dependencies]
 ganbaru-chat = { workspace = true, features = ["test-support"] }
+ganbaru-db = { workspace = true, features = ["test-support"] }
 ganbaru-handoff = { workspace = true, features = ["test-support"] }
+ganbaru-sync-replica = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }

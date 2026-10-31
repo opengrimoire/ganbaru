@@ -113,6 +113,8 @@ pub async fn set_workspace_repository(
     require_updated(pool, id, result.rows_affected()).await
 }
 
+/// Archives or restores a working folder. The stored primary folder of its project cannot be
+/// archived; another folder must be promoted first.
 pub async fn set_workspace_archived(
     pool: &SqlitePool,
     id: &ProjectWorkingFolderId,
@@ -120,6 +122,11 @@ pub async fn set_workspace_archived(
     expected_revision: u64,
     now: &UtcTimestamp,
 ) -> ChatResult<ProjectWorkingFolder> {
+    if archived && is_stored_primary(pool, id).await? {
+        return Err(primary_folder_error(
+            "Promote another working folder before archiving the primary folder",
+        ));
+    }
     let result = sqlx::query(
         "UPDATE project_working_folders SET archived_at = ?, revision = revision + 1, updated_at = ?
          WHERE id = ? AND revision = ?",
@@ -134,28 +141,99 @@ pub async fn set_workspace_archived(
     require_updated(pool, id, result.rows_affected()).await
 }
 
+/// Removes an external working folder. Managed folders and the stored primary folder of the
+/// project cannot be removed.
 pub async fn remove_external_working_folder(
     pool: &SqlitePool,
     id: &ProjectWorkingFolderId,
 ) -> ChatResult<()> {
+    let folder = read_workspace(pool, id).await?;
+    if folder.kind == WorkingFolderKind::Managed {
+        return Err(ChatError::validation(
+            "workingFolderId",
+            "Managed project working folders cannot be removed",
+        ));
+    }
+    if is_stored_primary(pool, id).await? {
+        return Err(primary_folder_error(
+            "Promote another working folder before removing the primary folder",
+        ));
+    }
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if is_referenced_by_chat(&mut transaction, id).await? {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "Chat still references this working folder",
+            true,
+        ));
+    }
     let result =
         sqlx::query("DELETE FROM project_working_folders WHERE id = ? AND kind = 'external'")
             .bind(id.as_str())
-            .execute(pool)
+            .execute(&mut *transaction)
             .await
             .map_err(persistence_error)?;
-    if result.rows_affected() == 1 {
-        return Ok(());
+    if result.rows_affected() != 1 {
+        return Err(not_found_error());
     }
-    let folder = read_workspace(pool, id).await?;
-    Err(if folder.kind == WorkingFolderKind::Managed {
-        ChatError::validation(
-            "workingFolderId",
-            "Managed project working folders cannot be removed",
-        )
-    } else {
-        not_found_error()
-    })
+    transaction.commit().await.map_err(persistence_error)
+}
+
+/// Returns whether any Chat row that cascades with the folder references `id`.
+///
+/// Folder deletion cascades into Chat so that project deletion converges on every replica, so a
+/// local removal checks for references explicitly instead of relying on the foreign keys.
+/// Drafts and execution environments belong to the folder itself and do not count as use.
+async fn is_referenced_by_chat(
+    connection: &mut sqlx::SqliteConnection,
+    id: &ProjectWorkingFolderId,
+) -> ChatResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat_threads WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_agent_runs WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_attachments WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_resources WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_cleanup_jobs WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_assignment_authorization_revisions
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_assignment_authorized_folder_sources
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_scheduled_message_references
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_scratch_promotions
+                       WHERE destination_working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_teammate_working_folder_grants
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_working_folder_reference_targets
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_workspace_path_reference_targets
+                       WHERE working_folder_id = ?1)",
+    )
+    .bind(id.as_str())
+    .fetch_one(connection)
+    .await
+    .map_err(persistence_error)
+}
+
+/// Returns whether `id` is the stored primary folder of its own project.
+async fn is_stored_primary(pool: &SqlitePool, id: &ProjectWorkingFolderId) -> ChatResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM project_primary_working_folders primary_folder
+           JOIN project_working_folders folder
+             ON folder.id = primary_folder.working_folder_id
+            AND folder.project_id = primary_folder.project_id
+           WHERE folder.id = ?
+         )",
+    )
+    .bind(id.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)
+}
+
+fn primary_folder_error(message: &str) -> ChatError {
+    ChatError::new(ChatErrorCode::Conflict, message, true)
 }
 
 async fn require_updated(
@@ -267,3 +345,6 @@ fn corrupt_data_error() -> ChatError {
         false,
     )
 }
+
+#[cfg(test)]
+mod tests;

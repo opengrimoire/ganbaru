@@ -6,6 +6,9 @@
   import DistractionsMobileSettings from "./DistractionsMobileSettings.svelte";
   import DistractionsDesktopSettings from "./DistractionsDesktopSettings.svelte";
   import DistractionsLimitsSettings from "./DistractionsLimitsSettings.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import { distractionsEditProblemMessageKey } from "$lib/distractions";
+  import { getDistractions } from "$lib/stores/distractions.svelte";
 
   let {
     initialTab = "limits",
@@ -16,6 +19,7 @@
   } = $props();
 
   const { t } = getLocalization();
+  const distractions = getDistractions();
   const isAndroid = __GANBARU_BUILD_PLATFORM__ === "android";
 
   const tabs: ReadonlyArray<{
@@ -59,6 +63,16 @@
       </button>
     {/each}
   </div>
+
+  {#if distractions.editProblem}
+    <Notice
+      class="px-1 text-[0.8rem] leading-5"
+      tone="warning"
+      role="status"
+      copy={false}
+      message={t(distractionsEditProblemMessageKey(distractions.editProblem))}
+    />
+  {/if}
 
   {#if activeTab === "limits"}
     <DistractionsLimitsSettings {onOpenLimitEditor} />

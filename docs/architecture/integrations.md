@@ -18,7 +18,7 @@ A separately authorized MCP service for external clients is planned. It must not
 
 ## Browser extension
 
-The Chromium Manifest V3 extension communicates with a separate local native messaging host. It receives bounded blocker state, reports redacted events, and opens an extension-owned block page. The extension does not turn the browser into a general data bridge.
+The Chromium Manifest V3 extension communicates with a separate local native messaging host. It receives bounded blocker state, reports redacted events, and opens an extension-owned block page. The host never opens the vault; it writes redacted block events and usage to a device-local spool that the app ingests. The extension does not turn the browser into a general data bridge.
 
 Firefox support is planned behind the same product-level rule semantics. See [Distraction blocker](../features/distractions/README.md).
 
@@ -46,9 +46,9 @@ Loopback servers use random bearer tokens, bounded requests, narrow registries, 
 
 ## Device linking, sync, and collaboration
 
-Private-LAN device linking with single-writer whole-vault handoff is implemented between one person's desktop and Android devices. It uses pinned, paired transport and moves one validated complete vault; it is not concurrent sync.
+Private-LAN device linking is implemented between one person's desktop and Android devices. It uses pinned, paired transport, gives a newly linked device one validated complete vault copy, and then carries concurrent sync operations between the devices.
 
-Typed domain operations, Yrs/Yjs collaborative text, and an optional user-hosted Rust relay for encrypted records are planned, followed by multi-person collaboration. They are not current runtime dependencies. The future transport must preserve local canonical storage and enforce resource visibility for derived data as well as direct reads.
+Typed domain operations replicate most domains concurrently between linked devices. An optional user-hosted Rust relay for encrypted records is planned, followed by multi-person collaboration with Yrs/Yjs collaborative text. They are not current runtime dependencies. The future transport must preserve local canonical storage and enforce resource visibility for derived data as well as direct reads.
 
 See [Sync and collaboration](../data/sync.md).
 

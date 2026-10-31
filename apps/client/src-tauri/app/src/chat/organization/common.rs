@@ -1,16 +1,168 @@
 //! Shared validation, wire conversion, and identifier helpers.
 
-use super::super::channels::{identifier_error, persistence_error, u64_value};
+use super::super::channels::{identifier_error, persistence_error};
 use ganbaru_chat::coordination::contracts::*;
+pub(super) use ganbaru_chat::ids::new_id;
+use ganbaru_chat::ids::{REPLY_THREAD_ID_PREFIX, derived_id};
 use ganbaru_chat_contracts::models::*;
 use serde_json::Value;
 #[cfg(desktop)]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(super) const MAX_MESSAGE_BYTES: usize = 128 * 1024;
+pub(super) use ganbaru_chat::timeline::MAX_MESSAGE_MARKDOWN_BYTES as MAX_MESSAGE_BYTES;
+use ganbaru_chat::timeline::{MAX_ATTACHMENT_ID_CHARS, MAX_MESSAGE_ATTACHMENTS};
+
+/// Owner of attachment references copied by value from the device's attachment rows.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AttachmentReferenceOwner {
+    /// A message revision, through its replicated owned references.
+    Revision,
+    /// A scheduled message, through its device-local references.
+    ScheduledMessage,
+}
+
+impl AttachmentReferenceOwner {
+    fn insert_sql(self) -> &'static str {
+        match self {
+            Self::Revision => {
+                "INSERT INTO chat_communication_attachment_references
+                     (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+                      original_display_name, mime_type, byte_size, sha256)
+                 SELECT ?, ?, id, working_folder_id, kind, original_display_name, mime_type,
+                        byte_size, sha256
+                 FROM chat_attachments WHERE id = ?"
+            }
+            Self::ScheduledMessage => {
+                "INSERT INTO chat_scheduled_message_attachment_references
+                     (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                      original_display_name, mime_type, byte_size, sha256)
+                 SELECT ?, ?, id, working_folder_id, kind, original_display_name, mime_type,
+                        byte_size, sha256
+                 FROM chat_attachments WHERE id = ?"
+            }
+        }
+    }
+}
+
+/// Inserts the references of `owner_id` to `attachment_ids` in order, copying each attachment's
+/// working folder, kind, display name, content type, size, and digest from its row on this
+/// device so the reference stays readable without that row.
+///
+/// # Errors
+///
+/// Returns a validation error when an attachment does not exist on this device.
+pub(super) async fn insert_attachment_references(
+    connection: &mut sqlx::SqliteConnection,
+    owner: AttachmentReferenceOwner,
+    owner_id: &str,
+    attachment_ids: &[ChatAttachmentId],
+) -> ChatResult<()> {
+    for (ordinal, attachment_id) in attachment_ids.iter().enumerate() {
+        let inserted = sqlx::query(owner.insert_sql())
+            .bind(owner_id)
+            .bind(i64::try_from(ordinal).unwrap_or(i64::MAX))
+            .bind(attachment_id.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?
+            .rows_affected();
+        if inserted != 1 {
+            return Err(ChatError::validation(
+                "attachmentIds",
+                "Attachment was not found",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Where a posted revision takes its attachment references from.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AttachmentSource<'a> {
+    /// The device's attachment rows named by the request.
+    Device(&'a [ChatAttachmentId]),
+    /// The values a scheduled message stored, so a send needs no attachment row on this device.
+    Scheduled {
+        /// Scheduled message whose references are copied.
+        scheduled_message_id: &'a str,
+        /// Number of attachments the scheduled request names.
+        expected: usize,
+    },
+}
+
+/// Inserts the attachment references of the revision `revision_id` from `source`.
+///
+/// # Errors
+///
+/// Returns a validation error when a device attachment does not exist, or when the scheduled
+/// message holds a different number of attachment references than its request names.
+pub(super) async fn insert_revision_attachments(
+    connection: &mut sqlx::SqliteConnection,
+    revision_id: &str,
+    source: AttachmentSource<'_>,
+) -> ChatResult<()> {
+    match source {
+        AttachmentSource::Device(attachment_ids) => {
+            insert_attachment_references(
+                connection,
+                AttachmentReferenceOwner::Revision,
+                revision_id,
+                attachment_ids,
+            )
+            .await
+        }
+        AttachmentSource::Scheduled {
+            scheduled_message_id,
+            expected,
+        } => {
+            let inserted = sqlx::query(
+                "INSERT INTO chat_communication_attachment_references
+                     (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+                      original_display_name, mime_type, byte_size, sha256)
+                 SELECT ?, ordinal, attachment_id, working_folder_id, kind,
+                        original_display_name, mime_type, byte_size, sha256
+                 FROM chat_scheduled_message_attachment_references
+                 WHERE scheduled_message_id = ?
+                 ORDER BY ordinal",
+            )
+            .bind(revision_id)
+            .bind(scheduled_message_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?
+            .rows_affected();
+            if usize::try_from(inserted).ok() != Some(expected) {
+                return Err(ChatError::validation(
+                    "attachmentIds",
+                    "The scheduled message attachments are incomplete",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Active folder grants of one AI channel membership, bound to the conversation and teammate.
+///
+/// Concurrent edits on two devices can each leave a default grant after sync merges them, so
+/// only the default grant with the lowest working folder id reads as the default. Execution
+/// context selection breaks the tie the same way.
+pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
+        folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
+        (grant_row.is_default <> 0 AND NOT EXISTS (
+            SELECT 1 FROM chat_teammate_working_folder_grants other
+            WHERE other.conversation_id = grant_row.conversation_id
+              AND other.teammate_id = grant_row.teammate_id
+              AND other.revoked_at IS NULL AND other.is_default <> 0
+              AND other.working_folder_id < grant_row.working_folder_id
+        )) AS is_default,
+        grant_row.runtime_approval_policy, grant_row.revision, grant_row.revoked_at
+ FROM chat_teammate_working_folder_grants grant_row
+ JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
+ WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
+   AND grant_row.revoked_at IS NULL
+ ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
 
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {
     request.references.iter().any(|reference| {
@@ -74,7 +226,11 @@ pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> Chat
             "Message content exceeds the 128 KiB limit",
         ));
     }
-    json_object(&request.rich_content, "richContent")?;
+    if json_object(&request.rich_content, "richContent")?.len()
+        > ganbaru_chat::timeline::MAX_RICH_CONTENT_BYTES
+    {
+        return Err(ganbaru_chat::timeline::rich_content_too_large());
+    }
     let mut ranges = Vec::with_capacity(request.references.len());
     let mut reference_ids = BTreeSet::new();
     let mut semantic_targets = BTreeSet::new();
@@ -119,6 +275,22 @@ pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> Chat
         return Err(ChatError::validation(
             "references",
             "Inline reference ranges must not overlap",
+        ));
+    }
+    if request.attachment_ids.len() > MAX_MESSAGE_ATTACHMENTS {
+        return Err(ChatError::validation(
+            "attachmentIds",
+            "A message can carry at most 20 attachments",
+        ));
+    }
+    if request
+        .attachment_ids
+        .iter()
+        .any(|id| id.as_str().chars().count() > MAX_ATTACHMENT_ID_CHARS)
+    {
+        return Err(ChatError::validation(
+            "attachmentIds",
+            "Attachment ID is too long",
         ));
     }
     let mut attachments = BTreeSet::new();
@@ -200,16 +372,33 @@ pub(super) fn validate_profile_text(value: &str, maximum: usize, field: &str) ->
     Ok(())
 }
 
+/// Refuses a teammate name that another teammate, archived ones included, already uses, ignoring
+/// case and surrounding spaces.
+///
+/// The check covers the teammates this device holds. Devices that create or rename teammates
+/// concurrently can still end up with equal names, which readers tell apart by id.
 #[cfg(desktop)]
-pub(super) fn map_teammate_write_error(error: sqlx::Error) -> ChatError {
-    let detail = error.to_string();
-    if detail.contains("idx_chat_participants_teammate_display_name")
-        || detail.contains("chat_participants.display_name")
-    {
-        ChatError::validation("displayName", "Name already in use")
-    } else {
-        persistence_error(error)
+pub(super) async fn require_unused_teammate_name(
+    connection: &mut sqlx::SqliteConnection,
+    display_name: &str,
+    teammate_id: &str,
+) -> ChatResult<()> {
+    let in_use: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_participants
+           WHERE participant_kind = 'ai_teammate' AND id != ?
+             AND lower(trim(display_name)) = lower(trim(?))
+         )",
+    )
+    .bind(teammate_id)
+    .bind(display_name)
+    .fetch_one(connection)
+    .await
+    .map_err(persistence_error)?;
+    if in_use {
+        return Err(ChatError::validation("displayName", "Name already in use"));
     }
+    Ok(())
 }
 
 pub(super) fn json_object(value: &VersionedJson, field: &str) -> ChatResult<String> {
@@ -223,16 +412,59 @@ pub(super) fn parse_json(data: String) -> ChatResult<Value> {
     serde_json::from_str(&data).map_err(serialization_error)
 }
 
-pub(super) fn parse_cursor(cursor: Option<&str>) -> ChatResult<Option<i64>> {
+/// A timeline page cursor: a position `(order_key, item_id)` and whether the page includes it.
+///
+/// Cursors are `before:{order_key}:{item_id}` for pages that end just before the position and
+/// `through:{order_key}:{item_id}` for pages that end at it. Order keys never contain `:`, so
+/// the first `:` after the prefix ends the key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PageCursor {
+    pub(super) order_key: String,
+    pub(super) item_id: String,
+    pub(super) inclusive: bool,
+}
+
+const BEFORE_CURSOR_PREFIX: &str = "before:";
+const THROUGH_CURSOR_PREFIX: &str = "through:";
+
+impl PageCursor {
+    /// The cursor of a page that ends just before `(order_key, item_id)`.
+    pub(super) fn before(order_key: &str, item_id: &str) -> String {
+        format!("{BEFORE_CURSOR_PREFIX}{order_key}:{item_id}")
+    }
+
+    /// The cursor of a page that ends at `(order_key, item_id)`.
+    pub(super) fn through(order_key: &str, item_id: &str) -> String {
+        format!("{THROUGH_CURSOR_PREFIX}{order_key}:{item_id}")
+    }
+}
+
+pub(super) fn parse_cursor(cursor: Option<&str>) -> ChatResult<Option<PageCursor>> {
     cursor
         .map(|value| {
-            value
-                .parse::<i64>()
-                .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| ChatError::validation("cursor", "Chat page cursor is invalid"))
+            let (inclusive, position) = if let Some(rest) = value.strip_prefix(BEFORE_CURSOR_PREFIX)
+            {
+                (false, rest)
+            } else if let Some(rest) = value.strip_prefix(THROUGH_CURSOR_PREFIX) {
+                (true, rest)
+            } else {
+                return Err(invalid_cursor());
+            };
+            let (order_key, item_id) = position.split_once(':').ok_or_else(invalid_cursor)?;
+            if ganbaru_sync_contracts::OrderKey::parse(order_key).is_err() || item_id.is_empty() {
+                return Err(invalid_cursor());
+            }
+            Ok(PageCursor {
+                order_key: order_key.to_owned(),
+                item_id: item_id.to_owned(),
+                inclusive,
+            })
         })
         .transpose()
+}
+
+fn invalid_cursor() -> ChatError {
+    ChatError::validation("cursor", "Chat page cursor is invalid")
 }
 
 pub(super) fn normalized_fts_query(query: &str) -> ChatResult<String> {
@@ -262,20 +494,90 @@ fn safe_relative_path(path: &str) -> bool {
 }
 
 pub(super) fn conversation_item_id() -> ChatResult<ChatConversationItemId> {
-    ChatConversationItemId::new(new_id("conversation-item")).map_err(identifier_error)
+    ChatConversationItemId::new(new_id("conversation-item")?).map_err(identifier_error)
 }
 
 pub(super) fn message_revision_id() -> ChatResult<ChatMessageRevisionId> {
-    ChatMessageRevisionId::new(new_id("message-revision")).map_err(identifier_error)
+    ChatMessageRevisionId::new(new_id("message-revision")?).map_err(identifier_error)
 }
 
-pub(super) fn reply_thread_id() -> ChatResult<ChatReplyThreadId> {
-    ChatReplyThreadId::new(new_id("reply-thread")).map_err(identifier_error)
+/// Item and revision ids of one message a scheduled send posts, derived from the scheduled
+/// message so a repeated send names the same rows.
+pub(super) struct ScheduledPostIds {
+    /// The posted message item.
+    pub(super) item_id: ChatConversationItemId,
+    /// The posted message's first revision.
+    pub(super) revision_id: ChatMessageRevisionId,
 }
 
-#[cfg(desktop)]
-pub(super) fn work_assignment_id() -> ChatResult<ChatWorkAssignmentId> {
-    ChatWorkAssignmentId::new(new_id("assignment")).map_err(identifier_error)
+/// Which message of a scheduled send an id names.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ScheduledPostTarget {
+    /// The message posted where the scheduled message was written.
+    Message,
+    /// The channel copy of a reply that is also sent to the channel.
+    ChannelCopy,
+}
+
+/// Returns the derived ids of a scheduled send's message or channel copy.
+pub(super) fn scheduled_post_ids(
+    scheduled_message_id: &str,
+    target: ScheduledPostTarget,
+) -> ChatResult<ScheduledPostIds> {
+    let role = match target {
+        ScheduledPostTarget::Message => "scheduled",
+        ScheduledPostTarget::ChannelCopy => "scheduled-channel-copy",
+    };
+    Ok(ScheduledPostIds {
+        item_id: ChatConversationItemId::new(derived_id(
+            "conversation-item",
+            &[role, scheduled_message_id],
+        )?)
+        .map_err(identifier_error)?,
+        revision_id: ChatMessageRevisionId::new(derived_id(
+            "message-revision",
+            &[role, scheduled_message_id],
+        )?)
+        .map_err(identifier_error)?,
+    })
+}
+
+/// Returns the reply thread id derived from its root item, so every device that opens the thread
+/// for the same root message agrees on its id.
+pub(super) fn reply_thread_id(
+    root_item_id: &ChatConversationItemId,
+) -> ChatResult<ChatReplyThreadId> {
+    ChatReplyThreadId::new(derived_id(
+        REPLY_THREAD_ID_PREFIX,
+        &[root_item_id.as_str()],
+    )?)
+    .map_err(identifier_error)
+}
+
+/// Returns the work assignment input id derived from its message, so one message routes to at
+/// most one input whichever device writes it.
+pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
+    derived_id(
+        ganbaru_chat::ids::ASSIGNMENT_INPUT_ID_PREFIX,
+        &[message_item_id],
+    )
+}
+
+/// Returns the work assignment id derived from its triggering message, its teammate, and the
+/// assignment it follows, so concurrent Starts of one mention on two devices write one
+/// assignment that sync merges instead of two that both run.
+pub(super) fn work_assignment_id(
+    message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+    previous_assignment_id: Option<&ChatWorkAssignmentId>,
+) -> ChatResult<ChatWorkAssignmentId> {
+    let mut parts = vec![message_item_id.as_str(), teammate_id.as_str()];
+    parts.extend(previous_assignment_id.map(ChatWorkAssignmentId::as_str));
+    ChatWorkAssignmentId::new(derived_id(
+        ganbaru_chat::ids::WORK_ASSIGNMENT_ID_PREFIX,
+        &parts,
+    )?)
+    .map_err(identifier_error)
 }
 
 pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantKind> {
@@ -339,15 +641,24 @@ pub(super) fn wire_folder_capability(value: ChatFolderCapability) -> &'static st
     }
 }
 
+/// Order key a `from_grant` history boundary stamps when it is granted now: the first root
+/// position after the conversation's last root item, so only later root items are visible.
+pub(super) async fn from_grant_lower_order_key(
+    connection: &mut sqlx::SqliteConnection,
+    conversation_id: &str,
+) -> ChatResult<String> {
+    let last_key =
+        ganbaru_chat::timeline::last_order_key(connection, conversation_id, None).await?;
+    ganbaru_chat::timeline::order_key_after(last_key.as_deref())
+}
+
 pub(super) fn parse_history_boundary(
     kind: &str,
-    lower_ordinal: Option<i64>,
+    lower_order_key: Option<String>,
 ) -> ChatResult<ChatHistoryBoundary> {
     match kind {
-        "entire" if lower_ordinal.is_none() => Ok(ChatHistoryBoundary::Entire),
-        "from_grant" => Ok(ChatHistoryBoundary::FromGrant {
-            lower_ordinal: lower_ordinal.map(u64_value).transpose()?,
-        }),
+        "entire" if lower_order_key.is_none() => Ok(ChatHistoryBoundary::Entire),
+        "from_grant" => Ok(ChatHistoryBoundary::FromGrant { lower_order_key }),
         _ => Err(stored_value_error("history boundary")),
     }
 }
@@ -355,35 +666,42 @@ pub(super) fn parse_history_boundary(
 /// Channel history one teammate membership may read, resolved from the
 /// membership and its access profile revision.
 ///
-/// Positions are top-level channel ordinals. A reply thread sits at its root's
-/// position, because reply ordinals count within their thread.
+/// Positions are root timeline order keys. A reply thread sits at its root's
+/// position, because reply order keys count within their thread.
 #[cfg(desktop)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TeammateHistoryAccess {
-    visible_from: Option<u64>,
+    visible_from: Option<String>,
 }
 
 #[cfg(desktop)]
 impl TeammateHistoryAccess {
     /// Resolves effective history access. A `from_grant` boundary without a
-    /// lower ordinal admits nothing.
-    pub(super) fn resolve(read_history: bool, from_grant: bool, from_ordinal: Option<u64>) -> Self {
+    /// lower order key admits nothing; entire history starts at the empty key,
+    /// which sorts before every order key.
+    pub(super) fn resolve(
+        read_history: bool,
+        from_grant: bool,
+        from_order_key: Option<String>,
+    ) -> Self {
         let visible_from = match (read_history, from_grant) {
             (false, _) => None,
-            (true, true) => from_ordinal,
-            (true, false) => Some(1),
+            (true, true) => from_order_key,
+            (true, false) => Some(String::new()),
         };
         Self { visible_from }
     }
 
-    /// Returns the lowest readable position, or `None` when no history is readable.
-    pub(super) fn visible_from(self) -> Option<u64> {
-        self.visible_from
+    /// Returns the lowest readable order key, or `None` when no history is readable.
+    pub(super) fn visible_from(&self) -> Option<&str> {
+        self.visible_from.as_deref()
     }
 
-    /// Returns whether the message or reply thread at `position` is readable.
-    pub(super) fn admits_position(self, position: u64) -> bool {
-        self.visible_from.is_some_and(|lower| lower <= position)
+    /// Returns whether the message or reply thread at `order_key` is readable.
+    pub(super) fn admits_position(&self, order_key: &str) -> bool {
+        self.visible_from
+            .as_deref()
+            .is_some_and(|lower| lower <= order_key)
     }
 }
 
@@ -550,22 +868,56 @@ fn stored_value_error(label: &str) -> ChatError {
     )
 }
 
-pub(super) fn new_id(prefix: &str) -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}:{nanos:032x}{sequence:016x}")
-}
-
 pub(super) fn serialization_error<E>(_error: E) -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
         "Chat JSON data is invalid",
         false,
     )
+}
+
+/// The stable id of this device, which decides where assignments and scheduled messages run.
+pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> ChatResult<String> {
+    crate::sync::devices::stable_device_id(app).map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            "This device's identity is unavailable",
+            true,
+        )
+    })
+}
+
+/// The devices that can write Chat in the active vault of `pool`: this device and the linked
+/// devices with an active sync writer, so work another linked device executes is not taken for
+/// stranded.
+pub(super) async fn chat_writers<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &sqlx::SqlitePool,
+) -> ChatResult<super::workflow::ChatWriters> {
+    let device_id = this_device_id(app)?;
+    let linked = active_writer_devices(pool).await?;
+    Ok(super::workflow::ChatWriters::new(
+        std::iter::once(device_id).chain(linked),
+    ))
+}
+
+/// The devices with an active sync writer in the vault of `pool` that the authorization log
+/// has not removed. An unlinked device's writer is revoked or carries a removal cutoff, so it
+/// is not listed.
+pub(super) async fn active_writer_devices(pool: &sqlx::SqlitePool) -> ChatResult<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT writer.device_id FROM sync_writers writer
+         WHERE writer.state = 'active' AND writer.removal_cutoff_seq IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM sync_devices device
+             WHERE device.space_id = writer.space_id AND device.device_id = writer.device_id
+               AND device.removed_revision IS NOT NULL
+           )
+         ORDER BY writer.device_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)
 }
 
 pub(super) fn map_command_receipt_error(error: sqlx::Error) -> ChatError {

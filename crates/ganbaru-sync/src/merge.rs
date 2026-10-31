@@ -8,16 +8,22 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Digest32, Field, GroupId, GroupMask, GroupValue, Hlc, RevokeReason, Seq,
-    SpaceId, TableId, Value, VersionVector, WriterId,
+    Change, ChangeAction, Digest32, Field, GroupId, GroupMask, GroupValue, Hlc, Seq, SpaceId,
+    TableId, Value, VersionVector, WriterId,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::Engine;
+use crate::codec;
 use crate::error::{SyncResult, corrupt};
+use crate::exclusion;
+use crate::hydrate;
 use crate::log::{self, ContextCache, seq_i64, stored_u64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
+use crate::materialize;
+use crate::recovery;
+use crate::visibility::Visibility;
 
 /// Merge state of a published row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,10 +43,38 @@ pub(crate) struct Version {
     pub(crate) clock: Hlc,
     pub(crate) hash: Digest32,
     pub(crate) value: Value,
+    /// Whether the stored value is elided and `value` was read back, see [`crate::hydrate`].
+    pub(crate) elided: bool,
+}
+
+/// One retained version as stored, without a value when it is elided.
+#[derive(Debug, Clone)]
+pub(crate) struct Stored {
+    pub(crate) group: GroupId,
+    pub(crate) writer: WriterId,
+    pub(crate) seq: Seq,
+    pub(crate) clock: Hlc,
+    pub(crate) hash: Digest32,
+    pub(crate) value: Option<Value>,
+}
+
+impl Stored {
+    /// The version with its value.
+    pub(crate) fn into_version(self, value: Value, elided: bool) -> Version {
+        Version {
+            group: self.group,
+            writer: self.writer,
+            seq: self.seq,
+            clock: self.clock,
+            hash: self.hash,
+            value,
+            elided,
+        }
+    }
 }
 
 /// Mutable state of one engine transaction.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Batch {
     pub(crate) space: SpaceId,
     /// Applied sequence per writer. `sync_writers.applied_seq` matches it except while an
@@ -49,6 +83,16 @@ pub(crate) struct Batch {
     pub(crate) contexts: ContextCache,
     /// Rows whose merge state changed and must be refreshed and materialized.
     pub(crate) dirty: BTreeSet<(TableId, String)>,
+    /// Dirty rows whose merge state an exclusion dropped because no remaining operation wrote
+    /// them. They materialize absent.
+    pub(crate) orphaned: BTreeSet<(TableId, String)>,
+    /// Groups the anchor seals again with their current values once the call materialized,
+    /// because a fork or removal excluded stored operations that wrote them.
+    pub(crate) republish: BTreeMap<(TableId, String), GroupMask>,
+    /// Groups a former or current anchor seals again because an exclusion removes operations
+    /// it applied as anchor, which released what they displaced. They are captured before the
+    /// call materializes, while the domain rows still hold the values those operations wrote.
+    pub(crate) released: BTreeMap<(TableId, String), GroupMask>,
 }
 
 impl Batch {
@@ -58,6 +102,9 @@ impl Batch {
             applied: log::applied_vector(conn, space).await?,
             contexts: ContextCache::default(),
             dirty: BTreeSet::new(),
+            orphaned: BTreeSet::new(),
+            republish: BTreeMap::new(),
+            released: BTreeMap::new(),
         })
     }
 }
@@ -102,12 +149,92 @@ pub(crate) fn parse_row_state(state: Option<&str>) -> SyncResult<Option<RowState
     }
 }
 
-/// Retained versions of a row, ordered by group and writer.
+/// Records that operation `seq` of `writer` created a row, which no longer waits for a
+/// creation. A `fresh` row got its merge state from this creation, so it never waited.
+async fn record_creation(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    writer: WriterId,
+    seq: Seq,
+    fresh: bool,
+) -> SyncResult<()> {
+    sqlx::query(
+        "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq) VALUES (?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq)?)
+    .execute(&mut *conn)
+    .await?;
+    if fresh {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE sync_rows SET creation_pending = 0
+         WHERE table_id = ? AND row_key = ? AND creation_pending = 1",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Adds merge state for a row no operation this replica applied created, so changes from an
+/// operation that saw it created on an excluded forked branch apply and stay hidden until an
+/// operation creates the row.
+pub(crate) async fn defer_creation(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<()> {
+    sqlx::query(
+        "INSERT INTO sync_rows (table_id, row_key, state, creation_pending) VALUES (?, ?, 'live', 1)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Marks the rows of `rows` that kept merge state but lost every creation as waiting for one.
+pub(crate) async fn mark_uncreated(
+    conn: &mut SqliteConnection,
+    rows: &BTreeSet<(TableId, String)>,
+) -> SyncResult<()> {
+    for (table, key) in rows {
+        sqlx::query(
+            "UPDATE sync_rows SET creation_pending = 1
+             WHERE table_id = ?1 AND row_key = ?2
+                AND NOT EXISTS (
+                    SELECT 1 FROM sync_row_creations c
+                    WHERE c.table_id = ?1 AND c.row_key = ?2
+                )",
+        )
+        .bind(table_param(*table))
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Retained versions of a row with elided values read back, ordered by group and writer.
 pub(crate) async fn versions(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     table: TableId,
     key: &str,
 ) -> SyncResult<Vec<Version>> {
+    let spec = engine
+        .manifest()
+        .table(table)
+        .ok_or_else(|| corrupt("versions of an unknown table"))?;
     let rows = sqlx::query(
         "SELECT group_id, writer_id, seq, clock, value_hash, value FROM sync_register_versions
          WHERE table_id = ? AND row_key = ? ORDER BY group_id, writer_id",
@@ -116,22 +243,40 @@ pub(crate) async fn versions(
     .bind(key)
     .fetch_all(&mut *conn)
     .await?;
-    rows.iter().map(|row| version_from_row(row, 0)).collect()
+    let stored = rows
+        .iter()
+        .map(|row| stored_from_row(row, 0))
+        .collect::<SyncResult<Vec<_>>>()?;
+    hydrate::row(engine, conn, spec, key, stored).await
 }
 
-/// A version from the columns `group_id, writer_id, seq, clock, value_hash, value` at `offset`.
-pub(crate) fn version_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Version> {
+/// A stored version from the columns `group_id, writer_id, seq, clock, value_hash, value` at
+/// `offset`.
+pub(crate) fn stored_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Stored> {
     let writer: Vec<u8> = row.try_get(offset + 1)?;
     let hash: Vec<u8> = row.try_get(offset + 4)?;
-    let value: Vec<u8> = row.try_get(offset + 5)?;
-    Ok(Version {
+    let value: Option<Vec<u8>> = row.try_get(offset + 5)?;
+    Ok(Stored {
         group: group_id(row.try_get(offset)?)?,
         writer: log::writer_id(&writer)?,
         seq: stored_u64(row.try_get(offset + 2)?, "version sequence")?,
         clock: Hlc::from_u64(stored_u64(row.try_get(offset + 3)?, "version clock")?),
         hash: log::digest(&hash)?,
-        value: Value::decode(&value).map_err(|_| corrupt("stored value does not decode"))?,
+        value: value
+            .map(|value| Value::decode(&value).map_err(|_| corrupt("stored value does not decode")))
+            .transpose()?,
     })
+}
+
+/// A version of a group read across its whole table, whose winners are never elided, from the
+/// columns [`stored_from_row`] reads.
+pub(crate) fn version_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Version> {
+    let stored = stored_from_row(row, offset)?;
+    let value = stored
+        .value
+        .clone()
+        .ok_or_else(|| corrupt("a group read across its table has an elided value"))?;
+    Ok(stored.into_version(value, false))
 }
 
 fn field_rank(field: &Field) -> u8 {
@@ -217,7 +362,94 @@ pub(crate) fn winners<'v>(
         .collect()
 }
 
-/// Records one change of an applied operation in the merge state.
+/// Keeps a version an operation supersedes, with its value read back, until the anchor
+/// confirms storing the operation.
+async fn displace(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+    stored: Stored,
+    writer: WriterId,
+    seq: Seq,
+) -> SyncResult<()> {
+    let value = match stored.value {
+        Some(value) => value,
+        None => {
+            hydrate::elided_value(
+                engine,
+                conn,
+                table,
+                key,
+                stored.group,
+                stored.writer,
+                stored.seq,
+                &stored.hash,
+            )
+            .await?
+        }
+    };
+    sqlx::query(
+        "INSERT INTO sync_displaced_versions
+            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value,
+             displaced_by_writer, displaced_by_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(table_param(table.id))
+    .bind(key)
+    .bind(i64::from(stored.group.get()))
+    .bind(stored.writer.as_bytes().as_slice())
+    .bind(seq_i64(stored.seq)?)
+    .bind(log::clamp_ms(stored.clock.as_u64()))
+    .bind(stored.hash.as_slice())
+    .bind(value.encode())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq)?)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Puts back a version a removal exclusion restored, with its reference targets.
+pub(crate) async fn restore_version(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+    stored: &Stored,
+    value: Value,
+) -> SyncResult<()> {
+    let spec = table
+        .group(stored.group)
+        .ok_or_else(|| corrupt("restored version of an unknown group"))?;
+    sqlx::query(
+        "INSERT INTO sync_register_versions
+            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (table_id, row_key, group_id, writer_id) DO UPDATE SET
+            seq = excluded.seq, clock = excluded.clock, value_hash = excluded.value_hash,
+            value = excluded.value",
+    )
+    .bind(table_param(table.id))
+    .bind(key)
+    .bind(i64::from(stored.group.get()))
+    .bind(stored.writer.as_bytes().as_slice())
+    .bind(seq_i64(stored.seq)?)
+    .bind(log::clamp_ms(stored.clock.as_u64()))
+    .bind(stored.hash.as_slice())
+    .bind(value.encode())
+    .execute(&mut *conn)
+    .await?;
+    let group = GroupValue {
+        group: stored.group,
+        hash: stored.hash,
+        value,
+    };
+    replace_version_refs(conn, table.id, key, stored.writer, &[(&group, spec)], false).await
+}
+
+/// Records one change of an applied operation in the merge state. With `retain`, the versions
+/// it supersedes are kept as displaced until the anchor confirms storing the operation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_change(
     conn: &mut SqliteConnection,
@@ -228,6 +460,7 @@ pub(crate) async fn apply_change(
     context: &VersionVector,
     table: &TableSpec,
     change: &Change,
+    retain: Option<&Engine>,
 ) -> SyncResult<()> {
     let key = change.row.as_str();
     // Register versions reference their row, so a row created here has none to supersede.
@@ -244,19 +477,34 @@ pub(crate) async fn apply_change(
             == 1
     } else if row_state(conn, change.table, key).await?.is_some() {
         false
+    } else if exclusion::created_late(conn, change.table, key).await? {
+        // An honest operation that saw a late create of a removed device writes the row, which
+        // stays hidden as a late change until an admin restores it.
+        sqlx::query("INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')")
+            .bind(table_param(change.table))
+            .bind(key)
+            .execute(&mut *conn)
+            .await?;
+        false
     } else {
         return Err(corrupt("change for an unpublished row reached apply"));
     };
+    if change.action == ChangeAction::Create {
+        record_creation(conn, change.table, key, writer, seq, created).await?;
+    }
     if change.action == ChangeAction::Tombstone {
         sqlx::query(
-            "INSERT INTO sync_tombstones (table_id, row_key, writer_id, seq, replaced_by)
-             VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO sync_tombstones
+                (table_id, row_key, writer_id, seq, replaced_by, cause_table, cause_row)
+             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(table_param(change.table))
         .bind(key)
         .bind(writer.as_bytes().as_slice())
         .bind(seq_i64(seq)?)
         .bind(change.replaced_by.as_ref().map(|target| target.as_str()))
+        .bind(change.cause.as_ref().map(|cause| table_param(cause.table)))
+        .bind(change.cause.as_ref().map(|cause| cause.row.as_str()))
         .execute(&mut *conn)
         .await?;
         sqlx::query(
@@ -277,19 +525,25 @@ pub(crate) async fn apply_change(
             Vec::new()
         } else {
             sqlx::query(
-                "SELECT writer_id, seq FROM sync_register_versions
+                "SELECT group_id, writer_id, seq, clock, value_hash,
+                    CASE WHEN ? THEN value END
+                 FROM sync_register_versions
                  WHERE table_id = ? AND row_key = ? AND group_id = ?",
             )
+            .bind(retain.is_some())
             .bind(table_param(change.table))
             .bind(key)
             .bind(i64::from(group.group.get()))
             .fetch_all(&mut *conn)
             .await?
         };
+        let mut superseded = false;
         for row in existing {
-            let other: Vec<u8> = row.try_get(0)?;
-            let other_seq = stored_u64(row.try_get(1)?, "version sequence")?;
-            if context.covers(&log::writer_id(&other)?, other_seq) {
+            let other = stored_from_row(&row, 0)?;
+            if context.covers(&other.writer, other.seq) {
+                if let Some(engine) = retain {
+                    displace(engine, conn, table, key, other.clone(), writer, seq).await?;
+                }
                 sqlx::query(
                     "DELETE FROM sync_register_versions
                      WHERE table_id = ? AND row_key = ? AND group_id = ? AND writer_id = ?",
@@ -297,49 +551,60 @@ pub(crate) async fn apply_change(
                 .bind(table_param(change.table))
                 .bind(key)
                 .bind(i64::from(group.group.get()))
-                .bind(other.as_slice())
+                .bind(other.writer.as_bytes().as_slice())
                 .execute(&mut *conn)
                 .await?;
+            } else if (other.writer == writer && other.seq > seq)
+                || (other.clock > clock
+                    && batch
+                        .contexts
+                        .get(conn, batch.space, other.writer, other.seq)
+                        .await?
+                        .covers(&writer, seq))
+            {
+                // An operation applied again after an exclusion was lifted never replaces a
+                // version that saw it or a later version of its own writer.
+                superseded = true;
             }
         }
-        let reference = match (spec.kind, group.value.fields()) {
-            (MergeKind::Reference { .. }, [Field::Text(target)]) => Some(target.as_str()),
-            _ => None,
-        };
-        upserts.push((group, reference));
+        if !superseded {
+            upserts.push((group, spec));
+        }
     }
-    upsert_versions(conn, change, writer, seq, clock, &upserts).await?;
+    upsert_versions(conn, change, writer, seq, clock, &upserts, created).await?;
     batch.dirty.insert((change.table, key.to_string()));
     Ok(())
 }
 
-/// Records the versions a change writes in one statement, with their reference targets.
+/// Records the versions a change writes in one statement, then replaces their reference
+/// targets. A `fresh` row got its merge state from this change.
 async fn upsert_versions(
     conn: &mut SqliteConnection,
     change: &Change,
     writer: WriterId,
     seq: Seq,
     clock: Hlc,
-    upserts: &[(&GroupValue, Option<&str>)],
+    upserts: &[(&GroupValue, &GroupSpec)],
+    fresh: bool,
 ) -> SyncResult<()> {
     if upserts.is_empty() {
         return Ok(());
     }
-    let rows = vec!["(?, ?, ?, ?, ?, ?, ?, ?, ?)"; upserts.len()].join(", ");
+    let rows = vec!["(?, ?, ?, ?, ?, ?, ?, ?)"; upserts.len()].join(", ");
     // A change carries at most one value per group, so the distinct statements stay bounded
     // by the largest group count of the manifest.
     let sql = format!(
         "INSERT INTO sync_register_versions
-            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value, ref_key)
+            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
          VALUES {rows}
          ON CONFLICT (table_id, row_key, group_id, writer_id) DO UPDATE SET
             seq = excluded.seq, clock = excluded.clock, value_hash = excluded.value_hash,
-            value = excluded.value, ref_key = excluded.ref_key"
+            value = excluded.value"
     );
     let seq = seq_i64(seq)?;
     let clock = log::clamp_ms(clock.as_u64());
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-    for (group, reference) in upserts {
+    for (group, _) in upserts {
         query = query
             .bind(table_param(change.table))
             .bind(change.row.as_str())
@@ -348,8 +613,87 @@ async fn upsert_versions(
             .bind(seq)
             .bind(clock)
             .bind(group.hash.as_slice())
-            .bind(group.value.encode())
-            .bind(*reference);
+            .bind(group.value.encode());
+    }
+    query.execute(&mut *conn).await?;
+    replace_version_refs(
+        conn,
+        change.table,
+        change.row.as_str(),
+        writer,
+        upserts,
+        fresh,
+    )
+    .await
+}
+
+/// Replaces the reference targets of the versions a change wrote: one row per reference column
+/// holding a row key, and one per distinct key the owned rows of a blob field reference. A
+/// `fresh` row got its merge state from this change, so it has no targets to replace.
+async fn replace_version_refs(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    row: &str,
+    writer: WriterId,
+    upserts: &[(&GroupValue, &GroupSpec)],
+    fresh: bool,
+) -> SyncResult<()> {
+    let referencing = upserts
+        .iter()
+        .filter(|(_, spec)| {
+            spec.reference_columns().next().is_some() || spec.owned_references().next().is_some()
+        })
+        .collect::<Vec<_>>();
+    if referencing.is_empty() {
+        return Ok(());
+    }
+    if !fresh {
+        let groups = vec!["?"; referencing.len()].join(", ");
+        let sql = format!(
+            "DELETE FROM sync_version_refs
+             WHERE table_id = ? AND row_key = ? AND writer_id = ? AND group_id IN ({groups})"
+        );
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(table_param(table))
+            .bind(row)
+            .bind(writer.as_bytes().as_slice());
+        for (group, _) in &referencing {
+            query = query.bind(i64::from(group.group.get()));
+        }
+        query.execute(&mut *conn).await?;
+    }
+
+    let mut targets = BTreeSet::new();
+    for (group, spec) in &referencing {
+        for (field, _) in spec.reference_columns() {
+            if let Some(Field::Text(target)) = group.value.fields().get(field) {
+                targets.insert((group.group, field, target.clone()));
+            }
+        }
+        let owned = codec::owned_targets(spec, &group.value)
+            .map_err(|error| corrupt(format!("stored owned value: {error}")))?;
+        for (field, _, target) in owned {
+            targets.insert((group.group, field, target));
+        }
+    }
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let rows = vec!["(?, ?, ?, ?, ?, ?)"; targets.len()].join(", ");
+    let sql = format!(
+        "INSERT INTO sync_version_refs (table_id, row_key, group_id, writer_id, field, ref_key)
+         VALUES {rows}"
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+    for (group, field, target) in targets {
+        let field = i64::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
+        query = query
+            .bind(table_param(table))
+            .bind(row)
+            .bind(i64::from(group.get()))
+            .bind(writer.as_bytes().as_slice())
+            .bind(field)
+            .bind(target);
     }
     query.execute(&mut *conn).await?;
     Ok(())
@@ -358,15 +702,21 @@ async fn upsert_versions(
 /// Merge state and retained versions of published rows, keyed by table and row.
 pub(crate) type MergedRows = BTreeMap<(TableId, String), (RowState, Vec<Version>)>;
 
-/// Recomputes the conflict mask of live rows and the recovery flag of tombstoned rows.
-/// Returns the merge state it read for each dirty published row.
+/// Recomputes the conflict mask of live rows and the recovery flag of tombstoned rows,
+/// including the deleted roots of dirty live rows hidden by cascade. A dirty live row missing
+/// from its domain table may have left the group of the root it was hidden under, which is not
+/// known after the change, so every flagged row is then recomputed as well. Returns the merge
+/// state it read for each dirty published row.
 pub(crate) async fn refresh_flags(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
+    visibility: &mut Visibility,
 ) -> SyncResult<MergedRows> {
     let dirty: Vec<(TableId, String)> = batch.dirty.iter().cloned().collect();
     let mut merged = MergedRows::new();
+    let mut roots = BTreeSet::new();
+    let mut recheck_flagged = false;
     for (table_id, key) in dirty {
         let Some(table) = engine.manifest().table(table_id) else {
             return Err(corrupt("dirty row of an unknown table"));
@@ -396,43 +746,81 @@ pub(crate) async fn refresh_flags(
             stored.try_get::<i64, _>(1)?,
             stored.try_get::<i64, _>(2)? != 0,
         );
-        let versions = rows
+        let stored = rows
             .iter()
             .filter_map(|row| match row.try_get::<Option<i64>, _>(3) {
-                Ok(Some(_)) => Some(version_from_row(row, 3)),
+                Ok(Some(_)) => Some(stored_from_row(row, 3)),
                 Ok(None) => None,
                 Err(error) => Some(Err(error.into())),
             })
             .collect::<SyncResult<Vec<_>>>()?;
-        let (conflict_mask, recovery) = match state {
-            RowState::Live => (conflict_mask(table, &versions), false),
-            RowState::Tombstoned => {
-                let covering = tombstone_contexts(conn, batch, table_id, &key).await?;
-                let recovery = versions.iter().any(|version| {
-                    table
-                        .group(version.group)
-                        .is_some_and(|group| group.recoverable)
-                        && !covering
-                            .iter()
-                            .any(|context| context.covers(&version.writer, version.seq))
-                });
-                (GroupMask::EMPTY, recovery)
+        let versions = hydrate::row(engine, conn, table, &key, stored).await?;
+        let flags = match state {
+            RowState::Live => {
+                if let Some(root) =
+                    recovery::flag_root(engine, conn, visibility, table_id, &key).await?
+                {
+                    roots.insert(root);
+                }
+                // The domain table still holds the state before this batch materializes.
+                if !recheck_flagged && !materialize::domain_exists(conn, table, &key).await? {
+                    recheck_flagged = true;
+                }
+                let mut mask = conflict_mask(table, &versions);
+                // A severed edge surfaces as a conflict of its existence group.
+                if let Some(exists) = table
+                    .exists_group()
+                    .filter(|_| visibility.is_severed(table_id, &key))
+                {
+                    mask.insert(exists.id);
+                }
+                (mask, false)
             }
+            RowState::Tombstoned => (
+                GroupMask::EMPTY,
+                recovery::flagged(engine, conn, batch, visibility, table_id, &key).await?,
+            ),
         };
-        if stored_flags != (mask_param(conflict_mask), recovery) {
-            sqlx::query(
-                "UPDATE sync_rows SET conflict_mask = ?, recovery = ? WHERE table_id = ? AND row_key = ?",
-            )
-            .bind(mask_param(conflict_mask))
-            .bind(i64::from(recovery))
-            .bind(table_param(table_id))
-            .bind(&key)
-            .execute(&mut *conn)
-            .await?;
+        if stored_flags != (mask_param(flags.0), flags.1) {
+            store_flags(conn, table_id, &key, flags).await?;
         }
         merged.insert((table_id, key), (state, versions));
     }
+    if recheck_flagged {
+        roots.extend(recovery::flagged_rows(conn).await?);
+    }
+    for (table_id, key) in roots {
+        if merged.contains_key(&(table_id, key.clone())) {
+            continue;
+        }
+        let recovery = recovery::flagged(engine, conn, batch, visibility, table_id, &key).await?;
+        store_flags(conn, table_id, &key, (GroupMask::EMPTY, recovery)).await?;
+    }
     Ok(merged)
+}
+
+/// Stores the conflict mask and recovery flag of a published row.
+async fn store_flags(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    (conflict_mask, recovery): (GroupMask, bool),
+) -> SyncResult<()> {
+    sqlx::query(
+        "UPDATE sync_rows SET conflict_mask = ?, recovery = ? WHERE table_id = ? AND row_key = ?",
+    )
+    .bind(mask_param(conflict_mask))
+    .bind(i64::from(recovery))
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Whether an existence register value records a removal.
+pub(crate) fn is_removal(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| value.fields() == [Field::Integer(0)])
 }
 
 /// Surfaced groups whose retained versions hold two or more distinct values.
@@ -449,84 +837,4 @@ pub(crate) fn conflict_mask(table: &TableSpec, versions: &[Version]) -> GroupMas
         }
     }
     mask
-}
-
-/// Causal contexts of the operations that tombstoned a row.
-pub(crate) async fn tombstone_contexts(
-    conn: &mut SqliteConnection,
-    batch: &mut Batch,
-    table: TableId,
-    key: &str,
-) -> SyncResult<Vec<VersionVector>> {
-    let rows = sqlx::query(
-        "SELECT writer_id, seq FROM sync_tombstones WHERE table_id = ? AND row_key = ?",
-    )
-    .bind(table_param(table))
-    .bind(key)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut contexts = Vec::with_capacity(rows.len());
-    for row in rows {
-        let writer: Vec<u8> = row.try_get(0)?;
-        let writer = log::writer_id(&writer)?;
-        let seq = stored_u64(row.try_get(1)?, "tombstone sequence")?;
-        let mut context = batch
-            .contexts
-            .get(conn, batch.space, writer, seq)
-            .await?
-            .clone();
-        // The tombstoning operation covers its own writer's versions up to itself.
-        context.advance(writer, seq);
-        contexts.push(context);
-    }
-    Ok(contexts)
-}
-
-/// Whether a version is retained by a tombstoned row and covered by none of its tombstones.
-pub(crate) fn uncovered(version: &Version, covering: &[VersionVector]) -> bool {
-    !covering
-        .iter()
-        .any(|context| context.covers(&version.writer, version.seq))
-}
-
-/// Records a revocation of `target`: its cutoff only lowers, a fork marking is kept, and its
-/// stored operations past the cutoff that are not applied are held as invalid. Returns how many
-/// operations it held.
-pub(crate) async fn revoke_effects(
-    conn: &mut SqliteConnection,
-    space: SpaceId,
-    target: WriterId,
-    cutoff: Seq,
-    reason: RevokeReason,
-) -> SyncResult<u64> {
-    let cutoff = seq_i64(cutoff)?;
-    let updated = sqlx::query(
-        "UPDATE sync_writers SET
-            cutoff_seq = CASE WHEN cutoff_seq IS NULL OR cutoff_seq > ? THEN ? ELSE cutoff_seq END,
-            state = CASE WHEN state = 'forked' OR ? THEN 'forked' ELSE 'revoked' END
-         WHERE space_id = ? AND writer_id = ?",
-    )
-    .bind(cutoff)
-    .bind(cutoff)
-    .bind(reason == RevokeReason::Forked)
-    .bind(space.as_bytes().as_slice())
-    .bind(target.as_bytes().as_slice())
-    .execute(&mut *conn)
-    .await?;
-    if updated.rows_affected() != 1 {
-        return Err(corrupt("revocation of an unknown writer reached apply"));
-    }
-    let held = sqlx::query(
-        "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid'
-         WHERE space_id = ? AND writer_id = ? AND state = 'waiting' AND seq > (
-            SELECT cutoff_seq FROM sync_writers WHERE space_id = ? AND writer_id = ?
-         )",
-    )
-    .bind(space.as_bytes().as_slice())
-    .bind(target.as_bytes().as_slice())
-    .bind(space.as_bytes().as_slice())
-    .bind(target.as_bytes().as_slice())
-    .execute(&mut *conn)
-    .await?;
-    Ok(held.rows_affected())
 }

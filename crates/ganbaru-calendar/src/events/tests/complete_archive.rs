@@ -11,8 +11,8 @@ fn archive_and_restore_preserve_task_links_music_versions_and_independent_import
     crate::test_support::block_on(async {
         let pool = super::metadata::seed().await;
         sqlx::raw_sql("UPDATE project_task_event_links SET link_kind='reference';
-            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, version, soundscape_behavior)
-                VALUES ('event-override', 'source', 'short-break', 'pause-music', 'explicit', 9, 7, 'keep-current-soundscape');")
+            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, version, soundscape_behavior, sync_key)
+                VALUES ('event-override', 'source', 'short-break', 'pause-music', 'explicit', 9, 7, 'keep-current-soundscape', lower(hex(randomblob(16))));")
             .execute(&pool).await.unwrap();
         let link: (String, String) = sqlx::query_as(
             "SELECT link_kind, created_at FROM project_task_event_links WHERE event_id='source'",
@@ -306,7 +306,7 @@ fn moved_occurrence_archive_uses_its_override_metadata_and_current_focus_alias()
             INSERT INTO calendar_event_overrides (id, parent_event_id, recurrence_id, title, description, location, start_time, end_time)
                 VALUES ('moved', 'event-1', '2099-05-20', 'Override title', '', 'Moved location', '2099-06-01T09:00:00Z', '2099-06-01T11:00:00Z');
             INSERT INTO calendar_event_extended_properties (id, event_id, property_key, property_value) VALUES ('base', 'event-1', 'X-EXTRA', 'base');
-            INSERT INTO calendar_event_override_extended_properties (id, override_id, property_key, property_value) VALUES ('delta', 'moved', 'X-EXTRA', 'override');")
+            INSERT INTO calendar_event_override_extended_properties (id, event_id, override_id, property_key, property_value) VALUES ('delta', 'event-1', 'moved', 'X-EXTRA', 'override');")
             .execute(&pool).await.unwrap();
         let mut tx = pool.begin().await.unwrap();
         let error = delete_calendar_event_tx(&mut tx, &target("event-1::2099-05-20"))

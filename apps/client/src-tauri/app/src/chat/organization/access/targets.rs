@@ -47,6 +47,11 @@ pub async fn chat_list_assignment_targets(
         .into_iter()
         .map(|read| (read.working_folder.id.clone(), read.binding_status))
         .collect::<BTreeMap<_, _>>();
+    crate::chat::channels::ensure_chat_defaults(
+        &pool,
+        crate::chat::channels::ChatDefaultsScope::Project(&channel.project_id),
+    )
+    .await?;
     let mut targets = Vec::new();
     for grant in &channel_access.folder_grants {
         let rows = sqlx::query(

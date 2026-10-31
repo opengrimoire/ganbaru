@@ -1,3 +1,4 @@
+use super::identity::{RetirableTable, creatable_key, location_id, normalize_relative_path};
 use super::local_refresh::RelinkArtworkCache;
 use super::*;
 use sqlx::{Row, SqlitePool};
@@ -117,10 +118,17 @@ pub async fn apply(
             "must be confirmed when identity evidence is weak",
         ));
     }
+    let relative_path = normalize_relative_path(&request.relative_path);
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin item location repair", error))?;
+    let location_id = creatable_key(
+        &mut transaction,
+        RetirableTable::Locations,
+        location_id(&request.root_id, &relative_path),
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO music_local_roots (id, name, created_at_ms, updated_at_ms)
          VALUES (?, ?, ?, ?)",
@@ -138,10 +146,10 @@ pub async fn apply(
              lightweight_fingerprint, strong_fingerprint, availability, first_seen_at_ms, updated_at_ms)
          VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'available', ?, ?)",
     )
-    .bind(&request.location_id)
+    .bind(&location_id)
     .bind(&request.item_id)
     .bind(&request.root_id)
-    .bind(&request.relative_path)
+    .bind(&relative_path)
     .bind(inspected.file_size_bytes)
     .bind(&inspected.lightweight_fingerprint)
     .bind(&inspected.strong_fingerprint)
@@ -152,7 +160,7 @@ pub async fn apply(
     .map_err(|error| super::writes::map_database_error("save repaired item location", error))?;
     super::writes::commit(transaction, "commit item location repair").await?;
     Ok(MusicWriteReceipt {
-        id: request.location_id,
+        id: location_id,
         version: 1,
     })
 }

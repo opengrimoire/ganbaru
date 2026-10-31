@@ -122,7 +122,7 @@ impl Session {
             .max(lower_bound)
             .min(detected_at_ms.max(lower_bound));
         let id = segment.id.clone();
-        sqlx::query("INSERT INTO pomodoro_pauses (id, segment_id, started_at, ended_at, reason, detected_at) VALUES (lower(hex(randomblob(16))), ?, ?, NULL, ?, ?)")
+        sqlx::query("INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, ended_at, reason, detected_at) SELECT ?1, COALESCE(MAX(ordinal) + 1, 0), ?2, NULL, ?3, ?4 FROM pomodoro_pauses WHERE segment_id = ?1")
             .bind(&id).bind(format_timestamp(start_ms)?).bind(reason).bind(format_timestamp(detected_at_ms.max(start_ms))?)
             .execute(&mut **tx).await.map_err(|error| format!("Start Focus pause: {error}"))?;
         self.record_event(tx, "pause_start", start_ms, Some(reason), None)

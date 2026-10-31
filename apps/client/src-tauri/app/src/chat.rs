@@ -10,6 +10,8 @@ pub mod checkpoints;
 pub(crate) mod cleanup_service;
 #[cfg(desktop)]
 pub(crate) mod command_support;
+pub(crate) mod configuration;
+pub mod conflicts;
 #[cfg(desktop)]
 pub mod credentials;
 pub mod device_state;
@@ -54,6 +56,7 @@ pub(crate) mod settings;
 pub mod settings_commands;
 #[cfg(desktop)]
 pub mod source_control;
+pub(crate) mod sync;
 #[cfg(desktop)]
 pub mod terminal;
 #[cfg(desktop)]

@@ -40,7 +40,7 @@ describe("ChatParticipantAvatar", () => {
   const preferences = getPreferences();
   const chat = getChat();
   const originalDisplayName = preferences.profileDisplayName;
-  const originalImagePath = preferences.profileImagePath;
+  const originalImage = preferences.profileImage;
   const originalSettings = chat.settings;
   const originalTeammates = chat.teammates;
   const originalArchivedTeammates = chat.archivedTeammates;
@@ -51,7 +51,7 @@ describe("ChatParticipantAvatar", () => {
     component = undefined;
     target = undefined;
     preferences.setProfileDisplayName(originalDisplayName);
-    preferences.setProfileImagePath(originalImagePath);
+    preferences.setProfileImage(originalImage);
     chat.settings = originalSettings;
     chat.teammates = originalTeammates;
     chat.archivedTeammates = originalArchivedTeammates;
@@ -60,7 +60,7 @@ describe("ChatParticipantAvatar", () => {
 
   it("reacts to current local profile names and images without changing the participant", async () => {
     preferences.setProfileDisplayName("Alice Smith");
-    preferences.setProfileImagePath(null);
+    preferences.setProfileImage(null);
     target = document.createElement("div");
     document.body.append(target);
     component = mount(ChatParticipantAvatar, {
@@ -72,7 +72,7 @@ describe("ChatParticipantAvatar", () => {
 
     preferences.setProfileDisplayName("Renamed Person");
     const imagePath = `profile/${"a".repeat(64)}.png`;
-    preferences.setProfileImagePath(imagePath);
+    preferences.setProfileImage({ path: imagePath, byteSize: 2048 });
     await tick();
     await vi.waitFor(() => {
       expect(target?.querySelector("img")?.src).toBe(`https://profile.invalid/${imagePath}`);
@@ -104,7 +104,6 @@ describe("ChatParticipantAvatar", () => {
       },
       channelCount: 1,
       activeAssignmentCount: 0,
-      hasDurableHistory: false,
     } satisfies ChatAiTeammateRead];
     target = document.createElement("div");
     document.body.append(target);
@@ -142,7 +141,6 @@ describe("ChatParticipantAvatar", () => {
       },
       channelCount: 1,
       activeAssignmentCount: 0,
-      hasDurableHistory: true,
     } satisfies ChatAiTeammateRead;
     chat.archivedTeammates = [archivedTeammate];
     target = document.createElement("div");

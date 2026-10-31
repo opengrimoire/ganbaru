@@ -201,7 +201,7 @@ async fn load_navigation_databases(
          FROM notes_databases AS database
          JOIN notes_blocks AS block ON block.id = database.id
          JOIN notes_pages AS page ON page.id = block.page_id
-         JOIN notes_data_sources AS source ON source.id = json_extract(block.payload, '$.data_source_id')
+         JOIN notes_data_sources AS source ON source.id = json_extract(block.attrs, '$.data_source_id')
          WHERE database.in_trash = 0 AND block.in_trash = 0
            AND block.type = 'child_database' AND page.in_trash = 0 AND page.archived = 0
            AND source.in_trash = 0",
@@ -345,16 +345,24 @@ fn add_unique(
     }
 }
 
-pub(super) fn page_projection() -> &'static str {
-    "id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, folder_id, title, json_extract(properties, '$.__ganbaru_project_id') AS project_id, icon, in_trash, archived, created_time, last_edited_time"
+/// Summary columns for an unaliased `notes_pages` read, with the derived page project.
+pub(super) fn page_projection() -> String {
+    crate::structure::page_summary_columns("notes_pages")
 }
 
+/// Limits an unaliased `notes_pages` read to pages of `project_id`, or of no project.
 fn push_project_filter(query: &mut QueryBuilder<Sqlite>, project_id: Option<&str>) {
     if let Some(project_id) = project_id {
-        query.push(" AND json_extract(properties, '$.__ganbaru_project_id') = ");
+        query.push(format!(
+            " AND {} = ",
+            crate::structure::page_project_sql("notes_pages")
+        ));
         query.push_bind(project_id.to_string());
     } else {
-        query.push(" AND json_extract(properties, '$.__ganbaru_project_id') IS NULL");
+        query.push(format!(
+            " AND {} IS NULL",
+            crate::structure::page_project_sql("notes_pages")
+        ));
     }
 }
 
@@ -482,10 +490,15 @@ async fn load_ancestors(
     for id in ids {
         separated.push_bind(id);
     }
-    separated.push_unseparated(") AND parent_type = 'page_id' UNION ALL SELECT page.parent_page_id, ancestors.depth + 1 FROM notes_pages page JOIN ancestors ON page.id = ancestors.id WHERE page.parent_type = 'page_id' AND ancestors.depth < 64) SELECT DISTINCT ");
+    separated.push_unseparated(") AND parent_type = 'page_id' UNION SELECT page.parent_page_id, ancestors.depth + 1 FROM notes_pages page JOIN ancestors ON page.id = ancestors.id WHERE page.parent_type = 'page_id' AND ancestors.depth < ");
+    query
+        .push_bind(crate::structure::MAX_TREE_DEPTH)
+        .push(") SELECT DISTINCT ");
     query.push(page_projection()).push(" FROM notes_pages WHERE in_trash = 0 AND archived = 0 AND id IN (SELECT id FROM ancestors WHERE id IS NOT NULL)");
     push_project_filter(&mut query, project_id);
-    query.push(" LIMIT 64");
+    query
+        .push(" LIMIT ")
+        .push_bind(crate::structure::MAX_TREE_DEPTH);
     query
         .build_query_as()
         .fetch_all(&mut **transaction)

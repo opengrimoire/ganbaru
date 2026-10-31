@@ -1,5 +1,5 @@
 use super::*;
-use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 pub(crate) const SEARCH_SCHEMA_VERSION: i64 = 1;
 pub(crate) const SEARCH_FINGERPRINT: &str =
@@ -139,6 +139,15 @@ pub(crate) async fn ensure(
     }
 }
 
+/// Drops the index state on `conn`, so the next search rebuilds the whole index.
+pub(crate) async fn mark_stale(conn: &mut SqliteConnection) -> MusicLibraryResult<()> {
+    sqlx::query("DELETE FROM music_search_index_state")
+        .execute(&mut *conn)
+        .await
+        .map_err(|error| MusicLibraryError::database("mark music search index stale", error))?;
+    Ok(())
+}
+
 pub(crate) async fn refresh_item(
     transaction: &mut Transaction<'_, Sqlite>,
     item_id: &str,
@@ -148,6 +157,14 @@ pub(crate) async fn refresh_item(
 
 pub(crate) async fn refresh_items(
     transaction: &mut Transaction<'_, Sqlite>,
+    item_ids: &[String],
+) -> MusicLibraryResult<()> {
+    refresh_items_on(transaction, item_ids).await
+}
+
+/// Rebuilds the search rows of `item_ids` on `conn`; ids without an item lose their row.
+pub(crate) async fn refresh_items_on(
+    conn: &mut SqliteConnection,
     item_ids: &[String],
 ) -> MusicLibraryResult<()> {
     if item_ids.is_empty() {
@@ -161,7 +178,7 @@ pub(crate) async fn refresh_items(
     separated.push_unseparated(")");
     delete
         .build()
-        .execute(&mut **transaction)
+        .execute(&mut *conn)
         .await
         .map_err(|error| MusicLibraryError::database("remove stale music search rows", error))?;
     let mut insert = QueryBuilder::<Sqlite>::new(
@@ -177,7 +194,7 @@ pub(crate) async fn refresh_items(
     separated.push_unseparated(")");
     insert
         .build()
-        .execute(&mut **transaction)
+        .execute(&mut *conn)
         .await
         .map_err(|error| MusicLibraryError::database("refresh music search rows", error))?;
     Ok(())

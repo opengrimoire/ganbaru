@@ -12,6 +12,10 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use ganbaru_atomic_files::FileAccess;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
+use ganbaru_sync_replica::backup::{
+    MAX_VAULT_MANIFEST_BYTES, VAULT_APP_MARKER, VAULT_SCHEMA_VERSION, VaultManifest,
+    parse_vault_manifest,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,8 +28,6 @@ static APP_STATE: std::sync::Mutex<Option<CachedAppState>> = std::sync::Mutex::n
 static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod config;
-#[cfg(desktop)]
-pub(crate) use config::read_active_config_bounded;
 mod documents;
 
 // Keep Tauri commands and their generated wrappers at the vault facade.
@@ -34,19 +36,22 @@ pub use documents::*;
 
 pub(crate) mod backup;
 pub(crate) mod database_rollback;
+pub(crate) mod encrypted_backup;
 pub(crate) mod handoff;
-pub(crate) mod ownership;
+pub(crate) mod preferences;
+#[cfg(any(mobile, test))]
+pub(crate) mod process_managers;
 pub(crate) mod quiescence;
+pub(crate) mod replaced_vaults;
 pub(crate) mod runtime_lifecycle;
+pub(crate) mod vault_lock;
+pub(crate) mod write_fence;
 
-pub const APP_SQLITE_FILE: &str = "ganbaru.sqlite";
+pub const APP_SQLITE_FILE: &str = ganbaru_sync_replica::backup::DATABASE_FILE;
 const PRODUCTION_VAULT_NAME: &str = "Ganbaru";
 const DEVELOPMENT_VAULT_NAME: &str = "Ganbaru Dev";
 const APP_STATE_FILE: &str = "app-state.json";
-const VAULT_MANIFEST_FILE: &str = "vault.json";
-const CONFIG_FILE: &str = "config.json";
-const VAULT_APP_MARKER: &str = "ganbaru";
-const VAULT_SCHEMA_VERSION: u32 = 1;
+const VAULT_MANIFEST_FILE: &str = ganbaru_sync_replica::backup::VAULT_MANIFEST_FILE;
 const MAX_RECENT_VAULTS: usize = 8;
 #[cfg(target_os = "android")]
 const MOBILE_VAULT_IMPORT_MAX_FILES: u32 = 100_000;
@@ -122,8 +127,13 @@ where
 }
 
 pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
+    ensure_device_id_in(&app_config_dir(app)?)
+}
+
+/// The device id stored in the app config directory `config_dir`, created on first use.
+pub(crate) fn ensure_device_id_in(config_dir: &Path) -> Result<String, String> {
     // Most calls find the identity already stored; avoid cloning device state for an update.
-    if let Some(device_id) = read_app_state(app)?
+    if let Some(device_id) = read_app_state_in(config_dir)?
         .device_id
         .as_ref()
         .filter(|value| !value.trim().is_empty())
@@ -135,7 +145,7 @@ pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<
         .map_err(|error| format!("create device id timestamp: {error}"))?
         .as_nanos();
     let candidate = format!("device-{timestamp:x}-{:x}", std::process::id());
-    update_app_state(app, |state| {
+    update_app_state_in(config_dir, |state| {
         if let Some(device_id) = state
             .device_id
             .as_ref()
@@ -148,21 +158,10 @@ pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<
     })
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultManifest {
-    app: String,
-    schema_version: u32,
-    vault_id: String,
-    display_name: String,
-    created_at: String,
-}
-
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultInfo {
     pub path: String,
-    pub config_path: String,
     pub database_path: String,
     pub vault_id: String,
     pub display_name: String,
@@ -177,10 +176,12 @@ pub struct VaultDefaultLocation {
     pub development_build: bool,
 }
 
-fn app_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    let mut path = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    path.push(APP_STATE_FILE);
-    Ok(path)
+fn app_config_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    app.path().app_config_dir().map_err(|e| e.to_string())
+}
+
+fn app_state_path_in(config_dir: &Path) -> PathBuf {
+    config_dir.join(APP_STATE_FILE)
 }
 
 fn read_app_state_from_path(path: &Path) -> Result<VaultAppState, String> {
@@ -295,20 +296,33 @@ fn make_directory_private(path: &Path) -> Result<(), String> {
 pub(crate) fn read_app_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Arc<VaultAppState>, String> {
+    read_app_state_in(&app_config_dir(app)?)
+}
+
+/// The device state stored in the app config directory `config_dir`.
+fn read_app_state_in(config_dir: &Path) -> Result<Arc<VaultAppState>, String> {
     let mut cache = APP_STATE
         .lock()
         .map_err(|_| "app state lock is unavailable".to_string())?;
-    cached_app_state(&mut cache, &app_state_path(app)?)
+    cached_app_state(&mut cache, &app_state_path_in(config_dir))
 }
 
 pub(crate) fn update_app_state<R: Runtime, T>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut VaultAppState) -> Result<T, String>,
 ) -> Result<T, String> {
+    update_app_state_in(&app_config_dir(app)?, update)
+}
+
+/// Updates the device state stored in the app config directory `config_dir`.
+fn update_app_state_in<T>(
+    config_dir: &Path,
+    update: impl FnOnce(&mut VaultAppState) -> Result<T, String>,
+) -> Result<T, String> {
     let mut cache = APP_STATE
         .lock()
         .map_err(|_| "app state lock is unavailable".to_string())?;
-    let path = app_state_path(app)?;
+    let path = app_state_path_in(config_dir);
     let current = cached_app_state(&mut cache, &path)?;
     let mut state = VaultAppState::clone(&current);
     let result = update(&mut state)?;
@@ -396,22 +410,13 @@ fn manifest_path(path: &Path) -> PathBuf {
     path.join(VAULT_MANIFEST_FILE)
 }
 
-/// Resolve the portable configuration path beneath an already authorized vault root.
-pub(crate) fn config_path(path: &Path) -> PathBuf {
-    path.join(CONFIG_FILE)
-}
-
 fn database_path(path: &Path) -> PathBuf {
     path.join(APP_SQLITE_FILE)
 }
 
-/// Largest `vault.json` accepted from an archive or a vault folder. The marker holds a few
-/// short fields.
-const MAX_VAULT_MANIFEST_BYTES: u64 = 64 * 1024;
-
-/// Largest `config.json` any reader accepts. Writes that would exceed it are refused, so a
-/// configuration the app saved always reads back.
-pub(crate) const MAX_VAULT_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest device preference file any reader accepts. Writes that would exceed it are refused,
+/// so preferences the app saved always read back.
+pub(crate) const MAX_DEVICE_PREFERENCES_BYTES: u64 = 4 * 1024 * 1024;
 
 fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
     let contents = ganbaru_atomic_files::read_regular_file_capped(
@@ -423,28 +428,9 @@ fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
     parse_vault_manifest(&contents)
 }
 
-fn parse_vault_manifest(contents: &[u8]) -> Result<VaultManifest, String> {
-    let manifest: VaultManifest = serde_json::from_slice(contents)
-        .map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
-    if manifest.app != VAULT_APP_MARKER {
-        return Err("selected folder is not a Ganbaru folder".to_string());
-    }
-    if manifest.schema_version != VAULT_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported Ganbaru folder schema version {}",
-            manifest.schema_version
-        ));
-    }
-    // The identity names key store accounts and key files, so it keeps to the wire identifier
-    // alphabet before anything uses it.
-    ganbaru_handoff::protocol::validate_identifier("Ganbaru folder id", &manifest.vault_id)?;
-    Ok(manifest)
-}
-
 fn vault_info_from_manifest(path: &Path, manifest: VaultManifest) -> Result<VaultInfo, String> {
     Ok(VaultInfo {
         path: path_to_string(path, "Ganbaru folder")?,
-        config_path: path_to_string(&config_path(path), "config")?,
         database_path: path_to_string(&database_path(path), "database")?,
         vault_id: manifest.vault_id,
         display_name: if manifest.display_name.trim().is_empty() {
@@ -472,19 +458,22 @@ const MANAGED_VAULT_DIRECTORIES: &[&str] = &["assets", "projects"];
 /// the user can write. The vault root itself may be reached through a link.
 fn reject_symlinked_vault_entries(path: &Path) -> Result<(), String> {
     let database = APP_SQLITE_FILE.to_string();
-    let entries = [VAULT_MANIFEST_FILE.to_string(), CONFIG_FILE.to_string()]
-        .into_iter()
-        .chain(
-            DATABASE_COMPANION_SUFFIXES
-                .iter()
-                .map(|suffix| format!("{database}{suffix}")),
-        )
-        .chain(std::iter::once(database.clone()))
-        .chain(
-            MANAGED_VAULT_DIRECTORIES
-                .iter()
-                .map(|name| name.to_string()),
-        );
+    let entries = [
+        VAULT_MANIFEST_FILE.to_string(),
+        vault_lock::VAULT_LOCK_FILE.to_string(),
+    ]
+    .into_iter()
+    .chain(
+        DATABASE_COMPANION_SUFFIXES
+            .iter()
+            .map(|suffix| format!("{database}{suffix}")),
+    )
+    .chain(std::iter::once(database.clone()))
+    .chain(
+        MANAGED_VAULT_DIRECTORIES
+            .iter()
+            .map(|name| name.to_string()),
+    );
     for entry in entries {
         ganbaru_atomic_files::reject_symlink(&path.join(&entry))
             .map_err(|error| format!("check Ganbaru folder entry '{entry}': {error}"))?;
@@ -502,16 +491,12 @@ const VAULT_SKELETON_DIRECTORIES: &[&str] = &[
     "reports",
     "assets",
     "templates",
-    ".yjs",
 ];
 
 fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
     for relative in VAULT_SKELETON_DIRECTORIES {
         ganbaru_atomic_files::create_directories_within(path, &path.join(relative))
             .map_err(|e| format!("create Ganbaru folder path '{relative}': {e}"))?;
-    }
-    if !config_path(path).exists() {
-        write_text_file_atomically(&config_path(path), "{}\n", FileAccess::OwnerOnly)?;
     }
     match ganbaru_atomic_files::create_private_file(&database_path(path)) {
         Ok(_) => Ok(()),
@@ -585,12 +570,15 @@ async fn select_reserved_vault<R: Runtime>(
     .map_err(|error| format!("vault selection worker failed: {error}"))?
 }
 
-/// Persists selection while the caller retains the native and write barriers.
+/// Persists selection while the caller retains the native and write barriers. The selected
+/// vault is fenced first, which releases the previous vault's lock, so a folder another Ganbaru
+/// process has open is refused before it becomes active.
 fn select_quiesced_vault<R: Runtime>(
     app: &tauri::AppHandle<R>,
     info: &VaultInfo,
     _quiescence: &quiescence::SnapshotQuiescence,
 ) -> Result<(), String> {
+    vault_lock::process_vault_lock().acquire(Path::new(&info.path))?;
     update_app_state(app, |state| {
         state.active_vault_path = Some(info.path.clone());
         state
@@ -648,6 +636,7 @@ fn retain_vault_scopes(state: &mut VaultAppState, known_vault_ids: &BTreeSet<Str
 
 /// Reconciles native execution owners with the newly active, authorized vault.
 pub(crate) fn resume_native_runtimes<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    preferences::reset(app);
     let focus = crate::pomodoro::resume_after_vault_handoff(app);
     let music = crate::music::session::resume_after_vault_handoff(app);
     #[cfg(desktop)]
@@ -876,9 +865,20 @@ pub fn active_vault_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
     active_vault(app).map(|(path, _)| path)
 }
 
+/// The active vault root of the app config directory `config_dir`.
+pub(crate) fn active_vault_path_in(config_dir: &Path) -> Result<PathBuf, String> {
+    active_vault_in(config_dir).map(|(path, _)| path)
+}
+
 /// Resolve the active folder and its validated marker with one marker read.
 fn active_vault<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(PathBuf, VaultManifest), String> {
-    let Some(path) = read_app_state(app)?.active_vault_path.clone() else {
+    active_vault_in(&app_config_dir(app)?)
+}
+
+/// Resolve the active folder of the app config directory `config_dir` and its validated marker
+/// with one marker read.
+fn active_vault_in(config_dir: &Path) -> Result<(PathBuf, VaultManifest), String> {
+    let Some(path) = read_app_state_in(config_dir)?.active_vault_path.clone() else {
         return Err("no active Ganbaru folder selected".to_string());
     };
     let path = canonical_vault_path(PathBuf::from(path))?;
@@ -918,7 +918,7 @@ fn available_vault_path(path: Option<PathBuf>) -> Result<Option<PathBuf>, String
 
 pub(crate) struct WritableVaultPath {
     path: PathBuf,
-    _permit: ownership::ManagedVaultWritePermit,
+    _permit: write_fence::ManagedVaultWritePermit,
 }
 
 impl WritableVaultPath {
@@ -945,26 +945,20 @@ impl AsRef<Path> for WritableVaultPath {
 pub(crate) fn active_writable_vault_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<WritableVaultPath, String> {
-    let (path, manifest) = active_vault(app)?;
-    let vault_id = manifest.vault_id;
-    let permit = app
-        .state::<ownership::VaultOwnershipManager>()
-        .acquire_managed_write(&vault_id)?;
-    Ok(WritableVaultPath {
-        path,
-        _permit: permit,
-    })
+    writable_vault_path_in(
+        &app_config_dir(app)?,
+        app.state::<write_fence::VaultWriteFence>().inner(),
+    )
 }
 
-/// The active vault root for writing assets of replicated domains, which a linked stable
-/// replica may write as well as the owner.
-pub(crate) fn active_replicated_asset_path<R: Runtime>(
-    app: &tauri::AppHandle<R>,
+/// [`active_writable_vault_path`] for the app config directory `config_dir`, with the permit
+/// taken from `fence`.
+pub(crate) fn writable_vault_path_in(
+    config_dir: &Path,
+    fence: &write_fence::VaultWriteFence,
 ) -> Result<WritableVaultPath, String> {
-    let (path, manifest) = active_vault(app)?;
-    let permit = app
-        .state::<ownership::VaultOwnershipManager>()
-        .acquire_replicated_asset_write(&manifest.vault_id)?;
+    let permit = fence.acquire_managed_write()?;
+    let (path, _) = active_vault_in(config_dir)?;
     Ok(WritableVaultPath {
         path,
         _permit: permit,
@@ -975,8 +969,19 @@ pub(crate) fn active_vault_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<S
     active_vault(app).map(|(_, manifest)| manifest.vault_id)
 }
 
+/// The active vault id of the app config directory `config_dir`.
+pub(crate) fn active_vault_id_in(config_dir: &Path) -> Result<String, String> {
+    active_vault_in(config_dir).map(|(_, manifest)| manifest.vault_id)
+}
+
+#[cfg(desktop)]
 pub fn active_database_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     Ok(database_path(&active_vault_path(app)?))
+}
+
+/// The active vault database of the app config directory `config_dir`.
+pub(crate) fn active_database_path_in(config_dir: &Path) -> Result<PathBuf, String> {
+    Ok(database_path(&active_vault_path_in(config_dir)?))
 }
 
 fn require_absolute_path(path: &Path) -> Result<(), String> {
@@ -991,6 +996,37 @@ fn require_absolute_path(path: &Path) -> Result<(), String> {
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|e| format!("selected path is not a local file: {e}"))
+}
+
+/// Creates a vault with id `vault_id` in the empty folder `vault_path` and makes it the active
+/// vault of device `device_id` in the app config directory `config_dir`. Returns the path of
+/// its database, which is created empty and migrates on first open.
+#[cfg(test)]
+pub(crate) fn activate_test_vault(
+    config_dir: &Path,
+    vault_path: &Path,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(vault_path).map_err(|e| format!("create test vault: {e}"))?;
+    let path = canonical_vault_path(vault_path.to_path_buf())?;
+    let manifest = VaultManifest {
+        app: VAULT_APP_MARKER.to_string(),
+        schema_version: VAULT_SCHEMA_VERSION,
+        vault_id: vault_id.to_string(),
+        display_name: display_name_from_path(&path),
+        created_at: now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
+    };
+    ensure_vault_skeleton(&path)?;
+    let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    write_text_file_atomically(&manifest_path(&path), &json, FileAccess::OwnerOnly)?;
+    let active = path.to_string_lossy().into_owned();
+    update_app_state_in(config_dir, |state| {
+        state.device_id = Some(device_id.to_string());
+        state.active_vault_path = Some(active);
+        Ok(())
+    })?;
+    Ok(database_path(&path))
 }
 
 /// Replace a UTF-8 text file through a synced, exclusively created temporary
@@ -1118,27 +1154,22 @@ mod tests {
         fs::remove_dir_all(parent).unwrap();
     }
 
-    /// The config writer used by `mutate_active_vault_config` never writes
-    /// through a temporary-name link planted in a shared vault.
+    /// Atomic vault writes never write through a temporary-name link planted in a shared vault.
     #[cfg(unix)]
     #[test]
-    fn config_writes_ignore_a_planted_temporary_symlink() {
+    fn atomic_writes_ignore_a_planted_temporary_symlink() {
         let vault = unique_path("planted-temporary");
         fs::create_dir_all(&vault).unwrap();
         initialize_vault(&vault).unwrap();
         let sentinel = unique_path("planted-temporary-sentinel");
         fs::write(&sentinel, "untouched").unwrap();
-        std::os::unix::fs::symlink(&sentinel, vault.join("config.json.tmp")).unwrap();
+        std::os::unix::fs::symlink(&sentinel, vault.join("written.json.tmp")).unwrap();
 
-        write_text_file_atomically(
-            &config_path(&vault),
-            "{\"preferences\":{}}",
-            FileAccess::OwnerOnly,
-        )
-        .unwrap();
+        write_text_file_atomically(&vault.join("written.json"), "{}", FileAccess::OwnerOnly)
+            .unwrap();
 
         assert_eq!(fs::read_to_string(&sentinel).unwrap(), "untouched");
-        let metadata = fs::symlink_metadata(config_path(&vault)).unwrap();
+        let metadata = fs::symlink_metadata(vault.join("written.json")).unwrap();
         assert!(metadata.file_type().is_file());
         fs::remove_dir_all(vault).unwrap();
         fs::remove_file(sentinel).unwrap();
@@ -1162,9 +1193,9 @@ mod tests {
     #[test]
     fn opening_a_vault_rejects_symlinked_fixed_entries() {
         for entry in [
-            "config.json",
             "ganbaru.sqlite",
             "ganbaru.sqlite-wal",
+            "vault.lock",
             "assets",
         ] {
             let vault = unique_path("symlinked-entry");
@@ -1204,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_vault_creates_manifest_config_database_and_dirs() {
+    fn initialize_vault_creates_manifest_database_and_dirs_without_config() {
         let path = unique_path("portable-vault");
         fs::create_dir_all(&path).expect("create vault folder");
 
@@ -1215,11 +1246,11 @@ mod tests {
             path.join(APP_SQLITE_FILE).to_string_lossy()
         );
         assert!(path.join(VAULT_MANIFEST_FILE).exists());
-        assert!(path.join(CONFIG_FILE).exists());
+        assert!(!path.join("config.json").exists());
         assert!(path.join(APP_SQLITE_FILE).exists());
         assert!(path.join("notes").join("daily").is_dir());
         assert!(path.join("diary").join("morning").is_dir());
-        assert!(path.join(".yjs").is_dir());
+        assert!(!path.join(".yjs").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1351,13 +1382,17 @@ mod tests {
         fs::create_dir_all(&path).expect("create vault folder");
         let created = initialize_vault(&path).expect("initialize vault");
         fs::remove_dir_all(path.join("assets")).expect("remove assets");
-        fs::remove_file(path.join(CONFIG_FILE)).expect("remove config");
+        fs::write(path.join("config.json"), "{\"chat\":{}}").expect("write stray config");
 
         let opened = validate_vault_candidate(&path).expect("validate vault");
 
         assert_eq!(opened.vault_id, created.vault_id);
         assert!(path.join("assets").is_dir());
-        assert!(path.join(CONFIG_FILE).is_file());
+        assert_eq!(
+            fs::read_to_string(path.join("config.json")).expect("read stray config"),
+            "{\"chat\":{}}",
+            "an existing config.json is left as it was"
+        );
         let _ = fs::remove_dir_all(&path);
     }
 

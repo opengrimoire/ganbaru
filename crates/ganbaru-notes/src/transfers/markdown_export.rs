@@ -108,29 +108,15 @@ async fn load_active_page_blocks(
     pool: &SqlitePool,
     page_id: &str,
 ) -> Result<Vec<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
          WHERE page_id = ?
            AND in_trash = 0
-         ORDER BY sort_order ASC, id ASC",
-    )
+         ORDER BY order_key ASC, id ASC"
+    ))
     .bind(page_id)
     .fetch_all(pool)
     .await
@@ -660,7 +646,7 @@ impl MarkdownRenderer {
                 target, thread.row.status, thread.row.created_time
             ));
             for comment in &thread.comments {
-                let author = display_name(&comment.display_name);
+                let author = display_name(comment.display_name.as_deref());
                 let rich_text = parse_json_array(&comment.rich_text).unwrap_or_default();
                 let mut text = self.render_rich_text(&rich_text, None, Some(&comment.id));
                 if text.chars().count() > MAX_EXPORTED_COMMENT_TEXT_CHARS {
@@ -935,6 +921,7 @@ async fn load_export_comments(
         .await
     }
     .map_err(|e| format!("load notes comment threads for markdown export: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
 
     let mut threads = Vec::with_capacity(thread_rows.len());
     for row in thread_rows {
@@ -958,6 +945,16 @@ async fn load_export_comments(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes comments for markdown export: {e}"))?;
+        let comments = comments
+            .into_iter()
+            .map(|mut comment| {
+                comment.display_name = Some(crate::local_user::resolved_display_name_json(
+                    comment.display_name.as_deref(),
+                    &local_author_name,
+                ));
+                comment
+            })
+            .collect();
         threads.push(ExportCommentThread {
             row,
             anchor,

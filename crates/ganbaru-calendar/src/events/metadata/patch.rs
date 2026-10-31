@@ -63,8 +63,8 @@ impl Metadata {
                 }
                 Field::Geo(value) => {
                     let geo = parse_geo(value)?;
-                    assign!(geo_lat, geo.map(|pair| pair.0));
-                    assign!(geo_lng, geo.map(|pair| pair.1));
+                    assign!(geo_lat, geo.map(|pair| pair.lat));
+                    assign!(geo_lng, geo.map(|pair| pair.lng));
                 }
                 Field::Organizer(value) => {
                     let rows = parse_organizer(value)?

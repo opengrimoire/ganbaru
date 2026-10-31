@@ -147,11 +147,20 @@ async fn build_archive(
     };
     let asset_paths = collect_asset_paths(&pages, &blocks_by_page, &comments);
     let mut diagnostics = Vec::new();
-    let assets = load_assets(pool, &asset_paths, include_assets, &mut diagnostics).await?;
-    let asset_archive_paths = assets
+    let (assets, stored_paths) =
+        load_assets(pool, &asset_paths, include_assets, &mut diagnostics).await?;
+    let exported_archive_paths = assets
         .iter()
         .filter(|asset| asset.exported)
-        .map(|asset| (asset.source_path.clone(), asset.archive_path.clone()))
+        .map(|asset| (asset.source_path.as_str(), asset.archive_path.as_str()))
+        .collect::<HashMap<_, _>>();
+    let asset_archive_paths = stored_paths
+        .iter()
+        .filter_map(|(referenced, stored)| {
+            exported_archive_paths
+                .get(stored.as_str())
+                .map(|archive| (referenced.clone(), (*archive).to_string()))
+        })
         .collect::<HashMap<_, _>>();
     let databases = if include_database_views {
         export_databases(pool, blocks_by_page.values().flatten()).await?
@@ -262,19 +271,20 @@ async fn load_pages(
     include_tree: bool,
 ) -> Result<Vec<NotePageRow>, String> {
     if !include_tree {
-        return sqlx::query_as::<_, NotePageRow>(
-            "SELECT *
+        return sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {}
              FROM notes_pages
              WHERE id = ?
                AND in_trash = 0
                AND archived = 0",
-        )
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(page_id)
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes page for HTML export: {e}"));
     }
-    sqlx::query_as::<_, NotePageRow>(
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
         "WITH RECURSIVE page_tree(id, depth) AS (
             SELECT id, 0
             FROM notes_pages
@@ -299,11 +309,12 @@ async fn load_pages(
                   )
               )
          )
-         SELECT page.*
+         SELECT {}
          FROM notes_pages AS page
          JOIN page_tree ON page_tree.id = page.id
          ORDER BY page_tree.depth ASC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(page_id)
     .bind(PAGE_TREE_DEPTH_LIMIT)
     .fetch_all(pool)
@@ -317,26 +328,16 @@ async fn load_blocks(pool: &SqlitePool, page_ids: &[String]) -> Result<Vec<NoteB
     }
     let placeholders = placeholders(page_ids.len());
     let sql = format!(
-        "SELECT id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
          FROM notes_blocks
-         WHERE page_id IN ({placeholders})
+         WHERE page_id IN ({})
            AND in_trash = 0
-         ORDER BY page_id ASC, sort_order ASC, id ASC"
+         ORDER BY page_id ASC, order_key ASC, id ASC"
+        ),
+        placeholders
     );
     let mut query = sqlx::query_as::<_, NoteBlockRow>(AssertSqlSafe(sql.as_str()));
     for page_id in page_ids {
@@ -487,6 +488,7 @@ async fn load_page_comments(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes comment threads for HTML export: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
     let mut threads = Vec::new();
     for thread in thread_rows {
         let anchor = sqlx::query_as::<_, NoteCommentAnchorRow>(
@@ -514,7 +516,10 @@ async fn load_page_comments(
             .map(|row| ExportComment {
                 id: row.id,
                 rich_text: row.rich_text,
-                author_name: display_name(&row.display_name),
+                author_name: display_name(Some(&crate::local_user::resolved_display_name_json(
+                    row.display_name.as_deref(),
+                    &local_author_name,
+                ))),
             })
             .collect();
         threads.push(ExportCommentThread {
@@ -588,17 +593,43 @@ fn collect_asset_paths_from_value(value: &Value, paths: &mut HashSet<String>) {
     }
 }
 
+/// The asset rows the referenced `asset_paths` resolve to, and the stored path of the row each
+/// referenced path resolves to. A reference may name its bytes under another extension than the
+/// row that holds them, so rows are resolved by class and digest as well as by path.
 async fn load_assets(
     pool: &SqlitePool,
     asset_paths: &HashSet<String>,
     include_assets: bool,
     diagnostics: &mut Vec<NoteHtmlExportDiagnosticDto>,
-) -> Result<Vec<NoteHtmlExportAssetDto>, String> {
+) -> Result<(Vec<NoteHtmlExportAssetDto>, HashMap<String, String>), String> {
     if asset_paths.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), HashMap::new()));
     }
-    let mut sorted_paths = asset_paths.iter().cloned().collect::<Vec<_>>();
+    let mut referenced_paths = asset_paths.iter().cloned().collect::<Vec<_>>();
+    referenced_paths.sort();
+    let mut stored_paths = HashMap::new();
+    for path in &referenced_paths {
+        match crate::assets::resolve_asset_row(pool, path).await? {
+            Some(asset) => {
+                stored_paths.insert(path.clone(), asset.asset_path);
+            }
+            None => diagnostics.push(NoteHtmlExportDiagnosticDto::new(
+                "html_export_asset_metadata_missing",
+                "warning",
+                None::<String>,
+                None::<String>,
+                None::<String>,
+                None::<String>,
+                format!("Managed asset metadata was missing for {path}"),
+            )),
+        }
+    }
+    let mut sorted_paths = stored_paths.values().cloned().collect::<Vec<_>>();
+    if sorted_paths.is_empty() {
+        return Ok((Vec::new(), stored_paths));
+    }
     sorted_paths.sort();
+    sorted_paths.dedup();
     let sql = format!(
         "SELECT id,
                 asset_path AS source_path,
@@ -619,22 +650,16 @@ async fn load_assets(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes assets for HTML export: {e}"))?;
-    let found = rows
-        .iter()
-        .map(|row| row.source_path.clone())
-        .collect::<HashSet<_>>();
-    for path in sorted_paths.iter().filter(|path| !found.contains(*path)) {
-        diagnostics.push(NoteHtmlExportDiagnosticDto::new(
-            "html_export_asset_metadata_missing",
-            "warning",
-            None::<String>,
-            None::<String>,
-            None::<String>,
-            None::<String>,
-            format!("Managed asset metadata was missing for {path}"),
-        ));
+    let mut fallback_paths: HashMap<&str, Vec<String>> = HashMap::new();
+    for path in &referenced_paths {
+        if let Some(stored) = stored_paths.get(path).filter(|stored| *stored != path) {
+            fallback_paths
+                .entry(stored.as_str())
+                .or_default()
+                .push(path.clone());
+        }
     }
-    Ok(rows
+    let assets = rows
         .into_iter()
         .map(|row| {
             let exported = include_assets && row.storage_state == "available";
@@ -649,6 +674,10 @@ async fn load_assets(
                     "Managed asset is not available on disk and was not exported",
                 ));
             }
+            let fallback_source_paths = fallback_paths
+                .get(row.source_path.as_str())
+                .cloned()
+                .unwrap_or_default();
             NoteHtmlExportAssetDto {
                 id: row.id,
                 archive_path: asset_archive_path(&row.source_path),
@@ -658,9 +687,11 @@ async fn load_assets(
                 sha256: row.sha256,
                 storage_state: row.storage_state,
                 exported,
+                fallback_source_paths,
             }
         })
-        .collect())
+        .collect();
+    Ok((assets, stored_paths))
 }
 
 async fn export_databases<'a, I>(
@@ -736,7 +767,7 @@ async fn load_database_export(
                 configuration
          FROM notes_database_views
          WHERE database_id = ?
-         ORDER BY sort_order ASC, id ASC",
+         ORDER BY order_key ASC, id ASC",
     )
     .bind(&database_id)
     .fetch_all(pool)
@@ -746,15 +777,16 @@ async fn load_database_export(
     let rows = if data_source_id.is_empty() {
         Vec::new()
     } else {
-        sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT id, title, properties, last_edited_time
-             FROM notes_pages
-             WHERE parent_type = 'data_source_id'
-               AND parent_data_source_id = ?
-               AND in_trash = 0
-               AND archived = 0
-             ORDER BY title COLLATE NOCASE ASC, id ASC",
-        )
+        sqlx::query_as::<_, (String, String, String, String)>(sqlx::AssertSqlSafe(format!(
+            "SELECT page.id, page.title, {} AS properties, page.last_edited_time
+             FROM notes_pages AS page
+             WHERE page.parent_type = 'data_source_id'
+               AND page.parent_data_source_id = ?
+               AND page.in_trash = 0
+               AND page.archived = 0
+             ORDER BY page.title COLLATE NOCASE ASC, page.id ASC",
+            crate::page_property_storage::page_properties_sql("page")
+        )))
         .bind(data_source_id)
         .fetch_all(pool)
         .await
@@ -878,9 +910,8 @@ fn block_key(block_id: &str) -> String {
     format!("block:{block_id}")
 }
 
-fn display_name(raw: &str) -> String {
-    serde_json::from_str::<Value>(raw)
-        .ok()
+fn display_name(raw: Option<&str>) -> String {
+    raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         .and_then(|value| {
             value
                 .get("resolved_name")

@@ -30,6 +30,13 @@ export const quickNotes = {
     deleteConfirmTitle: (name: string) => `Delete tag ${name}?`,
     deleteConfirmMessage: "Notes keep their content and lose this tag",
   },
+  sync: {
+    conflicts: (count: number) =>
+      `${count} ${count === 1 ? "note was" : "notes were"} edited on two devices. Open ${count === 1 ? "it" : "them"} in Quick notes to choose what to keep.`,
+    untitled: "Untitled note",
+    restored: "Note restored",
+    restoreFailed: "The note could not be restored",
+  },
   conflict: {
     badge: "Conflict",
     cardHint: "This note was edited on two devices. Open it to choose what to keep.",

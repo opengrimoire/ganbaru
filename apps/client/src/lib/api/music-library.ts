@@ -17,6 +17,7 @@ import {
   parseIssues,
   parseItemWindow,
   parsePlaylist,
+  parseOrderReceipts,
   parsePlaylistSummaries,
   parsePlaylistPlaybackEntries,
   parseRefreshJobProgress,
@@ -27,6 +28,7 @@ import {
   parseSourceRemovalImpact,
   parseWriteReceipt,
   parseYouTubeSnapshotResult,
+  parseAdvancedMembershipReceipt,
   type LocalRootBinding,
   type MusicBulkMembershipWrite,
   type MusicBulkMembershipEdit,
@@ -34,6 +36,7 @@ import {
   type MusicBulkReviewWrite,
   type MusicBulkSnoozeWrite,
   type MusicAdvancedMembershipWrite,
+  type MusicAdvancedMembershipReceipt,
   type MusicCollectionWrite,
   type MusicInspectorDetail,
   type MusicInterchangeImportResult,
@@ -70,6 +73,7 @@ import {
   type MusicSourceSummary,
   type MusicSourceRemovalImpact,
   type MusicSourceRemovalRequest,
+  type MusicOrderReceipt,
   type MusicWriteReceipt,
   type MusicYouTubePlaylistSnapshotWrite,
   type MusicYouTubeSnapshotResult,
@@ -173,11 +177,8 @@ export const createMusicPlaylist = (request: MusicPlaylistCreate): Promise<Music
   call("music_library_create_playlist", databaseArgs({ request }), parseWriteReceipt);
 export const updateMusicPlaylist = (request: MusicPlaylistUpdate): Promise<MusicWriteReceipt> =>
   call("music_library_update_playlist", databaseArgs({ request }), parseWriteReceipt);
-export const reorderMusicPlaylists = (request: MusicPlaylistsReorder): Promise<MusicWriteReceipt[]> =>
-  call("music_library_reorder_playlists", databaseArgs({ request }), (value) => {
-    if (!Array.isArray(value)) throw new Error("playlist reorder receipts must be an array");
-    return value.map((entry, index) => parseWriteReceipt(entry, `playlist reorder receipts[${index}]`));
-  });
+export const reorderMusicPlaylists = (request: MusicPlaylistsReorder): Promise<MusicOrderReceipt[]> =>
+  call("music_library_reorder_playlists", databaseArgs({ request }), (value) => parseOrderReceipts(value, "playlist reorder receipts"));
 export const duplicateMusicPlaylist = (request: MusicPlaylistDuplicate): Promise<MusicWriteReceipt> =>
   call("music_library_duplicate_playlist", databaseArgs({ request }), parseWriteReceipt);
 export const getMusicPlaylistDeleteImpact = (playlistId: string): Promise<MusicPlaylistDeleteImpact> =>
@@ -256,8 +257,8 @@ export const bulkSnoozeMusicItems = (request: MusicBulkSnoozeWrite): Promise<Mus
     if (typeof value !== "object" || value === null || !("changedCount" in value) || typeof value.changedCount !== "number") throw new Error("bulk snooze result must contain changedCount");
     return { changedCount: value.changedCount };
   });
-export const saveMusicAdvancedMembership = (request: MusicAdvancedMembershipWrite): Promise<MusicWriteReceipt> =>
-  call("music_library_save_advanced_membership", databaseArgs({ request }), parseWriteReceipt);
+export const saveMusicAdvancedMembership = (request: MusicAdvancedMembershipWrite): Promise<MusicAdvancedMembershipReceipt> =>
+  call("music_library_save_advanced_membership", databaseArgs({ request }), parseAdvancedMembershipReceipt);
 export const removeMusicMemberships = (request: MusicMembershipRemove): Promise<void> =>
   call("music_library_remove_memberships", databaseArgs({ request }), parseVoid);
 export const removeMusicSnooze = (snoozeId: string): Promise<void> =>

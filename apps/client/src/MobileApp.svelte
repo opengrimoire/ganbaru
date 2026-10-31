@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onBackButtonPress } from "@tauri-apps/api/app";
   import { onMount, untrack } from "svelte";
+  import { notesHeldEditNotice, reportNotesHeldEditFailure } from "$lib/stores/notes/held-edit-notice.svelte";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
+  import { setSyncForeground } from "$lib/api/sync";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     MobileBackListenerController,
@@ -42,12 +44,6 @@
   import { mark as perfMark } from "$lib/stores/perf-log.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { flushConfig } from "$lib/vault/config";
-
-  let {
-    onInitialSurfacePresented = () => undefined,
-  }: {
-    onInitialSurfacePresented?: () => void;
-  } = $props();
 
   type CalendarComponent = typeof import("$lib/components/calendar/CalendarView.svelte").default;
   type ProjectsComponent = typeof import("$lib/components/projects/ProjectsView.svelte").default;
@@ -128,9 +124,6 @@
   let deferredLoadErrors = $state<Partial<Record<DeferredSurface, LoadFailure>>>({});
   const deferredSurfaceLoads = new Map<DeferredSurface, Promise<void>>();
   let deferredPreparationStarted = false;
-  let primarySurfacePresented = false;
-  let ownershipStatusReady = false;
-  let initialSurfaceReported = false;
   let mobileAppDisposed = false;
   let stopMusicPreload = (): void => undefined;
   let removePomodoroBackLayer = (): void => undefined;
@@ -198,7 +191,7 @@
       quickNotes: flushQuickNoteEditors,
     },
     onError: (label, error) => {
-      console.error(`Failed to flush mobile ${label} persistence`, error);
+      if (!reportNotesHeldEditFailure(error)) console.error(`Failed to flush mobile ${label} persistence`, error);
     },
   });
 
@@ -252,6 +245,10 @@
       });
   }
 
+  /**
+   * Saves Notes edits when the app hides, once Notes has ever mounted, even while another tab is on screen. A held edit
+   * refuses the flush, and the lifecycle error handler shows the held notice.
+   */
   function flushMountedNotes(): Promise<void> {
     if (!notesSurfaceMounted || !notesStore) return Promise.resolve();
     return notesStore.flushPendingWrites();
@@ -380,8 +377,8 @@
   }
 
   /**
-   * Recovers the Focus run without blocking startup or resume: a read-only replica cannot
-   * recover, and the native projection reports that failure to the Focus surface.
+   * Recovers the Focus run without blocking startup or resume; the native projection reports
+   * a failed recovery to the Focus surface.
    */
   async function recoverFocusRun(): Promise<void> {
     try {
@@ -544,8 +541,6 @@
     await afterAnimationFrames(2);
     if (mobileAppDisposed) return;
     perfMark("boot.mobile-calendar-presented");
-    primarySurfacePresented = true;
-    reportInitialSurfacePresentedIfReady();
     void synchronizeMobileDistractions();
     void ensureCalendarNotificationScheduler();
     const batches: readonly (readonly DeferredSurface[])[] = [
@@ -562,25 +557,6 @@
       if (mobileAppDisposed) return;
     }
     perfMark("boot.mobile-standard-surfaces-ready");
-  }
-
-  function reportInitialSurfacePresentedIfReady(): void {
-    if (initialSurfaceReported || !primarySurfacePresented || !ownershipStatusReady) return;
-    initialSurfaceReported = true;
-    onInitialSurfacePresented();
-  }
-
-  function reportOwnershipStatusReady(): void {
-    ownershipStatusReady = true;
-    reportInitialSurfacePresentedIfReady();
-  }
-
-  async function reportInitialErrorAfterPaint(): Promise<void> {
-    await afterAnimationFrames(2);
-    if (!mobileAppDisposed && loadError) {
-      primarySurfacePresented = true;
-      reportInitialSurfacePresentedIfReady();
-    }
   }
 
   async function initializeWorkspace(): Promise<void> {
@@ -607,7 +583,6 @@
     } catch (error) {
       loadError = classifyLoadFailure(error);
       console.error("Failed to initialize the mobile workspace", error);
-      void reportInitialErrorAfterPaint();
     } finally {
       initializingWorkspace = false;
     }
@@ -824,7 +799,13 @@
         schedulerResume = null;
       });
     };
+    const reportSyncForeground = (): void => {
+      setSyncForeground(document.visibilityState === "visible").catch((error) => {
+        console.error("Failed to report the app visibility to sync", error);
+      });
+    };
     const handleVisibilityChange = (): void => {
+      reportSyncForeground();
       if (document.visibilityState === "hidden") {
         pomodoro.prepareForMobileBackground();
         return;
@@ -837,6 +818,7 @@
     window.addEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("focus", resumeLifecycleSchedulers);
+    reportSyncForeground();
 
     void initializeWorkspace();
 
@@ -1162,12 +1144,14 @@
   {/if}
   {/if}
 
-  {#await import("$lib/components/vault/VaultOwnershipPrompt.svelte") then module}
-    {@const VaultOwnershipPrompt = module.default}
-    <VaultOwnershipPrompt platform="android" onStatusReady={reportOwnershipStatusReady} />
-  {/await}
   {#await import("$lib/components/vault/FlaggedRollbackToast.svelte") then module}
     {@const FlaggedRollbackToast = module.default}
     <FlaggedRollbackToast />
   {/await}
+  {#if notesHeldEditNotice.current}
+    {#await import("$lib/components/notes/conflicts/NotesHeldEditToast.svelte") then module}
+      {@const NotesHeldEditToast = module.default}
+      <NotesHeldEditToast />
+    {/await}
+  {/if}
 </div>

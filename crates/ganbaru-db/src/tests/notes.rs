@@ -1,5 +1,5 @@
 use super::helpers::migrated_memory_pool;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::AssertSqlSafe;
 
 #[test]
 fn schema_creates_normalized_notes_database_tables() {
@@ -9,7 +9,8 @@ fn schema_creates_normalized_notes_database_tables() {
             "notes_databases",
             "notes_data_sources",
             "notes_database_views",
-            "notes_data_source_relation_links",
+            "notes_relation_edges",
+            "notes_page_property_values",
             "notes_data_source_rollup_cache",
             "notes_data_source_templates",
             "notes_data_source_template_blocks",
@@ -24,8 +25,8 @@ fn schema_creates_normalized_notes_database_tables() {
         }
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -37,9 +38,9 @@ fn schema_creates_normalized_notes_database_tables() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'database-a',
@@ -49,7 +50,7 @@ fn schema_creates_normalized_notes_database_tables() {
                 'child_database',
                 '{\"title\":\"Tasks\"}',
                 'Tasks',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -58,13 +59,14 @@ fn schema_creates_normalized_notes_database_tables() {
         sqlx::query(
             "INSERT INTO notes_databases (
                 id,
+                block_id,
                 parent_type,
                 parent_page_id,
                 title,
                 title_rich_text,
                 description
              )
-             VALUES ('database-a', 'page_id', 'page-a', 'Tasks', '[]', '[]')",
+             VALUES ('database-a', 'database-a', 'page_id', 'page-a', 'Tasks', '[]', '[]')",
         )
         .execute(&pool)
         .await
@@ -75,10 +77,9 @@ fn schema_creates_normalized_notes_database_tables() {
                 database_id,
                 title,
                 title_rich_text,
-                description,
-                properties
+                description
              )
-             VALUES ('source-a', 'database-a', 'Tasks', '[]', '[]', '{}')",
+             VALUES ('source-a', 'database-a', 'Tasks', '[]', '[]')",
         )
         .execute(&pool)
         .await
@@ -118,124 +119,98 @@ fn schema_creates_normalized_notes_database_tables() {
 }
 
 #[test]
-fn schema_enforces_notes_folder_placement_invariants() {
+fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let folder_table: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'notes_folders'",
+        let notes_triggers: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%' AND name NOT LIKE 'sync\\_%' ESCAPE '\\'
+             ORDER BY name",
         )
-        .fetch_optional(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(folder_table, Some(1));
-        let folder_column: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM pragma_table_info('notes_pages') WHERE name = 'folder_id'",
-        )
-        .fetch_optional(&pool)
-        .await
-        .unwrap();
-        assert_eq!(folder_column, Some(1));
+        assert_eq!(
+            notes_triggers,
+            [
+                "notes_pages_local_nesting_insert",
+                "notes_pages_local_nesting_update",
+                "notes_pages_park_child_page_blocks",
+            ],
+            "Notes rules are checked by writes, except moved-out child_page block parking \
+             through foreign key cascades and local nested page pairing"
+        );
 
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('folder-group', 'Folders')")
+        sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
             .execute(&pool)
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name)
-             VALUES ('folder-project-a', 'folder-group', 'A'),
-                    ('folder-project-b', 'folder-group', 'B')",
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('folder-project-a', 'folder-group', 'A', 'a0'),
+                    ('folder-project-b', 'folder-group', 'B', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO notes_folders (id, project_id, name)
-             VALUES ('folder-a', 'folder-project-a', 'A'),
-                    ('folder-b', 'folder-project-b', 'B')",
+             VALUES ('folder-a', 'folder-project-a', 'A')",
         )
         .execute(&pool)
         .await
         .unwrap();
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_folders (id, project_id, parent_folder_id, name)
-             VALUES ('folder-cross', 'folder-project-a', 'folder-b', 'Cross project')",
-            )
-            .execute(&pool)
-            .await
-            .is_err()
-        );
-
         sqlx::query(
-            "INSERT INTO notes_folders (id, project_id, parent_folder_id, name)
-             VALUES ('folder-child', 'folder-project-a', 'folder-a', 'Child')",
+            "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title)
+             VALUES ('folder-page', 'workspace', 'folder-a', 'folder-project-a', 'Folder page'),
+                    ('loose-page', 'workspace', NULL, 'folder-project-b', 'Loose page'),
+                    ('unassigned-page', 'workspace', NULL, NULL, 'Unassigned page')",
         )
         .execute(&pool)
         .await
         .unwrap();
         assert!(
             sqlx::query(
-                "UPDATE notes_folders SET parent_folder_id = 'folder-child' WHERE id = 'folder-a'",
+                "INSERT INTO notes_pages (id, parent_type, project_id, title)
+                 VALUES ('missing-project-page', 'workspace', 'missing-project', 'Missing')",
             )
             .execute(&pool)
             .await
-            .is_err()
+            .is_err(),
+            "a page project must name an existing project"
         );
+        for blank_owner in ["", "   "] {
+            assert!(
+                sqlx::query("UPDATE notes_pages SET trash_owner = ? WHERE id = 'loose-page'")
+                    .bind(blank_owner)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "a page trash owner may not be blank"
+            );
+        }
 
-        sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, folder_id, title, properties)
-             VALUES (
-                 'folder-page',
-                 'workspace',
-                 'folder-a',
-                 'Folder page',
-                 json_object('__ganbaru_project_id', 'folder-project-a')
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_pages (id, parent_type, folder_id, title, properties)
-             VALUES (
-                 'wrong-project-page',
-                 'workspace',
-                 'folder-a',
-                 'Wrong project',
-                 json_object('__ganbaru_project_id', 'folder-project-b')
-             )",
-            )
+        sqlx::query("DELETE FROM projects WHERE id = 'folder-project-a'")
             .execute(&pool)
             .await
-            .is_err()
-        );
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_pages (
-                id, parent_type, parent_page_id, folder_id, title, properties
-             ) VALUES (
-                 'nested-folder-page',
-                 'page_id',
-                 'folder-page',
-                 'folder-a',
-                 'Invalid nested folder page',
-                 json_object('__ganbaru_project_id', 'folder-project-a')
-             )",
-            )
-            .execute(&pool)
-            .await
-            .is_err()
-        );
-        assert!(
-            sqlx::query(
-                "UPDATE notes_pages
-             SET properties = json_object('__ganbaru_project_id', 'folder-project-b')
-             WHERE id = 'folder-page'",
-            )
-            .execute(&pool)
-            .await
-            .is_err()
+            .unwrap();
+        let remaining: Vec<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT id, project_id, folder_id FROM notes_pages ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            remaining,
+            [
+                ("folder-page".to_string(), None, None),
+                (
+                    "loose-page".to_string(),
+                    Some("folder-project-b".to_string()),
+                    None
+                ),
+                ("unassigned-page".to_string(), None, None),
+            ],
+            "deleting a project keeps its pages as unassigned workspace pages"
         );
     });
 }
@@ -245,15 +220,15 @@ fn schema_validates_project_notes_default_open_mode() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order)
-             VALUES ('group-notes-mode', 'Notes mode', 'lucide:folder', 100)",
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('group-notes-mode', 'Notes mode', 'lucide:folder', 'a0')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-notes-mode', 'group-notes-mode', 'Notes mode', 'lucide:folder', 100)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-notes-mode', 'group-notes-mode', 'Notes mode', 'lucide:folder', 'a0')",
         )
         .execute(&pool)
         .await
@@ -286,19 +261,20 @@ fn schema_validates_project_notes_default_open_mode() {
 fn schema_creates_notes_local_user_identity() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let row = sqlx::query(
-            "SELECT id, display_name
-             FROM notes_local_users
-             ORDER BY created_time ASC, id ASC
-             LIMIT 1",
+        let id: String = sqlx::query_scalar(
+            "SELECT id FROM notes_local_users ORDER BY created_time ASC, id ASC LIMIT 1",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        let id: String = row.try_get("id").unwrap();
-        let display_name: String = row.try_get("display_name").unwrap();
         assert_ne!(id, "local-user");
-        assert_eq!(display_name, "You");
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info('notes_local_users') ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns, ["id", "created_time"]);
 
         let created_by_column: Option<i64> = sqlx::query_scalar(
             "SELECT 1
@@ -349,19 +325,20 @@ fn schema_creates_notes_comment_reactions_and_notification_preferences() {
                 .await
                 .unwrap();
         for statement in [
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
             "INSERT INTO notes_comment_threads (id, page_id, parent_type, parent_page_id)
              VALUES ('thread-a', 'page-a', 'page_id', 'page-a')",
-            "INSERT INTO notes_comments (id, thread_id, rich_text) VALUES ('comment-a', 'thread-a', '[]')",
+            "INSERT INTO notes_comments (id, thread_id, rich_text, created_by)
+             VALUES ('comment-a', 'thread-a', '[]', 'person-a')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
 
         let insert_reaction = |emoji: &'static str, created_by: &'static str| {
             sqlx::query(
-                "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji)
-                 VALUES ('comment-a', ?, '{\"type\":\"user\",\"resolved_name\":\"You\"}', ?)",
+                "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji, sync_key)
+                 VALUES ('comment-a', ?1, '{\"type\":\"user\",\"resolved_name\":\"You\"}', ?2, 'reaction:' || ?1 || ':' || ?2)",
             )
             .bind(created_by)
             .bind(emoji)
@@ -488,8 +465,8 @@ fn schema_creates_notes_mention_notifications() {
         assert_eq!(page_fk, Some(1));
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -523,11 +500,11 @@ fn schema_creates_notes_mention_notifications() {
         );
         sqlx::query(
             "INSERT INTO notes_blocks (
-                id, page_id, parent_type, parent_page_id, type, payload, plain_text, sort_order
+                id, page_id, parent_type, parent_page_id, type, attrs, plain_text, order_key
              )
              VALUES (
                 'block-a', 'page-a', 'page_id', 'page-a', 'paragraph',
-                json_object('rich_text', json_array()), '', 1
+                json_object('rich_text', json_array()), '', 'a0'
              )",
         )
         .execute(&pool)
@@ -610,9 +587,13 @@ fn schema_creates_notes_suggestions() {
                 .unwrap();
         assert_eq!(exists, Some(1));
 
-        for column in ["created_by", "accepted_by", "rejected_by"] {
-            let user_fk: Option<i64> = sqlx::query_scalar(
-                "SELECT 1
+        for (column, action) in [
+            ("created_by", "CASCADE"),
+            ("accepted_by", "SET NULL"),
+            ("rejected_by", "SET NULL"),
+        ] {
+            let user_fk: Option<String> = sqlx::query_scalar(
+                "SELECT on_delete
                  FROM pragma_foreign_key_list('notes_suggestions')
                  WHERE \"table\" = 'notes_local_users'
                    AND \"from\" = ?",
@@ -622,15 +603,15 @@ fn schema_creates_notes_suggestions() {
             .await
             .unwrap();
             assert_eq!(
-                user_fk,
-                Some(1),
+                user_fk.as_deref(),
+                Some(action),
                 "{column} should reference notes_local_users"
             );
         }
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -642,9 +623,9 @@ fn schema_creates_notes_suggestions() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-a',
@@ -654,7 +635,7 @@ fn schema_creates_notes_suggestions() {
                 'paragraph',
                 json_object('rich_text', json_array()),
                 'Original',
-                1
+                'a0'
              )",
         )
         .execute(&pool)
@@ -705,337 +686,6 @@ fn schema_creates_notes_suggestions() {
 }
 
 #[test]
-fn schema_creates_notes_collaboration_operations() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
-                .bind("notes_collaboration_operations")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
-        assert_eq!(exists, Some(1));
-
-        for table in ["notes_local_users"] {
-            let fk: Option<i64> = sqlx::query_scalar(
-                "SELECT 1
-                 FROM pragma_foreign_key_list('notes_collaboration_operations')
-                 WHERE \"table\" = ?",
-            )
-            .bind(table)
-            .fetch_optional(&pool)
-            .await
-            .unwrap();
-            assert_eq!(fk, Some(1), "{table} should be referenced");
-        }
-        for table in ["notes_pages", "notes_blocks"] {
-            let fk: Option<i64> = sqlx::query_scalar(
-                "SELECT 1
-                 FROM pragma_foreign_key_list('notes_collaboration_operations')
-                 WHERE \"table\" = ?",
-            )
-            .bind(table)
-            .fetch_optional(&pool)
-            .await
-            .unwrap();
-            assert_eq!(fk, None, "{table} must not delete append-only operations");
-        }
-
-        sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (
-                'block-a',
-                'page-a',
-                'page_id',
-                'page-a',
-                'paragraph',
-                json_object('rich_text', json_array()),
-                'Original',
-                1
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let user_id: String = sqlx::query_scalar(
-            "SELECT id FROM notes_local_users ORDER BY created_time ASC, id ASC LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO notes_collaboration_operations (
-                id,
-                entity_type,
-                entity_id,
-                operation_type,
-                page_id,
-                block_id,
-                actor_id,
-                actor_display_name,
-                base_version,
-                entity_version,
-                conflict_policy,
-                payload
-             )
-             VALUES (
-                'operation-a',
-                'suggestion',
-                'suggestion-a',
-                'suggestion_create',
-                'page-a',
-                'block-a',
-                ?,
-                json_object('type', 'user', 'resolved_name', 'You'),
-                0,
-                1,
-                'append_only',
-                json_object('schema_version', 1)
-             )",
-        )
-        .bind(&user_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_collaboration_operations (
-                id,
-                entity_type,
-                entity_id,
-                operation_type,
-                page_id,
-                actor_id,
-                actor_display_name,
-                base_version,
-                entity_version,
-                conflict_policy,
-                payload
-             )
-             VALUES (
-                'operation-b',
-                'suggestion',
-                'suggestion-b',
-                'suggestion_accept',
-                'page-a',
-                ?,
-                json_object('type', 'user', 'resolved_name', 'You'),
-                0,
-                1,
-                'append_only',
-                json_object('schema_version', 1)
-             )",
-            )
-            .bind(&user_id)
-            .execute(&pool)
-            .await
-            .is_err()
-        );
-
-        sqlx::query("DELETE FROM notes_pages WHERE id = 'page-a'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let retained_operations: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notes_collaboration_operations WHERE id = 'operation-a'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(retained_operations, 1);
-    });
-}
-
-#[test]
-fn schema_creates_notes_page_icon_assets() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-
-        sqlx::query(
-            "INSERT INTO notes_page_icon_assets
-                (id, asset_path, original_name, content_type, byte_size, sha256)
-             VALUES (
-                'asset-1',
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
-                'focus.png',
-                'image/png',
-                42,
-                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let asset_path: String = sqlx::query_scalar(
-            "SELECT asset_path FROM notes_page_icon_assets WHERE id = 'asset-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            asset_path,
-            "notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-        );
-
-        for (id, asset_path, content_type, byte_size, sha256) in [
-            (
-                "bad-prefix",
-                "project-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-nested",
-                "notes/page-icons/nested/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-type",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.gif",
-                "image/gif",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-size",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                0,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-hash",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "short",
-            ),
-        ] {
-            let inserted = sqlx::query(
-                "INSERT INTO notes_page_icon_assets
-                    (id, asset_path, content_type, byte_size, sha256)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(asset_path)
-            .bind(content_type)
-            .bind(byte_size)
-            .bind(sha256)
-            .execute(&pool)
-            .await;
-            assert!(inserted.is_err());
-        }
-    });
-}
-
-#[test]
-fn schema_creates_notes_page_cover_assets() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-
-        sqlx::query(
-            "INSERT INTO notes_page_cover_assets
-                (id, asset_path, original_name, content_type, byte_size, sha256)
-             VALUES (
-                'asset-1',
-                'notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
-                'cover.png',
-                'image/png',
-                42,
-                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let asset_path: String = sqlx::query_scalar(
-            "SELECT asset_path FROM notes_page_cover_assets WHERE id = 'asset-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            asset_path,
-            "notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-        );
-
-        for (id, asset_path, content_type, byte_size, sha256) in [
-            (
-                "bad-prefix",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-nested",
-                "notes/page-covers/nested/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-type",
-                "notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.gif",
-                "image/gif",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-size",
-                "notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                0,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-hash",
-                "notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "short",
-            ),
-        ] {
-            let inserted = sqlx::query(
-                "INSERT INTO notes_page_cover_assets
-                    (id, asset_path, content_type, byte_size, sha256)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(asset_path)
-            .bind(content_type)
-            .bind(byte_size)
-            .bind(sha256)
-            .execute(&pool)
-            .await;
-            assert!(inserted.is_err());
-        }
-    });
-}
-
-#[test]
 fn schema_creates_notes_assets_and_references() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -1054,9 +704,9 @@ fn schema_creates_notes_assets_and_references() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-1',
@@ -1066,7 +716,7 @@ fn schema_creates_notes_assets_and_references() {
                 'paragraph',
                 '{\"paragraph\":{\"rich_text\":[]}}',
                 '',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -1085,7 +735,7 @@ fn schema_creates_notes_assets_and_references() {
                 sha256
              )
              VALUES (
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+                'notes/page-icons:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
                 'image',
                 'local_upload',
@@ -1112,7 +762,7 @@ fn schema_creates_notes_assets_and_references() {
                 missing_at
              )
              VALUES (
-                'notes/files/report.pdf',
+                'notes/files:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                 'notes/files/report.pdf',
                 'pdf',
                 'imported',
@@ -1131,7 +781,7 @@ fn schema_creates_notes_assets_and_references() {
         sqlx::query(
             "INSERT INTO notes_asset_references (asset_id, owner_type, owner_id, page_id, role)
              VALUES (
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+                'notes/page-icons:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'page',
                 'page-1',
                 'page-1',
@@ -1151,7 +801,7 @@ fn schema_creates_notes_assets_and_references() {
                 role
              )
              VALUES (
-                'notes/files/report.pdf',
+                'notes/files:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                 'block',
                 'block-1',
                 'page-1',
@@ -1236,18 +886,11 @@ fn schema_creates_notes_assets_and_references() {
                 "available",
                 None::<&str>,
             ),
-            (
-                "bad-missing-state",
-                "notes/files/file.bin",
-                "file",
-                "local_upload",
-                "application/octet-stream",
-                1,
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "missing",
-                None::<&str>,
-            ),
         ] {
+            let class = asset_path
+                .rsplit_once('/')
+                .map_or(asset_path, |(class, _)| class);
+            let asset_id = format!("{class}:{sha256}");
             let inserted = sqlx::query(
                 "INSERT INTO notes_assets (
                     id,
@@ -1262,7 +905,7 @@ fn schema_creates_notes_assets_and_references() {
                  )
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(id)
+            .bind(asset_id)
             .bind(asset_path)
             .bind(kind)
             .bind(source_type)
@@ -1279,7 +922,7 @@ fn schema_creates_notes_assets_and_references() {
         let invalid_reference = sqlx::query(
             "INSERT INTO notes_asset_references (asset_id, owner_type, owner_id, role)
              VALUES (
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+                'notes/page-icons:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'page',
                 'page-1',
                 'page_icon'
@@ -1380,9 +1023,9 @@ fn schema_creates_notes_backlink_index() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-1',
@@ -1392,7 +1035,7 @@ fn schema_creates_notes_backlink_index() {
                 'paragraph',
                 '{\"paragraph\":{\"rich_text\":[]}}',
                 'Mention target',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -1525,9 +1168,9 @@ fn schema_creates_notes_link_facts() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-1',
@@ -1537,7 +1180,7 @@ fn schema_creates_notes_link_facts() {
                 'paragraph',
                 '{\"paragraph\":{\"rich_text\":[]}}',
                 'Task mention',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -1555,7 +1198,7 @@ fn schema_creates_notes_link_facts() {
                 sha256
              )
              VALUES (
-                'asset-1',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'notes/files/asset-1.png',
                 'image',
                 'local_upload',
@@ -1621,8 +1264,8 @@ fn schema_creates_notes_link_facts() {
                 'page-1',
                 'block-1',
                 'file',
-                'asset-1',
-                'asset-1',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'block_file',
                 'diagram.png',
                 '2026-07-02T12:00:00.000Z',
@@ -1672,7 +1315,7 @@ fn schema_creates_notes_link_facts() {
                 'page-1',
                 'block-1',
                 'file',
-                'asset-1',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'block_file',
                 'diagram.png',
                 '2026-07-02T12:00:00.000Z',
@@ -1697,13 +1340,15 @@ fn schema_creates_strict_project_notes_history_storage() {
         .unwrap();
         assert_eq!(default_retention, 30);
 
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name)
-             VALUES ('project-1', 'group-1', 'Learning')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project-1', 'group-1', 'Learning', 'a0')",
         )
         .execute(&pool)
         .await
@@ -1781,23 +1426,6 @@ fn schema_creates_strict_project_notes_history_storage() {
         .await
         .unwrap();
         assert_eq!(deadline_index_exists, 1);
-
-        let operation_foreign_keys: Vec<String> = sqlx::query_scalar(
-            "SELECT \"table\" FROM pragma_foreign_key_list('notes_collaboration_operations')",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert!(
-            !operation_foreign_keys
-                .iter()
-                .any(|table| table == "notes_pages")
-        );
-        assert!(
-            !operation_foreign_keys
-                .iter()
-                .any(|table| table == "notes_blocks")
-        );
     });
 }
 
@@ -1806,16 +1434,16 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'Headings', '{}');
-             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, payload, has_children)
-               VALUES ('parent', 'page', 'page_id', 'page', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
-             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, payload)
-               VALUES ('child', 'page', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'Headings');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
+               VALUES ('parent', 'page', 'page_id', 'page', 'heading_4', '{\"is_toggleable\":true}', 'a0');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, text, order_key)
+               VALUES ('child', 'page', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}', 'a0');
              INSERT INTO notes_page_templates (id, name) VALUES ('template', 'Headings');
-             INSERT INTO notes_page_template_blocks (template_id, id, parent_type, type, payload, has_children)
-               VALUES ('template', 'parent', 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
-             INSERT INTO notes_page_template_blocks (template_id, id, parent_type, parent_block_id, type, payload)
-               VALUES ('template', 'child', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');",
+             INSERT INTO notes_page_template_blocks (template_id, id, ordinal, parent_type, type, payload, has_children)
+               VALUES ('template', 'parent', 0, 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
+             INSERT INTO notes_page_template_blocks (template_id, id, ordinal, parent_type, parent_block_id, type, payload)
+               VALUES ('template', 'child', 1, 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');",
         ).execute(&pool).await.unwrap();
         for table in ["notes_blocks", "notes_page_template_blocks"] {
             for heading in ["heading_5", "heading_6"] {
@@ -1827,14 +1455,17 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
                 .await
                 .unwrap();
             }
-            assert!(
-                sqlx::query(AssertSqlSafe(format!(
-                    "UPDATE {table} SET type = 'heading_7' WHERE id = 'parent'"
-                )))
-                .execute(&pool)
-                .await
-                .is_err()
-            );
+            // Template blocks are owned sync rows whose types Notes and the sync adapter check.
+            if table == "notes_blocks" {
+                assert!(
+                    sqlx::query(AssertSqlSafe(format!(
+                        "UPDATE {table} SET type = 'heading_7' WHERE id = 'parent'"
+                    )))
+                    .execute(&pool)
+                    .await
+                    .is_err()
+                );
+            }
         }
         assert_eq!(
             sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
@@ -1857,5 +1488,330 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
                 .unwrap(),
             "ok"
         );
+    });
+}
+
+/// Every block type the Notes schema accepts.
+const NOTES_BLOCK_TYPES: [&str; 37] = [
+    "paragraph",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "heading_4",
+    "heading_5",
+    "heading_6",
+    "bulleted_list_item",
+    "numbered_list_item",
+    "to_do",
+    "toggle",
+    "callout",
+    "quote",
+    "child_page",
+    "child_database",
+    "breadcrumb",
+    "table_of_contents",
+    "column_list",
+    "column",
+    "table",
+    "table_row",
+    "tab",
+    "image",
+    "video",
+    "audio",
+    "file",
+    "pdf",
+    "bookmark",
+    "link_preview",
+    "synced_block",
+    "template",
+    "button",
+    "embed",
+    "equation",
+    "divider",
+    "code",
+    "unsupported",
+];
+
+#[test]
+fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('notes_blocks') ORDER BY cid")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for present in ["attrs", "text", "order_key", "trash_owner"] {
+            assert!(columns.iter().any(|column| column == present), "{present}");
+        }
+        for absent in ["payload", "sort_order", "has_children"] {
+            assert!(!columns.iter().any(|column| column == absent), "{absent}");
+        }
+        let page_columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('notes_pages')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for present in ["project_id", "trash_owner"] {
+            assert!(
+                page_columns.iter().any(|column| column == present),
+                "{present}"
+            );
+        }
+        let notes_triggers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\' AND name NOT LIKE 'notes\\_pages\\_local\\_nesting\\_%' ESCAPE '\\' AND name <> 'notes_pages_park_child_page_blocks'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(notes_triggers, 0);
+
+        sqlx::raw_sql(
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'P');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+               VALUES ('block', 'page', 'page_id', 'page', 'toggle', 'a0');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (column, value) in [("attrs", "[]"), ("text", "\"x\""), ("order_key", "")] {
+            let rejected = sqlx::query(AssertSqlSafe(format!(
+                "UPDATE notes_blocks SET {column} = ? WHERE id = 'block'"
+            )))
+            .bind(value)
+            .execute(&pool)
+            .await;
+            assert!(rejected.is_err(), "{column} accepted {value}");
+        }
+        assert!(
+            sqlx::query("INSERT INTO notes_block_view_state (block_id) VALUES ('block')")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "an empty view state row is refused"
+        );
+        sqlx::query("INSERT INTO notes_block_view_state (block_id, open) VALUES ('block', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM notes_pages WHERE id = 'page'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM notes_blocks) + (SELECT COUNT(*) FROM notes_block_view_state)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn fresh_vault_nested_pages_follow_their_child_page_block() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'G', 'a0');
+             INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'P', 'a0');
+             INSERT INTO notes_folders (id, project_id, name) VALUES ('folder', 'project', 'F');
+             INSERT INTO notes_pages (id, parent_type, title) VALUES ('parent', 'workspace', 'P');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
+             VALUES ('child', 'page_id', 'parent', 'child', 'C')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+             VALUES ('child', 'parent', 'page_id', 'parent', 'child_page', 'a0')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit()
+            .await
+            .expect("the block reference is checked at commit");
+
+        // Local writes keep the parent columns paired with `child_block_id`; remote placement
+        // is paired by the Notes structure repair.
+        for statement in [
+            "UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child'",
+            "UPDATE notes_pages SET parent_type = 'workspace', parent_page_id = NULL WHERE id = 'child'",
+            "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'child'",
+            "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'parent'",
+            "UPDATE notes_pages SET folder_id = 'folder' WHERE id = 'child'",
+        ] {
+            assert!(
+                sqlx::raw_sql(AssertSqlSafe(statement))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{statement}"
+            );
+        }
+        assert!(
+            sqlx::query(
+                "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
+                 VALUES ('loose', 'page_id', 'parent', 'loose', 'L')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "a nested page needs its child_page block"
+        );
+        sqlx::raw_sql(
+            "UPDATE sync_apply_state SET applying = 1;
+             UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child';
+             UPDATE notes_pages SET child_block_id = 'child' WHERE id = 'child';
+             UPDATE sync_apply_state SET applying = 0;",
+        )
+        .execute(&pool)
+        .await
+        .expect("apply writes placement before the hook derives the parent columns");
+
+        sqlx::query("DELETE FROM notes_blocks WHERE id = 'child'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pages: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_pages ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pages, vec!["parent".to_string()]);
+    });
+}
+
+#[test]
+fn notes_blocks_accept_every_block_type() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'Page')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (index, block_type) in NOTES_BLOCK_TYPES.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO notes_blocks
+                    (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
+                 VALUES (?, 'page', 'page_id', 'page', ?, '{}', ?)",
+            )
+            .bind(format!("block-{index:02}"))
+            .bind(block_type)
+            .bind(format!("a0{index:02}1"))
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("{block_type}: {error}"));
+        }
+        let unknown = sqlx::query(
+            "INSERT INTO notes_blocks
+                (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
+             VALUES ('unknown', 'page', 'page_id', 'page', 'unknown_type', '{}', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(
+            unknown.to_string().contains("CHECK constraint failed"),
+            "{unknown}"
+        );
+    });
+}
+
+#[test]
+fn replicated_notes_tables_capture_changes_and_keep_hook_maintained_placement_unchecked() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table'
+             AND name IN ('notes_page_history_pending', 'notes_sync_repair_pending')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 2);
+        for table in [
+            "notes_local_users",
+            "notes_folders",
+            "notes_pages",
+            "notes_page_aliases",
+            "notes_blocks",
+            "notes_databases",
+            "notes_data_sources",
+            "notes_database_views",
+            "notes_page_templates",
+            "notes_data_source_templates",
+        ] {
+            let sync_triggers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'trigger' AND tbl_name = ? AND name LIKE 'sync\\_%' ESCAPE '\\'",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(sync_triggers, 7, "{table}");
+        }
+        let page_keys: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT \"from\", \"table\", on_delete FROM pragma_foreign_key_list('notes_pages')
+             WHERE \"from\" IN ('parent_page_id', 'parent_data_source_id')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            page_keys,
+            [(
+                "parent_data_source_id".to_string(),
+                "notes_data_sources".to_string(),
+                "CASCADE".to_string()
+            )]
+        );
+    });
+}
+
+#[test]
+fn deleting_a_data_source_removes_its_row_pages_and_options() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'Page');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+                 VALUES ('db', 'page', 'page_id', 'page', 'child_database', 'a0');
+             INSERT INTO notes_databases
+                 (id, block_id, parent_type, parent_page_id, title, title_rich_text, description)
+                 VALUES ('db', 'db', 'page_id', 'page', 'Tasks', '[]', '[]');
+             INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description)
+                 VALUES ('source', 'db', 'Tasks', '[]', '[]');
+             INSERT INTO notes_data_source_properties
+                 (data_source_id, property_id, sync_key, name, type, config, order_key)
+                 VALUES ('source', 'stage', 'key-stage', 'Stage', 'select', '{}', 'a1');
+             INSERT INTO notes_data_source_property_options
+                 (data_source_id, property_id, property_key, option_id, sync_key, name, position)
+                 VALUES ('source', 'stage', 'key-stage', 'todo', 'key-todo', 'To do', 'a0');
+             INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+                 VALUES ('row', 'data_source_id', 'source', 'Row');
+             DELETE FROM notes_data_sources WHERE id = 'source';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM notes_pages WHERE id = 'row')
+                  + (SELECT count(*) FROM notes_data_source_property_options)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
     });
 }

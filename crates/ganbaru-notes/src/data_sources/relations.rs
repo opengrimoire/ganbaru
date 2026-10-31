@@ -1,6 +1,6 @@
-use crate::data_sources;
 use crate::models::NotePageRow;
 use crate::validation::require_uuid;
+use crate::{data_sources, page_property_storage};
 use serde_json::{Map, Value, json};
 use sqlx::{Sqlite, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -185,53 +185,17 @@ pub async fn ensure_relation_schema_targets_tx(
     Ok(())
 }
 
-pub async fn rebuild_data_source_relation_links_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    data_source_id: &str,
-    schema_properties: &Value,
-) -> Result<(), String> {
-    sqlx::query(
-        "DELETE FROM notes_data_source_relation_links
-         WHERE source_data_source_id = ?",
-    )
-    .bind(data_source_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("delete notes data source relation links: {e}"))?;
-    let rows = sqlx::query_as::<_, NotePageRow>(
-        "SELECT *
-         FROM notes_pages
-         WHERE parent_type = 'data_source_id'
-           AND parent_data_source_id = ?
-           AND in_trash = 0
-           AND archived = 0",
-    )
-    .bind(data_source_id)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|e| format!("load notes relation rows: {e}"))?;
-    for row in rows {
-        let properties = parse_json(&row.properties, "row page properties")?;
-        replace_row_relation_links_tx(
-            tx,
-            data_source_id,
-            &row.id,
-            schema_properties,
-            &properties,
-            false,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
+/// Makes the relation values in `row_properties` the links of `source_page_id` under every
+/// relation property of `schema_properties`; a relation the object omits loses its links.
+///
+/// Links are stored as canonical edges, so the synced side of a two-way relation follows
+/// without a second write.
 pub async fn replace_row_relation_links_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source_data_source_id: &str,
     source_page_id: &str,
     schema_properties: &Value,
     row_properties: &Value,
-    propagate_dual: bool,
 ) -> Result<(), String> {
     let row_object = row_properties
         .as_object()
@@ -247,20 +211,20 @@ pub async fn replace_row_relation_links_tx(
             source_page_id,
             &property,
             &value,
-            propagate_dual,
         )
         .await?;
     }
     Ok(())
 }
 
+/// Makes the relation value `row_property_value` the links of `source_page_id` under the
+/// relation property `property_schema`.
 pub async fn replace_relation_property_links_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source_data_source_id: &str,
     source_page_id: &str,
     property_schema: &Value,
     row_property_value: &Value,
-    propagate_dual: bool,
 ) -> Result<(), String> {
     let property = relation_property_from_schema("", property_schema)?
         .ok_or_else(|| "row property is not a relation".to_string())?;
@@ -270,7 +234,6 @@ pub async fn replace_relation_property_links_tx(
         source_page_id,
         &property,
         row_property_value,
-        propagate_dual,
     )
     .await
 }
@@ -281,58 +244,29 @@ async fn replace_relation_property_links_inner_tx(
     source_page_id: &str,
     property: &RelationProperty,
     row_property_value: &Value,
-    propagate_dual: bool,
 ) -> Result<(), String> {
     ensure_active_data_source_tx(tx, &property.config.target_data_source_id).await?;
     let current_target_ids = relation_ids_from_value(row_property_value)?;
-    let previous_target_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT target_page_id
-         FROM notes_data_source_relation_links
-         WHERE source_page_id = ? AND source_property_id = ?
-         ORDER BY target_page_id ASC",
-    )
-    .bind(source_page_id)
-    .bind(&property.id)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|e| format!("load previous notes relation links: {e}"))?;
     let targets = active_relation_targets_tx(
         tx,
         &property.config.target_data_source_id,
         &current_target_ids,
     )
     .await?;
-    sqlx::query(
-        "DELETE FROM notes_data_source_relation_links
-         WHERE source_page_id = ? AND source_property_id = ?",
+    let target_ids = targets
+        .into_iter()
+        .map(|target| target.id)
+        .collect::<Vec<_>>();
+    let (added, removed) = page_property_storage::replace_relation_targets(
+        tx,
+        source_data_source_id,
+        source_page_id,
+        &property.id,
+        &target_ids,
     )
-    .bind(source_page_id)
-    .bind(&property.id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("delete notes relation links: {e}"))?;
-    for target in &targets {
-        insert_relation_link_tx(
-            tx,
-            source_page_id,
-            source_data_source_id,
-            &property.id,
-            &property.name,
-            &target.id,
-            &property.config.target_data_source_id,
-        )
-        .await?;
-    }
-    if propagate_dual {
-        sync_dual_relation_links_tx(
-            tx,
-            source_data_source_id,
-            source_page_id,
-            property,
-            &previous_target_ids,
-            &current_target_ids,
-        )
-        .await?;
+    .await?;
+    if added.is_empty() && removed.is_empty() {
+        return Ok(());
     }
     data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(tx, source_data_source_id)
         .await?;
@@ -341,171 +275,6 @@ async fn replace_relation_property_links_inner_tx(
         &property.config.target_data_source_id,
     )
     .await?;
-    Ok(())
-}
-
-async fn sync_dual_relation_links_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    source_data_source_id: &str,
-    source_page_id: &str,
-    property: &RelationProperty,
-    previous_target_ids: &[String],
-    current_target_ids: &[String],
-) -> Result<(), String> {
-    let Some(_) = property.config.dual_property else {
-        return Ok(());
-    };
-    let target_schema =
-        load_data_source_properties_tx(tx, &property.config.target_data_source_id).await?;
-    let inverse =
-        inverse_relation_property(&property.config, &target_schema, source_data_source_id)?;
-    let previous: HashSet<&str> = previous_target_ids.iter().map(String::as_str).collect();
-    let current: HashSet<&str> = current_target_ids.iter().map(String::as_str).collect();
-    for removed_target_id in previous.difference(&current) {
-        update_inverse_relation_value_tx(
-            tx,
-            &property.config.target_data_source_id,
-            removed_target_id,
-            &inverse,
-            source_data_source_id,
-            source_page_id,
-            false,
-        )
-        .await?;
-    }
-    for current_target_id in current {
-        update_inverse_relation_value_tx(
-            tx,
-            &property.config.target_data_source_id,
-            current_target_id,
-            &inverse,
-            source_data_source_id,
-            source_page_id,
-            true,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn update_inverse_relation_value_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    inverse_data_source_id: &str,
-    inverse_page_id: &str,
-    inverse_property: &RelationProperty,
-    target_data_source_id: &str,
-    target_page_id: &str,
-    should_add: bool,
-) -> Result<(), String> {
-    let Some(mut row) = sqlx::query_as::<_, NotePageRow>(
-        "SELECT *
-         FROM notes_pages
-         WHERE id = ?
-           AND parent_type = 'data_source_id'
-           AND parent_data_source_id = ?
-           AND in_trash = 0
-           AND archived = 0",
-    )
-    .bind(inverse_page_id)
-    .bind(inverse_data_source_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| format!("load inverse notes relation row: {e}"))?
-    else {
-        return Ok(());
-    };
-    let mut properties = parse_json(&row.properties, "inverse row page properties")?;
-    let properties_object = properties
-        .as_object_mut()
-        .ok_or_else(|| "inverse row page properties must be an object".to_string())?;
-    let current_value = properties_object
-        .get(&inverse_property.key)
-        .cloned()
-        .unwrap_or_else(|| relation_property_value(&inverse_property.id, Value::Array(Vec::new())));
-    let mut ids = relation_ids_from_value(&current_value)?;
-    if should_add {
-        if !ids.iter().any(|id| id == target_page_id) {
-            ids.push(target_page_id.to_string());
-        }
-    } else {
-        ids.retain(|id| id != target_page_id);
-    }
-    let payload = Value::Array(ids.iter().map(|id| json!({ "id": id })).collect());
-    properties_object.insert(
-        inverse_property.key.clone(),
-        relation_property_value(&inverse_property.id, payload),
-    );
-    row.properties = properties.to_string();
-    sqlx::query(
-        "UPDATE notes_pages
-         SET properties = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?",
-    )
-    .bind(&row.properties)
-    .bind(inverse_page_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("update inverse notes relation row: {e}"))?;
-    if should_add {
-        insert_relation_link_tx(
-            tx,
-            inverse_page_id,
-            inverse_data_source_id,
-            &inverse_property.id,
-            &inverse_property.name,
-            target_page_id,
-            target_data_source_id,
-        )
-        .await?;
-    } else {
-        sqlx::query(
-            "DELETE FROM notes_data_source_relation_links
-             WHERE source_page_id = ?
-               AND source_property_id = ?
-               AND target_page_id = ?",
-        )
-        .bind(inverse_page_id)
-        .bind(&inverse_property.id)
-        .bind(target_page_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("delete inverse notes relation link: {e}"))?;
-    }
-    data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(tx, inverse_data_source_id)
-        .await?;
-    Ok(())
-}
-
-async fn insert_relation_link_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    source_page_id: &str,
-    source_data_source_id: &str,
-    source_property_id: &str,
-    source_property_name: &str,
-    target_page_id: &str,
-    target_data_source_id: &str,
-) -> Result<(), String> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO notes_data_source_relation_links (
-            source_page_id,
-            source_data_source_id,
-            source_property_id,
-            source_property_name,
-            target_page_id,
-            target_data_source_id
-         )
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind(source_page_id)
-    .bind(source_data_source_id)
-    .bind(source_property_id)
-    .bind(source_property_name)
-    .bind(target_page_id)
-    .bind(target_data_source_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("insert notes relation link: {e}"))?;
     Ok(())
 }
 
@@ -670,14 +439,15 @@ async fn load_data_source_properties_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<Value, String> {
-    let properties: String = sqlx::query_scalar(
-        "SELECT data_source.properties
-         FROM notes_data_sources AS data_source
+    let properties: String = sqlx::query_scalar(concat!(
+        "SELECT ",
+        crate::note_data_source_properties_json!("data_source"),
+        " FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .bind(data_source_id)
     .fetch_optional(&mut **tx)
     .await

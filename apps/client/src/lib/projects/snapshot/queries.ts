@@ -27,18 +27,6 @@ function copy<T>(values: readonly T[] | undefined): T[] {
   return values ? values.slice() : [];
 }
 
-function lastSortOrder(values: readonly { sortOrder: number }[] | undefined): number {
-  return Math.max(0, values?.at(-1)?.sortOrder ?? 0);
-}
-
-function lastTaskSectionSortOrder(values: readonly ProjectTask[] | undefined): number {
-  return Math.max(0, values?.at(-1)?.sectionSortOrder ?? 0);
-}
-
-function lastTaskStatusSortOrder(values: readonly ProjectTask[] | undefined): number {
-  return Math.max(0, values?.at(-1)?.statusSortOrder ?? 0);
-}
-
 export function activeProjects(source: ProjectLoadedDataIndexSource): Project[] {
   return copy(projectLoadedDataIndex(source).activeProjects);
 }
@@ -76,6 +64,7 @@ export function sectionsForProjectIncludingInactive(
   return projectId ? copy(projectLoadedDataIndex(source).sectionsByProject.get(projectId)) : [];
 }
 
+/** Live statuses for pickers, settings, and defaults. */
 export function statusesForProject(
   source: ProjectLoadedDataIndexSource,
   projectId: string | null | undefined,
@@ -83,11 +72,28 @@ export function statusesForProject(
   return projectId ? copy(projectLoadedDataIndex(source).statusesByProject.get(projectId)) : [];
 }
 
+/** Live priorities for pickers, settings, and defaults. */
 export function prioritiesForProject(
   source: ProjectLoadedDataIndexSource,
   projectId: string | null | undefined,
 ): ProjectPriorityConfig[] {
   return projectId ? copy(projectLoadedDataIndex(source).prioritiesByProject.get(projectId)) : [];
+}
+
+/** Live statuses plus deleted ones that a task still uses, for task views, grouping, and labels. */
+export function taskStatusesForProject(
+  source: ProjectLoadedDataIndexSource,
+  projectId: string | null | undefined,
+): ProjectStatus[] {
+  return projectId ? copy(projectLoadedDataIndex(source).taskStatusesByProject.get(projectId)) : [];
+}
+
+/** Live priorities plus deleted ones that a task still uses, for task views, grouping, and labels. */
+export function taskPrioritiesForProject(
+  source: ProjectLoadedDataIndexSource,
+  projectId: string | null | undefined,
+): ProjectPriorityConfig[] {
+  return projectId ? copy(projectLoadedDataIndex(source).taskPrioritiesByProject.get(projectId)) : [];
 }
 
 export function tasksForProject(
@@ -355,70 +361,6 @@ export function dependenciesBlockedByTask(
   taskId: string | null | undefined,
 ): ProjectTaskDependency[] {
   return taskId ? copy(projectLoadedDataIndex(source).dependenciesBlockedByTask.get(taskId)) : [];
-}
-
-export function nextGroupSortOrder(source: ProjectLoadedDataIndexSource): number {
-  return projectLoadedDataIndex(source).maxGroupSortOrder + 1000;
-}
-
-export function nextProjectSortOrder(source: ProjectLoadedDataIndexSource, groupId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).projectsByGroup.get(groupId)) + 1000;
-}
-
-export function nextSectionSortOrder(source: ProjectLoadedDataIndexSource, projectId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).activeSectionsByProject.get(projectId)) + 1000;
-}
-
-export function nextStatusSortOrder(source: ProjectLoadedDataIndexSource, projectId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).statusesByProject.get(projectId)) + 1000;
-}
-
-export function nextPrioritySortOrder(source: ProjectLoadedDataIndexSource, projectId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).prioritiesByProject.get(projectId)) + 1000;
-}
-
-export function nextTaskSectionSortOrder(
-  source: ProjectLoadedDataIndexSource,
-  projectId: string,
-  sectionId: string,
-): number {
-  return lastTaskSectionSortOrder(
-    projectLoadedDataIndex(source).activeTopLevelTasksBySection.get(projectPairKey(projectId, sectionId)),
-  ) + 1000;
-}
-
-export function nextSubtaskSortOrder(source: ProjectLoadedDataIndexSource, parentTaskId: string): number {
-  return lastTaskSectionSortOrder(projectLoadedDataIndex(source).tasksByParent.get(parentTaskId)) + 1000;
-}
-
-export function nextChecklistSortOrder(source: ProjectLoadedDataIndexSource, taskId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).checklistItemsByTask.get(taskId)) + 1000;
-}
-
-export function nextTagSortOrder(source: ProjectLoadedDataIndexSource, projectId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).tagsByProject.get(projectId)) + 1000;
-}
-
-export function nextCustomFieldSortOrder(source: ProjectLoadedDataIndexSource, projectId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).customFieldsByProject.get(projectId)) + 1000;
-}
-
-export function nextCustomFieldOptionSortOrder(source: ProjectLoadedDataIndexSource, fieldId: string): number {
-  return lastSortOrder(projectLoadedDataIndex(source).customFieldOptionsByField.get(fieldId)) + 1000;
-}
-
-export function nextCustomEmojiSortOrder(source: ProjectLoadedDataIndexSource): number {
-  return projectLoadedDataIndex(source).maxCustomEmojiSortOrder + 1000;
-}
-
-export function nextTaskStatusSortOrder(
-  source: ProjectLoadedDataIndexSource,
-  projectId: string,
-  statusId: string,
-): number {
-  return lastTaskStatusSortOrder(
-    projectLoadedDataIndex(source).activeTopLevelTasksByStatus.get(projectPairKey(projectId, statusId)),
-  ) + 1000;
 }
 
 function snapshotWithoutProjectData(source: ProjectsSnapshot, projectId: string): ProjectsSnapshot {

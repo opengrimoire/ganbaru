@@ -67,7 +67,7 @@ impl Preimages {
         rows.sort_by(|(left, _), (right, _)| {
             (&left.parent_page_id, &left.parent_block_id)
                 .cmp(&(&right.parent_page_id, &right.parent_block_id))
-                .then(left.sort_order.total_cmp(&right.sort_order))
+                .then(left.order_key.cmp(&right.order_key))
                 .then(left.id.cmp(&right.id))
         });
         let mut blocks = Vec::with_capacity(rows.len());
@@ -86,7 +86,7 @@ pub(super) async fn charge_row(
     id: &str,
     bytes: usize,
 ) -> Result<usize, String> {
-    let row_bytes: i64 = sqlx::query_scalar("SELECT length(CAST(payload AS BLOB)) + length(CAST(plain_text AS BLOB)) + 1024 FROM notes_blocks WHERE id = ?")
+    let row_bytes: i64 = sqlx::query_scalar("SELECT length(CAST(attrs AS BLOB)) + length(CAST(text AS BLOB)) + length(CAST(plain_text AS BLOB)) + 1024 FROM notes_blocks WHERE id = ?")
         .bind(id).fetch_one(&mut **tx).await.map_err(|error| format!("bound Notes edit receipt: {error}"))?;
     let next = bytes.saturating_add(row_bytes as usize);
     if next > super::compound::MAX_RESULT_BYTES {
@@ -103,12 +103,12 @@ pub(super) async fn placement(
     if row.in_trash != 0 {
         return Ok(None);
     }
-    let after: Option<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_page_id IS ? AND parent_block_id IS ? AND in_trash = 0 AND (sort_order < ? OR (sort_order = ? AND id < ?)) ORDER BY sort_order DESC, id DESC LIMIT 1")
-        .bind(&row.parent_page_id).bind(&row.parent_block_id).bind(row.sort_order).bind(row.sort_order).bind(&row.id)
+    let after: Option<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_page_id IS ? AND parent_block_id IS ? AND in_trash = 0 AND (order_key < ? OR (order_key = ? AND id < ?)) ORDER BY order_key DESC, id DESC LIMIT 1")
+        .bind(&row.parent_page_id).bind(&row.parent_block_id).bind(&row.order_key).bind(&row.order_key).bind(&row.id)
         .fetch_optional(&mut **tx).await.map_err(|error| format!("read Notes edit placement: {error}"))?;
     let before = if after.is_none() {
-        sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_page_id IS ? AND parent_block_id IS ? AND in_trash = 0 AND (sort_order > ? OR (sort_order = ? AND id > ?)) ORDER BY sort_order, id LIMIT 1")
-            .bind(&row.parent_page_id).bind(&row.parent_block_id).bind(row.sort_order).bind(row.sort_order).bind(&row.id)
+        sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_page_id IS ? AND parent_block_id IS ? AND in_trash = 0 AND (order_key > ? OR (order_key = ? AND id > ?)) ORDER BY order_key, id LIMIT 1")
+            .bind(&row.parent_page_id).bind(&row.parent_block_id).bind(&row.order_key).bind(&row.order_key).bind(&row.id)
             .fetch_optional(&mut **tx).await.map_err(|error| format!("read Notes first placement: {error}"))?
     } else {
         None

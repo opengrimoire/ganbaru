@@ -65,11 +65,13 @@ import {
   readIdentifier,
   readNullable,
   readNonNegativeSafeInteger,
+  readOrderKey,
   readRecord,
   readString,
   readUtcTimestamp,
   readVersionedJson,
 } from "./readers";
+import { compareCodeUnits } from "$lib/utils/order-key";
 
 const AGENT_RUN_STATES = [
   "queued", "starting", "working", "waiting", "completed", "failed", "cancelled",
@@ -149,7 +151,6 @@ export function parseChatAiTeammate(value: unknown, label = "Chat AI teammate"):
       record.activeAssignmentCount,
       `${label}.activeAssignmentCount`,
     ),
-    hasDurableHistory: readBoolean(record.hasDurableHistory, `${label}.hasDurableHistory`),
   };
 }
 
@@ -175,9 +176,9 @@ function parseChatHistoryBoundary(value: unknown, label: string): ChatHistoryBou
   const record = readRecord(value, label);
   const kind = readEnum(record.kind, ["entire", "fromGrant"] as const, `${label}.kind`);
   if (kind === "entire") return { kind };
-  return record.lowerOrdinal === undefined
+  return record.lowerOrderKey === undefined || record.lowerOrderKey === null
     ? { kind }
-    : { kind, lowerOrdinal: readNonNegativeSafeInteger(record.lowerOrdinal, `${label}.lowerOrdinal`) };
+    : { kind, lowerOrderKey: readOrderKey(record.lowerOrderKey, `${label}.lowerOrderKey`) };
 }
 
 function parseChatFolderGrant(value: unknown, label: string): ChatFolderGrant {
@@ -281,6 +282,10 @@ export function parseChatTeammateChannelAccess(
     groupId: readIdentifier(record.groupId, `${label}.groupId`),
     channelName: readString(record.channelName, `${label}.channelName`),
     accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
+    accessProfileRevisionId: readIdentifier(
+      record.accessProfileRevisionId,
+      `${label}.accessProfileRevisionId`,
+    ),
     accessProfileRevision: readNonNegativeSafeInteger(
       record.accessProfileRevision,
       `${label}.accessProfileRevision`,
@@ -601,16 +606,17 @@ function parseChatScratchSourceSummary(
   label: string,
 ): ChatScratchSourceSummaryRead {
   const record = readRecord(value, label);
-  const lowerOrdinal = readNonNegativeSafeInteger(record.lowerOrdinal, `${label}.lowerOrdinal`);
-  const highOrdinal = readNonNegativeSafeInteger(record.highOrdinal, `${label}.highOrdinal`);
-  if (highOrdinal < lowerOrdinal) {
-    throw new Error(`${label}.highOrdinal must not precede lowerOrdinal`);
+  const lowerOrderKey = readOrderKey(record.lowerOrderKey, `${label}.lowerOrderKey`);
+  // An empty high key marks a range that held no message when the generation began.
+  const highOrderKey = readOrderKey(record.highOrderKey, `${label}.highOrderKey`, true);
+  if (highOrderKey !== "" && compareCodeUnits(highOrderKey, lowerOrderKey) < 0) {
+    throw new Error(`${label}.highOrderKey must not precede lowerOrderKey`);
   }
   return {
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
     channelName: readString(record.channelName, `${label}.channelName`),
-    lowerOrdinal,
-    highOrdinal,
+    lowerOrderKey,
+    highOrderKey,
     audienceRevision: readNonNegativeSafeInteger(
       record.audienceRevision,
       `${label}.audienceRevision`,
@@ -871,7 +877,7 @@ export function parseChatMessage(value: unknown, label = "Chat message"): ChatMe
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     revisionId: readIdentifier(record.revisionId, `${label}.revisionId`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
-    author: parseChatParticipant(record.author, `${label}.author`),
+    author: readNullable(record.author, `${label}.author`, parseChatParticipant),
     authorLabelSnapshot: readString(record.authorLabelSnapshot, `${label}.authorLabelSnapshot`),
     normalizedMarkdown,
     richContent: readVersionedJson(record.richContent, `${label}.richContent`),
@@ -882,7 +888,7 @@ export function parseChatMessage(value: unknown, label = "Chat message"): ChatMe
       `${label}.references`,
     ),
     replyThread: readNullable(record.replyThread, `${label}.replyThread`, parseChatReplyThreadSummary),
-    ordinal: readNonNegativeSafeInteger(record.ordinal, `${label}.ordinal`),
+    orderKey: readOrderKey(record.orderKey, `${label}.orderKey`),
     editedAt: readNullable(record.editedAt, `${label}.editedAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
   };
@@ -1042,6 +1048,15 @@ export function parseChatMessageSearchResult(
   label = "Chat message search result",
 ): ChatMessageSearchResultRead {
   const record = readRecord(value, label);
+  const authorParticipantId = readNullable(record.authorParticipantId, `${label}.authorParticipantId`, readIdentifier);
+  const authorKind = readNullable(
+    record.authorKind,
+    `${label}.authorKind`,
+    (kind, path) => readEnum(kind, CHAT_PARTICIPANT_KINDS, path),
+  );
+  if ((authorParticipantId === null) !== (authorKind === null)) {
+    throw new Error(`${label}.authorKind must be present exactly when authorParticipantId is`);
+  }
   return {
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
@@ -1049,9 +1064,9 @@ export function parseChatMessageSearchResult(
     conversationId: readIdentifier(record.conversationId, `${label}.conversationId`),
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     messageItemId: readIdentifier(record.messageItemId, `${label}.messageItemId`),
-    ordinal: readNonNegativeSafeInteger(record.ordinal, `${label}.ordinal`),
-    authorParticipantId: readIdentifier(record.authorParticipantId, `${label}.authorParticipantId`),
-    authorKind: readEnum(record.authorKind, CHAT_PARTICIPANT_KINDS, `${label}.authorKind`),
+    anchorCursor: readString(record.anchorCursor, `${label}.anchorCursor`),
+    authorParticipantId,
+    authorKind,
     authorDisplayName: readString(record.authorDisplayName, `${label}.authorDisplayName`),
     excerpt: readString(record.excerpt, `${label}.excerpt`),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),

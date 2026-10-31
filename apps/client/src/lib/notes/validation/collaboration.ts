@@ -27,7 +27,6 @@ export function parseNotesLocalUser(value: unknown): NotesLocalUser {
     id: readString(record.id, "local user.id"),
     display_name: readDisplayString(record.display_name, "local user.display_name"),
     created_time: readString(record.created_time, "local user.created_time"),
-    last_edited_time: readString(record.last_edited_time, "local user.last_edited_time"),
   };
 }
 

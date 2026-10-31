@@ -1,5 +1,5 @@
 import { getMusicInspectorDetail, saveMusicAdvancedMembership, setMusicItemSignals, setMusicMetadataOverrides } from "$lib/api/music-library";
-import type { MusicInspectorDetail, MusicItemSignal, MusicMembershipSkipRange, MusicPlaylistMembership } from "$lib/music/library/contracts";
+import type { MusicInspectorDetail, MusicItemSignal, MusicMembershipSkipRangeWrite, MusicPlaylistMembership } from "$lib/music/library/contracts";
 
 export interface MusicBuilderInspectorApi {
   detail(itemId: string): Promise<MusicInspectorDetail>;
@@ -183,7 +183,7 @@ export class MusicBuilderInspectorController {
 
   async saveAdvancedMembership(
     membership: MusicPlaylistMembership,
-    skipRanges: MusicMembershipSkipRange[],
+    skipRanges: readonly MusicMembershipSkipRangeWrite[],
   ): Promise<boolean> {
     if (this.saving) return false;
     this.saving = true;
@@ -191,13 +191,13 @@ export class MusicBuilderInspectorController {
     try {
       const receipt = await saveMusicAdvancedMembership({
         membership: { ...membership, expectedVersion: membership.version, updatedAtMs: Date.now() },
-        skipRanges,
+        skipRanges: skipRanges.map(({ startMs, endMs }) => ({ startMs, endMs })),
       });
-      membership.version = receipt.version;
+      membership.version = receipt.membership.version;
       if (this.detail) {
         this.detail.membershipSkipRanges = [
           ...this.detail.membershipSkipRanges.filter((range) => range.membershipId !== membership.id),
-          ...skipRanges,
+          ...receipt.skipRanges,
         ];
       }
       return true;

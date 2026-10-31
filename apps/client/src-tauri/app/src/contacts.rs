@@ -34,8 +34,6 @@ pub enum ContactsError {
     CardRevoked(String),
     /// The recipient could not be reached through the hint in the card.
     RecipientUnreachable(String),
-    /// The vault is read-only on this device.
-    ReadOnly(String),
     /// The row changed since the frontend last read it.
     RevisionConflict(String),
     Failed(String),
@@ -57,7 +55,6 @@ impl ContactsError {
             | Self::InvalidCard(message)
             | Self::CardRevoked(message)
             | Self::RecipientUnreachable(message)
-            | Self::ReadOnly(message)
             | Self::RevisionConflict(message)
             | Self::Failed(message) => message,
         }
@@ -231,17 +228,6 @@ async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
     let _ = app;
 }
 
-fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), ContactsError> {
-    let status = crate::vault::ownership::active_status(app)?;
-    if status.can_write {
-        Ok(())
-    } else {
-        Err(ContactsError::ReadOnly(
-            "the vault is read-only on this device".to_string(),
-        ))
-    }
-}
-
 async fn snapshot<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -254,7 +240,7 @@ async fn snapshot<R: Runtime>(
         .into_iter()
         .map(store::ContactRow::view)
         .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_pending_requests(pool)
+    let requests = store::list_pending_requests(pool, store::now())
         .await?
         .iter()
         .map(store::RequestRow::view)
@@ -281,19 +267,18 @@ pub async fn contacts_local_card<R: Runtime>(
     ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
-    card::local_card_view(&app, &identity)
+    card::local_card_view(&app, &identity).await
 }
 
 #[tauri::command]
 pub async fn contacts_regenerate_card<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<LocalCardView, ContactsError> {
-    require_writable(&app)?;
     ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     let identity = card::rotate_card(&pool, identity).await?;
-    card::local_card_view(&app, &identity)
+    card::local_card_view(&app, &identity).await
 }
 
 #[tauri::command]
@@ -307,9 +292,10 @@ pub async fn contacts_parse_card<R: Runtime>(
     let identity = identity::load_identity(&app, &pool).await?;
     let public_key = signed.card.public_key.to_text();
     let existing = store::contact_by_key(&pool, &public_key).await?;
-    let pending_sent = store::pending_request(&pool, RequestDirection::Sent, &public_key)
-        .await?
-        .is_some();
+    let pending_sent =
+        store::pending_request(&pool, RequestDirection::Sent, &public_key, store::now())
+            .await?
+            .is_some();
     Ok(ParsedCardView {
         display_name: signed.card.display_name.clone(),
         color: signed.card.color,
@@ -340,7 +326,6 @@ pub async fn contacts_send_request<R: Runtime>(
     app: AppHandle<R>,
     request: SendContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
@@ -361,7 +346,6 @@ pub async fn contacts_accept_request<R: Runtime>(
     app: AppHandle<R>,
     request: AcceptContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::accept_request(
         &pool,
@@ -380,7 +364,6 @@ pub async fn contacts_decline_request<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::close_request(
         &pool,
@@ -398,7 +381,6 @@ pub async fn contacts_cancel_request<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::close_request(
         &pool,
@@ -416,7 +398,6 @@ pub async fn contacts_block<R: Runtime>(
     app: AppHandle<R>,
     request: BlockPersonRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     requests::block_person(&pool, &request.public_key, store::now()).await?;
     snapshot(&app, &pool).await
@@ -427,7 +408,6 @@ pub async fn contacts_unblock<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     remove_contact_in_state(
         &pool,
@@ -444,7 +424,6 @@ pub async fn contacts_remove<R: Runtime>(
     app: AppHandle<R>,
     request: RowRevision,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     remove_contact_in_state(
         &pool,
@@ -461,7 +440,6 @@ pub async fn contacts_update_trust<R: Runtime>(
     app: AppHandle<R>,
     request: UpdateTrustRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
-    require_writable(&app)?;
     let pool = contacts_pool(&app).await?;
     let now = store::now();
     let updated = store::update_contact_trust(
@@ -488,7 +466,7 @@ pub async fn contacts_sync_requests<R: Runtime>(
     let pool = contacts_pool(&app).await?;
     if let Some(identity) = identity::load_identity(&app, &pool).await?
         && identity.key.is_some()
-        && crate::vault::ownership::active_status(&app)?.can_write
+        && !requests::follows_coordinator(&app)?
     {
         requests::poll_sent_requests(&pool, &identity).await?;
     }
@@ -546,7 +524,7 @@ async fn remove_contact_in_state(
     expected_revision: i64,
     state: ContactState,
 ) -> Result<(), ContactsError> {
-    let removed = store::delete_contact(pool, id, expected_revision, state).await?;
+    let removed = store::remove_contact(pool, id, expected_revision, state, store::now()).await?;
     if removed {
         Ok(())
     } else {

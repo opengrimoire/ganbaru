@@ -52,6 +52,26 @@ pub(super) fn limit_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<
     Ok(path)
 }
 
+pub(super) fn rules_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let mut path = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&path).map_err(|e| format!("create app config dir: {e}"))?;
+    path.push(RULES_FILE);
+    Ok(path)
+}
+
+/// The rules file the browser host reads: the vault they belong to and the assembled rules of
+/// `root`. The host ignores rules of a vault that is no longer active.
+pub(super) fn rules_file_contents(vault_path: &Path, root: &Value) -> Result<String, String> {
+    let vault_path = vault_path
+        .to_str()
+        .ok_or("vault path is not UTF-8 for the browser rules file")?;
+    serde_json::to_string(&serde_json::json!({
+        "vaultPath": vault_path,
+        "distractions": root.get("distractions").unwrap_or(&Value::Null),
+    }))
+    .map_err(|error| format!("encode browser rules file: {error}"))
+}
+
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),

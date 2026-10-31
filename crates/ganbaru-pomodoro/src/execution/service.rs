@@ -1,5 +1,6 @@
 use sqlx::{Sqlite, Transaction};
 
+use super::activity::record_activity;
 use super::decisions::*;
 use super::models::*;
 use super::mutations::Session;
@@ -72,6 +73,7 @@ pub async fn focus_execute_command_tx(
         &session.changed_segments,
     )
     .await?;
+    record_activity(tx, context, &result).await?;
     save_receipt(tx, command, &result).await?;
     Ok(result)
 }
@@ -100,14 +102,18 @@ pub async fn focus_apply_observation_tx(
     } else {
         revision
     };
-    load_snapshot(
+    let snapshot = load_snapshot(
         tx,
         revision,
         &session.state,
         context.now_ms,
         &session.changed_segments,
     )
-    .await
+    .await?;
+    if changed {
+        record_activity(tx, context, &snapshot).await?;
+    }
+    Ok(snapshot)
 }
 
 async fn apply_intent(

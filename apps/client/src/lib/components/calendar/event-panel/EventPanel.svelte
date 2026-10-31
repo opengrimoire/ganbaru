@@ -1067,7 +1067,7 @@
         aria-label={t("common.close")}
         onclick={onClose}
         onpointerdown={(event) => event.stopPropagation()}
-        class="flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
+        class="panel-chrome flex h-12 w-12 shrink-0 items-center justify-center text-muted-foreground active:bg-accent"
       >
         <X size={22} aria-hidden="true" />
       </button>

@@ -11,7 +11,7 @@
 //!
 //! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
-//! test run takes about one minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
+//! test run takes a few minutes. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
 //! that seed alone in the shard that owns it.
 
 mod peer;

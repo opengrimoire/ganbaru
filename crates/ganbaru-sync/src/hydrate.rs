@@ -11,7 +11,8 @@
 //! materialize changes or deletes a domain row, it stores the values elided from it again, so
 //! tombstoned and hidden rows keep their versions whole.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ganbaru_sync_contracts::{Content, Digest32, Envelope, GroupId, Seq, TableId, Value, WriterId};
 use sqlx::{Row, SqliteConnection};
@@ -22,6 +23,51 @@ use crate::log::{self, seq_i64, stored_u64};
 use crate::manifest::TableSpec;
 use crate::merge::{Stored, Version, group_id, table_param};
 use crate::seal;
+
+/// Decoded operation bodies a vault holds at most, enough for the few operations the versions
+/// of neighboring rows come from.
+pub(crate) const CACHED_BODIES: usize = 4;
+
+/// Written values of one operation by table, row, and group.
+pub(crate) type Body = BTreeMap<(TableId, String, GroupId), Value>;
+
+/// The operation bodies read last, so that hydrating many rows of one operation decodes it
+/// once. A hit still has to hash to the stored `value_hash`, so a rolled back transaction, a
+/// compaction, or a reset space can only cause a miss.
+#[derive(Debug, Default)]
+pub(crate) struct BodyCache(Mutex<VecDeque<(WriterId, Seq, Arc<Body>)>>);
+
+impl BodyCache {
+    pub(crate) fn lookup(&self, writer: WriterId, seq: Seq) -> Option<Arc<Body>> {
+        let bodies = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        bodies
+            .iter()
+            .find(|(cached, at, _)| *cached == writer && *at == seq)
+            .map(|(_, _, body)| Arc::clone(body))
+    }
+
+    pub(crate) fn store(&self, writer: WriterId, seq: Seq, body: Arc<Body>) {
+        let mut bodies = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        bodies.retain(|(cached, at, _)| *cached != writer || *at != seq);
+        if bodies.len() == CACHED_BODIES {
+            bodies.pop_front();
+        }
+        bodies.push_back((writer, seq, body));
+    }
+}
+
+/// The value `body` holds for a group of a row, when it hashes to `hash`.
+pub(crate) fn body_value(
+    body: &Body,
+    table: TableId,
+    key: &str,
+    group: GroupId,
+    hash: &Digest32,
+) -> Option<Value> {
+    body.get(&(table, key.to_string(), group))
+        .filter(|value| value.hash(table, group) == *hash)
+        .cloned()
+}
 
 /// Versions of one row with every elided value read back, in the order given.
 pub(crate) async fn row(
@@ -76,6 +122,13 @@ pub(crate) async fn elided_value(
     {
         return Ok(value);
     }
+    if let Some(value) = engine
+        .bodies
+        .lookup(writer, seq)
+        .and_then(|body| body_value(&body, table.id, key, group, hash))
+    {
+        return Ok(value);
+    }
     let envelope: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT envelope FROM sync_ops
          WHERE space_id IN (SELECT space_id FROM sync_spaces) AND writer_id = ? AND seq = ?",
@@ -95,13 +148,16 @@ pub(crate) async fn elided_value(
     let Content::Changes(changes) = operation.content else {
         return Err(corrupt("elided value names an operation without changes"));
     };
-    changes
-        .into_iter()
-        .find(|change| change.table == table.id && change.row.as_str() == key)
-        .and_then(|change| change.groups.into_iter().find(|value| value.group == group))
-        .map(|value| value.value)
-        .filter(|value| value.hash(table.id, group) == *hash)
-        .ok_or_else(|| corrupt("elided value cannot be hydrated"))
+    let mut body = Body::new();
+    for change in changes {
+        for value in change.groups {
+            body.entry((change.table, change.row.as_str().to_string(), value.group))
+                .or_insert(value.value);
+        }
+    }
+    let value = body_value(&body, table.id, key, group, hash);
+    engine.bodies.store(writer, seq, Arc::new(body));
+    value.ok_or_else(|| corrupt("elided value cannot be hydrated"))
 }
 
 /// Stores again the elided values of a row's versions in `groups`, or in every group when

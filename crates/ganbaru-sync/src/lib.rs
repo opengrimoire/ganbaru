@@ -182,6 +182,8 @@ pub struct Engine {
     /// Enrollments of every stored chain, for the last stored entry set a genesis was checked
     /// against.
     enrolled: authorization::EnrolledCache,
+    /// Operation bodies read last for elided values.
+    bodies: hydrate::BodyCache,
 }
 
 impl Engine {
@@ -257,6 +259,7 @@ impl Engine {
             adapters,
             hooks,
             enrolled: authorization::EnrolledCache::default(),
+            bodies: hydrate::BodyCache::default(),
         })
     }
 

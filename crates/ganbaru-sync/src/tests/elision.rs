@@ -1,9 +1,12 @@
 //! Winning values elided from merge state and captured groups elided at seal.
 
-use ganbaru_sync_contracts::{Field, GroupId};
+use std::sync::Arc;
+
+use ganbaru_sync_contracts::{Field, GroupId, Seq, Value, WriterId};
 
 use super::block_on;
 use super::replica::{Replica, converge};
+use crate::hydrate::{Body, BodyCache, CACHED_BODIES, body_value};
 use crate::local::retained_group_values;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::merge;
@@ -217,4 +220,55 @@ fn a_deleted_row_stores_its_elided_values_again() {
             assert_eq!(entries[0].presentation.title, "Edited");
         }
     });
+}
+
+#[test]
+fn repeated_reads_of_elided_winners_follow_each_sealed_operation() {
+    block_on(async {
+        let mut replicas = shared_note().await;
+        let editor = &mut replicas[0];
+        editor
+            .exec("UPDATE quick_notes SET title = 'Unsealed' WHERE id = 'note-1'")
+            .await;
+        for _ in 0..2 {
+            assert_eq!(retained_titles(editor).await, ["One"]);
+        }
+        editor.seal().await.unwrap();
+        editor
+            .exec("UPDATE quick_notes SET title = 'Again' WHERE id = 'note-1'")
+            .await;
+        for _ in 0..2 {
+            assert_eq!(retained_titles(editor).await, ["Unsealed"]);
+        }
+        editor.check_version_values().await;
+    });
+}
+
+#[test]
+fn a_cached_body_serves_only_values_of_the_stored_hash_and_keeps_the_latest_operations() {
+    let title = note_group::TITLE;
+    let value = Value::new(vec![Field::Text("One".to_string())]).unwrap();
+    let stale = Value::new(vec![Field::Text("Other".to_string())]).unwrap();
+    let hash = value.hash(NOTES_TABLE, title);
+    let mut body = Body::new();
+    body.insert((NOTES_TABLE, "note-1".to_string(), title), value.clone());
+    assert_eq!(
+        body_value(&body, NOTES_TABLE, "note-1", title, &hash),
+        Some(value)
+    );
+    let stale_hash = stale.hash(NOTES_TABLE, title);
+    assert_eq!(
+        body_value(&body, NOTES_TABLE, "note-1", title, &stale_hash),
+        None
+    );
+    assert_eq!(body_value(&body, NOTES_TABLE, "note-2", title, &hash), None);
+
+    let cache = BodyCache::default();
+    let writer = WriterId::from_bytes([7; 16]);
+    let body = Arc::new(body);
+    for seq in 0..=CACHED_BODIES as Seq {
+        cache.store(writer, seq, Arc::clone(&body));
+    }
+    assert!(cache.lookup(writer, 0).is_none());
+    assert!(cache.lookup(writer, CACHED_BODIES as Seq).is_some());
 }

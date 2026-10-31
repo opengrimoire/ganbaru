@@ -1922,6 +1922,15 @@ mod tests {
             fs::read(first_target.join("assets/notes/files/h04.txt")).unwrap(),
             b"desktop asset"
         );
+        let linked = ganbaru_db::DatabasePoolRegistry::default();
+        let linked_pool = linked
+            .connect_path(database_path(&first_target))
+            .await
+            .unwrap();
+        ganbaru_pomodoro::focus_read_execution_snapshot(&linked_pool, 0)
+            .await
+            .unwrap();
+        linked.close_all().await.unwrap();
 
         let initial_staging = parent.join("initial-refresh-staging");
         stage_handoff_archive(&archive, &initial_staging, &source_info.vault_id)

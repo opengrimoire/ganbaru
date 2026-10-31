@@ -1533,6 +1533,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     local: &[
         DeviceTable {
             name: "fixture_item_marks",
+            seed: None,
             triggers: &[DomainTrigger {
                 name: "fixture_item_marks_refuse_negative",
                 policy: TriggerPolicy::ApplierVisible,
@@ -1541,6 +1542,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         },
         DeviceTable {
             name: "fixture_asset_pins",
+            seed: None,
             triggers: &[],
             assets: &[
                 LocalAssetColumn {

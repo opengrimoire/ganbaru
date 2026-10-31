@@ -361,6 +361,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     local: &[],
     engine: &[DeviceTable {
         name: "contacts_local_identity",
+        seed: None,
         triggers: &[
             DomainTrigger {
                 name: "contacts_local_identity_immutable_update",

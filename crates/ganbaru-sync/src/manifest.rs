@@ -105,6 +105,10 @@ pub struct DomainTrigger {
 pub struct DeviceTable {
     /// SQL table name.
     pub name: &'static str,
+    /// Statement that writes the row readers of a `Local` table require, skipping a row the
+    /// device already has, and matching the row a new vault's schema seeds. `None` when the
+    /// table starts empty.
+    pub seed: Option<&'static str>,
     /// Domain triggers on the table.
     pub triggers: &'static [DomainTrigger],
     /// Columns of a `Local` or declared unconverted table naming managed asset files the sweep
@@ -981,6 +985,14 @@ impl Manifest {
             local: leak(local),
             engine: leak(engine),
         }
+    }
+
+    /// The seed statements of the domains' `Local` tables.
+    pub fn local_seeds(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.domains
+            .iter()
+            .flat_map(|domain| domain.local.iter())
+            .filter_map(|table| table.seed)
     }
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their

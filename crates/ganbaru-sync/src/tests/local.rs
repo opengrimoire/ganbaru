@@ -8,8 +8,11 @@ use crate::local::{
     prepare_snapshot_copy, replacement_vector, restore_local_state, space_context,
 };
 use crate::log::WriterState;
+use crate::manifest::Manifest;
+use crate::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync_contracts::{RecoverySeed, VersionVector};
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
+use std::collections::BTreeMap;
 
 async fn add_note(replica: &mut Replica, id: &str, title: &str) {
     replica
@@ -761,5 +764,116 @@ fn rotating_after_an_inactive_writer_seals_every_pending_capture() {
                 "{state}"
             );
         }
+    });
+}
+
+/// `Local` tables whose rows Chat creates on demand, so a new device starts without them.
+const ON_DEMAND_LOCAL_TABLES: &[&str] = &["chat_execution_environments"];
+
+/// Every row of each `Local` table, leaving out the columns a seed takes from the clock.
+async fn local_rows(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+) -> BTreeMap<&'static str, Vec<String>> {
+    let mut rows = BTreeMap::new();
+    for table in manifest.local {
+        if ON_DEMAND_LOCAL_TABLES.contains(table) {
+            continue;
+        }
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info(?)
+             WHERE name NOT IN ('updated_at', 'updated_at_ms')",
+        )
+        .bind(*table)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        let values: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT json_array({}) FROM {table} ORDER BY 1",
+            columns.join(", ")
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        rows.insert(*table, values);
+    }
+    rows
+}
+
+#[test]
+fn a_snapshot_copy_of_a_new_vault_keeps_every_seeded_device_row() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let seeded = local_rows(&mut conn, &VAULT_MANIFEST).await;
+        assert_eq!(seeded["pomodoro_execution_state"].len(), 1);
+        assert_eq!(seeded["music_soundscape_state"].len(), 1);
+        prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
+            .await
+            .unwrap();
+        assert_eq!(local_rows(&mut conn, &VAULT_MANIFEST).await, seeded);
+    });
+}
+
+#[test]
+fn a_snapshot_copy_drops_the_source_values_of_seeded_device_rows() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        sqlx::raw_sql(
+            "UPDATE pomodoro_execution_state SET state_json = '{\"run\":1}', revision = 9;
+             UPDATE notes_page_history_settings SET retention_days = 7;",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
+            .await
+            .unwrap();
+        let focus: (String, i64) =
+            sqlx::query_as("SELECT state_json, revision FROM pomodoro_execution_state")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(focus, ("{}".to_owned(), 0));
+        let retention: i64 =
+            sqlx::query_scalar("SELECT retention_days FROM notes_page_history_settings")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(retention, 30);
+    });
+}
+
+#[test]
+fn a_restore_keeps_seeded_rows_the_live_database_lacks_and_live_values_it_has() {
+    block_on(async {
+        let mut replica = Replica::new(0, 1).await;
+        let manifest = replica.engine.manifest();
+        replica
+            .exec(
+                "DELETE FROM pomodoro_execution_state;
+                 UPDATE notes_page_history_settings SET retention_days = 7;",
+            )
+            .await;
+        let live = temporary_database("seeds");
+        std::fs::write(&live, replica.snapshot().await).unwrap();
+        let mut staged = connection_from(&replica.snapshot().await).await;
+        prepare_snapshot_copy(&mut staged, manifest).await.unwrap();
+        restore_local_state(&mut staged, manifest, &live)
+            .await
+            .unwrap();
+        std::fs::remove_file(&live).unwrap();
+        let focus: i64 = sqlx::query_scalar("SELECT count(*) FROM pomodoro_execution_state")
+            .fetch_one(&mut staged)
+            .await
+            .unwrap();
+        assert_eq!(focus, 1);
+        let retention: i64 =
+            sqlx::query_scalar("SELECT retention_days FROM notes_page_history_settings")
+                .fetch_one(&mut staged)
+                .await
+                .unwrap();
+        assert_eq!(retention, 7);
     });
 }

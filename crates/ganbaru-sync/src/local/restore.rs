@@ -34,9 +34,10 @@ pub struct LocalRestoreReport {
 }
 
 /// Copies the device state of the live database at `live` into the staged replacement on
-/// `staged`: every `Local` table's rows, and `Local` column values onto replicated rows present
-/// in both databases. A table's revision column takes one more than the larger of both values,
-/// so a revision observed before the replacement never matches a row whose content changed.
+/// `staged`: every `Local` table's rows, with seeded rows the live database lacks at new-vault
+/// values, and `Local` column values onto replicated rows present in both databases. A table's
+/// revision column takes one more than the larger of both values, so a revision observed before
+/// the replacement never matches a row whose content changed.
 /// Rows that reference a parent the replacement lacks are deleted or nulled by their declared
 /// delete action. Runs in one transaction with the engine marked as applying, so capture
 /// triggers stay quiet and nothing in the copy is published.
@@ -99,6 +100,7 @@ async fn restore_attached(
         .await?
         .rows_affected();
     }
+    super::write_local_seeds(&mut tx, manifest).await?;
     for table in manifest.tables {
         if table.local_columns.is_empty() {
             continue;

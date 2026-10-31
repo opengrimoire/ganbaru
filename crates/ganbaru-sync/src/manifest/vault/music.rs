@@ -1367,10 +1367,15 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// The soundscape state every device reads before it can play a soundscape.
+const SOUNDSCAPE_STATE_SEED: &str = "INSERT OR IGNORE INTO music_soundscape_state \
+     (singleton, updated_at_ms) VALUES (1, CAST(strftime('%s', 'now') AS INTEGER) * 1000)";
+
 /// A device table without domain triggers.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
+        seed: None,
         triggers: &[],
         assets: &[],
     }
@@ -1410,7 +1415,10 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("music_relink_plans"),
         device("music_session_checkpoints"),
         device("music_session_receipts"),
-        device("music_soundscape_state"),
+        DeviceTable {
+            seed: Some(SOUNDSCAPE_STATE_SEED),
+            ..device("music_soundscape_state")
+        },
         device("music_transfer_receipts"),
     ],
     engine: &[],

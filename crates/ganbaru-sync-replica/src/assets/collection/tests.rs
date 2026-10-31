@@ -32,6 +32,7 @@ static PINS_DOMAIN: DomainManifest = DomainManifest {
     derived: &[],
     local: &[DeviceTable {
         name: "pins",
+        seed: None,
         triggers: &[],
         assets: &[LocalAssetColumn {
             column: "asset_id",

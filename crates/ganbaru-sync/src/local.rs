@@ -216,10 +216,22 @@ pub async fn store_recovery_kit_keys(
     Ok(())
 }
 
+/// Writes the rows readers of `Local` tables require, keeping any the device already has.
+pub(crate) async fn write_local_seeds(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+) -> SyncResult<()> {
+    for seed in manifest.local_seeds() {
+        sqlx::query(AssertSqlSafe(seed)).execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
 /// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
-/// emptied and every `Local` column is reset to its materialization value, because device state
-/// belongs to the device that wrote it; captures belong to the installation that made them, so
-/// the copy drops any that could not be sealed; and the apply flag is clear.
+/// emptied, keeping only their seeded rows at new-vault values, and every `Local` column is reset
+/// to its materialization value, because device state belongs to the device that wrote it;
+/// captures belong to the installation that made them, so the copy drops any that could not be
+/// sealed; and the apply flag is clear.
 ///
 /// The resets run with the apply flag set, so gated domain triggers and capture stay quiet.
 pub async fn prepare_snapshot_copy(
@@ -234,6 +246,7 @@ pub async fn prepare_snapshot_copy(
             .execute(&mut *tx)
             .await?;
     }
+    write_local_seeds(&mut tx, manifest).await?;
     for table in manifest.tables {
         if table.local_columns.is_empty() {
             continue;

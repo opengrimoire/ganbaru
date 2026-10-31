@@ -1651,10 +1651,19 @@ const fn undo_state_asset(class: &'static str) -> LocalAssetColumn {
     }
 }
 
+/// The history retention every device reads before it keeps page history.
+const PAGE_HISTORY_SETTINGS_SEED: &str =
+    "INSERT OR IGNORE INTO notes_page_history_settings (id, retention_days) VALUES (1, 30)";
+
+/// The history maintenance state every device reads before it prunes page history.
+const HISTORY_MAINTENANCE_SEED: &str =
+    "INSERT OR IGNORE INTO notes_history_maintenance_state (id, last_run_at) VALUES (1, NULL)";
+
 /// A device table without domain triggers or assets.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
+        seed: None,
         triggers: &[],
         assets: &[],
     }
@@ -1710,12 +1719,19 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_edit_receipts"),
         device("notes_history_bundle_chunks"),
         device("notes_history_bundles"),
-        device("notes_history_maintenance_state"),
+        DeviceTable {
+            seed: Some(HISTORY_MAINTENANCE_SEED),
+            ..device("notes_history_maintenance_state")
+        },
         device("notes_mention_notifications"),
         device("notes_page_history_pending"),
-        device("notes_page_history_settings"),
+        DeviceTable {
+            seed: Some(PAGE_HISTORY_SETTINGS_SEED),
+            ..device("notes_page_history_settings")
+        },
         DeviceTable {
             name: "notes_page_history_snapshots",
+            seed: None,
             triggers: &[],
             assets: &[LocalAssetColumn {
                 column: "asset_ids",
@@ -1728,6 +1744,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_page_notification_settings"),
         DeviceTable {
             name: "notes_project_history_asset_pins",
+            seed: None,
             triggers: &[],
             assets: &[LocalAssetColumn {
                 column: "asset_id",
@@ -1743,6 +1760,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_sync_repair_pending"),
         DeviceTable {
             name: "notes_undo_state",
+            seed: None,
             triggers: &[],
             assets: &UNDO_STATE_ASSETS,
         },

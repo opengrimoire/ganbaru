@@ -688,6 +688,7 @@ pub const BLOCK_EVENTS: TableSpec = TableSpec {
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
+        seed: None,
         triggers: &[],
         assets: &[],
     }

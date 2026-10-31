@@ -88,6 +88,7 @@ const UNDECLARED: &[LocalAssetColumn] = &[LocalAssetColumn {
 fn malformed_local_asset_columns_are_refused() {
     let local = [DeviceTable {
         name: "fixture_asset_pins",
+        seed: None,
         triggers: &[],
         assets: UNDECLARED,
     }];
@@ -124,6 +125,7 @@ fn malformed_local_asset_columns_are_refused() {
 fn an_unconverted_table_declares_only_asset_columns_and_no_other_class() {
     let pins = [DeviceTable {
         name: "fixture_asset_pins",
+        seed: None,
         triggers: &[],
         assets: &[],
     }];
@@ -197,6 +199,7 @@ const UNLISTED: &[LocalAssetColumn] = &[
 fn an_asset_id_column_lists_declared_classes() {
     let local = [DeviceTable {
         name: "fixture_asset_pins",
+        seed: None,
         triggers: &[],
         assets: UNLISTED,
     }];

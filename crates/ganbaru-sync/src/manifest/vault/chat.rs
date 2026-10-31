@@ -1657,6 +1657,7 @@ pub const SEMANTIC_UPDATES: TableSpec = TableSpec {
 const fn device(name: &'static str, triggers: &'static [DomainTrigger]) -> DeviceTable {
     DeviceTable {
         name,
+        seed: None,
         triggers,
         assets: &[],
     }
@@ -1735,6 +1736,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         ),
         DeviceTable {
             name: "chat_attachments",
+            seed: None,
             triggers: &[
                 gated("chat_attachments_create_resource"),
                 applier_visible("chat_attachments_managed_relative_path_shape_insert"),

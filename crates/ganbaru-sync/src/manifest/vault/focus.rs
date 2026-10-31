@@ -567,10 +567,15 @@ pub const DEVICE_ACTIVITY: TableSpec = TableSpec {
     ..BASE
 };
 
+/// The Focus execution state every device reads before it can run or report Focus.
+const EXECUTION_STATE_SEED: &str = "INSERT OR IGNORE INTO pomodoro_execution_state \
+     (singleton, state_json, updated_at_ms) VALUES (1, '{}', 0)";
+
 /// A device table without domain triggers.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
+        seed: None,
         triggers: &[],
         assets: &[],
     }
@@ -587,7 +592,10 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     tables: &[RUNS, SEGMENTS, RUN_EVENTS, DEVICE_ACTIVITY],
     derived: &[],
     local: &[
-        device("pomodoro_execution_state"),
+        DeviceTable {
+            seed: Some(EXECUTION_STATE_SEED),
+            ..device("pomodoro_execution_state")
+        },
         device("pomodoro_execution_receipts"),
         device("pomodoro_run_adaptive_snapshots"),
         device("pomodoro_adaptive_planned_blocks"),

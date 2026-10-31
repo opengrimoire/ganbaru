@@ -46,9 +46,10 @@ async fn forged_vault(name: &str, edit: impl Fn(&str) -> String) -> (PathBuf, Pa
         .execute(&pool)
         .await
         .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
     for migration in crate::up_migrations() {
         sqlx::raw_sql(sqlx::AssertSqlSafe(edit(migration.sql.as_str())))
-            .execute(&pool)
+            .execute(&mut *transaction)
             .await
             .unwrap();
         sqlx::query(
@@ -58,10 +59,11 @@ async fn forged_vault(name: &str, edit: impl Fn(&str) -> String) -> (PathBuf, Pa
         .bind(migration.version)
         .bind(migration.description.as_ref())
         .bind(migration.checksum.as_ref())
-        .execute(&pool)
+        .execute(&mut *transaction)
         .await
         .unwrap();
     }
+    transaction.commit().await.unwrap();
     pool.close().await;
     (directory, path)
 }

@@ -1,17 +1,36 @@
 //! User theme persistence independent of Tauri: current and seed tokens and event palettes, seed
-//! resets, upgrade dismissals, and validation of every row written to or read from SQLite.
-//! Built-in themes are not stored; their reserved ids are rejected.
+//! resets, upgrade dismissals, sync conflicts on theme content, and validation of every row
+//! written to or read from SQLite. Built-in themes are not stored; their reserved ids are rejected.
+//!
+//! A theme's seed is written once when the theme is created and never changes afterwards, so
+//! every linked device resets to the same values. Writes leave rows that already hold the
+//! requested values untouched, so a save that changes nothing replicates nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ganbaru_db::impl_sqlite_from_row;
+use ganbaru_sync::OPEN_CONFLICT_MASK_SQL;
+use ganbaru_sync::domains::themes::{
+    PALETTE_SIZE, ThemeContent, ThemeToken, canonical_tokens, is_calendar_mode, is_display_name,
+    is_hex_color, is_icon_label, is_token_key,
+};
+use ganbaru_sync::manifest::vault::themes::THEMES_TABLE;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteQueryResult;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Connection, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
-const PALETTE_SIZE: usize = 32;
-const MAX_DISPLAY_NAME_LENGTH: usize = 60;
+mod conflicts;
+mod recovery;
+
+pub use conflicts::{
+    ThemeConflictError, ThemeConflictRead, ThemeConflictResolution, conflict_from_pool,
+    resolve_from_pool,
+};
+pub use recovery::restore_recovered;
+
+/// Characters of the longest theme id: a UUID or an older `theme-` slug fits well below it.
+const MAX_THEME_ID_CHARS: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,11 +66,11 @@ struct ThemePaletteWrite {
     value: String,
 }
 
+/// The highest derivation engine version whose upgrade prompt was dismissed for a theme.
 #[derive(Serialize)]
 pub struct DismissalRow {
     theme_id: String,
     engine_version: i64,
-    dismissed_at_ms: i64,
 }
 
 #[derive(Serialize)]
@@ -69,6 +88,8 @@ pub struct ThemeRowRead {
     seed_icon_label: String,
     created_at_ms: i64,
     updated_at_ms: i64,
+    /// Whether concurrent saves on linked devices left a content conflict nobody resolved.
+    has_conflict: bool,
 }
 impl_sqlite_from_row!(ThemeRowRead {
     id,
@@ -84,6 +105,7 @@ impl_sqlite_from_row!(ThemeRowRead {
     seed_icon_label,
     created_at_ms,
     updated_at_ms,
+    has_conflict,
 });
 
 #[derive(Serialize)]
@@ -140,18 +162,29 @@ impl ThemeScoped for PaletteRowRead {
     }
 }
 
+/// Column `has_conflict` of a theme aliased `t`.
+fn has_conflict_column() -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM sync_rows r
+                 WHERE r.table_id = {} AND r.row_key = t.id AND {OPEN_CONFLICT_MASK_SQL} <> 0)
+         AS has_conflict",
+        THEMES_TABLE.0
+    )
+}
+
 /// Load every user theme with its current and seed rows, rejecting stored rows that fail
 /// validation.
 pub async fn load_all(pool: &SqlitePool) -> Result<Vec<UserThemeRead>, String> {
-    let themes = sqlx::query_as::<_, ThemeRowRead>(
-        "SELECT id, display_name, blend_canvas, seed_blend_canvas,
-                derivation_engine_version, calendar_default_mode,
-                calendar_default_custom, seed_calendar_default_mode,
-                seed_calendar_default_custom, icon_label, seed_icon_label,
-                created_at_ms, updated_at_ms
-         FROM themes
-         ORDER BY created_at_ms ASC",
-    )
+    let themes = sqlx::query_as::<_, ThemeRowRead>(sqlx::AssertSqlSafe(format!(
+        "SELECT t.id, t.display_name, t.blend_canvas, t.seed_blend_canvas,
+                t.derivation_engine_version, t.calendar_default_mode,
+                t.calendar_default_custom, t.seed_calendar_default_mode,
+                t.seed_calendar_default_custom, t.icon_label, t.seed_icon_label,
+                t.created_at_ms, t.updated_at_ms, {}
+         FROM themes t
+         ORDER BY t.created_at_ms ASC, t.id ASC",
+        has_conflict_column()
+    )))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load themes: {e}"))?;
@@ -214,12 +247,28 @@ pub async fn load_all(pool: &SqlitePool) -> Result<Vec<UserThemeRead>, String> {
         .collect())
 }
 
+/// Load one user theme, failing when it does not exist.
+pub async fn load_one(pool: &SqlitePool, id: &str) -> Result<UserThemeRead, String> {
+    load_all(pool)
+        .await?
+        .into_iter()
+        .find(|theme| theme.theme.id == id)
+        .ok_or_else(|| format!("theme '{id}' not found"))
+}
+
 /// Insert a new user theme with its current and seed rows in one transaction. Fails when the id
-/// is already taken.
+/// is already taken, including by a theme a linked device deleted.
 pub async fn insert(pool: &SqlitePool, write: &UserThemeWrite) -> Result<(), String> {
+    let mut conn = pool.acquire().await.map_err(|e| format!("acquire: {e}"))?;
+    insert_on(&mut conn, write).await
+}
+
+/// Insert a new user theme on `conn`. Inside an open transaction the insert joins it as a
+/// savepoint, so the caller decides when it commits.
+async fn insert_on(conn: &mut SqliteConnection, write: &UserThemeWrite) -> Result<(), String> {
     validate_theme_write(write)?;
     let now = now_ms()?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let mut tx = conn.begin().await.map_err(|e| format!("begin: {e}"))?;
 
     let existing = sqlx::query_scalar::<_, i64>("SELECT 1 FROM themes WHERE id = ? LIMIT 1")
         .bind(&write.id)
@@ -262,32 +311,20 @@ pub async fn insert(pool: &SqlitePool, write: &UserThemeWrite) -> Result<(), Str
         }
     })?;
 
-    insert_token_rows(
+    insert_tokens(&mut tx, &write.id, &write_tokens(&write.tokens), TOKENS).await?;
+    insert_palette(&mut tx, &write.id, &write_palette(&write.palette), PALETTE).await?;
+    insert_tokens(
         &mut tx,
         &write.id,
-        &write.tokens,
-        "INSERT INTO theme_tokens (theme_id, kind, key, value, isolated) VALUES (?, ?, ?, ?, ?)",
+        &write_tokens(&write.seed_tokens),
+        SEED_TOKENS,
     )
     .await?;
-    insert_palette_rows(
+    insert_palette(
         &mut tx,
         &write.id,
-        &write.palette,
-        "INSERT INTO theme_event_palette (theme_id, slot, value) VALUES (?, ?, ?)",
-    )
-    .await?;
-    insert_token_rows(
-        &mut tx,
-        &write.id,
-        &write.seed_tokens,
-        "INSERT INTO theme_seed_tokens (theme_id, kind, key, value, isolated) VALUES (?, ?, ?, ?, ?)",
-    )
-    .await?;
-    insert_palette_rows(
-        &mut tx,
-        &write.id,
-        &write.seed_palette,
-        "INSERT INTO theme_seed_event_palette (theme_id, slot, value) VALUES (?, ?, ?)",
+        &write_palette(&write.seed_palette),
+        SEED_PALETTE,
     )
     .await?;
 
@@ -295,84 +332,39 @@ pub async fn insert(pool: &SqlitePool, write: &UserThemeWrite) -> Result<(), Str
     Ok(())
 }
 
-/// Replace an existing theme's metadata and every current and seed row in one transaction. Fails
-/// when the theme does not exist.
+/// Replace an existing theme's name, icon, and content (blend canvas, engine version, Calendar
+/// default, tokens, and palette) in one transaction. The seed fields of `write` are ignored,
+/// since a theme's seed never changes after creation. Fails when the theme does not exist.
 pub async fn replace_content(pool: &SqlitePool, write: &UserThemeWrite) -> Result<(), String> {
     validate_theme_write(write)?;
+    let content = write_content(write)?;
     let now = now_ms()?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
 
-    let result = sqlx::query(
-        "UPDATE themes
-            SET display_name = ?,
-                icon_label = ?,
-                seed_icon_label = ?,
-                blend_canvas = ?,
-                seed_blend_canvas = ?,
-                derivation_engine_version = ?,
-                calendar_default_mode = ?,
-                calendar_default_custom = ?,
-                seed_calendar_default_mode = ?,
-                seed_calendar_default_custom = ?,
-                updated_at_ms = ?
-          WHERE id = ?",
+    let labeled = sqlx::query(
+        "UPDATE themes SET display_name = ?, icon_label = ?
+          WHERE id = ? AND (display_name IS NOT ? OR icon_label IS NOT ?)",
     )
     .bind(&write.display_name)
     .bind(&write.icon_label)
-    .bind(&write.seed_icon_label)
-    .bind(&write.blend_canvas)
-    .bind(&write.seed_blend_canvas)
-    .bind(write.derivation_engine_version)
-    .bind(&write.calendar_default_mode)
-    .bind(&write.calendar_default_custom)
-    .bind(&write.seed_calendar_default_mode)
-    .bind(&write.seed_calendar_default_custom)
-    .bind(now)
     .bind(&write.id)
+    .bind(&write.display_name)
+    .bind(&write.icon_label)
     .execute(&mut *tx)
     .await
-    .map_err(|e| format!("update theme: {e}"))?;
-
-    if result.rows_affected() == 0 {
-        return Err(format!("theme '{}' not found", write.id));
+    .map_err(|e| format!("update theme: {e}"))?
+    .rows_affected()
+        > 0;
+    let changed = write_theme_content(&mut tx, &write.id, &content).await?;
+    if labeled || changed {
+        touch_theme(&mut tx, &write.id, now).await?;
     }
-
-    delete_theme_children(&mut tx, &write.id).await?;
-    insert_token_rows(
-        &mut tx,
-        &write.id,
-        &write.tokens,
-        "INSERT INTO theme_tokens (theme_id, kind, key, value, isolated) VALUES (?, ?, ?, ?, ?)",
-    )
-    .await?;
-    insert_palette_rows(
-        &mut tx,
-        &write.id,
-        &write.palette,
-        "INSERT INTO theme_event_palette (theme_id, slot, value) VALUES (?, ?, ?)",
-    )
-    .await?;
-    insert_token_rows(
-        &mut tx,
-        &write.id,
-        &write.seed_tokens,
-        "INSERT INTO theme_seed_tokens (theme_id, kind, key, value, isolated) VALUES (?, ?, ?, ?, ?)",
-    )
-    .await?;
-    insert_palette_rows(
-        &mut tx,
-        &write.id,
-        &write.seed_palette,
-        "INSERT INTO theme_seed_event_palette (theme_id, slot, value) VALUES (?, ?, ?)",
-    )
-    .await?;
 
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     Ok(())
 }
 
-/// Delete a user theme; its rows and upgrade dismissals cascade. Deleting a missing theme
-/// succeeds.
+/// Delete a user theme; its rows cascade. Deleting a missing theme succeeds.
 pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), String> {
     validate_theme_id(id)?;
     sqlx::query("DELETE FROM themes WHERE id = ?")
@@ -383,8 +375,9 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Record that the user dismissed the upgrade of a theme to a derivation engine version,
-/// replacing an earlier dismissal of the same version.
+/// Record that the user dismissed the upgrade of a theme to a derivation engine version. A theme
+/// keeps only its highest dismissed version, so dismissing a lower one changes nothing. Fails
+/// when the theme does not exist.
 pub async fn record_dismissal(
     pool: &SqlitePool,
     id: &str,
@@ -394,25 +387,28 @@ pub async fn record_dismissal(
     if engine_version < 0 {
         return Err("engine_version cannot be negative".to_string());
     }
-    let dismissed_at_ms = now_ms()?;
-    sqlx::query(
-        "INSERT OR REPLACE INTO theme_upgrade_dismissals
-            (theme_id, engine_version, dismissed_at_ms)
-         VALUES (?, ?, ?)",
+    let mut conn = pool.acquire().await.map_err(|e| format!("acquire: {e}"))?;
+    let result = sqlx::query(
+        "UPDATE themes SET upgrade_dismissed_engine_version = ?
+          WHERE id = ? AND upgrade_dismissed_engine_version < ?",
     )
+    .bind(engine_version)
     .bind(id)
     .bind(engine_version)
-    .bind(dismissed_at_ms)
-    .execute(pool)
+    .execute(&mut *conn)
     .await
     .map_err(|e| format!("record theme dismissal: {e}"))?;
+    if result.rows_affected() == 0 {
+        ensure_theme_exists(&mut conn, id, "record theme dismissal").await?;
+    }
     Ok(())
 }
 
-/// Load every recorded theme upgrade dismissal.
+/// Load the highest dismissed upgrade of every theme that has one.
 pub async fn load_dismissals(pool: &SqlitePool) -> Result<Vec<DismissalRow>, String> {
     let rows = sqlx::query(
-        "SELECT theme_id, engine_version, dismissed_at_ms FROM theme_upgrade_dismissals",
+        "SELECT id, upgrade_dismissed_engine_version FROM themes
+          WHERE upgrade_dismissed_engine_version > 0",
     )
     .fetch_all(pool)
     .await
@@ -422,14 +418,11 @@ pub async fn load_dismissals(pool: &SqlitePool) -> Result<Vec<DismissalRow>, Str
         .map(|row| {
             Ok(DismissalRow {
                 theme_id: row
-                    .try_get("theme_id")
-                    .map_err(|e| format!("read dismissal theme_id: {e}"))?,
+                    .try_get("id")
+                    .map_err(|e| format!("read dismissal theme id: {e}"))?,
                 engine_version: row
-                    .try_get("engine_version")
-                    .map_err(|e| format!("read dismissal engine_version: {e}"))?,
-                dismissed_at_ms: row
-                    .try_get("dismissed_at_ms")
-                    .map_err(|e| format!("read dismissal dismissed_at_ms: {e}"))?,
+                    .try_get("upgrade_dismissed_engine_version")
+                    .map_err(|e| format!("read dismissal engine version: {e}"))?,
             })
         })
         .collect()
@@ -440,14 +433,22 @@ pub async fn rename(pool: &SqlitePool, id: &str, display_name: &str) -> Result<(
     validate_theme_id(id)?;
     validate_display_name(display_name)?;
     let now = now_ms()?;
-    let result = sqlx::query("UPDATE themes SET display_name = ?, updated_at_ms = ? WHERE id = ?")
-        .bind(display_name)
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("rename theme: {e}"))?;
-    ensure_row_changed(result, "rename theme")
+    let mut conn = pool.acquire().await.map_err(|e| format!("acquire: {e}"))?;
+    let result = sqlx::query(
+        "UPDATE themes SET display_name = ?, updated_at_ms = max(updated_at_ms, ?)
+          WHERE id = ? AND display_name IS NOT ?",
+    )
+    .bind(display_name)
+    .bind(now)
+    .bind(id)
+    .bind(display_name)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| format!("rename theme: {e}"))?;
+    if result.rows_affected() == 0 {
+        ensure_theme_exists(&mut conn, id, "rename theme").await?;
+    }
+    Ok(())
 }
 
 /// Restore one current token's value and isolation from the theme's seed. Fails when the theme
@@ -462,17 +463,25 @@ pub async fn reset_token_to_seed(
     validate_token_identity(kind, key, "token")?;
     let now = now_ms()?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM theme_tokens WHERE theme_id = ? AND kind = ? AND key = ?",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(key)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("read theme token: {e}"))?;
+    if exists.is_none() {
+        return Err("reset theme token to seed: no matching row".to_string());
+    }
     let result = sqlx::query(
         "UPDATE theme_tokens AS t
-            SET value = (
-                    SELECT value FROM theme_seed_tokens AS s
-                    WHERE s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
-                ),
-                isolated = (
-                    SELECT isolated FROM theme_seed_tokens AS s
-                    WHERE s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
-                )
-          WHERE t.theme_id = ? AND t.kind = ? AND t.key = ?",
+            SET value = s.value, isolated = s.isolated
+           FROM theme_seed_tokens AS s
+          WHERE t.theme_id = ? AND t.kind = ? AND t.key = ?
+            AND s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
+            AND (t.value IS NOT s.value OR t.isolated IS NOT s.isolated)",
     )
     .bind(id)
     .bind(kind)
@@ -480,8 +489,9 @@ pub async fn reset_token_to_seed(
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("reset theme token to seed: {e}"))?;
-    ensure_row_changed(result, "reset theme token to seed")?;
-    touch_theme(&mut tx, id, now).await?;
+    if result.rows_affected() > 0 {
+        touch_theme(&mut tx, id, now).await?;
+    }
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     Ok(())
 }
@@ -492,108 +502,230 @@ pub async fn reset_to_seed(pool: &SqlitePool, id: &str) -> Result<(), String> {
     validate_theme_id(id)?;
     let now = now_ms()?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    ensure_theme_exists(&mut tx, id, "reset theme to seed").await?;
 
-    sqlx::query(
+    let tokens = sqlx::query(
         "UPDATE theme_tokens AS t
-            SET value = (
-                    SELECT value FROM theme_seed_tokens AS s
-                    WHERE s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
-                ),
-                isolated = (
-                    SELECT isolated FROM theme_seed_tokens AS s
-                    WHERE s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
-                )
-          WHERE t.theme_id = ?",
+            SET value = s.value, isolated = s.isolated
+           FROM theme_seed_tokens AS s
+          WHERE t.theme_id = ?
+            AND s.theme_id = t.theme_id AND s.kind = t.kind AND s.key = t.key
+            AND (t.value IS NOT s.value OR t.isolated IS NOT s.isolated)",
     )
     .bind(id)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("reset theme tokens to seed: {e}"))?;
 
-    sqlx::query(
+    let palette = sqlx::query(
         "UPDATE theme_event_palette AS p
-            SET value = (
-                SELECT value FROM theme_seed_event_palette AS s
-                WHERE s.theme_id = p.theme_id AND s.slot = p.slot
-            )
-          WHERE p.theme_id = ?",
+            SET value = s.value
+           FROM theme_seed_event_palette AS s
+          WHERE p.theme_id = ?
+            AND s.theme_id = p.theme_id AND s.slot = p.slot
+            AND p.value IS NOT s.value",
     )
     .bind(id)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("reset theme palette to seed: {e}"))?;
 
-    let result = sqlx::query(
+    let theme = sqlx::query(
         "UPDATE themes
             SET blend_canvas = seed_blend_canvas,
                 calendar_default_mode = seed_calendar_default_mode,
-                calendar_default_custom = seed_calendar_default_custom,
-                updated_at_ms = ?
-          WHERE id = ?",
+                calendar_default_custom = seed_calendar_default_custom
+          WHERE id = ?
+            AND (blend_canvas IS NOT seed_blend_canvas
+                 OR calendar_default_mode IS NOT seed_calendar_default_mode
+                 OR calendar_default_custom IS NOT seed_calendar_default_custom)",
     )
-    .bind(now)
     .bind(id)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("reset theme to seed: {e}"))?;
-    ensure_row_changed(result, "reset theme to seed")?;
+
+    if tokens.rows_affected() + palette.rows_affected() + theme.rows_affected() > 0 {
+        touch_theme(&mut tx, id, now).await?;
+    }
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     Ok(())
 }
 
-async fn delete_theme_children(
+const TOKENS: &str =
+    "INSERT INTO theme_tokens (theme_id, kind, key, value, isolated) VALUES (?, ?, ?, ?, ?)";
+const PALETTE: &str = "INSERT INTO theme_event_palette (theme_id, slot, value) VALUES (?, ?, ?)";
+const SEED_TOKENS: &str =
+    "INSERT INTO theme_seed_tokens (theme_id, kind, key, value, isolated) VALUES (?, ?, ?, ?, ?)";
+const SEED_PALETTE: &str =
+    "INSERT INTO theme_seed_event_palette (theme_id, slot, value) VALUES (?, ?, ?)";
+
+/// The current content of a theme, or `None` when the theme does not exist.
+async fn load_theme_content(
+    conn: &mut SqliteConnection,
+    id: &str,
+) -> Result<Option<ThemeContent>, String> {
+    let Some((
+        blend_canvas,
+        derivation_engine_version,
+        calendar_default_mode,
+        calendar_default_custom,
+    )) = sqlx::query_as::<_, (String, i64, String, String)>(
+        "SELECT blend_canvas, derivation_engine_version, calendar_default_mode,
+                    calendar_default_custom
+               FROM themes WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| format!("read theme content: {e}"))?
+    else {
+        return Ok(None);
+    };
+    let tokens = sqlx::query_as::<_, (String, String, String, bool)>(
+        "SELECT kind, key, value, isolated FROM theme_tokens
+          WHERE theme_id = ? ORDER BY kind ASC, key ASC",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("read theme tokens: {e}"))?
+    .into_iter()
+    .map(|(kind, key, value, isolated)| ThemeToken {
+        kind,
+        key,
+        value,
+        isolated,
+    })
+    .collect();
+    let palette = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM theme_event_palette WHERE theme_id = ? ORDER BY slot ASC",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("read theme palette: {e}"))?;
+    Ok(Some(ThemeContent {
+        blend_canvas,
+        derivation_engine_version,
+        calendar_default_mode,
+        calendar_default_custom,
+        tokens,
+        palette,
+    }))
+}
+
+/// Writes `content` to an existing theme, touching only the columns and owned rows that differ.
+/// Returns whether anything changed; fails when the theme does not exist.
+async fn write_theme_content(
     tx: &mut Transaction<'_, Sqlite>,
-    theme_id: &str,
-) -> Result<(), String> {
-    for query in [
-        "DELETE FROM theme_tokens WHERE theme_id = ?",
-        "DELETE FROM theme_event_palette WHERE theme_id = ?",
-        "DELETE FROM theme_seed_tokens WHERE theme_id = ?",
-        "DELETE FROM theme_seed_event_palette WHERE theme_id = ?",
-    ] {
-        sqlx::query(query)
-            .bind(theme_id)
+    id: &str,
+    content: &ThemeContent,
+) -> Result<bool, String> {
+    let current = load_theme_content(tx, id)
+        .await?
+        .ok_or_else(|| format!("theme '{id}' not found"))?;
+    if &current == content {
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE themes
+            SET blend_canvas = ?, derivation_engine_version = ?,
+                calendar_default_mode = ?, calendar_default_custom = ?
+          WHERE id = ?",
+    )
+    .bind(&content.blend_canvas)
+    .bind(content.derivation_engine_version)
+    .bind(&content.calendar_default_mode)
+    .bind(&content.calendar_default_custom)
+    .bind(id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("update theme content: {e}"))?;
+    if current.tokens != content.tokens {
+        sqlx::query("DELETE FROM theme_tokens WHERE theme_id = ?")
+            .bind(id)
             .execute(&mut **tx)
             .await
-            .map_err(|e| format!("delete theme children: {e}"))?;
+            .map_err(|e| format!("delete theme tokens: {e}"))?;
+        insert_tokens(tx, id, &content.tokens, TOKENS).await?;
+    }
+    if current.palette != content.palette {
+        sqlx::query("DELETE FROM theme_event_palette WHERE theme_id = ?")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("delete theme palette: {e}"))?;
+        insert_palette(tx, id, &content.palette, PALETTE).await?;
+    }
+    Ok(true)
+}
+
+/// The content of a checked write: tokens in canonical order and the palette in slot order.
+fn write_content(write: &UserThemeWrite) -> Result<ThemeContent, String> {
+    Ok(ThemeContent {
+        blend_canvas: write.blend_canvas.clone(),
+        derivation_engine_version: write.derivation_engine_version,
+        calendar_default_mode: write.calendar_default_mode.clone(),
+        calendar_default_custom: write.calendar_default_custom.clone(),
+        tokens: canonical_tokens(&write_tokens(&write.tokens)).map_err(|e| e.to_string())?,
+        palette: write_palette(&write.palette),
+    })
+}
+
+fn write_tokens(rows: &[ThemeTokenWrite]) -> Vec<ThemeToken> {
+    rows.iter()
+        .map(|row| ThemeToken {
+            kind: row.kind.clone(),
+            key: row.key.clone(),
+            value: row.value.clone(),
+            isolated: row.isolated,
+        })
+        .collect()
+}
+
+/// Palette values in slot order. Callers pass rows [`validate_palette_rows`] accepted, so every
+/// slot appears exactly once.
+fn write_palette(rows: &[ThemePaletteWrite]) -> Vec<String> {
+    let mut sorted: Vec<&ThemePaletteWrite> = rows.iter().collect();
+    sorted.sort_by_key(|row| row.slot);
+    sorted.into_iter().map(|row| row.value.clone()).collect()
+}
+
+async fn insert_tokens(
+    tx: &mut Transaction<'_, Sqlite>,
+    theme_id: &str,
+    tokens: &[ThemeToken],
+    query: &'static str,
+) -> Result<(), String> {
+    for token in tokens {
+        sqlx::query(query)
+            .bind(theme_id)
+            .bind(&token.kind)
+            .bind(&token.key)
+            .bind(&token.value)
+            .bind(token.isolated)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("insert theme token '{}:{}': {e}", token.kind, token.key))?;
     }
     Ok(())
 }
 
-async fn insert_token_rows(
+async fn insert_palette(
     tx: &mut Transaction<'_, Sqlite>,
     theme_id: &str,
-    rows: &[ThemeTokenWrite],
+    palette: &[String],
     query: &'static str,
 ) -> Result<(), String> {
-    for row in rows {
+    for (slot, value) in palette.iter().enumerate() {
         sqlx::query(query)
             .bind(theme_id)
-            .bind(&row.kind)
-            .bind(&row.key)
-            .bind(&row.value)
-            .bind(if row.isolated { 1_i64 } else { 0_i64 })
+            .bind(slot as i64)
+            .bind(value)
             .execute(&mut **tx)
             .await
-            .map_err(|e| format!("insert theme token '{}:{}': {e}", row.kind, row.key))?;
-    }
-    Ok(())
-}
-
-async fn insert_palette_rows(
-    tx: &mut Transaction<'_, Sqlite>,
-    theme_id: &str,
-    rows: &[ThemePaletteWrite],
-    query: &'static str,
-) -> Result<(), String> {
-    for row in rows {
-        sqlx::query(query)
-            .bind(theme_id)
-            .bind(row.slot)
-            .bind(&row.value)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("insert theme palette slot {}: {e}", row.slot))?;
+            .map_err(|e| format!("insert theme palette slot {slot}: {e}"))?;
     }
     Ok(())
 }
@@ -603,13 +735,31 @@ async fn touch_theme(
     theme_id: &str,
     now: i64,
 ) -> Result<(), String> {
-    let result = sqlx::query("UPDATE themes SET updated_at_ms = ? WHERE id = ?")
-        .bind(now)
-        .bind(theme_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("touch theme: {e}"))?;
+    let result =
+        sqlx::query("UPDATE themes SET updated_at_ms = max(updated_at_ms, ?) WHERE id = ?")
+            .bind(now)
+            .bind(theme_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("touch theme: {e}"))?;
     ensure_row_changed(result, "touch theme")
+}
+
+async fn ensure_theme_exists(
+    conn: &mut SqliteConnection,
+    id: &str,
+    context: &str,
+) -> Result<(), String> {
+    let exists = sqlx::query_scalar::<_, i64>("SELECT 1 FROM themes WHERE id = ?")
+        .bind(id)
+        .fetch_optional(conn)
+        .await
+        .map_err(|e| format!("{context}: {e}"))?;
+    if exists.is_some() {
+        Ok(())
+    } else {
+        Err(format!("{context}: no matching row"))
+    }
 }
 
 fn ensure_row_changed(result: SqliteQueryResult, context: &str) -> Result<(), String> {
@@ -718,20 +868,24 @@ fn validate_theme_write(write: &UserThemeWrite) -> Result<(), String> {
 }
 
 fn validate_display_name(value: &str) -> Result<(), String> {
-    if value.trim().is_empty() {
-        return Err("display_name cannot be empty".to_string());
+    if is_display_name(value) {
+        Ok(())
+    } else {
+        Err(format!(
+            "display_name must be 1 to {} characters and not blank",
+            ganbaru_sync::domains::themes::MAX_DISPLAY_NAME_CHARS
+        ))
     }
-    if value.chars().count() > MAX_DISPLAY_NAME_LENGTH {
-        return Err(format!(
-            "display_name cannot exceed {MAX_DISPLAY_NAME_LENGTH} characters"
-        ));
-    }
-    Ok(())
 }
 
 fn validate_theme_id(id: &str) -> Result<(), String> {
     if id.trim().is_empty() {
         return Err("theme id cannot be empty".to_string());
+    }
+    if id.len() > MAX_THEME_ID_CHARS {
+        return Err(format!(
+            "theme id cannot exceed {MAX_THEME_ID_CHARS} characters"
+        ));
     }
     if !is_valid_theme_slug(id) {
         return Err(
@@ -757,17 +911,17 @@ fn is_valid_theme_slug(id: &str) -> bool {
 }
 
 fn validate_token_identity(kind: &str, key: &str, field: &str) -> Result<(), String> {
-    if !matches!(kind, "source" | "app" | "calendar") {
+    if !ganbaru_sync::domains::themes::TOKEN_KINDS.contains(&kind) {
         return Err(format!("{field} contains invalid token kind '{kind}'"));
     }
-    if key.trim().is_empty() {
-        return Err(format!("{field} contains an empty token key"));
+    if !is_token_key(key) {
+        return Err(format!("{field} contains an invalid token key"));
     }
     Ok(())
 }
 
 fn validate_icon_label(value: &str, field: &str) -> Result<(), String> {
-    if matches!(value, "light" | "dark") {
+    if is_icon_label(value) {
         Ok(())
     } else {
         Err(format!("{field} must be 'light' or 'dark'"))
@@ -775,7 +929,7 @@ fn validate_icon_label(value: &str, field: &str) -> Result<(), String> {
 }
 
 fn validate_calendar_mode(value: &str, field: &str) -> Result<(), String> {
-    if matches!(value, "light" | "dark" | "app-canvas" | "custom") {
+    if is_calendar_mode(value) {
         Ok(())
     } else {
         Err(format!(
@@ -785,25 +939,7 @@ fn validate_calendar_mode(value: &str, field: &str) -> Result<(), String> {
 }
 
 fn validate_token_rows(rows: &[ThemeTokenWrite], field: &str) -> Result<(), String> {
-    let mut seen = HashSet::with_capacity(rows.len());
-    for row in rows {
-        if !matches!(row.kind.as_str(), "source" | "app" | "calendar") {
-            return Err(format!(
-                "{field} contains invalid token kind '{}'",
-                row.kind
-            ));
-        }
-        if row.key.trim().is_empty() {
-            return Err(format!("{field} contains an empty token key"));
-        }
-        validate_hex_color(&row.value, field)?;
-        if !seen.insert((row.kind.as_str(), row.key.as_str())) {
-            return Err(format!(
-                "{field} contains duplicate token '{}:{}'",
-                row.kind, row.key
-            ));
-        }
-    }
+    canonical_tokens(&write_tokens(rows)).map_err(|e| format!("{field}: {e}"))?;
     Ok(())
 }
 
@@ -839,22 +975,11 @@ fn validate_hex_color(value: &str, field: &str) -> Result<(), String> {
     }
 }
 
-fn is_hex_color(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.first() != Some(&b'#') {
-        return false;
-    }
-    if bytes.len() != 7 && bytes.len() != 9 {
-        return false;
-    }
-    bytes[1..].iter().all(u8::is_ascii_hexdigit)
-}
-
 fn now_ms() -> Result<i64, String> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("system clock before unix epoch: {e}"))?;
-    Ok(duration.as_millis() as i64)
+    i64::try_from(duration.as_millis()).map_err(|e| format!("system clock out of range: {e}"))
 }
 
 #[cfg(test)]

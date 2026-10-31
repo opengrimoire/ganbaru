@@ -1,5 +1,6 @@
 mod active_event_protections;
 mod archive_restore;
+mod command_identity;
 mod commit;
 mod complete_archive;
 mod create;
@@ -16,4 +17,5 @@ mod recurrence_batches;
 mod sanitization;
 mod scope;
 mod task_schedule;
+mod timing_bound;
 mod validation;

@@ -1,28 +1,51 @@
 //! Concurrent sync of the active vault: the service that seals local changes and exchanges with
 //! the hub, the paired transport, and the recovery offers and device names the frontend shows.
 //! Replica access, the local writer, carry-forward, and the exchange live in
-//! `ganbaru-sync-replica`.
+//! `ganbaru-sync-replica`. A pass runs through a host, so the app and a headless pass without a
+//! Tauri runtime share it.
 
+#[cfg(desktop)]
+pub(crate) mod anchor_server;
+mod authority;
+#[cfg(any(mobile, test))]
+mod background_changes;
+pub(crate) mod backup_keys;
 pub(crate) mod commands;
+mod connectivity;
+mod contests;
 pub(crate) mod devices;
-mod images;
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod headless;
+mod host;
+pub(crate) mod key_protection;
 mod recovery;
+mod recovery_kit;
+pub(crate) mod server;
 mod service;
 mod status;
 mod transport;
+mod vault_assets;
 
-#[cfg(desktop)]
 pub(crate) use ganbaru_sync_replica::hub;
-use ganbaru_sync_replica::{access, assets, carry_forward, client, writer};
+pub(crate) use ganbaru_sync_replica::service::discovery_keys;
+use ganbaru_sync_replica::service::peers;
+use ganbaru_sync_replica::{assets, writer};
 
-#[cfg(test)]
-mod tests;
-
+#[cfg(target_os = "linux")]
+pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-#[cfg(desktop)]
-pub(crate) use service::sync_hub;
+pub(crate) use host::rebuild_staged_vault;
+pub(crate) use peers::reported_members;
 pub(crate) use service::{
-    SyncRuntime, export_for_replacement, quiesced_sync, resume_after_vault_handoff, seal_quiesced,
-    setup, stop_for_vault_handoff, sync_files,
+    SyncRuntime, bootstrap_members, ensure_device_key, member_admission_source, member_hub,
+    peer_hints, quiesced_sync, read_peer_book, release_runtime_handle, resume_after_vault_handoff,
+    seal_quiesced, setup, stop_for_vault_handoff, sync_files,
+};
+#[cfg(desktop)]
+pub(crate) use service::{
+    enrollment_sealer, ensure_admin_key, log_admission_source, quarantined_devices,
+    stored_admin_key, sync_hub,
 };
 pub(crate) use status::SyncSubscribers;
+#[cfg(desktop)]
+pub(crate) use status::emit_applied;

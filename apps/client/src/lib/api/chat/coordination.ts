@@ -235,15 +235,6 @@ export async function archiveChatTeammate(
   }));
 }
 
-export async function deleteUnusedChatTeammate(
-  teammateId: ChatParticipantId,
-  expectedRevision: number,
-): Promise<void> {
-  await invoke("chat_delete_unused_teammate", {
-    dbUrl: await ensureDbUrl(), teammateId, expectedRevision,
-  });
-}
-
 export async function readChatChannelRoster(channelId: ChatChannelId): Promise<ChatChannelRosterRead> {
   const command = localExecutionAvailable
     ? "chat_read_channel_roster"

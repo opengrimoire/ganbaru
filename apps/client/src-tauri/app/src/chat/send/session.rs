@@ -476,10 +476,10 @@ pub(super) async fn require_live_authorization(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE run.provider_thread_id = ?
            AND (? IS NULL OR run.provider_turn_id = ?)
            AND run.state IN ('starting', 'working', 'waiting')

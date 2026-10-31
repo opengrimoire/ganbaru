@@ -10,7 +10,6 @@
   import ProfileImageCropDialog from "$lib/components/profile/ProfileImageCropDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { NotesLocalUser } from "$lib/notes/types";
   import type { EventColor } from "$lib/calendar/types";
   import {
     PROFILE_IMAGE_DEFAULT_CROP,
@@ -22,8 +21,9 @@
     PROFILE_DISPLAY_NAME_FALLBACK,
     PROFILE_DISPLAY_NAME_MAX_CHARS,
     PROFILE_FULL_NAME_MAX_CHARS,
-    isProfileImagePath,
+    isProfileImage,
     normalizeProfileDisplayName,
+    type ProfileImage,
     normalizeProfileFullName,
   } from "$lib/stores/preference-options";
   import { getNotes } from "$lib/stores/notes.svelte";
@@ -48,7 +48,7 @@
   let avatarPanelOpen = $state(false);
   /** Open crop editor; `ownsFile` marks a newly picked file that Cancel must delete. */
   let cropEditor = $state<{
-    path: string;
+    image: ProfileImage;
     crop: ProfileImageCrop;
     fromUpload: boolean;
     ownsFile: boolean;
@@ -56,7 +56,8 @@
 
   let draftDisplayName = $state(preferences.profileDisplayName);
   let draftFullName = $state(preferences.profileFullName);
-  let draftImagePath = $state(preferences.profileImagePath);
+  let draftImage = $state<ProfileImage | null>(preferences.profileImage);
+  const draftImagePath = $derived(draftImage?.path ?? null);
   let draftImageCrop = $state<ProfileImageCrop>({ ...preferences.profileImageCrop });
   let draftUseImage = $state(preferences.profileUseImage);
   let draftColor = $state<EventColor>(preferences.profileColor);
@@ -143,20 +144,16 @@
       return;
     }
 
-    const shouldUpdateNotesName = displayName.value !== preferences.profileDisplayName;
-    const notesDisplayName = displayName.value || PROFILE_DISPLAY_NAME_FALLBACK;
+    const displayNameChanged = displayName.value !== preferences.profileDisplayName;
     saving = true;
     try {
-      if (shouldUpdateNotesName) {
-        const updated: NotesLocalUser | null = await notes.updateLocalUserDisplayName(notesDisplayName);
-        if (!updated) {
-          saveError = notes.localUserError ?? t("settings.profileIdentity.syncFailed");
-          return;
-        }
-      }
       if (!preferences.setProfileDisplayName(displayName.value)) {
         saveError = t("settings.profileIdentity.invalidName");
         return;
+      }
+      if (displayNameChanged) {
+        await flushConfig();
+        await notes.refreshLocalAuthor();
       }
       if (!preferences.setProfileFullName(fullName.value)) {
         saveError = t("settings.profileIdentity.invalidFullName");
@@ -178,7 +175,7 @@
     const previous = preferences.profileImagePath;
     const imageSaved = draftImagePath === previous
       ? preferences.setProfileImageCrop(draftImageCrop)
-      : preferences.setProfileImagePath(draftImagePath, draftImageCrop);
+      : preferences.setProfileImage(draftImage, draftImageCrop);
     if (!imageSaved || !preferences.setProfileColor(draftColor)) {
       throw new Error(t("settings.profileIdentity.invalidPicture"));
     }
@@ -219,15 +216,16 @@
     try {
       const selected = await pickProfileImageFile(t("settings.profileIdentity.picturePickerTitle"));
       if (!selected) return;
-      const path = selected.relativePath;
+      const image = { path: selected.relativePath, byteSize: selected.byteSize };
+      const path = image.path;
       const ownsFile = path !== preferences.profileImagePath && path !== pendingImagePath;
-      if (!isProfileImagePath(path)) {
+      if (!isProfileImage(image)) {
         if (ownsFile) await deleteProfileImageFile(path);
         throw new Error(t("settings.profileIdentity.invalidPicture"));
       }
       avatarPanelOpen = false;
       cropEditor = {
-        path,
+        image,
         crop: path === draftImagePath ? { ...draftImageCrop } : { ...PROFILE_IMAGE_DEFAULT_CROP },
         fromUpload: true,
         ownsFile,
@@ -240,10 +238,10 @@
   }
 
   function adjustProfileImage(): void {
-    const path = draftImagePath;
+    const image = draftImage;
     avatarPanelOpen = false;
-    if (!path) return;
-    cropEditor = { path, crop: { ...draftImageCrop }, fromUpload: false, ownsFile: false };
+    if (!image) return;
+    cropEditor = { image, crop: { ...draftImageCrop }, fromUpload: false, ownsFile: false };
   }
 
   function closeCropEditor(): void {
@@ -257,13 +255,13 @@
     if (!editor) return;
     closeCropEditor();
     markPictureEdited();
-    const replacedPending = pendingImagePath !== null && pendingImagePath !== editor.path
+    const replacedPending = pendingImagePath !== null && pendingImagePath !== editor.image.path
       ? pendingImagePath
       : null;
-    draftImagePath = editor.path;
+    draftImage = editor.image;
     draftImageCrop = { ...crop };
     if (editor.fromUpload) draftUseImage = true;
-    pendingImagePath = editor.path === preferences.profileImagePath ? null : editor.path;
+    pendingImagePath = editor.image.path === preferences.profileImagePath ? null : editor.image.path;
     if (replacedPending) void discardImageFile(replacedPending);
   }
 
@@ -272,14 +270,14 @@
     const editor = cropEditor;
     if (!editor) return;
     closeCropEditor();
-    if (editor.ownsFile) void discardImageFile(editor.path);
+    if (editor.ownsFile) void discardImageFile(editor.image.path);
   }
 
   function removeProfileImage(): void {
     if (!draftImagePath || savingImage) return;
     markPictureEdited();
     const pending = pendingImagePath;
-    draftImagePath = null;
+    draftImage = null;
     draftImageCrop = { ...PROFILE_IMAGE_DEFAULT_CROP };
     pendingImagePath = null;
     if (pending) void discardImageFile(pending);
@@ -417,9 +415,9 @@
         />
       {/if}
       {#if cropEditor}
-        {#key cropEditor.path}
+        {#key cropEditor.image.path}
           <ProfileImageCropDialog
-            imagePath={cropEditor.path}
+            imagePath={cropEditor.image.path}
             initialCrop={cropEditor.crop}
             onApply={applyProfileImageCrop}
             onCancel={cancelProfileImageCrop}

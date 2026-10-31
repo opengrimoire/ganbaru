@@ -2,7 +2,7 @@
 
 use super::common::{
     native_assignment_safety_mode, new_id, parse_runtime_approval_policy, serialization_error,
-    sha256_hex,
+    sha256_hex, this_device_id,
 };
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
@@ -15,26 +15,13 @@ pub(super) async fn dispatch_assignment_job(
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
 ) -> ChatResult<()> {
+    let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
-    let claim_token = new_id("dispatch-claim");
-    let claimed = sqlx::query(
-        "UPDATE chat_assignment_dispatch_jobs
-         SET state = 'claimed', claimed_at = ?, claim_token = ?,
-             attempt_count = attempt_count + 1, updated_at = ?
-         WHERE assignment_id = ? AND state = 'queued' AND available_at <= ?",
-    )
-    .bind(now.as_str())
-    .bind(&claim_token)
-    .bind(now.as_str())
-    .bind(assignment_id.as_str())
-    .bind(now.as_str())
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
-    if claimed.rows_affected() != 1 {
+    let Some(claim_token) = claim_dispatch_job(&pool, &assignment_id, &device_id, &now).await?
+    else {
         return Ok(());
-    }
+    };
     let result = dispatch_claimed_assignment(
         app.clone(),
         db_url.clone(),
@@ -49,6 +36,37 @@ pub(super) async fn dispatch_assignment_job(
     }
     mark_initial_assignment_input_delivered(&pool, &assignment_id).await?;
     deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
+}
+
+/// Claims the queued dispatch job of `assignment_id` when the device `device_id` executes the
+/// assignment, returning the claim token. An assignment without an executing device runs on
+/// the device that holds its device-local dispatch job.
+pub(super) async fn claim_dispatch_job(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<String>> {
+    let claim_token = new_id("dispatch-claim")?;
+    let claimed = sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs
+         SET state = 'claimed', claimed_at = ?1, claim_token = ?2,
+             attempt_count = attempt_count + 1, updated_at = ?1
+         WHERE assignment_id = ?3 AND state = 'queued' AND available_at <= ?1
+           AND EXISTS (
+             SELECT 1 FROM chat_work_assignments assignment
+             WHERE assignment.id = ?3
+               AND coalesce(assignment.executing_device_id, ?4) = ?4
+           )",
+    )
+    .bind(now.as_str())
+    .bind(&claim_token)
+    .bind(assignment_id.as_str())
+    .bind(device_id)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok((claimed.rows_affected() == 1).then_some(claim_token))
 }
 
 async fn mark_initial_assignment_input_delivered(
@@ -122,7 +140,6 @@ async fn dispatch_claimed_assignment(
             authorization.scope_digest,
             authorization.decision_state,
             authorization.revoked_at AS authorization_revoked_at,
-            policy.revision AS policy_revision,
             teammate.instructions,
             channel.project_id,
             project.status AS project_status,
@@ -157,10 +174,10 @@ async fn dispatch_claimed_assignment(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
          WHERE assignment.id = ?
            AND CASE
@@ -244,8 +261,10 @@ async fn dispatch_claimed_assignment(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let policy_revision = u64_value(row.try_get("policy_revision").map_err(persistence_error)?)?;
-    let policy = read_policy(pool, &teammate_id, policy_revision).await?;
+    let policy_revision_id: String = row
+        .try_get("teammate_policy_revision_id")
+        .map_err(persistence_error)?;
+    let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
     let resolved_runtime_approval = parse_runtime_approval_policy(
         &row.try_get::<String, _>("resolved_runtime_approval_policy")
             .map_err(persistence_error)?,
@@ -384,7 +403,7 @@ async fn dispatch_claimed_assignment(
         .transpose()?;
     let provider_execution_thread_id = existing_thread_id
         .clone()
-        .unwrap_or(ChatThreadId::new(new_id("provider-execution")).map_err(identifier_error)?);
+        .unwrap_or(ChatThreadId::new(new_id("provider-execution")?).map_err(identifier_error)?);
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment.attachment_id
          FROM chat_work_assignments assignment
@@ -455,8 +474,8 @@ async fn dispatch_claimed_assignment(
         new_thread_id: (continuation.is_none()).then_some(provider_execution_thread_id),
         execution_environment_id: execution_environment_id.clone(),
         scratch_generation_id: scratch_generation_id.clone(),
-        turn_id: ChatTurnId::new(new_id("provider-turn")).map_err(identifier_error)?,
-        message_id: ChatMessageId::new(new_id("provider-message")).map_err(identifier_error)?,
+        turn_id: ChatTurnId::new(new_id("provider-turn")?).map_err(identifier_error)?,
+        message_id: ChatMessageId::new(new_id("provider-message")?).map_err(identifier_error)?,
         provider_instance_id: policy.provider_instance_id,
         provider_managed_model: policy.provider_managed_model,
         model_id: policy.model_id,
@@ -478,7 +497,7 @@ async fn dispatch_claimed_assignment(
             origin: ganbaru_chat::agent_runs::TurnOrigin::Assignment {
                 developer_instructions,
                 run: Box::new(ganbaru_chat::agent_runs::AgentRunBinding {
-                    run_id: ChatAgentRunId::new(new_id("agent-run")).map_err(identifier_error)?,
+                    run_id: ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?,
                     assignment_id: assignment_id.clone(),
                     project_id,
                     teammate_policy_revision_id: policy.id,
@@ -517,10 +536,10 @@ async fn require_live_folder_target(
            JOIN chat_teammate_channel_memberships channel_access
              ON channel_access.conversation_id = live.conversation_id
             AND channel_access.teammate_id = live.teammate_id
+            AND channel_access.removed_at IS NULL
            JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           JOIN chat_access_profile_revisions profile_revision
+           JOIN chat_access_profile_effective_revisions profile_revision
              ON profile_revision.access_profile_id = profile.id
-            AND profile_revision.revision = profile.latest_revision
            WHERE frozen.authorization_revision_id = ?
              AND frozen.working_folder_id = ?
              AND frozen.is_execution_target = 1
@@ -584,7 +603,7 @@ async fn fail_assignment_dispatch(
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    sqlx::query(
+    let failed = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = 'failed', state_reason = ?, settled_at = ?,
              revision = revision + 1, updated_at = ?
@@ -596,15 +615,21 @@ async fn fail_assignment_dispatch(
     .bind(assignment_id.as_str())
     .execute(&mut *transaction)
     .await
-    .map_err(persistence_error)?;
-    insert_dispatch_failure_message(
-        &mut transaction,
-        assignment_id,
-        claim_token,
-        &error.message,
-        &now,
-    )
-    .await?;
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    // An assignment that already left the queue, for example through a cancel applied from
+    // another device, keeps its state and gets no failure message.
+    if failed {
+        insert_dispatch_failure_message(
+            &mut transaction,
+            assignment_id,
+            claim_token,
+            &error.message,
+            &now,
+        )
+        .await?;
+    }
     transaction.commit().await.map_err(persistence_error)
 }
 
@@ -636,23 +661,21 @@ async fn insert_dispatch_failure_message(
     let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1 FROM chat_conversation_items
-         WHERE reply_thread_id = ?",
+    let order_key = ganbaru_chat::timeline::next_order_key(
+        transaction,
+        &conversation_id,
+        Some(&reply_thread_id),
     )
-    .bind(&reply_thread_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(&reply_thread_id)
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(now.as_str())
     .execute(&mut **transaction)
     .await
@@ -679,9 +702,9 @@ async fn insert_dispatch_failure_message(
     let rich_content_data = serde_json::to_string(&rich_content).map_err(serialization_error)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
@@ -710,8 +733,8 @@ async fn insert_dispatch_failure_message(
     .await
     .map_err(persistence_error)?;
     sqlx::query(
-        "UPDATE chat_reply_threads SET reply_count = reply_count + 1,
-             last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
+        "UPDATE chat_reply_threads
+         SET last_activity_at = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(now.as_str())
     .bind(now.as_str())
@@ -780,10 +803,10 @@ pub(super) async fn deliver_assignment_input(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          JOIN chat_work_assignment_inputs input ON input.assignment_id = run.assignment_id
          JOIN chat_communication_messages message ON message.item_id = input.message_item_id
          JOIN chat_communication_message_revisions revision
@@ -838,7 +861,7 @@ pub(super) async fn deliver_assignment_input(
                 expected_thread_revision: None,
             },
             thread_id,
-            message_id: ChatMessageId::new(new_id("provider-steer-message"))
+            message_id: ChatMessageId::new(new_id("provider-steer-message")?)
                 .map_err(identifier_error)?,
             prompt: row
                 .try_get("normalized_markdown")

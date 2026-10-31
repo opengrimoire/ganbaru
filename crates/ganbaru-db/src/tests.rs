@@ -1,17 +1,24 @@
 mod access;
 mod calendar;
 mod chat;
+mod chat_local_tables;
+mod chat_timeline;
 mod contacts;
 mod core;
 mod distractions;
 mod helpers;
 mod music;
 mod notes;
+mod notes_databases;
 mod pomodoro;
+mod preferences;
+mod project_fk_actions;
 mod projects;
 mod query_plans;
 mod quick_notes;
 mod schema_catalog;
+mod sync;
+mod themes;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -93,6 +100,9 @@ fn pool_registry_close_releases_a_connection_returned_during_close() {
     block_on(async {
         let directory = registry_test_directory("close-returning");
         let path = directory.join("ganbaru.sqlite");
+        crate::test_support::write_migrated_database(&path)
+            .await
+            .unwrap();
         let registry = crate::DatabasePoolRegistry::default();
         let pool = registry.connect_path(&path).await.unwrap();
         drop(pool.acquire().await.unwrap());
@@ -159,6 +169,9 @@ fn pool_registry_reuses_and_closes_authorized_path() {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("ganbaru.sqlite");
+        crate::test_support::write_migrated_database(&path)
+            .await
+            .unwrap();
         let registry = crate::DatabasePoolRegistry::default();
 
         let first = registry.connect_path(&path).await.unwrap();
@@ -222,6 +235,9 @@ fn read_only_pool_rejects_writes_and_mode_reuse() {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("ganbaru.sqlite");
+        crate::test_support::write_migrated_database(&path)
+            .await
+            .unwrap();
         let registry = crate::DatabasePoolRegistry::default();
         let writable = registry.connect_path(&path).await.unwrap();
         sqlx::query("CREATE TABLE access_test (value TEXT NOT NULL)")
@@ -262,6 +278,9 @@ fn current_schema_validation_rejects_changed_migration_history() {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("ganbaru.sqlite");
+        crate::test_support::write_migrated_database(&path)
+            .await
+            .unwrap();
         let registry = crate::DatabasePoolRegistry::default();
         let pool = registry.connect_path(&path).await.unwrap();
         crate::validate_current_schema(&pool).await.unwrap();

@@ -5,18 +5,18 @@ use std::path::{Path, PathBuf};
 
 mod config;
 mod events;
-mod linked_usage;
 mod rules;
 mod snapshot;
+mod spool;
 
 use config::{is_protected_app_name, normalize_app_name, normalize_host_rule};
 use events::log_block_event;
-use linked_usage::{UsageSample, record_usage_sample};
 use rules::{decide_url_with_limits, feed_fingerprint, host_from_url, rules_fingerprint};
 use snapshot::{
     StateSnapshot, config_dir_candidates, is_valid_local_date, load_snapshot, runtime_status,
     should_enforce,
 };
+use spool::{UsageSample, record_usage_sample};
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()

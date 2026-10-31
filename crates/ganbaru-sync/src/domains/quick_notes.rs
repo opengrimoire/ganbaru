@@ -1,6 +1,6 @@
 //! Quick notes adapter: the canonical text run and image list codecs, the plain text projection,
-//! and lifecycle priorities. The app normalizes and projects bodies with these functions, so
-//! local writes and merged values agree byte for byte.
+//! lifecycle priorities, and image asset references. The app normalizes and projects bodies with
+//! these functions, so local writes and merged values agree byte for byte.
 
 use std::fmt;
 
@@ -8,7 +8,10 @@ use ganbaru_sync_contracts::codec::{Reader, Writer};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
-use crate::manifest::vault::quick_notes::{ADAPTER, NOTES_TABLE, note_group};
+use crate::assets::AssetRef;
+use crate::manifest::vault::quick_notes::{
+    ADAPTER, IMAGES_CLASS, IMAGES_OWNED, NOTES_TABLE, RUNS_OWNED, note_group,
+};
 
 /// Text runs in one body.
 pub const MAX_RUNS: usize = 4_096;
@@ -174,6 +177,20 @@ pub const MAX_IMAGE_PIXELS: u64 = 64_000_000;
 /// Content types an image may have, indexed by their codec byte.
 pub const IMAGE_CONTENT_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const SHA256_BYTES: usize = 32;
+/// Characters of the lowercase hex SHA-256 naming an image file.
+pub const SHA256_HEX_CHARS: usize = crate::assets::SHA256_HEX_CHARS;
+/// Characters of the longest content type in [`IMAGE_CONTENT_TYPES`].
+pub const MAX_CONTENT_TYPE_CHARS: usize = {
+    let mut longest = 0;
+    let mut index = 0;
+    while index < IMAGE_CONTENT_TYPES.len() {
+        if IMAGE_CONTENT_TYPES[index].len() > longest {
+            longest = IMAGE_CONTENT_TYPES[index].len();
+        }
+        index += 1;
+    }
+    longest
+};
 
 /// A reference from a note to a content-addressed image file in the vault.
 ///
@@ -427,8 +444,56 @@ fn is_body(table: TableId, group: GroupId) -> bool {
     table == NOTES_TABLE && group == note_group::BODY
 }
 
-fn is_images(table: TableId, group: GroupId) -> bool {
-    table == NOTES_TABLE && group == note_group::IMAGES
+fn image_fields(image: NoteImage) -> Vec<Field> {
+    vec![
+        Field::Text(image.sha256),
+        Field::Text(image.content_type),
+        Field::Integer(i64::from(image.byte_size)),
+        Field::Integer(i64::from(image.width)),
+        Field::Integer(i64::from(image.height)),
+    ]
+}
+
+fn run_fields(run: TextRun) -> Vec<Field> {
+    vec![
+        Field::Text(run.content),
+        Field::Integer(i64::from(run.bold)),
+        Field::Integer(i64::from(run.italic)),
+        Field::Integer(i64::from(run.underline)),
+    ]
+}
+
+/// Image lists that reach the codec bounds: no images, and every content type at the largest
+/// count, size, and dimensions.
+fn image_samples() -> Vec<Vec<Vec<Field>>> {
+    let full = (0..MAX_IMAGES)
+        .map(|index| {
+            let seed = u8::try_from(index).unwrap_or(u8::MAX);
+            NoteImage {
+                sha256: digest_hex(&[seed; SHA256_BYTES]),
+                content_type: IMAGE_CONTENT_TYPES[index % IMAGE_CONTENT_TYPES.len()].to_owned(),
+                byte_size: if index == 0 { MAX_IMAGE_BYTES } else { 1 },
+                width: if index == 1 { MAX_IMAGE_DIMENSION } else { 1 },
+                height: if index == 2 { MAX_IMAGE_DIMENSION } else { 1 },
+            }
+        })
+        .map(image_fields)
+        .collect();
+    vec![Vec::new(), full]
+}
+
+/// Run lists that reach the codec bounds: an empty body, every style, and a body of the
+/// largest length in multibyte characters.
+fn run_samples() -> Vec<Vec<Vec<Field>>> {
+    let styles = (0..=STYLE_BITS)
+        .map(|style| TextRun::from_style(format!("run {style} \u{e9}\u{1f600}"), style))
+        .map(run_fields)
+        .collect();
+    let longest = vec![run_fields(TextRun::from_style(
+        "\u{1f600}".repeat(MAX_BODY_CHARS),
+        BOLD,
+    ))];
+    vec![Vec::new(), styles, longest]
 }
 
 impl DomainAdapter for QuickNotesAdapter {
@@ -439,63 +504,87 @@ impl DomainAdapter for QuickNotesAdapter {
     fn encode_owned(
         &self,
         table: TableId,
-        group: GroupId,
+        owned: &str,
         rows: Vec<Vec<Field>>,
-    ) -> Result<Value, AdapterError> {
-        if is_images(table, group) {
-            let images = rows
-                .into_iter()
-                .map(image_from_fields)
-                .collect::<Result<Vec<_>, _>>()?;
-            let bytes = encode_images(&images).map_err(|_| AdapterError("quick note images"))?;
-            return Value::new(vec![Field::Blob(bytes)])
-                .map_err(|_| AdapterError("quick note images"));
+    ) -> Result<Vec<u8>, AdapterError> {
+        match (table, owned) {
+            (NOTES_TABLE, IMAGES_OWNED) => {
+                let images = rows
+                    .into_iter()
+                    .map(image_from_fields)
+                    .collect::<Result<Vec<_>, _>>()?;
+                validate_images(&images).map_err(|_| AdapterError("quick note images"))?;
+                encode_images(&images).map_err(|_| AdapterError("quick note images"))
+            }
+            (NOTES_TABLE, RUNS_OWNED) => {
+                let runs = rows
+                    .into_iter()
+                    .map(run_from_fields)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let bytes = encode_runs(&runs);
+                // A list that is not canonical would change on the way through.
+                decode_runs(&bytes)?;
+                Ok(bytes)
+            }
+            _ => Err(AdapterError("owned table")),
         }
-        if !is_body(table, group) {
-            return Err(AdapterError("owned group"));
-        }
-        let runs = rows
-            .into_iter()
-            .map(run_from_fields)
-            .collect::<Result<Vec<_>, _>>()?;
-        Value::new(vec![Field::Blob(encode_runs(&runs))])
-            .map_err(|_| AdapterError("quick note body"))
     }
 
     fn decode_owned(
         &self,
         table: TableId,
+        owned: &str,
+        bytes: &[u8],
+    ) -> Result<Vec<Vec<Field>>, AdapterError> {
+        match (table, owned) {
+            (NOTES_TABLE, IMAGES_OWNED) => Ok(decode_images(bytes)?
+                .into_iter()
+                .map(image_fields)
+                .collect()),
+            (NOTES_TABLE, RUNS_OWNED) => {
+                Ok(decode_runs(bytes)?.into_iter().map(run_fields).collect())
+            }
+            _ => Err(AdapterError("owned table")),
+        }
+    }
+
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        if table == NOTES_TABLE {
+            &[note_group::IMAGES]
+        } else {
+            &[]
+        }
+    }
+
+    fn asset_refs(
+        &self,
+        table: TableId,
         group: GroupId,
         value: &Value,
-    ) -> Result<Vec<Vec<Field>>, AdapterError> {
-        if is_images(table, group) {
-            return Ok(decode_images(images_blob(value)?)?
-                .into_iter()
-                .map(|image| {
-                    vec![
-                        Field::Text(image.sha256),
-                        Field::Text(image.content_type),
-                        Field::Integer(i64::from(image.byte_size)),
-                        Field::Integer(i64::from(image.width)),
-                        Field::Integer(i64::from(image.height)),
-                    ]
-                })
-                .collect());
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        if table != NOTES_TABLE || group != note_group::IMAGES {
+            return Ok(Vec::new());
         }
-        if !is_body(table, group) {
-            return Err(AdapterError("owned group"));
-        }
-        Ok(decode_runs(body_blob(value)?)?
+        decode_images(images_blob(value)?)?
             .into_iter()
-            .map(|run| {
-                vec![
-                    Field::Text(run.content),
-                    Field::Integer(i64::from(run.bold)),
-                    Field::Integer(i64::from(run.italic)),
-                    Field::Integer(i64::from(run.underline)),
-                ]
+            .map(|image| {
+                AssetRef::new(
+                    &IMAGES_CLASS,
+                    image.sha256,
+                    image.content_type,
+                    image.byte_size,
+                )
+                .map_err(|_| AdapterError("quick note image reference"))
             })
-            .collect())
+            .collect()
+    }
+
+    fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {
+        match (table, owned) {
+            (NOTES_TABLE, IMAGES_OWNED) => image_samples(),
+            (NOTES_TABLE, RUNS_OWNED) => run_samples(),
+            _ => Vec::new(),
+        }
     }
 
     fn derived(
@@ -592,20 +681,21 @@ mod tests {
     #[test]
     fn image_lists_round_trip_through_owned_rows_in_order() {
         let images = vec![image(0xab, "image/gif"), image(0x01, "image/png")];
-        let value = QuickNotesAdapter
-            .encode_owned(NOTES_TABLE, note_group::IMAGES, owned(&images))
+        let bytes = QuickNotesAdapter
+            .encode_owned(NOTES_TABLE, IMAGES_OWNED, owned(&images))
             .unwrap();
+        let value = Value::new(vec![Field::Blob(bytes.clone())]).unwrap();
         assert_eq!(
             QuickNotesAdapter.validate(NOTES_TABLE, note_group::IMAGES, &value),
             Ok(())
         );
         assert_eq!(
             QuickNotesAdapter
-                .decode_owned(NOTES_TABLE, note_group::IMAGES, &value)
+                .decode_owned(NOTES_TABLE, IMAGES_OWNED, &bytes)
                 .unwrap(),
             owned(&images)
         );
-        assert_eq!(decode_images(images_blob(&value).unwrap()).unwrap(), images);
+        assert_eq!(decode_images(&bytes).unwrap(), images);
         assert_eq!(
             QuickNotesAdapter
                 .derived(NOTES_TABLE, note_group::IMAGES, &value)
@@ -616,10 +706,11 @@ mod tests {
 
     #[test]
     fn empty_image_list_is_canonical() {
-        let value = QuickNotesAdapter
-            .encode_owned(NOTES_TABLE, note_group::IMAGES, Vec::new())
+        let bytes = QuickNotesAdapter
+            .encode_owned(NOTES_TABLE, IMAGES_OWNED, Vec::new())
             .unwrap();
-        assert_eq!(images_blob(&value).unwrap(), &[0, 0, 0, 0]);
+        assert_eq!(bytes, [0, 0, 0, 0]);
+        let value = Value::new(vec![Field::Blob(bytes)]).unwrap();
         assert_eq!(
             QuickNotesAdapter.validate(NOTES_TABLE, note_group::IMAGES, &value),
             Ok(())
@@ -639,9 +730,41 @@ mod tests {
         rows[0][2] = Field::Integer(-1);
         assert!(
             QuickNotesAdapter
-                .encode_owned(NOTES_TABLE, note_group::IMAGES, rows)
+                .encode_owned(NOTES_TABLE, IMAGES_OWNED, rows)
                 .is_err()
         );
+        let duplicate = owned(&[image(1, "image/png"), image(1, "image/png")]);
+        assert!(
+            QuickNotesAdapter
+                .encode_owned(NOTES_TABLE, IMAGES_OWNED, duplicate)
+                .is_err()
+        );
+        let adjacent = vec![
+            run_fields(TextRun::from_style("a".to_owned(), BOLD)),
+            run_fields(TextRun::from_style("b".to_owned(), BOLD)),
+        ];
+        assert!(
+            QuickNotesAdapter
+                .encode_owned(NOTES_TABLE, RUNS_OWNED, adjacent)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn owned_samples_round_trip_byte_exactly() {
+        for owned in [RUNS_OWNED, IMAGES_OWNED] {
+            let samples = QuickNotesAdapter.owned_samples(NOTES_TABLE, owned);
+            assert!(samples.len() >= 2);
+            for rows in samples {
+                let bytes = QuickNotesAdapter
+                    .encode_owned(NOTES_TABLE, owned, rows.clone())
+                    .unwrap();
+                let decoded = QuickNotesAdapter
+                    .decode_owned(NOTES_TABLE, owned, &bytes)
+                    .unwrap();
+                assert_eq!(decoded, rows);
+            }
+        }
     }
 
     #[test]

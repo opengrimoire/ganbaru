@@ -39,7 +39,7 @@ describe("createProjectStoreSelectors", () => {
         id: "group-1",
         name: "Inbox",
         icon: "lucide:folder",
-        sortOrder: 1000,
+        orderKey: "1000",
         collapsed: false,
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
@@ -47,32 +47,5 @@ describe("createProjectStoreSelectors", () => {
     };
 
     expect(selectors.groupById("group-1")?.name).toBe("Inbox");
-  });
-
-  it("derives the next custom emoji sort order", () => {
-    const snapshot = {
-      ...emptySnapshot(),
-      customEmojis: [
-        {
-          id: "emoji-1",
-          name: "Focus",
-          assetPath: "assets/project-icons/focus.png",
-          sortOrder: 1000,
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
-        {
-          id: "emoji-2",
-          name: "Break",
-          assetPath: "assets/project-icons/break.png",
-          sortOrder: 3000,
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
-      ],
-    } satisfies ProjectsSnapshot;
-    const selectors = createProjectStoreSelectors(() => snapshot);
-
-    expect(selectors.nextCustomEmojiSortOrder()).toBe(4000);
   });
 });

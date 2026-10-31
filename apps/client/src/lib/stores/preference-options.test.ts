@@ -11,14 +11,16 @@ import {
   DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE,
   DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC,
   DEFAULT_PROFILE_DISPLAY_NAME,
-  DEFAULT_PROFILE_IMAGE_PATH,
+  DEFAULT_PROFILE_IMAGE,
   DEFAULT_PROFILE_FULL_NAME,
   DEFAULT_PROFILE_USE_IMAGE,
   PROFILE_DISPLAY_NAME_MAX_CHARS,
   isProfileColor,
   randomProfileColor,
+  isProfileImage,
   isProfileImagePath,
   PROFILE_FULL_NAME_MAX_CHARS,
+  PROFILE_IMAGE_MAX_BYTES,
   DEFAULT_CALENDAR_TIME_FORMAT,
   CALENDAR_VIEW_MODES,
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
@@ -234,13 +236,32 @@ describe("profile preferences", () => {
   });
 
   it("accepts only managed raster profile image paths", () => {
-    expect(DEFAULT_PROFILE_IMAGE_PATH).toBeNull();
+    expect(DEFAULT_PROFILE_IMAGE).toBeNull();
     expect(isProfileImagePath(`profile/${"a".repeat(64)}.png`)).toBe(true);
-    expect(isProfileImagePath(`profile/${"b".repeat(64)}.jpeg`)).toBe(true);
+    expect(isProfileImagePath(`profile/${"b".repeat(64)}.jpg`)).toBe(true);
+    expect(isProfileImagePath(`profile/${"b".repeat(64)}.jpeg`)).toBe(false);
+    expect(isProfileImagePath(`profile/${"A".repeat(64)}.png`)).toBe(false);
+    expect(isProfileImagePath(` profile/${"a".repeat(64)}.png`)).toBe(false);
     expect(isProfileImagePath("profile/image.png")).toBe(false);
     expect(isProfileImagePath(`profile/nested/${"a".repeat(64)}.webp`)).toBe(false);
     expect(isProfileImagePath(`project-icons/${"a".repeat(64)}.png`)).toBe(false);
     expect(isProfileImagePath(`profile/${"a".repeat(64)}.svg`)).toBe(false);
+  });
+
+  it("accepts profile pictures only as a managed path with its exact bounded size", () => {
+    const path = `profile/${"c".repeat(64)}.webp`;
+    expect(isProfileImage({ path, byteSize: 1 })).toBe(true);
+    expect(isProfileImage({ path, byteSize: PROFILE_IMAGE_MAX_BYTES })).toBe(true);
+    expect(isProfileImage({ path, byteSize: 0 })).toBe(false);
+    expect(isProfileImage({ path, byteSize: PROFILE_IMAGE_MAX_BYTES + 1 })).toBe(false);
+    expect(isProfileImage({ path, byteSize: 1.5 })).toBe(false);
+    expect(isProfileImage({ path, byteSize: "10" })).toBe(false);
+    expect(isProfileImage({ path })).toBe(false);
+    expect(isProfileImage({ path, byteSize: 10, extra: true })).toBe(false);
+    expect(isProfileImage({ path: "profile/image.png", byteSize: 10 })).toBe(false);
+    expect(isProfileImage(path)).toBe(false);
+    expect(isProfileImage([path, 10])).toBe(false);
+    expect(isProfileImage(null)).toBe(false);
   });
 
   it("accepts only theme palette slots as profile colors", () => {

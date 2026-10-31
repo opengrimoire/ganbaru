@@ -16,7 +16,7 @@ static DELIVERY_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
 #[derive(sqlx::FromRow)]
 struct AcceptedPresetSound {
     soundscape_id: String,
-    level: f64,
+    level_milli: i64,
     generated_kind: Option<String>,
     source_kind: String,
 }
@@ -146,25 +146,25 @@ async fn read_preset(
     local_paths: &BTreeMap<String, String>,
     preset_id: &str,
 ) -> MusicLibraryResult<Option<SoundscapeStartRequest>> {
-    let preset_level: Option<f64> =
-        sqlx::query_scalar("SELECT level FROM music_soundscape_presets WHERE id = ?")
+    let preset_level_milli: Option<i64> =
+        sqlx::query_scalar("SELECT level_milli FROM music_soundscape_presets WHERE id = ?")
             .bind(preset_id)
             .fetch_optional(&mut *connection)
             .await
             .map_err(|error| {
                 MusicLibraryError::database("read accepted soundscape preset", error)
             })?;
-    let Some(preset_level) = preset_level else {
+    let Some(preset_level_milli) = preset_level_milli else {
         return Ok(None);
     };
     // A preset holds at most MAX_SOUNDSCAPE_LAYERS sounds, so the limit never hides a playable one.
     let sounds: Vec<AcceptedPresetSound> = sqlx::query_as(
-        "SELECT ps.soundscape_id, ps.level, s.generated_kind, s.source_kind
+        "SELECT ps.soundscape_id, ps.level_milli, s.generated_kind, s.source_kind
          FROM music_soundscape_preset_sounds ps
          JOIN music_soundscapes s ON s.id = ps.soundscape_id
          WHERE ps.preset_id = ? AND length(CAST(s.id AS BLOB)) <= ?
            AND (s.source_kind = 'local-loop' OR s.availability = 'available')
-         ORDER BY ps.position LIMIT ?",
+         ORDER BY ps.order_key, ps.soundscape_id LIMIT ?",
     )
     .bind(preset_id)
     .bind(MAX_SOUND_SOURCE_ID_BYTES)
@@ -187,7 +187,7 @@ async fn read_preset(
         local_path: first.local_path,
         level: first.level,
         extra_sources: layers.collect(),
-        preset_level,
+        preset_level: ganbaru_music_library::from_thousandths(preset_level_milli),
         keep_playing_layers: false,
     }))
 }
@@ -225,7 +225,7 @@ fn layer(
         source_id: sound.soundscape_id,
         generated_kind,
         local_path,
-        level: sound.level,
+        level: ganbaru_music_library::from_thousandths(sound.level_milli),
     })
 }
 
@@ -319,7 +319,7 @@ impl Owner {
         &mut self,
         prepared: PreparedSoundscape,
         activation: ContextActivation,
-        permit: crate::vault::ownership::ManagedVaultWritePermit,
+        permit: crate::vault::write_fence::ManagedVaultWritePermit,
     ) -> MusicLibraryResult<()> {
         let Some(request) = prepared.action else {
             return Ok(());

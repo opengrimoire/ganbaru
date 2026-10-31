@@ -92,18 +92,17 @@ async fn load_child_rows_tx(
     data_source_id: &str,
     parent_id: &str,
 ) -> Result<Vec<NotePageRow>, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
-         FROM notes_data_source_row_hierarchy AS hierarchy
-         JOIN notes_pages AS page ON page.id = hierarchy.row_page_id
-         WHERE hierarchy.data_source_id = ?
-           AND hierarchy.parent_row_page_id = ?
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
+         FROM notes_pages AS page
+         WHERE page.parent_data_source_id = ?
+           AND page.parent_row_page_id = ?
            AND page.parent_type = 'data_source_id'
-           AND page.parent_data_source_id = hierarchy.data_source_id
            AND page.in_trash = 0
            AND page.archived = 0
          ORDER BY page.created_time ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(data_source_id)
     .bind(parent_id)
     .fetch_all(&mut **tx)

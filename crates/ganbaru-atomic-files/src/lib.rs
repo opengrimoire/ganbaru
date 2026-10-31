@@ -4,6 +4,7 @@
 //! which refuses any existing entry, a symlink or dangling symlink included, so a link
 //! planted in a shared folder cannot redirect the bytes. The temporary file is synced and
 //! renamed over the target; the rename replaces a symlinked target instead of following it.
+//! A staged file follows the same steps for content written in chunks over time.
 //! Managed folders also refuse symlinked directories between their root and the target,
 //! because `create_new` only protects the final path component.
 //! Bounded reads open the file once and check its type and size through that handle.
@@ -16,6 +17,9 @@ use std::path::{Component, Path, PathBuf};
 
 /// Random bytes in each temporary file name.
 const TEMPORARY_NONCE_BYTES: usize = 16;
+
+/// Extension that ends each temporary file name.
+const TEMPORARY_SUFFIX: &str = ".tmp";
 
 /// Random names tried before a private directory creation gives up. A collision of
 /// 128-bit names means something else is creating entries, so a few attempts suffice.
@@ -95,6 +99,103 @@ pub fn write_file_atomically_within(
 ) -> io::Result<()> {
     create_directories_within(root, parent_directory(path)?)?;
     write_file_atomically(path, bytes, access)
+}
+
+/// A replacement of a file written in pieces, for content that arrives in chunks and is only
+/// known to be valid once complete.
+///
+/// The bytes go to a randomly named temporary file created exclusively next to the target, as
+/// in [`write_file_atomically`]. [`StagedFile::commit`] syncs it and renames it over the
+/// target; dropping an uncommitted staged file removes the temporary file, so an abandoned or
+/// refused transfer leaves nothing behind.
+#[derive(Debug)]
+pub struct StagedFile {
+    file: Option<File>,
+    temporary: PathBuf,
+    target: PathBuf,
+    written: u64,
+}
+
+impl StagedFile {
+    /// Starts replacing `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path has no parent or file name, or the temporary file cannot
+    /// be created exclusively.
+    pub fn create(path: &Path, access: FileAccess) -> io::Result<Self> {
+        let parent = parent_directory(path)?;
+        let temporary = temporary_path(parent, path)?;
+        let file = open_temporary(&temporary, access)?;
+        Ok(Self {
+            file: Some(file),
+            temporary,
+            target: path.to_path_buf(),
+            written: 0,
+        })
+    }
+
+    /// The file the staged bytes replace.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// The temporary file holding the staged bytes, which a caller may read back to check them
+    /// before committing.
+    pub fn staged_path(&self) -> &Path {
+        &self.temporary
+    }
+
+    /// Bytes written so far.
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// Appends `bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write error; the staged file should then be dropped.
+    pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("staged file is already closed"))?;
+        file.write_all(bytes)?;
+        self.written += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Syncs the staged bytes and renames them over the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when syncing or renaming fails. The temporary file is removed and the
+    /// target is left as it was.
+    pub fn commit(mut self) -> io::Result<()> {
+        let file = self
+            .file
+            .take()
+            .ok_or_else(|| io::Error::other("staged file is already closed"))?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&self.temporary, &self.target)?;
+        // The temporary path is now the target, so dropping must not remove it.
+        self.temporary = PathBuf::new();
+        if let Ok(parent) = parent_directory(&self.target) {
+            sync_directory(parent);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if !self.temporary.as_os_str().is_empty() {
+            remove_temporary(&self.temporary);
+        }
+    }
 }
 
 /// Creates `directory` and its missing ancestors below `root`, refusing to traverse a
@@ -204,6 +305,27 @@ pub fn create_private_temporary_directory(parent: &Path, prefix: &str) -> io::Re
             parent.display()
         ),
     ))
+}
+
+/// Flushes the entries of `directory`, such as a rename into it, to stable storage.
+///
+/// Call it before deleting the only other copy of data that a rename moved into `directory`.
+/// Windows offers no directory flush to ordinary handles, so there it does nothing.
+///
+/// # Errors
+///
+/// Returns an error on Unix when `directory` cannot be opened or its filesystem rejects the
+/// flush.
+pub fn sync_directory_entries(directory: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(directory)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(())
+    }
 }
 
 /// Creates `directory` and any missing ancestors, each accessible only by the current user.
@@ -437,6 +559,27 @@ fn parent_directory(path: &Path) -> io::Result<&Path> {
         })
 }
 
+/// Whether `name` has the shape of a temporary file this crate creates beside a target: a
+/// leading dot, the target's file name, a dot, the random lowercase hex nonce, and `.tmp`.
+/// Sweeps of files left by a crash use it so they never touch other entries.
+pub fn is_temporary_file_name(name: &OsStr) -> bool {
+    let Some(rest) = name
+        .to_str()
+        .and_then(|name| name.strip_prefix('.'))
+        .and_then(|name| name.strip_suffix(TEMPORARY_SUFFIX))
+    else {
+        return false;
+    };
+    let Some((target, nonce)) = rest.rsplit_once('.') else {
+        return false;
+    };
+    !target.is_empty()
+        && nonce.len() == TEMPORARY_NONCE_BYTES * 2
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn temporary_path(parent: &Path, path: &Path) -> io::Result<PathBuf> {
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
@@ -446,7 +589,7 @@ fn temporary_path(parent: &Path, path: &Path) -> io::Result<PathBuf> {
     })?;
     let mut name = OsString::from(".");
     name.push(file_name);
-    name.push(format!(".{}.tmp", random_hex()?));
+    name.push(format!(".{}{TEMPORARY_SUFFIX}", random_hex()?));
     Ok(parent.join(name))
 }
 

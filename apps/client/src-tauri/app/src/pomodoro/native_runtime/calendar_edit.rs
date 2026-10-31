@@ -1,7 +1,9 @@
 //! Calendar Save shares the Focus owner queue, transaction and publication fence.
 
 use super::*;
-use ganbaru_calendar::events::commit::{CommitFailure, CommitReceipt, CommitReply, CommitRequest};
+use ganbaru_calendar::events::commit::{
+    CommitFailure, CommitReceipt, CommitReply, CommitRequest, DeletionLease,
+};
 
 const DELETE_UNDO_LIFETIME: Duration = Duration::from_secs(5);
 
@@ -94,6 +96,18 @@ impl UndoSlot {
             .prepare(tx, request.command_id())
             .await
     }
+}
+
+/// Sync holds a deleted event as long as its Undo opportunity, on the wall clock sync seals by.
+fn deletion_lease() -> Result<DeletionLease, String> {
+    let now_ms = u64::try_from(now_ms().map_err(|error| error.message)?)
+        .map_err(|_| "The system clock is before 1970")?;
+    let lifetime = u64::try_from(DELETE_UNDO_LIFETIME.as_millis())
+        .map_err(|_| "Calendar Undo lifetime is out of range")?;
+    Ok(DeletionLease {
+        now_ms,
+        until_ms: now_ms.saturating_add(lifetime),
+    })
 }
 
 /// A civil clock can shorten this lease, but cannot extend it across sleep or
@@ -211,21 +225,6 @@ pub(crate) async fn commit_calendar_edit(
     request: CommitRequest,
 ) -> Result<CommitReply, CommitFailure> {
     request.validate()?;
-    let ownership = app
-        .try_state::<crate::vault::ownership::VaultOwnershipManager>()
-        .ok_or_else(|| CommitFailure::unknown("Calendar vault authorization is unavailable"))?;
-    if ownership
-        .cached_status(&request.vault_id)
-        .map_err(CommitFailure::unknown)?
-        .is_some_and(|status| !status.can_write)
-    {
-        return read_only_calendar_retry(app, &request)
-            .await
-            .map(|receipt| CommitReply {
-                receipt,
-                undo_available_for_ms: None,
-            });
-    }
     let state = app
         .try_state::<FocusRuntimeState>()
         .ok_or_else(|| CommitFailure::unknown("Native Focus owner is unavailable"))?;
@@ -244,73 +243,6 @@ pub(crate) async fn commit_calendar_edit(
         })?;
     receive.await.map_err(|_| {
         CommitFailure::unknown("Native Calendar owner stopped before returning its receipt")
-    })?
-}
-
-/// Confirm an existing result independently of execution or mutation authority.
-async fn read_only_calendar_retry(
-    app: &tauri::AppHandle,
-    request: &CommitRequest,
-) -> Result<CommitReceipt, CommitFailure> {
-    let _transition =
-        crate::vault::quiescence::reserve_vault_transition().map_err(CommitFailure::unknown)?;
-    let expected = receipt_read_authority(app, &request.vault_id).await?;
-    if expected.1 {
-        return Err(CommitFailure::unknown(
-            "Calendar write ownership changed; retry this Save",
-        ));
-    }
-    let receipt = tokio::time::timeout(
-        ganbaru_calendar::events::scope::SCOPE_WORKER_TIMEOUT,
-        async {
-            let permit = receipt_worker_permit()?;
-            let pool = crate::db::connect_active_vault_read_only(app, permit)
-                .await
-                .map_err(CommitFailure::unknown)?;
-            request.read_only_retry(&pool).await
-        },
-    )
-    .await
-    .map_err(|_| CommitFailure::unknown("Calendar receipt lookup timed out; retry this Save"))??;
-    if receipt_read_authority(app, &request.vault_id).await? != expected {
-        return Err(CommitFailure::unknown(
-            "Calendar read authority changed during retry",
-        ));
-    }
-    receipt
-        .ok_or_else(|| "This vault is read-only and has no accepted receipt for this Save".into())
-}
-
-/// Filesystem identity and ledger refresh stay off the execution/runtime threads.
-async fn receipt_read_authority(
-    app: &tauri::AppHandle,
-    expected_vault_id: &str,
-) -> Result<(u64, bool), CommitFailure> {
-    let app = app.clone();
-    let expected_vault_id = expected_vault_id.to_owned();
-    let permit = receipt_worker_permit()?;
-    let worker = tauri::async_runtime::spawn_blocking(move || {
-        let _permit = permit;
-        let vault_id = crate::vault::active_vault_id(&app).map_err(CommitFailure::unknown)?;
-        if vault_id != expected_vault_id {
-            return Err(CommitFailure::unknown(
-                "Calendar receipt belongs to a different vault",
-            ));
-        }
-        let status = app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .status(&vault_id)
-            .map_err(CommitFailure::unknown)?;
-        Ok((status.generation, status.can_write))
-    });
-    tokio::time::timeout(
-        ganbaru_calendar::events::scope::SCOPE_WORKER_TIMEOUT,
-        worker,
-    )
-    .await
-    .map_err(|_| CommitFailure::unknown("Calendar receipt authority timed out; retry this Save"))?
-    .map_err(|error| {
-        CommitFailure::unknown(format!("Calendar receipt authority worker: {error}"))
     })?
 }
 
@@ -409,8 +341,8 @@ impl Owner {
         }
         let _permit = self
             .app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(&request.vault_id)?;
+            .state::<crate::vault::write_fence::VaultWriteFence>()
+            .acquire_managed_write()?;
         let pool = self
             .pool
             .as_ref()
@@ -516,6 +448,7 @@ impl Owner {
                 now_ms: now,
                 platform: platform(),
                 foreground: self.foreground,
+                device_id: Some(self.device_id()?),
                 commitment: calendar.commitment,
                 local_time: Some(Arc::new(local_time::NativeLocalTime(self.app.clone()))),
                 planned_blocks: calendar
@@ -529,7 +462,7 @@ impl Owner {
                 .map_err(|error| error.message)?;
         }
         let (prepared, mut undo) = prepared.into_write();
-        let receipt = prepared.write(&mut tx).await?;
+        let receipt = prepared.write_held(&mut tx, deletion_lease()?).await?;
         self.refresh_foreground();
         let (snapshot, next_boundary) = if receipt.changed {
             let calendar = calendar::resolve(
@@ -552,6 +485,7 @@ impl Owner {
                 now_ms: now,
                 platform: platform(),
                 foreground: self.foreground,
+                device_id: Some(self.device_id()?),
                 commitment: calendar.commitment,
                 local_time: Some(Arc::new(local_time::NativeLocalTime(self.app.clone()))),
                 planned_blocks: calendar
@@ -786,7 +720,9 @@ mod tests {
                 .connect("sqlite::memory:")
                 .await
                 .unwrap();
-            ganbaru_db::run_migrations(&pool).await.unwrap();
+            ganbaru_db::test_support::apply_migrated_template(&pool)
+                .await
+                .unwrap();
             let hash = "a".repeat(64);
             let revision = "b".repeat(64);
             let mut tx = pool.begin().await.unwrap();

@@ -71,7 +71,7 @@ export interface ChatChannelCapabilities {
 
 export type ChatHistoryBoundary =
   | { kind: "entire" }
-  | { kind: "fromGrant"; lowerOrdinal?: number };
+  | { kind: "fromGrant"; lowerOrderKey?: string };
 
 export const CHAT_ACCESS_PROFILE_BUILTIN_KEYS = [
   "conversationOnly",
@@ -162,6 +162,7 @@ export interface ChatTeammateChannelAccess {
   groupId: string;
   channelName: string;
   accessProfileId: ChatAccessProfileId;
+  accessProfileRevisionId: ChatAccessProfileRevisionId;
   accessProfileRevision: number;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
@@ -182,7 +183,8 @@ export interface ChatTeammateAccessRead {
 export interface ChatTeammateChannelAccessInput {
   channelId: ChatChannelId;
   accessProfileId: ChatAccessProfileId;
-  accessProfileRevision: number;
+  /** Effective profile revision the draft was made against; saving refuses any other. */
+  accessProfileRevisionId: ChatAccessProfileRevisionId;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
   runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;
@@ -315,8 +317,8 @@ export type ChatScratchDeviceAvailability =
 export interface ChatScratchSourceSummaryRead {
   channelId: ChatChannelId;
   channelName: string;
-  lowerOrdinal: number;
-  highOrdinal: number;
+  lowerOrderKey: string;
+  highOrderKey: string;
   audienceRevision: number;
 }
 
@@ -499,7 +501,6 @@ export interface ChatAiTeammateRead {
   latestPolicy: ChatTeammatePolicyRead | null;
   channelCount: number;
   activeAssignmentCount: number;
-  hasDurableHistory: boolean;
 }
 
 export interface ChatConversationMembershipRead {
@@ -605,14 +606,16 @@ export interface ChatMessageRead {
   replyThreadId: ChatReplyThreadId | null;
   revisionId: ChatMessageRevisionId;
   revision: number;
-  author: ChatParticipantRead;
+  /** Author identity, null when the message carries only its author label snapshot. */
+  author: ChatParticipantRead | null;
   authorLabelSnapshot: string;
   normalizedMarkdown: string;
   richContent: VersionedJson;
   attachmentIds: ChatAttachmentId[];
   references: ChatMessageReference[];
   replyThread: ChatReplyThreadSummaryRead | null;
-  ordinal: number;
+  /** Position within its scope; messages order by `(orderKey, itemId)`. */
+  orderKey: string;
   editedAt: UtcTimestamp | null;
   createdAt: UtcTimestamp;
 }
@@ -672,9 +675,13 @@ export interface ChatMessageSearchResultRead {
   conversationId: ChatConversationId;
   replyThreadId: ChatReplyThreadId | null;
   messageItemId: ChatConversationItemId;
-  ordinal: number;
-  authorParticipantId: ChatParticipantId;
-  authorKind: ChatParticipantKind;
+  /** Channel page cursor that ends at the result, or at its reply thread root. */
+  anchorCursor: string;
+  /** Author identity, null when the message carries only its author label snapshot. */
+  authorParticipantId: ChatParticipantId | null;
+  /** Author kind, null together with the author identity. */
+  authorKind: ChatParticipantKind | null;
+  /** Author display name, or the author label snapshot when the identity is null. */
   authorDisplayName: string;
   excerpt: string;
   createdAt: UtcTimestamp;

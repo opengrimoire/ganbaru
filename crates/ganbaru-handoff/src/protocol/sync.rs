@@ -5,6 +5,7 @@
 
 use super::is_base64url;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 /// Raw operation bytes in one push or pull page. Its base64url form plus JSON framing stays
 /// below the control frame limit, and a single operation of the largest size always fits.
@@ -22,6 +23,12 @@ const MAX_OPERATION_TEXT_BYTES: usize =
 const WRITER_TEXT_LENGTH: usize = 32;
 /// Hex text of an operation hash.
 const HASH_TEXT_LENGTH: usize = 64;
+/// Listener endpoints a coordinator reports in one sync state, and a linked device keeps.
+pub const MAX_COORDINATOR_ENDPOINTS: usize = 8;
+/// Member listener endpoints one sync state reports, and a peer book keeps.
+pub const MAX_MEMBER_ENDPOINTS: usize = 32;
+/// Bytes of a vault discovery key.
+pub const DISCOVERY_KEY_BYTES: usize = 32;
 
 /// One version vector entry: the highest sequence of a writer.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -53,12 +60,16 @@ pub enum SyncRefusalCode {
     Revoked,
     /// The operation is malformed, badly signed, or not certified for the vault.
     Invalid,
-    /// The writer is unknown, or its genesis names another device.
+    /// The writer is unknown, its genesis names another device, or the device is not enrolled
+    /// in the space yet.
     UnknownWriter,
     /// The writer's genesis uses a newer format than the receiver reads.
     NewerFormat,
     /// The writer's genesis would exceed the writers a device or the vault may have.
     WriterLimit,
+    /// The device must bootstrap from a snapshot because the hub no longer holds operations
+    /// it lacks.
+    BootstrapRequired,
 }
 
 /// A refused push: the code and, when it concerns one writer, where its chain stopped.
@@ -99,6 +110,20 @@ pub(super) fn validate_ops(ops: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Operations in one fork evidence message: the two copies of one sequence.
+pub const MAX_SYNC_EVIDENCE_OPS: usize = 2;
+
+/// Checks fork evidence: none or a pair, or with `pair_only` false also a single offered
+/// operation.
+pub(super) fn validate_evidence(evidence: &[String], pair_only: bool) -> Result<(), String> {
+    match evidence.len() {
+        0 | MAX_SYNC_EVIDENCE_OPS => {}
+        1 if !pair_only => {}
+        _ => return Err("sync fork evidence holds a wrong number of operations".to_string()),
+    }
+    validate_ops(evidence)
+}
+
 pub(super) fn validate_hashes(hashes: &[String]) -> Result<(), String> {
     if hashes.len() > MAX_SYNC_HASHES as usize {
         return Err("sync hash list is too large".to_string());
@@ -116,6 +141,39 @@ pub(super) fn validate_refusal(refusal: &SyncRefusal) -> Result<(), String> {
     Ok(())
 }
 
+/// Envelopes in one record page, lookup, or push, and hashes or writers one record lookup or
+/// push result names.
+pub const MAX_SYNC_RECORDS: usize = 256;
+/// Classes of the record exchange cursor.
+pub const SYNC_RECORD_CLASSES: usize = 5;
+
+/// Checks a bounded list of authorization record store envelopes.
+pub(super) fn validate_records(records: &[String]) -> Result<(), String> {
+    if records.len() > MAX_SYNC_RECORDS {
+        return Err("sync record page holds too many envelopes".to_string());
+    }
+    validate_ops(records)
+}
+
+/// Checks a record exchange cursor: one stored order for each class.
+pub(super) fn validate_record_cursor(cursor: &[u64]) -> Result<(), String> {
+    if cursor.len() != SYNC_RECORD_CLASSES {
+        return Err("sync record cursor is invalid".to_string());
+    }
+    Ok(())
+}
+
+/// Checks the hashes and writers a record lookup names.
+pub(super) fn validate_record_wants(hashes: &[String], writers: &[String]) -> Result<(), String> {
+    if hashes.len() > MAX_SYNC_RECORDS || writers.len() > MAX_SYNC_RECORDS {
+        return Err("sync record lookup is too large".to_string());
+    }
+    hashes.iter().try_for_each(|hash| validate_hash(hash))?;
+    writers
+        .iter()
+        .try_for_each(|writer| validate_writer(writer))
+}
+
 pub(super) fn validate_page_bytes(max_bytes: u32) -> Result<(), String> {
     if max_bytes == 0 || max_bytes as usize > SYNC_PAGE_BYTES {
         return Err("sync page size is invalid".to_string());
@@ -129,6 +187,206 @@ pub(super) fn validate_hash_range(from_seq: u64, limit: u32) -> Result<(), Strin
         return Err("sync hash range is invalid".to_string());
     }
     Ok(())
+}
+
+/// Checks the endpoints a coordinator reports: a bounded list of socket addresses that each
+/// may be dialed on a LAN and may name a device to other hosts.
+pub fn validate_coordinator_endpoints(endpoints: &[String]) -> Result<(), String> {
+    if endpoints.len() > MAX_COORDINATOR_ENDPOINTS {
+        return Err("coordinator endpoint list is too large".to_string());
+    }
+    endpoints
+        .iter()
+        .try_for_each(|endpoint| validate_coordinator_endpoint(endpoint).map(|_| ()))
+}
+
+/// Parses one reported coordinator endpoint and applies the dial and reporting policy.
+pub fn validate_coordinator_endpoint(endpoint: &str) -> Result<SocketAddr, String> {
+    let address = endpoint
+        .parse::<SocketAddr>()
+        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
+    crate::dial::validate_dial_endpoint(address)
+        .and_then(|_| crate::dial::reportable_address(address.ip()))
+        .map_err(|error| format!("coordinator endpoint is refused: {error}"))?;
+    Ok(address)
+}
+
+/// One listener endpoint of a vault member, as the reporting hub last observed it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberEndpoint {
+    /// Handoff device id of the member that listens there.
+    pub device_id: String,
+    /// Socket address of the member's listener.
+    pub endpoint: String,
+    /// When the reporting hub last saw the member report it, in Unix milliseconds.
+    pub observed_ms: u64,
+}
+
+/// Checks the member endpoints a sync state reports: at most [`MAX_MEMBER_ENDPOINTS`], each
+/// naming a valid device id and an endpoint that may be dialed on a LAN, with no repeated pair.
+pub fn validate_member_endpoints(members: &[MemberEndpoint]) -> Result<(), String> {
+    if members.len() > MAX_MEMBER_ENDPOINTS {
+        return Err("member endpoint list is too large".to_string());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for member in members {
+        super::validate_identifier("member device id", &member.device_id)?;
+        validate_coordinator_endpoint(&member.endpoint)?;
+        if !seen.insert((member.device_id.as_str(), member.endpoint.as_str())) {
+            return Err("member endpoint list repeats an endpoint".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The unpadded base64url form of a sync device public key, as enrollment carries it.
+pub fn encode_sync_device_key(key: &ganbaru_sync_contracts::DevicePublicKey) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        key.as_bytes(),
+    )
+}
+
+/// Decodes the unpadded base64url form of a sync device public key.
+pub fn decode_sync_device_key(
+    text: &str,
+) -> Result<ganbaru_sync_contracts::DevicePublicKey, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, text)
+        .map_err(|_| "sync device key is invalid".to_string())?;
+    ganbaru_sync_contracts::DevicePublicKey::from_slice(&bytes)
+        .map_err(|_| "sync device key is invalid".to_string())
+}
+
+/// Base64url length of the largest space charter.
+const MAX_CHARTER_TEXT_BYTES: usize =
+    (ganbaru_sync_contracts::bounds::MAX_CHARTER_BYTES * 4).div_ceil(3);
+
+/// The unpadded base64url form of a space charter, as the pairing response carries it.
+pub fn encode_sync_charter(charter: &ganbaru_sync_contracts::SignedCharter) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        charter.encode(),
+    )
+}
+
+/// Decodes a space charter and the person key it names, and verifies the charter's signature
+/// with that key.
+pub fn decode_sync_charter(
+    charter: &str,
+    person_key: &str,
+) -> Result<
+    (
+        ganbaru_sync_contracts::SignedCharter,
+        ganbaru_contacts::PersonPublicKey,
+    ),
+    String,
+> {
+    let person_key = ganbaru_contacts::PersonPublicKey::from_text(person_key)
+        .map_err(|_| "sync person key is invalid".to_string())?;
+    if charter.is_empty() || charter.len() > MAX_CHARTER_TEXT_BYTES || !is_base64url(charter) {
+        return Err("sync charter is invalid".to_string());
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, charter)
+        .map_err(|_| "sync charter is invalid".to_string())?;
+    let charter = ganbaru_sync_contracts::SignedCharter::decode(&bytes)
+        .map_err(|error| format!("sync charter is invalid: {error}"))?;
+    charter
+        .verify(&person_key)
+        .map_err(|_| "sync charter signature is invalid".to_string())?;
+    Ok((charter, person_key))
+}
+
+/// The unpadded base64url form of an admin-signed proposal.
+pub fn encode_sync_proposal(proposal: &ganbaru_sync_contracts::SignedProposal) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        proposal.encode(),
+    )
+}
+
+/// Decodes an admin-signed proposal and verifies its signature.
+pub fn decode_sync_proposal(text: &str) -> Result<ganbaru_sync_contracts::SignedProposal, String> {
+    if text.is_empty() || text.len() > MAX_OPERATION_TEXT_BYTES || !is_base64url(text) {
+        return Err("sync proposal is invalid".to_string());
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, text)
+        .map_err(|_| "sync proposal is invalid".to_string())?;
+    ganbaru_sync_contracts::SignedProposal::decode(&bytes)
+        .map_err(|error| format!("sync proposal is invalid: {error}"))
+}
+
+/// The unpadded base64url form of a sync admin public key, as a desktop's enrollment carries it.
+pub fn encode_sync_admin_key(key: &ganbaru_sync_contracts::AdminPublicKey) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        key.as_bytes(),
+    )
+}
+
+/// Decodes the unpadded base64url form of a sync admin public key.
+pub fn decode_sync_admin_key(text: &str) -> Result<ganbaru_sync_contracts::AdminPublicKey, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, text)
+        .map_err(|_| "sync admin key is invalid".to_string())?;
+    ganbaru_sync_contracts::AdminPublicKey::from_slice(&bytes)
+        .map_err(|_| "sync admin key is invalid".to_string())
+}
+
+/// Proposals a hub hands the anchor in one forward answer, and final rejections the anchor
+/// reports in one forward request.
+pub const MAX_SYNC_FORWARDED_PROPOSALS: usize = 32;
+
+/// A final rejection the anchor gave a proposal a hub forwarded, named by the proposal hash.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettledProposal {
+    /// Lowercase hex of the proposal hash.
+    pub proposal: String,
+    /// Wire value of the rejection.
+    pub rejection: u8,
+}
+
+/// Checks the rejections a forward request reports: bounded, hex hashes, known rejections.
+pub(super) fn validate_settled(settled: &[SyncSettledProposal]) -> Result<(), String> {
+    if settled.len() > MAX_SYNC_FORWARDED_PROPOSALS {
+        return Err("sync forward settles too many proposals".to_string());
+    }
+    for entry in settled {
+        if entry.proposal.len() != HASH_TEXT_LENGTH || !is_lower_hex(&entry.proposal) {
+            return Err("sync proposal hash is invalid".to_string());
+        }
+        if ganbaru_sync_contracts::ProposalRejection::from_u8(entry.rejection).is_none() {
+            return Err("sync proposal rejection is invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Checks the proposals a forward answer carries: bounded and each verified.
+pub(super) fn validate_forwarded(proposals: &[String]) -> Result<(), String> {
+    if proposals.len() > MAX_SYNC_FORWARDED_PROPOSALS {
+        return Err("sync forward carries too many proposals".to_string());
+    }
+    for proposal in proposals {
+        decode_sync_proposal(proposal)?;
+    }
+    Ok(())
+}
+
+/// Checks the anchor's answer to a proposal: exactly one of a revision or a known rejection.
+pub(super) fn validate_proposed(
+    revision: Option<u64>,
+    rejection: Option<u8>,
+) -> Result<(), String> {
+    match (revision, rejection) {
+        (Some(revision), None) if i64::try_from(revision).is_ok() && revision > 0 => Ok(()),
+        (None, Some(code))
+            if ganbaru_sync_contracts::ProposalRejection::from_u8(code).is_some() =>
+        {
+            Ok(())
+        }
+        _ => Err("sync proposal answer is invalid".to_string()),
+    }
 }
 
 pub(super) fn validate_writer(writer: &str) -> Result<(), String> {
@@ -163,21 +421,50 @@ fn is_lower_hex(text: &str) -> bool {
 pub const SYNC_ASSET_CHUNK_BYTES: usize = SYNC_PAGE_BYTES;
 /// Asset references in one presence query.
 pub const MAX_SYNC_ASSETS: usize = 512;
-/// Largest asset the exchange moves; each domain enforces its own smaller limit.
-pub const MAX_SYNC_ASSET_BYTES: u32 = 32 * 1024 * 1024;
+/// Largest asset the exchange moves, streamed in chunks; each asset class enforces its own
+/// bound up to this one.
+pub const MAX_SYNC_ASSET_BYTES: u32 = 64 * 1024 * 1024;
+// Relay asset chunks carry the same chunks and assets as a paired pull.
+const _: () = assert!(
+    SYNC_ASSET_CHUNK_BYTES == ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES
+        && MAX_SYNC_ASSET_BYTES as usize == ganbaru_sync_contracts::bounds::MAX_RELAY_ASSET_BYTES
+);
 /// Base64url length of the largest chunk.
 const MAX_ASSET_CHUNK_TEXT_BYTES: usize = (SYNC_ASSET_CHUNK_BYTES * 4).div_ceil(3);
 /// Length of a media type such as `image/png`.
 const MAX_CONTENT_TYPE_BYTES: usize = 64;
+/// Length of an asset class name such as `quick-notes/images`.
+const MAX_ASSET_CLASS_BYTES: usize = 64;
 
-/// A content-addressed file that sync moves between devices: the SHA-256 of its bytes, its
-/// media type, and its exact size.
+/// A content-addressed file that sync moves between devices: the asset class that stores it,
+/// the SHA-256 of its bytes, its media type, and its exact size. The receiver resolves the
+/// class against the classes it registers and never builds a path from the text.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncAsset {
+    pub class: String,
     pub sha256: String,
     pub content_type: String,
     pub byte_size: u32,
+}
+
+impl SyncAsset {
+    /// The class and digest that identify the asset.
+    pub fn key(&self) -> SyncAssetKey {
+        SyncAssetKey {
+            class: self.class.clone(),
+            sha256: self.sha256.clone(),
+        }
+    }
+}
+
+/// The identity of an asset: its class and the SHA-256 of its bytes. The same bytes in two
+/// classes are two assets.
+#[derive(Clone, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAssetKey {
+    pub class: String,
+    pub sha256: String,
 }
 
 pub(super) fn validate_assets(assets: &[SyncAsset]) -> Result<(), String> {
@@ -188,6 +475,7 @@ pub(super) fn validate_assets(assets: &[SyncAsset]) -> Result<(), String> {
 }
 
 pub(super) fn validate_asset(asset: &SyncAsset) -> Result<(), String> {
+    validate_asset_class(&asset.class)?;
     validate_asset_digest(&asset.sha256)?;
     let content_type = &asset.content_type;
     let well_formed = content_type.len() <= MAX_CONTENT_TYPE_BYTES
@@ -210,13 +498,14 @@ pub(super) fn validate_asset(asset: &SyncAsset) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn validate_asset_digests(digests: &[String]) -> Result<(), String> {
-    if digests.len() > MAX_SYNC_ASSETS {
+pub(super) fn validate_asset_keys(keys: &[SyncAssetKey]) -> Result<(), String> {
+    if keys.len() > MAX_SYNC_ASSETS {
         return Err("sync asset list is too large".to_string());
     }
-    digests
-        .iter()
-        .try_for_each(|digest| validate_asset_digest(digest))
+    keys.iter().try_for_each(|key| {
+        validate_asset_class(&key.class)?;
+        validate_asset_digest(&key.sha256)
+    })
 }
 
 /// A chunk at `offset` of `asset`: the offset lies inside the asset, and the text is a
@@ -254,6 +543,23 @@ pub(super) fn validate_asset_data(data: &str) -> Result<(), String> {
 pub(super) fn validate_asset_received(received: u32) -> Result<(), String> {
     if received > MAX_SYNC_ASSET_BYTES {
         return Err("sync asset progress is invalid".to_string());
+    }
+    Ok(())
+}
+
+/// A class name is a relative path of lowercase segments, so no form of it escapes a
+/// directory even before the receiver resolves it against its registered classes.
+fn validate_asset_class(class: &str) -> Result<(), String> {
+    let well_formed = !class.is_empty()
+        && class.len() <= MAX_ASSET_CLASS_BYTES
+        && class.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        });
+    if !well_formed {
+        return Err("sync asset class is invalid".to_string());
     }
     Ok(())
 }

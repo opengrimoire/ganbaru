@@ -237,12 +237,6 @@ pub(super) struct CalendarGuestPermissions {
 }
 
 #[derive(Deserialize)]
-pub(super) struct CalendarGeoPayload {
-    pub(super) lat: f64,
-    pub(super) lng: f64,
-}
-
-#[derive(Deserialize)]
 pub(super) struct CalendarOrganizerPayload {
     pub(super) name: Option<String>,
     pub(super) email: String,

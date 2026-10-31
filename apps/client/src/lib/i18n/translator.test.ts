@@ -158,13 +158,13 @@ describe("translator", () => {
     );
   });
 
-  it("normalizes invalid stored language preferences", async () => {
+  it("reads an invalid stored language preference as system without writing it back", async () => {
     getConfigKeyMock.mockReturnValue("fr");
     const { getLocalization, initializeLocalizationFromConfig } = await loadTranslator();
 
     await initializeLocalizationFromConfig();
 
     expect(getLocalization().languagePreference).toBe("system");
-    expect(setConfigKeyMock).toHaveBeenCalledWith("preferences.language", "system");
+    expect(setConfigKeyMock).not.toHaveBeenCalled();
   });
 });

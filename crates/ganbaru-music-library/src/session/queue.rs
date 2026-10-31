@@ -3,6 +3,7 @@
 use super::{models::*, policy::SessionPolicy};
 use crate::{
     MusicItemAvailability, MusicLibraryError, MusicLibraryResult, MusicRepeatMode, MusicWeight,
+    from_thousandths,
 };
 use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -30,8 +31,8 @@ struct QueueRow {
     enabled: Option<i64>,
     start_ms: Option<i64>,
     end_ms: Option<i64>,
-    volume: Option<f64>,
-    rate: Option<f64>,
+    volume_milli: Option<i64>,
+    rate_milli: Option<i64>,
     snoozed_until: Option<i64>,
     snoozed_indefinitely: i64,
 }
@@ -205,6 +206,24 @@ fn resolve_path(root: Option<&String>, relative: Option<&str>) -> Option<String>
     }
 }
 
+/// Availability used by the queue policy: the device observation for local files, and the replicated
+/// resolution state for YouTube videos, so a video resolved on one device plays on every online device.
+/// An embedding block is reported separately by the policy.
+fn row_availability(
+    local: bool,
+    observed: &str,
+    youtube_resolution_state: Option<&str>,
+) -> MusicLibraryResult<MusicItemAvailability> {
+    if local {
+        return MusicItemAvailability::try_from(observed).map_err(validation);
+    }
+    Ok(if youtube_resolution_state == Some("unavailable") {
+        MusicItemAvailability::Unavailable
+    } else {
+        MusicItemAvailability::Available
+    })
+}
+
 fn row_entry(
     row: QueueRow,
     roots: &BTreeMap<String, String>,
@@ -227,8 +246,11 @@ fn row_entry(
     } else {
         SessionBackend::Browser
     };
-    let availability =
-        MusicItemAvailability::try_from(row.availability.as_str()).map_err(validation)?;
+    let availability = row_availability(
+        local,
+        &row.availability,
+        row.youtube_resolution_state.as_deref(),
+    )?;
     let weight =
         MusicWeight::try_from(row.weight.as_deref().unwrap_or("normal")).map_err(validation)?;
     let bound = !local || path.is_some();
@@ -263,8 +285,8 @@ fn row_entry(
         bound,
         phase_allowed: true,
         skip_ranges: Vec::new(),
-        volume: row.volume,
-        rate: row.rate,
+        volume: row.volume_milli.map(from_thousandths),
+        rate: row.rate_milli.map(from_thousandths),
     })
 }
 
@@ -281,7 +303,7 @@ fn row_query(playlist_id: Option<&str>, now_ms: i64) -> QueryBuilder<Sqlite> {
          (SELECT relative_path FROM music_local_locations WHERE item_id = item.id AND availability = 'available'
           ORDER BY updated_at_ms DESC, id LIMIT 1) AS relative_path,
          membership.id AS membership_id, membership.weight, membership.enabled,
-         membership.start_ms, membership.end_ms, membership.volume, membership.rate,
+         membership.start_ms, membership.end_ms, membership.volume_milli, membership.rate_milli,
          (SELECT MAX(ends_at_ms) FROM music_snoozes WHERE item_id = item.id AND starts_at_ms <= ");
     query
         .push_bind(now_ms)
@@ -361,7 +383,7 @@ pub async fn load_queue(
             query
                 .push(" WHERE membership.playlist_id = ")
                 .push_bind(playlist_id)
-                .push(" ORDER BY membership.position, membership.id LIMIT ")
+                .push(" ORDER BY membership.order_key, membership.id LIMIT ")
                 .push_bind((MAX_QUEUE_ENTRIES + 1) as i64);
             let rows = query
                 .build_query_as::<QueueRow>()
@@ -404,7 +426,7 @@ pub async fn load_queue(
         let ranges: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT skip.membership_id, skip.start_ms, skip.end_ms FROM music_membership_skip_ranges AS skip
              JOIN music_playlist_memberships AS membership ON membership.id = skip.membership_id
-             WHERE membership.playlist_id = ? ORDER BY skip.membership_id, skip.sort_order LIMIT ?")
+             WHERE membership.playlist_id = ? ORDER BY skip.membership_id, skip.ordinal LIMIT ?")
             .bind(playlist_id).bind((MAX_SKIP_RANGES + 1) as i64).fetch_all(&mut *connection).await
             .map_err(|error| MusicLibraryError::database("read session skip ranges", error))?;
         if ranges.len() > MAX_SKIP_RANGES {
@@ -476,4 +498,34 @@ async fn load_items(
                 .ok_or_else(|| MusicLibraryError::not_found("music item", id))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+
+    #[test]
+    fn youtube_availability_follows_the_replicated_resolution_state() {
+        for (state, expected) in [
+            (None, MusicItemAvailability::Available),
+            (Some("resolving"), MusicItemAvailability::Available),
+            (Some("timed-out"), MusicItemAvailability::Available),
+            (Some("ready"), MusicItemAvailability::Available),
+            (Some("unavailable"), MusicItemAvailability::Unavailable),
+        ] {
+            assert_eq!(
+                row_availability(false, "unknown", state).unwrap(),
+                expected,
+                "{state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_availability_stays_the_device_observation() {
+        assert_eq!(
+            row_availability(true, "missing", None).unwrap(),
+            MusicItemAvailability::Missing
+        );
+    }
 }

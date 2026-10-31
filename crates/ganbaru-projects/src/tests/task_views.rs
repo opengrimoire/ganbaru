@@ -68,10 +68,10 @@ fn task_view_column_calculations_cover_filtered_results_before_pagination() {
         insert_project_graph_fixture(&pool).await;
         sqlx::raw_sql("UPDATE project_tasks SET estimate_minutes = CASE id WHEN 'task-a' THEN NULL WHEN 'task-b' THEN 20 ELSE 100 END;
             UPDATE project_tasks SET archived_at = '2026-07-01' WHERE id = 'task-c';
-            INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order) VALUES ('number', 'project-a', 'Points', 'number', 100), ('choice', 'project-a', 'Phase', 'select', 200), ('empty', 'project-a', 'Empty', 'number', 300);
-            INSERT INTO project_custom_field_values (task_id, field_id, number_value) VALUES ('task-a', 'number', 0), ('task-b', 'number', 10), ('task-c', 'number', 100);
-            INSERT INTO project_custom_field_options (id, field_id, name, sort_order) VALUES ('choice-one', 'choice', 'Planning', 100);
-            INSERT INTO project_custom_field_option_values (task_id, field_id, option_id) VALUES ('task-b', 'choice', 'choice-one');")
+            INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key) VALUES ('number', 'project-a', 'Points', 'number', 'a1'), ('choice', 'project-a', 'Phase', 'select', 'a2'), ('empty', 'project-a', 'Empty', 'number', 'a3');
+            INSERT INTO project_custom_field_values (task_id, field_id, sync_key, number_value) VALUES ('task-a', 'number', 'value-a-number', 0), ('task-b', 'number', 'value-b-number', 10000000), ('task-c', 'number', 'value-c-number', 100000000), ('task-b', 'choice', 'value-b-choice', NULL);
+            INSERT INTO project_custom_field_options (id, field_id, name, order_key) VALUES ('choice-one', 'choice', 'Planning', 'a1');
+            INSERT INTO project_custom_field_option_values (value_key, ordinal, option_id) VALUES ('value-b-choice', 0, 'choice-one');")
             .execute(&pool).await.unwrap();
         let first = load_task_view(&pool, list_task_view_request(1))
             .await
@@ -143,10 +143,10 @@ fn task_view_custom_column_sort_keeps_numeric_order_and_resolves_option_names() 
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
-        sqlx::raw_sql("INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order) VALUES ('number', 'project-a', 'Points', 'number', 100), ('choice', 'project-a', 'Phase', 'select', 200);
-            INSERT INTO project_custom_field_values (task_id, field_id, number_value) VALUES ('task-a', 'number', 10), ('task-b', 'number', 2);
-            INSERT INTO project_custom_field_options (id, field_id, name, sort_order) VALUES ('choice-z', 'choice', 'Zebra', 100), ('choice-a', 'choice', 'Alpha', 200);
-            INSERT INTO project_custom_field_option_values (task_id, field_id, option_id) VALUES ('task-a', 'choice', 'choice-z'), ('task-b', 'choice', 'choice-a');")
+        sqlx::raw_sql("INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key) VALUES ('number', 'project-a', 'Points', 'number', 'a1'), ('choice', 'project-a', 'Phase', 'select', 'a2');
+            INSERT INTO project_custom_field_values (task_id, field_id, sync_key, number_value) VALUES ('task-a', 'number', 'value-a-number', 10000000), ('task-b', 'number', 'value-b-number', 2000000), ('task-a', 'choice', 'value-a-choice', NULL), ('task-b', 'choice', 'value-b-choice', NULL);
+            INSERT INTO project_custom_field_options (id, field_id, name, order_key) VALUES ('choice-z', 'choice', 'Zebra', 'a1'), ('choice-a', 'choice', 'Alpha', 'a2');
+            INSERT INTO project_custom_field_option_values (value_key, ordinal, option_id) VALUES ('value-a-choice', 0, 'choice-z'), ('value-b-choice', 0, 'choice-a');")
             .execute(&pool).await.unwrap();
         for field in ["number", "choice"] {
             let mut request = list_task_view_request(10);
@@ -177,13 +177,14 @@ fn task_view_list_is_keyset_paginated_and_body_bounded() {
         for index in 0..10_000 {
             sqlx::query(
                 "INSERT INTO project_tasks
-                 (id, project_id, section_id, status_id, title, description, section_sort_order)
-                 VALUES (?, 'project-a', 'section-a', 'status-a', ?, ?, ?)",
+                 (id, project_id, section_id, status_id, title, description, section_order_key, status_order_key)
+                 VALUES (?, 'project-a', 'section-a', 'status-a', ?, ?, ?, ?)",
             )
             .bind(format!("task-{index:05}"))
             .bind(format!("Task {index:05}"))
             .bind("body".repeat(1_000))
-            .bind(index as f64)
+            .bind(crate::order::rank_key(index).unwrap().into_string())
+            .bind(crate::order::rank_key(index).unwrap().into_string())
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -236,12 +237,13 @@ fn task_view_handles_empty_single_and_exact_page_sizes() {
             for index in 0..count {
                 sqlx::query(
                     "INSERT INTO project_tasks
-                     (id, project_id, section_id, status_id, title, section_sort_order)
-                     VALUES (?, 'project-a', 'section-a', 'status-a', ?, ?)",
+                     (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+                     VALUES (?, 'project-a', 'section-a', 'status-a', ?, ?, ?)",
                 )
                 .bind(format!("task-{index}"))
                 .bind(format!("Task {index}"))
-                .bind(index as f64)
+                .bind(crate::order::rank_key(index).unwrap().into_string())
+                .bind(crate::order::rank_key(index).unwrap().into_string())
                 .execute(&pool)
                 .await
                 .unwrap();

@@ -11,6 +11,7 @@ fn search_returns_page_block_and_comment_matches() {
                 title: "Target page".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -69,9 +70,8 @@ fn search_keyset_pages_equal_titles_without_full_page_payloads() {
             "WITH RECURSIVE sequence(value) AS (
                  SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 60
              )
-             INSERT INTO notes_pages (id, parent_type, title, properties, last_edited_time)
+             INSERT INTO notes_pages (id, parent_type, title, last_edited_time)
              SELECT printf('10000000-0000-4000-8000-%012d', value), 'workspace', 'Needle same',
-                    json_object('title', json_object('id', 'title', 'type', 'title', 'title', json_array())),
                     '2026-07-11T00:00:00.000Z'
              FROM sequence;",
         )
@@ -249,47 +249,18 @@ fn search_indexes_comment_targets_authors_anchors_and_resolved_filter() {
 }
 
 #[test]
-fn search_fts_rebuilds_and_indexes_properties_files_and_metadata() {
+fn search_fts_rebuilds_and_indexes_titles_files_and_metadata() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         create_page(&pool, PAGE_A, BLOCK_A).await;
 
         sqlx::query(
             "UPDATE notes_pages
-             SET properties = ?,
+             SET title = ?,
                  last_edited_time = '2035-07-02T10:00:00.000Z'
              WHERE id = ?",
         )
-        .bind(
-            json!({
-                "Name": {
-                    "id": "title",
-                    "name": "Name",
-                    "type": "title",
-                    "title": [rich_text("Search Host")]
-                },
-                "Status": {
-                    "id": "status",
-                    "name": "Status",
-                    "type": "status",
-                    "status": {
-                        "id": "status-review",
-                        "name": "Deep Review",
-                        "color": "green"
-                    }
-                },
-                "Due": {
-                    "id": "due",
-                    "name": "Due",
-                    "type": "date",
-                    "date": {
-                        "start": "2035-07-02",
-                        "end": null
-                    }
-                }
-            })
-            .to_string(),
-        )
+        .bind("Search Host Deep Review")
         .bind(PAGE_A)
         .execute(&pool)
         .await
@@ -407,31 +378,11 @@ fn search_fts_rebuilds_and_indexes_properties_files_and_metadata() {
 
         sqlx::query(
             "UPDATE notes_pages
-             SET properties = ?,
+             SET title = ?,
                  last_edited_time = '2035-07-02T10:01:00.000Z'
              WHERE id = ?",
         )
-        .bind(
-            json!({
-                "Name": {
-                    "id": "title",
-                    "name": "Name",
-                    "type": "title",
-                    "title": [rich_text("Search Host")]
-                },
-                "Status": {
-                    "id": "status",
-                    "name": "Status",
-                    "type": "status",
-                    "status": {
-                        "id": "status-fresh",
-                        "name": "Fresh Signal",
-                        "color": "blue"
-                    }
-                }
-            })
-            .to_string(),
-        )
+        .bind("Search Host Fresh Signal")
         .bind(PAGE_A)
         .execute(&pool)
         .await

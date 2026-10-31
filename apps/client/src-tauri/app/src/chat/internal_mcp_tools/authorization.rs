@@ -25,15 +25,15 @@ pub(crate) async fn verify_scope(
             JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = authorization.destination_conversation_id
              AND channel_access.teammate_id = assignment.teammate_id
+             AND channel_access.removed_at IS NULL
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = channel_access.conversation_id
              AND membership.participant_id = channel_access.teammate_id
              AND membership.removed_at IS NULL
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_revisions profile_revision
+            JOIN chat_access_profile_effective_revisions profile_revision
               ON profile_revision.access_profile_id = profile.id
-             AND profile_revision.revision = profile.latest_revision
             JOIN chat_agent_runs run
               ON run.id = ?
              AND run.assignment_id = authorization.assignment_id
@@ -113,15 +113,15 @@ pub(super) async fn verify_channel_source(
             JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = source.conversation_id
              AND channel_access.teammate_id = assignment.teammate_id
+             AND channel_access.removed_at IS NULL
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = channel_access.conversation_id
              AND membership.participant_id = channel_access.teammate_id
              AND membership.removed_at IS NULL
             JOIN chat_access_profiles teammate_profile
               ON teammate_profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_revisions teammate_profile_revision
+            JOIN chat_access_profile_effective_revisions teammate_profile_revision
               ON teammate_profile_revision.access_profile_id = teammate_profile.id
-             AND teammate_profile_revision.revision = teammate_profile.latest_revision
             JOIN chat_conversation_memberships requester_membership
               ON requester_membership.conversation_id = source.conversation_id
              AND requester_membership.participant_id = authorization.requester_participant_id
@@ -144,8 +144,10 @@ pub(super) async fn verify_channel_source(
               AND source.source_handle = ?
               AND source.message_reference_id = ?
               AND source.conversation_id = ?
-              AND source.lower_ordinal = ?
-              AND source.high_ordinal = ?
+              AND source.lower_order_key = ?
+              AND source.lower_item_id = ?
+              AND source.high_order_key = ?
+              AND source.high_item_id = ?
               AND source.source_revision_cutoff_id = ?
               AND source.destination_audience_revision = ?
               AND destination_audience.revision >= source.destination_audience_revision
@@ -166,8 +168,8 @@ pub(super) async fn verify_channel_source(
                   ELSE 'entire'
                 END = 'entire'
                 OR (
-                  channel_access.history_from_ordinal IS NOT NULL
-                  AND channel_access.history_from_ordinal <= source.lower_ordinal
+                  channel_access.history_from_order_key IS NOT NULL
+                  AND channel_access.history_from_order_key <= source.lower_order_key
                 )
               )
               AND (
@@ -177,11 +179,11 @@ pub(super) async fn verify_channel_source(
                   FROM chat_teammate_channel_memberships requester_source_access
                   JOIN chat_access_profiles requester_profile
                     ON requester_profile.id = requester_source_access.access_profile_id
-                  JOIN chat_access_profile_revisions requester_profile_revision
+                  JOIN chat_access_profile_effective_revisions requester_profile_revision
                     ON requester_profile_revision.access_profile_id = requester_profile.id
-                   AND requester_profile_revision.revision = requester_profile.latest_revision
                   WHERE requester_source_access.conversation_id = source.conversation_id
                     AND requester_source_access.teammate_id = authorization.requester_participant_id
+                    AND requester_source_access.removed_at IS NULL
                     AND CASE
                           WHEN requester_source_access.read_history_inherits_profile = 1
                             THEN requester_profile_revision.default_read_history
@@ -198,8 +200,8 @@ pub(super) async fn verify_channel_source(
                         ELSE 'entire'
                       END = 'entire'
                       OR (
-                        requester_source_access.history_from_ordinal IS NOT NULL
-                        AND requester_source_access.history_from_ordinal <= source.lower_ordinal
+                        requester_source_access.history_from_order_key IS NOT NULL
+                        AND requester_source_access.history_from_order_key <= source.lower_order_key
                       )
                     )
                 )
@@ -218,11 +220,11 @@ pub(super) async fn verify_channel_source(
                       FROM chat_teammate_channel_memberships destination_ai_access
                       JOIN chat_access_profiles destination_profile
                         ON destination_profile.id = destination_ai_access.access_profile_id
-                      JOIN chat_access_profile_revisions destination_profile_revision
+                      JOIN chat_access_profile_effective_revisions destination_profile_revision
                         ON destination_profile_revision.access_profile_id = destination_profile.id
-                       AND destination_profile_revision.revision = destination_profile.latest_revision
                       WHERE destination_ai_access.conversation_id = authorization.destination_conversation_id
                         AND destination_ai_access.teammate_id = destination_member.participant_id
+                        AND destination_ai_access.removed_at IS NULL
                         AND CASE
                               WHEN destination_ai_access.read_history_inherits_profile = 1
                                 THEN destination_profile_revision.default_read_history
@@ -239,9 +241,9 @@ pub(super) async fn verify_channel_source(
                             ELSE 'entire'
                           END = 'entire'
                           OR (
-                            destination_ai_access.history_from_ordinal IS NOT NULL
-                            AND destination_ai_access.history_from_ordinal
-                              <= coalesce(reference_root.ordinal, reference_item.ordinal)
+                            destination_ai_access.history_from_order_key IS NOT NULL
+                            AND destination_ai_access.history_from_order_key
+                              <= coalesce(reference_root.order_key, reference_item.order_key)
                           )
                         )
                     )
@@ -260,11 +262,11 @@ pub(super) async fn verify_channel_source(
                         FROM chat_teammate_channel_memberships source_ai_access
                         JOIN chat_access_profiles source_profile
                           ON source_profile.id = source_ai_access.access_profile_id
-                        JOIN chat_access_profile_revisions source_profile_revision
+                        JOIN chat_access_profile_effective_revisions source_profile_revision
                           ON source_profile_revision.access_profile_id = source_profile.id
-                         AND source_profile_revision.revision = source_profile.latest_revision
                         WHERE source_ai_access.conversation_id = source.conversation_id
                           AND source_ai_access.teammate_id = destination_member.participant_id
+                          AND source_ai_access.removed_at IS NULL
                           AND CASE
                                 WHEN source_ai_access.read_history_inherits_profile = 1
                                   THEN source_profile_revision.default_read_history
@@ -281,8 +283,8 @@ pub(super) async fn verify_channel_source(
                               ELSE 'entire'
                             END = 'entire'
                             OR (
-                              source_ai_access.history_from_ordinal IS NOT NULL
-                              AND source_ai_access.history_from_ordinal <= source.lower_ordinal
+                              source_ai_access.history_from_order_key IS NOT NULL
+                              AND source_ai_access.history_from_order_key <= source.lower_order_key
                             )
                           )
                       )
@@ -295,8 +297,10 @@ pub(super) async fn verify_channel_source(
     .bind(&source.source_handle)
     .bind(&source.message_reference_id)
     .bind(&source.conversation_id)
-    .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?)
-    .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?)
+    .bind(&source.lower_order_key)
+    .bind(&source.lower_item_id)
+    .bind(&source.high_order_key)
+    .bind(&source.high_item_id)
     .bind(&source.source_revision_cutoff_id)
     .bind(i64::try_from(source.destination_audience_revision).map_err(|_| generic_denial_error())?)
     .fetch_one(pool)
@@ -333,18 +337,17 @@ pub(super) async fn verify_folder_source(
             JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = membership.conversation_id
              AND channel_access.teammate_id = membership.participant_id
+             AND channel_access.removed_at IS NULL
             JOIN chat_teammate_access_state access_state
               ON access_state.teammate_id = membership.participant_id
             JOIN chat_teammates teammate
               ON teammate.participant_id = assignment.teammate_id
-            JOIN chat_teammate_policy_revisions policy
+            JOIN chat_teammate_effective_policies policy
               ON policy.teammate_id = teammate.participant_id
-             AND policy.revision = teammate.latest_policy_revision
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
-            JOIN chat_access_profile_revisions profile_revision
+            JOIN chat_access_profile_effective_revisions profile_revision
               ON profile_revision.access_profile_id = profile.id
-             AND profile_revision.revision = profile.latest_revision
             JOIN chat_teammate_working_folder_grants live_grant
               ON live_grant.conversation_id = authorization.destination_conversation_id
              AND live_grant.teammate_id = assignment.teammate_id

@@ -2,17 +2,18 @@
 
 use super::profiles::read_access_profile;
 use super::{
-    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessValidationIssue, ChatChannelCapabilities,
-    ChatChannelId, ChatConversationId, ChatError, ChatErrorCode, ChatFolderGrantRead,
-    ChatHistoryBoundary, ChatParticipantId, ChatResult, ChatRuntimeApprovalPolicy,
-    ChatTeammateAccessRead, ChatTeammateChannelAccessInput, ChatTeammateChannelAccessRead,
-    ProjectWorkingFolderId,
+    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessProfileRevisionId,
+    ChatAccessValidationIssue, ChatChannelCapabilities, ChatChannelId, ChatConversationId,
+    ChatError, ChatErrorCode, ChatFolderGrantRead, ChatHistoryBoundary, ChatParticipantId,
+    ChatResult, ChatRuntimeApprovalPolicy, ChatTeammateAccessRead, ChatTeammateChannelAccessInput,
+    ChatTeammateChannelAccessRead, ProjectWorkingFolderId,
 };
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, optional_timestamp, persistence_error, u64_value};
 use crate::chat::organization::common::{
-    parse_approval_policy, parse_folder_capability, parse_history_boundary,
-    parse_runtime_approval_policy, teammate_runtime_approval,
+    ACTIVE_FOLDER_GRANTS_SQL, from_grant_lower_order_key, parse_approval_policy,
+    parse_folder_capability, parse_history_boundary, parse_runtime_approval_policy,
+    teammate_runtime_approval,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -25,9 +26,8 @@ pub(in crate::chat::organization) async fn read_teammate_access(
         "SELECT access_state.access_revision, policy.safety_mode
          FROM chat_teammate_access_state access_state
          JOIN chat_teammates teammate ON teammate.participant_id = access_state.teammate_id
-         JOIN chat_teammate_policy_revisions policy
+         JOIN chat_teammate_effective_policies policy
            ON policy.teammate_id = teammate.participant_id
-          AND policy.revision = teammate.latest_policy_revision
          WHERE access_state.teammate_id = ?",
     )
     .bind(teammate_id.as_str())
@@ -38,7 +38,8 @@ pub(in crate::chat::organization) async fn read_teammate_access(
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
                 channel.conversation_id, channel.name AS channel_name,
-                ai.access_profile_id, profile.latest_revision AS access_profile_revision,
+                ai.access_profile_id, profile_revision.id AS access_profile_revision_id,
+                profile_revision.revision AS access_profile_revision,
                 profile_revision.default_read_history AS profile_read_history,
                 profile_revision.default_participate AS profile_participate,
                 profile_revision.default_history_boundary AS profile_history_boundary,
@@ -46,7 +47,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                 ai.read_history, ai.read_history_inherits_profile,
                 ai.participate, ai.participate_inherits_profile,
                 ai.history_boundary, ai.history_boundary_inherits_profile,
-                ai.history_from_ordinal, ai.runtime_approval_policy,
+                ai.history_from_order_key, ai.runtime_approval_policy,
                 ai.scratch_runtime_approval_policy,
                 membership.revision AS membership_revision, membership.removed_at
          FROM chat_teammate_channel_memberships ai
@@ -56,10 +57,9 @@ pub(in crate::chat::organization) async fn read_teammate_access(
          JOIN chat_channels channel ON channel.conversation_id = ai.conversation_id
          JOIN projects project ON project.id = channel.project_id
          JOIN chat_access_profiles profile ON profile.id = ai.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
-         WHERE ai.teammate_id = ?
+         WHERE ai.teammate_id = ? AND ai.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )
     .bind(teammate_id.as_str())
@@ -73,23 +73,12 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        let grant_rows = sqlx::query(
-            "SELECT grant_row.working_folder_id, folder.display_name,
-                    grant_row.capability, grant_row.capability_inherits_profile,
-                    grant_row.is_default,
-                    grant_row.runtime_approval_policy, grant_row.revision,
-                    grant_row.revoked_at
-             FROM chat_teammate_working_folder_grants grant_row
-             JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
-             WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
-               AND grant_row.revoked_at IS NULL
-             ORDER BY grant_row.is_default DESC, folder.sort_order, folder.display_name, folder.id",
-        )
-        .bind(conversation_id.as_str())
-        .bind(teammate_id.as_str())
-        .fetch_all(pool)
-        .await
-        .map_err(persistence_error)?;
+        let grant_rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
+            .bind(conversation_id.as_str())
+            .bind(teammate_id.as_str())
+            .fetch_all(pool)
+            .await
+            .map_err(persistence_error)?;
         let profile_folder_capability = parse_folder_capability(
             &row.try_get::<String, _>("profile_folder_capability")
                 .map_err(persistence_error)?,
@@ -142,7 +131,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
         let stored_history_boundary = parse_history_boundary(
             &row.try_get::<String, _>("history_boundary")
                 .map_err(persistence_error)?,
-            row.try_get("history_from_ordinal")
+            row.try_get("history_from_order_key")
                 .map_err(persistence_error)?,
         )?;
         let history_inherits_profile = row
@@ -153,25 +142,22 @@ pub(in crate::chat::organization) async fn read_teammate_access(
             match profile_history_boundary.clone() {
                 ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
                 ChatHistoryBoundary::FromGrant { .. } => ChatHistoryBoundary::FromGrant {
-                    lower_ordinal: match stored_history_boundary {
-                        ChatHistoryBoundary::FromGrant { lower_ordinal } => lower_ordinal,
+                    lower_order_key: match stored_history_boundary {
+                        ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key,
                         ChatHistoryBoundary::Entire => None,
                     },
                 },
             }
         } else if history_boundary_is_expansion(&profile_history_boundary, &stored_history_boundary)
         {
-            let lower_ordinal: i64 = sqlx::query_scalar(
-                "SELECT coalesce(max(ordinal), 0) + 1
-                 FROM chat_conversation_items
-                 WHERE conversation_id = ? AND reply_thread_id IS NULL",
-            )
-            .bind(conversation_id.as_str())
-            .fetch_one(pool)
-            .await
-            .map_err(persistence_error)?;
             ChatHistoryBoundary::FromGrant {
-                lower_ordinal: Some(u64_value(lower_ordinal)?),
+                lower_order_key: Some(
+                    from_grant_lower_order_key(
+                        &mut *pool.acquire().await.map_err(persistence_error)?,
+                        conversation_id.as_str(),
+                    )
+                    .await?,
+                ),
             }
         } else {
             stored_history_boundary
@@ -188,6 +174,11 @@ pub(in crate::chat::organization) async fn read_teammate_access(
             channel_name: row.try_get("channel_name").map_err(persistence_error)?,
             access_profile_id: ChatAccessProfileId::new(
                 row.try_get::<String, _>("access_profile_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            access_profile_revision_id: ChatAccessProfileRevisionId::new(
+                row.try_get::<String, _>("access_profile_revision_id")
                     .map_err(persistence_error)?,
             )
             .map_err(identifier_error)?,
@@ -328,7 +319,7 @@ pub(super) async fn resolve_channel_access(
                 continue;
             }
         };
-        if profile.latest_revision.revision != input.access_profile_revision {
+        if profile.latest_revision.id != input.access_profile_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile changed before teammate access could be previewed",
@@ -435,9 +426,9 @@ pub(super) async fn resolve_channel_access(
         let history_boundary = match input.history_boundary {
             ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
             ChatHistoryBoundary::FromGrant { .. } => {
-                let current_lower = sqlx::query_scalar::<_, Option<i64>>(
-                    "SELECT history_from_ordinal FROM chat_teammate_channel_memberships
-                     WHERE conversation_id = ? AND teammate_id = ?
+                let current_lower = sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT history_from_order_key FROM chat_teammate_channel_memberships
+                     WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL
                        AND history_boundary = 'from_grant'",
                 )
                 .bind(conversation_id.as_str())
@@ -447,22 +438,17 @@ pub(super) async fn resolve_channel_access(
                 .map_err(persistence_error)?
                 .flatten();
                 let lower = match current_lower {
-                    Some(value) => u64_value(value)?,
+                    Some(value) => value,
                     None => {
-                        let value: i64 = sqlx::query_scalar(
-                            "SELECT COALESCE(max(ordinal), 0) + 1
-                             FROM chat_conversation_items
-                             WHERE conversation_id = ? AND reply_thread_id IS NULL",
+                        from_grant_lower_order_key(
+                            &mut *pool.acquire().await.map_err(persistence_error)?,
+                            conversation_id.as_str(),
                         )
-                        .bind(conversation_id.as_str())
-                        .fetch_one(pool)
-                        .await
-                        .map_err(persistence_error)?;
-                        u64_value(value)?
+                        .await?
                     }
                 };
                 ChatHistoryBoundary::FromGrant {
-                    lower_ordinal: Some(lower),
+                    lower_order_key: Some(lower),
                 }
             }
         };
@@ -473,6 +459,7 @@ pub(super) async fn resolve_channel_access(
             conversation_id,
             channel_name: channel_row.try_get("name").map_err(persistence_error)?,
             access_profile_id: input.access_profile_id.clone(),
+            access_profile_revision_id: profile.latest_revision.id.clone(),
             access_profile_revision: profile.latest_revision.revision,
             profile_maximum_folder_capability: profile.latest_revision.maximum_folder_capability,
             profile_default_channel_capabilities: profile
@@ -508,6 +495,7 @@ pub(super) fn proposed_access_read(
                 conversation_id: channel.conversation_id.clone(),
                 channel_name: channel.channel_name.clone(),
                 access_profile_id: channel.access_profile_id.clone(),
+                access_profile_revision_id: channel.access_profile_revision_id.clone(),
                 access_profile_revision: channel.access_profile_revision,
                 capabilities: channel.capabilities,
                 history_boundary: channel.history_boundary.clone(),

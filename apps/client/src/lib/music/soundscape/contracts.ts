@@ -1,3 +1,4 @@
+import { fromThousandths, toThousandths } from "$lib/music/thousandths";
 import { parseProjectIcon, serializeProjectIcon } from "$lib/projects/icons/values";
 
 export type MusicSoundscapeSourceKind = "generated-noise" | "local-loop" | "bundled-loop";
@@ -46,6 +47,8 @@ export interface MusicSoundscapeState {
 export const MAX_SOUNDSCAPE_PRESET_LEVEL = 2;
 /** Level of a new preset: the Music volume setting itself, shown as 0%. */
 export const DEFAULT_SOUNDSCAPE_PRESET_LEVEL = 1;
+/** Highest share of the preset level one sound plays at. */
+const MAX_SOUNDSCAPE_PRESET_SOUND_LEVEL = 1;
 
 /** One sound in a preset mix with its share of the preset level, from 0 (silent) to 1 (full). */
 export interface MusicSoundscapePresetSound {
@@ -55,7 +58,8 @@ export interface MusicSoundscapePresetSound {
 
 /**
  * Named mix of soundscape sounds, the only thing a soundscape plays. Its level multiplies the Music volume setting.
- * Removing a sound can leave a preset empty until it is edited.
+ * Removing a sound can leave a preset empty until it is edited. Levels are multipliers here; the vault stores them as
+ * integer thousandths, and the parser and {@link presetWriteWire} convert at the command boundary.
  */
 export interface MusicSoundscapePreset {
   id: string;
@@ -76,6 +80,28 @@ export interface MusicSoundscapePresetWrite {
   sounds: MusicSoundscapePresetSound[];
   expectedVersion: number | null;
   updatedAtMs: number;
+}
+
+/** A preset sound as the save command takes it, with its level in thousandths. */
+export interface MusicSoundscapePresetSoundWire {
+  soundscapeId: string;
+  levelMilli: number;
+}
+
+/** A preset save as the command takes it, with levels in thousandths. */
+export interface MusicSoundscapePresetWriteWire extends Omit<MusicSoundscapePresetWrite, "level" | "sounds"> {
+  levelMilli: number;
+  sounds: MusicSoundscapePresetSoundWire[];
+}
+
+/** A preset save with its multipliers rounded to the thousandths the vault stores. */
+export function presetWriteWire(write: MusicSoundscapePresetWrite): MusicSoundscapePresetWriteWire {
+  const { level: presetLevel, sounds, ...fields } = write;
+  return {
+    ...fields,
+    levelMilli: toThousandths(presetLevel),
+    sounds: sounds.map((sound) => ({ soundscapeId: sound.soundscapeId, levelMilli: toThousandths(sound.level) })),
+  };
 }
 
 export interface MusicSoundscapeStateWrite {
@@ -165,16 +191,20 @@ export function parseMusicSoundscapeSnapshot(value: unknown): MusicSoundscapeSna
   const row = record(value, "soundscape snapshot");
   return { status: enumeration(row.status, statuses, "soundscape snapshot.status"), sourceId: optionalText(row.sourceId, "soundscape snapshot.sourceId"), errorCode: optionalText(row.errorCode, "soundscape snapshot.errorCode") };
 }
-function level(value: unknown, max: number, label: string): number {
-  const result = number(value, label);
-  if (result < 0 || result > max) throw new Error(`${label} is out of range`);
-  return result;
+/** A stored level in thousandths, checked against its multiplier range and returned as a multiplier. */
+function levelFromMilli(value: unknown, max: number, label: string): number {
+  const milli = integer(value, label);
+  if (milli < 0 || milli > toThousandths(max)) throw new Error(`${label} is out of range`);
+  return fromThousandths(milli);
 }
 function presetSounds(value: unknown, label: string): MusicSoundscapePresetSound[] {
-  if (!Array.isArray(value) || value.length > MAX_SOUNDSCAPE_LAYERS) throw new Error(`${label} is invalid`);
+  if (!Array.isArray(value)) throw new Error(`${label} is invalid`);
   const sounds = value.map((entry, index) => {
     const sound = record(entry, `${label}[${index}]`);
-    return { soundscapeId: text(sound.soundscapeId, `${label}[${index}].soundscapeId`), level: level(sound.level, 1, `${label}[${index}].level`) };
+    return {
+      soundscapeId: text(sound.soundscapeId, `${label}[${index}].soundscapeId`),
+      level: levelFromMilli(sound.levelMilli, MAX_SOUNDSCAPE_PRESET_SOUND_LEVEL, `${label}[${index}].levelMilli`),
+    };
   });
   if (new Set(sounds.map((sound) => sound.soundscapeId)).size !== sounds.length) throw new Error(`${label} repeats a sound`);
   return sounds;
@@ -185,7 +215,7 @@ export function parseMusicSoundscapePreset(value: unknown, label = "sound preset
     id: text(row.id, `${label}.id`),
     name: text(row.name, `${label}.name`),
     icon: iconText(row.icon, `${label}.icon`),
-    level: level(row.level, MAX_SOUNDSCAPE_PRESET_LEVEL, `${label}.level`),
+    level: levelFromMilli(row.levelMilli, MAX_SOUNDSCAPE_PRESET_LEVEL, `${label}.levelMilli`),
     sounds: presetSounds(row.sounds, `${label}.sounds`),
     createdAtMs: integer(row.createdAtMs, `${label}.createdAtMs`),
     updatedAtMs: integer(row.updatedAtMs, `${label}.updatedAtMs`),

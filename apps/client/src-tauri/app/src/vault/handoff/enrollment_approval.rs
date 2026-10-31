@@ -13,6 +13,8 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 pub(crate) const ENROLLMENT_DECLINED_MESSAGE: &str = "the coordinator declined this device";
+pub(crate) const ENROLLMENT_NO_CHARTER_MESSAGE: &str =
+    "the coordinator could not present the vault's sync charter; try pairing again";
 pub(crate) const ENROLLMENT_UNANSWERED_MESSAGE: &str =
     "the coordinator did not approve this device in time";
 pub(crate) const ENROLLMENT_BUSY_MESSAGE: &str =

@@ -141,11 +141,12 @@ fn deleting_default_view_replaces_its_source_pair_and_linked_creation_uses_that_
         databases::view_management::delete_database_view(&pool, DATABASE_A, DATABASE_VIEW_A)
             .await
             .unwrap();
-        let raw: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(DATABASE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let raw: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(DATABASE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         let payload: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(payload["view_id"], DATABASE_VIEW_B);
         assert_eq!(payload["data_source_id"], DATA_SOURCE_B);
@@ -296,12 +297,14 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
             3
         );
         let folder_id = "00000000-0000-4000-8000-000000000301";
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group', 'Group')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name) VALUES ('project', 'group', 'Project')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'Project', 'a1')",
         )
         .execute(&pool)
         .await
@@ -314,18 +317,20 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
         .await
         .unwrap();
         create_page(&pool, PAGE_C, "99999999-9999-4999-8999-999999999999").await;
-        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, properties = json_set(properties, '$.__ganbaru_project_id', 'project') WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, project_id = 'project' WHERE id = ?")
             .bind(folder_id)
             .bind(PAGE_C)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(
-            "UPDATE notes_pages SET parent_type = 'page_id', parent_page_id = ? WHERE id = ?",
+        writes::move_page(
+            &pool,
+            PAGE_A,
+            crate::models::NoteMovePage {
+                parent: page_parent(PAGE_C),
+                folder_id: None,
+            },
         )
-        .bind(PAGE_C)
-        .bind(PAGE_A)
-        .execute(&pool)
         .await
         .unwrap();
         let listed = serde_json::to_value(
@@ -628,19 +633,9 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
             ["options"][0];
         assert_ne!(option["id"], "high");
         assert_eq!(option["name"], "High");
-        let row: String = sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-            .bind(PAGE_B)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        let row: Value = serde_json::from_str(&row).unwrap();
+        let row = stored_page_properties(&pool, PAGE_B).await;
         assert!(!row.as_object().unwrap().values().any(|value| value.get("id").and_then(Value::as_str) == Some(duplicate_id.as_str())));
-        let before: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let before = stored_schema(&pool, DATA_SOURCE_A).await;
         for action in [
             NoteDataSourcePropertyAction::Insert {
                 property_id: "title".to_string(),
@@ -668,16 +663,7 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
                 .is_err()
             );
         }
-        assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT properties FROM notes_data_sources WHERE id = ?"
-            )
-            .bind(DATA_SOURCE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            before
-        );
+        assert_eq!(stored_schema(&pool, DATA_SOURCE_A).await, before);
     });
 }
 
@@ -816,12 +802,7 @@ fn change_type(
 }
 
 async fn row_properties(pool: &sqlx::SqlitePool, page_id: &str) -> Value {
-    let raw: String = sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-        .bind(page_id)
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    serde_json::from_str(&raw).unwrap()
+    stored_page_properties(pool, page_id).await
 }
 
 #[test]
@@ -967,12 +948,7 @@ fn property_type_changes_convert_row_values_and_deletion_strips_them() {
         );
         assert!(row_properties(&pool, PAGE_B).await.get("Due").is_none());
 
-        let before: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let before = stored_schema(&pool, DATA_SOURCE_A).await;
         for action in [
             change_type("title", "rich_text", None),
             change_type("notes", "multi_select", None),
@@ -984,16 +960,7 @@ fn property_type_changes_convert_row_values_and_deletion_strips_them() {
         ] {
             assert!(run_property_action(&pool, action).await.is_err());
         }
-        assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT properties FROM notes_data_sources WHERE id = ?"
-            )
-            .bind(DATA_SOURCE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            before
-        );
+        assert_eq!(stored_schema(&pool, DATA_SOURCE_A).await, before);
     });
 }
 

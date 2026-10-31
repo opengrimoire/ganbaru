@@ -4,22 +4,24 @@ use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 
 const MAX_PRESET_NAME_CHARS: usize = 80;
-/// Highest preset level, which doubles the Music volume before output clamping.
-const MAX_PRESET_LEVEL: f64 = 2.0;
+/// Preset level in thousandths of the Music volume; the top doubles it before output clamping.
+const PRESET_LEVEL_MILLI: std::ops::RangeInclusive<i64> = 0..=2_000;
+/// Sound level in thousandths of the preset level.
+const PRESET_SOUND_LEVEL_MILLI: std::ops::RangeInclusive<i64> = 0..=1_000;
 
 /// Every preset with its sounds in playback order, sorted by name.
 pub async fn presets(pool: &SqlitePool) -> MusicLibraryResult<Vec<MusicSoundscapePreset>> {
-    let rows = sqlx::query_as::<_, (String, String, String, f64, i64, i64, i64)>(
-        "SELECT id, name, icon, level, created_at_ms, updated_at_ms, version
+    let rows = sqlx::query_as::<_, (String, String, String, i64, i64, i64, i64)>(
+        "SELECT id, name, icon, level_milli, created_at_ms, updated_at_ms, version
          FROM music_soundscape_presets ORDER BY lower(name), id",
     )
     .fetch_all(pool)
     .await
     .map_err(|error| MusicLibraryError::database("load soundscape presets", error))?;
     let mut sounds = HashMap::<String, Vec<MusicSoundscapePresetSound>>::new();
-    for (preset_id, soundscape_id, level) in sqlx::query_as::<_, (String, String, f64)>(
-        "SELECT preset_id, soundscape_id, level FROM music_soundscape_preset_sounds
-         ORDER BY preset_id, position",
+    for (preset_id, soundscape_id, level_milli) in sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT preset_id, soundscape_id, level_milli FROM music_soundscape_preset_sounds
+         ORDER BY preset_id, order_key, soundscape_id",
     )
     .fetch_all(pool)
     .await
@@ -30,7 +32,7 @@ pub async fn presets(pool: &SqlitePool) -> MusicLibraryResult<Vec<MusicSoundscap
             .or_default()
             .push(MusicSoundscapePresetSound {
                 soundscape_id,
-                level,
+                level_milli,
             });
     }
     Ok(rows
@@ -40,7 +42,7 @@ pub async fn presets(pool: &SqlitePool) -> MusicLibraryResult<Vec<MusicSoundscap
             id: row.0,
             name: row.1,
             icon: row.2,
-            level: row.3,
+            level_milli: row.3,
             created_at_ms: row.4,
             updated_at_ms: row.5,
             version: row.6,
@@ -70,6 +72,7 @@ pub async fn upsert(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin soundscape preset update", error))?;
+    check_layer_cap(&mut transaction, &request).await?;
     for sound in &request.sounds {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM music_soundscapes WHERE id = ?)")
@@ -86,14 +89,15 @@ pub async fn upsert(
             ));
         }
     }
-    let existing = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT created_at_ms, version FROM music_soundscape_presets WHERE id = ?",
-    )
-    .bind(&request.id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("load soundscape preset version", error))?;
-    if let Some((_, version)) = existing {
+    let existing =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM music_soundscape_presets WHERE id = ?")
+            .bind(&request.id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| {
+                MusicLibraryError::database("load soundscape preset version", error)
+            })?;
+    if let Some(version) = existing {
         if request.expected_version != Some(version) {
             return Err(MusicLibraryError::conflict(
                 "the soundscape preset changed before this update",
@@ -105,88 +109,203 @@ pub async fn upsert(
             &request.id,
         ));
     }
-    let created_at_ms = existing.map(|row| row.0).unwrap_or(request.updated_at_ms);
-    let version = existing.map(|row| row.1 + 1).unwrap_or(1);
     let name = request.name.trim().to_owned();
-    sqlx::query(
-        "INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name, icon = excluded.icon, level = excluded.level,
-           updated_at_ms = excluded.updated_at_ms, version = excluded.version",
-    )
-    .bind(&request.id)
-    .bind(&name)
-    .bind(&request.icon)
-    .bind(request.level)
-    .bind(created_at_ms)
-    .bind(request.updated_at_ms)
-    .bind(version)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?;
-    sqlx::query("DELETE FROM music_soundscape_preset_sounds WHERE preset_id = ?")
+    let changed = if existing.is_some() {
+        let fields_changed = sqlx::query(
+            "UPDATE music_soundscape_presets
+             SET name = ?, icon = ?, level_milli = ?
+             WHERE id = ? AND (name, icon, level_milli) IS NOT (?, ?, ?)",
+        )
+        .bind(&name)
+        .bind(&request.icon)
+        .bind(request.level_milli)
         .bind(&request.id)
+        .bind(&name)
+        .bind(&request.icon)
+        .bind(request.level_milli)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("replace soundscape preset sounds", error))?;
-    for (position, sound) in request.sounds.iter().enumerate() {
+        .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?
+        .rows_affected()
+            > 0;
+        let sounds_changed =
+            replace_preset_sounds(&mut transaction, &request.id, &request.sounds).await?;
+        fields_changed || sounds_changed
+    } else {
         sqlx::query(
-            "INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO music_soundscape_presets (id, name, icon, level_milli, created_at_ms, updated_at_ms, version)
+             VALUES (?, ?, ?, ?, ?, ?, 1)",
         )
         .bind(&request.id)
-        .bind(position as i64)
-        .bind(&sound.soundscape_id)
-        .bind(sound.level)
+        .bind(&name)
+        .bind(&request.icon)
+        .bind(request.level_milli)
+        .bind(request.updated_at_ms)
+        .bind(request.updated_at_ms)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
+        .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?;
+        replace_preset_sounds(&mut transaction, &request.id, &request.sounds).await?;
+        false
+    };
+    if changed {
+        sqlx::query(
+            "UPDATE music_soundscape_presets
+             SET updated_at_ms = ?, version = version + 1
+             WHERE id = ?",
+        )
+        .bind(request.updated_at_ms)
+        .bind(&request.id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("advance soundscape preset version", error))?;
     }
     super::writes::commit(transaction, "commit soundscape preset update").await?;
-    Ok(MusicSoundscapePreset {
-        id: request.id,
-        name,
-        icon: request.icon,
-        level: request.level,
-        sounds: request.sounds,
-        created_at_ms,
-        updated_at_ms: request.updated_at_ms,
-        version,
-    })
+    preset(pool, &request.id).await
+}
+
+/// Diffs a preset's ordered sounds against the stored rows and returns whether any row changed.
+///
+/// Rows are matched by sound, so a kept sound keeps its row. Added sounds append after the stored keys,
+/// then only the sounds whose relative order changed receive new keys.
+async fn replace_preset_sounds(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    preset_id: &str,
+    sounds: &[MusicSoundscapePresetSound],
+) -> MusicLibraryResult<bool> {
+    let stored = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT soundscape_id, order_key, level_milli FROM music_soundscape_preset_sounds
+         WHERE preset_id = ? ORDER BY order_key, soundscape_id",
+    )
+    .bind(preset_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load soundscape preset sounds", error))?;
+    let wanted = sounds
+        .iter()
+        .map(|sound| sound.soundscape_id.as_str())
+        .collect::<HashSet<_>>();
+    let stored_levels = stored
+        .iter()
+        .map(|(soundscape_id, _, level_milli)| (soundscape_id.as_str(), *level_milli))
+        .collect::<HashMap<_, _>>();
+    let mut changed = false;
+    for (soundscape_id, _, _) in stored
+        .iter()
+        .filter(|(soundscape_id, _, _)| !wanted.contains(soundscape_id.as_str()))
+    {
+        sqlx::query(
+            "DELETE FROM music_soundscape_preset_sounds WHERE preset_id = ? AND soundscape_id = ?",
+        )
+        .bind(preset_id)
+        .bind(soundscape_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("remove soundscape preset sound", error))?;
+        changed = true;
+    }
+    let mut current = stored
+        .iter()
+        .filter(|(soundscape_id, _, _)| wanted.contains(soundscape_id.as_str()))
+        .map(|(soundscape_id, order_key, _)| (soundscape_id.clone(), order_key.clone()))
+        .collect::<Vec<_>>();
+    let added = sounds
+        .iter()
+        .filter(|sound| !stored_levels.contains_key(sound.soundscape_id.as_str()))
+        .collect::<Vec<_>>();
+    let tail = stored.last().map(|(_, order_key, _)| order_key.as_str());
+    for (sound, key) in added
+        .iter()
+        .zip(super::order::keys_after(tail, added.len())?)
+    {
+        sqlx::query(
+            "INSERT INTO music_soundscape_preset_sounds
+                (preset_id, soundscape_id, order_key, level_milli, sync_key)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(preset_id)
+        .bind(&sound.soundscape_id)
+        .bind(key.as_str())
+        .bind(sound.level_milli)
+        .bind(ganbaru_music::sync_keys::preset_sound_key(
+            preset_id,
+            &sound.soundscape_id,
+        )?)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
+        current.push((sound.soundscape_id.clone(), key.as_str().to_owned()));
+        changed = true;
+    }
+    let desired = sounds
+        .iter()
+        .map(|sound| sound.soundscape_id.as_str())
+        .collect::<Vec<_>>();
+    for (soundscape_id, key) in super::order::reorder(&current, &desired)? {
+        sqlx::query(
+            "UPDATE music_soundscape_preset_sounds SET order_key = ?
+             WHERE preset_id = ? AND soundscape_id = ?",
+        )
+        .bind(key.as_str())
+        .bind(preset_id)
+        .bind(&soundscape_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("move soundscape preset sound", error))?;
+        changed = true;
+    }
+    for sound in sounds {
+        if stored_levels
+            .get(sound.soundscape_id.as_str())
+            .is_none_or(|level_milli| *level_milli == sound.level_milli)
+        {
+            continue;
+        }
+        sqlx::query(
+            "UPDATE music_soundscape_preset_sounds SET level_milli = ?
+             WHERE preset_id = ? AND soundscape_id = ?",
+        )
+        .bind(sound.level_milli)
+        .bind(preset_id)
+        .bind(&sound.soundscape_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Saves only a preset's level, the setting the soundscape controls adjust while it plays.
 ///
-/// The latest level wins without a version check, so a slider never conflicts with itself; the version still
-/// advances so a concurrent full edit notices the change.
+/// The latest level wins without a version check, so a slider never conflicts with itself; a changed level
+/// still advances the version so a concurrent full edit notices it, and an unchanged level writes nothing.
 pub async fn set_level(
     pool: &SqlitePool,
     preset_id: &str,
-    level: f64,
+    level_milli: i64,
     updated_at_ms: i64,
 ) -> MusicLibraryResult<MusicSoundscapePreset> {
     validate_id(preset_id, "presetId")?;
-    validate_preset_level(level)?;
+    validate_preset_level(level_milli)?;
     if updated_at_ms <= 0 {
         return Err(MusicLibraryError::validation(
             "updatedAt",
             "must be positive",
         ));
     }
-    let result = sqlx::query(
+    sqlx::query(
         "UPDATE music_soundscape_presets
-         SET level = ?, updated_at_ms = MAX(updated_at_ms + 1, ?), version = version + 1
-         WHERE id = ?",
+         SET level_milli = ?, updated_at_ms = MAX(updated_at_ms + 1, ?), version = version + 1
+         WHERE id = ? AND level_milli IS NOT ?",
     )
-    .bind(level)
+    .bind(level_milli)
     .bind(updated_at_ms)
     .bind(preset_id)
+    .bind(level_milli)
     .execute(pool)
     .await
     .map_err(|error| MusicLibraryError::database("save soundscape preset level", error))?;
-    if result.rows_affected() == 0 {
-        return Err(MusicLibraryError::not_found("soundscape preset", preset_id));
-    }
     preset(pool, preset_id).await
 }
 
@@ -225,14 +344,55 @@ pub async fn remove(
     super::writes::commit(transaction, "commit soundscape preset removal").await
 }
 
-fn validate_preset_level(level: f64) -> MusicLibraryResult<()> {
-    if !level.is_finite() || !(0.0..=MAX_PRESET_LEVEL).contains(&level) {
+fn validate_preset_level(level_milli: i64) -> MusicLibraryResult<()> {
+    if !PRESET_LEVEL_MILLI.contains(&level_milli) {
         return Err(MusicLibraryError::validation(
-            "level",
-            format!("must be a finite value between zero and {MAX_PRESET_LEVEL}"),
+            "levelMilli",
+            format!(
+                "must be between {} and {}",
+                PRESET_LEVEL_MILLI.start(),
+                PRESET_LEVEL_MILLI.end()
+            ),
         ));
     }
     Ok(())
+}
+
+fn layer_count_error() -> MusicLibraryError {
+    MusicLibraryError::validation(
+        "sounds",
+        format!("must contain between one and {MAX_SOUNDSCAPE_LAYERS} sounds"),
+    )
+}
+
+/// Refuses a write that grows a preset past [`MAX_SOUNDSCAPE_LAYERS`]. Concurrent edits on
+/// linked devices can merge a preset past the cap; such a preset stays editable and can be
+/// trimmed, so a write may name more sounds only when every one of them is already stored.
+async fn check_layer_cap(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request: &MusicSoundscapePresetWrite,
+) -> MusicLibraryResult<()> {
+    if request.sounds.len() <= MAX_SOUNDSCAPE_LAYERS {
+        return Ok(());
+    }
+    let stored = sqlx::query_scalar::<_, String>(
+        "SELECT soundscape_id FROM music_soundscape_preset_sounds WHERE preset_id = ?",
+    )
+    .bind(&request.id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load soundscape preset sounds", error))?
+    .into_iter()
+    .collect::<HashSet<_>>();
+    if request
+        .sounds
+        .iter()
+        .all(|sound| stored.contains(&sound.soundscape_id))
+    {
+        Ok(())
+    } else {
+        Err(layer_count_error())
+    }
 }
 
 fn validate_write(request: &MusicSoundscapePresetWrite) -> MusicLibraryResult<()> {
@@ -245,18 +405,15 @@ fn validate_write(request: &MusicSoundscapePresetWrite) -> MusicLibraryResult<()
         ));
     }
     validate_icon(&request.icon)?;
-    validate_preset_level(request.level)?;
+    validate_preset_level(request.level_milli)?;
     if request.updated_at_ms <= 0 {
         return Err(MusicLibraryError::validation(
             "updatedAt",
             "must be positive",
         ));
     }
-    if request.sounds.is_empty() || request.sounds.len() > MAX_SOUNDSCAPE_LAYERS {
-        return Err(MusicLibraryError::validation(
-            "sounds",
-            format!("must contain between one and {MAX_SOUNDSCAPE_LAYERS} sounds"),
-        ));
+    if request.sounds.is_empty() {
+        return Err(layer_count_error());
     }
     let mut seen = HashSet::new();
     for sound in &request.sounds {
@@ -267,10 +424,14 @@ fn validate_write(request: &MusicSoundscapePresetWrite) -> MusicLibraryResult<()
                 "must not contain duplicates",
             ));
         }
-        if !sound.level.is_finite() || !(0.0..=1.0).contains(&sound.level) {
+        if !PRESET_SOUND_LEVEL_MILLI.contains(&sound.level_milli) {
             return Err(MusicLibraryError::validation(
                 "sounds",
-                "levels must be finite values between zero and one",
+                format!(
+                    "levels must be between {} and {}",
+                    PRESET_SOUND_LEVEL_MILLI.start(),
+                    PRESET_SOUND_LEVEL_MILLI.end()
+                ),
             ));
         }
     }
@@ -282,26 +443,26 @@ mod tests {
     use super::*;
     use crate::tests::pool;
 
-    fn sounds(entries: &[(&str, f64)]) -> Vec<MusicSoundscapePresetSound> {
+    fn sounds(entries: &[(&str, i64)]) -> Vec<MusicSoundscapePresetSound> {
         entries
             .iter()
             .map(|(id, level)| MusicSoundscapePresetSound {
                 soundscape_id: (*id).to_owned(),
-                level: *level,
+                level_milli: *level,
             })
             .collect()
     }
 
     fn write(
         id: &str,
-        entries: &[(&str, f64)],
+        entries: &[(&str, i64)],
         expected_version: Option<i64>,
     ) -> MusicSoundscapePresetWrite {
         MusicSoundscapePresetWrite {
             id: id.into(),
             name: " Rainy desk ".into(),
             icon: "lucide:cloud-rain".into(),
-            level: 0.5,
+            level_milli: 500,
             sounds: sounds(entries),
             expected_version,
             updated_at_ms: 1_700_000_000_000,
@@ -325,7 +486,7 @@ mod tests {
             let seeded = presets(&pool).await.unwrap();
             assert_eq!(seeded.len(), 3);
             assert!(seeded.iter().all(|preset| preset.sounds.len() == 1
-                && preset.sounds[0].level == 1.0
+                && preset.sounds[0].level_milli == 1000
                 && preset.id == format!("preset-{}", preset.sounds[0].soundscape_id)));
         });
     }
@@ -339,8 +500,8 @@ mod tests {
                 write(
                     "desk",
                     &[
-                        ("generated-brown-noise", 0.25),
-                        ("generated-white-noise", 1.0),
+                        ("generated-brown-noise", 250),
+                        ("generated-white-noise", 1000),
                     ],
                     None,
                 ),
@@ -351,18 +512,18 @@ mod tests {
             assert_eq!(created.version, 1);
             assert_eq!(custom_presets(&pool).await, vec![created.clone()]);
             assert!(
-                upsert(&pool, write("desk", &[("generated-pink-noise", 1.0)], None))
-                    .await
-                    .is_err()
+                upsert(
+                    &pool,
+                    write("desk", &[("generated-pink-noise", 1000)], None)
+                )
+                .await
+                .is_err()
             );
             let updated = upsert(
                 &pool,
                 write(
                     "desk",
-                    &[
-                        ("generated-white-noise", 0.5),
-                        ("generated-pink-noise", 0.0),
-                    ],
+                    &[("generated-white-noise", 500), ("generated-pink-noise", 0)],
                     Some(1),
                 ),
             )
@@ -371,10 +532,7 @@ mod tests {
             assert_eq!(updated.version, 2);
             assert_eq!(
                 preset(&pool, "desk").await.unwrap().sounds,
-                sounds(&[
-                    ("generated-white-noise", 0.5),
-                    ("generated-pink-noise", 0.0)
-                ])
+                sounds(&[("generated-white-noise", 500), ("generated-pink-noise", 0)])
             );
             assert!(remove(&pool, "desk", 1).await.is_err());
             remove(&pool, "desk", 2).await.unwrap();
@@ -383,30 +541,103 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_presets_and_levels_write_nothing_and_reorders_keep_one_row_per_sound() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let entries = [
+                ("generated-brown-noise", 250),
+                ("generated-white-noise", 1000),
+                ("generated-pink-noise", 500),
+            ];
+            let created = upsert(&pool, write("desk", &entries, None)).await.unwrap();
+            let mut again = write("desk", &entries, Some(1));
+            again.updated_at_ms += 100;
+            assert_eq!(upsert(&pool, again).await.unwrap(), created);
+            assert_eq!(
+                set_level(&pool, "desk", created.level_milli, 1_700_000_000_500)
+                    .await
+                    .unwrap(),
+                created
+            );
+
+            let reordered = [
+                ("generated-pink-noise", 500),
+                ("generated-brown-noise", 250),
+            ];
+            let updated = upsert(&pool, write("desk", &reordered, Some(1)))
+                .await
+                .unwrap();
+            assert_eq!(updated.version, 2);
+            assert_eq!(updated.sounds, sounds(&reordered));
+        });
+    }
+
+    #[test]
+    fn moving_one_sound_rekeys_only_that_sound() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let entries = [
+                ("generated-brown-noise", 250),
+                ("generated-white-noise", 1000),
+                ("generated-pink-noise", 500),
+            ];
+            upsert(&pool, write("desk", &entries, None)).await.unwrap();
+            let keys = |pool: SqlitePool| async move {
+                sqlx::query_as::<_, (String, String)>(
+                    "SELECT soundscape_id, order_key FROM music_soundscape_preset_sounds
+                     WHERE preset_id = 'desk'",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect::<HashMap<_, _>>()
+            };
+            let before = keys(pool.clone()).await;
+            let moved = [entries[2], entries[0], entries[1]];
+            let updated = upsert(&pool, write("desk", &moved, Some(1))).await.unwrap();
+            assert_eq!(updated.sounds, sounds(&moved));
+            let after = keys(pool.clone()).await;
+            assert_eq!(
+                after["generated-brown-noise"],
+                before["generated-brown-noise"]
+            );
+            assert_eq!(
+                after["generated-white-noise"],
+                before["generated-white-noise"]
+            );
+            assert_ne!(
+                after["generated-pink-noise"],
+                before["generated-pink-noise"]
+            );
+        });
+    }
+
+    #[test]
     fn preset_levels_save_alone_and_stay_in_range() {
         crate::test_support::block_on(async {
             let pool = pool().await;
-            let created = upsert(&pool, write("desk", &[("generated-pink-noise", 0.8)], None))
+            let created = upsert(&pool, write("desk", &[("generated-pink-noise", 800)], None))
                 .await
                 .unwrap();
-            let louder = set_level(&pool, "desk", 1.5, 1_700_000_000_001)
+            let louder = set_level(&pool, "desk", 1500, 1_700_000_000_001)
                 .await
                 .unwrap();
-            assert_eq!(louder.level, 1.5);
+            assert_eq!(louder.level_milli, 1500);
             assert_eq!(louder.version, created.version + 1);
             assert_eq!(louder.sounds, created.sounds);
-            for level in [-0.1, 2.1, f64::NAN] {
+            for level in [-1, 2_001] {
                 assert!(
                     set_level(&pool, "desk", level, 1_700_000_000_002)
                         .await
                         .is_err()
                 );
-                let mut invalid = write("other", &[("generated-pink-noise", 1.0)], None);
-                invalid.level = level;
+                let mut invalid = write("other", &[("generated-pink-noise", 1000)], None);
+                invalid.level_milli = level;
                 assert!(upsert(&pool, invalid).await.is_err());
             }
             assert!(
-                set_level(&pool, "removed", 1.0, 1_700_000_000_002)
+                set_level(&pool, "removed", 1000, 1_700_000_000_002)
                     .await
                     .is_err()
             );
@@ -424,8 +655,8 @@ mod tests {
                     write(
                         "twice",
                         &[
-                            ("generated-brown-noise", 1.0),
-                            ("generated-brown-noise", 0.5)
+                            ("generated-brown-noise", 1000),
+                            ("generated-brown-noise", 500)
                         ],
                         None
                     )
@@ -434,11 +665,11 @@ mod tests {
                 .is_err()
             );
             assert!(
-                upsert(&pool, write("unknown", &[("removed-sound", 1.0)], None))
+                upsert(&pool, write("unknown", &[("removed-sound", 1000)], None))
                     .await
                     .is_err()
             );
-            for level in [-0.1, 1.1, f64::INFINITY] {
+            for level in [-1, 1_001] {
                 assert!(
                     upsert(
                         &pool,
@@ -453,12 +684,109 @@ mod tests {
     }
 
     #[test]
+    fn a_preset_merged_past_the_layer_cap_stays_editable_but_never_grows() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let ids = (0..=MAX_SOUNDSCAPE_LAYERS + 1)
+                .map(|index| format!("local-layer-{index:02}"))
+                .collect::<Vec<_>>();
+            for id in &ids {
+                sqlx::query(
+                    "INSERT INTO music_soundscapes
+                        (id, source_kind, name, availability, created_at_ms, updated_at_ms, version)
+                     VALUES (?, 'local-loop', ?, 'available', 1, 1, 1)",
+                )
+                .bind(id)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let entries = |count: usize| {
+                ids[..count]
+                    .iter()
+                    .map(|id| (id.as_str(), 500))
+                    .collect::<Vec<_>>()
+            };
+            let saved = upsert(
+                &pool,
+                write("merged", &entries(MAX_SOUNDSCAPE_LAYERS), None),
+            )
+            .await
+            .unwrap();
+            assert!(
+                upsert(
+                    &pool,
+                    write(
+                        "merged",
+                        &entries(MAX_SOUNDSCAPE_LAYERS + 1),
+                        Some(saved.version)
+                    )
+                )
+                .await
+                .is_err()
+            );
+
+            // A layer another device added, merged in by sync.
+            let merged = &ids[MAX_SOUNDSCAPE_LAYERS];
+            let tail: String = sqlx::query_scalar(
+                "SELECT max(order_key) FROM music_soundscape_preset_sounds WHERE preset_id = 'merged'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let order_key = crate::order::keys_after(Some(&tail), 1).unwrap().remove(0);
+            sqlx::query(
+                "INSERT INTO music_soundscape_preset_sounds
+                    (preset_id, soundscape_id, order_key, level_milli, sync_key)
+                 VALUES ('merged', ?, ?, 500, ?)",
+            )
+            .bind(merged)
+            .bind(order_key.as_str())
+            .bind(ganbaru_music::sync_keys::preset_sound_key("merged", merged).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+            let merged_preset = preset(&pool, "merged").await.unwrap();
+            assert_eq!(merged_preset.sounds.len(), MAX_SOUNDSCAPE_LAYERS + 1);
+
+            let mut louder = entries(MAX_SOUNDSCAPE_LAYERS + 1);
+            louder[0].1 = 900;
+            let edited = upsert(&pool, write("merged", &louder, Some(merged_preset.version)))
+                .await
+                .unwrap();
+            assert_eq!(edited.sounds.len(), MAX_SOUNDSCAPE_LAYERS + 1);
+            let mut grown = entries(MAX_SOUNDSCAPE_LAYERS + 2);
+            grown[0].1 = 900;
+            assert!(
+                upsert(&pool, write("merged", &grown, Some(edited.version)))
+                    .await
+                    .is_err()
+            );
+            let trimmed = upsert(
+                &pool,
+                write(
+                    "merged",
+                    &entries(MAX_SOUNDSCAPE_LAYERS),
+                    Some(edited.version),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(trimmed.sounds.len(), MAX_SOUNDSCAPE_LAYERS);
+        });
+    }
+
+    #[test]
     fn removing_the_active_preset_stops_the_soundscape() {
         crate::test_support::block_on(async {
             let pool = pool().await;
-            let created = upsert(&pool, write("desk", &[("generated-pink-noise", 1.0)], None))
-                .await
-                .unwrap();
+            let created = upsert(
+                &pool,
+                write("desk", &[("generated-pink-noise", 1000)], None),
+            )
+            .await
+            .unwrap();
             let initial = crate::soundscapes::state(&pool).await.unwrap();
             crate::soundscapes::update_state(
                 &pool,
@@ -488,7 +816,7 @@ mod tests {
                 &pool,
                 write(
                     "storm",
-                    &[("local-storm", 1.0), ("generated-pink-noise", 0.4)],
+                    &[("local-storm", 1000), ("generated-pink-noise", 400)],
                     None,
                 ),
             )
@@ -499,7 +827,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 preset(&pool, "storm").await.unwrap().sounds,
-                sounds(&[("generated-pink-noise", 0.4)])
+                sounds(&[("generated-pink-noise", 400)])
             );
         });
     }

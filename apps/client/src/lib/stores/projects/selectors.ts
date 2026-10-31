@@ -57,6 +57,12 @@ export function createProjectStoreSelectors(
     prioritiesForProject(projectId: string | null | undefined): ProjectPriorityConfig[] {
       return projectSnapshot.prioritiesForProject(readSnapshot(), projectId);
     },
+    taskStatusesForProject(projectId: string | null | undefined): ProjectStatus[] {
+      return projectSnapshot.taskStatusesForProject(readSnapshot(), projectId);
+    },
+    taskPrioritiesForProject(projectId: string | null | undefined): ProjectPriorityConfig[] {
+      return projectSnapshot.taskPrioritiesForProject(readSnapshot(), projectId);
+    },
     tasksForProject(projectId: string | null | undefined): ProjectTask[] {
       return projectSnapshot.tasksForProject(readSnapshot(), projectId);
     },
@@ -170,45 +176,6 @@ export function createProjectStoreSelectors(
     },
     dependenciesBlockedByTask(taskId: string | null | undefined): ProjectTaskDependency[] {
       return projectSnapshot.dependenciesBlockedByTask(readSnapshot(), taskId);
-    },
-    nextGroupSortOrder(): number {
-      return projectSnapshot.nextGroupSortOrder(readSnapshot());
-    },
-    nextProjectSortOrder(groupId: string): number {
-      return projectSnapshot.nextProjectSortOrder(readSnapshot(), groupId);
-    },
-    nextSectionSortOrder(projectId: string): number {
-      return projectSnapshot.nextSectionSortOrder(readSnapshot(), projectId);
-    },
-    nextStatusSortOrder(projectId: string): number {
-      return projectSnapshot.nextStatusSortOrder(readSnapshot(), projectId);
-    },
-    nextPrioritySortOrder(projectId: string): number {
-      return projectSnapshot.nextPrioritySortOrder(readSnapshot(), projectId);
-    },
-    nextTaskSectionSortOrder(projectId: string, sectionId: string): number {
-      return projectSnapshot.nextTaskSectionSortOrder(readSnapshot(), projectId, sectionId);
-    },
-    nextSubtaskSortOrder(parentTaskId: string): number {
-      return projectSnapshot.nextSubtaskSortOrder(readSnapshot(), parentTaskId);
-    },
-    nextChecklistSortOrder(taskId: string): number {
-      return projectSnapshot.nextChecklistSortOrder(readSnapshot(), taskId);
-    },
-    nextTagSortOrder(projectId: string): number {
-      return projectSnapshot.nextTagSortOrder(readSnapshot(), projectId);
-    },
-    nextCustomFieldSortOrder(projectId: string): number {
-      return projectSnapshot.nextCustomFieldSortOrder(readSnapshot(), projectId);
-    },
-    nextCustomFieldOptionSortOrder(fieldId: string): number {
-      return projectSnapshot.nextCustomFieldOptionSortOrder(readSnapshot(), fieldId);
-    },
-    nextCustomEmojiSortOrder(): number {
-      return projectSnapshot.nextCustomEmojiSortOrder(readSnapshot());
-    },
-    nextTaskStatusSortOrder(projectId: string, statusId: string): number {
-      return projectSnapshot.nextTaskStatusSortOrder(readSnapshot(), projectId, statusId);
     },
   };
 }

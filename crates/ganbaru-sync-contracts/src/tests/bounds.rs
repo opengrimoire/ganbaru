@@ -1,12 +1,18 @@
-use super::fixtures::{group_value, header, row, space, writer_id, writer_key};
+use super::fixtures::{
+    GOLDEN_DEVICE_ID, authorization_operation, golden_charter, group_value, header, person,
+    proposal, row, space, writer_id, writer_key,
+};
 use crate::bounds::{
-    MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_DEPENDENCIES, MAX_FIELDS_PER_VALUE,
-    MAX_HEADER_BYTES, MAX_OPERATION_BYTES, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
+    MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_CHARTER_BYTES, MAX_DEPENDENCIES,
+    MAX_DEVICE_ID_BYTES, MAX_FIELDS_PER_VALUE, MAX_HEADER_BYTES, MAX_LATE_RESOLUTIONS,
+    MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
+    MAX_WRITERS_PER_SPACE,
 };
 use crate::codec::CodecError;
 use crate::{
-    Change, ChangeAction, Content, Envelope, Field, Operation, OperationError, TableId, Value,
-    WriterId,
+    AuthorizationError, AuthorizationRecord, Change, ChangeAction, CharterError, Content, Entry,
+    Envelope, Field, Handover, LateResolution, LateRow, Operation, OperationError, Remove,
+    ResolveLate, Sequencing, SignedCharter, TableId, Value, VersionVector, WriterId, sign_charter,
 };
 
 const PREVIOUS_HASH: [u8; 32] = [7; 32];
@@ -29,6 +35,7 @@ fn tombstone(index: usize) -> Change {
         action: ChangeAction::Tombstone,
         groups: Vec::new(),
         replaced_by: None,
+        cause: None,
     }
 }
 
@@ -39,6 +46,7 @@ fn write(key: &str, fields: Vec<Field>) -> Change {
         action: ChangeAction::Write,
         groups: vec![group_value(2, 0, fields)],
         replaced_by: None,
+        cause: None,
     }
 }
 
@@ -50,7 +58,8 @@ fn dependency_writer(index: usize) -> WriterId {
 
 fn codec_error(result: Result<impl Sized, OperationError>) -> CodecError {
     match result {
-        Err(OperationError::Codec(error)) => error,
+        Err(OperationError::Codec(error))
+        | Err(OperationError::Authorization(AuthorizationError::Codec(error))) => error,
         Err(error) => panic!("unexpected error {error}"),
         Ok(_) => panic!("operation sealed past a bound"),
     }
@@ -220,5 +229,122 @@ fn decoding_rejects_oversized_envelopes() {
     assert_eq!(
         Envelope::decode(&bytes).err(),
         Some(CodecError::Bounds("operation"))
+    );
+}
+
+fn authorization_record(entry: Entry, sequencing: Sequencing, epoch: u32) -> AuthorizationRecord {
+    AuthorizationRecord {
+        epoch,
+        revision: 2,
+        previous_entry_hash: [0x0c; 32],
+        anchor_device_id: GOLDEN_DEVICE_ID.to_string(),
+        proposal: proposal(entry, 0),
+        sequencing,
+    }
+}
+
+fn seal_and_reopen(record: AuthorizationRecord) -> Result<Operation, OperationError> {
+    let operation = authorization_operation(writer_id(), 2, PREVIOUS_HASH, record);
+    let sealed = operation.seal(&writer_key())?;
+    assert!(sealed.bytes().len() <= MAX_OPERATION_BYTES);
+    let decoded = Envelope::decode(sealed.bytes())
+        .unwrap()
+        .operation()
+        .unwrap();
+    assert_eq!(decoded, operation);
+    Ok(decoded)
+}
+
+fn removed_device() -> Entry {
+    Entry::Remove(Remove {
+        device_id: "device-b.phone".to_string(),
+    })
+}
+
+fn removal(cutoffs: usize) -> Sequencing {
+    Sequencing::Removal {
+        cutoffs: (0..cutoffs)
+            .map(|index| (dependency_writer(index), u64::MAX))
+            .collect(),
+        discovery_key: [0xd3; 32],
+    }
+}
+
+#[test]
+fn a_removal_with_every_writer_of_a_device_fits_one_operation() {
+    let decoded = seal_and_reopen(authorization_record(
+        removed_device(),
+        removal(MAX_REMOVAL_CUTOFFS),
+        0,
+    ))
+    .unwrap();
+    match decoded.content {
+        Content::Authorization(record) => match record.sequencing {
+            Sequencing::Removal { cutoffs, .. } => assert_eq!(cutoffs.len(), MAX_REMOVAL_CUTOFFS),
+            other => panic!("unexpected sequencing {other:?}"),
+        },
+        other => panic!("unexpected content {other:?}"),
+    }
+    assert_eq!(
+        codec_error(
+            authorization_operation(
+                writer_id(),
+                2,
+                PREVIOUS_HASH,
+                authorization_record(removed_device(), removal(MAX_REMOVAL_CUTOFFS + 1), 0),
+            )
+            .seal(&writer_key())
+        ),
+        CodecError::Bounds("removal cutoffs")
+    );
+}
+
+#[test]
+fn a_handover_carrying_a_full_vector_fits_one_operation() {
+    let vector: VersionVector = (0..MAX_WRITERS_PER_SPACE)
+        .map(|index| (dependency_writer(index), u64::MAX))
+        .collect();
+    let handover = Entry::Handover(Handover {
+        new_anchor_device_id: GOLDEN_DEVICE_ID.to_string(),
+        epoch: 1,
+        continues_from_revision: 1,
+        continues_from_hash: [0x0c; 32],
+    });
+    let sequencing = Sequencing::Handover {
+        old_anchor_vector: Some(vector),
+    };
+    seal_and_reopen(authorization_record(handover, sequencing, 1)).unwrap();
+}
+
+#[test]
+fn the_largest_late_resolution_fits_one_operation() {
+    let long_key = "k".repeat(MAX_ROW_KEY_BYTES - 5);
+    let rows: Vec<LateRow> = (0..MAX_LATE_RESOLUTIONS)
+        .map(|index| LateRow {
+            table: TableId(1),
+            row: row(&format!("{long_key}{index:05}")),
+            resolution: LateResolution::Restore,
+        })
+        .collect();
+    let entry = Entry::ResolveLate(ResolveLate {
+        removal_revision: 1,
+        rows,
+    });
+    seal_and_reopen(authorization_record(entry, Sequencing::Empty, 0)).unwrap();
+}
+
+#[test]
+fn the_charter_bound_fits_the_largest_charter_and_refuses_more() {
+    let mut charter = golden_charter().charter;
+    charter.anchor_device_id = "d".repeat(MAX_DEVICE_ID_BYTES);
+    charter.created_at_ms = i64::MAX;
+    let encoded = sign_charter(&charter, &person()).unwrap().encode();
+    assert_eq!(encoded.len(), MAX_CHARTER_BYTES);
+    assert!(SignedCharter::decode(&encoded).is_ok());
+    let mut oversized = encoded;
+    oversized.push(0);
+    assert_eq!(
+        SignedCharter::decode(&oversized),
+        Err(CharterError::Codec(CodecError::Bounds("space charter")))
     );
 }

@@ -29,6 +29,8 @@
     onConfirm,
     onCancel,
     onDismiss = onCancel,
+    alternateLabel,
+    onAlternate,
   }: {
     title?: string;
     message: string;
@@ -40,6 +42,10 @@
     onConfirm: () => void;
     onCancel: () => void;
     onDismiss?: () => void;
+    /** Label of an optional third action between cancel and confirm; it has no keyboard shortcut. */
+    alternateLabel?: string;
+    /** Runs the optional third action; the button shows only when `alternateLabel` is also set. */
+    onAlternate?: () => void;
   } = $props();
 
   const displayMessage = $derived(message.replace(/\.\s*$/u, ""));
@@ -132,6 +138,15 @@
       >
         {#if mobileShell}{cancelLabel}{:else}{`${cancelLabel} (${t("common.escapeKey")})`}{/if}
       </button>
+      {#if alternateLabel && onAlternate}
+        <button
+          type="button"
+          onclick={onAlternate}
+          class="min-h-12 rounded-md border border-border bg-card px-3.5 py-2 text-[0.866667rem] font-medium text-foreground transition-colors hover:bg-accent"
+        >
+          {alternateLabel}
+        </button>
+      {/if}
       <button
         type="button"
         onclick={onConfirm}

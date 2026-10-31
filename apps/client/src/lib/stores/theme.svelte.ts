@@ -37,12 +37,20 @@ import {
   mergeThemePatch,
   nextUniqueDisplayName,
   normalizeDisplayName,
-  themeIdCollisionError,
+  importedTheme,
   toUserThemeSnapshot,
+  withSeedOf,
 } from "$lib/themes/operations";
+import {
+  planThemeSave,
+  type ThemeSaveChoice,
+  type ThemeSaveOutcome,
+} from "$lib/themes/editor-save";
 import { rgbToHex } from "$lib/color/math";
 import { readNativeBackground } from "$lib/themes/native-background";
+import { resolveActiveThemeId, resolveQuickToggleThemeId } from "$lib/themes/active-theme";
 import { getConfigKey, setConfigKey } from "../vault/config";
+import { listenSyncApplied } from "../api/sync";
 import {
   deleteTheme as dbDeleteTheme,
   insertTheme as dbInsertTheme,
@@ -50,6 +58,10 @@ import {
   loadDismissals,
   recordDismissal,
   replaceThemeContent,
+  resolveThemeConflict as dbResolveThemeConflict,
+  ThemeConflictError,
+  type DismissalRow,
+  type ThemeConflictResolution,
   type TokenKind,
   type UserThemeRead,
   type UserThemeWrite,
@@ -70,6 +82,16 @@ const QUICK_TOGGLE_DARK_KEY = "theme.quickToggleDarkId";
 /** Theme surface the Android shell paints behind the WebView before the page draws. */
 const ANDROID_WINDOW_BACKGROUND_TOKEN = "--background";
 const THEME_WINDOW_SYNC_EVENT = "theme-window-sync";
+/** Replicated table of user themes; its rows carry their tokens and palettes. */
+export const THEMES_SYNC_TABLE = "themes";
+/** Every table that holds user theme rows, so applied changes to any of them reload themes. */
+const THEME_TABLES: ReadonlySet<string> = new Set([
+  THEMES_SYNC_TABLE,
+  "theme_tokens",
+  "theme_event_palette",
+  "theme_seed_tokens",
+  "theme_seed_event_palette",
+]);
 
 interface ThemeWindowSyncPayload {
   activeId: ThemeId;
@@ -99,31 +121,75 @@ const freshThemes = new Set<ThemeId>();
 
 /**
  * Dismissals queued during an editor session for a fresh theme. The
- * `theme_upgrade_dismissals` table FKs back to `themes.id`, so
- * `recordDismissal` cannot run until the parent row exists. `persistThemeToDb`
- * drains this map after the INSERT lands. For non-fresh themes the
- * dismissal goes straight to disk and never enters this map.
+ * dismissal is a column of the theme row, so `recordDismissal` cannot run
+ * until the row exists. `persistThemeToDb` drains this map after the
+ * INSERT lands. For non-fresh themes the dismissal goes straight to disk
+ * and never enters this map.
  */
 const pendingDismissals = new Map<ThemeId, number>();
+
+/** User themes with conflicting content versions from linked devices. */
+let conflictedThemeIds = $state<ReadonlySet<ThemeId>>(new Set());
+
+/**
+ * The theme an open editor session is changing. Its in-memory buffer holds
+ * unsaved edits, so a reload keeps it and runs again once the session ends.
+ */
+let editingThemeId: ThemeId | undefined;
+
+/**
+ * The stored form of every saved user theme as last read from SQLite, which an
+ * editor session records as its base when it opens.
+ */
+let storedThemeWrites = new Map<ThemeId, UserThemeWrite>();
+
+/**
+ * The stored form of the edited theme when its editor session opened. Saving
+ * compares it with the stored theme then, so a remote edit is never silently
+ * overwritten.
+ */
+let editingBase: UserThemeWrite | undefined;
+let reloadAfterEditing = false;
+let reloadInFlight: Promise<void> | undefined;
+let reloadQueued = false;
+let replicationListenerStarted = false;
 
 function combinedRegistry(): Readonly<Record<ThemeId, Theme>> {
   return { ...BUILTIN_THEME_REGISTRY, ...customThemes };
 }
 
-function loadActiveIdFromConfig(): ThemeId {
-  const saved = getConfigKey<string | undefined>(ACTIVE_KEY, undefined);
-  if (saved && getThemeById(saved, combinedRegistry())) return saved;
-  return DEFAULT_THEME_ID;
+const DARK_COLOR_SCHEME_QUERY = "(prefers-color-scheme: dark)";
+
+function systemPrefersDark(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return DEFAULT_THEME_ID === darkTheme.id;
+  }
+  return window.matchMedia(DARK_COLOR_SCHEME_QUERY).matches;
+}
+
+/**
+ * The theme this device shows for `candidate`, which is its saved or
+ * current choice. When that theme does not exist, because the device has
+ * none saved or a linked device deleted it, the quick-toggle theme matching
+ * the system color scheme is shown. The fallback is not written, so only
+ * the device that deletes a theme resets the preferences naming it.
+ */
+function resolveActiveId(candidate: ThemeId | undefined): ThemeId {
+  return resolveActiveThemeId({
+    activeId: candidate,
+    quickToggleLightId,
+    quickToggleDarkId,
+    prefersDark: systemPrefersDark(),
+    registry: combinedRegistry(),
+  });
 }
 
 function validThemeId(id: ThemeId, fallback: ThemeId): ThemeId {
   return getThemeById(id, combinedRegistry()) ? id : fallback;
 }
 
-function loadQuickToggleIdFromConfig(key: string, fallback: ThemeId): ThemeId {
-  const saved = getConfigKey<string | undefined>(key, undefined);
-  if (saved && getThemeById(saved, combinedRegistry())) return saved;
-  return fallback;
+function loadQuickToggleIdFromConfig(key: string, slot: "light" | "dark"): ThemeId {
+  return resolveQuickToggleThemeId(getConfigKey<string | undefined>(key, undefined), slot, combinedRegistry());
 }
 
 function resolveActive(): Theme {
@@ -243,28 +309,144 @@ function initThemeSync(): void {
  */
 export async function hydrateUserThemes(): Promise<void> {
   if (hydrated) return;
-  const reads = await loadAllUserThemes();
-  for (const read of reads) {
-    const theme = userThemeFromRead(read);
-    customThemes[theme.id] = theme;
-  }
-  const dismissalRows = await loadDismissals();
-  for (const row of dismissalRows) {
-    const prev = dismissals[row.theme_id] ?? 0;
-    if (row.engine_version > prev) dismissals[row.theme_id] = row.engine_version;
-  }
-  activeId = loadActiveIdFromConfig();
-  quickToggleLightId = loadQuickToggleIdFromConfig(
-    QUICK_TOGGLE_LIGHT_KEY,
-    lightTheme.id,
-  );
-  quickToggleDarkId = loadQuickToggleIdFromConfig(
-    QUICK_TOGGLE_DARK_KEY,
-    darkTheme.id,
-  );
+  const [reads, dismissalRows] = await Promise.all([loadAllUserThemes(), loadDismissals()]);
+  applyStoredThemes(reads, dismissalRows);
+  quickToggleLightId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_LIGHT_KEY, "light");
+  quickToggleDarkId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_DARK_KEY, "dark");
+  activeId = resolveActiveId(getConfigKey<string | undefined>(ACTIVE_KEY, undefined));
   hydrated = true;
   applyThemeToDom();
   initThemeSync();
+  startThemeReplicationListener();
+}
+
+/**
+ * Replace the in-memory user themes with the stored ones. Fresh themes
+ * that were never saved and the theme an editor session is changing keep
+ * their in-memory state.
+ */
+function applyStoredThemes(reads: readonly UserThemeRead[], dismissalRows: readonly DismissalRow[]): void {
+  const next: Record<ThemeId, UserTheme> = {};
+  const conflicted = new Set<ThemeId>();
+  const stored = new Map<ThemeId, UserThemeWrite>();
+  for (const read of reads) {
+    const id = read.theme.id;
+    if (read.theme.has_conflict) conflicted.add(id);
+    const storedTheme = userThemeFromRead(read);
+    stored.set(id, userThemeToWrite(storedTheme));
+    const kept = id === editingThemeId ? customThemes[id] : undefined;
+    next[id] = kept ?? storedTheme;
+  }
+  storedThemeWrites = stored;
+  for (const id of freshThemes) {
+    const fresh = customThemes[id];
+    if (fresh) next[id] = fresh;
+  }
+  if (editingThemeId !== undefined && !Object.hasOwn(next, editingThemeId)) {
+    const editing = customThemes[editingThemeId];
+    if (editing) next[editingThemeId] = editing;
+  }
+  const nextDismissals: Record<ThemeId, number> = {};
+  for (const row of dismissalRows) nextDismissals[row.theme_id] = row.engine_version;
+  for (const id of Object.keys(next)) {
+    const local = pendingDismissals.get(id) ?? dismissals[id] ?? 0;
+    if (local > (nextDismissals[id] ?? 0)) nextDismissals[id] = local;
+  }
+  customThemes = next;
+  dismissals = nextDismissals;
+  conflictedThemeIds = conflicted;
+}
+
+async function reloadOnce(): Promise<void> {
+  const [reads, dismissalRows] = await Promise.all([loadAllUserThemes(), loadDismissals()]);
+  if (editingThemeId !== undefined) reloadAfterEditing = true;
+  applyStoredThemes(reads, dismissalRows);
+  const nextActiveId = resolveActiveId(activeId);
+  if (nextActiveId !== activeId) activeId = nextActiveId;
+  applyThemeToDom();
+}
+
+/**
+ * Reload user themes after another device changed them. Reloads never run
+ * concurrently; a request during a reload runs once more after it.
+ */
+export async function reloadUserThemes(): Promise<void> {
+  if (!hydrated) return;
+  if (reloadInFlight) {
+    reloadQueued = true;
+    return reloadInFlight;
+  }
+  reloadInFlight = (async () => {
+    try {
+      do {
+        reloadQueued = false;
+        await reloadOnce();
+      } while (reloadQueued);
+    } finally {
+      reloadInFlight = undefined;
+    }
+  })();
+  return reloadInFlight;
+}
+
+function reloadUserThemesInBackground(): void {
+  void reloadUserThemes().catch((error: unknown) => {
+    console.error("Theme reload after sync failed", error);
+  });
+}
+
+/** Reload user themes whenever sync applies theme rows. Every window receives the notice itself. */
+function startThemeReplicationListener(): void {
+  if (replicationListenerStarted) return;
+  replicationListenerStarted = true;
+  void listenSyncApplied((tables) => {
+    if (tables.some((table) => THEME_TABLES.has(table))) reloadUserThemesInBackground();
+  }).catch((error: unknown) => {
+    replicationListenerStarted = false;
+    console.error("Themes could not listen for sync", error);
+  });
+}
+
+/**
+ * Mark the theme an editor session changes, or undefined when the session
+ * ends. Opening a session records the stored theme as the base its save
+ * compares against. A reload deferred while the session was open runs when
+ * it ends.
+ */
+function setEditingTheme(id: ThemeId | undefined): void {
+  editingThemeId = id;
+  editingBase = id === undefined ? undefined : storedThemeWrites.get(id);
+  if (id !== undefined || !reloadAfterEditing) return;
+  reloadAfterEditing = false;
+  reloadUserThemesInBackground();
+}
+
+/**
+ * Resolve a theme's content conflict on every linked device. The chosen
+ * content replaces the in-memory theme, including an open editor buffer,
+ * since choosing a version is an explicit edit, and becomes the session's
+ * save base.
+ */
+async function resolveThemeConflict(resolution: ThemeConflictResolution): Promise<void> {
+  let read: UserThemeRead;
+  try {
+    read = await dbResolveThemeConflict(resolution);
+  } catch (error: unknown) {
+    if (error instanceof ThemeConflictError && error.code === "resolved") reloadUserThemesInBackground();
+    throw error;
+  }
+  const theme = userThemeFromRead(read);
+  customThemes[theme.id] = theme;
+  const write = userThemeToWrite(theme);
+  storedThemeWrites.set(theme.id, write);
+  if (theme.id === editingThemeId) editingBase = write;
+  if (!read.theme.has_conflict) {
+    const next = new Set(conflictedThemeIds);
+    next.delete(theme.id);
+    conflictedThemeIds = next;
+  }
+  if (editingThemeId !== undefined) reloadAfterEditing = true;
+  if (theme.id === activeId) applyThemeToDom();
 }
 
 type TokenWrite = UserThemeWrite["tokens"][number];
@@ -578,27 +760,102 @@ function existingDisplayNames(): string[] {
   return Object.values(combinedRegistry()).map((t) => t.displayName);
 }
 
+/** The stored rows of one user theme, or undefined when it does not exist. */
+async function loadStoredTheme(id: ThemeId): Promise<UserThemeRead | undefined> {
+  const reads = await loadAllUserThemes();
+  return reads.find((read) => read.theme.id === id);
+}
+
+/** Replace the in-memory theme with its stored rows and repaint it when active. */
+function adoptStoredTheme(read: UserThemeRead): void {
+  const theme = userThemeFromRead(read);
+  customThemes[theme.id] = theme;
+  storedThemeWrites.set(theme.id, userThemeToWrite(theme));
+  if (theme.id === activeId) applyThemeToDom();
+}
+
+/**
+ * Save the in-memory state of theme `id` as a new theme with a fresh id and a
+ * display name no other theme uses. The original keeps its stored state, or
+ * leaves memory when `stored` is undefined because it was deleted. The copy
+ * becomes active when the original was.
+ */
+async function saveThemeAsCopy(
+  id: ThemeId,
+  stored: UserThemeRead | undefined,
+  reason: "deleted" | "copy",
+): Promise<ThemeSaveOutcome> {
+  const current = customThemes[id];
+  if (!current) return { kind: "saved" };
+  const names = Object.values(combinedRegistry())
+    .filter((theme) => theme.id !== id)
+    .map((theme) => theme.displayName);
+  if (stored) names.push(stored.theme.display_name);
+  const copy = importedTheme(current, generateThemeId(), names);
+  const write = userThemeToWrite(copy);
+  await dbInsertTheme(write);
+  const dismissal = dismissals[id];
+  if (dismissal !== undefined) await recordDismissal(copy.id, dismissal);
+  customThemes[copy.id] = copy;
+  storedThemeWrites.set(copy.id, write);
+  if (dismissal !== undefined) dismissals[copy.id] = dismissal;
+  if (stored) {
+    adoptStoredTheme(stored);
+  } else {
+    delete customThemes[id];
+    delete dismissals[id];
+    storedThemeWrites.delete(id);
+  }
+  if (activeId === id) setTheme(copy.id);
+  return { kind: "savedAsCopy", id: copy.id, displayName: copy.displayName, reason };
+}
+
 /**
  * Flush the in-memory state of a theme to SQLite. Called by the editor's
- * Save path. Fresh themes go through `dbInsertTheme`; existing themes
- * use `replaceThemeContent` so dismissal rows survive. Pending dismissals
- * for the theme are recorded after the INSERT lands.
+ * Save path. Fresh themes go through `dbInsertTheme`, and pending dismissals
+ * for them are recorded after the INSERT lands. Existing themes write only
+ * the groups the editor session changed through `replaceThemeContent`, which
+ * keeps the seed and the dismissal, so remote edits to other groups survive.
+ * When another device changed the same group differently, nothing is written
+ * until `choice` says to overwrite it or to save a copy. When the theme was
+ * deleted meanwhile, the edits are saved as a new theme instead.
  */
-async function persistThemeToDb(id: ThemeId): Promise<void> {
+async function persistThemeToDb(id: ThemeId, choice?: ThemeSaveChoice): Promise<ThemeSaveOutcome> {
   const current = customThemes[id];
-  if (!current) return;
-  const write = userThemeToWrite(current);
+  if (!current) return { kind: "saved" };
+  const edited = userThemeToWrite(current);
   if (freshThemes.has(id)) {
-    await dbInsertTheme(write);
+    await dbInsertTheme(edited);
     freshThemes.delete(id);
+    storedThemeWrites.set(id, edited);
     const pending = pendingDismissals.get(id);
     if (pending !== undefined) {
       await recordDismissal(id, pending);
       pendingDismissals.delete(id);
     }
-  } else {
-    await replaceThemeContent(write);
+    return { kind: "saved" };
   }
+  const stored = await loadStoredTheme(id);
+  if (choice === "copy") return saveThemeAsCopy(id, stored, "copy");
+  const plan = planThemeSave({
+    base: id === editingThemeId ? editingBase : undefined,
+    edited,
+    stored: stored ? userThemeToWrite(userThemeFromRead(stored)) : undefined,
+  });
+  if (plan.kind === "unchanged") return { kind: "saved" };
+  if (plan.kind === "deleted") return saveThemeAsCopy(id, undefined, "deleted");
+  if (plan.conflicts.length > 0 && choice !== "overwrite") {
+    return { kind: "conflict", groups: plan.conflicts };
+  }
+  try {
+    await replaceThemeContent(plan.write);
+  } catch (error: unknown) {
+    if ((await loadStoredTheme(id)) === undefined) return saveThemeAsCopy(id, undefined, "deleted");
+    throw error;
+  }
+  const written = await loadStoredTheme(id);
+  if (written) adoptStoredTheme(written);
+  return { kind: "saved" };
 }
 
 /**
@@ -626,11 +883,12 @@ function discardFreshTheme(id: ThemeId): void {
  * Used by the Cancel path to revert in-memory edits without touching the
  * DB (which never received them in the buffer model). The id is locked
  * to the existing slot so the snapshot cannot accidentally fork a new
- * theme.
+ * theme, and the theme keeps its seed, which snapshots do not carry.
  */
 function restoreThemeFromSnapshot(id: ThemeId, json: string): boolean {
   if (isBuiltinThemeId(id)) return false;
-  if (!Object.hasOwn(customThemes, id)) return false;
+  const current = customThemes[id];
+  if (!current) return false;
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -642,7 +900,7 @@ function restoreThemeFromSnapshot(id: ThemeId, json: string): boolean {
   }
   const result = validateThemeJson(parsed);
   if (!result.ok) return false;
-  customThemes[id] = { ...result.theme, id };
+  customThemes[id] = withSeedOf(result.theme, current);
   if (id === activeId) applyThemeToDom();
   return true;
 }
@@ -655,7 +913,7 @@ function duplicateTheme(sourceId: ThemeId): ThemeId | undefined {
   const registry = combinedRegistry();
   const source = registry[sourceId];
   if (!source) return undefined;
-  const id = generateThemeId(registry);
+  const id = generateThemeId();
   const displayName = nextUniqueDisplayName(
     `${source.displayName} copy`,
     existingDisplayNames(),
@@ -684,6 +942,7 @@ async function deleteTheme(id: ThemeId): Promise<boolean> {
   }
   freshThemes.delete(id);
   pendingDismissals.delete(id);
+  storedThemeWrites.delete(id);
   delete customThemes[id];
   delete dismissals[id];
   resetQuickToggleThemeReference(id);
@@ -1115,9 +1374,9 @@ function rebakeTheme(id: ThemeId): boolean {
 /**
  * Mark a (theme, engine_version) pair as dismissed. The in-memory state
  * updates immediately so the banner hides. For non-fresh themes the row
- * is recorded straight away. Fresh themes defer the write until the
- * editor commit lands the parent themes row, since the dismissal table
- * has a foreign key to it.
+ * is recorded straight away and replicates to linked devices. Fresh
+ * themes defer the write until the editor commit lands the theme row,
+ * since the dismissal is a column of that row.
  */
 async function dismissUpgrade(id: ThemeId): Promise<boolean> {
   const current = customThemes[id];
@@ -1147,20 +1406,19 @@ async function importTheme(json: string): Promise<ImportThemeResult> {
   }
   const result = validateThemeJson(parsed);
   if (!result.ok) return result;
-  const registry = combinedRegistry();
-  const incomingId = result.theme.id;
-  const collisionError = themeIdCollisionError(incomingId, registry);
-  if (collisionError) return { ok: false, errors: [collisionError] };
+  const theme = importedTheme(result.theme, generateThemeId(), existingDisplayNames());
+  const write = userThemeToWrite(theme);
   try {
-    await dbInsertTheme(userThemeToWrite(result.theme));
+    await dbInsertTheme(write);
   } catch (err) {
     return {
       ok: false,
       errors: [err instanceof Error ? err.message : String(err)],
     };
   }
-  customThemes[incomingId] = result.theme;
-  return { ok: true, id: incomingId };
+  customThemes[theme.id] = theme;
+  storedThemeWrites.set(theme.id, write);
+  return { ok: true, id: theme.id };
 }
 
 function exportTheme(id: ThemeId): string | undefined {
@@ -1185,7 +1443,8 @@ function replaceThemeDraft(
   if (isBuiltinThemeId(id)) {
     return { ok: false, errors: ["built-in themes cannot be edited"] };
   }
-  if (!Object.hasOwn(customThemes, id)) {
+  const current = customThemes[id];
+  if (!current) {
     return { ok: false, errors: ["theme not found"] };
   }
   let parsed: unknown;
@@ -1206,8 +1465,7 @@ function replaceThemeDraft(
   }
   const result = validateThemeJson(parsed);
   if (!result.ok) return result;
-  const next: UserTheme = { ...result.theme, id };
-  customThemes[id] = next;
+  customThemes[id] = withSeedOf(result.theme, current);
   if (id === activeId) applyThemeToDom();
   return { ok: true };
 }
@@ -1255,6 +1513,12 @@ export function getTheme() {
     isBuiltin(id: ThemeId): boolean {
       return isBuiltinThemeId(id);
     },
+    /** Whether concurrent saves on linked devices left content versions to choose from. */
+    hasConflict(id: ThemeId): boolean {
+      return conflictedThemeIds.has(id);
+    },
+    resolveConflict: resolveThemeConflict,
+    setEditingTheme,
     shouldOfferRebake,
     setTheme,
     setQuickToggleTheme,

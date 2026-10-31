@@ -3,7 +3,7 @@
 use super::copy_budget::CopyContext;
 use super::ids::new_note_id;
 use super::page_duplicates::{DuplicatePageGraph, insert_child_page_copy, plan_child_page_copy};
-use crate::models::{NoteBlockRow, NoteDataSourceRow, NotePageRow, NoteParent};
+use crate::models::{NoteBlockRow, NoteDataSourceRow, NoteParent};
 use crate::{assets, data_sources};
 use serde_json::Value;
 use sqlx::{AssertSqlSafe, Sqlite, Transaction};
@@ -76,11 +76,13 @@ pub(crate) async fn plan_database_copy(
         .and_then(Value::as_str)
         .ok_or("database block has no view")?
         .to_string();
-    let source_sizes = sqlx::query_as::<_, (String, i64)>(
+    let source_sizes = sqlx::query_as::<_, (String, i64)>(concat!(
         "SELECT DISTINCT source.id,
             length(CAST(source.title AS BLOB)) + length(CAST(source.title_rich_text AS BLOB))
                 + length(CAST(source.description AS BLOB)) + coalesce(length(CAST(source.icon AS BLOB)), 0)
-                + length(CAST(source.properties AS BLOB))
+                + length(CAST(",
+        crate::note_data_source_properties_json!("source"),
+        " AS BLOB))
                 + coalesce(length(CAST(source.source_provider AS BLOB)), 0)
                 + coalesce(length(CAST(source.source_object_id AS BLOB)), 0)
                 + coalesce(length(CAST(source.source_workspace_id AS BLOB)), 0)
@@ -90,13 +92,13 @@ pub(crate) async fn plan_database_copy(
          JOIN notes_blocks AS owner_block ON owner_block.id = owner.id
          WHERE ((source.in_trash = 0 AND owner.in_trash = 0) OR
              (? AND source.in_trash = 1 AND owner.in_trash = 1
-              AND json_extract(owner_block.payload, '$.__ganbaru_trash_owner') = ?))
+              AND owner_block.trash_owner = (SELECT trash_owner FROM notes_blocks WHERE id = ?)))
          AND (source.database_id = ? OR source.id IN (
              SELECT data_source_id FROM notes_database_views WHERE database_id = ?))
          ORDER BY source.id LIMIT ?",
-    )
+    ))
     .bind(include_trashed)
-    .bind(payload.get("__ganbaru_trash_owner").and_then(Value::as_str))
+    .bind(&block.id)
     .bind(&block.id)
     .bind(&block.id)
     .bind((MAX_COPY_OBJECTS + 1) as i64)
@@ -117,10 +119,12 @@ pub(crate) async fn plan_database_copy(
     let source_keys =
         serde_json::to_string(&source_sizes.iter().map(|(id, _)| id).collect::<Vec<_>>())
             .map_err(|error| format!("encode copied source identities: {error}"))?;
-    let sources = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT source.* FROM notes_data_sources AS source
+    let sources = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("source"),
+        " FROM notes_data_sources AS source
          JOIN json_each(?) AS selected ON source.id = selected.value ORDER BY source.id",
-    )
+    ))
     .bind(source_keys)
     .fetch_all(&mut **tx)
     .await
@@ -169,7 +173,7 @@ pub(crate) async fn plan_database_copy(
         schema_ids.insert(source.id.clone(), property_ids);
     }
     let source_views: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM notes_database_views WHERE database_id = ? ORDER BY sort_order, id LIMIT ?",
+        "SELECT id FROM notes_database_views WHERE database_id = ? ORDER BY order_key, id LIMIT ?",
     )
     .bind(&block.id)
     .bind((MAX_COPY_OBJECTS + 1) as i64)
@@ -191,10 +195,15 @@ pub(crate) async fn plan_database_copy(
              JOIN notes_blocks AS owner ON owner.id = source.database_id
              WHERE page.parent_data_source_id = ? AND (page.in_trash = 0 OR
                  (? AND source.in_trash = 1 AND page.in_trash = 1
-                  AND json_extract(page.properties, '$.__ganbaru_trash_owner') = json_extract(owner.payload, '$.__ganbaru_trash_owner')))
+                  AND page.trash_owner = owner.trash_owner))
              ORDER BY page.id LIMIT ?",
-        ).bind(source).bind(include_trashed).bind((MAX_COPY_OBJECTS + 1) as i64).fetch_all(&mut **tx).await
-            .map_err(|e| format!("load copied database rows: {e}"))?;
+        )
+        .bind(source)
+        .bind(include_trashed)
+        .bind((MAX_COPY_OBJECTS + 1) as i64)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("load copied database rows: {e}"))?;
         for page_id in page_ids {
             let new_page = new_note_id(tx, context.reserved_ids).await?;
             let graph = Box::pin(plan_child_page_copy(
@@ -268,20 +277,21 @@ pub(crate) async fn insert_database_copy(
     tx: &mut Transaction<'_, Sqlite>,
     copy: &DatabaseCopy,
 ) -> Result<(), String> {
-    sqlx::query("INSERT INTO notes_databases (id, parent_type, parent_page_id, parent_block_id, title, title_rich_text, description, icon, cover, is_inline)
-        SELECT ?, block.parent_type, block.parent_page_id, block.parent_block_id, source.title, source.title_rich_text, source.description, source.icon, source.cover, source.is_inline
+    sqlx::query("INSERT INTO notes_databases (id, block_id, parent_type, parent_page_id, parent_block_id, title, title_rich_text, description, icon, cover, is_inline)
+        SELECT block.id, block.id, block.parent_type, block.parent_page_id, block.parent_block_id, source.title, source.title_rich_text, source.description, source.icon, source.cover, source.is_inline
         FROM notes_databases AS source JOIN notes_blocks AS block ON block.id = ? WHERE source.id = ?")
-        .bind(&copy.id).bind(&copy.id).bind(&copy.source_id).execute(&mut **tx).await
+        .bind(&copy.id).bind(&copy.source_id).execute(&mut **tx).await
         .map_err(|e| format!("copy Notes database: {e}"))?;
     for (source, id) in &copy.sources {
-        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, icon, properties)
-            SELECT ?, ?, title, title_rich_text, description, icon, properties FROM notes_data_sources WHERE id = ?")
+        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, icon)
+            SELECT ?, ?, title, title_rich_text, description, icon FROM notes_data_sources WHERE id = ?")
             .bind(id).bind(&copy.id).bind(source).execute(&mut **tx).await
             .map_err(|e| format!("copy Notes database source: {e}"))?;
+        crate::property_storage::copy_data_source_properties(tx, source, id).await?;
     }
     for (source, id) in &copy.views {
-        sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, sort_order)
-            SELECT ?, ?, ?, name, type, filter, sorts, configuration, sort_order FROM notes_database_views WHERE id = ?")
+        sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, order_key)
+            SELECT ?, ?, ?, name, type, filter, sorts, configuration, order_key FROM notes_database_views WHERE id = ?")
             .bind(id).bind(&copy.id)
             .bind(sqlx::query_scalar::<_, String>("SELECT data_source_id FROM notes_database_views WHERE id = ?")
                 .bind(source).fetch_one(&mut **tx).await.map_err(|e| format!("resolve copied view source: {e}"))?
@@ -292,10 +302,21 @@ pub(crate) async fn insert_database_copy(
         Box::pin(insert_child_page_copy(tx, graph)).await?;
     }
     for (source, id, data_source) in &copy.templates {
-        sqlx::query("INSERT INTO notes_data_source_templates (id, data_source_id, source_page_id, name, properties, is_default)
-            SELECT ?, ?, NULL, name, properties, is_default FROM notes_data_source_templates WHERE id = ?")
+        sqlx::query("INSERT INTO notes_data_source_templates (id, data_source_id, source_page_id, name, properties)
+            SELECT ?, ?, NULL, name, properties FROM notes_data_source_templates WHERE id = ?")
             .bind(id).bind(data_source).bind(source).execute(&mut **tx).await
             .map_err(|e| format!("copy Notes database template: {e}"))?;
+        sqlx::query(
+            "UPDATE notes_data_sources SET default_template_id = ?1
+             WHERE id = ?2
+               AND EXISTS (SELECT 1 FROM notes_data_sources WHERE default_template_id = ?3)",
+        )
+        .bind(id)
+        .bind(data_source)
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("copy Notes database default template: {e}"))?;
         let source_page: Option<String> = sqlx::query_scalar(
             "SELECT source_page_id FROM notes_data_source_templates WHERE id = ?",
         )
@@ -315,19 +336,25 @@ pub(crate) async fn insert_database_copy(
                 .map_err(|e| format!("copy template row reference: {e}"))?;
         }
         let blocks = sqlx::query_as::<_, crate::models::NoteDataSourceTemplateBlockRow>(
-            "SELECT template_id, id, parent_type, parent_block_id, has_children, type AS block_type, payload, plain_text, sort_order, created_time, last_edited_time
-             FROM notes_data_source_template_blocks WHERE template_id = ? ORDER BY sort_order, id")
+            "SELECT template_id, id, parent_type, parent_block_id, has_children, type AS block_type, payload, plain_text, ordinal, created_time, last_edited_time
+             FROM notes_data_source_template_blocks WHERE template_id = ? ORDER BY ordinal")
             .bind(source).fetch_all(&mut **tx).await.map_err(|e| format!("read template copy: {e}"))?;
         for block in blocks {
             let payload: Value = serde_json::from_str(&block.payload)
                 .map_err(|e| format!("parse copied template: {e}"))?;
             let block_ids = &copy.template_block_ids[source];
-            sqlx::query("INSERT INTO notes_data_source_template_blocks (template_id, id, parent_type, parent_block_id, has_children, type, payload, plain_text, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO notes_data_source_template_blocks (template_id, id, parent_type, parent_block_id, has_children, type, payload, plain_text, ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(id).bind(&block_ids[&block.id]).bind(block.parent_type)
                 .bind(block.parent_block_id.as_ref().and_then(|id| block_ids.get(id)))
-                .bind(block.has_children).bind(block.block_type).bind(payload.to_string()).bind(block.plain_text).bind(block.sort_order)
+                .bind(block.has_children).bind(block.block_type).bind(payload.to_string()).bind(block.plain_text).bind(block.ordinal)
                 .execute(&mut **tx).await.map_err(|e| format!("copy template body: {e}"))?;
         }
+        crate::templates::ensure_template_content_size_tx(
+            tx,
+            crate::templates::TemplateKind::DataSource,
+            id,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -350,30 +377,18 @@ impl DatabaseCopy {
         tx: &mut Transaction<'_, Sqlite>,
         inherited: &HashMap<String, String>,
         schemas: &HashMap<String, HashMap<String, String>>,
-        copied_sources: &mut HashSet<String>,
+        copied: &mut CopiedRelations,
     ) -> Result<(), String> {
         let mut identities = inherited.clone();
         let mut schemas = schemas.clone();
         self.collect_identities(&mut identities, &mut schemas);
         for (source, id) in &self.sources {
-            let mut schema: Value = serde_json::from_str(
-                &sqlx::query_scalar::<_, String>(
-                    "SELECT properties FROM notes_data_sources WHERE id = ?",
-                )
-                .bind(id)
-                .fetch_one(&mut **tx)
-                .await
-                .map_err(|e| format!("read copied schema: {e}"))?,
-            )
-            .map_err(|e| format!("parse copied schema: {e}"))?;
+            let mut schema = crate::property_storage::load_data_source_properties(tx, id)
+                .await?
+                .ok_or_else(|| "copied data source not found".to_string())?;
             remap_schema(&mut schema, &identities, &schemas, source);
-            sqlx::query("UPDATE notes_data_sources SET properties = ? WHERE id = ?")
-                .bind(schema.to_string())
-                .bind(id)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| format!("remap copied database schema: {e}"))?;
-            copied_sources.insert(id.clone());
+            crate::property_storage::write_data_source_properties(tx, id, &schema).await?;
+            copied.sources.insert(id.clone());
         }
         for (source, id) in &self.views {
             let source_id: String =
@@ -429,10 +444,26 @@ impl DatabaseCopy {
             }
         }
         for graph in &self.rows {
-            Box::pin(graph.finalize(tx, &identities, &schemas, copied_sources)).await?;
+            Box::pin(graph.finalize(tx, &identities, &schemas, copied)).await?;
         }
         Ok(())
     }
+}
+
+/// One copied row page with its properties remapped onto the copy's identities.
+pub(crate) struct CopiedRow {
+    pub data_source_id: String,
+    pub page_id: String,
+    pub properties: Value,
+}
+
+/// What finalizing copies leaves for the closing pass: the copied data sources, whose property
+/// assets are reindexed, and the copied rows, whose relation links are written once every copy
+/// exists.
+#[derive(Default)]
+pub(crate) struct CopiedRelations {
+    pub sources: HashSet<String>,
+    pub rows: Vec<CopiedRow>,
 }
 
 /// Remap the entire captured closure after insertion, then rebuild relation and asset indexes.
@@ -450,40 +481,73 @@ pub(crate) async fn finalize_copies(
     for page in pages {
         page.collect_identities(&mut identities, &mut schemas);
     }
-    let mut copied_sources = HashSet::new();
+    let mut copied = CopiedRelations::default();
     for database in databases {
         database
-            .finalize(tx, &identities, &schemas, &mut copied_sources)
+            .finalize(tx, &identities, &schemas, &mut copied)
             .await?;
     }
     for page in pages {
-        page.finalize(tx, &identities, &schemas, &mut copied_sources)
+        page.finalize(tx, &identities, &schemas, &mut copied)
             .await?;
     }
     crate::data_sources::row_hierarchy::copy_edges_tx(tx, &identities).await?;
-    for source in copied_sources {
-        let raw: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(&source)
-                .fetch_one(&mut **tx)
-                .await
-                .map_err(|e| format!("read copied relation schema: {e}"))?;
-        let schema: Value =
-            serde_json::from_str(&raw).map_err(|e| format!("parse copied relation schema: {e}"))?;
-        rebuild_copied_relation_links(tx, &source, &schema).await?;
-        assets::sync_data_source_property_asset_references_tx(tx, &source, &schema).await?;
+    write_copied_relation_links(tx, &copied.rows).await?;
+    for source in &copied.sources {
+        let schema = crate::property_storage::load_data_source_properties(tx, source)
+            .await?
+            .ok_or_else(|| "copied data source not found".to_string())?;
+        assets::sync_data_source_property_asset_references_tx(tx, source, &schema).await?;
     }
     Ok(())
 }
 
-/// Retain unavailable relation references in canonical data without indexing them as live targets.
-async fn rebuild_copied_relation_links(
+/// Links each active copied row to the related pages its source row showed that are still rows
+/// of the relation's target data source. Relations to an unavailable data source are
+/// left empty.
+async fn write_copied_relation_links(
     tx: &mut Transaction<'_, Sqlite>,
-    source: &str,
-    schema: &Value,
+    rows: &[CopiedRow],
 ) -> Result<(), String> {
-    let mut index_schema = schema.clone();
-    let mut unavailable = Vec::new();
+    let mut schemas = HashMap::<String, Value>::new();
+    for row in rows {
+        let active_row: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0)",
+        )
+        .bind(&row.page_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("check copied relation row: {e}"))?;
+        if !active_row {
+            continue;
+        }
+        if !schemas.contains_key(&row.data_source_id) {
+            let schema = live_relation_schema(tx, &row.data_source_id).await?;
+            schemas.insert(row.data_source_id.clone(), schema);
+        }
+        let schema = &schemas[&row.data_source_id];
+        let properties = related_row_values(tx, schema, &row.properties).await?;
+        data_sources::relations::replace_row_relation_links_tx(
+            tx,
+            &row.data_source_id,
+            &row.page_id,
+            schema,
+            &properties,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// The relation properties of `data_source_id` whose target data source is active.
+async fn live_relation_schema(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+) -> Result<Value, String> {
+    let schema = crate::property_storage::load_data_source_properties(tx, data_source_id)
+        .await?
+        .ok_or_else(|| "copied data source not found".to_string())?;
+    let mut live = serde_json::Map::new();
     for (key, property) in schema
         .as_object()
         .ok_or("copied schema must be an object")?
@@ -500,33 +564,36 @@ async fn rebuild_copied_relation_links(
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| format!("check copied relation source: {e}"))?;
-        if !active {
-            unavailable.push(key.clone());
+        if active {
+            live.insert(key.clone(), property.clone());
         }
     }
-    if let Some(properties) = index_schema.as_object_mut() {
-        for key in unavailable {
-            properties.remove(&key);
-        }
-    }
-    let rows = sqlx::query_as::<_, NotePageRow>("SELECT * FROM notes_pages WHERE parent_data_source_id = ? AND in_trash = 0 AND archived = 0")
-        .bind(source).fetch_all(&mut **tx).await.map_err(|e| format!("read copied relation rows: {e}"))?;
-    for row in rows {
-        let mut properties: Value = serde_json::from_str(&row.properties)
-            .map_err(|e| format!("parse copied row relations: {e}"))?;
-        for (key, property) in index_schema
-            .as_object()
-            .ok_or("copied schema must be an object")?
-        {
-            let Some(relation) = data_sources::relations::relation_config_from_schema(property)?
-            else {
-                continue;
-            };
-            let Some(value) = properties.get(key) else {
-                continue;
-            };
+    Ok(Value::Object(live))
+}
+
+/// The relation values of `properties` under `schema`, keeping only related pages that are still
+/// active rows of each relation's target data source. Relation writes accept only active
+/// targets, so a trashed or archived related row is left out of the copy instead of failing it.
+async fn related_row_values(
+    tx: &mut Transaction<'_, Sqlite>,
+    schema: &Value,
+    properties: &Value,
+) -> Result<Value, String> {
+    let mut live_values = serde_json::Map::new();
+    for (key, property) in schema
+        .as_object()
+        .ok_or("copied schema must be an object")?
+    {
+        let Some(relation) = data_sources::relations::relation_config_from_schema(property)? else {
+            continue;
+        };
+        let property_id = property
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("copied relation has no property id")?;
+        let mut live = Vec::new();
+        if let Some(value) = properties.get(key) {
             let references = data_sources::relations::canonical_relation_payload(value)?;
-            let mut live = Vec::new();
             for reference in references
                 .as_array()
                 .ok_or("copied relation must be an array")?
@@ -536,36 +603,25 @@ async fn rebuild_copied_relation_links(
                     .and_then(Value::as_str)
                     .ok_or("copied relation has no page id")?;
                 let active: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ?
-                    AND parent_data_source_id = ? AND in_trash = 0 AND archived = 0)",
+                    "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ? AND parent_data_source_id = ?
+                    AND in_trash = 0 AND archived = 0)",
                 )
                 .bind(page_id)
                 .bind(&relation.target_data_source_id)
                 .fetch_one(&mut **tx)
                 .await
-                .map_err(|e| format!("check copied relation row: {e}"))?;
+                .map_err(|e| format!("check copied relation target: {e}"))?;
                 if active {
                     live.push(reference.clone());
                 }
             }
-            let property_id = property
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or("copied relation has no property id")?;
-            properties[key] =
-                data_sources::relations::relation_property_value(property_id, Value::Array(live));
         }
-        data_sources::relations::replace_row_relation_links_tx(
-            tx,
-            source,
-            &row.id,
-            &index_schema,
-            &properties,
-            false,
-        )
-        .await?;
+        live_values.insert(
+            key.clone(),
+            data_sources::relations::relation_property_value(property_id, Value::Array(live)),
+        );
     }
-    Ok(())
+    Ok(Value::Object(live_values))
 }
 
 fn remap_schema(
@@ -726,11 +782,7 @@ fn remap_local_notes_url(url: &str, identities: &HashMap<String, String>) -> Str
 /// An independent copy never inherits its source's trash ownership or restore journal.
 pub(super) fn strip_trash_metadata(value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
-        for key in [
-            "__ganbaru_database_trash",
-            "__ganbaru_trash",
-            "__ganbaru_trash_owner",
-        ] {
+        for key in ["__ganbaru_database_trash", "__ganbaru_trash"] {
             object.remove(key);
         }
     }

@@ -2,6 +2,7 @@
 
 use crate::bounds::{MAX_GROUPS, MAX_ROW_KEY_BYTES};
 use crate::signing::{PERSONAL_SPACE_DOMAIN, WRITER_ID_DOMAIN, WriterPublicKey, domain_digest};
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// Length of space and writer ids.
@@ -259,4 +260,69 @@ impl fmt::Display for RowKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
+}
+
+/// Prefix of the placeholder keys a converting migration writes before the domain's conversion
+/// pass derives the real ones; no published key starts with it.
+pub const PENDING_KEY_PREFIX: &str = "pending:";
+/// Longest prefix [`derived_key`] accepts.
+pub const MAX_DERIVED_KEY_PREFIX_BYTES: usize = 32;
+/// Hexadecimal digits of the SHA-256 digest that follow the prefix of a derived key.
+pub const DERIVED_KEY_DIGITS: usize = 32;
+
+/// Inputs [`derived_key`] refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedKeyError {
+    /// The prefix is empty, longer than [`MAX_DERIVED_KEY_PREFIX_BYTES`], not made of lowercase
+    /// ASCII letters, digits, `_`, or `-`, or is the reserved placeholder prefix.
+    Prefix,
+    /// No parts were given.
+    NoParts,
+    /// A part contains NUL, which separates parts.
+    Part,
+}
+
+impl fmt::Display for DerivedKeyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Prefix => "derived key prefix is not a short lowercase name",
+            Self::NoParts => "derived key needs at least one part",
+            Self::Part => "derived key part contains NUL",
+        })
+    }
+}
+
+impl std::error::Error for DerivedKeyError {}
+
+/// The row key of a row whose identity is its content, such as the `sync_key` of a composite
+/// primary key: `{prefix}:` followed by the first [`DERIVED_KEY_DIGITS`] hexadecimal digits of
+/// SHA-256 over the parts joined by NUL.
+///
+/// It is the only `sync_key` encoder, so every replica derives the same key for the same parts.
+pub fn derived_key(prefix: &str, parts: &[&str]) -> Result<RowKey, DerivedKeyError> {
+    let valid_prefix = !prefix.is_empty()
+        && prefix.len() <= MAX_DERIVED_KEY_PREFIX_BYTES
+        && prefix.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        })
+        && PENDING_KEY_PREFIX.strip_suffix(':') != Some(prefix);
+    if !valid_prefix {
+        return Err(DerivedKeyError::Prefix);
+    }
+    if parts.is_empty() {
+        return Err(DerivedKeyError::NoParts);
+    }
+    if parts.iter().any(|part| part.contains('\0')) {
+        return Err(DerivedKeyError::Part);
+    }
+    let mut hasher = Sha256::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            hasher.update([0u8]);
+        }
+        hasher.update(part.as_bytes());
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    let digits = hex(&digest[..DERIVED_KEY_DIGITS / 2]);
+    RowKey::new(format!("{prefix}:{digits}")).map_err(|_| DerivedKeyError::Prefix)
 }

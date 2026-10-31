@@ -1,5 +1,7 @@
 //! Durable organizational messages, reply threads, teammates, and work assignments.
 
+#[cfg(desktop)]
+use super::channels::sync_key;
 use super::channels::{
     chat_pool, i64_value, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,
@@ -7,7 +9,7 @@ use super::channels::{
 pub use ganbaru_chat::coordination::contracts::*;
 use ganbaru_chat_contracts::models::*;
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::{Row, SqlitePool};
 #[cfg(desktop)]
 use sqlx::{Sqlite, Transaction};
 
@@ -29,15 +31,20 @@ mod common;
 mod context;
 #[cfg(desktop)]
 mod dispatch;
+#[cfg(desktop)]
+mod primary_folder;
 mod reads;
 mod scheduling;
 mod teammate_lifecycle;
 mod workflow;
 
+#[cfg(desktop)]
+pub(crate) use assignments::start_synced_assignment_work;
 use common::{
-    conversation_item_id, has_thread_eligible_mention, map_command_receipt_error,
-    message_revision_id, normalized_fts_query, parse_cursor, parse_participant_kind,
-    reply_thread_id, serialization_error, validate_message_request,
+    AttachmentSource, PageCursor, ScheduledPostTarget, chat_writers, conversation_item_id,
+    has_thread_eligible_mention, map_command_receipt_error, message_revision_id,
+    normalized_fts_query, parse_cursor, parse_participant_kind, reply_thread_id,
+    scheduled_post_ids, serialization_error, this_device_id, validate_message_request,
 };
 #[cfg(desktop)]
 pub(crate) use common::{
@@ -46,7 +53,7 @@ pub(crate) use common::{
 };
 #[cfg(desktop)]
 use common::{
-    json_object, map_teammate_write_error, validate_display_name, validate_policy,
+    json_object, require_unused_teammate_name, validate_display_name, validate_policy,
     validate_profile_text, validate_teammate_role,
 };
 #[cfg(desktop)]
@@ -57,13 +64,14 @@ use reads::{
     read_teammate,
 };
 #[cfg(desktop)]
-use teammate_lifecycle::{delete_unused_teammate, set_teammate_archived};
+use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
-    AssignmentWrite, CommunicationMessageWrite, insert_channel_copy, insert_communication_message,
-    next_item_ordinal, persist_assignment_routing, read_post_receipt,
-    require_continuation_scope_is_unchanged, require_reply_thread, resolve_invoked_teammate,
+    AssignmentWrite, ChannelCopy, CommunicationMessageWrite, PostingDevice, insert_channel_copy,
+    insert_communication_message, next_item_order_key, persist_assignment_routing,
+    read_post_receipt, require_continuation_scope_is_unchanged, require_reply_thread,
+    resolve_invoked_teammate,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -128,9 +136,17 @@ pub async fn chat_create_teammate(
     validate_profile_text(&request.instructions, 65_536, "instructions")?;
     validate_policy(&app, &request.policy)?;
     let avatar_data = json_object(&request.avatar, "avatar")?;
+    let home_device_id = crate::sync::devices::stable_device_id(&app)
+        .map_err(crate::chat::settings::device_state_error)?;
     let pool = chat_pool(app, db_url).await?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    require_unused_teammate_name(
+        &mut transaction,
+        &display_name,
+        request.teammate_id.as_str(),
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, avatar_schema_version,
@@ -145,15 +161,16 @@ pub async fn chat_create_teammate(
     .bind(now.as_str())
     .execute(&mut *transaction)
     .await
-    .map_err(map_teammate_write_error)?;
+    .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_teammates
-            (participant_id, role, instructions, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)",
+            (participant_id, role, instructions, home_device_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(request.teammate_id.as_str())
     .bind(role)
     .bind(request.instructions.trim())
+    .bind(home_device_id)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -162,7 +179,6 @@ pub async fn chat_create_teammate(
     insert_policy_revision(
         &mut transaction,
         &request.teammate_id,
-        1,
         &request.policy,
         &now,
     )
@@ -182,18 +198,6 @@ pub async fn chat_archive_teammate(
 ) -> ChatResult<ChatAiTeammateRead> {
     let pool = chat_pool(app, db_url).await?;
     set_teammate_archived(&pool, &teammate_id, expected_revision, archived).await
-}
-
-#[tauri::command]
-#[cfg(desktop)]
-pub async fn chat_delete_unused_teammate(
-    app: tauri::AppHandle,
-    db_url: String,
-    teammate_id: ChatParticipantId,
-    expected_revision: u64,
-) -> ChatResult<()> {
-    let pool = chat_pool(app, db_url).await?;
-    delete_unused_teammate(&pool, &teammate_id, expected_revision).await
 }
 
 #[tauri::command]
@@ -228,30 +232,8 @@ pub async fn chat_read_project_primary_working_folder(
     db_url: String,
     project_id: String,
 ) -> ChatResult<ChatProjectPrimaryWorkingFolderRead> {
-    let row = sqlx::query(
-        "SELECT project_id, working_folder_id, revision
-         FROM project_primary_working_folders WHERE project_id = ?",
-    )
-    .bind(&project_id)
-    .fetch_optional(&chat_pool(app, db_url).await?)
-    .await
-    .map_err(persistence_error)?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Primary working folder was not found",
-            true,
-        )
-    })?;
-    Ok(ChatProjectPrimaryWorkingFolderRead {
-        project_id: row.try_get("project_id").map_err(persistence_error)?,
-        working_folder_id: ProjectWorkingFolderId::new(
-            row.try_get::<String, _>("working_folder_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
-    })
+    let pool = chat_pool(app, db_url).await?;
+    primary_folder::read_effective_primary_working_folder(&pool, &project_id).await
 }
 
 #[tauri::command]
@@ -263,28 +245,15 @@ pub async fn chat_set_project_primary_working_folder(
     working_folder_id: ProjectWorkingFolderId,
     expected_revision: u64,
 ) -> ChatResult<ChatProjectPrimaryWorkingFolderRead> {
-    let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let now = now_timestamp()?;
-    let updated = sqlx::query(
-        "UPDATE project_primary_working_folders
-         SET working_folder_id = ?, revision = revision + 1, updated_at = ?
-         WHERE project_id = ? AND revision = ?",
+    let pool = chat_pool(app, db_url).await?;
+    primary_folder::set_primary_working_folder(
+        &pool,
+        &project_id,
+        &working_folder_id,
+        expected_revision,
+        &now_timestamp()?,
     )
-    .bind(working_folder_id.as_str())
-    .bind(now.as_str())
-    .bind(&project_id)
-    .bind(i64_value(expected_revision)?)
-    .execute(&pool)
     .await
-    .map_err(persistence_error)?;
-    if updated.rows_affected() != 1 {
-        return Err(ChatError::new(
-            ChatErrorCode::StaleRevision,
-            "The primary working folder changed before the update",
-            true,
-        ));
-    }
-    chat_read_project_primary_working_folder(app, db_url, project_id).await
 }
 
 #[tauri::command]
@@ -293,16 +262,110 @@ pub async fn chat_post_message(
     db_url: String,
     request: PostChatMessageCommand,
 ) -> ChatResult<PostChatMessageResult> {
-    validate_message_request(&request)?;
+    post_message(app, db_url, &request, None).await
+}
+
+/// A scheduled message being sent under the claim `claim_token`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ScheduledSend<'a> {
+    /// Scheduled message posted.
+    pub(super) scheduled_message_id: &'a ChatScheduledMessageId,
+    /// Claim the sender holds on it.
+    pub(super) claim_token: &'a str,
+}
+
+/// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the
+/// post routes to.
+pub(super) async fn post_message(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: &PostChatMessageCommand,
+    scheduled: Option<ScheduledSend<'_>>,
+) -> ChatResult<PostChatMessageResult> {
+    validate_message_request(request)?;
     #[cfg(desktop)]
     let dispatch_app = app.clone();
     #[cfg(desktop)]
     let dispatch_db_url = db_url.clone();
-    let pool = chat_pool(app, db_url).await?;
-    if let Some(result) = read_post_receipt(&pool, &request.client_command_id).await? {
-        return Ok(result);
+    let device_id = this_device_id(&app)?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let writers = chat_writers(&app, &pool).await?;
+    let posted = persist_post(
+        &pool,
+        request,
+        scheduled,
+        PostingDevice::this_device(&device_id, &writers),
+    )
+    .await?;
+    #[cfg(desktop)]
+    if let Some(assignment_id) = posted
+        .assignment_write
+        .assignment_id
+        .clone()
+        .filter(|_| posted.assignment_write.executes_here)
+    {
+        if posted.assignment_write.input_queued {
+            let input_message_id = posted.item_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = deliver_assignment_input(
+                    dispatch_app,
+                    dispatch_db_url,
+                    assignment_id,
+                    input_message_id,
+                )
+                .await;
+            });
+        } else {
+            tauri::async_runtime::spawn(async move {
+                let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;
+            });
+        }
     }
-    let channel = super::channels::read_channel(&pool, &request.channel_id).await?;
+    Ok(posted.result)
+}
+
+/// A post written to the vault. Only desktop dispatches the work it routed.
+#[cfg_attr(mobile, allow(dead_code))]
+struct PersistedPost {
+    result: PostChatMessageResult,
+    item_id: ChatConversationItemId,
+    assignment_write: AssignmentWrite,
+}
+
+/// Deletes a scheduled message whose device-local dispatch row holds the claim `?2`; the
+/// dispatch row goes with it by cascade.
+const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messages
+     WHERE id = ?1 AND EXISTS (
+         SELECT 1 FROM chat_scheduled_message_dispatch dispatch
+         WHERE dispatch.scheduled_message_id = ?1 AND dispatch.claim_token = ?2
+     )";
+
+/// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
+/// ids derived from the scheduled message, copies its stored attachment values, and deletes the
+/// scheduled message in the same transaction, so it posts once even when the device stops
+/// between steps.
+async fn persist_post(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled: Option<ScheduledSend<'_>>,
+    device: PostingDevice<'_>,
+) -> ChatResult<PersistedPost> {
+    if let Some(result) = read_post_receipt(pool, &request.client_command_id).await? {
+        if let Some(scheduled) = scheduled {
+            sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
+                .bind(scheduled.scheduled_message_id.as_str())
+                .bind(scheduled.claim_token)
+                .execute(pool)
+                .await
+                .map_err(persistence_error)?;
+        }
+        return Ok(PersistedPost {
+            item_id: result.message.item_id.clone(),
+            result,
+            assignment_write: AssignmentWrite::NONE,
+        });
+    }
+    let channel = super::channels::read_channel(pool, &request.channel_id).await?;
     if channel.archived_at.is_some() {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -311,10 +374,10 @@ pub async fn chat_post_message(
         ));
     }
     if let Some(reply_thread_id) = request.reply_thread_id.as_ref() {
-        require_reply_thread(&pool, reply_thread_id, &channel.conversation_id).await?;
+        require_reply_thread(pool, reply_thread_id, &channel.conversation_id).await?;
     }
     let resolved_invocation = resolve_invoked_teammate(
-        &pool,
+        pool,
         &channel.conversation_id,
         request.reply_thread_id.as_ref(),
         &request.references,
@@ -328,11 +391,26 @@ pub async fn chat_post_message(
         &request.references,
     )?;
     let now = now_timestamp()?;
-    let item_id = conversation_item_id()?;
-    let revision_id = message_revision_id()?;
+    let (item_id, revision_id) = match scheduled {
+        Some(scheduled) => {
+            let ids = scheduled_post_ids(
+                scheduled.scheduled_message_id.as_str(),
+                ScheduledPostTarget::Message,
+            )?;
+            (ids.item_id, ids.revision_id)
+        }
+        None => (conversation_item_id()?, message_revision_id()?),
+    };
+    let attachments = match scheduled {
+        Some(scheduled) => AttachmentSource::Scheduled {
+            scheduled_message_id: scheduled.scheduled_message_id.as_str(),
+            expected: request.attachment_ids.len(),
+        },
+        None => AttachmentSource::Device(&request.attachment_ids),
+    };
     let target_reply_thread_id = match request.reply_thread_id.as_ref() {
         Some(reply_thread_id) => Some(reply_thread_id.clone()),
-        None if has_thread_eligible_mention(&request) => Some(reply_thread_id()?),
+        None if has_thread_eligible_mention(request) => Some(reply_thread_id(&item_id)?),
         None => None,
     };
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
@@ -347,7 +425,7 @@ pub async fn chat_post_message(
     .execute(&mut *transaction)
     .await
     .map_err(map_command_receipt_error)?;
-    let ordinal = next_item_ordinal(
+    let order_key = next_item_order_key(
         &mut transaction,
         &channel.conversation_id,
         request.reply_thread_id.as_ref(),
@@ -360,8 +438,9 @@ pub async fn chat_post_message(
             revision_id: &revision_id,
             conversation_id: &channel.conversation_id,
             reply_thread_id: request.reply_thread_id.as_ref(),
-            ordinal,
-            request: &request,
+            order_key: &order_key,
+            request,
+            attachments,
             invoked_teammate_id: resolved_invocation
                 .as_ref()
                 .map(|invocation| &invocation.teammate_id),
@@ -396,7 +475,7 @@ pub async fn chat_post_message(
         })?;
         sqlx::query(
             "UPDATE chat_reply_threads
-             SET reply_count = reply_count + 1, last_activity_at = ?,
+             SET last_activity_at = ?,
                  revision = revision + 1, updated_at = ? WHERE id = ?",
         )
         .bind(now.as_str())
@@ -424,26 +503,50 @@ pub async fn chat_post_message(
                 &item_id,
                 resolved_invocation.as_ref(),
                 request.execution_target.as_ref(),
+                device,
                 &now,
             )
             .await?
         }
-        None => AssignmentWrite {
-            assignment_id: None,
-            input_queued: false,
-        },
+        None => AssignmentWrite::NONE,
     };
     if request.also_send_to_channel && request.reply_thread_id.is_some() {
         insert_channel_copy(
             &mut transaction,
             &channel.conversation_id,
-            &request,
+            request,
+            ChannelCopy {
+                ids: scheduled
+                    .map(|scheduled| {
+                        scheduled_post_ids(
+                            scheduled.scheduled_message_id.as_str(),
+                            ScheduledPostTarget::ChannelCopy,
+                        )
+                    })
+                    .transpose()?,
+                attachments,
+            },
             resolved_invocation
                 .as_ref()
                 .map(|invocation| &invocation.teammate_id),
             &now,
         )
         .await?;
+    }
+    if let Some(scheduled) = scheduled {
+        let deleted = sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)
+            .bind(scheduled.scheduled_message_id.as_str())
+            .bind(scheduled.claim_token)
+            .execute(&mut *transaction)
+            .await
+            .map_err(persistence_error)?;
+        if deleted.rows_affected() != 1 {
+            return Err(ChatError::new(
+                ChatErrorCode::Conflict,
+                "The scheduled message changed before it was sent",
+                true,
+            ));
+        }
     }
     let receipt_locator = StoredPostMessageReceipt::Locator {
         message_item_id: item_id.clone(),
@@ -463,12 +566,12 @@ pub async fn chat_post_message(
     .await
     .map_err(persistence_error)?;
     transaction.commit().await.map_err(persistence_error)?;
-    let message = read_message(&pool, &item_id).await?;
+    let message = read_message(pool, &item_id).await?;
     let assignment = match assignment_write.assignment_id.as_ref() {
-        Some(assignment_id) => Some(read_assignment(&pool, assignment_id).await?),
+        Some(assignment_id) => Some(read_assignment(pool, assignment_id).await?),
         None => match target_reply_thread_id.as_ref() {
             Some(reply_thread_id) => {
-                read_active_or_latest_assignment(&pool, reply_thread_id).await?
+                read_active_or_latest_assignment(pool, reply_thread_id).await?
             }
             None => None,
         },
@@ -488,29 +591,14 @@ pub async fn chat_post_message(
     .bind(serialized)
     .bind(now_timestamp()?.as_str())
     .bind(request.client_command_id.as_str())
-    .execute(&pool)
+    .execute(pool)
     .await
     .map_err(persistence_error)?;
-    #[cfg(desktop)]
-    if let Some(assignment_id) = assignment_write.assignment_id.clone() {
-        if assignment_write.input_queued {
-            let input_message_id = item_id.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = deliver_assignment_input(
-                    dispatch_app,
-                    dispatch_db_url,
-                    assignment_id,
-                    input_message_id,
-                )
-                .await;
-            });
-        } else {
-            tauri::async_runtime::spawn(async move {
-                let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;
-            });
-        }
-    }
-    Ok(result)
+    Ok(PersistedPost {
+        result,
+        item_id,
+        assignment_write,
+    })
 }
 
 #[tauri::command]
@@ -585,36 +673,57 @@ pub async fn chat_read_channel_page(
     limit: Option<u32>,
 ) -> ChatResult<ChatChannelPageRead> {
     let pool = chat_pool(app, db_url).await?;
-    let channel = super::channels::read_channel(&pool, &channel_id).await?;
-    let before = parse_cursor(cursor.as_deref())?;
+    read_channel_page(&pool, channel_id, cursor.as_deref(), limit).await
+}
+
+/// Reads one page of a channel's root messages ending at `cursor`, oldest first.
+///
+/// Root messages order by `(order_key, id)`, so messages that share an order key after a
+/// concurrent post page in a stable order without gaps or repeats.
+async fn read_channel_page(
+    pool: &sqlx::SqlitePool,
+    channel_id: ChatChannelId,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> ChatResult<ChatChannelPageRead> {
+    let channel = super::channels::read_channel(pool, &channel_id).await?;
+    let end = parse_cursor(cursor)?;
     let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
     let rows = sqlx::query(
-        "SELECT id, ordinal
+        "SELECT id, order_key
          FROM chat_conversation_items
          WHERE conversation_id = ? AND reply_thread_id IS NULL AND item_kind = 'message'
-           AND (? IS NULL OR ordinal < ?)
-         ORDER BY ordinal DESC LIMIT ?",
+           AND (? IS NULL OR (order_key, id) < (?, ?) OR (? AND order_key = ? AND id = ?))
+         ORDER BY order_key DESC, id DESC LIMIT ?",
     )
     .bind(channel.conversation_id.as_str())
-    .bind(before)
-    .bind(before)
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.item_id.as_str()))
+    .bind(end.as_ref().is_some_and(|end| end.inclusive))
+    .bind(end.as_ref().map(|end| end.order_key.as_str()))
+    .bind(end.as_ref().map(|end| end.item_id.as_str()))
     .bind(i64::from(limit))
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
     let previous_cursor = rows
         .last()
-        .map(|row| row.try_get::<i64, _>("ordinal"))
-        .transpose()
-        .map_err(persistence_error)?
         .filter(|_| rows.len() == limit as usize)
-        .map(|ordinal| ordinal.to_string());
+        .map(|row| {
+            Ok::<_, sqlx::Error>(PageCursor::before(
+                &row.try_get::<String, _>("order_key")?,
+                &row.try_get::<String, _>("id")?,
+            ))
+        })
+        .transpose()
+        .map_err(persistence_error)?;
     let mut messages = Vec::with_capacity(rows.len());
     for row in rows.into_iter().rev() {
         let item_id =
             ChatConversationItemId::new(row.try_get::<String, _>("id").map_err(persistence_error)?)
                 .map_err(identifier_error)?;
-        messages.push(read_message(&pool, &item_id).await?);
+        messages.push(read_message(pool, &item_id).await?);
     }
     Ok(ChatChannelPageRead {
         channel_id,
@@ -652,6 +761,17 @@ pub async fn chat_search_messages(
 ) -> ChatResult<Vec<ChatMessageSearchResultRead>> {
     let fts_query = normalized_fts_query(&query)?;
     let pool = chat_pool(app, db_url).await?;
+    search_messages(&pool, fts_query, project_id.as_deref(), limit).await
+}
+
+/// Searches organizational messages, keeping results whose author participant is gone under the
+/// message's author label snapshot.
+async fn search_messages(
+    pool: &sqlx::SqlitePool,
+    fts_query: String,
+    project_id: Option<&str>,
+    limit: Option<u32>,
+) -> ChatResult<Vec<ChatMessageSearchResultRead>> {
     let rows = sqlx::query(
         "SELECT
             channel.project_id,
@@ -660,16 +780,18 @@ pub async fn chat_search_messages(
             search.conversation_id,
             search.reply_thread_id,
             search.message_item_id,
-            item.ordinal,
+            item.order_key,
             participant.id AS author_participant_id,
             participant.participant_kind AS author_participant_kind,
-            participant.display_name AS author_display_name,
+            coalesce(participant.display_name, message.author_label_snapshot)
+                AS author_display_name,
             snippet(chat_communication_search_fts, 4, '<mark>', '</mark>', '…', 24) AS excerpt,
             item.created_at
          FROM chat_communication_search_fts search
          JOIN chat_conversation_items item ON item.id = search.message_item_id
          JOIN chat_communication_messages message ON message.item_id = item.id
-         JOIN chat_participants participant ON participant.id = message.author_participant_id
+         LEFT JOIN chat_participants participant
+           ON participant.id = message.author_participant_id
          JOIN chat_channels channel ON channel.conversation_id = search.conversation_id
          WHERE chat_communication_search_fts MATCH ?
            AND (? IS NULL OR channel.project_id = ?)
@@ -677,10 +799,10 @@ pub async fn chat_search_messages(
          LIMIT ?",
     )
     .bind(fts_query)
-    .bind(project_id.as_deref())
-    .bind(project_id.as_deref())
+    .bind(project_id)
+    .bind(project_id)
     .bind(i64::from(limit.unwrap_or(50).clamp(1, MAX_SEARCH_RESULTS)))
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
     rows.into_iter()
@@ -709,16 +831,24 @@ pub async fn chat_search_messages(
                         .map_err(persistence_error)?,
                 )
                 .map_err(identifier_error)?,
-                ordinal: u64_value(row.try_get("ordinal").map_err(persistence_error)?)?,
-                author_participant_id: ChatParticipantId::new(
-                    row.try_get::<String, _>("author_participant_id")
+                anchor_cursor: PageCursor::through(
+                    &row.try_get::<String, _>("order_key")
                         .map_err(persistence_error)?,
-                )
-                .map_err(identifier_error)?,
-                author_kind: parse_participant_kind(
-                    &row.try_get::<String, _>("author_participant_kind")
+                    &row.try_get::<String, _>("message_item_id")
                         .map_err(persistence_error)?,
-                )?,
+                ),
+                author_participant_id: row
+                    .try_get::<Option<String>, _>("author_participant_id")
+                    .map_err(persistence_error)?
+                    .map(ChatParticipantId::new)
+                    .transpose()
+                    .map_err(identifier_error)?,
+                author_kind: row
+                    .try_get::<Option<String>, _>("author_participant_kind")
+                    .map_err(persistence_error)?
+                    .as_deref()
+                    .map(parse_participant_kind)
+                    .transpose()?,
                 author_display_name: row
                     .try_get("author_display_name")
                     .map_err(persistence_error)?,
@@ -749,6 +879,18 @@ pub async fn chat_retry_assignment(
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     assignments::retry_assignment(app, db_url, assignment_id, expected_revision).await
+}
+
+/// Starts the work of a mention whose post recorded no assignment, running it on this device.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_start_mentioned_assignment(
+    app: tauri::AppHandle,
+    db_url: String,
+    message_item_id: ChatConversationItemId,
+    teammate_id: ChatParticipantId,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    assignments::start_mentioned_assignment(app, db_url, message_item_id, teammate_id).await
 }
 
 #[cfg(test)]

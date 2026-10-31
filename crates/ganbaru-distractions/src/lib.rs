@@ -1,9 +1,10 @@
 //! Distraction blocker domain independent of Tauri and the WebView: wire contracts, desktop
 //! application name rules and protected applications, usage limit budgets, usage sample
-//! normalization, and evidence-bounded elapsed accounting.
+//! normalization, evidence-bounded elapsed accounting, and the vault's rules in SQLite.
 //! Callers own observation, enforcement, close authorization, state files, and the device spool.
 
 pub mod accounting;
+pub mod config;
 pub mod contracts;
 pub mod limits;
 pub mod rules;

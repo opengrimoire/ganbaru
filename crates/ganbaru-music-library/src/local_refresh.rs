@@ -143,6 +143,15 @@ async fn catalog(
         if paths.is_empty() {
             return Ok(());
         }
+        let observed = paths
+            .into_iter()
+            .map(|relative_path| {
+                let stat = traversal::stat_media(root, &relative_path);
+                (relative_path, stat)
+            })
+            .collect();
+        let paths =
+            persistence::record_unchanged_batch(pool, request, generation, observed).await?;
         let inspected = inspect_batch(root, &paths)?;
         let mut evidence = Vec::with_capacity(inspected.len());
         for (relative_path, result) in inspected {

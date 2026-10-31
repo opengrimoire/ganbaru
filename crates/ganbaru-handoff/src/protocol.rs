@@ -6,14 +6,22 @@ use std::io::Read;
 use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub mod anchor;
+pub mod relay;
 mod sync;
 
 pub use sync::{
-    MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES,
-    SYNC_PAGE_BYTES, SyncAsset, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
+    DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
+    MAX_SYNC_EVIDENCE_OPS, MAX_SYNC_FORWARDED_PROPOSALS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES,
+    SYNC_PAGE_BYTES, SyncAsset, SyncAssetKey, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
+    SyncSettledProposal, decode_sync_admin_key, decode_sync_charter, decode_sync_device_key,
+    decode_sync_proposal, encode_sync_admin_key, encode_sync_charter, encode_sync_device_key,
+    encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
+    validate_member_endpoints,
 };
+pub use sync::{MAX_MEMBER_ENDPOINTS, MAX_SYNC_RECORDS, MemberEndpoint, SYNC_RECORD_CLASSES};
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 17;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -22,13 +30,12 @@ pub const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 160;
 pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
 const MAX_APP_VERSION_BYTES: usize = 64;
-pub const MAX_DISTRACTIONS_SAMPLES: usize = 1_024;
 pub const TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
 /// LAN port the coordinator of a production build listens on.
 pub const COORDINATOR_PORT: u16 = 43_821;
 /// LAN port the coordinator of a development build listens on.
 pub const DEVELOPMENT_COORDINATOR_PORT: u16 = 43_822;
-const PAIRING_QR_MAGIC: &[u8; 4] = b"GBQ\x01";
+const PAIRING_QR_MAGIC: &[u8; 4] = b"GBQ\x02";
 /// Base64url text of a 64-byte Ed25519 signature.
 const SIGNATURE_TEXT_LENGTH: usize = 86;
 /// Base64url text of a 16-byte card nonce.
@@ -130,7 +137,6 @@ pub struct PairingInvitation {
     pub coordinator_fingerprint: String,
     pub coordinator_device_id: String,
     pub vault_id: String,
-    pub generation: u64,
     pub expires_at_ms: i64,
 }
 
@@ -164,16 +170,11 @@ pub struct BundleMetadata {
     pub vault_id: String,
     pub device_id: String,
     pub transfer_id: String,
-    pub generation: u64,
     pub archive_bytes: u64,
     pub archive_sha256: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BundlePurpose {
-    Ownership,
-    Refresh,
+    /// Whether the sender registers no post-apply hooks, so the receiver runs every hook in
+    /// full rebuild mode before the vault opens.
+    pub derived_state_stale: bool,
 }
 
 impl BundleMetadata {
@@ -194,20 +195,6 @@ impl BundleMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DistractionsSampleMessage {
-    pub sample_id: String,
-    pub device_id: String,
-    pub source_type: String,
-    pub source_key: String,
-    pub display_name: Option<String>,
-    pub started_at_ms: i64,
-    pub elapsed_seconds: i64,
-    pub local_date: String,
-    pub created_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ControlMessage {
     Enroll {
@@ -219,37 +206,38 @@ pub enum ControlMessage {
         device_label: String,
         device_kind: DeviceKind,
         device_certificate: String,
+        /// Device key that certifies the device's sync writers, which the anchor enrolls.
+        sync_device_key: String,
+        /// Admin key a desktop proposes authorization changes with once an admin promotes it;
+        /// phones send none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sync_admin_key: Option<String>,
     },
+    /// The coordinator linked the device. `charter` is the vault's space charter and
+    /// `person_key` the person key that signed it; both are present once the coordinator founded
+    /// the space, and both are absent when founding failed and the device learns the charter from
+    /// the vault bundle instead.
     Enrolled {
         protocol_version: u16,
         coordinator_device_id: String,
         #[serde(default)]
         coordinator_device_label: Option<String>,
+        #[serde(default)]
+        charter: Option<String>,
+        #[serde(default)]
+        person_key: Option<String>,
     },
     RequestBundle {
         protocol_version: u16,
         compatibility: HandoffCompatibility,
         vault_id: String,
         device_id: String,
-        generation: u64,
-        purpose: BundlePurpose,
     },
     BundlePrepared {
         metadata: BundleMetadata,
-        purpose: BundlePurpose,
-    },
-    BundlePending {
-        protocol_version: u16,
-        owner_device_id: String,
-        generation: u64,
     },
     DownloadBundle {
         metadata: BundleMetadata,
-    },
-    UploadBundle {
-        metadata: BundleMetadata,
-        source_device_id: String,
-        purpose: BundlePurpose,
     },
     BundleMetadata {
         metadata: BundleMetadata,
@@ -260,30 +248,11 @@ pub enum ControlMessage {
     BundleComplete {
         transfer_id: String,
     },
-    BundleStaged {
-        transfer_id: String,
-    },
-    CommitStagedOwnership {
-        metadata: BundleMetadata,
-    },
-    OwnershipGrant {
-        protocol_version: u16,
-        vault_id: String,
-        transfer_id: String,
-        owner_device_id: String,
-        generation: u64,
-    },
-    CommitUploadedOwnership {
-        metadata: BundleMetadata,
-        source_device_id: String,
-    },
     ActivationComplete {
         protocol_version: u16,
         vault_id: String,
         device_id: String,
         transfer_id: String,
-        generation: u64,
-        purpose: BundlePurpose,
     },
     ActivationAcknowledged {
         transfer_id: String,
@@ -293,32 +262,6 @@ pub enum ControlMessage {
     },
     TransferCancelled {
         transfer_id: String,
-    },
-    RefreshRequest {
-        protocol_version: u16,
-        compatibility: HandoffCompatibility,
-        vault_id: String,
-        device_id: String,
-        generation: u64,
-    },
-    RefreshStatus {
-        available: bool,
-        generation: u64,
-        transfer_id: Option<String>,
-        requested_upload: Option<BundlePurpose>,
-    },
-    DistractionsExchange {
-        protocol_version: u16,
-        vault_id: String,
-        device_id: String,
-        samples: Vec<DistractionsSampleMessage>,
-        acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DistractionsSampleMessage>,
-    },
-    DistractionsAcknowledged {
-        acknowledged_sample_ids: Vec<String>,
-        peer_samples: Vec<DistractionsSampleMessage>,
-        combined_samples: Vec<DistractionsSampleMessage>,
     },
     /// Unauthenticated: a person asks the recipient (whose card they hold) to become a contact.
     ContactRequest {
@@ -353,7 +296,8 @@ pub enum ControlMessage {
         public_key: String,
         private_key_pkcs8: String,
     },
-    /// Authenticated: a linked device compares its stored operations with the hub's.
+    /// Authenticated: a linked device compares its stored operations with the hub's, and
+    /// reports the endpoints its own sync listener serves on, empty when it does not listen.
     SyncHello {
         protocol_version: u16,
         vault_id: String,
@@ -361,12 +305,22 @@ pub enum ControlMessage {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe: Option<SyncProbe>,
+        listening: Vec<String>,
     },
-    /// The hub's stored operations and its hash at the probed sequence, when it holds it.
+    /// The hub's stored operations and its hash at the probed sequence, when it holds it, plus
+    /// the member listener endpoints the hub knows, its own first, so a linked device follows
+    /// address changes without relinking. `stable` lists the
+    /// operations every counted device holds, and `bootstrap_required` tells the device that
+    /// the hub no longer holds operations it lacks. `forked` lists the writers the hub holds
+    /// fork evidence for, each with the sequence where its copies differ.
     SyncState {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe_hash: Option<String>,
+        members: Vec<MemberEndpoint>,
+        stable: Vec<SyncSeq>,
+        bootstrap_required: bool,
+        forked: Vec<SyncSeq>,
     },
     /// Authenticated: operations the hub lacks, in an order that keeps chains contiguous.
     SyncPush {
@@ -412,6 +366,21 @@ pub enum ControlMessage {
     SyncHashList {
         hashes: Vec<String>,
     },
+    /// Authenticated: the fork evidence of `writer`. `evidence` is empty to ask for the hub's
+    /// pair, one operation of `writer` that the hub may hold differently at its sequence, or a
+    /// pair the hub may lack.
+    SyncForkEvidence {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        writer: String,
+        evidence: Vec<String>,
+    },
+    /// The two operations proving that the requested writer forked, or none when the hub holds
+    /// no evidence for it.
+    SyncForkPair {
+        evidence: Vec<String>,
+    },
     /// Authenticated: which of these assets the hub holds.
     SyncAssetQuery {
         protocol_version: u16,
@@ -419,9 +388,9 @@ pub enum ControlMessage {
         device_id: String,
         assets: Vec<SyncAsset>,
     },
-    /// Digests of the queried assets the hub holds.
+    /// The queried assets the hub holds.
     SyncAssetPresence {
-        held: Vec<String>,
+        held: Vec<SyncAssetKey>,
     },
     /// Authenticated: a chunk of an asset the hub holds, from `offset`.
     SyncAssetGet {
@@ -448,6 +417,119 @@ pub enum ControlMessage {
     SyncAssetReceived {
         received: u32,
     },
+    /// Authenticated: an admin-signed proposal for the anchor to sequence. Only the anchor
+    /// sequences; any other hub answers with the `not_anchor` rejection.
+    SyncPropose {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        proposal: String,
+    },
+    /// The revision that holds the proposal, or the wire value of the rejection.
+    SyncProposed {
+        revision: Option<u64>,
+        rejection: Option<u8>,
+    },
+    /// Authenticated: the anchor, while another device coordinates, asks the hub for the
+    /// proposals the hub holds for it and reports the final rejections of proposals it took
+    /// earlier. The hub answers only the anchor of its selected chain.
+    SyncForward {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        settled: Vec<SyncSettledProposal>,
+    },
+    /// The proposals the hub holds for the anchor, oldest first.
+    SyncForwarded {
+        proposals: Vec<String>,
+    },
+    /// Authenticated: a page of the hub's authorization record store past `cursor`, the
+    /// stored order the requester reached in each envelope class. Served to removed and held
+    /// devices too.
+    SyncRecords {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        cursor: Vec<u64>,
+        max_bytes: u32,
+    },
+    SyncRecordPage {
+        records: Vec<String>,
+        cursor: Vec<u64>,
+        more: bool,
+    },
+    /// Authenticated: stored envelopes whose envelope or entry hash is among `hashes`, and the
+    /// certificates of `writers`.
+    SyncRecordGet {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        hashes: Vec<String>,
+        writers: Vec<String>,
+    },
+    SyncRecordFound {
+        records: Vec<String>,
+    },
+    /// Authenticated: authorization records, certificates, and fork evidence the hub may lack.
+    SyncRecordPush {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        records: Vec<String>,
+    },
+    /// How many pushed envelopes the hub did not hold, and what it still lacks that they
+    /// reference.
+    SyncRecordPushResult {
+        admitted: u32,
+        missing_hashes: Vec<String>,
+        missing_writers: Vec<String>,
+    },
+    /// Opens the setup of an always-on anchor, or asks its version. A device may send it
+    /// without a client certificate. Its shape and the challenge's stay stable across protocol
+    /// versions, so each side can say which one needs an update.
+    AnchorHello {
+        protocol_version: u16,
+        compatibility: HandoffCompatibility,
+        client_nonce: String,
+    },
+    /// The server's versions and its nonce for the setup proof.
+    AnchorChallenge {
+        protocol_version: u16,
+        compatibility: HandoffCompatibility,
+        server_nonce: String,
+    },
+    /// Proves the setup secret, see [`anchor::anchor_setup_proof`].
+    AnchorProof {
+        proof: String,
+        /// The vault the device sets up, or `None` when it recovers the vault the server runs.
+        vault_id: Option<String>,
+    },
+    /// What the server tells a device that proved the secret: the keys it enrolls with, and
+    /// the space it already serves, if any.
+    AnchorIdentity {
+        device_id: String,
+        device_label: String,
+        device_key: String,
+        admin_key: String,
+        space: Option<anchor::AnchorSpace>,
+    },
+    /// Uploads a snapshot of the vault over the setup connection. A [`Self::ResumeAt`] answer
+    /// asks for the archive bytes, then a [`Self::BundleComplete`] closes them.
+    AnchorUpload {
+        metadata: BundleMetadata,
+        charter: String,
+        person_key: String,
+        take_anchor: bool,
+    },
+    /// The server opened the uploaded snapshot and runs it.
+    AnchorActivated {
+        vault_id: String,
+    },
+    /// Asks the server's sequencer to take a proposal the recovery key signed, for a device
+    /// that lost every other device of the space. [`Self::SyncProposed`] answers it.
+    AnchorRecover {
+        proposal: String,
+    },
     Error {
         code: String,
         message: String,
@@ -456,8 +538,16 @@ pub enum ControlMessage {
 }
 
 impl ControlMessage {
+    /// Whether this is a record exchange request, which every paired peer is served whatever
+    /// the authorization log says of its device.
+    pub fn is_record_exchange(&self) -> bool {
+        matches!(
+            self,
+            Self::SyncRecords { .. } | Self::SyncRecordGet { .. } | Self::SyncRecordPush { .. }
+        )
+    }
+
     /// The vault and device a sync request names, or `None` for any other message.
-    #[cfg(desktop)]
     pub fn sync_peer(&self) -> Option<(&str, &str)> {
         match self {
             Self::SyncHello {
@@ -485,6 +575,11 @@ impl ControlMessage {
                 device_id,
                 ..
             }
+            | Self::SyncForkEvidence {
+                vault_id,
+                device_id,
+                ..
+            }
             | Self::SyncAssetQuery {
                 vault_id,
                 device_id,
@@ -496,6 +591,31 @@ impl ControlMessage {
                 ..
             }
             | Self::SyncAssetPut {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncPropose {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncForward {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecords {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecordGet {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncRecordPush {
                 vault_id,
                 device_id,
                 ..
@@ -515,6 +635,8 @@ impl ControlMessage {
                 device_label,
                 device_kind: _,
                 device_certificate,
+                sync_device_key,
+                sync_admin_key,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("invitation id", invitation_id)?;
@@ -525,16 +647,33 @@ impl ControlMessage {
                 if device_certificate.is_empty() || device_certificate.len() > 8 * 1024 {
                     return Err("device certificate is invalid".to_string());
                 }
+                decode_sync_device_key(sync_device_key)?;
+                if let Some(key) = sync_admin_key {
+                    decode_sync_admin_key(key)?;
+                }
             }
             Self::Enrolled {
                 protocol_version,
                 coordinator_device_id,
                 coordinator_device_label,
+                charter,
+                person_key,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("coordinator device id", coordinator_device_id)?;
                 if let Some(label) = coordinator_device_label {
                     validate_device_label("coordinator device label", label)?;
+                }
+                match (charter, person_key) {
+                    (Some(charter), Some(person_key)) => {
+                        decode_sync_charter(charter, person_key)?;
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(
+                            "the sync charter and its person key travel together".to_string()
+                        );
+                    }
                 }
             }
             Self::RequestBundle {
@@ -542,139 +681,36 @@ impl ControlMessage {
                 compatibility,
                 vault_id,
                 device_id,
-                ..
             } => {
                 validate_protocol(*protocol_version)?;
                 compatibility.validate()?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
             }
-            Self::BundlePrepared { metadata, .. } | Self::CommitStagedOwnership { metadata } => {
-                metadata.validate()?
-            }
-            Self::BundlePending {
-                protocol_version,
-                owner_device_id,
-                ..
-            } => {
-                validate_protocol(*protocol_version)?;
-                validate_identifier("owner device id", owner_device_id)?;
-            }
-            Self::DownloadBundle { metadata } | Self::BundleMetadata { metadata } => {
-                metadata.validate()?
-            }
-            Self::UploadBundle {
-                metadata,
-                source_device_id,
-                ..
-            }
-            | Self::CommitUploadedOwnership {
-                metadata,
-                source_device_id,
-            } => {
-                metadata.validate()?;
-                validate_identifier("source device id", source_device_id)?;
-                if source_device_id == &metadata.device_id {
-                    return Err("bundle source and receiver must be different devices".to_string());
-                }
-            }
+            Self::BundlePrepared { metadata }
+            | Self::DownloadBundle { metadata }
+            | Self::BundleMetadata { metadata } => metadata.validate()?,
             Self::ResumeAt { offset } => {
                 if *offset > MAX_ARCHIVE_BYTES {
                     return Err("resume offset exceeds the archive limit".to_string());
                 }
             }
             Self::BundleComplete { transfer_id }
-            | Self::BundleStaged { transfer_id }
             | Self::ActivationAcknowledged { transfer_id }
             | Self::CancelTransfer { transfer_id }
             | Self::TransferCancelled { transfer_id } => {
                 validate_identifier("transfer id", transfer_id)?;
-            }
-            Self::OwnershipGrant {
-                protocol_version,
-                vault_id,
-                transfer_id,
-                owner_device_id,
-                generation,
-            } => {
-                validate_protocol(*protocol_version)?;
-                validate_identifier("vault id", vault_id)?;
-                validate_identifier("transfer id", transfer_id)?;
-                validate_identifier("owner device id", owner_device_id)?;
-                if *generation == 0 {
-                    return Err("ownership grant generation must be positive".to_string());
-                }
             }
             Self::ActivationComplete {
                 protocol_version,
                 vault_id,
                 device_id,
                 transfer_id,
-                generation,
-                purpose,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
                 validate_identifier("transfer id", transfer_id)?;
-                if *purpose == BundlePurpose::Ownership && *generation == 0 {
-                    return Err("activation generation must be positive".to_string());
-                }
-            }
-            Self::RefreshRequest {
-                protocol_version,
-                compatibility,
-                vault_id,
-                device_id,
-                ..
-            } => {
-                validate_protocol(*protocol_version)?;
-                compatibility.validate()?;
-                validate_identifier("vault id", vault_id)?;
-                validate_identifier("device id", device_id)?;
-            }
-            Self::RefreshStatus { transfer_id, .. } => {
-                if let Some(transfer_id) = transfer_id {
-                    validate_identifier("transfer id", transfer_id)?;
-                }
-            }
-            Self::DistractionsExchange {
-                protocol_version,
-                vault_id,
-                device_id,
-                samples,
-                acknowledged_peer_sample_ids,
-                owner_snapshot,
-            } => {
-                validate_protocol(*protocol_version)?;
-                validate_identifier("vault id", vault_id)?;
-                validate_identifier("device id", device_id)?;
-                if samples.len() > MAX_DISTRACTIONS_SAMPLES {
-                    return Err("too many Distractions samples".to_string());
-                }
-                for sample in samples {
-                    validate_distractions_sample(sample)?;
-                    if sample.device_id != *device_id {
-                        return Err("Distractions sample metadata is invalid".to_string());
-                    }
-                }
-                validate_distractions_sample_ids(acknowledged_peer_sample_ids)?;
-                validate_distractions_samples(owner_snapshot)?;
-                if samples.len() + owner_snapshot.len() > MAX_DISTRACTIONS_SAMPLES {
-                    return Err("Distractions exchange exceeds the sample limit".to_string());
-                }
-            }
-            Self::DistractionsAcknowledged {
-                acknowledged_sample_ids,
-                peer_samples,
-                combined_samples,
-            } => {
-                validate_distractions_sample_ids(acknowledged_sample_ids)?;
-                validate_distractions_samples(peer_samples)?;
-                validate_distractions_samples(combined_samples)?;
-                if peer_samples.len() + combined_samples.len() > MAX_DISTRACTIONS_SAMPLES {
-                    return Err("Distractions response exceeds the sample limit".to_string());
-                }
             }
             Self::ContactRequest {
                 protocol_version,
@@ -770,22 +806,31 @@ impl ControlMessage {
                 manifest_version: _,
                 stored,
                 probe,
+                listening,
             } => {
                 validate_sync_peer(*protocol_version, vault_id, device_id)?;
                 sync::validate_vector(stored)?;
                 if let Some(probe) = probe {
                     sync::validate_probe(probe)?;
                 }
+                sync::validate_coordinator_endpoints(listening)?;
             }
             Self::SyncState {
                 manifest_version: _,
                 stored,
                 probe_hash,
+                members,
+                stable,
+                bootstrap_required: _,
+                forked,
             } => {
                 sync::validate_vector(stored)?;
+                sync::validate_vector(stable)?;
+                sync::validate_vector(forked)?;
                 if let Some(hash) = probe_hash {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
+                sync::validate_member_endpoints(members)?;
             }
             Self::SyncPush {
                 protocol_version,
@@ -836,6 +881,18 @@ impl ControlMessage {
                 sync::validate_hash_range(*from_seq, *limit)?;
             }
             Self::SyncHashList { hashes } => sync::validate_hashes(hashes)?,
+            Self::SyncForkEvidence {
+                protocol_version,
+                vault_id,
+                device_id,
+                writer,
+                evidence,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_writer(writer)?;
+                sync::validate_evidence(evidence, false)?;
+            }
+            Self::SyncForkPair { evidence } => sync::validate_evidence(evidence, true)?,
             Self::SyncAssetQuery {
                 protocol_version,
                 vault_id,
@@ -845,7 +902,7 @@ impl ControlMessage {
                 validate_sync_peer(*protocol_version, vault_id, device_id)?;
                 sync::validate_assets(assets)?;
             }
-            Self::SyncAssetPresence { held } => sync::validate_asset_digests(held)?,
+            Self::SyncAssetPresence { held } => sync::validate_asset_keys(held)?,
             Self::SyncAssetGet {
                 protocol_version,
                 vault_id,
@@ -870,6 +927,123 @@ impl ControlMessage {
                 sync::validate_asset_chunk(asset, *offset, data)?;
             }
             Self::SyncAssetReceived { received } => sync::validate_asset_received(*received)?,
+            Self::SyncPropose {
+                protocol_version,
+                vault_id,
+                device_id,
+                proposal,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                decode_sync_proposal(proposal)?;
+            }
+            Self::SyncProposed {
+                revision,
+                rejection,
+            } => sync::validate_proposed(*revision, *rejection)?,
+            Self::SyncForward {
+                protocol_version,
+                vault_id,
+                device_id,
+                settled,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_settled(settled)?;
+            }
+            Self::SyncForwarded { proposals } => sync::validate_forwarded(proposals)?,
+            Self::SyncRecords {
+                protocol_version,
+                vault_id,
+                device_id,
+                cursor,
+                max_bytes,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_record_cursor(cursor)?;
+                sync::validate_page_bytes(*max_bytes)?;
+            }
+            Self::SyncRecordPage {
+                records,
+                cursor,
+                more: _,
+            } => {
+                sync::validate_records(records)?;
+                sync::validate_record_cursor(cursor)?;
+            }
+            Self::SyncRecordGet {
+                protocol_version,
+                vault_id,
+                device_id,
+                hashes,
+                writers,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_record_wants(hashes, writers)?;
+            }
+            Self::SyncRecordFound { records } => sync::validate_records(records)?,
+            Self::SyncRecordPush {
+                protocol_version,
+                vault_id,
+                device_id,
+                records,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_records(records)?;
+            }
+            Self::SyncRecordPushResult {
+                admitted,
+                missing_hashes,
+                missing_writers,
+            } => {
+                sync::validate_record_wants(missing_hashes, missing_writers)?;
+                if *admitted as usize > sync::MAX_SYNC_RECORDS {
+                    return Err("sync record admission count is invalid".to_string());
+                }
+            }
+            Self::AnchorHello {
+                compatibility,
+                client_nonce: nonce,
+                ..
+            }
+            | Self::AnchorChallenge {
+                compatibility,
+                server_nonce: nonce,
+                ..
+            } => {
+                compatibility.validate()?;
+                anchor::decode_anchor_nonce(nonce)?;
+            }
+            Self::AnchorProof { proof, vault_id } => {
+                anchor::decode_anchor_proof(proof)?;
+                if let Some(vault_id) = vault_id {
+                    validate_identifier("vault id", vault_id)?;
+                }
+            }
+            Self::AnchorIdentity {
+                device_id,
+                device_label,
+                device_key,
+                admin_key,
+                space,
+            } => {
+                validate_identifier("server device id", device_id)?;
+                validate_device_label("server device label", device_label)?;
+                decode_sync_device_key(device_key)?;
+                decode_sync_admin_key(admin_key)?;
+                if let Some(space) = space {
+                    space.validate()?;
+                }
+            }
+            Self::AnchorUpload {
+                metadata,
+                charter,
+                person_key,
+                ..
+            } => {
+                metadata.validate()?;
+                decode_sync_charter(charter, person_key)?;
+            }
+            Self::AnchorActivated { vault_id } => validate_identifier("vault id", vault_id)?,
+            Self::AnchorRecover { proposal } => decode_sync_proposal(proposal).map(drop)?,
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -904,74 +1078,107 @@ fn validate_card_text(label: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_distractions_sample_ids(sample_ids: &[String]) -> Result<(), String> {
-    if sample_ids.len() > MAX_DISTRACTIONS_SAMPLES {
-        return Err("too many acknowledged Distractions samples".to_string());
-    }
-    for sample_id in sample_ids {
-        validate_identifier("sample id", sample_id)?;
-    }
-    Ok(())
+/// A message carried in one length-prefixed JSON frame. Every frame is validated before it is
+/// encoded and after it is decoded, so a peer never sends or acts on a message outside its bounds.
+pub trait Frame: Serialize + DeserializeOwned {
+    /// What the frame is called in errors.
+    const LABEL: &'static str;
+
+    /// Checks every bound and text form of the message.
+    fn validate(&self) -> Result<(), String>;
 }
 
-fn validate_distractions_samples(samples: &[DistractionsSampleMessage]) -> Result<(), String> {
-    if samples.len() > MAX_DISTRACTIONS_SAMPLES {
-        return Err("too many Distractions samples".to_string());
+impl Frame for ControlMessage {
+    const LABEL: &'static str = "handoff control message";
+
+    fn validate(&self) -> Result<(), String> {
+        ControlMessage::validate(self)
     }
-    for sample in samples {
-        validate_distractions_sample(sample)?;
-    }
-    Ok(())
 }
 
-fn validate_distractions_sample(sample: &DistractionsSampleMessage) -> Result<(), String> {
-    validate_identifier("sample id", &sample.sample_id)?;
-    validate_identifier("sample device id", &sample.device_id)?;
-    if !matches!(
-        sample.source_type.as_str(),
-        "website" | "desktop-app" | "mobile-app"
-    ) || sample.source_key.trim().is_empty()
-        || sample.source_key.len() > 255
-        || sample
-            .display_name
-            .as_ref()
-            .is_some_and(|name| name.len() > 120)
-        || sample.started_at_ms < 0
-        || !(1..=86_400).contains(&sample.elapsed_seconds)
-        || !is_valid_local_date(&sample.local_date)
-        || sample.created_at_ms < 0
-    {
-        return Err("Distractions sample metadata is invalid".to_string());
+/// Writes one frame: a big-endian u32 length, then the JSON encoding of a valid `message` no
+/// larger than [`MAX_CONTROL_BYTES`].
+pub async fn write_frame<W, T>(writer: &mut W, message: &T) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+    T: Frame,
+{
+    message.validate()?;
+    let label = T::LABEL;
+    let encoded =
+        serde_json::to_vec(message).map_err(|error| format!("encode {label}: {error}"))?;
+    if encoded.len() > MAX_CONTROL_BYTES {
+        return Err(format!("{label} exceeds the size limit"));
     }
-    Ok(())
+    writer
+        .write_u32(encoded.len() as u32)
+        .await
+        .map_err(|error| format!("write {label} length: {error}"))?;
+    writer
+        .write_all(&encoded)
+        .await
+        .map_err(|error| format!("write {label}: {error}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|error| format!("flush {label}: {error}"))
 }
 
-fn is_valid_local_date(value: &str) -> bool {
-    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+/// Reads one frame no larger than `max_bytes`, which never exceeds [`MAX_CONTROL_BYTES`]. The
+/// length is checked before the frame is allocated, and the decoded message is validated.
+pub async fn read_frame<R, T>(reader: &mut R, max_bytes: usize) -> Result<T, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
+    let length = read_frame_length::<R, T>(reader, max_bytes).await?;
+    read_frame_body(reader, length).await
+}
+
+/// Reads the length prefix of one frame and checks it against `max_bytes`, which never exceeds
+/// [`MAX_CONTROL_BYTES`]. A caller that budgets memory reserves the returned length before it
+/// reads the body with [`read_frame_body`].
+pub async fn read_frame_length<R, T>(reader: &mut R, max_bytes: usize) -> Result<usize, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
+    let label = T::LABEL;
+    let length = reader
+        .read_u32()
+        .await
+        .map_err(|error| format!("read {label} length: {error}"))? as usize;
+    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
+        return Err(format!("{label} has an invalid size"));
+    }
+    Ok(length)
+}
+
+/// Reads and validates the body of a frame whose length [`read_frame_length`] returned.
+pub async fn read_frame_body<R, T>(reader: &mut R, length: usize) -> Result<T, String>
+where
+    R: AsyncRead + Unpin,
+    T: Frame,
+{
+    let label = T::LABEL;
+    if length == 0 || length > MAX_CONTROL_BYTES {
+        return Err(format!("{label} has an invalid size"));
+    }
+    let mut encoded = vec![0_u8; length];
+    reader
+        .read_exact(&mut encoded)
+        .await
+        .map_err(|error| format!("read {label}: {error}"))?;
+    let message: T = decode_bounded_json(&encoded, label)?;
+    message.validate()?;
+    Ok(message)
 }
 
 pub async fn write_control<W>(writer: &mut W, message: &ControlMessage) -> Result<(), String>
 where
     W: AsyncWrite + Unpin,
 {
-    message.validate()?;
-    let encoded = serde_json::to_vec(message)
-        .map_err(|error| format!("encode handoff control message: {error}"))?;
-    if encoded.len() > MAX_CONTROL_BYTES {
-        return Err("handoff control message exceeds the size limit".to_string());
-    }
-    writer
-        .write_u32(encoded.len() as u32)
-        .await
-        .map_err(|error| format!("write handoff message length: {error}"))?;
-    writer
-        .write_all(&encoded)
-        .await
-        .map_err(|error| format!("write handoff message: {error}"))?;
-    writer
-        .flush()
-        .await
-        .map_err(|error| format!("flush handoff message: {error}"))
+    write_frame(writer, message).await
 }
 
 pub async fn read_control<R>(reader: &mut R) -> Result<ControlMessage, String>
@@ -990,22 +1197,7 @@ pub async fn read_control_limited<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let length = reader
-        .read_u32()
-        .await
-        .map_err(|error| format!("read handoff message length: {error}"))?
-        as usize;
-    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
-        return Err("handoff control message has an invalid size".to_string());
-    }
-    let mut encoded = vec![0_u8; length];
-    reader
-        .read_exact(&mut encoded)
-        .await
-        .map_err(|error| format!("read handoff message: {error}"))?;
-    let message: ControlMessage = decode_bounded_json(&encoded, "handoff control message")?;
-    message.validate()?;
-    Ok(message)
+    read_frame(reader, max_bytes).await
 }
 
 fn decode_bounded_json<T: DeserializeOwned>(encoded: &[u8], label: &str) -> Result<T, String> {
@@ -1116,7 +1308,6 @@ fn encode_pairing_qr_payload(invitation: &PairingInvitation) -> Result<Vec<u8>, 
     )?);
     push_qr_string(&mut payload, &invitation.coordinator_device_id)?;
     push_qr_string(&mut payload, &invitation.vault_id)?;
-    payload.extend_from_slice(&invitation.generation.to_be_bytes());
     payload.extend_from_slice(&invitation.expires_at_ms.to_be_bytes());
     Ok(payload)
 }
@@ -1136,7 +1327,6 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
     let coordinator_fingerprint = encode_qr_digest(take_qr_array(payload, &mut position)?);
     let coordinator_device_id = take_qr_string(payload, &mut position)?;
     let vault_id = take_qr_string(payload, &mut position)?;
-    let generation = u64::from_be_bytes(take_qr_array(payload, &mut position)?);
     let expires_at_ms = i64::from_be_bytes(take_qr_array(payload, &mut position)?);
     if position != payload.len() {
         return Err("pairing QR code contains unexpected data".to_string());
@@ -1154,7 +1344,6 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
         coordinator_fingerprint,
         coordinator_device_id,
         vault_id,
-        generation,
         expires_at_ms,
     };
     invitation.validate(now_ms)?;
@@ -1337,6 +1526,10 @@ pub fn test_compatibility() -> HandoffCompatibility {
 mod tests {
     use super::*;
 
+    fn test_device_key() -> ganbaru_sync_contracts::DevicePublicKey {
+        ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32])
+    }
+
     fn qr_invitation() -> PairingInvitation {
         PairingInvitation {
             protocol_version: PROTOCOL_VERSION,
@@ -1349,7 +1542,6 @@ mod tests {
             coordinator_fingerprint: "b".repeat(64),
             coordinator_device_id: "device-abcdefghijklmnopqrstuv".to_string(),
             vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
-            generation: 7,
             expires_at_ms: i64::MAX,
         }
     }
@@ -1367,6 +1559,8 @@ mod tests {
             device_label: "Phone".to_string(),
             device_kind: DeviceKind::Phone,
             device_certificate: "certificate".to_string(),
+            sync_device_key: encode_sync_device_key(&test_device_key()),
+            sync_admin_key: None,
         };
         for output in [format!("{invitation:?}"), format!("{enroll:?}")] {
             assert!(!output.contains(&secret), "{output}");
@@ -1377,6 +1571,30 @@ mod tests {
         let decoded: ControlMessage =
             serde_json::from_value(serialized).expect("decode enrollment");
         assert_eq!(decoded, enroll);
+    }
+
+    #[test]
+    fn usage_exchange_messages_are_not_part_of_the_protocol() {
+        // Usage reaches other devices as replicated daily totals, so the control channel
+        // carries no usage samples in either direction.
+        for kind in ["distractionsExchange", "distractionsAcknowledged"] {
+            let message = serde_json::json!({
+                "kind": kind,
+                "protocolVersion": PROTOCOL_VERSION,
+                "vaultId": "vault-abcdefghijklmnopqrstuv",
+                "deviceId": "device-phone",
+                "samples": [],
+                "acknowledgedPeerSampleIds": [],
+                "ownerSnapshot": [],
+                "acknowledgedSampleIds": [],
+                "peerSamples": [],
+                "combinedSamples": [],
+            });
+            assert!(
+                serde_json::from_value::<ControlMessage>(message).is_err(),
+                "{kind} must not decode"
+            );
+        }
     }
 
     #[test]
@@ -1392,11 +1610,15 @@ mod tests {
             device_label: label.to_string(),
             device_kind: DeviceKind::Phone,
             device_certificate: "certificate".to_string(),
+            sync_device_key: encode_sync_device_key(&test_device_key()),
+            sync_admin_key: None,
         };
         let enrolled = |label: &str| ControlMessage::Enrolled {
             protocol_version: PROTOCOL_VERSION,
             coordinator_device_id: "device-desktop".to_string(),
             coordinator_device_label: Some(label.to_string()),
+            charter: None,
+            person_key: None,
         };
         for label in ["phone\u{0007}", "a\u{202E}b", "a\u{200F}b", ""] {
             assert!(enroll(label).validate().is_err(), "{label:?}");
@@ -1409,6 +1631,96 @@ mod tests {
         ] {
             assert_eq!(enroll(label).validate(), Ok(()), "{label:?}");
             assert_eq!(enrolled(label).validate(), Ok(()), "{label:?}");
+        }
+        let with_key = |key: String| match enroll("Phone") {
+            ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind,
+                device_certificate,
+                ..
+            } => ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind,
+                device_certificate,
+                sync_device_key: key,
+                sync_admin_key: None,
+            },
+            _ => unreachable!(),
+        };
+        let full = encode_sync_device_key(&test_device_key());
+        for invalid in [
+            String::new(),
+            full[1..].to_string(),
+            format!("{full}AA"),
+            "+".repeat(43),
+        ] {
+            assert!(with_key(invalid.clone()).validate().is_err(), "{invalid:?}");
+        }
+        assert_eq!(
+            decode_sync_device_key(&full),
+            Ok(test_device_key()),
+            "the device key round-trips"
+        );
+
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[6; 32])
+            .expect("admin")
+            .public_key();
+        let with_admin = |key: Option<String>| match enroll("Desktop") {
+            ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind: _,
+                device_certificate,
+                sync_device_key,
+                ..
+            } => ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind: DeviceKind::Computer,
+                device_certificate,
+                sync_device_key,
+                sync_admin_key: key,
+            },
+            _ => unreachable!(),
+        };
+        let admin_text = encode_sync_admin_key(&admin);
+        let desktop = with_admin(Some(admin_text.clone()));
+        assert_eq!(desktop.validate(), Ok(()));
+        assert_eq!(decode_sync_admin_key(&admin_text), Ok(admin));
+        let serialized = serde_json::to_value(&desktop).expect("serialize enrollment");
+        assert_eq!(serialized["sync_admin_key"], admin_text.as_str());
+        let phone = serde_json::to_value(with_admin(None)).expect("serialize enrollment");
+        assert!(
+            phone.get("sync_admin_key").is_none(),
+            "an enrollment without an admin key leaves the field out"
+        );
+        assert_eq!(
+            serde_json::from_value::<ControlMessage>(phone).expect("parse enrollment"),
+            with_admin(None)
+        );
+        for invalid in [String::new(), admin_text[1..].to_string(), "+".repeat(43)] {
+            assert!(
+                with_admin(Some(invalid.clone())).validate().is_err(),
+                "{invalid:?}"
+            );
         }
     }
 
@@ -1548,9 +1860,9 @@ mod tests {
             vault_id: "vault-1".to_string(),
             device_id: "device-1".to_string(),
             transfer_id: "transfer-1".to_string(),
-            generation: 1,
             archive_bytes: 10,
             archive_sha256: "a".repeat(64),
+            derived_state_stale: false,
         };
         metadata.archive_sha256 = "not-a-digest".to_string();
         assert!(metadata.validate().unwrap_err().contains("SHA-256"));
@@ -1561,6 +1873,7 @@ mod tests {
 
     fn asset(byte_size: u32) -> SyncAsset {
         SyncAsset {
+            class: "quick-notes/images".to_string(),
             sha256: "a".repeat(64),
             content_type: "image/png".to_string(),
             byte_size,
@@ -1612,9 +1925,72 @@ mod tests {
                 .unwrap_err()
                 .contains("too large")
         );
-        let presence = |held: Vec<String>| ControlMessage::SyncAssetPresence { held };
-        presence(vec!["a".repeat(64)]).validate().unwrap();
-        assert!(presence(vec!["../a".to_string()]).validate().is_err());
+        let presence = |held: Vec<SyncAssetKey>| ControlMessage::SyncAssetPresence { held };
+        presence(vec![asset(10).key()]).validate().unwrap();
+        let mut escaping = asset(10).key();
+        escaping.sha256 = "../a".to_string();
+        assert!(presence(vec![escaping]).validate().is_err());
+        assert!(
+            presence(vec![asset(10).key(); MAX_SYNC_ASSETS + 1])
+                .validate()
+                .unwrap_err()
+                .contains("too large")
+        );
+    }
+
+    #[test]
+    fn sync_asset_classes_must_be_relative_lowercase_paths() {
+        let query = |class: &str| {
+            let mut classed = asset(10);
+            classed.class = class.to_string();
+            ControlMessage::SyncAssetQuery {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-1".to_string(),
+                device_id: "device-1".to_string(),
+                assets: vec![classed],
+            }
+        };
+        for valid in ["quick-notes/images", "notes", "a/b/c-2"] {
+            query(valid).validate().unwrap();
+        }
+        for invalid in [
+            "",
+            "/quick-notes",
+            "quick-notes/",
+            "quick-notes//images",
+            "../images",
+            "quick-notes/..",
+            ".",
+            "Quick-notes/images",
+            "quick notes",
+            "quick-notes\\images",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(
+                query(invalid).validate(),
+                Err("sync asset class is invalid".to_string()),
+                "{invalid}"
+            );
+            let key = SyncAssetKey {
+                class: invalid.to_string(),
+                sha256: "a".repeat(64),
+            };
+            assert!(
+                ControlMessage::SyncAssetPresence { held: vec![key] }
+                    .validate()
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_assets_up_to_64_mib_stream_through_the_exchange() {
+        assert_eq!(MAX_SYNC_ASSET_BYTES, 64 * 1024 * 1024);
+        let last = MAX_SYNC_ASSET_BYTES - 3;
+        put(asset(MAX_SYNC_ASSET_BYTES), last, "AAAA".to_string())
+            .validate()
+            .unwrap();
     }
 
     #[test]
@@ -1690,6 +2066,533 @@ mod tests {
         ] {
             let error = status(issued_at_ms).validate().unwrap_err();
             assert!(error.contains("replay window"), "{issued_at_ms}: {error}");
+        }
+    }
+
+    /// Member endpoints of distinct devices, one per endpoint.
+    fn members(endpoints: &[&str]) -> Vec<MemberEndpoint> {
+        endpoints
+            .iter()
+            .zip(0u64..)
+            .map(|(endpoint, index)| MemberEndpoint {
+                device_id: format!("device-{index}"),
+                endpoint: (*endpoint).to_string(),
+                observed_ms: 1_700_000_000_000 + index,
+            })
+            .collect()
+    }
+
+    fn sync_state(endpoints: &[&str]) -> ControlMessage {
+        sync_state_with(members(endpoints))
+    }
+
+    fn sync_state_with(members: Vec<MemberEndpoint>) -> ControlMessage {
+        ControlMessage::SyncState {
+            manifest_version: 1,
+            stored: vec![SyncSeq {
+                writer: "a".repeat(32),
+                seq: 3,
+            }],
+            probe_hash: Some("c".repeat(64)),
+            members,
+            stable: vec![SyncSeq {
+                writer: "a".repeat(32),
+                seq: 2,
+            }],
+            bootstrap_required: false,
+            forked: vec![SyncSeq {
+                writer: "b".repeat(32),
+                seq: 3,
+            }],
+        }
+    }
+
+    fn frame_round_trip(message: &ControlMessage) -> Result<ControlMessage, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let mut frame = Vec::new();
+            write_control(&mut frame, message).await?;
+            read_control(&mut frame.as_slice()).await
+        })
+    }
+
+    #[test]
+    fn sync_state_round_trips_reported_endpoints() {
+        let state = sync_state(&[
+            "192.168.1.20:43821",
+            "[fd00::5]:43821",
+            "[2a01:4f8:10:20::5]:43821",
+            "100.64.3.4:43821",
+        ]);
+        assert_eq!(frame_round_trip(&state), Ok(state));
+        let empty = sync_state(&[]);
+        assert_eq!(frame_round_trip(&empty), Ok(empty));
+        let full = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS];
+        assert_eq!(sync_state(&full).validate(), Ok(()));
+    }
+
+    #[test]
+    fn member_endpoints_keep_their_wire_shape() {
+        let member = MemberEndpoint {
+            device_id: "device-laptop".to_string(),
+            endpoint: "192.168.1.20:43821".to_string(),
+            observed_ms: 1_700_000_000_123,
+        };
+        assert_eq!(
+            serde_json::to_value(&member).expect("serialize member endpoint"),
+            serde_json::json!({
+                "deviceId": "device-laptop",
+                "endpoint": "192.168.1.20:43821",
+                "observedMs": 1_700_000_000_123u64,
+            })
+        );
+        let hello = ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: vec!["192.168.1.20:43821".to_string()],
+        };
+        let wire = serde_json::to_value(&hello).expect("serialize sync hello");
+        assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
+        assert_eq!(wire["protocol_version"], serde_json::json!(17));
+        assert_eq!(frame_round_trip(&hello), Ok(hello));
+    }
+
+    #[test]
+    fn sync_hello_refuses_too_many_or_unreportable_listening_endpoints() {
+        let hello = |listening: Vec<&str>| ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: listening.into_iter().map(ToString::to_string).collect(),
+        };
+        assert_eq!(hello(Vec::new()).validate(), Ok(()));
+        assert_eq!(
+            hello(vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS]).validate(),
+            Ok(())
+        );
+        assert!(
+            hello(vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS + 1])
+                .validate()
+                .is_err()
+        );
+        assert!(hello(vec!["203.0.113.5:43821"]).validate().is_err());
+    }
+
+    #[test]
+    fn sync_state_refuses_unreportable_endpoints() {
+        let over = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS + 1];
+        assert!(sync_state(&over).validate().is_err());
+        let mut repeated = members(&["192.168.1.20:43821", "192.168.1.21:43821"]);
+        repeated[1].device_id = repeated[0].device_id.clone();
+        repeated[1].endpoint = repeated[0].endpoint.clone();
+        assert!(sync_state_with(repeated).validate().is_err());
+        let mut unnamed = members(&["192.168.1.20:43821"]);
+        unnamed[0].device_id = "device one".to_string();
+        assert!(sync_state_with(unnamed).validate().is_err());
+        for endpoint in [
+            "203.0.113.5:43821",
+            "127.0.0.1:43821",
+            "[::1]:43821",
+            "[fe80::1]:43821",
+            "192.168.1.20:0",
+            "192.168.1.20",
+            "",
+        ] {
+            let state = sync_state(&["10.0.0.4:43821", endpoint]);
+            assert!(state.validate().is_err(), "{endpoint:?}");
+            assert!(frame_round_trip(&state).is_err(), "{endpoint:?}");
+        }
+    }
+
+    #[test]
+    fn sync_state_round_trips_stability_and_refuses_malformed_stable_vectors() {
+        let mut state = sync_state(&[]);
+        if let ControlMessage::SyncState {
+            bootstrap_required, ..
+        } = &mut state
+        {
+            *bootstrap_required = true;
+        }
+        assert_eq!(frame_round_trip(&state), Ok(state));
+        for stable in [
+            vec![SyncSeq {
+                writer: "a".repeat(31),
+                seq: 1,
+            }],
+            vec![SyncSeq {
+                writer: "a".repeat(32),
+                seq: 0,
+            }],
+        ] {
+            let mut state = sync_state(&[]);
+            if let ControlMessage::SyncState { stable: field, .. } = &mut state {
+                *field = stable.clone();
+            }
+            assert!(state.validate().is_err(), "{stable:?}");
+        }
+        let refusal = SyncRefusal {
+            code: SyncRefusalCode::BootstrapRequired,
+            writer: None,
+            seq: None,
+        };
+        let encoded = serde_json::to_string(&refusal).expect("refusal encodes");
+        assert!(encoded.contains("\"bootstrap_required\""), "{encoded}");
+    }
+
+    #[test]
+    fn sync_state_bounds_its_forked_writers() {
+        let with_forked = |forked: Vec<SyncSeq>| {
+            let mut state = sync_state(&[]);
+            if let ControlMessage::SyncState { forked: field, .. } = &mut state {
+                *field = forked;
+            }
+            state
+        };
+        let writers = ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_SPACE;
+        let entry = |index: usize| SyncSeq {
+            writer: format!("{index:032x}"),
+            seq: 2,
+        };
+        let full = with_forked((0..writers).map(entry).collect());
+        assert_eq!(frame_round_trip(&full), Ok(full));
+        assert!(
+            with_forked((0..=writers).map(entry).collect())
+                .validate()
+                .is_err()
+        );
+        for malformed in [
+            SyncSeq {
+                writer: "B".repeat(32),
+                seq: 2,
+            },
+            SyncSeq {
+                writer: "b".repeat(32),
+                seq: 0,
+            },
+        ] {
+            assert!(with_forked(vec![malformed.clone()]).validate().is_err());
+        }
+    }
+
+    #[test]
+    fn fork_evidence_messages_round_trip_and_bound_their_operations() {
+        let op = |byte: u8| {
+            base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                vec![byte; 90],
+            )
+        };
+        let request = |evidence: Vec<String>| ControlMessage::SyncForkEvidence {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            writer: "a".repeat(32),
+            evidence,
+        };
+        for evidence in [Vec::new(), vec![op(1)], vec![op(1), op(2)]] {
+            let message = request(evidence);
+            assert_eq!(frame_round_trip(&message), Ok(message.clone()));
+            assert_eq!(message.sync_peer(), Some(("vault-1", "device-phone")));
+        }
+        assert!(request(vec![op(1), op(2), op(3)]).validate().is_err());
+        assert!(request(vec!["not base64!".to_string()]).validate().is_err());
+        let mut foreign = request(Vec::new());
+        if let ControlMessage::SyncForkEvidence { writer, .. } = &mut foreign {
+            *writer = "a".repeat(31);
+        }
+        assert!(foreign.validate().is_err());
+        let pair = |evidence| ControlMessage::SyncForkPair { evidence };
+        for evidence in [Vec::new(), vec![op(1), op(2)]] {
+            let message = pair(evidence);
+            assert_eq!(frame_round_trip(&message), Ok(message));
+        }
+        assert!(pair(vec![op(1)]).validate().is_err());
+        assert!(pair(vec![op(1), op(2), op(3)]).validate().is_err());
+    }
+
+    fn signed_charter(
+        person: &ganbaru_contacts::PersonKeyPair,
+        anchor_device_id: &str,
+    ) -> ganbaru_sync_contracts::SignedCharter {
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin");
+        ganbaru_sync_contracts::sign_charter(
+            &ganbaru_sync_contracts::Charter {
+                space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+                anchor_device_id: anchor_device_id.to_string(),
+                anchor_device_key: test_device_key(),
+                anchor_tls_fingerprint: [6; 32],
+                anchor_admin_key: admin.public_key(),
+                recovery_admin_key: admin.public_key(),
+                discovery_key: [7; 32],
+                created_at_ms: 1,
+            },
+            person,
+        )
+        .expect("sign charter")
+    }
+
+    #[test]
+    fn pairing_response_carries_a_charter_its_person_key_verifies() {
+        let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person");
+        let other = ganbaru_contacts::PersonKeyPair::from_seed(&[9; 32]).expect("other");
+        let enrolled =
+            |charter: Option<String>, person_key: Option<String>| ControlMessage::Enrolled {
+                protocol_version: PROTOCOL_VERSION,
+                coordinator_device_id: "device-desktop".to_string(),
+                coordinator_device_label: None,
+                charter,
+                person_key,
+            };
+        let charter = encode_sync_charter(&signed_charter(&person, "device-desktop"));
+        let person_key = person.public_key().to_text();
+        let valid = enrolled(Some(charter.clone()), Some(person_key.clone()));
+        assert_eq!(frame_round_trip(&valid), Ok(valid.clone()));
+        assert_eq!(enrolled(None, None).validate(), Ok(()));
+        // The charter names the founding anchor, which need not be the coordinator presenting it.
+        let founded_elsewhere = encode_sync_charter(&signed_charter(&person, "device-other"));
+        assert_eq!(
+            enrolled(Some(founded_elsewhere), Some(person_key.clone())).validate(),
+            Ok(())
+        );
+
+        let mut tampered =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &charter)
+                .expect("charter bytes");
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        let tampered =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, tampered);
+        for invalid in [
+            enrolled(Some(charter.clone()), None),
+            enrolled(None, Some(person_key.clone())),
+            enrolled(Some(charter.clone()), Some(other.public_key().to_text())),
+            enrolled(Some(tampered), Some(person_key.clone())),
+            enrolled(Some("A".repeat(4096)), Some(person_key.clone())),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn proposals_round_trip_verified_and_answers_name_one_outcome() {
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin");
+        let proposal = ganbaru_sync_contracts::sign_proposal(
+            &ganbaru_sync_contracts::Proposal {
+                space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+                charter: [7; 32],
+                author: admin.public_key(),
+                created_at_ms: 1,
+                entry: ganbaru_sync_contracts::Entry::Remove(ganbaru_sync_contracts::Remove {
+                    device_id: "device-phone".to_string(),
+                }),
+            },
+            &admin,
+        )
+        .expect("sign proposal");
+        let propose = |proposal: String| ControlMessage::SyncPropose {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-desktop".to_string(),
+            proposal,
+        };
+        let text = encode_sync_proposal(&proposal);
+        let message = propose(text.clone());
+        assert_eq!(frame_round_trip(&message), Ok(message.clone()));
+        assert_eq!(message.sync_peer(), Some(("vault-1", "device-desktop")));
+        assert_eq!(decode_sync_proposal(&text), Ok(proposal));
+        let mut forged =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &text)
+                .expect("proposal bytes");
+        let last = forged.len() - 1;
+        forged[last] ^= 1;
+        let forged =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, forged);
+        for invalid in [String::new(), forged, "not base64!".to_string()] {
+            assert!(propose(invalid.clone()).validate().is_err(), "{invalid:?}");
+        }
+
+        let answer = |revision, rejection| ControlMessage::SyncProposed {
+            revision,
+            rejection,
+        };
+        let not_anchor = ganbaru_sync_contracts::ProposalRejection::NotAnchor.as_u8();
+        for valid in [answer(Some(3), None), answer(None, Some(not_anchor))] {
+            assert_eq!(frame_round_trip(&valid), Ok(valid.clone()));
+        }
+        for invalid in [
+            answer(None, None),
+            answer(Some(3), Some(not_anchor)),
+            answer(Some(0), None),
+            answer(Some(u64::MAX), None),
+            answer(None, Some(u8::MAX)),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+
+        let forward = |settled: Vec<SyncSettledProposal>| ControlMessage::SyncForward {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            settled,
+        };
+        let rejected = |proposal: String, rejection: u8| SyncSettledProposal {
+            proposal,
+            rejection,
+        };
+        let hash = "ab".repeat(32);
+        let removed = ganbaru_sync_contracts::ProposalRejection::DeviceRemoved.as_u8();
+        let request = forward(vec![rejected(hash.clone(), removed)]);
+        assert_eq!(frame_round_trip(&request), Ok(request.clone()));
+        assert_eq!(request.sync_peer(), Some(("vault-1", "device-laptop")));
+        for invalid in [
+            forward(vec![rejected("AB".repeat(32), removed)]),
+            forward(vec![rejected(hash[1..].to_string(), removed)]),
+            forward(vec![rejected(hash.clone(), u8::MAX)]),
+            forward(vec![
+                rejected(hash.clone(), removed);
+                MAX_SYNC_FORWARDED_PROPOSALS + 1
+            ]),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+        let forwarded = |proposals: Vec<String>| ControlMessage::SyncForwarded { proposals };
+        let held = forwarded(vec![text.clone(); MAX_SYNC_FORWARDED_PROPOSALS]);
+        assert_eq!(frame_round_trip(&held), Ok(held.clone()));
+        for invalid in [
+            forwarded(vec![text.clone(); MAX_SYNC_FORWARDED_PROPOSALS + 1]),
+            forwarded(vec![String::new()]),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn sync_requests_of_the_previous_protocol_ask_for_an_update() {
+        let hello = |protocol_version| ControlMessage::SyncHello {
+            protocol_version,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: Vec::new(),
+        };
+        assert_eq!(hello(PROTOCOL_VERSION).validate(), Ok(()));
+        assert_eq!(
+            hello(PROTOCOL_VERSION - 1).validate(),
+            Err("handoff protocol version is unsupported".to_string())
+        );
+    }
+
+    #[test]
+    fn record_exchange_messages_round_trip_within_their_bounds() {
+        let peer = || {
+            (
+                "vault-abcdefghijklmnopqrstuv".to_string(),
+                "device-phone".to_string(),
+            )
+        };
+        let records = |count: usize| vec!["AAEC".to_string(); count];
+        let (vault_id, device_id) = peer();
+        let request = ControlMessage::SyncRecords {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            cursor: vec![0, 3, 0, 9, 12],
+            max_bytes: 64 * 1024,
+        };
+        assert!(request.is_record_exchange());
+        assert_eq!(frame_round_trip(&request), Ok(request));
+        let (vault_id, device_id) = peer();
+        let get = ControlMessage::SyncRecordGet {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            hashes: vec!["a".repeat(64); MAX_SYNC_RECORDS],
+            writers: vec!["b".repeat(32); MAX_SYNC_RECORDS],
+        };
+        assert!(get.is_record_exchange());
+        assert_eq!(frame_round_trip(&get), Ok(get));
+        let (vault_id, device_id) = peer();
+        let push = ControlMessage::SyncRecordPush {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id,
+            device_id,
+            records: records(MAX_SYNC_RECORDS),
+        };
+        assert!(push.is_record_exchange());
+        assert_eq!(frame_round_trip(&push), Ok(push));
+        let page = ControlMessage::SyncRecordPage {
+            records: records(MAX_SYNC_RECORDS),
+            cursor: vec![1; SYNC_RECORD_CLASSES],
+            more: true,
+        };
+        assert!(!page.is_record_exchange());
+        assert_eq!(frame_round_trip(&page), Ok(page));
+        let result = ControlMessage::SyncRecordPushResult {
+            admitted: MAX_SYNC_RECORDS as u32,
+            missing_hashes: vec!["c".repeat(64)],
+            missing_writers: vec!["d".repeat(32)],
+        };
+        assert_eq!(frame_round_trip(&result), Ok(result));
+    }
+
+    #[test]
+    fn record_exchange_messages_refuse_oversized_or_malformed_fields() {
+        let records = |count: usize| vec!["AAEC".to_string(); count];
+        let malformed = [
+            ControlMessage::SyncRecords {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                cursor: vec![0; SYNC_RECORD_CLASSES - 1],
+                max_bytes: 64 * 1024,
+            },
+            ControlMessage::SyncRecordPage {
+                records: records(MAX_SYNC_RECORDS + 1),
+                cursor: vec![0; SYNC_RECORD_CLASSES],
+                more: false,
+            },
+            ControlMessage::SyncRecordGet {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                hashes: vec!["a".repeat(64); MAX_SYNC_RECORDS + 1],
+                writers: Vec::new(),
+            },
+            ControlMessage::SyncRecordGet {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                hashes: Vec::new(),
+                writers: vec!["B".repeat(32)],
+            },
+            ControlMessage::SyncRecordFound {
+                records: vec![String::new()],
+            },
+            ControlMessage::SyncRecordPush {
+                protocol_version: PROTOCOL_VERSION - 1,
+                vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+                device_id: "device-phone".to_string(),
+                records: records(1),
+            },
+            ControlMessage::SyncRecordPushResult {
+                admitted: MAX_SYNC_RECORDS as u32 + 1,
+                missing_hashes: Vec::new(),
+                missing_writers: Vec::new(),
+            },
+        ];
+        for message in malformed {
+            assert!(message.validate().is_err(), "{message:?}");
         }
     }
 }

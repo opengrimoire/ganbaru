@@ -1,5 +1,4 @@
 import {
-  DEFAULT_DISTRACTIONS_CONFIG,
   isProtectedDistractionsDesktopAppName,
   distractionsLimitEntrySourceKeys,
   normalizeDistractionsAppName,
@@ -12,24 +11,59 @@ import {
   normalizeDistractionsUsageLimitName,
   normalizeDistractionsHost,
   parseDistractionsHosts,
+  distractionsEditProblem,
+  type DistractionsEditProblem,
   type DistractionsAppRule,
   type DistractionsCategoryId,
   type DistractionsCategoryRule,
   type DistractionsConfig,
   type DistractionsCustomCategory,
   type DistractionsDesktopConfig,
+  type DistractionsHostList,
   type DistractionsHostRule,
   type DistractionsLimitEntry,
   type DistractionsMobileAppRule,
   type DistractionsMobileConfig,
   type DistractionsMode,
+  type DistractionsRuleTarget,
+  type DistractionsRulesEditOutcome,
+  type DistractionsSettingFlag,
   type DistractionsUsageLimit,
 } from "$lib/distractions";
-import type { EventColor } from "$lib/calendar/types";
-import { configKeyChanged, getConfigKey, onConfigChangedElsewhere, setConfigKey } from "$lib/vault/config";
+import {
+  addDistractionsDesktopApp,
+  addDistractionsHosts,
+  addDistractionsMobileApp,
+  loadDistractionsRules,
+  removeDistractionsRule,
+  resetDistractionsRules,
+  saveDistractionsCustomCategory,
+  saveDistractionsUsageLimit,
+  setDistractionsRuleEnabled,
+  setDistractionsRulesMode,
+  type DistractionsUsageLimitDraft,
+  type DistractionsUsageLimitEntryDraft,
+} from "$lib/api/distractions";
+import { listenSyncApplied } from "$lib/api/sync";
 import { publishMobileDistractionsConfig } from "$lib/scheduling/mobile-distractions";
+import { createVaultChangeChannel } from "$lib/windows/vault-change-channel";
 
-const CONFIG_KEY = "distractions";
+export type { DistractionsUsageLimitDraft, DistractionsUsageLimitEntryDraft } from "$lib/api/distractions";
+
+/** Change key other windows receive after a rule edit; the whole rule set reloads. */
+const RULES_CHANGE_KEY = "rules";
+
+/** Sync applied topic and tables that carry distraction rules. */
+const RULES_SYNC_TABLES: ReadonlySet<string> = new Set([
+  "distractions_rules",
+  "distractions_settings",
+  "distractions_category_rules",
+  "distractions_custom_categories",
+  "distractions_host_rules",
+  "distractions_app_rules",
+  "distractions_usage_limits",
+  "distractions_usage_limit_entries",
+]);
 
 export type AddDistractionsCustomCategoryResult =
   | "added"
@@ -54,58 +88,138 @@ export type SaveDistractionsUsageLimitResult =
   | "duplicate-source"
   | "protected-source";
 
-export interface DistractionsUsageLimitDraft {
-  name: string;
-  minutesPerDay: number | null;
-  minutesPerWeek: number | null;
-  entries: readonly DistractionsUsageLimitEntryDraft[];
+let config = $state<DistractionsConfig>(normalizeDistractionsConfig(undefined));
+/** Why the latest rule edit was not saved; the next saved edit clears it. */
+let editProblem = $state<DistractionsEditProblem | null>(null);
+
+/** Edits and reloads run one at a time, in the order they were made. */
+let queue: Promise<void> = Promise.resolve();
+/** Increments with every local edit, so only the newest edit's or a later reload's rules replace what is shown. */
+let editGeneration = 0;
+
+const ruleChanges = createVaultChangeChannel("distractions-rules-changed");
+
+/** Replace the shown rules with the stored ones unless a local edit started meanwhile. */
+async function reloadRules(): Promise<void> {
+  const generation = editGeneration;
+  try {
+    const next = await loadDistractionsRules();
+    if (generation === editGeneration) config = next;
+  } catch (error) {
+    console.warn("Distractions rules could not be loaded", error);
+  }
 }
 
-export interface DistractionsUsageLimitEntryDraft {
-  id: string;
-  name: string;
-  color?: EventColor | null;
-  websiteHost: string;
-  mobileAppName: string;
-  mobileAppPackage: string;
-  desktopAppName: string;
-  desktopAppMatchNames: readonly string[];
+function queueReload(): void {
+  queue = queue.then(reloadRules);
 }
 
-function loadSavedConfig(): DistractionsConfig {
-  const saved = getConfigKey<unknown>(CONFIG_KEY, undefined);
-  return normalizeDistractionsConfig(saved);
-}
-
-let config = $state<DistractionsConfig>(loadSavedConfig());
-
-onConfigChangedElsewhere((keys) => {
-  if (configKeyChanged(keys, CONFIG_KEY)) config = loadSavedConfig();
-});
-
-function persist(next: DistractionsConfig): void {
-  config = next;
-  setConfigKey(CONFIG_KEY, next);
-  void publishMobileDistractionsConfig().catch((error: unknown) => {
-    console.warn("Android Distractions rules could not be published", error);
+/**
+ * Show an edit at once, then store it through its native command. The command's rules replace the shown ones when no
+ * newer edit is pending; a refusal or failure reloads the stored rules, so the screen never keeps an unsaved change.
+ */
+function edit(next: DistractionsConfig | null, run: () => Promise<DistractionsRulesEditOutcome>): void {
+  if (next) config = next;
+  editGeneration += 1;
+  const generation = editGeneration;
+  queue = queue.then(async () => {
+    try {
+      const outcome = await run();
+      editProblem = distractionsEditProblem(outcome);
+      if (outcome.status === "saved") {
+        ruleChanges.publish([RULES_CHANGE_KEY]);
+        if (generation === editGeneration) config = outcome.config;
+        return;
+      }
+      console.warn("Distractions rule edit was refused", outcome.reason);
+    } catch (error) {
+      editProblem = { kind: "failed" };
+      console.warn("Distractions rule edit could not be saved", error);
+    }
+    if (generation === editGeneration) await reloadRules();
   });
 }
 
-function update(partial: Partial<DistractionsConfig>): void {
-  persist({ ...config, ...partial });
+function update(partial: Partial<DistractionsConfig>, run: () => Promise<DistractionsRulesEditOutcome>): void {
+  edit({ ...config, ...partial }, run);
 }
 
-function updateDesktop(partial: Partial<DistractionsDesktopConfig>): void {
-  update({ desktop: { ...config.desktop, ...partial } });
+function updateDesktop(
+  partial: Partial<DistractionsDesktopConfig>,
+  run: () => Promise<DistractionsRulesEditOutcome>,
+): void {
+  update({ desktop: { ...config.desktop, ...partial } }, run);
 }
 
-function updateMobile(partial: Partial<DistractionsMobileConfig>): void {
-  update({ mobile: { ...config.mobile, ...partial } });
+function updateMobile(
+  partial: Partial<DistractionsMobileConfig>,
+  run: () => Promise<DistractionsRulesEditOutcome>,
+): void {
+  update({ mobile: { ...config.mobile, ...partial } }, run);
 }
 
-function updateLimits(partial: Partial<DistractionsConfig["limits"]>): void {
-  update({ limits: { ...config.limits, ...partial } });
+function updateLimits(
+  partial: Partial<DistractionsConfig["limits"]>,
+  run: () => Promise<DistractionsRulesEditOutcome>,
+): void {
+  update({ limits: { ...config.limits, ...partial } }, run);
 }
+
+function setSetting(setting: DistractionsSettingFlag, enabled: boolean): () => Promise<DistractionsRulesEditOutcome> {
+  return () => setDistractionsRuleEnabled({ kind: "setting", setting }, enabled);
+}
+
+function setTarget(target: DistractionsRuleTarget, enabled: boolean): () => Promise<DistractionsRulesEditOutcome> {
+  return () => setDistractionsRuleEnabled(target, enabled);
+}
+
+function removeTarget(target: DistractionsRuleTarget): () => Promise<DistractionsRulesEditOutcome> {
+  return () => removeDistractionsRule(target);
+}
+
+function hostListKey(list: DistractionsHostList): "blockedHosts" | "exceptionHosts" | "allowedHosts" {
+  if (list === "blocked") return "blockedHosts";
+  return list === "exception" ? "exceptionHosts" : "allowedHosts";
+}
+
+function addHostsText(list: DistractionsHostList, text: string): boolean {
+  const key = hostListKey(list);
+  const merged = mergeHosts(config[key], text);
+  if (!merged) return false;
+  const hosts = parseDistractionsHosts(text);
+  update({ [key]: merged }, () => addDistractionsHosts(list, hosts));
+  return true;
+}
+
+function removeListedHost(list: DistractionsHostList, host: string): void {
+  const key = hostListKey(list);
+  update({ [key]: removeHost(config[key], host) }, removeTarget({ kind: "host", list, host }));
+}
+
+function setListedHostEnabled(list: DistractionsHostList, host: string, enabled: boolean): void {
+  const key = hostListKey(list);
+  update({ [key]: setHostEnabled(config[key], host, enabled) }, setTarget({ kind: "host", list, host }, enabled));
+}
+
+/** Send budgets as whole minutes, the unit the native rules store. */
+function wholeMinuteDraft(draft: DistractionsUsageLimitDraft): DistractionsUsageLimitDraft {
+  return {
+    ...draft,
+    minutesPerDay: draft.minutesPerDay === null ? null : Math.trunc(draft.minutesPerDay),
+    minutesPerWeek: draft.minutesPerWeek === null ? null : Math.trunc(draft.minutesPerWeek),
+  };
+}
+
+function startRulesListeners(): void {
+  void listenSyncApplied((tables) => {
+    if (tables.some((table) => RULES_SYNC_TABLES.has(table))) queueReload();
+  }).catch((error: unknown) => console.warn("Distractions rules could not listen for sync", error));
+  void ruleChanges.listen(() => queueReload())
+    .catch((error: unknown) => console.warn("Distractions rules could not listen for other windows", error));
+}
+
+startRulesListeners();
+queueReload();
 
 function mergeHosts(
   existingHosts: readonly DistractionsHostRule[],
@@ -207,21 +321,6 @@ function setCategoryEnabled(
   return categories.map((rule) => rule.id === id ? { ...rule, enabled } : rule);
 }
 
-function slugifyCustomCategoryName(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "custom-stack";
-}
-
-function createCustomCategoryId(name: string): string {
-  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID().replace(/-/g, "").slice(0, 12)
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `${slugifyCustomCategoryName(name).slice(0, 48)}-${suffix}`;
-}
-
 function setCustomCategoryEnabled(
   customCategories: readonly DistractionsCustomCategory[],
   id: string,
@@ -242,18 +341,6 @@ function isDuplicateCustomCategoryName(name: string, currentId: string | null): 
   return config.customCategoryStacks.some((customCategory) => (
     customCategory.id !== currentId && customCategory.name.toLowerCase() === normalizedName
   ));
-}
-
-function createUsageLimitId(name: string): string {
-  const base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "limit";
-  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID().replace(/-/g, "").slice(0, 12)
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `${base}-${suffix}`;
 }
 
 function normalizeUsageLimitEntryId(value: string): string | null {
@@ -372,6 +459,10 @@ export function getDistractions() {
     get enabled(): boolean {
       return config.enabled;
     },
+    /** Why the latest rule edit was not saved, or `null` once an edit saves. */
+    get editProblem(): DistractionsEditProblem | null {
+      return editProblem;
+    },
     get mode(): DistractionsMode {
       return config.mode;
     },
@@ -451,58 +542,61 @@ export function getDistractions() {
       return publishMobileDistractionsConfig();
     },
     setMode(mode: DistractionsMode): void {
-      update({ mode });
+      update({ mode }, () => setDistractionsRulesMode(mode));
     },
     setEnabled(enabled: boolean): void {
-      update({ enabled });
+      update({ enabled }, setSetting("enabled", enabled));
     },
     setBlockDuringFocus(blockDuringFocus: boolean): void {
-      update({ blockDuringFocus });
+      update({ blockDuringFocus }, setSetting("blockDuringFocus", blockDuringFocus));
     },
     setBlockDuringShortBreaks(blockDuringShortBreaks: boolean): void {
-      update({ blockDuringShortBreaks });
+      update({ blockDuringShortBreaks }, setSetting("blockDuringShortBreaks", blockDuringShortBreaks));
     },
     setBlockDuringLongBreaks(blockDuringLongBreaks: boolean): void {
-      update({ blockDuringLongBreaks });
+      update({ blockDuringLongBreaks }, setSetting("blockDuringLongBreaks", blockDuringLongBreaks));
     },
     setPauseDuringFocusPause(pauseDuringFocusPause: boolean): void {
-      update({ pauseDuringFocusPause });
+      update({ pauseDuringFocusPause }, setSetting("pauseDuringFocusPause", pauseDuringFocusPause));
     },
     setDesktopEnabled(enabled: boolean): void {
-      updateDesktop({ enabled });
+      updateDesktop({ enabled }, setSetting("desktopEnabled", enabled));
     },
     setDesktopBlockDuringFocus(blockDuringFocus: boolean): void {
-      updateDesktop({ blockDuringFocus });
+      updateDesktop({ blockDuringFocus }, setSetting("desktopBlockDuringFocus", blockDuringFocus));
     },
     setDesktopBlockDuringShortBreaks(blockDuringShortBreaks: boolean): void {
-      updateDesktop({ blockDuringShortBreaks });
+      updateDesktop({ blockDuringShortBreaks }, setSetting("desktopBlockDuringShortBreaks", blockDuringShortBreaks));
     },
     setDesktopBlockDuringLongBreaks(blockDuringLongBreaks: boolean): void {
-      updateDesktop({ blockDuringLongBreaks });
+      updateDesktop({ blockDuringLongBreaks }, setSetting("desktopBlockDuringLongBreaks", blockDuringLongBreaks));
     },
     setDesktopPauseDuringFocusPause(pauseDuringFocusPause: boolean): void {
-      updateDesktop({ pauseDuringFocusPause });
+      updateDesktop({ pauseDuringFocusPause }, setSetting("desktopPauseDuringFocusPause", pauseDuringFocusPause));
     },
     setMobileEnabled(enabled: boolean): void {
-      updateMobile({ enabled });
+      updateMobile({ enabled }, setSetting("mobileEnabled", enabled));
     },
     setMobileBlockDuringFocus(blockDuringFocus: boolean): void {
-      updateMobile({ blockDuringFocus });
+      updateMobile({ blockDuringFocus }, setSetting("mobileBlockDuringFocus", blockDuringFocus));
     },
     setMobileBlockDuringShortBreaks(blockDuringShortBreaks: boolean): void {
-      updateMobile({ blockDuringShortBreaks });
+      updateMobile({ blockDuringShortBreaks }, setSetting("mobileBlockDuringShortBreaks", blockDuringShortBreaks));
     },
     setMobileBlockDuringLongBreaks(blockDuringLongBreaks: boolean): void {
-      updateMobile({ blockDuringLongBreaks });
+      updateMobile({ blockDuringLongBreaks }, setSetting("mobileBlockDuringLongBreaks", blockDuringLongBreaks));
     },
     setMobilePauseDuringFocusPause(pauseDuringFocusPause: boolean): void {
-      updateMobile({ pauseDuringFocusPause });
+      updateMobile({ pauseDuringFocusPause }, setSetting("mobilePauseDuringFocusPause", pauseDuringFocusPause));
     },
     setLimitsEnabled(enabled: boolean): void {
-      updateLimits({ enabled });
+      updateLimits({ enabled }, setSetting("limitsEnabled", enabled));
     },
     setBlockedCategoryEnabled(id: DistractionsCategoryId, enabled: boolean): void {
-      update({ blockedCategories: setCategoryEnabled(config.blockedCategories, id, enabled) });
+      update(
+        { blockedCategories: setCategoryEnabled(config.blockedCategories, id, enabled) },
+        setTarget({ kind: "category", id }, enabled),
+      );
     },
     addCustomCategory(
       nameInput: string,
@@ -510,25 +604,10 @@ export function getDistractions() {
     ): AddDistractionsCustomCategoryResult {
       const name = normalizeDistractionsCustomCategoryName(nameInput);
       if (!name) return "invalid-name";
-      const hosts = parseDistractionsHosts(hostsInput).map((host) => ({ host, enabled: true }));
+      const hosts = parseDistractionsHosts(hostsInput);
       if (hosts.length === 0) return "invalid-hosts";
       if (isDuplicateCustomCategoryName(name, null)) return "duplicate-name";
-      const existingIds = new Set(config.customCategoryStacks.map((customCategory) => customCategory.id));
-      let id = createCustomCategoryId(name);
-      while (existingIds.has(id)) {
-        id = createCustomCategoryId(name);
-      }
-      update({
-        customCategoryStacks: [
-          ...config.customCategoryStacks,
-          {
-            id,
-            name,
-            enabled: true,
-            hosts,
-          },
-        ],
-      });
+      edit(null, () => saveDistractionsCustomCategory(null, name, hosts));
       return "added";
     },
     updateCustomCategory(
@@ -538,59 +617,57 @@ export function getDistractions() {
     ): UpdateDistractionsCustomCategoryResult {
       const name = normalizeDistractionsCustomCategoryName(nameInput);
       if (!name) return "invalid-name";
-      const hosts = parseDistractionsHosts(hostsInput).map((host) => ({ host, enabled: true }));
+      const hosts = parseDistractionsHosts(hostsInput);
       if (hosts.length === 0) return "invalid-hosts";
       if (isDuplicateCustomCategoryName(name, id)) return "duplicate-name";
       let found = false;
       const customCategoryStacks = config.customCategoryStacks.map((customCategory) => {
         if (customCategory.id !== id) return customCategory;
         found = true;
+        const enabledByHost = new Map(customCategory.hosts.map((rule) => [rule.host, rule.enabled]));
         return {
           ...customCategory,
           name,
-          hosts,
+          hosts: hosts.map((host) => ({ host, enabled: enabledByHost.get(host) ?? true })),
         };
       });
       if (!found) return "missing";
-      update({ customCategoryStacks });
+      update({ customCategoryStacks }, () => saveDistractionsCustomCategory(id, name, hosts));
       return "updated";
     },
     removeCustomCategory(id: string): void {
-      update({ customCategoryStacks: removeCustomCategory(config.customCategoryStacks, id) });
+      update(
+        { customCategoryStacks: removeCustomCategory(config.customCategoryStacks, id) },
+        removeTarget({ kind: "customCategory", id }),
+      );
     },
     setCustomCategoryEnabled(id: string, enabled: boolean): void {
-      update({
-        customCategoryStacks: setCustomCategoryEnabled(config.customCategoryStacks, id, enabled),
-      });
+      update(
+        { customCategoryStacks: setCustomCategoryEnabled(config.customCategoryStacks, id, enabled) },
+        setTarget({ kind: "customCategory", id }, enabled),
+      );
     },
     addBlockedHostsText(text: string): boolean {
-      const merged = mergeHosts(config.blockedHosts, text);
-      if (!merged) return false;
-      update({ blockedHosts: merged });
-      return true;
+      return addHostsText("blocked", text);
     },
     addExceptionHostsText(text: string): boolean {
-      const merged = mergeHosts(config.exceptionHosts, text);
-      if (!merged) return false;
-      update({ exceptionHosts: merged });
-      return true;
+      return addHostsText("exception", text);
     },
     addAllowedHostsText(text: string): boolean {
-      const merged = mergeHosts(config.allowedHosts, text);
-      if (!merged) return false;
-      update({ allowedHosts: merged });
-      return true;
+      return addHostsText("allowed", text);
     },
     addBlockedAppsText(text: string): boolean {
+      const rule = appRuleFromInput(text);
       const merged = mergeApps(config.desktop.blockedApps, text);
-      if (!merged) return false;
-      updateDesktop({ blockedApps: merged });
+      if (!rule || !merged) return false;
+      updateDesktop({ blockedApps: merged }, () => addDistractionsDesktopApp(rule.name, rule.matchNames));
       return true;
     },
     addBlockedApp(name: string, matchNames: readonly string[]): boolean {
+      const rule = appRuleFromInput({ name, matchNames });
       const merged = mergeApps(config.desktop.blockedApps, { name, matchNames });
-      if (!merged) return false;
-      updateDesktop({ blockedApps: merged });
+      if (!rule || !merged) return false;
+      updateDesktop({ blockedApps: merged }, () => addDistractionsDesktopApp(rule.name, rule.matchNames));
       return true;
     },
     addBlockedMobileApp(nameInput: string, packageInput: string): boolean {
@@ -600,69 +677,65 @@ export function getDistractions() {
       if (config.mobile.blockedApps.some((rule) => (
         rule.packageName.toLowerCase() === packageName.toLowerCase()
       ))) return true;
-      updateMobile({
-        blockedApps: [...config.mobile.blockedApps, { name, packageName, enabled: true }],
-      });
+      updateMobile(
+        { blockedApps: [...config.mobile.blockedApps, { name, packageName, enabled: true }] },
+        () => addDistractionsMobileApp(name, packageName),
+      );
       return true;
     },
     removeBlockedHost(host: string): void {
-      update({ blockedHosts: removeHost(config.blockedHosts, host) });
+      removeListedHost("blocked", host);
     },
     removeExceptionHost(host: string): void {
-      update({ exceptionHosts: removeHost(config.exceptionHosts, host) });
+      removeListedHost("exception", host);
     },
     removeAllowedHost(host: string): void {
-      update({ allowedHosts: removeHost(config.allowedHosts, host) });
+      removeListedHost("allowed", host);
     },
     removeBlockedApp(name: string): void {
-      updateDesktop({ blockedApps: removeApp(config.desktop.blockedApps, name) });
+      updateDesktop(
+        { blockedApps: removeApp(config.desktop.blockedApps, name) },
+        removeTarget({ kind: "desktopApp", name }),
+      );
     },
     removeBlockedMobileApp(packageName: string): void {
       const key = packageName.toLowerCase();
-      updateMobile({
-        blockedApps: config.mobile.blockedApps.filter((rule) => (
-          rule.packageName.toLowerCase() !== key
-        )),
-      });
+      updateMobile(
+        { blockedApps: config.mobile.blockedApps.filter((rule) => rule.packageName.toLowerCase() !== key) },
+        removeTarget({ kind: "mobileApp", packageName }),
+      );
     },
     setBlockedHostEnabled(host: string, enabled: boolean): void {
-      update({ blockedHosts: setHostEnabled(config.blockedHosts, host, enabled) });
+      setListedHostEnabled("blocked", host, enabled);
     },
     setExceptionHostEnabled(host: string, enabled: boolean): void {
-      update({ exceptionHosts: setHostEnabled(config.exceptionHosts, host, enabled) });
+      setListedHostEnabled("exception", host, enabled);
     },
     setAllowedHostEnabled(host: string, enabled: boolean): void {
-      update({ allowedHosts: setHostEnabled(config.allowedHosts, host, enabled) });
+      setListedHostEnabled("allowed", host, enabled);
     },
     setBlockedAppEnabled(name: string, enabled: boolean): void {
-      updateDesktop({ blockedApps: setAppEnabled(config.desktop.blockedApps, name, enabled) });
+      if (isProtectedDistractionsDesktopAppName(name)) return;
+      updateDesktop(
+        { blockedApps: setAppEnabled(config.desktop.blockedApps, name, enabled) },
+        setTarget({ kind: "desktopApp", name }, enabled),
+      );
     },
     setBlockedMobileAppEnabled(packageName: string, enabled: boolean): void {
       const key = packageName.toLowerCase();
-      updateMobile({
-        blockedApps: config.mobile.blockedApps.map((rule) => (
-          rule.packageName.toLowerCase() === key ? { ...rule, enabled } : rule
-        )),
-      });
+      updateMobile(
+        {
+          blockedApps: config.mobile.blockedApps.map((rule) => (
+            rule.packageName.toLowerCase() === key ? { ...rule, enabled } : rule
+          )),
+        },
+        setTarget({ kind: "mobileApp", packageName }, enabled),
+      );
     },
     addUsageLimit(draft: DistractionsUsageLimitDraft): SaveDistractionsUsageLimitResult {
       const normalized = normalizeLimitDraft(draft);
       if (typeof normalized === "string") return normalized;
-      const existingIds = new Set(config.limits.items.map((limit) => limit.id));
-      let id = createUsageLimitId(normalized.name);
-      while (existingIds.has(id)) {
-        id = createUsageLimitId(normalized.name);
-      }
-      updateLimits({
-        items: [
-          ...config.limits.items,
-          {
-            id,
-            enabled: true,
-            ...normalized,
-          },
-        ],
-      });
+      edit(null, () => saveDistractionsUsageLimit(null, wholeMinuteDraft(draft)));
       return "saved";
     },
     updateUsageLimit(id: string, draft: DistractionsUsageLimitDraft): SaveDistractionsUsageLimitResult {
@@ -678,21 +751,23 @@ export function getDistractions() {
         };
       });
       if (!found) return "missing";
-      updateLimits({ items });
+      updateLimits({ items }, () => saveDistractionsUsageLimit(id, wholeMinuteDraft(draft)));
       return "saved";
     },
     removeUsageLimit(id: string): void {
-      updateLimits({ items: config.limits.items.filter((limit) => limit.id !== id) });
+      updateLimits(
+        { items: config.limits.items.filter((limit) => limit.id !== id) },
+        removeTarget({ kind: "usageLimit", id }),
+      );
     },
     setUsageLimitEnabled(id: string, enabled: boolean): void {
-      updateLimits({
-        items: config.limits.items.map((limit) =>
-          limit.id === id ? { ...limit, enabled } : limit
-        ),
-      });
+      updateLimits(
+        { items: config.limits.items.map((limit) => limit.id === id ? { ...limit, enabled } : limit) },
+        setTarget({ kind: "usageLimit", id }, enabled),
+      );
     },
     reset(): void {
-      persist({ ...DEFAULT_DISTRACTIONS_CONFIG });
+      edit(normalizeDistractionsConfig(undefined), resetDistractionsRules);
     },
   };
 }

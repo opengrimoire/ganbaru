@@ -65,8 +65,10 @@ pub struct InternalMcpChannelSource {
     pub message_reference_id: String,
     pub conversation_id: String,
     pub label_snapshot: String,
-    pub lower_ordinal: u64,
-    pub high_ordinal: u64,
+    pub lower_order_key: String,
+    pub lower_item_id: String,
+    pub high_order_key: String,
+    pub high_item_id: String,
     pub source_revision_cutoff_id: String,
     pub destination_audience_revision: u64,
 }
@@ -391,6 +393,24 @@ impl InternalMcpRegistry {
         *endpoint.state.access.write().await = EndpointAccessState::OrganizationalRevoked;
         let _ = endpoint.shutdown.send(());
         true
+    }
+
+    /// Every organizational run scope that is active now, with the thread it serves.
+    pub async fn active_run_scopes(&self) -> Vec<(ChatThreadId, InternalMcpRunScope)> {
+        let states: Vec<(ChatThreadId, Arc<EndpointState>)> = self
+            .endpoints
+            .lock()
+            .await
+            .iter()
+            .map(|(thread_id, endpoint)| (thread_id.clone(), Arc::clone(&endpoint.state)))
+            .collect();
+        let mut scopes = Vec::new();
+        for (thread_id, state) in states {
+            if let EndpointAccessState::OrganizationalActive(scope) = &*state.access.read().await {
+                scopes.push((thread_id, scope.as_ref().clone()));
+            }
+        }
+        scopes
     }
 
     async fn endpoint_state(&self, thread_id: &ChatThreadId) -> Option<Arc<EndpointState>> {

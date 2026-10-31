@@ -40,7 +40,7 @@ export function nextSelectedNotesPageId(
  * leaves that project empty instead of opening another project's note.
  */
 export function nextSelectedNotesPageIdInProject(
-  pages: readonly Pick<NotesPage, "id" | "properties">[],
+  pages: readonly Pick<NotesPage, "id" | "project_id">[],
   removedPageId: string,
   projectId: string | null,
 ): string | null {

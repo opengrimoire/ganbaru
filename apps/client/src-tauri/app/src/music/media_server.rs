@@ -29,6 +29,8 @@ use super::youtube::player_page::{youtube_host_content_security_policy, youtube_
 #[cfg(desktop)]
 use ganbaru_music_library::artwork::{embedded_artwork_id, extract_embedded_artwork};
 #[cfg(desktop)]
+use ganbaru_music_library::managed_artwork;
+#[cfg(desktop)]
 use sha2::{Digest, Sha256};
 
 /// Loopback host secrets. The YouTube page token is visible to YouTube's player script, which
@@ -337,6 +339,39 @@ pub async fn music_register_embedded_artwork(
     })
     .await
     .map_err(|error| format!("embedded artwork registration task failed: {error}"))?
+}
+
+/// Hosts managed artwork of the active vault for one playback lifecycle, after checking that
+/// the file matches the digest and type its reference names.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn music_register_artwork_asset(
+    app: tauri::AppHandle,
+    reference: String,
+    generation: u64,
+) -> Result<String, String> {
+    let vault_root = crate::vault::active_vault_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let artwork = managed_artwork::read_artwork(&vault_root, &reference)
+            .map_err(|error| error.to_string())?;
+        let state = app.state::<MusicHostState>();
+        let id = hosted_media_id(&state, format!("managed-artwork:{reference}").as_bytes());
+        state
+            .registry
+            .lock()
+            .map_err(|_| "media host registry is temporarily unavailable".to_string())?
+            .register(
+                id.clone(),
+                HostedMedia::Bytes {
+                    content_type: artwork.content_type,
+                    bytes: Arc::new(artwork.bytes),
+                },
+                generation,
+            )?;
+        Ok(hosted_media_url(&state, &id))
+    })
+    .await
+    .map_err(|error| format!("artwork registration task failed: {error}"))?
 }
 
 #[cfg(desktop)]

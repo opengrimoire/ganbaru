@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-handoff"
 version = "0.1.0"
-description = "Ganbaru LAN handoff wire protocol, device pairing state, and Linux firewall authorization for linked devices and the coordinator"
+description = "Ganbaru LAN handoff wire protocol, device pairing state, DNS-SD discovery records, and Linux firewall authorization for linked devices and the coordinator"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -25,6 +25,7 @@ ganbaru-sync-contracts = { workspace = true }
 qrcode = { workspace = true }
 quircs = { workspace = true }
 rcgen = { workspace = true }
+ring = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

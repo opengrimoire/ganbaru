@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { parseNotesCommentThread } from "$lib/notes/blocks/validation";
 import {
+  isNotesCommentTooLargeMessage,
   latestNotesComment,
+  NOTES_COMMENT_TOO_LARGE_CODE,
   notesCommentAnchorDraft,
   notesCommentBodyRichText,
   notesCommentIsEmpty,
@@ -233,5 +235,15 @@ describe("notes comment bodies and discussion lists", () => {
     });
     expect(latestNotesComment([pageThread, blockThread])?.thread).toBe(blockThread);
     expect(latestNotesComment([])).toBeNull();
+  });
+});
+
+describe("isNotesCommentTooLargeMessage", () => {
+  it("recognizes only the coded oversized body refusal", () => {
+    expect(isNotesCommentTooLargeMessage(`${NOTES_COMMENT_TOO_LARGE_CODE}: comment text is 300000 bytes`))
+      .toBe(true);
+    expect(isNotesCommentTooLargeMessage(NOTES_COMMENT_TOO_LARGE_CODE)).toBe(false);
+    expect(isNotesCommentTooLargeMessage(`could not save: ${NOTES_COMMENT_TOO_LARGE_CODE}: text`)).toBe(false);
+    expect(isNotesCommentTooLargeMessage("comment attachments must not exceed 50KB")).toBe(false);
   });
 });

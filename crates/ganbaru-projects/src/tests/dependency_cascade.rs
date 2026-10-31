@@ -8,7 +8,7 @@ async fn dated_graph(pool: &SqlitePool) {
     sqlx::raw_sql("UPDATE project_tasks SET start_date = '2026-06-10', target_end_date = '2026-06-12' WHERE id = 'task-a';
         UPDATE project_tasks SET start_date = '2026-06-11', target_end_date = '2026-06-13' WHERE id = 'task-b';
         UPDATE project_tasks SET start_date = '2026-06-14', target_end_date = '2026-06-15' WHERE id = 'task-c';
-        INSERT INTO project_task_dependencies(id, blocking_task_id, blocked_task_id) VALUES ('edge-a', 'task-a', 'task-b'), ('edge-b', 'task-b', 'task-c');")
+        INSERT INTO project_task_dependencies(id, sync_key, blocking_task_id, blocked_task_id) VALUES ('edge-a', 'edge-a', 'task-a', 'task-b'), ('edge-b', 'edge-b', 'task-b', 'task-c');")
         .execute(pool).await.unwrap();
 }
 
@@ -98,7 +98,7 @@ fn dependency_cascade_rejects_cycles_without_proposing_repeated_shifts() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         dated_graph(&pool).await;
-        sqlx::query("INSERT INTO project_task_dependencies(id, blocking_task_id, blocked_task_id) VALUES ('edge-cycle', 'task-c', 'task-a')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO project_task_dependencies(id, sync_key, blocking_task_id, blocked_task_id) VALUES ('edge-cycle', 'edge-cycle', 'task-c', 'task-a')").execute(&pool).await.unwrap();
         let preview = preview_dependency_cascade(&pool, "project-a")
             .await
             .unwrap();
@@ -135,7 +135,11 @@ fn dependency_cascade_reports_undated_invalid_and_foreign_endpoints() {
                 "invalid_date",
             ),
             (
-                "INSERT INTO projects(id, group_id, name) VALUES ('project-b', 'group-a', 'Other'); UPDATE project_tasks SET project_id = 'project-b' WHERE id = 'task-c'",
+                // Local writes cannot move a task between projects, so the fixture writes as the applier.
+                "INSERT INTO projects(id, group_id, name, order_key) VALUES ('project-b', 'group-a', 'Other', 'a2');
+                 UPDATE sync_apply_state SET applying = 1;
+                 UPDATE project_tasks SET project_id = 'project-b' WHERE id = 'task-c';
+                 UPDATE sync_apply_state SET applying = 0",
                 "missing_endpoint",
             ),
             (
@@ -186,7 +190,7 @@ fn dependency_cascade_protects_archived_completed_and_scheduled_work() {
                 "completed",
             ),
             (
-                "INSERT INTO calendar_events(id, title, start_time, end_time, project_id) VALUES ('event-a', 'Scheduled', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id) VALUES ('task-b', 'event-a')",
+                "INSERT INTO calendar_events(id, title, start_time, end_time, project_id) VALUES ('event-a', 'Scheduled', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id, sync_key) VALUES ('task-b', 'event-a', 'link-b')",
                 "scheduled",
             ),
         ] {
@@ -256,7 +260,7 @@ fn dependency_cascade_requires_review_after_a_task_or_graph_change() {
             "UPDATE project_tasks SET title = 'Renamed unseen predecessor' WHERE id = 'task-a'",
             "UPDATE project_tasks SET target_end_date = '2026-06-20' WHERE id = 'task-a'",
             "DELETE FROM project_task_dependencies WHERE id = 'edge-b'",
-            "INSERT INTO calendar_events(id, start_time, end_time, project_id) VALUES ('event-a', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id) VALUES ('task-b', 'event-a')",
+            "INSERT INTO calendar_events(id, start_time, end_time, project_id) VALUES ('event-a', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id, sync_key) VALUES ('task-b', 'event-a', 'link-b')",
         ] {
             let pool = migrated_memory_pool().await;
             dated_graph(&pool).await;
@@ -337,6 +341,12 @@ fn dependency_cascade_bounds_graph_and_full_result_before_mutation() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         dated_graph(&pool).await;
+        // Sync value bounds keep stored text far below these limits; dropping them shows the cascade
+        // bounds still hold on their own.
+        sqlx::raw_sql("DROP TRIGGER sync_values_project_tasks_update")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("UPDATE project_tasks SET description = printf('%*s', 6000000, 'x') WHERE id = 'task-b'").execute(&pool).await.unwrap();
         let request = request(&pool).await;
         let before = dates(&pool).await;
@@ -368,8 +378,8 @@ fn dependency_cascade_rejects_an_excessive_task_count_without_truncation() {
         let pool = migrated_memory_pool().await;
         dated_graph(&pool).await;
         sqlx::query("WITH RECURSIVE items(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM items WHERE value < 10000)
-            INSERT INTO project_tasks(id, project_id, section_id, status_id, title)
-            SELECT 'extra-' || value, 'project-a', 'section-a', 'status-a', 'Extra task' FROM items")
+            INSERT INTO project_tasks(id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+            SELECT 'extra-' || value, 'project-a', 'section-a', 'status-a', 'Extra task', 'e' || printf('%05d', value), 'e' || printf('%05d', value) FROM items")
             .execute(&pool).await.unwrap();
         assert!(
             preview_dependency_cascade(&pool, "project-a")

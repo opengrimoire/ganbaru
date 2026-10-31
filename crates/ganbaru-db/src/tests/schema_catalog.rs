@@ -19,13 +19,13 @@ async fn raw_pool(path: &Path) -> SqlitePool {
         .unwrap()
 }
 
-/// Creates a migrated vault database and returns its directory and path.
+/// Writes the shared migrated template as a vault database and returns its directory and path.
 async fn migrated_vault(name: &str) -> (PathBuf, PathBuf) {
     let directory = registry_test_directory(name);
     let path = directory.join("ganbaru.sqlite");
-    let registry = crate::DatabasePoolRegistry::default();
-    registry.connect_path(&path).await.unwrap();
-    registry.close_all().await.unwrap();
+    crate::test_support::write_migrated_database(&path)
+        .await
+        .unwrap();
     (directory, path)
 }
 
@@ -46,9 +46,10 @@ async fn forged_vault(name: &str, edit: impl Fn(&str) -> String) -> (PathBuf, Pa
         .execute(&pool)
         .await
         .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
     for migration in crate::up_migrations() {
         sqlx::raw_sql(sqlx::AssertSqlSafe(edit(migration.sql.as_str())))
-            .execute(&pool)
+            .execute(&mut *transaction)
             .await
             .unwrap();
         sqlx::query(
@@ -58,10 +59,11 @@ async fn forged_vault(name: &str, edit: impl Fn(&str) -> String) -> (PathBuf, Pa
         .bind(migration.version)
         .bind(migration.description.as_ref())
         .bind(migration.checksum.as_ref())
-        .execute(&pool)
+        .execute(&mut *transaction)
         .await
         .unwrap();
     }
+    transaction.commit().await.unwrap();
     pool.close().await;
     (directory, path)
 }
@@ -158,9 +160,12 @@ fn faithfully_forged_history_matches_the_reference_catalog() {
 #[test]
 fn fresh_vault_passes_and_reopens_read_write() {
     block_on(async {
-        let (directory, path) = migrated_vault("fresh-catalog").await;
-        current_schema_check(&path).await.unwrap();
+        let directory = registry_test_directory("fresh-catalog");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
+        registry.connect_path(&path).await.unwrap();
+        registry.close_all().await.unwrap();
+        current_schema_check(&path).await.unwrap();
         registry.connect_path(&path).await.unwrap();
         registry.close_all().await.unwrap();
         std::fs::remove_dir_all(directory).unwrap();
@@ -214,13 +219,42 @@ fn migration_history_view_is_rejected() {
 }
 
 #[test]
+fn history_that_is_not_a_prefix_of_the_embedded_migrations_is_rejected() {
+    block_on(async {
+        for (tamper, expected) in [
+            (
+                "INSERT INTO _sqlx_migrations
+                    (version, description, success, checksum, execution_time)
+                 SELECT version + 1, 'later', 1, X'00', 0 FROM _sqlx_migrations",
+                "does not match the current migration set",
+            ),
+            (
+                "UPDATE _sqlx_migrations SET version = version - 1",
+                "incompatible",
+            ),
+            ("UPDATE _sqlx_migrations SET success = 0", "incompatible"),
+            (
+                "DELETE FROM _sqlx_migrations",
+                "schema without migration history",
+            ),
+        ] {
+            let pool = super::helpers::migrated_memory_pool().await;
+            crate::validate_current_schema(&pool).await.unwrap();
+            sqlx::query(tamper).execute(&pool).await.unwrap();
+            let error = crate::validate_current_schema(&pool).await.unwrap_err();
+            assert!(error.contains(expected), "{tamper}: {error}");
+        }
+    });
+}
+
+#[test]
 fn modified_column_default_is_rejected() {
     const ORIGINAL: &str = "CREATE TABLE notes_link_facts_state (
-    key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
-    value TEXT NOT NULL,";
+  key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
+  value TEXT NOT NULL,";
     const FORGED: &str = "CREATE TABLE notes_link_facts_state (
-    key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
-    value TEXT NOT NULL DEFAULT 'forged',";
+  key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
+  value TEXT NOT NULL DEFAULT 'forged',";
     block_on(async {
         assert_eq!(
             crate::up_migrations()

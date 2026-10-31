@@ -7,7 +7,10 @@ import type {
   MusicYouTubeResolutionState,
 } from "$lib/music/library/contracts";
 import { resolveLocalMusicPath } from "$lib/music/platform-paths";
+import { fromThousandths } from "$lib/music/thousandths";
+import { youtubeResolutionAllowsPlayback } from "$lib/music/youtube-eligibility";
 import { localFileSourceFromPath, youtubeVideoSourceFromId, type MusicSource } from "$lib/music/sources";
+import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 export type MusicPlaylistSkipReason =
   | "disabled"
@@ -32,7 +35,9 @@ export interface MusicSavedQueueEntry {
   snoozedUntil: number | null;
   snoozedIndefinitely: boolean;
   skipRanges: MusicMembershipSkipRange[];
+  /** Volume multiplier from 0 to 1, converted from stored thousandths. */
   volume: number | null;
+  /** Playback rate multiplier from 0.25 to 2, converted from stored thousandths. */
   rate: number | null;
 }
 
@@ -94,7 +99,7 @@ export function evaluateMusicQueueEntry(
     if (entry.youtubeResolutionState === "embedding-blocked") {
       return { eligible: false, reason: "embedding-blocked" };
     }
-    if (entry.availability !== "available" || ["unavailable", "timed-out"].includes(entry.youtubeResolutionState ?? "")) {
+    if (!youtubeResolutionAllowsPlayback(entry.youtubeResolutionState)) {
       return { eligible: false, reason: "unavailable" };
     }
   } else if (entry.availability !== "available") {
@@ -112,7 +117,7 @@ export function projectMusicPlaylistPlayback(
   const skipped = emptyMusicSkipBreakdown();
   const structuralSkipped = emptyMusicSkipBreakdown();
   const bindingPaths = new Map(bindings.map((binding) => [binding.rootId, binding.folderPath]));
-  for (const entry of [...entries].sort((left, right) => left.position - right.position || left.membershipId.localeCompare(right.membershipId))) {
+  for (const entry of [...entries].sort((left, right) => compareOrderKeyThenId(left.orderKey, left.membershipId, right.orderKey, right.membershipId))) {
     const sourceResult = playbackSource(entry, bindingPaths);
     if (!sourceResult.source) {
       skipped[sourceResult.reason] += 1;
@@ -132,8 +137,8 @@ export function projectMusicPlaylistPlayback(
       snoozedUntil: entry.snoozedUntil,
       snoozedIndefinitely: entry.snoozedIndefinitely,
       skipRanges: [...entry.skipRanges].sort((left, right) => left.startMs - right.startMs),
-      volume: entry.volume,
-      rate: entry.rate,
+      volume: entry.volumeMilli === null ? null : fromThousandths(entry.volumeMilli),
+      rate: entry.rateMilli === null ? null : fromThousandths(entry.rateMilli),
     });
   }
   const eligibleIndices: number[] = [];

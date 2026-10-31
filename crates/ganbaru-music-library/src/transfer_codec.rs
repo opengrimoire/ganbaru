@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::io::Write;
 
 pub(super) const FORMAT: &str = "ganbaru/music-playlists";
+/// Interchange document version: memberships follow array order and carry thousandths.
+pub(super) const VERSION: i64 = 2;
 pub(super) const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_MEMBERSHIPS: usize = 10_000;
 pub(super) const MAX_PLAYLISTS: usize = 500;
@@ -78,7 +80,7 @@ pub(super) fn parse_json(contents: &str) -> MusicLibraryResult<MusicInterchangeD
             "The selected JSON file is not a Ganbaru music export",
         ));
     }
-    if value.get("version").and_then(Value::as_i64) != Some(1) {
+    if value.get("version").and_then(Value::as_i64) != Some(VERSION) {
         return Err(validation("The music export version is not supported"));
     }
     let playlists = value
@@ -169,7 +171,7 @@ pub(super) fn validate_document(document: &MusicInterchangeDocument) -> MusicLib
         }
         for membership in &playlist.memberships {
             if membership.item.locations.len() > 32
-                || membership.skip_ranges.len() > 100
+                || membership.skip_ranges.len() > MAX_SKIP_RANGES
                 || membership.snoozes.len() > 100
                 || membership.item.signals.len() > 6
             {
@@ -315,11 +317,6 @@ pub(super) fn serialize_json(mut document: MusicInterchangeDocument) -> MusicLib
         playlist
             .intended_uses
             .sort_by_key(|entry| entry.as_ref().to_string());
-        playlist.memberships.sort_by(|left, right| {
-            left.position
-                .cmp(&right.position)
-                .then_with(|| left.item.identity_key.cmp(&right.item.identity_key))
-        });
     }
     document.context_assignments.sort_by_key(|entry| {
         format!(

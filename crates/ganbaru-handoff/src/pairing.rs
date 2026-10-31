@@ -16,12 +16,12 @@ use storage::{
 
 #[cfg(desktop)]
 use super::protocol::HandoffCompatibility;
-#[cfg(desktop)]
-use super::protocol::PROTOCOL_VERSION;
 use super::protocol::{
-    BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, validate_device_label,
-    validate_identifier,
+    BundleMetadata, DeviceKind, PairingInvitation, decode_sync_charter,
+    validate_coordinator_endpoints, validate_device_label, validate_identifier,
 };
+#[cfg(desktop)]
+use super::protocol::{PROTOCOL_VERSION, decode_sync_admin_key, decode_sync_device_key};
 use base64::Engine;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -38,6 +38,9 @@ const STAGING_DIRECTORY: &str = "vault-handoff-staging";
 #[cfg(desktop)]
 const INVITATION_LIFETIME_MS: i64 = 3 * 60 * 1_000;
 const MAX_CERTIFICATE_BYTES: usize = 16 * 1024;
+/// Common name of every device certificate. Any LAN host that connects to a listener receives
+/// its certificate, so the certificate names no device, vault, or person.
+const DEVICE_CERTIFICATE_NAME: &str = "Ganbaru device";
 const MAX_LINKED_PEERS: usize = 32;
 const MAX_REVOKED_PEERS: usize = 64;
 /// Most device certificates the coordinator pins at once, linked and revoked together. Every
@@ -97,6 +100,12 @@ pub struct LinkedPeer {
     pub vault_id: String,
     pub certificate: String,
     pub certificate_fingerprint: String,
+    /// Public half of the device key the device enrolls in the vault's sync space, base64url.
+    pub sync_device_key: String,
+    /// Public half of the admin key a linked computer sent, base64url, which an admin promotes
+    /// it with. Phones never hold one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_admin_key: Option<String>,
     /// Enrollment time; at the stored limit, the oldest memberships of other vaults are revoked first.
     #[serde(default)]
     pub linked_at_ms: i64,
@@ -108,11 +117,110 @@ pub struct CoordinatorPin {
     pub device_id: String,
     #[serde(default)]
     pub device_label: Option<String>,
+    /// The invitation endpoint, kept as the last dial candidate.
     pub endpoint: String,
     pub vault_id: String,
-    #[serde(default)]
-    pub generation: u64,
     pub certificate_fingerprint: String,
+    /// The endpoint of the last authenticated connection to the coordinator.
+    #[serde(default)]
+    pub last_endpoint: Option<String>,
+    /// The listener endpoints the coordinator reported in its latest sync state.
+    #[serde(default)]
+    pub reported_endpoints: Vec<String>,
+    /// The vault's space charter and the person key that signed it, as the coordinator presented
+    /// them when this device linked.
+    #[serde(default)]
+    pub charter: Option<PinnedCharter>,
+}
+
+/// A space charter a coordinator presented at linking, verified against the person key it
+/// carried and the vault.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinnedCharter {
+    /// Base64url charter encoding.
+    pub charter: String,
+    /// Base64url person public key.
+    pub person_key: String,
+}
+
+impl PinnedCharter {
+    /// Decodes the charter and verifies it against its person key and the vault's personal
+    /// space. The charter names the founding anchor, which need not be the coordinator that
+    /// presents it: the log the charter starts says which device anchors the space now.
+    pub fn verify(&self, vault_id: &str) -> Result<ganbaru_sync_contracts::SignedCharter, String> {
+        let (charter, _) = decode_sync_charter(&self.charter, &self.person_key)?;
+        if charter.charter.space != ganbaru_sync_contracts::SpaceId::personal(vault_id) {
+            return Err("the coordinator presented a charter for another vault".to_string());
+        }
+        Ok(charter)
+    }
+}
+
+impl CoordinatorPin {
+    /// The endpoint that most likely reaches the coordinator now: the last authenticated one,
+    /// else the invitation endpoint.
+    pub fn current_endpoint(&self) -> &str {
+        self.last_endpoint.as_deref().unwrap_or(&self.endpoint)
+    }
+}
+
+/// Coordinator addresses learned from one authenticated exchange. `None` leaves a field as
+/// stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CoordinatorContact {
+    /// The endpoint an authenticated connection just reached.
+    pub last_endpoint: Option<String>,
+    /// The listener endpoints the coordinator reports now.
+    pub reported_endpoints: Option<Vec<String>>,
+}
+
+impl CoordinatorContact {
+    fn validate(&self) -> Result<(), String> {
+        if let Some(endpoint) = self.last_endpoint.as_deref() {
+            validate_pinned_endpoint("last coordinator endpoint", endpoint)?;
+        }
+        if let Some(endpoints) = self.reported_endpoints.as_deref() {
+            validate_coordinator_endpoints(endpoints)?;
+        }
+        Ok(())
+    }
+
+    /// Applies the update and returns whether the pin changed.
+    fn apply_to(self, pin: &mut CoordinatorPin) -> bool {
+        let mut changed = false;
+        if let Some(endpoint) = self.last_endpoint
+            && pin.last_endpoint.as_deref() != Some(endpoint.as_str())
+        {
+            pin.last_endpoint = Some(endpoint);
+            changed = true;
+        }
+        if let Some(endpoints) = self.reported_endpoints
+            && pin.reported_endpoints != endpoints
+        {
+            pin.reported_endpoints = endpoints;
+            changed = true;
+        }
+        changed
+    }
+}
+
+/// Checks a stored or learned coordinator endpoint: a socket address of a dialable class.
+fn validate_pinned_endpoint(label: &str, endpoint: &str) -> Result<(), String> {
+    let address = endpoint
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| format!("{label} is invalid"))?;
+    super::dial::validate_dial_endpoint(address)
+        .map(|_| ())
+        .map_err(|error| format!("{label} is refused: {error}"))
+}
+
+/// Why this device unlinked itself without the person asking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnlinkReason {
+    /// Its protected private keys can no longer be opened, so it must link again with new keys.
+    KeyProtectionLost,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -137,6 +245,9 @@ struct PairingStateFile {
     coordinator: Option<CoordinatorPin>,
     #[serde(default)]
     revoked_by_coordinator: bool,
+    /// Set when this device unlinked itself; cleared by the next link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unlink_reason: Option<UnlinkReason>,
     #[serde(default)]
     replica_ready: bool,
     #[serde(default)]
@@ -144,11 +255,7 @@ struct PairingStateFile {
     #[serde(default)]
     outgoing_transfer: Option<StoredOutgoingTransfer>,
     #[serde(default)]
-    incoming_transfer: Option<StoredIncomingTransfer>,
-    #[serde(default)]
     completed_activation: Option<PendingAcknowledgement>,
-    #[serde(default)]
-    requested_upload: Option<BundlePurpose>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -157,24 +264,12 @@ pub struct PendingAcknowledgement {
     pub vault_id: String,
     pub device_id: String,
     pub transfer_id: String,
-    pub generation: u64,
-    pub purpose: BundlePurpose,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredOutgoingTransfer {
     pub metadata: BundleMetadata,
-    pub purpose: BundlePurpose,
-    pub committed: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoredIncomingTransfer {
-    pub metadata: BundleMetadata,
-    pub source_device_id: String,
-    pub purpose: BundlePurpose,
 }
 
 pub struct TlsIdentity {
@@ -222,6 +317,10 @@ pub struct Enrollment<'a> {
     pub device_label: &'a str,
     pub device_kind: DeviceKind,
     pub certificate_b64: &'a str,
+    /// Public half of the device's sync device key, base64url.
+    pub sync_device_key: &'a str,
+    /// Public half of a computer's sync admin key, base64url.
+    pub sync_admin_key: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -278,12 +377,11 @@ impl PairingManager {
                 revoked_peers: BTreeMap::new(),
                 coordinator: None,
                 revoked_by_coordinator: false,
+                unlink_reason: None,
                 replica_ready: false,
                 pending_acknowledgement: None,
                 outgoing_transfer: None,
-                incoming_transfer: None,
                 completed_activation: None,
-                requested_upload: None,
             };
             persist_state(&state_path, &state)?;
             state
@@ -323,6 +421,13 @@ impl PairingManager {
             inner.outgoing_bundles.clear();
         }
         Ok(())
+    }
+
+    /// Whether [`Self::initialize`] loaded state or [`Self::disable`] turned linking off. A
+    /// loaded manager is the authority for its state file, so it is not loaded again.
+    pub fn is_loaded(&self) -> Result<bool, String> {
+        let inner = self.lock()?;
+        Ok(inner.state.is_some() || inner.disabled_reason.is_some())
     }
 
     /// Selects where the TLS key is kept. The key moves there on its next load and stays in the
@@ -380,6 +485,9 @@ impl PairingManager {
                     key
                 }
                 Ok(None) => return self.replace_lost_identity(&device_id),
+                Err(error) if crate::key_wrap::is_key_protection_lost(&error) => {
+                    return self.replace_lost_identity(&device_id);
+                }
                 Err(error) => return Err(format!("{DEVICE_KEY_UNAVAILABLE_ERROR}: {error}")),
             },
             (None, None) => {
@@ -441,8 +549,9 @@ impl PairingManager {
         }
     }
 
-    /// Creates a fresh identity after the stored key vanished, but only while no peer or
-    /// coordinator pins the old certificate; otherwise the user must unlink first.
+    /// Creates a fresh identity after the stored key vanished or can never be opened again, but
+    /// only while no peer or coordinator pins the old certificate; otherwise the device must be
+    /// unlinked first.
     fn replace_lost_identity(&self, device_id: &str) -> Result<(String, TlsIdentity), String> {
         {
             let mut inner = self.lock()?;
@@ -453,6 +562,13 @@ impl PairingManager {
             }
             if !state.linked_peers.is_empty() || state.coordinator.is_some() {
                 return Err(DEVICE_KEY_MISSING_ERROR.to_string());
+            }
+            // The old file can never be opened, and removing it clears the key store's record
+            // of a lost key, so a later failure on a relinked device is not read as that loss.
+            if let Some(store) = inner.key_store.as_ref()
+                && let Err(error) = store.remove(device_id)
+            {
+                eprintln!("remove the lost device linking key: {error}");
             }
             let mut next = state.clone();
             next.identity = create_identity(device_id.to_string())?;
@@ -584,13 +700,39 @@ impl PairingManager {
     }
 
     pub fn unlink(&self) -> Result<(), String> {
+        self.unlink_with(None)
+    }
+
+    /// Unlinks every peer and the coordinator because of `reason`, which stays recorded until
+    /// the next link so the device can tell the person why it is unlinked. Like [`Self::unlink`]
+    /// it waits for an active handoff to finish.
+    pub fn unlink_for(&self, reason: UnlinkReason) -> Result<(), String> {
+        self.unlink_with(Some(reason))
+    }
+
+    /// Why this device last unlinked itself, until it links again.
+    pub fn unlink_reason(&self) -> Result<Option<UnlinkReason>, String> {
+        let inner = self.lock()?;
+        Ok(initialized_state(&inner)?.unlink_reason)
+    }
+
+    /// Whether this device pins a coordinator or has linked peers.
+    pub fn has_links(&self) -> Result<bool, String> {
+        let inner = self.lock()?;
+        let state = initialized_state(&inner)?;
+        Ok(state.coordinator.is_some() || !state.linked_peers.is_empty())
+    }
+
+    /// Clears the cached TLS key, so the next [`Self::identity`] reads the key store again.
+    pub fn forget_cached_identity_key(&self) -> Result<(), String> {
+        self.lock()?.private_key = None;
+        Ok(())
+    }
+
+    fn unlink_with(&self, reason: Option<UnlinkReason>) -> Result<(), String> {
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some()
-            || previous.outgoing_transfer.is_some()
-            || previous.incoming_transfer.is_some()
-            || previous.requested_upload.is_some()
-        {
+        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
             return Err("finish or retry the active handoff before unlinking".to_string());
         }
         let state = initialized_state_mut(&mut inner)?;
@@ -600,6 +742,7 @@ impl PairingManager {
         }
         state.coordinator = None;
         state.revoked_by_coordinator = false;
+        state.unlink_reason = reason;
         state.replica_ready = false;
         state.completed_activation = None;
         if let Err(error) = persist_initialized_state(&inner) {
@@ -618,11 +761,7 @@ impl PairingManager {
         validate_identifier("peer device id", device_id)?;
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
-        if previous.pending_acknowledgement.is_some()
-            || previous.outgoing_transfer.is_some()
-            || previous.incoming_transfer.is_some()
-            || previous.requested_upload.is_some()
-        {
+        if previous.pending_acknowledgement.is_some() || previous.outgoing_transfer.is_some() {
             return Err("finish or retry the active handoff before unlinking".to_string());
         }
         let state = initialized_state_mut(&mut inner)?;
@@ -671,9 +810,7 @@ impl PairingManager {
         state.revoked_by_coordinator = true;
         state.pending_acknowledgement = None;
         state.outgoing_transfer = None;
-        state.incoming_transfer = None;
         state.completed_activation = None;
-        state.requested_upload = None;
         if let Err(error) = persist_initialized_state(&inner) {
             inner.state = Some(previous);
             return Err(error);
@@ -686,7 +823,6 @@ impl PairingManager {
         &self,
         endpoint: std::net::SocketAddr,
         vault_id: String,
-        generation: u64,
         compatibility: HandoffCompatibility,
         now_ms: i64,
     ) -> Result<PairingInvitation, String> {
@@ -705,7 +841,6 @@ impl PairingManager {
             ),
             coordinator_device_id: state.identity.device_id.clone(),
             vault_id,
-            generation,
             expires_at_ms: now_ms.saturating_add(INVITATION_LIFETIME_MS),
         };
         inner.invitations.clear();
@@ -783,6 +918,23 @@ impl PairingManager {
         coordinator_certificate: &[u8],
         coordinator_device_label: Option<String>,
     ) -> Result<(), String> {
+        self.record_enrolled(
+            invitation,
+            coordinator_certificate,
+            coordinator_device_label,
+            None,
+        )
+    }
+
+    /// Pins the coordinator that just linked this device, with the space charter it presented,
+    /// which must belong to the invitation's vault.
+    pub fn record_enrolled(
+        &self,
+        invitation: &PairingInvitation,
+        coordinator_certificate: &[u8],
+        coordinator_device_label: Option<String>,
+        charter: Option<PinnedCharter>,
+    ) -> Result<(), String> {
         let fingerprint = certificate_fingerprint(coordinator_certificate);
         if fingerprint != invitation.coordinator_fingerprint {
             return Err("coordinator certificate does not match the QR invitation".to_string());
@@ -790,19 +942,71 @@ impl PairingManager {
         if let Some(label) = coordinator_device_label.as_deref() {
             validate_device_label("coordinator device label", label)?;
         }
+        if let Some(charter) = charter.as_ref() {
+            charter.verify(&invitation.vault_id)?;
+        }
         let mut inner = self.lock()?;
+        let previous = initialized_state(&inner)?.clone();
         let state = initialized_state_mut(&mut inner)?;
         ensure_enrollment_target(state, invitation)?;
+        // Relinking to the same coordinator and vault keeps what its exchanges reported.
+        let reported_endpoints = match state.coordinator.take() {
+            Some(pin)
+                if pin.certificate_fingerprint == fingerprint
+                    && pin.vault_id == invitation.vault_id =>
+            {
+                pin.reported_endpoints
+            }
+            _ => Vec::new(),
+        };
         state.coordinator = Some(CoordinatorPin {
             device_id: invitation.coordinator_device_id.clone(),
             device_label: coordinator_device_label,
             endpoint: invitation.endpoint.clone(),
             vault_id: invitation.vault_id.clone(),
-            generation: invitation.generation,
             certificate_fingerprint: fingerprint,
+            last_endpoint: Some(invitation.endpoint.clone()),
+            reported_endpoints,
+            charter,
         });
         state.revoked_by_coordinator = false;
-        persist_initialized_state(&inner)
+        state.unlink_reason = None;
+        if let Err(error) = persist_initialized_state(&inner) {
+            inner.state = Some(previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Records coordinator addresses learned from an authenticated exchange with the coordinator
+    /// that `certificate_fingerprint` identifies for `vault_id`.
+    ///
+    /// Writes only when a field changed, and only while the pin still names that vault and
+    /// fingerprint, so an unlink or relink racing the exchange never resurrects or alters
+    /// another pin. Returns whether the pin changed.
+    pub fn record_coordinator_contact(
+        &self,
+        vault_id: &str,
+        certificate_fingerprint: &str,
+        contact: CoordinatorContact,
+    ) -> Result<bool, String> {
+        contact.validate()?;
+        let mut inner = self.lock()?;
+        let previous = initialized_state(&inner)?.clone();
+        let state = initialized_state_mut(&mut inner)?;
+        let Some(pin) = state.coordinator.as_mut().filter(|pin| {
+            pin.vault_id == vault_id && pin.certificate_fingerprint == certificate_fingerprint
+        }) else {
+            return Ok(false);
+        };
+        if !contact.apply_to(pin) {
+            return Ok(false);
+        }
+        if let Err(error) = persist_initialized_state(&inner) {
+            inner.state = Some(previous);
+            return Err(error);
+        }
+        Ok(true)
     }
 
     #[cfg(desktop)]
@@ -911,7 +1115,7 @@ fn create_identity(device_id: String) -> Result<StoredIdentity, String> {
         .map_err(|error| format!("configure device certificate: {error}"))?;
     params
         .distinguished_name
-        .push(DnType::CommonName, device_id.as_str());
+        .push(DnType::CommonName, DEVICE_CERTIFICATE_NAME);
     let certificate = params
         .self_signed(&signing_key)
         .map_err(|error| format!("generate device certificate: {error}"))?;
@@ -1000,6 +1204,10 @@ fn admit_enrollment(
     validate_identifier("device id", enrollment.device_id)?;
     validate_device_label("device label", enrollment.device_label)?;
     let certificate = decode_certificate(enrollment.certificate_b64)?;
+    decode_sync_device_key(enrollment.sync_device_key)?;
+    if let Some(key) = enrollment.sync_admin_key {
+        decode_sync_admin_key(key)?;
+    }
     let pending = inner
         .invitations
         .get(enrollment.invitation_id)
@@ -1020,6 +1228,12 @@ fn admit_enrollment(
         vault_id: enrollment.vault_id.to_string(),
         certificate: enrollment.certificate_b64.to_string(),
         certificate_fingerprint: certificate_fingerprint(certificate.as_ref()),
+        sync_device_key: enrollment.sync_device_key.to_string(),
+        // Only a computer can become an admin, so a phone's key is not kept.
+        sync_admin_key: enrollment
+            .sync_admin_key
+            .filter(|_| enrollment.device_kind == DeviceKind::Computer)
+            .map(str::to_string),
         linked_at_ms: now_ms,
     };
     let state = initialized_state(inner)?;

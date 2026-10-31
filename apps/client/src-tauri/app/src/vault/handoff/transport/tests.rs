@@ -9,13 +9,14 @@ use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{DeviceKind, MAX_ARCHIVE_BYTES, PROTOCOL_VERSION};
 use crate::vault::handoff::sha256_file;
 use base64::Engine;
+use ganbaru_sync_replica::serve::member::MemberAdmissionSource;
 use std::fs;
 use tokio::net::TcpListener;
 
-struct TestDirectory(PathBuf);
+pub(crate) struct TestDirectory(PathBuf);
 
 impl TestDirectory {
-    fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "ganbaru-transport-{label}-{}",
             random_token("test").expect("random test directory")
@@ -24,7 +25,7 @@ impl TestDirectory {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -35,7 +36,41 @@ impl Drop for TestDirectory {
     }
 }
 
-struct LocalPair {
+/// The sync device key test devices send when they enroll.
+pub(crate) fn test_sync_device_key() -> ganbaru_sync_contracts::DevicePublicKey {
+    ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32])
+}
+
+/// An enrollment sealer that answers every enrollment with a charter of `vault-1`, signed by a
+/// test person key, as a coordinator that anchors the space does.
+pub(crate) fn test_enrollment_sealer() -> EnrollmentSealer {
+    std::sync::Arc::new(|| Box::pin(async { Ok(Some(test_pinned_charter())) }))
+}
+
+fn test_pinned_charter() -> PinnedCharter {
+    let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person key");
+    let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin key");
+    let charter = ganbaru_sync_contracts::sign_charter(
+        &ganbaru_sync_contracts::Charter {
+            space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+            anchor_device_id: "device-desktop".to_string(),
+            anchor_device_key: test_sync_device_key(),
+            anchor_tls_fingerprint: [0; 32],
+            anchor_admin_key: admin.public_key(),
+            recovery_admin_key: admin.public_key(),
+            discovery_key: [7; 32],
+            created_at_ms: 1,
+        },
+        &person,
+    )
+    .expect("sign charter");
+    PinnedCharter {
+        charter: crate::vault::handoff::protocol::encode_sync_charter(&charter),
+        person_key: person.public_key().to_text(),
+    }
+}
+
+pub(crate) struct LocalPair {
     _desktop_root: TestDirectory,
     _phone_root: TestDirectory,
     desktop: PairingManager,
@@ -50,8 +85,43 @@ impl LocalPair {
         Self::start_with_hub(None).await
     }
 
-    async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
+    pub(crate) async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
         Self::start_with_limits(hub, server::limits::ConnectionLimits::default()).await
+    }
+
+    /// A coordinator serving `hub` that presents `charter` at pairing, as the coordinator of a
+    /// vault whose space it founded does.
+    pub(crate) async fn start_with_hub_charter(
+        hub: Option<crate::sync::hub::SyncHub>,
+        charter: PinnedCharter,
+    ) -> Self {
+        Self::start_with_sealer(
+            hub,
+            server::limits::ConnectionLimits::default(),
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+            std::sync::Arc::new(move || {
+                let charter = charter.clone();
+                Box::pin(async move { Ok(Some(charter)) })
+            }),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// A coordinator whose listener reads the quarantined devices from `quarantined`.
+    async fn start_with_quarantine(quarantined: QuarantinedDevices) -> Self {
+        Self::start_with_sealer(
+            None,
+            server::limits::ConnectionLimits::default(),
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+            test_enrollment_sealer(),
+            Some(quarantined),
+            None,
+        )
+        .await
     }
 
     async fn start_with_limits(
@@ -72,6 +142,27 @@ impl LocalPair {
         limits: server::limits::ConnectionLimits,
         approvals: EnrollmentApprovals,
         admission: LanAdmission,
+    ) -> Self {
+        Self::start_with_sealer(
+            hub,
+            limits,
+            approvals,
+            admission,
+            test_enrollment_sealer(),
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn start_with_sealer(
+        hub: Option<crate::sync::hub::SyncHub>,
+        limits: server::limits::ConnectionLimits,
+        approvals: EnrollmentApprovals,
+        admission: LanAdmission,
+        sealer: EnrollmentSealer,
+        quarantined: Option<QuarantinedDevices>,
+        log_admission: Option<MemberAdmissionSource>,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -94,20 +185,23 @@ impl LocalPair {
             .create_invitation(
                 endpoint,
                 "vault-1".to_string(),
-                0,
                 super::super::protocol::test_compatibility(),
                 unix_time_ms(),
             )
             .expect("create invitation");
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(server::serve_with_limits(
-            listener,
+            listener.into(),
             limits,
+            LoopbackPolicy::Allow,
             desktop.clone(),
             CoordinatorServices {
                 hub,
+                enrollment_sealer: Some(sealer),
                 approvals: approvals.clone(),
                 admission,
+                quarantined,
+                log_admission,
                 ..CoordinatorServices::default()
             },
             receiver,
@@ -123,7 +217,7 @@ impl LocalPair {
         }
     }
 
-    async fn enroll(&self) {
+    pub(crate) async fn enroll(&self) {
         approving(
             &self.approvals,
             super::enroll(
@@ -131,6 +225,8 @@ impl LocalPair {
                 &self.invitation,
                 "Phone".to_string(),
                 DeviceKind::Phone,
+                &test_sync_device_key(),
+                None,
             ),
         )
         .await
@@ -171,7 +267,6 @@ impl LocalPair {
             .create_invitation(
                 endpoint,
                 "vault-1".to_string(),
-                0,
                 super::super::protocol::test_compatibility(),
                 unix_time_ms(),
             )
@@ -181,14 +276,14 @@ impl LocalPair {
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         let approvals = EnrollmentApprovals::default();
         tokio::spawn(serve_with_coordinator(
-            listener,
+            listener.into(),
             desktop.clone(),
             CoordinatorServices {
                 coordinator: Some(requests),
                 contacts: Some(contacts),
-                hub: None,
+                enrollment_sealer: Some(test_enrollment_sealer()),
                 approvals: approvals.clone(),
-                admission: LanAdmission::default(),
+                ..CoordinatorServices::default()
             },
             receiver,
         ));
@@ -207,6 +302,11 @@ impl LocalPair {
         )
     }
 
+    /// The app config directory of the phone, which holds its pairing state.
+    pub(crate) fn phone_config_dir(&self) -> &Path {
+        self._phone_root.path()
+    }
+
     fn register_bundle(&self, bytes: &[u8], transfer_id: &str) -> BundleMetadata {
         let path = self._desktop_root.path().join(format!("{transfer_id}.zip"));
         fs::write(&path, bytes).expect("write bundle");
@@ -216,15 +316,27 @@ impl LocalPair {
             vault_id: "vault-1".to_string(),
             device_id: "device-phone".to_string(),
             transfer_id: transfer_id.to_string(),
-            generation: 1,
             archive_bytes: bytes.len() as u64,
             archive_sha256: sha256_file(&path).expect("bundle digest"),
+            derived_state_stale: false,
         };
         self.desktop
             .register_outgoing_bundle(metadata.clone(), path)
             .expect("register bundle");
         metadata
     }
+}
+
+/// Asks the coordinator `manager` is linked to for a vault copy, as an authenticated request
+/// that reaches coordinator dispatch.
+async fn prepare_copy(manager: &PairingManager) -> Result<BundleMetadata, String> {
+    request_bundle(
+        manager,
+        &BundleSource::Coordinator,
+        super::super::protocol::test_compatibility(),
+        &TransferCancellation::default(),
+    )
+    .await
 }
 
 impl Drop for LocalPair {
@@ -272,7 +384,15 @@ fn spawn_phone_enrollment(
 ) -> tokio::task::JoinHandle<Result<(), String>> {
     let phone = pair.phone.clone();
     tokio::spawn(async move {
-        super::enroll(&phone, &invitation, "Phone".to_string(), DeviceKind::Phone).await
+        super::enroll(
+            &phone,
+            &invitation,
+            "Phone".to_string(),
+            DeviceKind::Phone,
+            &test_sync_device_key(),
+            None,
+        )
+        .await
     })
 }
 
@@ -357,12 +477,52 @@ async fn unanswered_enrollment_times_out_and_keeps_the_invitation() {
 }
 
 #[tokio::test]
+async fn peers_outside_the_address_policy_are_closed_before_the_tls_handshake() {
+    let root = TestDirectory::new("address-policy");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(root.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize desktop");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind coordinator");
+    let endpoint = listener.local_addr().expect("coordinator endpoint");
+    // One pending slot: a refused peer that took it would keep the next connection waiting for
+    // its TLS handshake instead of closing.
+    let limits = server::limits::ConnectionLimits::new(1, 1, 64, 16);
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(server::serve_with_limits(
+        listener.into(),
+        limits.clone(),
+        LoopbackPolicy::Reject,
+        desktop,
+        CoordinatorServices::default(),
+        receiver,
+    ));
+
+    for attempt in 0..3 {
+        let mut stream = TcpStream::connect(endpoint).await.expect("connect");
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(Ok(0) | Err(_))),
+            "attempt {attempt} was not closed before the handshake"
+        );
+    }
+    assert!(
+        limits.admit(IpAddr::from([127, 0, 0, 1])).is_some(),
+        "refused peers never hold a pending slot"
+    );
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
 async fn an_unconfirmed_network_reaches_neither_enrollment_nor_the_handshake() {
     let pair = LocalPair::start_with_options(
         None,
         server::limits::ConnectionLimits::default(),
         EnrollmentApprovals::default(),
-        LanAdmission::deciding(|| false),
+        LanAdmission::deciding(|_| false),
     )
     .await;
     let error = tokio::time::timeout(
@@ -376,6 +536,62 @@ async fn an_unconfirmed_network_reaches_neither_enrollment_nor_the_handshake() {
     assert!(!error.is_empty());
     assert!(pair.approvals.pending().expect("pending").is_none());
     assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+}
+
+#[tokio::test]
+async fn the_wildcard_listener_asks_admission_about_the_address_each_peer_reached() {
+    let root = TestDirectory::new("wildcard-admission");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(root.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize desktop");
+    let listener = server::CoordinatorListener::bind(0).expect("bind wildcard listener");
+    let port = listener.port().expect("listener port");
+    let reached = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let admission = LanAdmission::deciding({
+        let reached = reached.clone();
+        move |local| {
+            reached.lock().expect("reached addresses").push(local);
+            false
+        }
+    });
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(server::serve_with_limits(
+        listener,
+        server::limits::ConnectionLimits::default(),
+        LoopbackPolicy::Allow,
+        desktop,
+        CoordinatorServices {
+            admission,
+            ..CoordinatorServices::default()
+        },
+        receiver,
+    ));
+
+    let mut targets = vec![IpAddr::from([127, 0, 0, 1])];
+    if std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok() {
+        targets.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    for target in &targets {
+        let mut stream = TcpStream::connect(SocketAddr::new(*target, port))
+            .await
+            .expect("connect");
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(Ok(0) | Err(_))),
+            "a refused network closes {target} before the handshake"
+        );
+    }
+    let reached = reached.lock().expect("reached addresses").clone();
+    assert_eq!(
+        reached,
+        targets
+            .iter()
+            .map(|target| SocketAddr::new(*target, port))
+            .collect::<Vec<_>>()
+    );
+    let _ = shutdown.send(());
 }
 
 #[tokio::test]
@@ -433,9 +649,14 @@ async fn fresh_phone_enrolls_and_stages_authenticated_bundle() {
     let bytes = b"authenticated whole-vault test bundle";
     let metadata = pair.register_bundle(bytes, "transfer-fresh");
 
-    let staged = download_bundle(&pair.phone, metadata, &TransferCancellation::default())
-        .await
-        .expect("download bundle");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("download bundle");
 
     assert_eq!(fs::read(staged).expect("read staged bundle"), bytes);
 }
@@ -448,11 +669,19 @@ async fn revoked_phone_clears_its_stale_link_after_authenticated_reconnect() {
         .unlink_device("device-phone")
         .expect("unlink offline phone");
 
-    let error = probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0)
+    let response = request_person_key(&pair.phone)
         .await
-        .expect_err("revoked phone must be rejected");
+        .expect("revoked phone gets an answered refusal");
 
-    assert!(error.contains("unlinked by the coordinator"));
+    assert!(
+        matches!(
+            &response,
+            ControlMessage::Error { code, message, .. }
+                if code == MEMBERSHIP_REVOKED_CODE
+                    && message.contains("unlinked by the coordinator")
+        ),
+        "{response:?}"
+    );
     assert!(
         pair.phone
             .coordinator_pin()
@@ -473,13 +702,13 @@ async fn revoked_phone_clears_its_stale_link_after_authenticated_reconnect() {
 }
 
 #[tokio::test]
-async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
+async fn authenticated_control_flow_prepares_downloads_and_acknowledges() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
     use super::super::pairing::PendingAcknowledgement;
 
     let (pair, mut requests) = LocalPair::start_with_coordinator().await;
     pair.enroll().await;
-    let metadata = pair.register_bundle(b"controlled handoff bundle", "transfer-control");
+    let metadata = pair.register_bundle(b"controlled vault copy", "transfer-control");
     let expected = metadata.clone();
     let coordinator = tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
@@ -488,40 +717,22 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
                     compatibility,
                     vault_id,
                     device_id,
-                    generation,
-                    purpose,
                 } => {
                     assert_eq!(compatibility, super::super::protocol::test_compatibility());
                     assert_eq!(vault_id, expected.vault_id);
                     assert_eq!(device_id, expected.device_id);
-                    assert_eq!(generation, 0);
-                    assert_eq!(purpose, BundlePurpose::Ownership);
                     CoordinatorResponse::Prepared {
                         metadata: expected.clone(),
-                        purpose,
-                    }
-                }
-                CoordinatorOperation::CommitOwnership { metadata } => {
-                    assert_eq!(metadata, expected);
-                    CoordinatorResponse::OwnershipGrant {
-                        vault_id: expected.vault_id.clone(),
-                        transfer_id: expected.transfer_id.clone(),
-                        owner_device_id: expected.device_id.clone(),
-                        generation: expected.generation,
                     }
                 }
                 CoordinatorOperation::Activated {
                     vault_id,
                     device_id,
                     transfer_id,
-                    generation,
-                    purpose,
                 } => {
                     assert_eq!(vault_id, expected.vault_id);
                     assert_eq!(device_id, expected.device_id);
                     assert_eq!(transfer_id, expected.transfer_id);
-                    assert_eq!(generation, expected.generation);
-                    assert_eq!(purpose, BundlePurpose::Ownership);
                     let response = CoordinatorResponse::ActivationAcknowledged {
                         transfer_id: expected.transfer_id.clone(),
                     };
@@ -536,278 +747,37 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
 
     let prepared = request_bundle(
         &pair.phone,
+        &BundleSource::Coordinator,
         super::super::protocol::test_compatibility(),
-        0,
-        BundlePurpose::Ownership,
         &TransferCancellation::default(),
     )
     .await
-    .expect("prepare ownership bundle");
+    .expect("prepare vault copy");
     assert_eq!(prepared, metadata);
     let staged = download_bundle(
         &pair.phone,
+        &BundleSource::Coordinator,
         prepared.clone(),
         &TransferCancellation::default(),
     )
     .await
-    .expect("stage ownership bundle");
+    .expect("stage vault copy");
     assert_eq!(
         fs::read(staged).expect("read staged bundle"),
-        b"controlled handoff bundle"
-    );
-    assert_eq!(
-        commit_staged_ownership(&pair.phone, prepared.clone())
-            .await
-            .expect("commit ownership"),
-        ("device-phone".to_string(), 1)
+        b"controlled vault copy"
     );
     acknowledge_activation(
         &pair.phone,
+        &BundleSource::Coordinator,
         &PendingAcknowledgement {
             vault_id: prepared.vault_id,
             device_id: prepared.device_id,
             transfer_id: prepared.transfer_id,
-            generation: prepared.generation,
-            purpose: BundlePurpose::Ownership,
         },
     )
     .await
     .expect("acknowledge activation");
     coordinator.await.expect("coordinator task");
-}
-
-#[tokio::test]
-async fn authenticated_distractions_exchange_returns_acknowledged_and_combined_samples() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::protocol::DistractionsSampleMessage;
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
-    pair.enroll().await;
-    let sample = DistractionsSampleMessage {
-        sample_id: "phone-sample".to_string(),
-        device_id: "device-phone".to_string(),
-        source_type: "mobile-app".to_string(),
-        source_key: "com.example.video".to_string(),
-        display_name: Some("Video".to_string()),
-        started_at_ms: 1_700_000_000_000,
-        elapsed_seconds: 30,
-        local_date: "2026-09-13".to_string(),
-        created_at_ms: 1_700_000_030_000,
-    };
-    let expected = sample.clone();
-    let response_sample = sample.clone();
-    let coordinator = tokio::spawn(async move {
-        let request = requests.recv().await.expect("Distractions request");
-        match request.operation {
-            CoordinatorOperation::DistractionsExchange {
-                vault_id,
-                device_id,
-                samples,
-                acknowledged_peer_sample_ids,
-                owner_snapshot,
-            } => {
-                assert_eq!(vault_id, "vault-1");
-                assert_eq!(device_id, "device-phone");
-                assert_eq!(samples, vec![expected]);
-                assert!(acknowledged_peer_sample_ids.is_empty());
-                assert!(owner_snapshot.is_empty());
-            }
-            operation => panic!("unexpected coordinator operation: {operation:?}"),
-        }
-        request
-            .response
-            .send(Ok(CoordinatorResponse::DistractionsAcknowledged {
-                acknowledged_sample_ids: vec!["phone-sample".to_string()],
-                peer_samples: Vec::new(),
-                combined_samples: vec![response_sample],
-            }))
-            .expect("send Distractions response");
-    });
-
-    let (acknowledged, peer, combined) =
-        exchange_distractions(&pair.phone, vec![sample.clone()], Vec::new(), Vec::new())
-            .await
-            .expect("exchange Distractions usage");
-    assert_eq!(acknowledged, vec![sample.sample_id]);
-    assert!(peer.is_empty());
-    assert_eq!(combined.len(), 1);
-    coordinator.await.expect("coordinator task");
-}
-
-#[tokio::test]
-async fn android_upload_resumes_from_durable_desktop_staging() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::pairing::StoredOutgoingTransfer;
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
-    pair.enroll().await;
-    let bytes = vec![73_u8; TRANSFER_CHUNK_BYTES * 2 + 17];
-    let transfer_id = "transfer-upload";
-    let (_, archive_path) = pair
-        .phone
-        .outgoing_snapshot_paths(transfer_id)
-        .expect("phone outgoing paths");
-    fs::write(&archive_path, &bytes).expect("write Android archive");
-    let metadata = BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: super::super::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-desktop".to_string(),
-        transfer_id: transfer_id.to_string(),
-        generation: 1,
-        archive_bytes: bytes.len() as u64,
-        archive_sha256: sha256_file(&archive_path).expect("archive digest"),
-    };
-    pair.phone
-        .store_outgoing_transfer(StoredOutgoingTransfer {
-            metadata: metadata.clone(),
-            purpose: BundlePurpose::Ownership,
-            committed: false,
-        })
-        .expect("persist outgoing transfer");
-    let (partial, metadata_path, complete) = pair
-        .desktop
-        .staging_paths(transfer_id)
-        .expect("desktop staging paths");
-    fs::write(&partial, &bytes[..TRANSFER_CHUNK_BYTES]).expect("write partial upload");
-    pair.desktop
-        .write_staging_metadata(&metadata_path, &metadata)
-        .expect("persist upload metadata");
-
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(
-            pair._desktop_root.path().to_path_buf(),
-            "device-desktop".to_string(),
-        )
-        .expect("restart desktop pairing state");
-    assert_eq!(
-        restarted
-            .read_staging_metadata(&metadata_path)
-            .expect("read restarted staging metadata"),
-        Some(metadata.clone())
-    );
-
-    let expected = metadata.clone();
-    let coordinator = tokio::spawn(async move {
-        while let Some(request) = requests.recv().await {
-            let response = match request.operation {
-                CoordinatorOperation::PollUpload {
-                    compatibility,
-                    vault_id,
-                    device_id,
-                    generation,
-                } => {
-                    assert_eq!(compatibility, super::super::protocol::test_compatibility());
-                    assert_eq!(vault_id, expected.vault_id);
-                    assert_eq!(device_id, "device-phone");
-                    assert_eq!(generation, 0);
-                    CoordinatorResponse::UploadStatus {
-                        generation,
-                        requested_upload: Some(BundlePurpose::Ownership),
-                    }
-                }
-                CoordinatorOperation::AuthorizeUpload {
-                    metadata,
-                    source_device_id,
-                    purpose,
-                } => {
-                    assert_eq!(metadata, expected);
-                    assert_eq!(source_device_id, "device-phone");
-                    assert_eq!(purpose, BundlePurpose::Ownership);
-                    CoordinatorResponse::UploadAuthorized {
-                        transfer_id: expected.transfer_id.clone(),
-                        already_received: false,
-                    }
-                }
-                CoordinatorOperation::Uploaded {
-                    metadata,
-                    source_device_id,
-                    purpose,
-                } => {
-                    assert_eq!(metadata, expected);
-                    assert_eq!(source_device_id, "device-phone");
-                    assert_eq!(purpose, BundlePurpose::Ownership);
-                    CoordinatorResponse::IncomingStaged {
-                        transfer_id: expected.transfer_id.clone(),
-                    }
-                }
-                CoordinatorOperation::CommitUploadedOwnership {
-                    metadata,
-                    source_device_id,
-                } => {
-                    assert_eq!(metadata, expected);
-                    assert_eq!(source_device_id, "device-phone");
-                    let response = CoordinatorResponse::ActivationAcknowledged {
-                        transfer_id: expected.transfer_id.clone(),
-                    };
-                    request.response.send(Ok(response)).expect("send response");
-                    break;
-                }
-                operation => panic!("unexpected coordinator operation: {operation:?}"),
-            };
-            request.response.send(Ok(response)).expect("send response");
-        }
-    });
-
-    assert_eq!(
-        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0,)
-            .await
-            .expect("poll coordinator"),
-        Some(BundlePurpose::Ownership)
-    );
-    upload_bundle(
-        &pair.phone,
-        metadata.clone(),
-        "device-phone".to_string(),
-        BundlePurpose::Ownership,
-    )
-    .await
-    .expect("resume Android upload");
-    assert_eq!(fs::read(complete).expect("read completed upload"), bytes);
-    commit_uploaded_ownership(&pair.phone, metadata, "device-phone".to_string())
-        .await
-        .expect("acknowledge uploaded ownership");
-    coordinator.await.expect("coordinator task");
-}
-
-#[tokio::test]
-async fn foreground_poll_observes_a_new_upload_request_without_reconnecting() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
-    pair.enroll().await;
-
-    let coordinator = tokio::spawn(async move {
-        let mut poll_count = 0;
-        while let Some(request) = requests.recv().await {
-            let CoordinatorOperation::PollUpload { generation, .. } = request.operation else {
-                panic!("unexpected coordinator operation");
-            };
-            poll_count += 1;
-            request
-                .response
-                .send(Ok(CoordinatorResponse::UploadStatus {
-                    generation,
-                    requested_upload: (poll_count >= 3).then_some(BundlePurpose::Refresh),
-                }))
-                .expect("send upload status");
-            if poll_count >= 3 {
-                return poll_count;
-            }
-        }
-        poll_count
-    });
-
-    let purpose = tokio::time::timeout(
-        Duration::from_secs(2),
-        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0),
-    )
-    .await
-    .expect("foreground poll should remain responsive")
-    .expect("poll coordinator");
-    assert_eq!(purpose, Some(BundlePurpose::Refresh));
-    assert_eq!(coordinator.await.expect("coordinator task"), 3);
 }
 
 #[tokio::test]
@@ -835,9 +805,14 @@ async fn invalid_device_identity_cannot_download_bundle() {
     let mut forged = metadata;
     forged.device_id = "device-phone".to_string();
 
-    let error = download_bundle(&attacker, forged, &TransferCancellation::default())
-        .await
-        .unwrap_err();
+    let error = download_bundle(
+        &attacker,
+        &BundleSource::Coordinator,
+        forged,
+        &TransferCancellation::default(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         error.contains("TLS")
             || error.contains("certificate")
@@ -931,6 +906,8 @@ async fn invitation_replay_is_rejected_by_coordinator() {
         &pair.invitation,
         "Phone".to_string(),
         DeviceKind::Phone,
+        &test_sync_device_key(),
+        None,
     )
     .await
     .unwrap_err();
@@ -957,11 +934,13 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
         .create_invitation(
             pair.invitation.endpoint.parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             super::super::protocol::test_compatibility(),
             unix_time_ms(),
         )
         .expect("create second invitation");
+    let laptop_admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[6; 32])
+        .expect("admin key")
+        .public_key();
     approving(
         &pair.approvals,
         super::enroll(
@@ -969,6 +948,8 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             &invitation,
             "Laptop".to_string(),
             DeviceKind::Computer,
+            &test_sync_device_key(),
+            Some(&laptop_admin),
         ),
     )
     .await
@@ -976,11 +957,21 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
 
     let peers = pair.desktop.linked_peers().expect("linked devices");
     assert_eq!(peers.len(), 2);
+    let admin_keys: Vec<(&str, Option<&str>)> = peers
+        .iter()
+        .map(|peer| (peer.device_label.as_str(), peer.sync_admin_key.as_deref()))
+        .collect();
+    let laptop_admin = super::super::protocol::encode_sync_admin_key(&laptop_admin);
+    assert!(admin_keys.contains(&("Phone", None)), "{admin_keys:?}");
+    assert!(
+        admin_keys.contains(&("Laptop", Some(laptop_admin.as_str()))),
+        "a linked desktop keeps the admin key it sent: {admin_keys:?}"
+    );
     assert_ne!(
         peers[0].certificate_fingerprint,
         peers[1].certificate_fingerprint
     );
-    let error = probe_coordinator(&second, super::super::protocol::test_compatibility(), 0)
+    let error = prepare_copy(&second)
         .await
         .expect_err("test server has no coordinator state");
     assert!(
@@ -1018,7 +1009,6 @@ async fn malformed_and_oversized_metadata_is_rejected_by_endpoint() {
                 "vaultId": "vault-1",
                 "deviceId": "device-phone",
                 "transferId": "transfer-invalid",
-                "generation": 1,
                 "archiveBytes": archive_bytes,
                 "archiveSha256": digest,
             }
@@ -1052,6 +1042,7 @@ async fn interrupted_download_retries_same_transfer_from_partial_file() {
 
     let error = download_bundle_inner(
         &pair.phone,
+        &BundleSource::Coordinator,
         metadata.clone(),
         &cancellation,
         Some(TRANSFER_CHUNK_BYTES as u64),
@@ -1066,9 +1057,14 @@ async fn interrupted_download_retries_same_transfer_from_partial_file() {
     let partial_bytes = partial.metadata().expect("partial bundle").len();
     assert!(partial_bytes > 0 && partial_bytes < metadata.archive_bytes);
 
-    let staged = download_bundle(&pair.phone, metadata, &cancellation)
-        .await
-        .expect("resume bundle");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &cancellation,
+    )
+    .await
+    .expect("resume bundle");
     assert_eq!(fs::read(staged).expect("read resumed bundle"), bytes);
 }
 
@@ -1081,14 +1077,24 @@ async fn cancelled_download_keeps_a_retryable_transfer_identity() {
     let cancellation = TransferCancellation::default();
     cancellation.cancel();
 
-    let error = download_bundle(&pair.phone, metadata.clone(), &cancellation)
-        .await
-        .unwrap_err();
+    let error = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata.clone(),
+        &cancellation,
+    )
+    .await
+    .unwrap_err();
     assert!(error.contains("cancelled"));
 
-    let staged = download_bundle(&pair.phone, metadata, &TransferCancellation::default())
-        .await
-        .expect("retry cancelled transfer");
+    let staged = download_bundle(
+        &pair.phone,
+        &BundleSource::Coordinator,
+        metadata,
+        &TransferCancellation::default(),
+    )
+    .await
+    .expect("retry cancelled transfer");
     assert_eq!(fs::read(staged).expect("read retried bundle"), bytes);
 }
 
@@ -1106,6 +1112,7 @@ async fn digest_mismatch_removes_corrupt_staging() {
 
     let error = download_bundle(
         &pair.phone,
+        &BundleSource::Coordinator,
         metadata.clone(),
         &TransferCancellation::default(),
     )
@@ -1129,9 +1136,9 @@ fn oversized_bundle_metadata_is_rejected_before_network_work() {
         vault_id: "vault-1".to_string(),
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-oversize".to_string(),
-        generation: 1,
         archive_bytes: MAX_ARCHIVE_BYTES + 1,
         archive_sha256: "a".repeat(64),
+        derived_state_stale: false,
     };
     assert!(metadata.validate().unwrap_err().contains("bundle size"));
 }
@@ -1326,7 +1333,7 @@ fn is_busy(message: &ControlMessage) -> bool {
 }
 
 #[tokio::test]
-async fn contact_request_flood_does_not_delay_coordinator_polls() {
+async fn contact_request_flood_does_not_delay_coordinator_requests() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
 
     let (pair, mut requests, mut contacts) = LocalPair::start_with_services().await;
@@ -1343,12 +1350,13 @@ async fn contact_request_flood_does_not_delay_coordinator_polls() {
     });
     let coordinator = tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
-            let CoordinatorOperation::PollUpload { generation, .. } = request.operation else {
+            let CoordinatorOperation::Prepare { .. } = request.operation else {
                 panic!("unexpected coordinator operation");
             };
-            let _ = request.response.send(Ok(CoordinatorResponse::UploadStatus {
-                generation,
-                requested_upload: Some(BundlePurpose::Refresh),
+            let _ = request.response.send(Ok(CoordinatorResponse::Rejected {
+                code: "copy_declined".to_string(),
+                message: "the coordinator answered".to_string(),
+                retryable: false,
             }));
         }
     });
@@ -1370,14 +1378,11 @@ async fn contact_request_flood_does_not_delay_coordinator_polls() {
         .collect();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let purpose = tokio::time::timeout(
-        Duration::from_secs(2),
-        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0),
-    )
-    .await
-    .expect("coordinator polls stay responsive during a contact flood")
-    .expect("poll coordinator");
-    assert_eq!(purpose, Some(BundlePurpose::Refresh));
+    let answer = tokio::time::timeout(Duration::from_secs(2), prepare_copy(&pair.phone))
+        .await
+        .expect("coordinator requests stay responsive during a contact flood")
+        .expect_err("the test coordinator declines the copy");
+    assert_eq!(answer, "the coordinator answered");
 
     for exchange in flood {
         let response = exchange.await.expect("flood task").expect("flood exchange");
@@ -1501,6 +1506,7 @@ async fn sync_requests_reach_the_hub_only_from_enrolled_devices() {
         manifest_version: 1,
         stored: Vec::new(),
         probe: None,
+        listening: Vec::new(),
     };
     let unauthenticated = unauthenticated_exchange(
         &pair.invitation.endpoint,
@@ -1584,7 +1590,7 @@ async fn closed_by_coordinator(stream: &mut TcpStream, wait: Duration) -> bool {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn connection_flood_is_closed_while_linked_devices_still_connect() {
-    let limits = server::limits::ConnectionLimits::new(6, 3, 64);
+    let limits = server::limits::ConnectionLimits::new(6, 3, 64, 16);
     let pair = LocalPair::start_with_limits(None, limits).await;
     pair.enroll().await;
     let endpoint: SocketAddr = pair.invitation.endpoint.parse().expect("endpoint");
@@ -1598,7 +1604,7 @@ async fn connection_flood_is_closed_while_linked_devices_still_connect() {
     }
     assert_eq!(closed, 7, "only the per-source pending budget stays open");
 
-    let error = probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0)
+    let error = prepare_copy(&pair.phone)
         .await
         .expect_err("test server has no coordinator state");
     assert!(
@@ -1652,3 +1658,376 @@ async fn accept_errors_back_off_instead_of_stopping_the_listener() {
     tokio::join!(serve, client);
     assert_eq!(failures.load(Ordering::SeqCst), 0);
 }
+
+fn pin_with(
+    endpoint: &str,
+    last_endpoint: Option<&str>,
+    reported_endpoints: &[&str],
+) -> CoordinatorPin {
+    CoordinatorPin {
+        device_id: "device-desktop".to_string(),
+        device_label: None,
+        endpoint: endpoint.to_string(),
+        vault_id: "vault-1".to_string(),
+        certificate_fingerprint: "a".repeat(64),
+        last_endpoint: last_endpoint.map(str::to_string),
+        reported_endpoints: reported_endpoints
+            .iter()
+            .map(|endpoint| endpoint.to_string())
+            .collect(),
+        charter: None,
+    }
+}
+
+fn socket_address(endpoint: &str) -> SocketAddr {
+    endpoint.parse().expect("endpoint")
+}
+
+fn linked_pin(manager: &PairingManager) -> CoordinatorPin {
+    manager
+        .coordinator_pin()
+        .expect("read coordinator pin")
+        .expect("linked device")
+}
+
+#[test]
+fn coordinator_candidates_put_the_last_working_endpoint_first_and_the_invitation_last() {
+    let pin = pin_with(
+        "192.168.1.20:43821",
+        Some("10.0.0.5:43821"),
+        &["192.168.1.20:43821", "[fd00::20]:43821", "10.0.0.5:43821"],
+    );
+    let (candidates, failures) =
+        coordinator_candidates(&pin, &[socket_address("172.16.0.9:43821")], |_| Ok(()));
+    assert_eq!(
+        candidates,
+        vec![
+            socket_address("10.0.0.5:43821"),
+            socket_address("192.168.1.20:43821"),
+            socket_address("[fd00::20]:43821"),
+            socket_address("172.16.0.9:43821"),
+        ]
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+fn coordinator_candidates_skip_refused_endpoints_and_stop_at_the_cap() {
+    let pin = pin_with("192.168.1.20:43821", None, &["10.0.0.5:43821"]);
+    let refused = socket_address("10.0.0.5:43821");
+    let (candidates, failures) = coordinator_candidates(&pin, &[], |endpoint| {
+        if endpoint == refused {
+            Err("refuse device connection: test".to_string())
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(candidates, vec![socket_address("192.168.1.20:43821")]);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].endpoint, "10.0.0.5:43821");
+
+    let discovered: Vec<SocketAddr> = (1..=20)
+        .map(|host| SocketAddr::from(([10, 0, 1, host], 43_821)))
+        .collect();
+    let (candidates, _) = coordinator_candidates(&pin, &discovered, |_| Ok(()));
+    assert_eq!(candidates.len(), MAX_COORDINATOR_CANDIDATES);
+    assert_eq!(candidates[0], refused);
+    assert!(
+        !candidates.contains(&socket_address("192.168.1.20:43821")),
+        "the invitation endpoint falls past the cap here"
+    );
+}
+
+#[test]
+fn discovery_retries_dial_only_endpoints_not_tried_and_authorized() {
+    let tried = [
+        socket_address("192.168.1.20:43821"),
+        socket_address("10.0.0.5:43821"),
+    ];
+    let refused = socket_address("[fd00::7]:43821");
+    let discovered = [
+        socket_address("10.0.0.5:43821"),
+        socket_address("192.168.1.30:43821"),
+        refused,
+        socket_address("192.168.1.30:43821"),
+        socket_address("172.16.0.9:43821"),
+    ];
+    let mut failures = Vec::new();
+    let untried = untried_discovered_endpoints(
+        &discovered,
+        &tried,
+        |endpoint| {
+            if endpoint == refused {
+                Err("refuse device connection: test".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        &mut failures,
+    );
+    assert_eq!(
+        untried,
+        vec![
+            socket_address("192.168.1.30:43821"),
+            socket_address("172.16.0.9:43821"),
+        ]
+    );
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].endpoint, refused.to_string());
+}
+
+#[test]
+fn a_single_dial_failure_keeps_its_message_and_several_are_summarized() {
+    let failure = |endpoint: &str, error: &str| DialFailure::new(endpoint, error);
+    assert_eq!(
+        coordinator_dial_error(vec![failure("10.0.0.5:1", "refuse device connection: x")]),
+        "refuse device connection: x"
+    );
+    let summary = coordinator_dial_error(vec![
+        failure("10.0.0.5:1", "coordinator connection timed out"),
+        failure("[fd00::5]:1", "connect to coordinator: refused"),
+    ]);
+    assert!(
+        summary.starts_with("could not connect to the coordinator at any known endpoint"),
+        "{summary}"
+    );
+    assert!(summary.contains("10.0.0.5:1: coordinator connection timed out"));
+    assert!(summary.contains("[fd00::5]:1: connect to coordinator: refused"));
+}
+
+#[tokio::test]
+async fn a_coordinator_dial_passes_foreign_and_silent_endpoints_and_remembers_the_one_that_answered()
+ {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let foreign = LocalPair::start().await;
+    let silent = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind silent listener");
+    let pin = linked_pin(&pair.phone);
+    assert!(
+        pair.phone
+            .record_coordinator_contact(
+                &pin.vault_id,
+                &pin.certificate_fingerprint,
+                crate::vault::handoff::pairing::CoordinatorContact {
+                    last_endpoint: Some(foreign.invitation.endpoint.clone()),
+                    ..Default::default()
+                },
+            )
+            .expect("record a foreign endpoint")
+    );
+    let pin = linked_pin(&pair.phone);
+    let (_, identity) = load_tls_identity(&pair.phone).await.expect("identity");
+    let started = std::time::Instant::now();
+    let browsed = AtomicBool::new(false);
+    let mut stream = connect_coordinator(
+        &pair.phone,
+        &pin,
+        identity,
+        &[silent.local_addr().expect("silent endpoint")],
+        async {
+            browsed.store(true, Ordering::Release);
+            Vec::new()
+        },
+    )
+    .await
+    .expect("reach the pinned coordinator");
+    assert!(
+        started.elapsed() < COORDINATOR_CONNECT_TIMEOUT,
+        "a silent endpoint must not hold the dial for its full timeout"
+    );
+    assert!(
+        !browsed.load(Ordering::Acquire),
+        "discovery waits until every candidate failed"
+    );
+    timeout_control(write_control(
+        &mut stream,
+        &ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            known: Vec::new(),
+        },
+    ))
+    .await
+    .expect("send over the pinned stream");
+    timeout_control(read_control(&mut stream))
+        .await
+        .expect("the coordinator answers over the pinned stream");
+    let remembered = linked_pin(&pair.phone);
+    assert_eq!(
+        remembered.last_endpoint.as_deref(),
+        Some(pair.invitation.endpoint.as_str())
+    );
+    assert_eq!(remembered.current_endpoint(), pair.invitation.endpoint);
+}
+
+#[tokio::test]
+async fn a_coordinator_dial_that_reaches_no_endpoint_reports_every_attempt() {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let closed_endpoint = || {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.local_addr().expect("closed endpoint")
+    };
+    let first = closed_endpoint();
+    let second = closed_endpoint();
+    let pin = CoordinatorPin {
+        endpoint: first.to_string(),
+        last_endpoint: None,
+        reported_endpoints: Vec::new(),
+        ..linked_pin(&pair.phone)
+    };
+    let (_, identity) = load_tls_identity(&pair.phone).await.expect("identity");
+    let Err(error) = connect_coordinator(
+        &pair.phone,
+        &pin,
+        identity,
+        &[second],
+        std::future::ready(vec![first]),
+    )
+    .await
+    else {
+        panic!("no endpoint is listening");
+    };
+    assert!(
+        error.starts_with("could not connect to the coordinator at any known endpoint"),
+        "{error}"
+    );
+    assert!(error.contains(&first.to_string()), "{error}");
+    assert!(error.contains(&second.to_string()), "{error}");
+    assert_eq!(
+        error.matches(&first.to_string()).count(),
+        1,
+        "a discovered endpoint that was already tried is not dialed again: {error}"
+    );
+}
+
+#[tokio::test]
+async fn discovery_reaches_a_coordinator_that_moved_after_every_known_endpoint_failed() {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("closed endpoint");
+    let pin = CoordinatorPin {
+        endpoint: closed.to_string(),
+        last_endpoint: None,
+        reported_endpoints: Vec::new(),
+        ..linked_pin(&pair.phone)
+    };
+    let moved = socket_address(&pair.invitation.endpoint);
+    let (_, identity) = load_tls_identity(&pair.phone).await.expect("identity");
+    let mut stream = connect_coordinator(
+        &pair.phone,
+        &pin,
+        identity,
+        &[],
+        std::future::ready(vec![closed, moved]),
+    )
+    .await
+    .expect("reach the coordinator at its discovered endpoint");
+    timeout_control(write_control(
+        &mut stream,
+        &ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            known: Vec::new(),
+        },
+    ))
+    .await
+    .expect("send over the pinned stream");
+    timeout_control(read_control(&mut stream))
+        .await
+        .expect("the coordinator answers over the pinned stream");
+    assert_eq!(
+        linked_pin(&pair.phone).last_endpoint.as_deref(),
+        Some(pair.invitation.endpoint.as_str()),
+        "the discovered endpoint that answered is dialed first next time"
+    );
+}
+
+#[tokio::test]
+async fn sync_states_refresh_the_remembered_coordinator_contact() {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let endpoints = vec![
+        "192.168.1.20:43821".to_string(),
+        "[fd00::20]:43821".to_string(),
+    ];
+    let coordinator = linked_pin(&pair.phone).device_id;
+    let member = |device_id: &str, endpoint: &str| super::super::protocol::MemberEndpoint {
+        device_id: device_id.to_string(),
+        endpoint: endpoint.to_string(),
+        observed_ms: 1_700_000_000_000,
+    };
+    let mut members: Vec<_> = endpoints
+        .iter()
+        .map(|endpoint| member(&coordinator, endpoint))
+        .collect();
+    members.push(member("device-other-member", "192.168.1.30:43821"));
+    record_reported_contact(&pair.phone, &members);
+    let pin = linked_pin(&pair.phone);
+    assert_eq!(
+        pin.reported_endpoints, endpoints,
+        "only the coordinator's own endpoints refresh its pin"
+    );
+
+    record_reported_contact(&pair.phone, &[member(&coordinator, "8.8.8.8:43821")]);
+    assert_eq!(
+        linked_pin(&pair.phone).reported_endpoints,
+        endpoints,
+        "an unreportable endpoint list is not stored"
+    );
+}
+
+#[tokio::test]
+async fn the_listener_refuses_a_quarantined_device_and_survives_an_unreadable_list() {
+    type List = Result<std::collections::BTreeSet<String>, String>;
+    let list: std::sync::Arc<std::sync::Mutex<List>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Ok(std::collections::BTreeSet::new())));
+    let source = list.clone();
+    let pair = LocalPair::start_with_quarantine(std::sync::Arc::new(move || {
+        let current = source.lock().expect("list").clone();
+        Box::pin(async move { current })
+    }))
+    .await;
+    pair.enroll().await;
+    // This listener serves no coordinator operations, so a device that passes admission gets
+    // that answer, while a refused one loses the connection after the handshake.
+    let served = || async {
+        let outcome = prepare_copy(&pair.phone).await;
+        match outcome {
+            Ok(_) => true,
+            Err(error) => error.contains("coordinator operations are unavailable"),
+        }
+    };
+    assert!(served().await, "a linked device is served");
+
+    *list.lock().expect("list") = Ok(std::collections::BTreeSet::from([
+        "device-phone".to_string()
+    ]));
+    assert!(
+        !served().await,
+        "a quarantined device is turned away after the handshake"
+    );
+    assert!(
+        pair.phone
+            .coordinator_pin()
+            .expect("coordinator pin")
+            .is_some(),
+        "a quarantine is not an unlink"
+    );
+
+    *list.lock().expect("list") = Err("the quarantine list is damaged".to_string());
+    assert!(
+        served().await,
+        "an unreadable list turns no linked device away"
+    );
+}
+
+#[cfg(desktop)]
+mod member;

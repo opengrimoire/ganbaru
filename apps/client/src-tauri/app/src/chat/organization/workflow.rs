@@ -1,11 +1,13 @@
 //! Assignment routing, frozen context, and durable organizational messages.
 
 use super::common::{
-    conversation_item_id, has_thread_eligible_mention, json_object, message_revision_id, new_id,
-    parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
+    AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
+    has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
+    new_id, parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
+    work_assignment_id,
 };
 #[cfg(desktop)]
-use super::common::{wire_approval_policy, wire_work_state, work_assignment_id};
+use super::common::{wire_approval_policy, wire_work_state};
 #[cfg(desktop)]
 use super::context::freeze_context_package;
 #[cfg(desktop)]
@@ -26,13 +28,27 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 pub(super) struct ResolvedInvocation {
     pub(super) teammate_id: ChatParticipantId,
     pub(super) active_assignment: Option<ChatWorkAssignmentRead>,
-    #[cfg(desktop)]
     pub(super) latest_assignment: Option<ChatWorkAssignmentRead>,
 }
 
+/// Where a post routed its invocation.
 pub(super) struct AssignmentWrite {
     pub(super) assignment_id: Option<ChatWorkAssignmentId>,
+    /// Whether the post became an input of an active assignment.
     pub(super) input_queued: bool,
+    /// Whether this device executes the assignment, so it dispatches or delivers now. Only
+    /// desktop executes assignments.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub(super) executes_here: bool,
+}
+
+impl AssignmentWrite {
+    /// A post that routed to no assignment.
+    pub(super) const NONE: Self = Self {
+        assignment_id: None,
+        input_queued: false,
+        executes_here: false,
+    };
 }
 
 pub(super) fn has_authority_bearing_references(references: &[ChatMessageReference]) -> bool {
@@ -125,25 +141,124 @@ pub(super) async fn resolve_invoked_teammate(
     Ok(Some(ResolvedInvocation {
         teammate_id,
         active_assignment,
-        #[cfg(desktop)]
         latest_assignment,
     }))
 }
 
-#[cfg(desktop)]
+/// The devices that can write Chat. An assignment writes its states, messages, and runs into
+/// Chat, so only these devices execute assignments: this device and the linked devices that
+/// hold an active sync writer.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct ChatWriters {
+    devices: std::collections::BTreeSet<String>,
+}
+
+impl ChatWriters {
+    /// The writers `devices`.
+    pub(super) fn new(devices: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            devices: devices.into_iter().collect(),
+        }
+    }
+
+    /// Whether the device `device_id` can write Chat.
+    pub(super) fn includes(&self, device_id: &str) -> bool {
+        self.devices.contains(device_id)
+    }
+
+    /// The writer ids as a JSON array, for queries that read them with `json_each`.
+    #[cfg(desktop)]
+    pub(super) fn json(&self) -> ChatResult<String> {
+        serde_json::to_string(&self.devices).map_err(serialization_error)
+    }
+}
+
+/// The device writing a post, which decides where the work a mention starts runs.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PostingDevice<'a> {
+    /// Stable id of this device.
+    pub(super) id: &'a str,
+    /// Whether this device executes assignments; Android never does.
+    pub(super) can_execute: bool,
+    /// Devices that can write Chat, the only ones an assignment may run on.
+    pub(super) chat_writers: &'a ChatWriters,
+}
+
+impl<'a> PostingDevice<'a> {
+    /// This device under its stable id `id`, with the Chat writers `chat_writers`.
+    pub(super) fn this_device(id: &'a str, chat_writers: &'a ChatWriters) -> Self {
+        Self {
+            id,
+            can_execute: cfg!(desktop),
+            chat_writers,
+        }
+    }
+
+    /// Whether this device executes the work of `executing_device_id`.
+    pub(super) fn executes(&self, executing_device_id: Option<&str>) -> bool {
+        self.can_execute && executing_device_id == Some(self.id)
+    }
+
+    /// Whether this device can run new work: it executes assignments and writes Chat.
+    pub(super) fn runs_new_work(&self) -> bool {
+        self.can_execute && self.chat_writers.includes(self.id)
+    }
+}
+
+/// The device an assignment of `teammate_id` runs on when `device` creates it: the teammate's
+/// home device when it can write Chat, else the posting device when it can run the work, else
+/// none, so the post records the mention only and a desktop starts the work later. A home
+/// device that a handoff turned into a replica, or that was unlinked, is passed over, since an
+/// assignment it executes would stay queued forever.
+async fn new_assignment_executing_device(
+    transaction: &mut Transaction<'_, Sqlite>,
+    teammate_id: &ChatParticipantId,
+    device: PostingDevice<'_>,
+) -> ChatResult<Option<String>> {
+    let home_device_id: Option<Option<String>> =
+        sqlx::query_scalar("SELECT home_device_id FROM chat_teammates WHERE participant_id = ?")
+            .bind(teammate_id.as_str())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(persistence_error)?;
+    Ok(home_device_id
+        .flatten()
+        .filter(|home| device.chat_writers.includes(home))
+        .or_else(|| device.runs_new_work().then(|| device.id.to_owned())))
+}
+
+/// The executing device of assignment `assignment_id`, if it names one.
+pub(super) async fn read_assignment_executing_device<'e, E>(
+    executor: E,
+    assignment_id: &str,
+) -> ChatResult<Option<String>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let executing_device_id: Option<Option<String>> =
+        sqlx::query_scalar("SELECT executing_device_id FROM chat_work_assignments WHERE id = ?")
+            .bind(assignment_id)
+            .fetch_optional(executor)
+            .await
+            .map_err(persistence_error)?;
+    Ok(executing_device_id.flatten())
+}
+
+/// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
+/// the active assignment, else a new assignment that runs on the teammate's home device or the
+/// posting desktop. A post from a device that cannot execute, for a teammate without a home
+/// device, records the mention only.
 pub(super) async fn persist_assignment_routing(
     transaction: &mut Transaction<'_, Sqlite>,
     reply_thread_id: &ChatReplyThreadId,
     message_item_id: &ChatConversationItemId,
     invocation: Option<&ResolvedInvocation>,
     execution_target: Option<&ChatExecutionTarget>,
+    device: PostingDevice<'_>,
     now: &UtcTimestamp,
 ) -> ChatResult<AssignmentWrite> {
     let Some(invocation) = invocation else {
-        return Ok(AssignmentWrite {
-            assignment_id: None,
-            input_queued: false,
-        });
+        return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
         let ordinal: i64 = sqlx::query_scalar(
@@ -164,7 +279,7 @@ pub(super) async fn persist_assignment_routing(
                 (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(new_id("assignment-input"))
+        .bind(assignment_input_id(message_item_id.as_str())?)
         .bind(active.id.as_str())
         .bind(message_item_id.as_str())
         .bind(ordinal)
@@ -173,20 +288,72 @@ pub(super) async fn persist_assignment_routing(
         .execute(&mut **transaction)
         .await
         .map_err(persistence_error)?;
+        let executing_device_id =
+            read_assignment_executing_device(&mut **transaction, active.id.as_str()).await?;
         return Ok(AssignmentWrite {
             assignment_id: Some(active.id.clone()),
             input_queued: true,
+            executes_here: device.executes(executing_device_id.as_deref()),
         });
     }
-    let assignment_id = work_assignment_id()?;
-    let previous_id = invocation
+    let Some(executing_device_id) =
+        new_assignment_executing_device(transaction, &invocation.teammate_id, device).await?
+    else {
+        return Ok(AssignmentWrite::NONE);
+    };
+    let assignment_id = create_assignment(
+        transaction,
+        NewAssignment {
+            reply_thread_id,
+            message_item_id,
+            teammate_id: &invocation.teammate_id,
+            latest_assignment: invocation.latest_assignment.as_ref(),
+            executing_device_id: &executing_device_id,
+            execution_target,
+        },
+        device,
+        now,
+    )
+    .await?;
+    Ok(AssignmentWrite {
+        assignment_id: Some(assignment_id),
+        input_queued: false,
+        executes_here: device.executes(Some(&executing_device_id)),
+    })
+}
+
+/// An assignment a post or a Start action creates.
+pub(super) struct NewAssignment<'a> {
+    pub(super) reply_thread_id: &'a ChatReplyThreadId,
+    /// Message that triggers it.
+    pub(super) message_item_id: &'a ChatConversationItemId,
+    pub(super) teammate_id: &'a ChatParticipantId,
+    /// Newest assignment of the reply thread, which the new one follows.
+    pub(super) latest_assignment: Option<&'a ChatWorkAssignmentRead>,
+    pub(super) executing_device_id: &'a str,
+    pub(super) execution_target: Option<&'a ChatExecutionTarget>,
+}
+
+/// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
+/// predecessor. A trigger message that is already an input moves to the new assignment, since
+/// its input id derives from the message. When this device executes it, the same transaction
+/// freezes its context and queues its dispatch; another executing device does both when the
+/// assignment arrives.
+pub(super) async fn create_assignment(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment: NewAssignment<'_>,
+    device: PostingDevice<'_>,
+    now: &UtcTimestamp,
+) -> ChatResult<ChatWorkAssignmentId> {
+    let previous_id = assignment.latest_assignment.map(|latest| &latest.id);
+    let assignment_id = work_assignment_id(
+        assignment.message_item_id,
+        assignment.teammate_id,
+        previous_id,
+    )?;
+    if let Some(previous) = assignment
         .latest_assignment
-        .as_ref()
-        .map(|assignment| &assignment.id);
-    if let Some(previous) = invocation
-        .latest_assignment
-        .as_ref()
-        .filter(|assignment| assignment.state == ChatWorkAssignmentState::ReadyForReview)
+        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)
     {
         let settled = sqlx::query(
             "UPDATE chat_work_assignments
@@ -210,14 +377,15 @@ pub(super) async fn persist_assignment_routing(
     sqlx::query(
         "INSERT INTO chat_work_assignments
             (id, reply_thread_id, teammate_id, triggering_message_item_id,
-             previous_assignment_id, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+             previous_assignment_id, executing_device_id, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
     )
     .bind(assignment_id.as_str())
-    .bind(reply_thread_id.as_str())
-    .bind(invocation.teammate_id.as_str())
-    .bind(message_item_id.as_str())
+    .bind(assignment.reply_thread_id.as_str())
+    .bind(assignment.teammate_id.as_str())
+    .bind(assignment.message_item_id.as_str())
     .bind(previous_id.map(ChatWorkAssignmentId::as_str))
+    .bind(assignment.executing_device_id)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut **transaction)
@@ -226,11 +394,14 @@ pub(super) async fn persist_assignment_routing(
     sqlx::query(
         "INSERT INTO chat_work_assignment_inputs
             (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
-         VALUES (?, ?, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            assignment_id = excluded.assignment_id, ordinal = 1,
+            routing_kind = excluded.routing_kind",
     )
-    .bind(new_id("assignment-input"))
+    .bind(assignment_input_id(assignment.message_item_id.as_str())?)
     .bind(assignment_id.as_str())
-    .bind(message_item_id.as_str())
+    .bind(assignment.message_item_id.as_str())
     .bind(if previous_id.is_some() {
         "follow_up"
     } else {
@@ -240,12 +411,41 @@ pub(super) async fn persist_assignment_routing(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
+    #[cfg(desktop)]
+    if device.executes(Some(assignment.executing_device_id)) {
+        queue_assignment_dispatch(
+            transaction,
+            &assignment_id,
+            assignment.reply_thread_id,
+            assignment.message_item_id,
+            assignment.teammate_id,
+            assignment.execution_target,
+            now,
+        )
+        .await?;
+    }
+    #[cfg(mobile)]
+    let _ = (device, assignment.execution_target);
+    Ok(assignment_id)
+}
+
+/// Freezes the context of assignment `assignment_id` and queues its dispatch on this device.
+#[cfg(desktop)]
+pub(super) async fn queue_assignment_dispatch(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    reply_thread_id: &ChatReplyThreadId,
+    message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+    execution_target: Option<&ChatExecutionTarget>,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
     freeze_context_package(
         transaction,
-        &assignment_id,
+        assignment_id,
         reply_thread_id,
         message_item_id,
-        &invocation.teammate_id,
+        teammate_id,
         execution_target,
         now,
     )
@@ -255,7 +455,7 @@ pub(super) async fn persist_assignment_routing(
             (id, assignment_id, state, available_at, created_at, updated_at)
          VALUES (?, ?, 'queued', ?, ?, ?)",
     )
-    .bind(new_id("dispatch"))
+    .bind(new_id("dispatch")?)
     .bind(assignment_id.as_str())
     .bind(now.as_str())
     .bind(now.as_str())
@@ -263,32 +463,7 @@ pub(super) async fn persist_assignment_routing(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    Ok(AssignmentWrite {
-        assignment_id: Some(assignment_id),
-        input_queued: false,
-    })
-}
-
-#[cfg(mobile)]
-pub(super) async fn persist_assignment_routing(
-    _transaction: &mut Transaction<'_, Sqlite>,
-    _reply_thread_id: &ChatReplyThreadId,
-    _message_item_id: &ChatConversationItemId,
-    invocation: Option<&ResolvedInvocation>,
-    _execution_target: Option<&ChatExecutionTarget>,
-    _now: &UtcTimestamp,
-) -> ChatResult<AssignmentWrite> {
-    if invocation.is_some() {
-        return Err(ChatError::new(
-            ChatErrorCode::DriverUnavailable,
-            "Local coding-agent execution is unavailable on this device",
-            true,
-        ));
-    }
-    Ok(AssignmentWrite {
-        assignment_id: None,
-        input_queued: false,
-    })
+    Ok(())
 }
 
 pub(super) struct CommunicationMessageWrite<'a> {
@@ -296,8 +471,9 @@ pub(super) struct CommunicationMessageWrite<'a> {
     pub(super) revision_id: &'a ChatMessageRevisionId,
     pub(super) conversation_id: &'a ChatConversationId,
     pub(super) reply_thread_id: Option<&'a ChatReplyThreadId>,
-    pub(super) ordinal: i64,
+    pub(super) order_key: &'a str,
     pub(super) request: &'a PostChatMessageCommand,
+    pub(super) attachments: AttachmentSource<'a>,
     pub(super) invoked_teammate_id: Option<&'a ChatParticipantId>,
     pub(super) now: &'a UtcTimestamp,
 }
@@ -308,13 +484,13 @@ pub(super) async fn insert_communication_message(
 ) -> ChatResult<()> {
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(write.item_id.as_str())
     .bind(write.conversation_id.as_str())
     .bind(write.reply_thread_id.map(ChatReplyThreadId::as_str))
-    .bind(write.ordinal)
+    .bind(write.order_key)
     .bind(write.now.as_str())
     .execute(&mut **transaction)
     .await
@@ -333,9 +509,9 @@ pub(super) async fn insert_communication_message(
     .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(write.revision_id.as_str())
     .bind(write.item_id.as_str())
@@ -358,20 +534,7 @@ pub(super) async fn insert_communication_message(
         )
         .await?;
     }
-    for (index, attachment_id) in write.request.attachment_ids.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO chat_communication_attachment_references
-                (message_revision_id, attachment_id, ordinal, created_at)
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(write.revision_id.as_str())
-        .bind(attachment_id.as_str())
-        .bind(i64::try_from(index).unwrap_or(i64::MAX))
-        .bind(write.now.as_str())
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-    }
+    insert_revision_attachments(transaction, write.revision_id.as_str(), write.attachments).await?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
         .bind(write.revision_id.as_str())
         .bind(write.item_id.as_str())
@@ -474,23 +637,25 @@ async fn insert_message_reference(
             let source_conversation_id: String = source
                 .try_get("conversation_id")
                 .map_err(persistence_error)?;
-            let source_high_ordinal = sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT max(item.ordinal)
-                 FROM chat_conversation_items item
-                 JOIN chat_communication_messages message ON message.item_id = item.id
-                 WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
-                   AND message.deleted_at IS NULL",
-            )
-            .bind(&source_conversation_id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?
-            .ok_or_else(|| {
-                ChatError::validation(
-                    "references",
-                    "An empty channel cannot be used as an assignment context source",
+            let (source_high_order_key, source_high_item_id) =
+                sqlx::query_as::<_, (String, String)>(
+                    "SELECT item.order_key, item.id
+                     FROM chat_conversation_items item
+                     JOIN chat_communication_messages message ON message.item_id = item.id
+                     WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
+                       AND message.deleted_at IS NULL
+                     ORDER BY item.order_key DESC, item.id DESC LIMIT 1",
                 )
-            })?;
+                .bind(&source_conversation_id)
+                .fetch_optional(&mut **transaction)
+                .await
+                .map_err(persistence_error)?
+                .ok_or_else(|| {
+                    ChatError::validation(
+                        "references",
+                        "An empty channel cannot be used as an assignment context source",
+                    )
+                })?;
             let audience_gap: i64 = sqlx::query_scalar(
                 "SELECT count(*)
                  FROM chat_conversation_memberships destination
@@ -498,11 +663,11 @@ async fn insert_message_reference(
                  LEFT JOIN chat_teammate_channel_memberships destination_ai
                    ON destination_ai.conversation_id = destination.conversation_id
                   AND destination_ai.teammate_id = destination.participant_id
+                  AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_revisions destination_revision
+                 LEFT JOIN chat_access_profile_effective_revisions destination_revision
                    ON destination_revision.access_profile_id = destination_profile.id
-                  AND destination_revision.revision = destination_profile.latest_revision
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
@@ -521,11 +686,11 @@ async fn insert_message_reference(
                      LEFT JOIN chat_teammate_channel_memberships source_ai
                        ON source_ai.conversation_id = source_membership.conversation_id
                       AND source_ai.teammate_id = source_membership.participant_id
+                      AND source_ai.removed_at IS NULL
                      LEFT JOIN chat_access_profiles source_profile
                        ON source_profile.id = source_ai.access_profile_id
-                     LEFT JOIN chat_access_profile_revisions source_revision
+                     LEFT JOIN chat_access_profile_effective_revisions source_revision
                        ON source_revision.access_profile_id = source_profile.id
-                      AND source_revision.revision = source_profile.latest_revision
                      WHERE source_membership.conversation_id = ?
                        AND source_membership.participant_id = destination.participant_id
                        AND source_membership.removed_at IS NULL
@@ -553,7 +718,19 @@ async fn insert_message_reference(
                     true,
                 ));
             }
-            let mut source_lower_ordinal: i64 = sqlx::query_scalar(
+            // Entire history starts at the first root item; an unstamped grant boundary sorts
+            // after the high bound and leaves the range empty.
+            let first_root_order_key: String = sqlx::query_scalar(
+                "SELECT min(order_key) FROM chat_conversation_items
+                 WHERE conversation_id = ? AND reply_thread_id IS NULL",
+            )
+            .bind(&source_conversation_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(persistence_error)?;
+            let after_high_order_key =
+                ganbaru_chat::timeline::order_key_after(Some(&source_high_order_key))?;
+            let mut source_lower_order_key: String = sqlx::query_scalar(
                 "SELECT coalesce(max(
                    CASE
                      WHEN participant.participant_kind = 'ai_teammate'
@@ -562,20 +739,20 @@ async fn insert_message_reference(
                          WHEN source_revision.default_history_boundary = 'from_grant'
                            OR source_ai.history_boundary = 'from_grant'
                          THEN 'from_grant' ELSE 'entire' END = 'from_grant'
-                     THEN coalesce(source_ai.history_from_ordinal, ? + 1)
-                     ELSE 1
+                     THEN coalesce(source_ai.history_from_order_key, ?)
+                     ELSE ?
                    END
-                 ), 1)
+                 ), ?)
                  FROM chat_conversation_memberships destination
                  JOIN chat_participants participant ON participant.id = destination.participant_id
                  LEFT JOIN chat_teammate_channel_memberships destination_ai
                    ON destination_ai.conversation_id = destination.conversation_id
                   AND destination_ai.teammate_id = destination.participant_id
+                  AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_revisions destination_revision
+                 LEFT JOIN chat_access_profile_effective_revisions destination_revision
                    ON destination_revision.access_profile_id = destination_profile.id
-                  AND destination_revision.revision = destination_profile.latest_revision
                  JOIN chat_conversation_memberships source_membership
                    ON source_membership.participant_id = destination.participant_id
                   AND source_membership.conversation_id = ?
@@ -583,11 +760,11 @@ async fn insert_message_reference(
                  LEFT JOIN chat_teammate_channel_memberships source_ai
                    ON source_ai.conversation_id = source_membership.conversation_id
                   AND source_ai.teammate_id = source_membership.participant_id
+                  AND source_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles source_profile
                    ON source_profile.id = source_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_revisions source_revision
+                 LEFT JOIN chat_access_profile_effective_revisions source_revision
                    ON source_revision.access_profile_id = source_profile.id
-                  AND source_revision.revision = source_profile.latest_revision
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
@@ -601,14 +778,16 @@ async fn insert_message_reference(
                      )
                    )",
             )
-            .bind(source_high_ordinal)
+            .bind(&after_high_order_key)
+            .bind(&first_root_order_key)
+            .bind(&first_root_order_key)
             .bind(&source_conversation_id)
             .bind(destination_conversation_id.as_str())
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
             if let Some(teammate_id) = invoked_teammate_id {
-                let teammate_lower_ordinal = sqlx::query_scalar::<_, i64>(
+                let teammate_lower_order_key = sqlx::query_scalar::<_, String>(
                     "SELECT CASE
                               WHEN CASE
                                 WHEN ai_membership.history_boundary_inherits_profile = 1
@@ -616,18 +795,18 @@ async fn insert_message_reference(
                                 WHEN ai_membership.history_boundary = 'from_grant'
                                   OR profile_revision.default_history_boundary = 'from_grant'
                                 THEN 'from_grant' ELSE 'entire' END = 'from_grant'
-                              THEN coalesce(ai_membership.history_from_ordinal, ? + 1)
-                              ELSE 1
+                              THEN coalesce(ai_membership.history_from_order_key, ?)
+                              ELSE ?
                             END
                         FROM chat_conversation_memberships membership
                         JOIN chat_teammate_channel_memberships ai_membership
                           ON ai_membership.conversation_id = membership.conversation_id
                          AND ai_membership.teammate_id = membership.participant_id
+                         AND ai_membership.removed_at IS NULL
                         JOIN chat_access_profiles profile
                           ON profile.id = ai_membership.access_profile_id
-                        JOIN chat_access_profile_revisions profile_revision
+                        JOIN chat_access_profile_effective_revisions profile_revision
                           ON profile_revision.access_profile_id = profile.id
-                         AND profile_revision.revision = profile.latest_revision
                         WHERE membership.conversation_id = ?
                           AND membership.participant_id = ?
                           AND membership.removed_at IS NULL
@@ -637,22 +816,23 @@ async fn insert_message_reference(
                                      profile_revision.default_read_history)
                           END = 1",
                 )
-                .bind(source_high_ordinal)
+                .bind(&after_high_order_key)
+                .bind(&first_root_order_key)
                 .bind(&source_conversation_id)
                 .bind(teammate_id.as_str())
                 .fetch_optional(&mut **transaction)
                 .await
                 .map_err(persistence_error)?;
-                let Some(teammate_lower_ordinal) = teammate_lower_ordinal else {
+                let Some(teammate_lower_order_key) = teammate_lower_order_key else {
                     return Err(ChatError::new(
                         ChatErrorCode::Conflict,
                         "The assigned teammate cannot read the referenced channel history",
                         true,
                     ));
                 };
-                source_lower_ordinal = source_lower_ordinal.max(teammate_lower_ordinal);
+                source_lower_order_key = source_lower_order_key.max(teammate_lower_order_key);
             }
-            if source_lower_ordinal > source_high_ordinal {
+            if source_lower_order_key > source_high_order_key {
                 return Err(ChatError::new(
                     ChatErrorCode::Conflict,
                     "No referenced channel history is readable by the complete destination audience",
@@ -660,61 +840,36 @@ async fn insert_message_reference(
                 ));
             }
             let source_revision_cutoff_id = sqlx::query_scalar::<_, String>(
-                "SELECT frozen.id
-                 FROM (
-                   SELECT revision.id, revision_ordinal.ordinal
-                   FROM chat_conversation_items item
-                   JOIN chat_communication_messages message ON message.item_id = item.id
-                   JOIN chat_communication_message_revisions revision
-                     ON revision.id = message.current_revision_id
-                   JOIN chat_communication_message_revision_ordinals revision_ordinal
-                     ON revision_ordinal.message_revision_id = revision.id
-                   WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
-                     AND message.deleted_at IS NULL
-                   UNION ALL
-                   SELECT revision.id, revision_ordinal.ordinal
-                   FROM chat_conversation_items item
-                   JOIN chat_communication_messages message ON message.item_id = item.id
-                   JOIN chat_communication_message_revisions revision
-                     ON revision.id = message.current_revision_id
-                   JOIN chat_communication_message_revision_ordinals revision_ordinal
-                     ON revision_ordinal.message_revision_id = revision.id
-                   WHERE item.conversation_id = ? AND item.reply_thread_id IS NOT NULL
-                     AND message.deleted_at IS NULL
-                 ) frozen
-                 ORDER BY frozen.ordinal DESC
+                "SELECT revision.id
+                 FROM chat_conversation_items item
+                 JOIN chat_communication_messages message ON message.item_id = item.id
+                 JOIN chat_communication_message_revisions revision
+                   ON revision.id = message.current_revision_id
+                 WHERE item.conversation_id = ? AND message.deleted_at IS NULL
+                 ORDER BY revision.created_at DESC, revision.id DESC
                  LIMIT 1",
             )
-            .bind(&source_conversation_id)
             .bind(&source_conversation_id)
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?
             .unwrap_or_else(|| revision_id.as_str().to_string());
-            let destination_audience_revision: i64 = sqlx::query_scalar(
-                "SELECT revision FROM chat_conversation_audience_state
-                 WHERE conversation_id = ?",
-            )
-            .bind(destination_conversation_id.as_str())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
             sqlx::query(
                 "INSERT INTO chat_channel_reference_targets
                     (reference_id, channel_id, source_conversation_id,
-                     destination_conversation_id, source_lower_ordinal,
-                     source_high_ordinal, source_revision_cutoff_id,
-                     destination_audience_revision)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     destination_conversation_id, source_lower_order_key,
+                     source_lower_item_id, source_high_order_key, source_high_item_id,
+                     source_revision_cutoff_id)
+                 VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)",
             )
             .bind(metadata.reference_id.as_str())
             .bind(channel_id.as_str())
             .bind(&source_conversation_id)
             .bind(destination_conversation_id.as_str())
-            .bind(source_lower_ordinal)
-            .bind(source_high_ordinal)
+            .bind(&source_lower_order_key)
+            .bind(&source_high_order_key)
+            .bind(&source_high_item_id)
             .bind(&source_revision_cutoff_id)
-            .bind(destination_audience_revision)
             .execute(&mut **transaction)
             .await
             .map_err(persistence_error)?;
@@ -837,20 +992,31 @@ async fn require_destination_project_folder(
     Ok(())
 }
 
+/// Identity and attachment source of the channel copy of a reply.
+pub(super) struct ChannelCopy<'a> {
+    /// Derived ids for a scheduled send, or `None` for random ids.
+    pub(super) ids: Option<ScheduledPostIds>,
+    /// Where the copy's attachment references come from.
+    pub(super) attachments: AttachmentSource<'a>,
+}
+
 pub(super) async fn insert_channel_copy(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     request: &PostChatMessageCommand,
+    copy: ChannelCopy<'_>,
     invoked_teammate_id: Option<&ChatParticipantId>,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
-    let item_id = conversation_item_id()?;
-    let revision_id = message_revision_id()?;
-    let ordinal = next_item_ordinal(transaction, conversation_id, None).await?;
+    let (item_id, revision_id) = match copy.ids {
+        Some(ids) => (ids.item_id, ids.revision_id),
+        None => (conversation_item_id()?, message_revision_id()?),
+    };
+    let order_key = next_item_order_key(transaction, conversation_id, None).await?;
     let mut copied_request = request.clone();
     for reference in &mut copied_request.references {
         reference.metadata_mut().reference_id =
-            ChatMessageReferenceId::new(new_id("message-reference")).map_err(identifier_error)?;
+            ChatMessageReferenceId::new(new_id("message-reference")?).map_err(identifier_error)?;
     }
     insert_communication_message(
         transaction,
@@ -859,15 +1025,16 @@ pub(super) async fn insert_channel_copy(
             revision_id: &revision_id,
             conversation_id,
             reply_thread_id: None,
-            ordinal,
+            order_key: &order_key,
             request: &copied_request,
+            attachments: copy.attachments,
             invoked_teammate_id,
             now,
         },
     )
     .await?;
     if has_thread_eligible_mention(request) {
-        let thread_id = reply_thread_id()?;
+        let thread_id = reply_thread_id(&item_id)?;
         sqlx::query(
             "INSERT INTO chat_reply_threads
                 (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
@@ -886,23 +1053,17 @@ pub(super) async fn insert_channel_copy(
     Ok(())
 }
 
-pub(super) async fn next_item_ordinal(
+pub(super) async fn next_item_order_key(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
     reply_thread_id: Option<&ChatReplyThreadId>,
-) -> ChatResult<i64> {
-    sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1
-         FROM chat_conversation_items
-         WHERE conversation_id = ?
-           AND ((? IS NULL AND reply_thread_id IS NULL) OR reply_thread_id = ?)",
+) -> ChatResult<String> {
+    ganbaru_chat::timeline::next_order_key(
+        transaction,
+        conversation_id.as_str(),
+        reply_thread_id.map(ChatReplyThreadId::as_str),
     )
-    .bind(conversation_id.as_str())
-    .bind(reply_thread_id.map(ChatReplyThreadId::as_str))
-    .bind(reply_thread_id.map(ChatReplyThreadId::as_str))
-    .fetch_one(&mut **transaction)
     .await
-    .map_err(persistence_error)
 }
 
 pub(super) async fn require_reply_thread(
@@ -936,19 +1097,21 @@ pub(super) async fn require_participating_teammate(
 ) -> ChatResult<()> {
     let row = sqlx::query(
         "SELECT membership.removed_at, participant.archived_at,
-                teammate.latest_policy_revision, ai_membership.participate,
+                policy.id AS policy_revision_id, ai_membership.participate,
                 ai_membership.participate_inherits_profile,
                 profile_revision.default_participate
          FROM chat_conversation_memberships membership
          JOIN chat_participants participant ON participant.id = membership.participant_id
          JOIN chat_teammates teammate ON teammate.participant_id = membership.participant_id
+         LEFT JOIN chat_teammate_effective_policies policy
+           ON policy.teammate_id = teammate.participant_id
          JOIN chat_teammate_channel_memberships ai_membership
            ON ai_membership.conversation_id = membership.conversation_id
           AND ai_membership.teammate_id = membership.participant_id
+          AND ai_membership.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = ai_membership.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE membership.conversation_id = ? AND membership.participant_id = ?",
     )
     .bind(conversation_id.as_str())
@@ -971,9 +1134,9 @@ pub(super) async fn require_participating_teammate(
             .map_err(persistence_error)?
             .is_none()
         && row
-            .try_get::<i64, _>("latest_policy_revision")
+            .try_get::<Option<String>, _>("policy_revision_id")
             .map_err(persistence_error)?
-            > 0
+            .is_some()
         && if row
             .try_get::<i64, _>("participate_inherits_profile")
             .map_err(persistence_error)?
@@ -1001,11 +1164,11 @@ pub(super) async fn require_participating_teammate(
     Ok(())
 }
 
+/// Appends a teammate policy revision and points the teammate's current policy at it.
 #[cfg(desktop)]
 pub(super) async fn insert_policy_revision(
     transaction: &mut Transaction<'_, Sqlite>,
     teammate_id: &ChatParticipantId,
-    revision: u64,
     policy: &ChatTeammatePolicyInput,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
@@ -1015,26 +1178,39 @@ pub(super) async fn insert_policy_revision(
         model_options: policy.model_options.clone(),
     })
     .map_err(serialization_error)?;
+    let policy_revision_id = new_id("teammate-policy")?;
+    let safety_mode = wire_approval_policy(policy.safety_mode);
     sqlx::query(
         "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, revision, provider_instance_id,
+            (id, teammate_id, provider_instance_id,
              safety_mode,
              model_selection_schema_version, model_selection_data, effort, speed,
              provider_options_schema_version, provider_options_data,
              interaction_mode, created_at)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
     )
-    .bind(new_id("teammate-policy"))
+    .bind(policy_revision_id.as_str())
     .bind(teammate_id.as_str())
-    .bind(i64_value(revision)?)
     .bind(policy.provider_instance_id.as_str())
-    .bind(wire_approval_policy(policy.safety_mode))
+    .bind(safety_mode)
     .bind(selection)
     .bind(policy.effort.as_deref())
     .bind(policy.speed.as_deref())
     .bind(i64::from(policy.provider_options.schema_version))
     .bind(json_object(&policy.provider_options, "providerOptions")?)
     .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = ?, current_policy_safety_mode = ?, updated_at = ?
+         WHERE participant_id = ?",
+    )
+    .bind(policy_revision_id.as_str())
+    .bind(safety_mode)
+    .bind(now.as_str())
+    .bind(teammate_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
@@ -1285,22 +1461,39 @@ pub(super) async fn set_assignment_state(
         ));
     }
     if !state.is_active() {
-        sqlx::query(
-            "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
-             WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
-        )
-        .bind(if state == ChatWorkAssignmentState::Cancelled {
-            "cancelled"
-        } else {
-            "failed"
-        })
-        .bind(now.as_str())
-        .bind(assignment_id.as_str())
-        .execute(pool)
-        .await
-        .map_err(persistence_error)?;
+        end_assignment_dispatch_jobs(pool, assignment_id, state, &now).await?;
     }
     read_assignment(pool, assignment_id).await
+}
+
+/// Ends the local dispatch jobs still queued or claimed for `assignment_id`, which settled as
+/// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
+/// settled work.
+#[cfg(desktop)]
+pub(super) async fn end_assignment_dispatch_jobs<'e, E>(
+    executor: E,
+    assignment_id: &ChatWorkAssignmentId,
+    state: ChatWorkAssignmentState,
+    now: &UtcTimestamp,
+) -> ChatResult<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
+         WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
+    )
+    .bind(if state == ChatWorkAssignmentState::Cancelled {
+        "cancelled"
+    } else {
+        "failed"
+    })
+    .bind(now.as_str())
+    .bind(assignment_id.as_str())
+    .execute(executor)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

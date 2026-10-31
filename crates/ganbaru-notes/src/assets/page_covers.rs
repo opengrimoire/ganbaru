@@ -15,8 +15,8 @@ use crate::assets::{self, ASSET_SOURCE_LOCAL_UPLOAD, ASSET_STATE_AVAILABLE, Mana
 use crate::blocking::run_blocking;
 use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 
-const PAGE_COVER_MAX_DISPLAY_MEGABYTES: usize = 8;
-const PAGE_COVER_MAX_BYTES: usize = PAGE_COVER_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
+const PAGE_COVER_MAX_BYTES: usize = ganbaru_sync::domains::notes::MAX_PAGE_COVER_BYTES as usize;
+const PAGE_COVER_MAX_DISPLAY_MEGABYTES: usize = PAGE_COVER_MAX_BYTES / (1024 * 1024);
 const PAGE_COVER_MAX_BASE64_CHARS: usize = PAGE_COVER_MAX_BYTES.div_ceil(3) * 4;
 const PAGE_COVER_DIR: &str = "notes/page-covers";
 pub const PAGE_COVER_ALLOWED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
@@ -130,6 +130,17 @@ fn write_binary_file_atomically(
     .map_err(|e| format!("save page cover: {e}"))
 }
 
+/// Content check of a page cover a sync peer sent, after its size and digest matched the
+/// reference: the bytes must be a page cover image of the content type the reference names.
+pub fn check_synced_page_cover(
+    asset: &ganbaru_sync::assets::AssetRef,
+    path: &Path,
+) -> Result<(), String> {
+    let bytes = read_file_capped(path, FinalSymlink::Refuse)?;
+    let kind = validate_page_cover_image(&bytes)?.kind;
+    assets::ensure_synced_content_type(kind.mime_type(), asset)
+}
+
 /// Reads a page cover image the user chose in the native picker, following a final link.
 pub fn read_picked_file_capped(path: &Path) -> Result<Vec<u8>, String> {
     read_file_capped(path, FinalSymlink::Follow)
@@ -202,7 +213,8 @@ pub async fn save_page_cover_bytes(
         ensure_page_cover_size(&bytes)?;
         let kind = validate_page_cover_image(&bytes)?.kind;
         let sha256 = hex_hash(&bytes);
-        let file_name = format!("{}.{}", sha256, kind.extension());
+        let file_name = ganbaru_sync::assets::file_name(&sha256, kind.mime_type())
+            .map_err(|error| format!("name page cover file: {error}"))?;
         let relative_path = format!("{PAGE_COVER_DIR}/{file_name}");
         let path = active_page_cover_dir(&vault_root).join(file_name);
         if !ganbaru_atomic_files::is_regular_file(&path) {
@@ -218,24 +230,6 @@ pub async fn save_page_cover_bytes(
         .begin()
         .await
         .map_err(|e| format!("begin page cover asset record: {e}"))?;
-    sqlx::query(
-        "INSERT INTO notes_page_cover_assets
-            (id, asset_path, original_name, content_type, byte_size, sha256)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(asset_path)
-         DO UPDATE SET
-            original_name = COALESCE(excluded.original_name, notes_page_cover_assets.original_name),
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-    )
-    .bind(&sha256)
-    .bind(&relative_path)
-    .bind(&original_name)
-    .bind(kind.mime_type())
-    .bind(byte_size)
-    .bind(&sha256)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("record page cover asset: {e}"))?;
     assets::upsert_managed_asset_tx(
         &mut tx,
         ManagedAssetWrite {

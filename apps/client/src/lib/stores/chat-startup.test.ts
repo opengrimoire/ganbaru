@@ -33,7 +33,7 @@ function deferred<T>() {
 function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
   return {
     configuration: {
-      schemaVersion: 1, providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
+      providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
       workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320 },
       behavior: {
         sendKey, restoreLastSelectedThread: true, showReasoningSummaries: true,
@@ -67,7 +67,7 @@ function message(channelId: string): ChatMessageRead {
     },
     authorLabelSnapshot: "User", normalizedMarkdown: "Saved local history",
     richContent: { schemaVersion: 1, value: {} }, attachmentIds: [], references: [],
-    replyThread: null, ordinal: 1, editedAt: null, createdAt: "2026-09-22T12:00:00Z",
+    replyThread: null, orderKey: "c001", editedAt: null, createdAt: "2026-09-22T12:00:00Z",
   };
 }
 

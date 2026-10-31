@@ -1,4 +1,5 @@
 import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
+import { youtubeResolutionAllowsPlayback } from "$lib/music/youtube-eligibility";
 import { sidecarArtworkRelativePath } from "$lib/music/artwork-identity";
 import { resolveLocalMusicPath } from "$lib/music/platform-paths";
 import { localFileSourceFromPath, youtubeVideoIdFromIdentity, youtubeVideoSourceFromId } from "$lib/music/sources";
@@ -12,7 +13,7 @@ export function projectMusicSourceQueue(
   const bindingPaths = new Map(bindings.map((binding) => [binding.rootId, binding.folderPath]));
   return items.flatMap((item): MusicSourceQueueEntry[] => {
     if (item.sourceKind === "youtube-video") {
-      if (item.availability !== "available" && item.availability !== "unknown") return [];
+      if (!youtubeResolutionAllowsPlayback(item.youtubeResolutionState)) return [];
       const videoId = youtubeVideoIdFromIdentity(item.identityKey);
       if (!videoId) return [];
       return [{

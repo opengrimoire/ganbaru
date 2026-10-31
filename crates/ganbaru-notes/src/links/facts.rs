@@ -145,11 +145,13 @@ async fn append_block_entries(
     link_resolver: &LocalLinkResolver,
     entries: &mut Vec<LinkFactEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, BlockFactRow>(
+    let rows = sqlx::query_as::<_, BlockFactRow>(concat!(
         "SELECT block.id,
                 block.page_id,
                 block.type AS block_type,
-                block.payload,
+                ",
+        crate::note_block_content_sql!("block"),
+        " AS payload,
                 block.plain_text,
                 block.created_time,
                 block.last_edited_time
@@ -169,7 +171,7 @@ async fn append_block_entries(
                      AND database.in_trash = 0
                )
            )",
-    )
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for link facts: {e}"))?;
@@ -207,10 +209,10 @@ async fn append_property_entries(
     link_resolver: &LocalLinkResolver,
     entries: &mut Vec<LinkFactEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, PropertyFactRow>(
+    let rows = sqlx::query_as::<_, PropertyFactRow>(sqlx::AssertSqlSafe(format!(
         "SELECT page.id AS page_id,
                 page.parent_data_source_id AS data_source_id,
-                page.properties,
+                {} AS properties,
                 page.created_time,
                 page.last_edited_time
          FROM notes_pages AS page
@@ -221,7 +223,8 @@ async fn append_property_entries(
            AND page.archived = 0
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes row properties for link facts: {e}"))?;
@@ -321,7 +324,7 @@ async fn append_relation_entries(
                 link.source_property_name,
                 link.target_page_id,
                 link.created_time
-         FROM notes_data_source_relation_links AS link
+         FROM notes_relation_links AS link
          JOIN notes_pages AS source_page ON source_page.id = link.source_page_id
          JOIN notes_pages AS target_page ON target_page.id = link.target_page_id
          WHERE source_page.in_trash = 0
@@ -522,7 +525,7 @@ async fn source_fingerprint(pool: &SqlitePool) -> Result<SourceFingerprint, Stri
          UNION ALL SELECT 'comment_threads', COUNT(*), COALESCE(MAX(last_edited_time), '') FROM notes_comment_threads
          UNION ALL SELECT 'data_sources', COUNT(*), COALESCE(MAX(last_edited_time), '') FROM notes_data_sources
          UNION ALL SELECT 'databases', COUNT(*), COALESCE(MAX(last_edited_time), '') FROM notes_databases
-         UNION ALL SELECT 'relation_links', COUNT(*), COALESCE(MAX(created_time), '') FROM notes_data_source_relation_links
+         UNION ALL SELECT 'relation_links', COUNT(*), COALESCE(MAX(created_time), '') FROM notes_relation_links
          UNION ALL SELECT 'assets', COUNT(*), COALESCE(MAX(updated_at), '') FROM notes_assets
          UNION ALL SELECT 'asset_references', COUNT(*), COALESCE(MAX(updated_at), '') FROM notes_asset_references
          UNION ALL SELECT 'page_aliases', COUNT(*), COALESCE(MAX(last_edited_time), '') FROM notes_page_aliases",

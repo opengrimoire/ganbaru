@@ -2,6 +2,38 @@ use super::*;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 use std::collections::HashMap;
 
+/// SQL predicate over `item` that matches the native queue policy: a local file plays when this
+/// device observed it available, and a YouTube video plays unless its replicated resolution state
+/// is `embedding-blocked` or `unavailable`. Device availability of a YouTube video is never used,
+/// so every device counts a synced video the same way.
+macro_rules! item_playable_sql {
+    () => {
+        "(CASE WHEN item.source_kind = 'youtube-video'
+              THEN COALESCE(item.youtube_resolution_state, '') NOT IN ('embedding-blocked', 'unavailable')
+              ELSE item.availability = 'available' END)"
+    };
+}
+
+/// SQL predicate over `item` for items that need review attention: a local file by its device
+/// availability, and a YouTube video by its replicated resolution state. A timed-out video is an
+/// issue to review but still attempts playback.
+macro_rules! item_issue_sql {
+    () => {
+        "(CASE WHEN item.source_kind = 'youtube-video'
+              THEN COALESCE(item.youtube_resolution_state, '') IN ('embedding-blocked', 'unavailable', 'timed-out')
+              ELSE item.availability IN ('missing', 'ambiguous', 'unavailable') END)"
+    };
+}
+
+/// SQL predicate over `item` for items that cannot play here, counted as unavailable.
+macro_rules! item_unavailable_sql {
+    () => {
+        "(CASE WHEN item.source_kind = 'youtube-video'
+              THEN COALESCE(item.youtube_resolution_state, '') IN ('embedding-blocked', 'unavailable')
+              ELSE item.availability = 'unavailable' END)"
+    };
+}
+
 pub async fn membership_matrix(
     pool: &SqlitePool,
     item_ids: Vec<String>,
@@ -60,13 +92,13 @@ pub async fn playlist_playback_entries(
             (SELECT location.relative_path FROM music_local_locations AS location
              WHERE location.item_id = item.id AND location.availability = 'available'
              ORDER BY location.updated_at_ms DESC, location.id LIMIT 1) AS relative_path,
-            membership.position,
+            membership.order_key,
             membership.weight,
             membership.enabled,
             membership.start_ms,
             membership.end_ms,
-            membership.volume,
-            membership.rate,
+            membership.volume_milli,
+            membership.rate_milli,
             EXISTS(
                 SELECT 1 FROM music_snoozes AS snooze
                 WHERE snooze.item_id = item.id
@@ -90,7 +122,7 @@ pub async fn playlist_playback_entries(
          FROM music_playlist_memberships AS membership
          JOIN music_library_items AS item ON item.id = membership.item_id
          WHERE membership.playlist_id = ?
-         ORDER BY membership.position, membership.id",
+         ORDER BY membership.order_key, membership.id",
     )
     .bind(now_ms)
     .bind(now_ms)
@@ -105,28 +137,27 @@ pub async fn playlist_playback_entries(
         .into_iter()
         .map(TryInto::try_into)
         .collect::<MusicLibraryResult<Vec<MusicPlaylistPlaybackEntry>>>()?;
-    let skip_ranges = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
-        "SELECT skip.id, skip.membership_id, skip.start_ms, skip.end_ms, skip.sort_order
+    let skip_ranges = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT skip.membership_id, skip.ordinal, skip.start_ms, skip.end_ms
          FROM music_membership_skip_ranges AS skip
          JOIN music_playlist_memberships AS membership ON membership.id = skip.membership_id
          WHERE membership.playlist_id = ?
-         ORDER BY skip.membership_id, skip.sort_order",
+         ORDER BY skip.membership_id, skip.ordinal",
     )
     .bind(playlist_id)
     .fetch_all(pool)
     .await
     .map_err(|error| MusicLibraryError::database("load playlist playback skip ranges", error))?;
     let mut by_membership: HashMap<String, Vec<MusicMembershipSkipRange>> = HashMap::new();
-    for (id, membership_id, start_ms, end_ms, sort_order) in skip_ranges {
+    for (membership_id, ordinal, start_ms, end_ms) in skip_ranges {
         by_membership
             .entry(membership_id.clone())
             .or_default()
             .push(MusicMembershipSkipRange {
-                id,
                 membership_id,
+                ordinal,
                 start_ms,
                 end_ms,
-                sort_order,
             });
     }
     for entry in &mut entries {
@@ -140,7 +171,11 @@ pub async fn playlist_playback_entries(
 fn push_item_from(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindowRequest) {
     builder.push(
         " FROM music_library_items AS item
-          LEFT JOIN music_listening_statistics AS stats ON stats.item_id = item.id ",
+          LEFT JOIN (
+              SELECT item_id, MAX(last_played_at_ms) AS last_played_at_ms,
+                     SUM(play_count) AS play_count
+              FROM music_listening_statistics GROUP BY item_id
+          ) AS stats ON stats.item_id = item.id ",
     );
     if request.destination == MusicListDestination::Playlist {
         builder.push(
@@ -244,7 +279,7 @@ fn push_item_order(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindow
         MusicItemSort::AddedToPlaylist => "membership.created_at_ms",
         MusicItemSort::LastPlayedAt => "COALESCE(stats.last_played_at_ms, 0)",
         MusicItemSort::PlayCount => "COALESCE(stats.play_count, 0)",
-        MusicItemSort::ManualPosition => "membership.position",
+        MusicItemSort::ManualPosition => "membership.order_key",
     };
     builder.push(expression);
     builder.push(match request.direction {
@@ -329,6 +364,7 @@ pub async fn item_window(
             ), '[]') AS source_collection_ids_json,
             item.original_artwork_identity,
             item.artwork_override,
+            item.youtube_resolution_state,
             item.duration_ms, item.availability, item.review_state,
             item.discovered_at_ms, item.updated_at_ms, item.version,
             (SELECT COUNT(*) FROM music_playlist_memberships AS all_memberships
@@ -349,7 +385,7 @@ pub async fn item_window(
     item_query.push(
         ")) AS active_snooze_count,
             stats.last_played_at_ms, COALESCE(stats.play_count, 0) AS play_count,
-            membership.id AS membership_id, membership.position AS membership_position,
+            membership.id AS membership_id, membership.order_key AS membership_order_key,
             membership.weight AS membership_weight, membership.enabled AS membership_enabled,
             membership.version AS membership_version",
     );
@@ -409,7 +445,7 @@ struct PlaylistSummaryRow {
     mix_enabled: i64,
     repeat_mode: String,
     intended_uses: String,
-    sort_order: i64,
+    order_key: String,
     total_count: i64,
     eligible_count: i64,
     unavailable_count: i64,
@@ -429,10 +465,9 @@ pub async fn playlist_summaries(
     if now_ms <= 0 {
         return Err(MusicLibraryError::validation("nowMs", "must be positive"));
     }
-    super::defaults::ensure_built_in_music_playlists(pool).await?;
-    let rows = sqlx::query_as::<_, PlaylistSummaryRow>(
+    let rows = sqlx::query_as::<_, PlaylistSummaryRow>(concat!(
         "SELECT playlist.id, playlist.name, playlist.icon, playlist.shuffle_enabled, playlist.mix_enabled,
-                playlist.repeat_mode, playlist.sort_order,
+                playlist.repeat_mode, playlist.order_key,
                 COALESCE((
                     SELECT group_concat(intended.intended_use, ',')
                     FROM music_playlist_intended_uses AS intended
@@ -440,14 +475,18 @@ pub async fn playlist_summaries(
                     ORDER BY intended.intended_use
                 ), '') AS intended_uses,
                 COUNT(membership.id) AS total_count,
-                SUM(CASE WHEN membership.enabled = 1 AND item.availability = 'available'
+                SUM(CASE WHEN membership.enabled = 1 AND ",
+        item_playable_sql!(),
+        "
                     AND NOT EXISTS (
                         SELECT 1 FROM music_snoozes AS snooze
                         WHERE snooze.item_id = item.id AND snooze.starts_at_ms <= ?
                           AND (snooze.ends_at_ms IS NULL OR snooze.ends_at_ms > ?)
                           AND (snooze.scope = 'all-playlists' OR snooze.playlist_id = playlist.id)
                     ) THEN 1 ELSE 0 END) AS eligible_count,
-                SUM(CASE WHEN item.id IS NOT NULL AND item.availability <> 'available'
+                SUM(CASE WHEN item.id IS NOT NULL AND NOT ",
+        item_playable_sql!(),
+        "
                     THEN 1 ELSE 0 END) AS unavailable_count,
                 SUM(CASE WHEN item.id IS NOT NULL AND EXISTS (
                         SELECT 1 FROM music_snoozes AS snooze
@@ -462,9 +501,9 @@ pub async fn playlist_summaries(
          LEFT JOIN music_playlist_memberships AS membership ON membership.playlist_id = playlist.id
          LEFT JOIN music_library_items AS item ON item.id = membership.item_id
          GROUP BY playlist.id
-         ORDER BY playlist.sort_order, playlist.name COLLATE NOCASE, playlist.id
+         ORDER BY playlist.order_key, playlist.id
          LIMIT ? OFFSET ?",
-    )
+    ))
     .bind(now_ms)
     .bind(now_ms)
     .bind(now_ms)
@@ -512,7 +551,7 @@ pub async fn playlist_summaries(
                         })
                     })
                     .collect::<MusicLibraryResult<Vec<_>>>()?,
-                sort_order: row.sort_order,
+                order_key: row.order_key,
                 total_count: row.total_count,
                 eligible_count: row.eligible_count,
                 unavailable_count: row.unavailable_count,
@@ -557,7 +596,7 @@ pub async fn source_summaries(
     if now_ms <= 0 {
         return Err(MusicLibraryError::validation("nowMs", "must be positive"));
     }
-    let rows = sqlx::query_as::<_, SourceSummaryRow>(
+    let rows = sqlx::query_as::<_, SourceSummaryRow>(concat!(
         "SELECT source.id, source.kind, source.name, source.refresh_state,
                 source.last_successful_refresh_at_ms, source.local_root_id,
                 source.youtube_playlist_id,
@@ -567,7 +606,9 @@ pub async fn source_summaries(
                               AND source_item.first_discovered_at_ms >= COALESCE(source.previous_successful_refresh_at_ms, 0)
                     THEN 1 ELSE 0 END) AS new_count,
                 SUM(CASE WHEN item.review_state = 'unreviewed' THEN 1 ELSE 0 END) AS unreviewed_count,
-                SUM(CASE WHEN item.availability = 'unavailable' THEN 1 ELSE 0 END) AS unavailable_count,
+                SUM(CASE WHEN ",
+        item_unavailable_sql!(),
+        " THEN 1 ELSE 0 END) AS unavailable_count,
                 SUM(CASE WHEN item.availability = 'ambiguous' THEN 1 ELSE 0 END) AS ambiguous_count,
                 ((SELECT COUNT(*) FROM music_refresh_job_issues AS refresh_issue
                   JOIN music_refresh_jobs AS refresh_job ON refresh_job.id = refresh_issue.job_id
@@ -584,7 +625,9 @@ pub async fn source_summaries(
                     AND relink_plan.state IN ('ready', 'applied')
                     AND relink_entry.match_kind IN ('ambiguous', 'missing')
                     AND relink_entry.resolved_at_ms IS NULL) +
-                 SUM(CASE WHEN item.availability IN ('missing', 'unavailable', 'ambiguous')
+                 SUM(CASE WHEN ",
+        item_issue_sql!(),
+        "
                      THEN 1 ELSE 0 END)) AS open_issue_count,
                 source.discovery_enabled,
                 source.version
@@ -595,7 +638,7 @@ pub async fn source_summaries(
          GROUP BY source.id
          ORDER BY source.name COLLATE NOCASE, source.id
          LIMIT ? OFFSET ?",
-    )
+    ))
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -668,7 +711,7 @@ pub async fn issues(
     limit: i64,
 ) -> MusicLibraryResult<Vec<MusicIssue>> {
     validate_summary_window(offset, limit)?;
-    let rows = sqlx::query_as::<_, MusicIssueRow>(
+    let rows = sqlx::query_as::<_, MusicIssueRow>(concat!(
         "SELECT id, issue_kind, item_id, playlist_id, collection_id, root_id,
                 relative_path, action_required, message, created_at_ms
              FROM (
@@ -689,14 +732,17 @@ pub async fn issues(
                      WHERE location.item_id = item.id ORDER BY location.root_id, location.relative_path LIMIT 1)
                         AS relative_path,
                     1 AS action_required,
-                    CASE item.availability
-                        WHEN 'missing' THEN 'The local media location is missing.'
-                        WHEN 'ambiguous' THEN 'The media identity needs confirmation.'
-                        ELSE 'The online media is unavailable.'
+                    CASE
+                        WHEN item.source_kind = 'youtube-video' THEN 'The online media is unavailable.'
+                        WHEN item.availability = 'missing' THEN 'The local media location is missing.'
+                        WHEN item.availability = 'ambiguous' THEN 'The media identity needs confirmation.'
+                        ELSE 'The local media is unavailable.'
                     END AS message,
                     item.updated_at_ms AS created_at_ms
                 FROM music_library_items AS item
-                WHERE item.availability IN ('missing', 'ambiguous', 'unavailable')
+                WHERE ",
+        item_issue_sql!(),
+        "
                 UNION ALL
                 SELECT refresh_issue.id, refresh_issue.issue_code, refresh_issue.item_id, NULL,
                     refresh_job.source_collection_id, refresh_job.local_root_id,
@@ -729,7 +775,7 @@ pub async fn issues(
              )
              ORDER BY created_at_ms DESC, id
              LIMIT ? OFFSET ?",
-    )
+    ))
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -786,8 +832,8 @@ pub async fn inspector_detail(
     .map(MusicLocalLocation::try_from)
     .collect::<MusicLibraryResult<Vec<_>>>()?;
     let memberships = sqlx::query_as::<_, MusicMembershipRow>(
-        "SELECT id, playlist_id, item_id, position, weight, enabled,
-                start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms, version
+        "SELECT id, playlist_id, item_id, order_key, weight, enabled,
+                start_ms, end_ms, volume_milli, rate_milli, created_at_ms, updated_at_ms, version
          FROM music_playlist_memberships WHERE item_id = ? ORDER BY playlist_id",
     )
     .bind(item_id)
@@ -797,12 +843,12 @@ pub async fn inspector_detail(
     .into_iter()
     .map(MusicPlaylistMembership::try_from)
     .collect::<MusicLibraryResult<Vec<_>>>()?;
-    let membership_skip_ranges = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
-        "SELECT skip.id, skip.membership_id, skip.start_ms, skip.end_ms, skip.sort_order
+    let membership_skip_ranges = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT skip.membership_id, skip.ordinal, skip.start_ms, skip.end_ms
          FROM music_membership_skip_ranges AS skip
          JOIN music_playlist_memberships AS membership ON membership.id = skip.membership_id
          WHERE membership.item_id = ?
-         ORDER BY skip.membership_id, skip.sort_order",
+         ORDER BY skip.membership_id, skip.ordinal",
     )
     .bind(item_id)
     .fetch_all(pool)
@@ -810,12 +856,11 @@ pub async fn inspector_detail(
     .map_err(|error| MusicLibraryError::database("load membership skip ranges", error))?
     .into_iter()
     .map(
-        |(id, membership_id, start_ms, end_ms, sort_order)| MusicMembershipSkipRange {
-            id,
+        |(membership_id, ordinal, start_ms, end_ms)| MusicMembershipSkipRange {
             membership_id,
+            ordinal,
             start_ms,
             end_ms,
-            sort_order,
         },
     )
     .collect();
@@ -845,8 +890,10 @@ pub async fn inspector_detail(
         })
         .collect::<MusicLibraryResult<Vec<_>>>()?;
     let statistics = sqlx::query_as::<_, MusicStatisticsRow>(
-        "SELECT item_id, last_played_at_ms, play_count, completion_count, skip_count, updated_at_ms
-         FROM music_listening_statistics WHERE item_id = ?",
+        "SELECT item_id, MAX(last_played_at_ms) AS last_played_at_ms,
+                SUM(play_count) AS play_count, SUM(completion_count) AS completion_count,
+                SUM(skip_count) AS skip_count, MAX(updated_at_ms) AS updated_at_ms
+         FROM music_listening_statistics WHERE item_id = ? GROUP BY item_id",
     )
     .bind(item_id)
     .fetch_optional(pool)
@@ -975,7 +1022,7 @@ pub async fn playlist_detail(
     playlist_id: &str,
 ) -> MusicLibraryResult<MusicPlaylist> {
     let row = sqlx::query_as::<_, MusicPlaylistRow>(
-        "SELECT id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order,
+        "SELECT id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key,
                 created_at_ms, updated_at_ms, version
          FROM music_playlists WHERE id = ?",
     )

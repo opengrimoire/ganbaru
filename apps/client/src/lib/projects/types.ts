@@ -17,6 +17,21 @@ import type { NotesHistoryRetentionDays } from "$lib/notes/history/retention";
 /** One step toward the start (-1) or the end (1) of a manual order. */
 export type MoveDirection = -1 | 1;
 
+/**
+ * Where a created or moved row goes among its ordered siblings. Native code computes the order key, so callers name
+ * a neighbour instead of a number; an omitted placement creates at the end and keeps an updated row in place.
+ */
+export type ProjectOrderPlacement =
+  | { kind: "before"; id: string }
+  | { kind: "after"; id: string }
+  | { kind: "end" };
+
+/** The identity a settings draft allocated for a new row, and where the row goes among its saved siblings. */
+export interface ProjectDraftIdentity {
+  id: string;
+  placement?: ProjectOrderPlacement;
+}
+
 /** View types that show the project's tasks. */
 export const PROJECT_VIEW_IDS = ["dashboard", "list", "kanban", "calendar", "gantt"] as const;
 export type ProjectViewId = (typeof PROJECT_VIEW_IDS)[number];
@@ -35,7 +50,7 @@ export interface ProjectView {
   projectId: string;
   viewType: ProjectViewType;
   name?: string;
-  sortOrder: number;
+  orderKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -130,7 +145,7 @@ export interface ProjectGroup {
   name: string;
   icon: string;
   color?: EventColor;
-  sortOrder: number;
+  orderKey: string;
   collapsed: boolean;
   hiddenAt?: string;
   archivedAt?: string;
@@ -144,7 +159,7 @@ export interface Project {
   name: string;
   icon: string;
   color?: EventColor;
-  sortOrder: number;
+  orderKey: string;
   status: ProjectLifecycleStatus;
   defaultEventName: string | null;
   defaultEventTimeMode: ProjectDefaultEventTimeMode;
@@ -186,13 +201,13 @@ export const PROJECT_CREATE_DEFAULTS = {
   defaultIdleSettingsSource: "global",
   defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-} satisfies Omit<ProjectCreate, "id" | "groupId" | "name" | "icon" | "sortOrder">;
+} satisfies Omit<ProjectCreate, "id" | "groupId" | "name" | "icon" | "placement">;
 
 export interface ProjectSection {
   id: string;
   projectId: string;
   name: string;
-  sortOrder: number;
+  orderKey: string;
   collapsed: boolean;
   hiddenAt?: string;
   archivedAt?: string;
@@ -206,8 +221,10 @@ export interface ProjectStatus {
   name: string;
   category: ProjectStatusCategory;
   color: EventColor;
-  sortOrder: number;
+  orderKey: string;
   terminal: boolean;
+  /** Set when deleted; the row stays for tasks that still use it but leaves pickers, settings, and defaults. */
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -217,7 +234,9 @@ export interface ProjectPriorityConfig {
   projectId: string;
   name: string;
   color: EventColor;
-  sortOrder: number;
+  orderKey: string;
+  /** Set when deleted; the row stays for tasks that still use it but leaves pickers, settings, and defaults. */
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -234,8 +253,8 @@ export interface ProjectTask {
   description: string;
   priority: ProjectPriority;
   taskType: ProjectTaskType;
-  sectionSortOrder: number;
-  statusSortOrder: number;
+  sectionOrderKey: string;
+  statusOrderKey: string;
   estimateMinutes?: number;
   dueDate?: string;
   dueTime?: string;
@@ -350,7 +369,7 @@ export interface ProjectChecklistItem {
   taskId: string;
   title: string;
   completedAt?: string;
-  sortOrder: number;
+  orderKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -360,7 +379,7 @@ export interface ProjectTag {
   projectId: string;
   name: string;
   color?: EventColor;
-  sortOrder: number;
+  orderKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -378,7 +397,7 @@ export interface ProjectCustomField {
   projectId: string;
   name: string;
   fieldType: ProjectCustomFieldType;
-  sortOrder: number;
+  orderKey: string;
   /** Chosen `lucide:` icon value; null shows the field type icon. */
   icon: string | null;
   createdAt: string;
@@ -391,7 +410,7 @@ export interface ProjectCustomFieldOption {
   id: string;
   fieldId: string;
   name: string;
-  sortOrder: number;
+  orderKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -400,7 +419,8 @@ export interface ProjectCustomFieldValue {
   taskId: string;
   fieldId: string;
   textValue?: string;
-  numberValue?: number;
+  /** Canonical decimal string with at most six decimals, as native fixed-point storage returns it. */
+  numberValue?: string;
   dateValue?: string;
   checkboxValue?: boolean;
   updatedAt: string;
@@ -410,7 +430,6 @@ export interface ProjectCustomFieldOptionValue {
   taskId: string;
   fieldId: string;
   optionId: string;
-  createdAt: string;
 }
 
 export interface ProjectTaskDependency {
@@ -489,7 +508,7 @@ export interface ProjectCustomEmoji {
   id: string;
   name: string;
   assetPath: string;
-  sortOrder: number;
+  orderKey: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -498,7 +517,7 @@ export interface ProjectCustomEmojiCreate {
   id: string;
   name: string;
   assetPath: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectTaskEventLinkCreate {
@@ -507,8 +526,8 @@ export interface ProjectTaskEventLinkCreate {
   linkKind: ProjectTaskEventLink["linkKind"];
 }
 
+/** Native code derives the dependency id from the task pair, so one pair always names the same row. */
 export interface ProjectTaskDependencyCreate {
-  id: string;
   blockingTaskId: string;
   blockedTaskId: string;
   dependencyType: ProjectTaskDependency["dependencyType"];
@@ -518,14 +537,14 @@ export interface ProjectChecklistItemCreate {
   id: string;
   taskId: string;
   title: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectChecklistItemUpdate {
   id: string;
   title: string;
   completed: boolean;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectTagCreate {
@@ -533,14 +552,14 @@ export interface ProjectTagCreate {
   projectId: string;
   name: string;
   color: EventColor | null;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectTagUpdate {
   id: string;
   name: string;
   color: EventColor | null;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectTaskTagLinkCreate {
@@ -553,7 +572,7 @@ export interface ProjectCustomFieldCreate {
   projectId: string;
   name: string;
   fieldType: ProjectCustomFieldType;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   icon?: string | null;
   duplicateSourceId?: string;
 }
@@ -562,7 +581,7 @@ export interface ProjectCustomFieldCreate {
 export interface ProjectCustomFieldUpdate {
   id: string;
   name: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   icon: string | null;
 }
 
@@ -570,20 +589,21 @@ export interface ProjectCustomFieldOptionCreate {
   id: string;
   fieldId: string;
   name: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectCustomFieldOptionUpdate {
   id: string;
   name: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectCustomFieldValueUpdate {
   taskId: string;
   fieldId: string;
   textValue: string | null;
-  numberValue: number | null;
+  /** Canonical decimal string; see `canonicalProjectCustomFieldNumber`. */
+  numberValue: string | null;
   dateValue: string | null;
   checkboxValue: boolean | null;
   optionIds: string[];
@@ -668,7 +688,7 @@ export interface ProjectGroupCreate {
   name: string;
   icon: string;
   color: EventColor | null;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectGroupUpdate {
@@ -676,7 +696,7 @@ export interface ProjectGroupUpdate {
   name: string;
   icon: string;
   color: EventColor | null;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   collapsed: boolean;
 }
 
@@ -686,7 +706,7 @@ export interface ProjectCreate {
   name: string;
   icon: string;
   color: EventColor | null;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   defaultEventName: string | null;
   defaultEventTimeMode: ProjectDefaultEventTimeMode;
   defaultEventDurationMinutes: number | null;
@@ -707,7 +727,7 @@ export interface ProjectUpdate {
   name: string;
   icon: string;
   color: EventColor | null;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   status: ProjectLifecycleStatus;
   defaultEventName: string | null;
   defaultEventTimeMode: ProjectDefaultEventTimeMode;
@@ -733,13 +753,13 @@ export interface ProjectSectionCreate {
   id: string;
   projectId: string;
   name: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectSectionUpdate {
   id: string;
   name: string;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   collapsed: boolean;
   hiddenAt: string | null;
   archivedAt: string | null;
@@ -751,7 +771,7 @@ export interface ProjectStatusCreate {
   name: string;
   category: ProjectStatusCategory;
   color: EventColor;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   terminal: boolean;
 }
 
@@ -760,7 +780,7 @@ export interface ProjectStatusUpdate {
   name: string;
   category: ProjectStatusCategory;
   color: EventColor;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
   terminal: boolean;
 }
 
@@ -769,7 +789,7 @@ export interface ProjectPriorityCreate {
   projectId: string;
   name: string;
   color: EventColor;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectPriorityUpdate {
@@ -777,7 +797,7 @@ export interface ProjectPriorityUpdate {
   projectId: string;
   name: string;
   color: EventColor;
-  sortOrder: number;
+  placement?: ProjectOrderPlacement;
 }
 
 export interface ProjectTaskCreate {
@@ -798,8 +818,8 @@ export interface ProjectTaskUpdate {
   description: string;
   priority: ProjectPriority;
   taskType: ProjectTaskType;
-  sectionSortOrder: number;
-  statusSortOrder: number;
+  sectionPlacement?: ProjectOrderPlacement;
+  statusPlacement?: ProjectOrderPlacement;
   estimateMinutes: number | null;
   dueDate: string | null;
   dueTime: string | null;

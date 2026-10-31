@@ -6,7 +6,9 @@ async fn pool() -> sqlx::SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql("INSERT INTO calendars(id, name, source) VALUES('focus-calendar', 'Focus', 'local');
         INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, created_at)
         VALUES('long', 'Long', '2024-03-11T09:00:00Z', '2024-03-11T12:00:00Z', 'UTC', 'focus-calendar', '2024-01-01'),
@@ -159,6 +161,7 @@ fn native_focus_reads_its_existing_owner_from_committed_execution_in_the_same_tr
                 foreground: true,
                 local_time: None,
                 planned_blocks: Vec::new(),
+                device_id: None,
                 commitment: chosen.commitment,
             };
             ganbaru_pomodoro::focus_execute_command_tx(
@@ -218,5 +221,120 @@ fn native_focus_canonical_edit_changes_the_fingerprint_and_cancelled_events_are_
                 .commitment
                 .is_none()
         );
+    });
+}
+
+/// Marks the open conflict groups of event `row_key`.
+async fn mark_conflict(tx: &mut SqliteConnection, row_key: &str, mask: GroupMask) {
+    sqlx::query(
+        "INSERT INTO sync_rows (table_id, row_key, state, conflict_mask) VALUES (?, ?, 'live', ?)
+         ON CONFLICT (table_id, row_key) DO UPDATE SET conflict_mask = excluded.conflict_mask",
+    )
+    .bind(i64::from(EVENTS_TABLE.0))
+    .bind(row_key)
+    .bind(i64::try_from(mask.0).unwrap())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn native_focus_skips_automatic_admission_of_an_event_with_an_open_timing_conflict() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        let time = now("2024-03-11T10:15:00Z");
+        let mut tx = pool.begin().await.unwrap();
+        mark_conflict(&mut tx, "short", GroupMask::of(event_group::TITLE)).await;
+        let other_group = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(other_group.commitment.unwrap().occurrence_id, "short");
+
+        mark_conflict(&mut tx, "short", GroupMask::of(event_group::TIMING)).await;
+        let automatic = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(automatic.commitment.unwrap().occurrence_id, "long");
+        assert_eq!(automatic.planned_blocks.len(), 2);
+        let requested = resolve_in_zone(&mut tx, time, Some("short"), &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(requested.commitment.unwrap().occurrence_id, "short");
+
+        mark_conflict(&mut tx, "long", GroupMask::of(event_group::TIMING)).await;
+        let suspended = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert!(suspended.commitment.is_none());
+        assert_eq!(suspended.planned_blocks.len(), 2);
+    });
+}
+
+/// Writes an activity row of `device_id` focusing on `occurrence_id`, fresh until `expires_at_ms`.
+async fn activity(
+    tx: &mut SqliteConnection,
+    device_id: &str,
+    occurrence_id: &str,
+    expires_at_ms: i64,
+) {
+    sqlx::query(
+        "INSERT INTO pomodoro_device_activity
+             (device_id, state, run_id, occurrence_id, event_title, expires_at_ms, updated_at_ms)
+         VALUES (?, 'focus', 'remote-run', ?, 'Short', ?, 0)",
+    )
+    .bind(device_id)
+    .bind(occurrence_id)
+    .bind(expires_at_ms)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+}
+
+async fn automatic(tx: &mut SqliteConnection, time: i64) -> Option<String> {
+    resolve_with(tx, time, None, &TimeZone::UTC, Some("device-local"))
+        .await
+        .unwrap()
+        .commitment
+        .map(|commitment| commitment.occurrence_id)
+}
+
+#[test]
+fn native_focus_skips_automatic_admission_of_an_occurrence_another_device_is_focusing_on() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        let time = now("2024-03-11T10:15:00Z");
+        let mut tx = pool.begin().await.unwrap();
+        activity(&mut tx, "device-local", "short", time + 1).await;
+        activity(&mut tx, "device-expired", "short", time).await;
+        assert_eq!(
+            automatic(&mut tx, time).await.as_deref(),
+            Some("short"),
+            "the local row and expired rows of other devices skip nothing"
+        );
+
+        activity(&mut tx, "device-other", "short", time + 1).await;
+        assert_eq!(automatic(&mut tx, time).await.as_deref(), Some("long"));
+        let explicit = resolve_with(
+            &mut tx,
+            time,
+            Some("short"),
+            &TimeZone::UTC,
+            Some("device-local"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(explicit.commitment.unwrap().occurrence_id, "short");
+        assert_eq!(explicit.planned_blocks.len(), 2);
+        let unfiltered = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(
+            unfiltered.commitment.unwrap().occurrence_id,
+            "short",
+            "explicit starts resolve without the activity skip"
+        );
+
+        activity(&mut tx, "device-third", "long", time + 1).await;
+        assert_eq!(automatic(&mut tx, time).await, None);
     });
 }

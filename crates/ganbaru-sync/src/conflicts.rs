@@ -53,7 +53,42 @@ pub struct ConflictDetail {
     pub versions: Vec<ConflictVersion>,
 }
 
+/// A live row with open conflicts and the competing versions of each conflicted group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenConflict {
+    /// Row key.
+    pub row_key: String,
+    /// Conflicted groups in manifest order.
+    pub groups: Vec<ConflictDetail>,
+}
+
 impl Engine {
+    /// Every live row of a table with open conflicts, by row key, each with the competing
+    /// versions of its conflicted groups. Domains present them without reading sync state
+    /// row by row.
+    pub async fn open_conflicts(
+        &self,
+        conn: &mut SqliteConnection,
+        space: SpaceId,
+        table: TableId,
+    ) -> SyncResult<Vec<OpenConflict>> {
+        if self.manifest().table(table).is_none() {
+            return Err(SyncError::InvalidRequest("unknown table"));
+        }
+        let rows = self.conflicts(conn, table).await?;
+        let mut open = Vec::with_capacity(rows.len());
+        for row in rows {
+            let groups = self
+                .conflict_details(conn, space, table, &row.row_key)
+                .await?;
+            open.push(OpenConflict {
+                row_key: row.row_key,
+                groups,
+            });
+        }
+        Ok(open)
+    }
+
     /// Live rows of a table with surfaced conflicts, by row key.
     pub async fn conflicts(
         &self,
@@ -107,7 +142,7 @@ impl Engine {
             .into_iter()
             .map(|writer| (writer.id, writer.device_id))
             .collect();
-        let versions = merge::versions(conn, table, key).await?;
+        let versions = merge::versions(self, conn, table, key).await?;
         let winners = merge::winners(self, spec, &versions);
         let mut details = Vec::new();
         for group in spec.groups.iter().filter(|group| mask.contains(group.id)) {

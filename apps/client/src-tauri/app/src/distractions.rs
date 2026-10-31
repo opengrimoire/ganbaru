@@ -1,7 +1,8 @@
-//! Distraction blocking. Desktop modules enforce browser and app rules from local state files;
-//! Android drives the native blocker. Contracts, application rules, budget matching, usage
-//! normalization, and elapsed accounting come from `ganbaru-distractions`; linked-device
-//! accounting is shared.
+//! Distraction blocking. Rules live in the vault's SQLite database; desktop modules enforce
+//! browser and app rules from local state files, and Android drives the native blocker.
+//! Contracts, application rules, budget matching, usage normalization, and elapsed accounting
+//! come from `ganbaru-distractions`. Each device keeps its usage samples and replicates daily
+//! usage totals, so budgets count every linked device.
 
 #[cfg(desktop)]
 use crate::vault;
@@ -33,15 +34,19 @@ pub(crate) mod commands;
 mod foreground;
 #[cfg(desktop)]
 pub(crate) mod limits_read;
-pub(crate) mod linked;
 #[cfg(desktop)]
 mod process_control;
 #[cfg(desktop)]
 mod processes;
+pub(crate) mod rule_commands;
+pub(crate) mod rule_store;
 #[cfg(desktop)]
 pub(crate) mod runtime;
 #[cfg(desktop)]
+pub(crate) mod spool;
+#[cfg(desktop)]
 pub(crate) mod state_files;
+pub(crate) mod usage_totals;
 
 pub(crate) use ganbaru_distractions::limits;
 #[cfg(desktop)]
@@ -106,7 +111,7 @@ use state_files::write_text_file_atomically;
 use catalog::{parse_desktop_entry, process_name_from_exec};
 
 #[cfg(all(desktop, test))]
-use authorization::{configured_close_authorization, read_bounded_authorization_config};
+use authorization::configured_close_authorization;
 
 #[cfg(all(desktop, test))]
 use catalog::DesktopCatalogIndex;
@@ -124,9 +129,7 @@ const EXTENSION_CONNECTION_FILE: &str = "distractions-extension-status.json";
 #[cfg(desktop)]
 const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 #[cfg(desktop)]
-const VAULT_CONFIG_FILE: &str = "config.json";
-#[cfg(desktop)]
-const MAX_AUTHORIZATION_CONFIG_BYTES: u64 = vault::MAX_VAULT_CONFIG_BYTES;
+const RULES_FILE: &str = "distractions-rules.json";
 #[cfg(desktop)]
 const LIMIT_STATE_STALE_SECONDS: i64 = 20;
 #[cfg(desktop)]

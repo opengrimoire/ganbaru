@@ -27,6 +27,7 @@
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import CollectionPropertyNameField from "$lib/components/collections/CollectionPropertyNameField.svelte";
   import CollectionPropertyTypeMenu from "$lib/components/collections/CollectionPropertyTypeMenu.svelte";
+  import NotesDatabaseMismatchCell from "$lib/components/notes/database/NotesDatabaseMismatchCell.svelte";
   import NotesDatabasePropertyEditor from "$lib/components/notes/database/NotesDatabasePropertyEditor.svelte";
   import NotesDatabasePropertySchemaEditor from "$lib/components/notes/database/NotesDatabasePropertySchemaEditor.svelte";
   import { notesPropertyHasSchemaOptions, notesPropertyKind, notesPropertyTypeOptions } from "$lib/components/notes/database/property-kinds";
@@ -71,6 +72,7 @@
   } from "$lib/notes/database/row-page-properties";
   import { notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import {
+    notesDatabasePropertyCell,
     notesDatabaseRowTitle,
     notesDatabaseTableCellEditValue,
     notesDatabaseTableColumns,
@@ -659,6 +661,7 @@
       {@const column = columns.get(property.id)}
       {#if column}
         {@const marker = dropTarget?.propertyId === property.id ? dropTarget.placement : null}
+        {@const cell = notesDatabasePropertyCell(row, column)}
         <div class={cn("group/property relative grid min-w-0 grid-cols-1 items-start @sm:grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)] @sm:gap-2", dragged === property.id && "opacity-50")}
           role="group" aria-label={property.name} data-row-page-property={property.id}
           ondragover={(event) => dragOver(event, property.id)} ondrop={drop}>
@@ -676,7 +679,10 @@
           {/if}
           {@render propertyMenu(property, index)}
           <div class="min-w-0">
-            {#if column.type === "relation"}
+            {#if cell.kind === "mismatch"}
+              <NotesDatabaseMismatchCell pageId={row.id} propertyId={column.id} storedType={cell.storedType}
+                disabled={savingIds.has(column.id)} onSettled={refresh} />
+            {:else if column.type === "relation"}
               <NotesDatabaseRowPageRelationValue {row} {column} rowIndex={index} columnIndex={0} disabled={savingIds.has(column.id)}
                 sourceName={sourceTitle(relationDataSources.find((source) => source.id === column.relationDataSourceId))}
                 onSave={(relationIds) => { error = null; return writeValue(column, relationIds); }}

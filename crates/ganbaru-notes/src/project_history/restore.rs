@@ -1,34 +1,20 @@
+//! Restores a project version as a diff against the current project graph.
+//!
+//! Bundle rows that are still part of the project keep their ids and are rewritten in place.
+//! Bundle pages and blocks that left the project or no longer exist come back as copies under
+//! fresh ids, together with everything nested under them, so a moved graph stays intact where it
+//! now lives and a deleted id is never reused.
+
+mod diff;
+
 use super::{
     NotesProjectHistoryRestorePlanDto, NotesProjectHistoryVersionDto, create_checkpoint,
     json_optional_string, load_manifest_rows_tx, load_manifest_tx, validate_project_id,
 };
-use crate::{collaboration_operations, links, local_user, search, writes};
-use serde_json::{Value, json};
-use sqlx::{AssertSqlSafe, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use crate::{links, search, writes};
+use serde_json::Value;
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
-
-const RESTORE_TABLE_ORDER: [&str; 20] = [
-    "notes_assets",
-    "notes_folders",
-    "notes_pages",
-    "notes_blocks",
-    "notes_databases",
-    "notes_data_sources",
-    "notes_data_source_row_hierarchy",
-    "notes_database_views",
-    "notes_data_source_templates",
-    "notes_data_source_template_blocks",
-    "notes_page_aliases",
-    "notes_page_notification_settings",
-    "notes_comment_threads",
-    "notes_comments",
-    "notes_comment_reactions",
-    "notes_comment_thread_anchors",
-    "notes_comment_thread_reads",
-    "notes_comment_thread_mutes",
-    "notes_suggestions",
-    "notes_mention_notifications",
-];
 
 fn ids(rows: &BTreeMap<String, Vec<Value>>, table: &str) -> HashSet<String> {
     rows.get(table)
@@ -105,7 +91,14 @@ async fn restore_plan(
         .count() as i64;
     let plan = NotesProjectHistoryRestorePlanDto {
         version_id: version_id.to_string(),
-        remove_count: current_pages.difference(&historical_pages).count() as i64,
+        remove_count: current
+            .rows_by_table
+            .get("notes_pages")
+            .into_iter()
+            .flatten()
+            .filter(|row| row.get("in_trash").and_then(Value::as_i64) == Some(0))
+            .filter(|row| !value_in(row, "id", &historical_pages))
+            .count() as i64,
         recreate_count: historical_pages.difference(&current_pages).count() as i64 - copy_count,
         change_count,
         copy_count,
@@ -134,6 +127,7 @@ pub(super) async fn restore_version(
 ) -> Result<NotesProjectHistoryVersionDto, String> {
     let project_id = validate_project_id(project_id)?;
     let (_, mut historical) = restore_plan(pool, &project_id, version_id).await?;
+    diff::refuse_outdated_bundle(&historical)?;
     create_checkpoint(
         pool,
         &project_id,
@@ -143,10 +137,9 @@ pub(super) async fn restore_version(
         "Before version history restore",
     )
     .await?;
-    let current = super::scope::load_project_graph(pool, &project_id).await?;
-    let current_folder_ids = ids(&current.rows_by_table, "notes_folders");
-    let current_page_ids = ids(&current.rows_by_table, "notes_pages");
-    let historical_page_ids = ids(&historical, "notes_pages");
+    let current = super::scope::load_project_graph(pool, &project_id)
+        .await?
+        .rows_by_table;
     let mut tx = pool
         .begin()
         .await
@@ -155,20 +148,20 @@ pub(super) async fn restore_version(
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("defer Notes restore foreign keys: {e}"))?;
-    let moved_page_ids =
-        existing_outside_page_ids_tx(&mut tx, &historical_page_ids, &current_page_ids).await?;
-    let copy_scope = copied_graph_scope(&historical, &moved_page_ids);
+    let copy_scope = copied_graph_scope(&historical, &current);
     let id_map = create_copy_id_map(&mut tx, &historical, &copy_scope).await?;
-    remap_copy_rows(&mut historical, &copy_scope, &id_map);
+    let renewed_ids = renew_deleted_published_ids_tx(&mut tx, &historical, &id_map).await?;
+    remap_copy_rows(&mut historical, &id_map);
+    remap_copy_rows(&mut historical, &renewed_ids);
+    refresh_derived_sync_keys(&mut historical)?;
     resolve_copied_alias_conflicts_tx(&mut tx, &mut historical, &id_map).await?;
     suppress_historical_notifications(&mut historical);
-    preserve_page_history_tx(&mut tx, &historical_page_ids).await?;
-    delete_current_project_pages_tx(&mut tx, &current_page_ids).await?;
-    delete_current_project_folders_tx(&mut tx, &current_folder_ids).await?;
-    insert_historical_rows_tx(&mut tx, &historical).await?;
+    let mut touched_page_ids = ids(&current, "notes_pages");
+    touched_page_ids.extend(ids(&historical, "notes_pages"));
+    diff::remove_omitted_rows_tx(&mut tx, &current, &historical, &id_map).await?;
+    diff::write_bundle_rows_tx(&mut tx, &current, &historical).await?;
+    diff::clear_page_derived_state_tx(&mut tx, &touched_page_ids).await?;
     validate_restored_hierarchy_tx(&mut tx, &historical).await?;
-    restore_preserved_page_history_tx(&mut tx).await?;
-    append_restore_operations_tx(&mut tx, &historical, version_id).await?;
     sqlx::query("DELETE FROM notes_project_history_dirty WHERE project_id = ?")
         .bind(&project_id)
         .execute(&mut *tx)
@@ -209,260 +202,6 @@ pub(super) async fn restore_version(
     super::version_from_row(&row)
 }
 
-async fn preserve_page_history_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    restored_page_ids: &HashSet<String>,
-) -> Result<(), String> {
-    sqlx::query("DROP TABLE IF EXISTS temp.notes_restore_page_history")
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear temporary Notes page history restore table: {e}"))?;
-    if restored_page_ids.is_empty() {
-        sqlx::query(
-            "CREATE TEMP TABLE notes_restore_page_history
-             AS SELECT * FROM notes_page_history_snapshots WHERE 0",
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("create empty temporary Notes page history table: {e}"))?;
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "CREATE TEMP TABLE notes_restore_page_history AS
-         SELECT * FROM notes_page_history_snapshots WHERE page_id IN (",
-    );
-    let mut separated = query.separated(", ");
-    for page_id in restored_page_ids {
-        separated.push_bind(page_id);
-    }
-    separated.push_unseparated(")");
-    query
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("preserve Notes page history during project restore: {e}"))?;
-    Ok(())
-}
-
-async fn restore_preserved_page_history_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<(), String> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO notes_page_history_snapshots
-         SELECT * FROM temp.notes_restore_page_history",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("restore preserved Notes page history records: {e}"))?;
-    sqlx::query("DROP TABLE temp.notes_restore_page_history")
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("drop temporary Notes page history restore table: {e}"))?;
-    Ok(())
-}
-
-async fn append_restore_operations_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    rows: &BTreeMap<String, Vec<Value>>,
-    version_id: &str,
-) -> Result<(), String> {
-    let actor = local_user::current_local_user_tx(tx).await?;
-    let actor_display_name = local_user::comment_display_name_json(&actor.display_name);
-    let thread_locations = rows
-        .get("notes_comment_threads")
-        .into_iter()
-        .flatten()
-        .filter_map(|row| {
-            let id = json_optional_string(row, "id")?;
-            let page_id = json_optional_string(row, "page_id")?;
-            let block_id = json_optional_string(row, "parent_block_id");
-            Some((id, (page_id, block_id)))
-        })
-        .collect::<HashMap<_, _>>();
-
-    for row in rows.get("notes_comment_threads").into_iter().flatten() {
-        let entity_id = required_row_text(row, "id", "comment thread")?;
-        let page_id = required_row_text(row, "page_id", "comment thread")?;
-        let block_id = json_optional_string(row, "parent_block_id");
-        let status = required_row_text(row, "status", "comment thread")?;
-        let base_version =
-            restore_operation_base_version_tx(tx, "comment_thread", &entity_id, row).await?;
-        let (operation_type, policy) = if base_version == 0 {
-            ("comment_thread_create", "append_only")
-        } else if status == "resolved" {
-            ("comment_thread_resolve", "state_transition")
-        } else {
-            ("comment_thread_reopen", "state_transition")
-        };
-        set_entity_sync_version_tx(tx, "notes_comment_threads", &entity_id, base_version + 1)
-            .await?;
-        collaboration_operations::record_tx(
-            tx,
-            collaboration_operations::CollaborationOperation {
-                entity_type: "comment_thread",
-                entity_id: &entity_id,
-                operation_type,
-                page_id: &page_id,
-                block_id: block_id.as_deref(),
-                actor_id: &actor.id,
-                actor_display_name: &actor_display_name,
-                base_version,
-                entity_version: base_version + 1,
-                conflict_policy: policy,
-                payload: restore_operation_payload(version_id, row),
-            },
-        )
-        .await?;
-    }
-
-    for row in rows.get("notes_comments").into_iter().flatten() {
-        let entity_id = required_row_text(row, "id", "comment")?;
-        let thread_id = required_row_text(row, "thread_id", "comment")?;
-        let (page_id, block_id) = thread_locations
-            .get(&thread_id)
-            .cloned()
-            .ok_or_else(|| "restored comment thread location is missing".to_string())?;
-        let base_version =
-            restore_operation_base_version_tx(tx, "comment", &entity_id, row).await?;
-        let (operation_type, policy) = if base_version == 0 {
-            ("comment_create", "append_only")
-        } else if row.get("deleted_at").is_some_and(|value| !value.is_null()) {
-            ("comment_delete", "state_transition")
-        } else {
-            ("comment_update", "last_writer_wins")
-        };
-        set_entity_sync_version_tx(tx, "notes_comments", &entity_id, base_version + 1).await?;
-        collaboration_operations::record_tx(
-            tx,
-            collaboration_operations::CollaborationOperation {
-                entity_type: "comment",
-                entity_id: &entity_id,
-                operation_type,
-                page_id: &page_id,
-                block_id: block_id.as_deref(),
-                actor_id: &actor.id,
-                actor_display_name: &actor_display_name,
-                base_version,
-                entity_version: base_version + 1,
-                conflict_policy: policy,
-                payload: restore_operation_payload(version_id, row),
-            },
-        )
-        .await?;
-    }
-
-    for row in rows.get("notes_suggestions").into_iter().flatten() {
-        let entity_id = required_row_text(row, "id", "suggestion")?;
-        let page_id = required_row_text(row, "page_id", "suggestion")?;
-        let block_id = required_row_text(row, "block_id", "suggestion")?;
-        let status = required_row_text(row, "status", "suggestion")?;
-        let base_version =
-            restore_operation_base_version_tx(tx, "suggestion", &entity_id, row).await?;
-        let (operation_type, policy) = match status.as_str() {
-            "accepted" => ("suggestion_accept", "state_transition"),
-            "rejected" => ("suggestion_reject", "state_transition"),
-            _ => ("suggestion_create", "append_only"),
-        };
-        set_entity_sync_version_tx(tx, "notes_suggestions", &entity_id, base_version + 1).await?;
-        collaboration_operations::record_tx(
-            tx,
-            collaboration_operations::CollaborationOperation {
-                entity_type: "suggestion",
-                entity_id: &entity_id,
-                operation_type,
-                page_id: &page_id,
-                block_id: Some(&block_id),
-                actor_id: &actor.id,
-                actor_display_name: &actor_display_name,
-                base_version,
-                entity_version: base_version + 1,
-                conflict_policy: policy,
-                payload: restore_operation_payload(version_id, row),
-            },
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-fn required_row_text(row: &Value, key: &str, entity: &str) -> Result<String, String> {
-    json_optional_string(row, key).ok_or_else(|| format!("restored {entity} is missing {key}"))
-}
-
-async fn restore_operation_base_version_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    entity_type: &str,
-    entity_id: &str,
-    row: &Value,
-) -> Result<i64, String> {
-    let operation_version: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(entity_version), 0)
-         FROM notes_collaboration_operations
-         WHERE entity_type = ? AND entity_id = ?",
-    )
-    .bind(entity_type)
-    .bind(entity_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|e| format!("load Notes restore collaboration version: {e}"))?;
-    let historical_version = row.get("sync_version").and_then(Value::as_i64).unwrap_or(0);
-    Ok(operation_version.max(historical_version))
-}
-
-async fn set_entity_sync_version_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    table: &str,
-    entity_id: &str,
-    version: i64,
-) -> Result<(), String> {
-    if !matches!(
-        table,
-        "notes_comment_threads" | "notes_comments" | "notes_suggestions"
-    ) {
-        return Err("unsupported Notes collaboration restore table".to_string());
-    }
-    let sql = format!("UPDATE {table} SET sync_version = ? WHERE id = ?");
-    sqlx::query(AssertSqlSafe(sql.as_str()))
-        .bind(version)
-        .bind(entity_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("update Notes collaboration version during restore: {e}"))?;
-    Ok(())
-}
-
-fn restore_operation_payload(version_id: &str, row: &Value) -> Value {
-    json!({
-        "history_restore": true,
-        "version_id": version_id,
-        "restored_state": row,
-    })
-}
-
-async fn existing_outside_page_ids_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    historical_page_ids: &HashSet<String>,
-    current_page_ids: &HashSet<String>,
-) -> Result<HashSet<String>, String> {
-    if historical_page_ids.is_empty() {
-        return Ok(HashSet::new());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM notes_pages WHERE id IN (");
-    let mut separated = query.separated(", ");
-    for id in historical_page_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(")");
-    let rows = query
-        .build()
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| format!("load moved Notes history pages: {e}"))?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| row.try_get::<String, _>("id").ok())
-        .filter(|id| !current_page_ids.contains(id))
-        .collect())
-}
-
 #[derive(Default)]
 struct CopyScope {
     page_ids: HashSet<String>,
@@ -474,12 +213,31 @@ struct CopyScope {
     comment_ids: HashSet<String>,
 }
 
+/// Collects the bundle rows restored as copies: every bundle page and block that is not part of
+/// the current project graph, and everything nested under them. A page, its `child_page` block,
+/// and a database and its `child_database` block share an id, so each pair is copied together.
+/// A pair whose page or database is still in the current graph keeps its id even when the paired
+/// block is gone, so restore mints fresh ids only for rows that now live elsewhere.
 fn copied_graph_scope(
     rows: &BTreeMap<String, Vec<Value>>,
-    moved_page_ids: &HashSet<String>,
+    current: &BTreeMap<String, Vec<Value>>,
 ) -> CopyScope {
+    let current_page_ids = ids(current, "notes_pages");
+    let current_block_ids = ids(current, "notes_blocks");
+    let current_database_ids = ids(current, "notes_databases");
+    let in_current_graph = |row: &Value| {
+        value_in(row, "id", &current_page_ids) || value_in(row, "id", &current_database_ids)
+    };
     let mut scope = CopyScope {
-        page_ids: moved_page_ids.clone(),
+        page_ids: ids(rows, "notes_pages")
+            .difference(&current_page_ids)
+            .cloned()
+            .collect(),
+        block_ids: ids(rows, "notes_blocks")
+            .difference(&current_block_ids)
+            .filter(|id| !current_page_ids.contains(*id) && !current_database_ids.contains(*id))
+            .cloned()
+            .collect(),
         ..CopyScope::default()
     };
     loop {
@@ -490,12 +248,22 @@ fn copied_graph_scope(
             scope.data_source_ids.len(),
         );
         for row in rows.get("notes_blocks").into_iter().flatten() {
-            if value_in(row, "page_id", &scope.page_ids) {
+            if in_current_graph(row) {
+                continue;
+            }
+            if value_in(row, "page_id", &scope.page_ids)
+                || value_in(row, "id", &scope.page_ids)
+                || value_in(row, "parent_block_id", &scope.block_ids)
+            {
                 insert_row_id(&mut scope.block_ids, row);
             }
         }
         for row in rows.get("notes_databases").into_iter().flatten() {
-            if value_in(row, "parent_page_id", &scope.page_ids)
+            if in_current_graph(row) {
+                continue;
+            }
+            if value_in(row, "id", &scope.block_ids)
+                || value_in(row, "parent_page_id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)
             {
                 insert_row_id(&mut scope.database_ids, row);
@@ -507,7 +275,11 @@ fn copied_graph_scope(
             }
         }
         for row in rows.get("notes_pages").into_iter().flatten() {
-            if value_in(row, "parent_page_id", &scope.page_ids)
+            if in_current_graph(row) {
+                continue;
+            }
+            if value_in(row, "id", &scope.block_ids)
+                || value_in(row, "parent_page_id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)
                 || value_in(row, "parent_data_source_id", &scope.data_source_ids)
             {
@@ -562,7 +334,9 @@ fn row_is_in_copy_scope(table: &str, row: &Value, scope: &CopyScope) -> bool {
         "notes_blocks" => value_in(row, "id", &scope.block_ids),
         "notes_databases" => value_in(row, "id", &scope.database_ids),
         "notes_data_sources" => value_in(row, "id", &scope.data_source_ids),
-        "notes_data_source_row_hierarchy" => value_in(row, "row_page_id", &scope.page_ids),
+        "notes_data_source_properties" | "notes_data_source_property_options" => {
+            value_in(row, "data_source_id", &scope.data_source_ids)
+        }
         "notes_database_views" => {
             value_in(row, "database_id", &scope.database_ids)
                 || value_in(row, "data_source_id", &scope.data_source_ids)
@@ -606,6 +380,9 @@ async fn create_copy_id_map(
             let Some(id) = json_optional_string(row, "id") else {
                 continue;
             };
+            if map.contains_key(&id) {
+                continue;
+            }
             let replacement = writes::new_note_id(tx, &mut reserved).await?;
             map.insert(id, replacement);
         }
@@ -613,18 +390,93 @@ async fn create_copy_id_map(
     Ok(map)
 }
 
-fn remap_copy_rows(
-    rows: &mut BTreeMap<String, Vec<Value>>,
-    scope: &CopyScope,
-    id_map: &HashMap<String, String>,
-) {
-    for (table, table_rows) in rows {
-        for row in table_rows {
-            if row_is_in_copy_scope(table, row, scope) {
-                remap_value(row, id_map);
+/// Fresh ids for bundle folders, aliases, data sources, views, data source templates, comment
+/// threads, comments, and suggestions that sync published and that have since been deleted.
+/// Sync never lets a deleted published key be created again, so these rows come back under new
+/// ids; rows sync never published keep their ids. Rows already copied with their page or
+/// database are left to `copy_ids`.
+async fn renew_deleted_published_ids_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &BTreeMap<String, Vec<Value>>,
+    copy_ids: &HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    use ganbaru_sync::manifest::vault::notes::{
+        ALIASES_TABLE, COMMENTS_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE,
+        FOLDERS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE, VIEWS_TABLE,
+    };
+
+    let mut renewed = HashMap::new();
+    let mut reserved = copy_ids.values().cloned().collect::<HashSet<_>>();
+    for (table, table_id) in [
+        ("notes_folders", FOLDERS_TABLE),
+        ("notes_page_aliases", ALIASES_TABLE),
+        ("notes_data_sources", DATA_SOURCES_TABLE),
+        ("notes_database_views", VIEWS_TABLE),
+        ("notes_data_source_templates", DATA_SOURCE_TEMPLATES_TABLE),
+        ("notes_comment_threads", THREADS_TABLE),
+        ("notes_comments", COMMENTS_TABLE),
+        ("notes_suggestions", SUGGESTIONS_TABLE),
+    ] {
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ?1 AND row_key = ?2)
+                AND NOT EXISTS (SELECT 1 FROM {table} WHERE id = ?2)"
+        );
+        for id in ids(rows, table) {
+            if copy_ids.contains_key(&id) {
+                continue;
+            }
+            let deleted: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(i64::from(table_id.0))
+                .bind(&id)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|e| format!("check deleted published Notes {table} row: {e}"))?;
+            if deleted {
+                let replacement = writes::new_note_id(tx, &mut reserved).await?;
+                renewed.insert(id, replacement);
             }
         }
     }
+    Ok(renewed)
+}
+
+/// Points every bundle row at the copies, so restored rows that mention or nest under a copied
+/// row reference the copy rather than the original.
+fn remap_copy_rows(rows: &mut BTreeMap<String, Vec<Value>>, id_map: &HashMap<String, String>) {
+    if id_map.is_empty() {
+        return;
+    }
+    for table_rows in rows.values_mut() {
+        for row in table_rows {
+            remap_value(row, id_map);
+        }
+    }
+}
+
+/// Rederives the `sync_key` of rows whose key follows their identity, so a copied row never
+/// reuses the key of the original it was copied from.
+fn refresh_derived_sync_keys(rows: &mut BTreeMap<String, Vec<Value>>) -> Result<(), String> {
+    for table in crate::sync_keys::DERIVED_KEY_TABLES {
+        for row in rows.get_mut(table.table).into_iter().flatten() {
+            let key = table.row_key(row)?;
+            let object = row
+                .as_object_mut()
+                .ok_or_else(|| format!("Notes history {} row is not an object", table.table))?;
+            object.insert("sync_key".to_string(), Value::String(key));
+        }
+    }
+    for row in rows
+        .get_mut(crate::sync_keys::PROPERTY_OPTIONS.table)
+        .into_iter()
+        .flatten()
+    {
+        let property_key = crate::sync_keys::PROPERTIES.row_key(row)?;
+        let object = row
+            .as_object_mut()
+            .ok_or_else(|| "Notes history option row is not an object".to_string())?;
+        object.insert("property_key".to_string(), Value::String(property_key));
+    }
+    Ok(())
 }
 
 async fn resolve_copied_alias_conflicts_tx(
@@ -726,75 +578,6 @@ fn suppress_historical_notifications(rows: &mut BTreeMap<String, Vec<Value>>) {
         }
     }
 }
-
-async fn delete_current_project_pages_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    page_ids: &HashSet<String>,
-) -> Result<(), String> {
-    if page_ids.is_empty() {
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new("DELETE FROM notes_pages WHERE id IN (");
-    let mut separated = query.separated(", ");
-    for id in page_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(")");
-    query
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("remove current project Notes before restore: {e}"))?;
-    Ok(())
-}
-
-async fn delete_current_project_folders_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    folder_ids: &HashSet<String>,
-) -> Result<(), String> {
-    if folder_ids.is_empty() {
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new("DELETE FROM notes_folders WHERE id IN (");
-    let mut separated = query.separated(", ");
-    for id in folder_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(")");
-    query
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("remove current project Notes folders before restore: {e}"))?;
-    Ok(())
-}
-
-async fn insert_historical_rows_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    rows: &BTreeMap<String, Vec<Value>>,
-) -> Result<(), String> {
-    for table in RESTORE_TABLE_ORDER {
-        let Some(table_rows) = rows.get(table) else {
-            continue;
-        };
-        if table == "notes_folders" {
-            for row in folder_rows_in_restore_order(table_rows)? {
-                insert_json_row_tx(tx, table, row, false).await?;
-            }
-            continue;
-        }
-        for row in table_rows {
-            insert_json_row_tx(tx, table, row, table == "notes_assets").await?;
-        }
-    }
-    if let Some(asset_references) = rows.get("notes_asset_references") {
-        for row in asset_references {
-            insert_json_row_tx(tx, "notes_asset_references", row, false).await?;
-        }
-    }
-    Ok(())
-}
-
 /// Keep untrusted snapshot edges inside the graph being restored, then validate canonical ownership.
 async fn validate_restored_hierarchy_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -802,25 +585,30 @@ async fn validate_restored_hierarchy_tx(
 ) -> Result<(), String> {
     let page_ids = ids(rows, "notes_pages");
     let source_ids = ids(rows, "notes_data_sources");
-    for edge in rows
-        .get("notes_data_source_row_hierarchy")
-        .into_iter()
-        .flatten()
-    {
-        if !value_in(edge, "data_source_id", &source_ids)
-            || !value_in(edge, "row_page_id", &page_ids)
-            || !value_in(edge, "parent_row_page_id", &page_ids)
+    for page in rows.get("notes_pages").into_iter().flatten() {
+        if json_optional_string(page, "parent_row_page_id").is_none() {
+            continue;
+        }
+        if !value_in(page, "parent_data_source_id", &source_ids)
+            || !value_in(page, "parent_row_page_id", &page_ids)
         {
             return Err(
                 "Restored sub-items must stay within the restored project graph".to_string(),
             );
         }
     }
+    if crate::structure::misplaced_folder_page_count_tx(tx).await? != 0 {
+        return Err("Restored folder notes must belong to their folder project".to_string());
+    }
     crate::data_sources::row_hierarchy::validate_sources_tx(
         tx,
         &source_ids.into_iter().collect::<Vec<_>>(),
     )
     .await
+}
+
+fn required_row_text(row: &Value, key: &str, entity: &str) -> Result<String, String> {
+    json_optional_string(row, key).ok_or_else(|| format!("restored {entity} is missing {key}"))
 }
 
 fn folder_rows_in_restore_order(rows: &[Value]) -> Result<Vec<&Value>, String> {
@@ -854,54 +642,10 @@ fn folder_rows_in_restore_order(rows: &[Value]) -> Result<Vec<&Value>, String> {
     }
     Ok(ordered)
 }
-
-async fn insert_json_row_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    table: &str,
-    row: &Value,
-    ignore_conflict: bool,
-) -> Result<(), String> {
-    let object = row
-        .as_object()
-        .ok_or_else(|| format!("Notes history {table} row is not an object"))?;
-    if object.is_empty() {
-        return Err(format!("Notes history {table} row is empty"));
-    }
-    let columns = object.keys().collect::<Vec<_>>();
-    let verb = if ignore_conflict {
-        "INSERT OR IGNORE"
-    } else {
-        "INSERT"
-    };
-    let column_sql = columns
-        .iter()
-        .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let value_sql = columns
-        .iter()
-        .map(|column| format!("json_extract(?, '$.{}')", column.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!("{verb} INTO \"{table}\" ({column_sql}) VALUES ({value_sql})");
-    let row_json = serde_json::to_string(row)
-        .map_err(|e| format!("serialize Notes history {table} row: {e}"))?;
-    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
-    for _ in &columns {
-        query = query.bind(&row_json);
-    }
-    query
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("restore Notes history row in {table}: {e}"))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{folder_rows_in_restore_order, restore_version};
     use crate::project_history::create_checkpoint;
-    use ganbaru_db::run_migrations;
     use serde_json::json;
     use sqlx::SqlitePool;
 
@@ -921,7 +665,9 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
         pool
     }
 
@@ -961,13 +707,13 @@ mod tests {
     fn project_restore_preserves_empty_folders_and_page_folder_membership() {
         crate::test_block_on(async {
             let pool = migrated_pool().await;
-            sqlx::query("INSERT INTO project_groups (id, name) VALUES ('folder-history', 'Notes')")
+            sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-history', 'Notes', 'a1')")
                 .execute(&pool)
                 .await
                 .unwrap();
             sqlx::query(
-                "INSERT INTO projects (id, group_id, name)
-                 VALUES (?, 'folder-history', 'Folder history')",
+                "INSERT INTO projects (id, group_id, name, order_key)
+                 VALUES (?, 'folder-history', 'Folder history', 'a1')",
             )
             .bind(PROJECT_ID)
             .execute(&pool)
@@ -993,9 +739,8 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO notes_pages (id, parent_type, folder_id, title, properties)
-                 VALUES (?, 'workspace', ?, 'Folder note',
-                         json_object('__ganbaru_project_id', ?, 'title', json_object()))",
+                "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title)
+                 VALUES (?, 'workspace', ?, ?, 'Folder note')",
             )
             .bind(PAGE_ID)
             .bind(ROOT_FOLDER_ID)
@@ -1074,6 +819,158 @@ mod tests {
             assert_eq!(empty_parent_id.as_deref(), Some(ROOT_FOLDER_ID));
             assert_eq!(later_folder_count, 0);
             assert_eq!(page_folder_id.as_deref(), Some(ROOT_FOLDER_ID));
+        });
+    }
+
+    #[test]
+    fn project_restore_on_a_synced_vault_keeps_published_ids_alive_and_renews_deleted_ones() {
+        use ganbaru_sync::manifest::vault::notes::{ALIASES_TABLE, FOLDERS_TABLE};
+
+        const KEPT_ALIAS_ID: &str = "60606060-6060-4060-8060-606060606060";
+        const SWAPPED_ALIAS_ID: &str = "70707070-7070-4070-8070-707070707070";
+        const DELETED_ALIAS_ID: &str = "80808080-8080-4080-8080-808080808080";
+
+        crate::test_block_on(async {
+            let pool = migrated_pool().await;
+            sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('synced-history', 'Notes', 'a1')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO projects (id, group_id, name, order_key)
+                 VALUES (?, 'synced-history', 'Synced history', 'a1')",
+            )
+            .bind(PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO notes_folders (id, project_id, name) VALUES (?, ?, 'Root')")
+                .bind(ROOT_FOLDER_ID)
+                .bind(PROJECT_ID)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO notes_folders (id, project_id, parent_folder_id, name)
+                 VALUES (?, ?, ?, 'Empty')",
+            )
+            .bind(EMPTY_FOLDER_ID)
+            .bind(PROJECT_ID)
+            .bind(ROOT_FOLDER_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title)
+                 VALUES (?, 'workspace', ?, ?, 'Folder note')",
+            )
+            .bind(PAGE_ID)
+            .bind(ROOT_FOLDER_ID)
+            .bind(PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO notes_page_aliases (id, page_id, alias, normalized_alias)
+                 VALUES (?1, ?4, 'First', 'first'), (?2, ?4, 'Second', 'second'),
+                        (?3, ?4, 'Gone', 'gone')",
+            )
+            .bind(KEPT_ALIAS_ID)
+            .bind(SWAPPED_ALIAS_ID)
+            .bind(DELETED_ALIAS_ID)
+            .bind(PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            // Sync published every folder and alias key, so none of them can be created again.
+            for (table, id) in [
+                (FOLDERS_TABLE, ROOT_FOLDER_ID),
+                (FOLDERS_TABLE, EMPTY_FOLDER_ID),
+                (ALIASES_TABLE, KEPT_ALIAS_ID),
+                (ALIASES_TABLE, SWAPPED_ALIAS_ID),
+                (ALIASES_TABLE, DELETED_ALIAS_ID),
+            ] {
+                sqlx::query(
+                    "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')",
+                )
+                .bind(i64::from(table.0))
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let baseline = create_checkpoint(
+                &pool,
+                PROJECT_ID,
+                "baseline",
+                None,
+                None,
+                "Synced folder version",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            // The two kept aliases trade their texts, so writing either one back in place would
+            // collide with the other without the parked placeholder.
+            for (id, alias) in [
+                (KEPT_ALIAS_ID, "Swap"),
+                (SWAPPED_ALIAS_ID, "First"),
+                (KEPT_ALIAS_ID, "Second"),
+            ] {
+                sqlx::query(
+                    "UPDATE notes_page_aliases SET alias = ?, normalized_alias = lower(?) WHERE id = ?",
+                )
+                .bind(alias)
+                .bind(alias)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            for (table, id) in [
+                ("notes_page_aliases", DELETED_ALIAS_ID),
+                ("notes_folders", EMPTY_FOLDER_ID),
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM {table} WHERE id = ?"
+                )))
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+
+            restore_version(&pool, PROJECT_ID, &baseline.id)
+                .await
+                .unwrap();
+
+            let aliases: Vec<(String, String)> = sqlx::query_as(
+                "SELECT id, normalized_alias FROM notes_page_aliases ORDER BY normalized_alias",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(aliases.len(), 3);
+            assert_eq!(aliases[0].0, KEPT_ALIAS_ID);
+            assert_eq!(aliases[0].1, "first");
+            assert_eq!(aliases[1].1, "gone");
+            assert_ne!(aliases[1].0, DELETED_ALIAS_ID);
+            assert_eq!(
+                aliases[2],
+                (SWAPPED_ALIAS_ID.to_string(), "second".to_string())
+            );
+            let folders: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT id, name, parent_folder_id FROM notes_folders ORDER BY name",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(folders.len(), 2);
+            assert_eq!(folders[0].1, "Empty");
+            assert_ne!(folders[0].0, EMPTY_FOLDER_ID);
+            assert_eq!(folders[0].2.as_deref(), Some(ROOT_FOLDER_ID));
+            assert_eq!(folders[1].0, ROOT_FOLDER_ID);
         });
     }
 }

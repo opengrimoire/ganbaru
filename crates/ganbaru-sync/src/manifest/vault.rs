@@ -1,28 +1,39 @@
-//! The vault manifest.
+//! The vault manifest: the registered domains, flattened once.
 
-use super::{Manifest, TableSpec};
+use std::sync::LazyLock;
 
+use super::{DomainManifest, Manifest};
+
+pub mod calendar;
+pub mod chat;
+pub mod contacts;
+pub mod distractions;
+pub mod focus;
+pub mod music;
+pub mod notes;
+pub mod preferences;
+pub mod projects;
 pub mod quick_notes;
+pub mod themes;
 
 /// Current vault manifest version.
-pub const VAULT_MANIFEST_VERSION: u16 = 1;
+pub const VAULT_MANIFEST_VERSION: u16 = 22;
 
-/// Replicated vault tables, parents first.
-static TABLES: [TableSpec; 2] = [quick_notes::TAGS, quick_notes::NOTES];
+/// Registered vault domains in dependency order, one line per domain.
+pub const VAULT_DOMAINS: &[&DomainManifest] = &[
+    &quick_notes::DOMAIN,
+    &preferences::DOMAIN,
+    &themes::DOMAIN,
+    &contacts::DOMAIN,
+    &music::DOMAIN,
+    &projects::DOMAIN,
+    &calendar::DOMAIN,
+    &focus::DOMAIN,
+    &distractions::DOMAIN,
+    &notes::DOMAIN,
+    &chat::DOMAIN,
+];
 
 /// The vault manifest.
-pub static VAULT_MANIFEST: Manifest = Manifest {
-    version: VAULT_MANIFEST_VERSION,
-    tables: &TABLES,
-    derived: &["quick_notes_search_fts"],
-    engine: &[
-        "sync_spaces",
-        "sync_apply_state",
-        "sync_capture",
-        "sync_writers",
-        "sync_ops",
-        "sync_rows",
-        "sync_register_versions",
-        "sync_tombstones",
-    ],
-};
+pub static VAULT_MANIFEST: LazyLock<Manifest> =
+    LazyLock::new(|| Manifest::from_domains(VAULT_MANIFEST_VERSION, VAULT_DOMAINS));

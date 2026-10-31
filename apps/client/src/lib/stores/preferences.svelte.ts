@@ -6,7 +6,7 @@ import {
   DEFAULT_CALENDAR_DIM_PAST_EVENTS,
   DEFAULT_PROFILE_DISPLAY_NAME,
   DEFAULT_PROFILE_FULL_NAME,
-  DEFAULT_PROFILE_IMAGE_PATH,
+  DEFAULT_PROFILE_IMAGE,
   DEFAULT_PROFILE_USE_IMAGE,
   DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE,
   DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC,
@@ -47,7 +47,8 @@ import {
   isContactTrustDuration,
   isProfileColor,
   randomProfileColor,
-  isProfileImagePath,
+  isProfileImage,
+  type ProfileImage,
   isTitleBarControlId,
   parseFocusBreakEndEscPresses,
   parseFocusBreakExtensionLimit,
@@ -80,7 +81,7 @@ import {
 
 const PROFILE_DISPLAY_NAME_CONFIG_KEY = "profile.displayName";
 const PROFILE_FULL_NAME_CONFIG_KEY = "profile.fullName";
-const PROFILE_IMAGE_PATH_CONFIG_KEY = "profile.imagePath";
+const PROFILE_IMAGE_CONFIG_KEY = "profile.image";
 const PROFILE_USE_IMAGE_CONFIG_KEY = "profile.useImage";
 const PROFILE_COLOR_CONFIG_KEY = "profile.color";
 const PROFILE_IMAGE_CROP_CONFIG_KEY = "profile.imageCrop";
@@ -160,9 +161,9 @@ function loadSavedProfileFullName(): string {
   return normalized.ok ? normalized.value : DEFAULT_PROFILE_FULL_NAME;
 }
 
-function loadSavedProfileImagePath(): string | null {
-  const saved = getConfigKey<unknown>(PROFILE_IMAGE_PATH_CONFIG_KEY, undefined);
-  return isProfileImagePath(saved) ? saved.trim() : DEFAULT_PROFILE_IMAGE_PATH;
+function loadSavedProfileImage(): ProfileImage | null {
+  const saved = getConfigKey<unknown>(PROFILE_IMAGE_CONFIG_KEY, undefined);
+  return isProfileImage(saved) ? { path: saved.path, byteSize: saved.byteSize } : DEFAULT_PROFILE_IMAGE;
 }
 
 function loadSavedProfileUseImage(): boolean {
@@ -301,7 +302,7 @@ let fontScale = $state<number>(loadSavedFontScale());
 let eventTimezoneDisplay = $state<EventTimezoneDisplay>(loadSavedEventTimezoneDisplay());
 let profileDisplayName = $state<string>(loadSavedProfileDisplayName());
 let profileFullName = $state<string>(loadSavedProfileFullName());
-let profileImagePath = $state<string | null>(loadSavedProfileImagePath());
+let profileImage = $state<ProfileImage | null>(loadSavedProfileImage());
 let profileUseImage = $state<boolean>(loadSavedProfileUseImage());
 let profileColor = $state<EventColor>(loadSavedProfileColor());
 let profileImageCrop = $state<ProfileImageCrop>(loadSavedProfileImageCrop());
@@ -400,7 +401,7 @@ function reloadSavedPreferences(): void {
   eventTimezoneDisplay = loadSavedEventTimezoneDisplay();
   profileDisplayName = loadSavedProfileDisplayName();
   profileFullName = loadSavedProfileFullName();
-  profileImagePath = loadSavedProfileImagePath();
+  profileImage = loadSavedProfileImage();
   profileUseImage = loadSavedProfileUseImage();
   profileColor = loadSavedProfileColor();
   profileImageCrop = loadSavedProfileImageCrop();
@@ -498,15 +499,15 @@ function setProfileFullName(value: string): boolean {
 }
 
 /** Set the managed picture and its crop together; removing the picture resets the crop. */
-function setProfileImagePath(
-  value: string | null,
+function setProfileImage(
+  value: ProfileImage | null,
   crop: ProfileImageCrop = PROFILE_IMAGE_DEFAULT_CROP,
 ): boolean {
-  if (value !== null && !isProfileImagePath(value)) return false;
+  if (value !== null && !isProfileImage(value)) return false;
   if (!isProfileImageCrop(crop)) return false;
-  profileImagePath = value?.trim() ?? null;
-  setConfigKey(PROFILE_IMAGE_PATH_CONFIG_KEY, profileImagePath ?? undefined);
-  return setProfileImageCrop(profileImagePath === null ? PROFILE_IMAGE_DEFAULT_CROP : crop);
+  profileImage = value === null ? null : { path: value.path, byteSize: value.byteSize };
+  setConfigKey(PROFILE_IMAGE_CONFIG_KEY, profileImage === null ? undefined : { ...profileImage });
+  return setProfileImageCrop(profileImage === null ? PROFILE_IMAGE_DEFAULT_CROP : crop);
 }
 
 function setProfileImageCrop(value: ProfileImageCrop): boolean {
@@ -730,15 +731,19 @@ export function getPreferences() {
     get profileFullName(): string {
       return profileFullName;
     },
+    /** Saved profile picture, or null when there is none. */
+    get profileImage(): ProfileImage | null {
+      return profileImage;
+    },
     get profileImagePath(): string | null {
-      return profileImagePath;
+      return profileImage?.path ?? null;
     },
     get profileUseImage(): boolean {
       return profileUseImage;
     },
     /** Picture the avatar shows, or null when there is none or the color is preferred. */
     get profileAvatarImagePath(): string | null {
-      return profileUseImage ? profileImagePath : null;
+      return profileUseImage ? profileImage?.path ?? null : null;
     },
     /** Theme palette slot behind the avatar initials. */
     get profileColor(): EventColor {
@@ -847,7 +852,7 @@ export function getPreferences() {
     setFontScale,
     setProfileDisplayName,
     setProfileFullName,
-    setProfileImagePath,
+    setProfileImage,
     setProfileUseImage,
     setProfileColor,
     setProfileImageCrop,

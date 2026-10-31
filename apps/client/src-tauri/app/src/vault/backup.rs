@@ -1,117 +1,29 @@
 //! Whole-vault snapshots and activation, with portable Android backup commands.
 
-#[cfg(target_os = "android")]
-use super::active_vault_path;
 use super::select_quiesced_vault;
-use super::{APP_SQLITE_FILE, CONFIG_FILE, CONFIG_LOCK, VAULT_MANIFEST_FILE, VaultInfo};
-use super::{MAX_VAULT_MANIFEST_BYTES, database_path, parse_vault_manifest, vault_info_from_path};
+use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, VaultInfo, database_path, vault_info_from_path};
 #[cfg(target_os = "android")]
-use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
+use super::{default_vault_path, path_to_string};
 #[cfg(target_os = "android")]
 use chrono::{SecondsFormat, Utc};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
-use sqlx::Row;
-use std::fs;
-use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
+#[cfg(any(desktop, test))]
+use ganbaru_sync_replica::backup::ArchiveGate;
 #[cfg(target_os = "android")]
-use tauri::Manager;
+use ganbaru_sync_replica::backup::BACKUP_MAX_BYTES;
+use ganbaru_sync_replica::backup::{
+    BACKUP_MAX_ENTRIES, DIFFERENT_VAULT_ERROR, is_bundle_layout_entry, is_database_sidecar,
+};
+pub(super) use ganbaru_sync_replica::backup::{SkippedEntries, extract_backup_archive};
+use std::fs;
+use std::path::{Path, PathBuf};
 use tauri::Runtime;
-use zip::write::{SimpleFileOptions, ZipWriter};
-use zip::{CompressionMethod, ZipArchive};
 
 #[cfg(target_os = "android")]
 const BACKUP_EXTENSION: &str = "ganbaru-backup";
 #[cfg(target_os = "android")]
 const BACKUP_MIME_TYPE: &str = "application/zip";
-const BACKUP_MAX_ENTRIES: usize = 100_000;
-const BACKUP_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
-const BACKUP_MAX_DEPTH: usize = 64;
-const COPY_BUFFER_BYTES: usize = 64 * 1024;
-/// Top-level directories a vault bundle carries with everything below them.
-/// Every vault skeleton directory lives below one of these.
-pub(super) const BUNDLE_DIRECTORIES: &[&str] = &[
-    "notes",
-    "diary",
-    "projects",
-    "reports",
-    "assets",
-    "templates",
-    ".yjs",
-];
-/// Directory whose direct children are project working folders.
-const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
-/// Most skipped bundle entries named in one log line.
-const MAX_REPORTED_SKIPPED_ENTRIES: usize = 8;
-const DIFFERENT_VAULT_ERROR: &str = "received bundle belongs to a different vault";
-
-/// Whether `relative` belongs to the vault layout a bundle carries: the vault
-/// marker, configuration, and database files, the skeleton directories with
-/// their contents, and only folders directly below `projects`. Anything else,
-/// such as a `.git`, `.claude`, `.codex`, or `.vscode` folder at the vault
-/// root, stays out of bundles in both directions.
-fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
-    let mut components = relative.components().map(|component| match component {
-        Component::Normal(name) => name.to_str(),
-        _ => None,
-    });
-    let Some(Some(top)) = components.next() else {
-        return false;
-    };
-    match components.next() {
-        None if directory => BUNDLE_DIRECTORIES.contains(&top),
-        None => [VAULT_MANIFEST_FILE, CONFIG_FILE, APP_SQLITE_FILE].contains(&top),
-        Some(None) => false,
-        Some(Some(_)) if top == BUNDLE_PROJECTS_DIRECTORY => {
-            directory || components.next().is_some()
-        }
-        Some(Some(_)) => BUNDLE_DIRECTORIES.contains(&top),
-    }
-}
-
-/// Whether `name` is a SQLite journal, WAL, or shared-memory file of the vault
-/// database. These belong to one database file and never move with another.
-fn is_database_sidecar(name: &Path) -> bool {
-    name.file_name()
-        .and_then(|value| value.to_str())
-        .and_then(|value| value.strip_prefix(APP_SQLITE_FILE))
-        .is_some_and(|suffix| suffix.starts_with('-'))
-}
-
-/// Entries left out of an extracted bundle or a vault replacement.
-#[derive(Debug, Default)]
-struct SkippedEntries {
-    count: usize,
-    named: Vec<PathBuf>,
-}
-
-impl SkippedEntries {
-    fn push(&mut self, path: PathBuf) {
-        self.count += 1;
-        if self.named.len() < MAX_REPORTED_SKIPPED_ENTRIES {
-            self.named.push(path);
-        }
-    }
-
-    /// Logs the skipped entries, naming the first few, so nothing is left out
-    /// silently.
-    fn report(&self, operation: &str, reason: &str) {
-        if self.count == 0 {
-            return;
-        }
-        let named = self
-            .named
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        eprintln!(
-            "{operation} skipped {} entries {reason}: {named}",
-            self.count
-        );
-    }
-}
 
 #[cfg(any(test, mobile))]
 #[derive(Debug, serde::Serialize)]
@@ -124,28 +36,6 @@ pub struct VaultBackupOutcome {
 }
 
 #[cfg(target_os = "android")]
-fn unique_transfer_directory<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    operation: &str,
-) -> Result<PathBuf, String> {
-    let root = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| format!("find app cache directory: {error}"))?;
-    fs::create_dir_all(&root).map_err(|error| format!("create app cache directory: {error}"))?;
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| format!("create transfer identifier: {error}"))?
-        .as_nanos();
-    let directory = root.join(format!(
-        "vault-{operation}-{}-{nonce:x}",
-        std::process::id()
-    ));
-    fs::create_dir(&directory).map_err(|error| format!("create transfer directory: {error}"))?;
-    Ok(directory)
-}
-
-#[cfg(target_os = "android")]
 fn backup_file_name() -> String {
     let timestamp: chrono::DateTime<Utc> = std::time::SystemTime::now().into();
     let timestamp = timestamp
@@ -154,372 +44,20 @@ fn backup_file_name() -> String {
     format!("ganbaru-backup-{timestamp}.{BACKUP_EXTENSION}")
 }
 
-#[cfg(target_os = "android")]
-async fn create_database_snapshot<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    destination: &Path,
-) -> Result<(), String> {
-    let pool = crate::db::connect_vault(&app).await?;
-    vacuum_database(&pool, destination).await
-}
-
-async fn vacuum_database(pool: &sqlx::SqlitePool, destination: &Path) -> Result<(), String> {
-    let destination = destination
-        .to_str()
-        .ok_or_else(|| "database snapshot path contains non-UTF-8 characters".to_string())?;
-    sqlx::query("VACUUM INTO ?")
-        .bind(destination)
-        .execute(pool)
-        .await
-        .map_err(|error| format!("create consistent database snapshot: {error}"))?;
-    Ok(())
-}
-
-#[derive(Clone)]
-struct ArchiveEntry {
-    source: PathBuf,
-    relative: PathBuf,
-    directory: bool,
-}
-
-fn collect_archive_entries(
-    root: &Path,
-    current: &Path,
-    entries: &mut Vec<ArchiveEntry>,
-    total_bytes: &mut u64,
-) -> Result<(), String> {
-    let mut children = fs::read_dir(current)
-        .map_err(|error| format!("read backup source '{}': {error}", current.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("read backup source entry: {error}"))?;
-    children.sort_by_key(fs::DirEntry::file_name);
-
-    for child in children {
-        if entries.len() >= BACKUP_MAX_ENTRIES {
-            return Err("Ganbaru folder contains too many backup entries".to_string());
-        }
-        let source = child.path();
-        let relative = source
-            .strip_prefix(root)
-            .map_err(|_| "backup entry escaped the Ganbaru folder".to_string())?
-            .to_path_buf();
-        let depth = relative.components().count();
-        if depth > BACKUP_MAX_DEPTH {
-            return Err("Ganbaru folder is nested too deeply to back up".to_string());
-        }
-        let metadata = fs::symlink_metadata(&source)
-            .map_err(|error| format!("inspect backup entry '{}': {error}", source.display()))?;
-        if !is_bundle_layout_entry(&relative, metadata.is_dir()) {
-            continue;
-        }
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "backup does not support symbolic link '{}'",
-                relative.display()
-            ));
-        }
-        if metadata.is_dir() {
-            entries.push(ArchiveEntry {
-                source: source.clone(),
-                relative,
-                directory: true,
-            });
-            collect_archive_entries(root, &source, entries, total_bytes)?;
-        } else if metadata.is_file() {
-            if is_database_sidecar(&relative) {
-                continue;
-            }
-            *total_bytes = total_bytes.saturating_add(metadata.len());
-            if *total_bytes > BACKUP_MAX_BYTES {
-                return Err("Ganbaru folder exceeds the backup size limit".to_string());
-            }
-            entries.push(ArchiveEntry {
-                source,
-                relative,
-                directory: false,
-            });
-        } else {
-            return Err(format!(
-                "backup contains unsupported entry '{}'",
-                relative.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn archive_name(path: &Path, directory: bool) -> Result<String, String> {
-    let mut name = path
-        .to_str()
-        .ok_or_else(|| "backup entry path contains non-UTF-8 characters".to_string())?
-        .replace('\\', "/");
-    if directory && !name.ends_with('/') {
-        name.push('/');
-    }
-    Ok(name)
-}
-
-fn create_backup_archive(
-    vault_root: &Path,
-    database_snapshot: &Path,
-    destination: &Path,
-) -> Result<(), String> {
-    let _config_guard = CONFIG_LOCK
-        .lock()
-        .map_err(|_| "vault config lock is unavailable".to_string())?;
-    let mut entries = Vec::new();
-    let mut total_bytes = 0;
-    collect_archive_entries(vault_root, vault_root, &mut entries, &mut total_bytes)?;
-
-    let file =
-        fs::File::create(destination).map_err(|error| format!("create backup archive: {error}"))?;
-    let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o600);
-    let directory_options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Stored)
-        .unix_permissions(0o700);
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-
-    for entry in entries {
-        let name = archive_name(&entry.relative, entry.directory)?;
-        if entry.directory {
-            writer
-                .add_directory(name, directory_options)
-                .map_err(|error| format!("write backup directory: {error}"))?;
-            continue;
-        }
-        writer
-            .start_file(name, options)
-            .map_err(|error| format!("write backup entry: {error}"))?;
-        let source = if entry.relative == Path::new(APP_SQLITE_FILE) {
-            database_snapshot
-        } else {
-            &entry.source
-        };
-        let mut input = fs::File::open(source).map_err(|error| {
-            format!("open backup entry '{}': {error}", entry.relative.display())
-        })?;
-        loop {
-            let count = input.read(&mut buffer).map_err(|error| {
-                format!("read backup entry '{}': {error}", entry.relative.display())
-            })?;
-            if count == 0 {
-                break;
-            }
-            writer.write_all(&buffer[..count]).map_err(|error| {
-                format!(
-                    "compress backup entry '{}': {error}",
-                    entry.relative.display()
-                )
-            })?;
-        }
-    }
-    writer
-        .finish()
-        .map_err(|error| format!("finish backup archive: {error}"))?
-        .sync_all()
-        .map_err(|error| format!("sync backup archive: {error}"))?;
-    Ok(())
-}
-
 /// Creates one consistent whole-vault archive after the caller excludes vault writers.
+#[cfg(desktop)]
 pub(crate) async fn create_handoff_archive(
     vault_root: &Path,
     database_snapshot: &Path,
     archive_path: &Path,
 ) -> Result<(), String> {
-    for path in [database_snapshot, archive_path] {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove stale handoff snapshot: {error}")),
-        }
-    }
-    let registry = ganbaru_db::DatabasePoolRegistry::default();
-    let pool = registry.connect_path(database_path(vault_root)).await?;
-    let snapshot_result = vacuum_database(&pool, database_snapshot).await;
-    registry.close_all().await?;
-    snapshot_result?;
-    prepare_snapshot_copy(database_snapshot).await?;
-    create_backup_archive(vault_root, database_snapshot, archive_path)
-}
-
-fn safe_archive_path(path: &Path) -> Result<PathBuf, String> {
-    if path.as_os_str().is_empty()
-        || path.is_absolute()
-        || path.components().count() > BACKUP_MAX_DEPTH
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("backup contains an unsafe entry path".to_string());
-    }
-    Ok(path.to_path_buf())
-}
-
-/// Checks the central directory before anything is written: the archive must hold a vault
-/// marker and database, its in-layout entries must declare at most `max_bytes` in total, and
-/// the marker must parse. Returns the archived vault identity.
-fn admit_backup_archive<R: Read + std::io::Seek>(
-    archive: &mut ZipArchive<R>,
-    max_bytes: u64,
-) -> Result<String, String> {
-    if archive.len() > BACKUP_MAX_ENTRIES {
-        return Err("backup contains too many entries".to_string());
-    }
-    let mut declared_bytes = 0_u64;
-    let mut has_database = false;
-    for index in 0..archive.len() {
-        let entry = archive
-            .by_index_raw(index)
-            .map_err(|error| format!("read backup entry {index}: {error}"))?;
-        let Some(relative) = entry.enclosed_name() else {
-            continue;
-        };
-        if entry.is_dir() || !is_bundle_layout_entry(&relative, false) {
-            continue;
-        }
-        has_database |= relative == Path::new(APP_SQLITE_FILE);
-        declared_bytes = declared_bytes.saturating_add(entry.size());
-        if declared_bytes > max_bytes {
-            return Err("backup exceeds the restore size limit".to_string());
-        }
-    }
-    if !has_database {
-        return Err("backup is missing its database".to_string());
-    }
-    let manifest = archive
-        .by_name(VAULT_MANIFEST_FILE)
-        .map_err(|error| format!("backup is missing its Ganbaru folder marker: {error}"))?;
-    if !manifest.is_file() || manifest.size() > MAX_VAULT_MANIFEST_BYTES {
-        return Err("backup has an invalid Ganbaru folder marker".to_string());
-    }
-    let mut contents = Vec::new();
-    manifest
-        .take(MAX_VAULT_MANIFEST_BYTES + 1)
-        .read_to_end(&mut contents)
-        .map_err(|error| format!("read backup Ganbaru folder marker: {error}"))?;
-    if contents.len() as u64 > MAX_VAULT_MANIFEST_BYTES {
-        return Err("backup has an invalid Ganbaru folder marker".to_string());
-    }
-    Ok(parse_vault_manifest(&contents)?.vault_id)
-}
-
-/// Extracts a bundle into a new `destination`, skipping entries outside the
-/// vault layout instead of failing the whole restore.
-fn extract_backup_archive(
-    archive_path: &Path,
-    destination: &Path,
-    expected_vault_id: Option<&str>,
-) -> Result<SkippedEntries, String> {
-    extract_backup_archive_within(
+    ganbaru_sync_replica::backup::create_snapshot_archive(
+        &ArchiveGate::process(),
+        vault_root,
+        database_snapshot,
         archive_path,
-        destination,
-        expected_vault_id,
-        BACKUP_MAX_BYTES,
     )
-}
-
-fn extract_backup_archive_within(
-    archive_path: &Path,
-    destination: &Path,
-    expected_vault_id: Option<&str>,
-    max_bytes: u64,
-) -> Result<SkippedEntries, String> {
-    let file = fs::File::open(archive_path).map_err(|error| format!("open backup: {error}"))?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|error| format!("open backup archive: {error}"))?;
-    let vault_id = admit_backup_archive(&mut archive, max_bytes)?;
-    if expected_vault_id.is_some_and(|expected| expected != vault_id) {
-        return Err(DIFFERENT_VAULT_ERROR.to_string());
-    }
-    ganbaru_atomic_files::create_private_directory(destination)
-        .map_err(|error| format!("create restore staging folder: {error}"))?;
-    let mut total_bytes = 0_u64;
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    let mut skipped = SkippedEntries::default();
-
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|error| format!("read backup entry {index}: {error}"))?;
-        if entry.encrypted() {
-            return Err("encrypted backup archives are not supported".to_string());
-        }
-        if let Some(mode) = entry.unix_mode() {
-            let file_type = mode & 0o170000;
-            if file_type != 0 && file_type != 0o040000 && file_type != 0o100000 {
-                return Err("backup contains an unsupported special file".to_string());
-            }
-        }
-        let enclosed = entry
-            .enclosed_name()
-            .ok_or_else(|| "backup contains an unsafe entry path".to_string())?;
-        let relative = safe_archive_path(&enclosed)?;
-        if !is_bundle_layout_entry(&relative, entry.is_dir()) {
-            skipped.push(relative);
-            continue;
-        }
-        let output = destination.join(&relative);
-        if output.exists() {
-            return Err(format!(
-                "backup contains duplicate entry '{}'",
-                relative.display()
-            ));
-        }
-        if entry.is_dir() {
-            fs::create_dir(&output).map_err(|error| {
-                format!(
-                    "create restored directory '{}': {error}",
-                    relative.display()
-                )
-            })?;
-            continue;
-        }
-        if !entry.is_file() {
-            return Err(format!(
-                "backup entry '{}' is unsupported",
-                relative.display()
-            ));
-        }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!("create restored parent '{}': {error}", relative.display())
-            })?;
-        }
-        let mut target = fs::File::create(&output)
-            .map_err(|error| format!("create restored file '{}': {error}", relative.display()))?;
-        let declared_bytes = entry.size();
-        let mut entry_bytes = 0_u64;
-        loop {
-            let count = entry
-                .read(&mut buffer)
-                .map_err(|error| format!("read backup file '{}': {error}", relative.display()))?;
-            if count == 0 {
-                break;
-            }
-            entry_bytes = entry_bytes.saturating_add(count as u64);
-            total_bytes = total_bytes.saturating_add(count as u64);
-            if entry_bytes > declared_bytes {
-                return Err(format!(
-                    "backup file '{}' exceeds its declared size",
-                    relative.display()
-                ));
-            }
-            if total_bytes > max_bytes {
-                return Err("backup exceeds the restore size limit".to_string());
-            }
-            target.write_all(&buffer[..count]).map_err(|error| {
-                format!("write restored file '{}': {error}", relative.display())
-            })?;
-        }
-        target
-            .sync_all()
-            .map_err(|error| format!("sync restored file '{}': {error}", relative.display()))?;
-    }
-    Ok(skipped)
+    .await
 }
 
 /// Extracts and validates a received whole-vault archive in separate staging.
@@ -555,36 +93,7 @@ pub(crate) async fn stage_handoff_archive(
 
 pub(crate) async fn validate_restored_vault(path: &Path) -> Result<VaultInfo, String> {
     let info = vault_info_from_path(path)?;
-    let restored_database = database_path(path);
-    let metadata = fs::metadata(&restored_database)
-        .map_err(|error| format!("backup is missing its database: {error}"))?;
-    if !metadata.is_file() || metadata.len() == 0 {
-        return Err("backup database is empty".to_string());
-    }
-    let registry = ganbaru_db::DatabasePoolRegistry::default();
-    let pool = registry.connect_path_read_only(&restored_database).await?;
-    let validation = async {
-        // The catalog check runs first so that integrity checking never reaches virtual table
-        // modules, such as FTS5, that the restored file defines or reshapes.
-        ganbaru_db::validate_current_schema(&pool).await?;
-        let row = sqlx::query("PRAGMA integrity_check")
-            .fetch_one(&pool)
-            .await
-            .map_err(|error| format!("check restored database: {error}"))?;
-        let result: String = row
-            .try_get(0)
-            .map_err(|error| format!("read restored database check: {error}"))?;
-        if result != "ok" {
-            return Err(format!(
-                "restored database failed its integrity check: {result}"
-            ));
-        }
-        Ok(())
-    }
-    .await;
-    let close_result = registry.close_all().await;
-    validation?;
-    close_result?;
+    ganbaru_sync_replica::backup::validate_vault_database(&database_path(path)).await?;
     Ok(info)
 }
 
@@ -684,7 +193,7 @@ async fn vault_content_bytes(vault: &Path) -> Result<u64, String> {
 /// Whether activating `staging` over `target`, a copy of the same vault, removes most of its
 /// data. A measurement failure is logged and not flagged; the replaced database is kept either
 /// way.
-async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool {
+pub(super) async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool {
     match (
         vault_content_bytes(target).await,
         vault_content_bytes(staging).await,
@@ -697,15 +206,58 @@ async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool 
     }
 }
 
-#[cfg(any(test, target_os = "android"))]
+#[cfg(test)]
 fn replace_vault(staging: &Path, target: &Path, rollback: &Path) -> Result<(), String> {
     replace_vault_flagging(staging, target, rollback, false)
+}
+
+/// Replaces `target` with `staging`, which holds another vault. The whole replaced vault is
+/// kept as a rollback copy inside the new folder, so it stays restorable from Settings > Data.
+pub(super) fn replace_with_other_vault(
+    staging: &Path,
+    target: &Path,
+    rollback: &Path,
+) -> Result<(), String> {
+    recover_interrupted_restore(target, rollback)?;
+    let had_target = target.exists();
+    if had_target {
+        fs::rename(target, rollback)
+            .map_err(|error| format!("prepare current data for restore: {error}"))?;
+    }
+    if let Err(error) = fs::rename(staging, target) {
+        if had_target {
+            let _ = fs::rename(rollback, target);
+        }
+        return Err(format!("activate restored data: {error}"));
+    }
+    if had_target && let Err(error) = finish_other_vault_replacement(target, rollback) {
+        eprintln!("Vault replacement cleanup: {error}");
+    }
+    Ok(())
+}
+
+/// Keeps `rollback`, a whole vault that another vault at `target` replaced, as a rollback copy
+/// of `target`. When it cannot be kept, the replaced folder stays as a visible sibling.
+fn finish_other_vault_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
+    let now = super::now_utc();
+    if let Err(error) = super::database_rollback::retain_other_vault(rollback, now) {
+        let kept = kept_previous_path(target)?;
+        fs::rename(rollback, &kept)
+            .map_err(|rename| format!("{error}; keep the replaced folder: {rename}"))?;
+        eprintln!(
+            "Vault replacement kept the replaced folder in '{}': {error}",
+            kept.display()
+        );
+        return Ok(());
+    }
+    finish_replacement(target, rollback)?;
+    super::database_rollback::prune_after_replacement(target, now)
 }
 
 /// Replaces `target` with `staging`. When both hold the same vault, the replaced data is kept as
 /// a rollback inside the new folder: the database, or the whole layout when `flagged` marks a
 /// drastic shrink.
-fn replace_vault_flagging(
+pub(super) fn replace_vault_flagging(
     staging: &Path,
     target: &Path,
     rollback: &Path,
@@ -757,7 +309,8 @@ fn finish_retained_replacement(
 
 /// Moves entries outside the vault layout from the replaced folder `rollback`
 /// into its replacement `target`, then removes `rollback`. Bundles never carry
-/// such entries, so they are files this device kept in its vault folder. When
+/// such entries, so they are files this device kept in its vault folder. The
+/// vault lock file stays behind, since the replacement carries its own. When
 /// one cannot move, `rollback` is kept as a visible sibling instead.
 fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
     let mut stranded = SkippedEntries::default();
@@ -770,7 +323,10 @@ fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
                 };
                 let name = PathBuf::from(child.file_name());
                 let directory = child.file_type().is_ok_and(|kind| kind.is_dir());
-                if is_bundle_layout_entry(&name, directory) || is_database_sidecar(&name) {
+                if is_bundle_layout_entry(&name, directory)
+                    || is_database_sidecar(&name)
+                    || name == Path::new(super::vault_lock::VAULT_LOCK_FILE)
+                {
                     continue;
                 }
                 let destination = target.join(&name);
@@ -783,7 +339,7 @@ fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
         }
         Err(_) => stranded.push(rollback.to_path_buf()),
     }
-    if stranded.count == 0 {
+    if stranded.is_empty() {
         return fs::remove_dir_all(rollback)
             .map_err(|error| format!("remove completed restore rollback: {error}"));
     }
@@ -835,7 +391,161 @@ pub(crate) fn active_handoff_staging_path<R: Runtime>(
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    Ok(parent.join(format!(".ganbaru.handoff-{transfer_id}.staging")))
+    Ok(handoff_staging_path_in(parent, transfer_id))
+}
+
+/// Staging folder for a received vault inside `parent`, the folder that will hold the vault, so
+/// activation is a rename on one file system.
+#[cfg(desktop)]
+pub(crate) fn handoff_staging_path_in(parent: &Path, transfer_id: &str) -> PathBuf {
+    parent.join(format!(".ganbaru.handoff-{transfer_id}.staging"))
+}
+
+/// Error returned when the folder chosen for a linked vault already holds files. The webview
+/// maps it to a localized message, so the text is stable.
+pub(crate) const LINK_FOLDER_NOT_EMPTY: &str =
+    "the folder chosen for the linked vault is not empty";
+
+/// Error returned when the folder chosen for a linked vault lies inside another vault. The
+/// webview maps it to a localized message, so the text is stable.
+#[cfg(any(test, desktop))]
+pub(crate) const LINK_FOLDER_INSIDE_VAULT: &str =
+    "the folder chosen for the linked vault is inside another vault";
+
+/// Whether `path`, or a folder that holds it, carries a vault marker. Symbolic links in the part
+/// of `path` that exists are resolved first.
+#[cfg(any(test, desktop))]
+fn lies_inside_vault(path: &Path) -> bool {
+    let Some(existing) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+        return false;
+    };
+    let resolved = fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    resolved
+        .ancestors()
+        .any(|folder| folder.join(VAULT_MANIFEST_FILE).is_file())
+}
+
+/// Most numbered siblings tried before a first link gives up on a free folder name.
+#[cfg(any(test, desktop))]
+const MAX_LINK_FOLDER_SUFFIX: u32 = 100;
+
+/// Whether `path` can receive a vault: it is missing or an empty folder.
+pub(super) fn is_free_folder(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        Ok(metadata) => metadata.is_dir() && super::folder_is_empty(path).unwrap_or(false),
+    }
+}
+
+/// Folder name for a vault display name: characters no supported file system accepts become
+/// spaces, and a name with nothing left falls back to the default folder name.
+#[cfg(any(test, desktop))]
+pub(super) fn vault_folder_name(display_name: &str, fallback: &str) -> String {
+    let cleaned: String = display_name
+        .chars()
+        .map(|character| {
+            if character.is_control() || r#"<>:"/\|?*"#.contains(character) {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches('.').trim();
+    if cleaned.is_empty() || cleaned == ".." {
+        fallback.to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Chooses the folder a first link on a computer activates the linked vault in. A folder the
+/// user chose must be missing or empty and must not lie inside another vault. Otherwise the
+/// default platform folder is used while it is missing or empty, and else an empty sibling named
+/// after the vault, numbered when that name is taken. The folder of the vault in use is never
+/// chosen, so it stays untouched. An empty folder holds no vault, so only the folders around it
+/// are checked.
+#[cfg(any(test, desktop))]
+pub(crate) fn resolve_link_folder(
+    chosen: Option<&Path>,
+    default: &Path,
+    vault_display_name: &str,
+) -> Result<PathBuf, String> {
+    if let Some(chosen) = chosen {
+        return if !is_free_folder(chosen) {
+            Err(LINK_FOLDER_NOT_EMPTY.to_string())
+        } else if lies_inside_vault(chosen) {
+            Err(LINK_FOLDER_INSIDE_VAULT.to_string())
+        } else {
+            Ok(chosen.to_path_buf())
+        };
+    }
+    if is_free_folder(default) {
+        return Ok(default.to_path_buf());
+    }
+    let parent = default
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    let fallback = default
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Ganbaru");
+    let name = vault_folder_name(vault_display_name, fallback);
+    (1..=MAX_LINK_FOLDER_SUFFIX)
+        .map(|number| {
+            if number == 1 {
+                parent.join(&name)
+            } else {
+                parent.join(format!("{name} {number}"))
+            }
+        })
+        .find(|candidate| is_free_folder(candidate))
+        .ok_or_else(|| "no free folder is available for the linked vault".to_string())
+}
+
+/// What happens to a folder that holds another vault when a received vault replaces it. A copy
+/// of the same vault is always replaced with carry-forward and a rollback copy.
+#[derive(Clone, Debug)]
+pub(crate) enum ReplacedVault {
+    /// Keep a folder that holds another vault whole beside the vault. Used on computers, where a
+    /// first link moves into its own folder instead.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    KeepOther,
+    /// Write a portable backup of another vault into this folder first, refusing the replacement
+    /// when the backup fails, then discard the replaced folder. A folder that is still the
+    /// untouched Android starter when the swap begins is discarded without a backup. The starter
+    /// is re-read inside snapshot quiescence, so a starter the user entered while the copy
+    /// downloaded is backed up.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    BackUpUnlessStarter(PathBuf),
+}
+
+/// Whether replacing the vault folder `target` needs a backup first. Only a readable vault that
+/// is still the untouched starter (`untouched_starter`) is discarded without one.
+fn replaced_vault_needs_backup(untouched_starter: bool, target: &Path) -> bool {
+    !(untouched_starter && vault_info_from_path(target).is_ok())
+}
+
+/// Where a received vault is activated.
+#[derive(Clone, Debug)]
+enum HandoffPlacement {
+    /// Replaces the folder at `target`.
+    Replace {
+        target: PathBuf,
+        previous: ReplacedVault,
+    },
+    /// Moves the vault into `target`, a missing or empty folder, and leaves the vault in use
+    /// where it is.
+    #[cfg_attr(not(desktop), allow(dead_code))]
+    NewFolder { target: PathBuf },
+}
+
+impl HandoffPlacement {
+    fn target(&self) -> &Path {
+        match self {
+            Self::Replace { target, .. } | Self::NewFolder { target } => target,
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -844,16 +554,15 @@ pub(crate) async fn activate_android_handoff(
     staging: &Path,
     transfer_id: &str,
     expected_vault_id: &str,
-    preserve_previous: bool,
+    previous: ReplacedVault,
 ) -> Result<VaultInfo, String> {
     let target = default_vault_path(app)?;
     activate_handoff_at_path(
         app,
         staging,
-        &target,
+        HandoffPlacement::Replace { target, previous },
         transfer_id,
         expected_vault_id,
-        preserve_previous,
     )
     .await
 }
@@ -864,32 +573,37 @@ pub(crate) async fn activate_active_handoff<R: Runtime>(
     staging: &Path,
     transfer_id: &str,
     expected_vault_id: &str,
-    preserve_previous: bool,
+    previous: ReplacedVault,
 ) -> Result<VaultInfo, String> {
     let target = super::active_vault_path(app)?;
     activate_handoff_at_path(
         app,
         staging,
-        &target,
+        HandoffPlacement::Replace { target, previous },
         transfer_id,
         expected_vault_id,
-        preserve_previous,
     )
     .await
 }
 
-/// Activates an ownership snapshot a linked owner uploaded to this coordinator. The coordinator's
-/// own copy of the linked vault is read-only while another device owns it, and its Quick notes
-/// changes carry forward.
+/// Activates a received vault in `target`, a missing or empty folder, and makes it the vault in
+/// use. The previous vault folder is not touched and stays in the vault picker.
 #[cfg(desktop)]
-pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
+pub(crate) async fn activate_handoff_in_new_folder<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
+    target: PathBuf,
     transfer_id: &str,
     expected_vault_id: &str,
 ) -> Result<VaultInfo, String> {
-    let target = super::active_vault_path(app)?;
-    activate_handoff_at_path(app, staging, &target, transfer_id, expected_vault_id, false).await
+    activate_handoff_at_path(
+        app,
+        staging,
+        HandoffPlacement::NewFolder { target },
+        transfer_id,
+        expected_vault_id,
+    )
+    .await
 }
 
 /// Whether the folder at `path` is the vault `vault_id`.
@@ -903,57 +617,54 @@ fn replaces_independent_vault(target: &Path, vault_id: &str) -> bool {
     target.exists() && !holds_vault(target, vault_id)
 }
 
-/// Replaces `target` with the staged handoff. A folder that holds any vault other than
-/// `expected_vault_id` is always kept whole beside it, whatever the caller asked, so a handoff can
-/// never delete an unrelated vault.
+/// Activates the staged handoff at `placement`. A folder that holds any vault other than
+/// `expected_vault_id` is deleted only after its replacement policy wrote a backup of it, or when
+/// it is the untouched Android starter; otherwise it is kept whole beside the vault, whatever the
+/// caller asked.
 async fn activate_handoff_at_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
-    target: &Path,
+    placement: HandoffPlacement,
     transfer_id: &str,
     expected_vault_id: &str,
-    preserve_previous: bool,
 ) -> Result<VaultInfo, String> {
+    let target = placement.target().to_path_buf();
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
-    let preserve_previous =
-        preserve_previous || replaces_independent_vault(target, expected_vault_id);
-    let rollback = if preserve_previous {
-        preserved_handoff_path(parent, target, transfer_id)
-    } else {
-        parent.join(".ganbaru.handoff-refresh-rollback")
-    };
-    if rollback.exists() && staging.exists() {
-        return Err("a previous handoff copy still requires recovery".to_string());
-    }
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?
+        .to_path_buf();
+    fs::create_dir_all(&parent).map_err(|error| format!("create app data directory: {error}"))?;
+    let swap = plan_swap(&placement, &parent, staging, transfer_id, expected_vault_id)?;
+    #[cfg(desktop)]
+    let expected_active = super::active_vault_path(app)?;
     let quiescence = super::quiescence::begin_snapshot_quiescence(app).await?;
-    if let Err(error) = carry_forward_local_changes(app, staging, target, expected_vault_id).await {
+    if let Err(error) = prepare_replacement(app, staging, &placement, expected_vault_id).await {
         return Err(match quiescence.finish() {
             Ok(()) => error,
             Err(resume) => format!("{error}; {resume}"),
         });
     }
-    let flagged = !preserve_previous
-        && staging.exists()
-        && holds_vault(target, expected_vault_id)
-        && replacement_shrinks_drastically(target, staging).await;
+    let flagged = matches!(
+        swap,
+        Swap::Replace {
+            preserve: false,
+            ..
+        }
+    ) && staging.exists()
+        && holds_vault(&target, expected_vault_id)
+        && replacement_shrinks_drastically(&target, staging).await;
     let activation_app = app.clone();
     let staging = staging.to_path_buf();
-    let target = target.to_path_buf();
     let expected_vault_id = expected_vault_id.to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(desktop)]
-        if super::active_vault_path(&activation_app)? != target {
+        if super::active_vault_path(&activation_app)? != expected_active {
             return Err("active vault changed while preparing handoff activation".to_string());
         }
         if staging.exists() {
-            if preserve_previous {
-                replace_vault_preserving_previous(&staging, &target, &rollback)?;
-            } else {
-                replace_vault_flagging(&staging, &target, &rollback, flagged)?;
-            }
+            super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
+                run_swap(&swap, &staging, &target, flagged)
+            })?;
         }
         let info = vault_info_from_path(&target)?;
         if info.vault_id != expected_vault_id {
@@ -961,32 +672,151 @@ async fn activate_handoff_at_path<R: Runtime>(
         }
         select_quiesced_vault(&activation_app, &info, &quiescence)?;
         quiescence.finish()?;
+        if let Swap::Replace {
+            rollback,
+            discard_preserved: true,
+            ..
+        } = &swap
+            && rollback.exists()
+            && let Err(error) = discard_replaced_folder(&target, rollback)
+        {
+            eprintln!(
+                "Remove the replaced vault folder '{}': {error}",
+                rollback.display()
+            );
+        }
         Ok(info)
     })
     .await
     .map_err(|error| format!("handoff activation worker failed: {error}"))?
 }
 
-/// Clears installation-local sync state from a snapshot copy before it leaves this device.
-async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
-    use sqlx::Connection;
-    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
-    let mut conn = sqlx::SqliteConnection::connect_with(&options)
-        .await
-        .map_err(|error| format!("open handoff snapshot: {error}"))?;
-    let result = ganbaru_sync::local::prepare_snapshot_copy(&mut conn)
-        .await
-        .map_err(|error| format!("prepare handoff snapshot: {error}"));
-    let closed = conn
-        .close()
-        .await
-        .map_err(|error| format!("close handoff snapshot: {error}"));
-    result.and(closed)
+/// Deletes the replaced vault folder `replaced` only after the activated vault at `target` and
+/// the renames into their parent are on stable storage, so a crash never leaves neither vault.
+/// A failed flush keeps `replaced`.
+fn discard_replaced_folder(target: &Path, replaced: &Path) -> Result<(), String> {
+    let durable = |folder: &Path| {
+        ganbaru_atomic_files::sync_directory_entries(folder)
+            .map_err(|error| format!("flush '{}': {error}", folder.display()))
+    };
+    durable(target)?;
+    if let Some(parent) = target.parent() {
+        durable(parent)?;
+    }
+    fs::remove_dir_all(replaced).map_err(|error| error.to_string())
 }
 
-/// Exports local sync operations the staged replacement lacks, so the next service start
-/// imports them into the replacement, and copies the Quick note images only this device holds.
-/// Only a replacement of the same vault carries anything.
+/// How the staged folder takes its place.
+#[derive(Debug)]
+enum Swap {
+    /// Renamed into a missing or empty folder.
+    IntoNewFolder,
+    /// Renamed over the target. With `preserve`, the target moves to `rollback` whole and is
+    /// deleted after activation only with `discard_preserved`; otherwise `rollback` holds the
+    /// rollback copy of a replacement of the same vault.
+    Replace {
+        rollback: PathBuf,
+        preserve: bool,
+        discard_preserved: bool,
+    },
+}
+
+/// Decides the swap for `placement` before any folder changes.
+fn plan_swap(
+    placement: &HandoffPlacement,
+    parent: &Path,
+    staging: &Path,
+    transfer_id: &str,
+    expected_vault_id: &str,
+) -> Result<Swap, String> {
+    let (target, previous) = match placement {
+        HandoffPlacement::NewFolder { target } => {
+            return if is_free_folder(target) {
+                Ok(Swap::IntoNewFolder)
+            } else {
+                Err(LINK_FOLDER_NOT_EMPTY.to_string())
+            };
+        }
+        HandoffPlacement::Replace { target, previous } => (target, previous),
+    };
+    let replaces_other = replaces_independent_vault(target, expected_vault_id);
+    let preserve = replaces_other;
+    let rollback = if preserve {
+        preserved_handoff_path(parent, target, transfer_id)
+    } else {
+        parent.join(".ganbaru.handoff-refresh-rollback")
+    };
+    if rollback.exists() && staging.exists() {
+        return Err("a previous handoff copy still requires recovery".to_string());
+    }
+    let discard_preserved = replaces_other
+        && match previous {
+            ReplacedVault::BackUpUnlessStarter(_) => true,
+            ReplacedVault::KeepOther => false,
+        };
+    Ok(Swap::Replace {
+        rollback,
+        preserve,
+        discard_preserved,
+    })
+}
+
+fn run_swap(swap: &Swap, staging: &Path, target: &Path, flagged: bool) -> Result<(), String> {
+    match swap {
+        Swap::IntoNewFolder => move_into_new_folder(staging, target),
+        Swap::Replace {
+            rollback,
+            preserve: true,
+            ..
+        } => replace_vault_preserving_previous(staging, target, rollback),
+        Swap::Replace { rollback, .. } => {
+            replace_vault_flagging(staging, target, rollback, flagged)
+        }
+    }
+}
+
+/// Runs inside snapshot quiescence before the swap: carries this device's changes forward into a
+/// replacement of the same vault, and writes the backup a replacement policy asks for. A failed
+/// backup refuses the replacement.
+async fn prepare_replacement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    staging: &Path,
+    placement: &HandoffPlacement,
+    expected_vault_id: &str,
+) -> Result<(), String> {
+    let HandoffPlacement::Replace { target, previous } = placement else {
+        return Ok(());
+    };
+    carry_forward_local_changes(app, staging, target, expected_vault_id).await?;
+    let root = match previous {
+        ReplacedVault::BackUpUnlessStarter(root) => {
+            replaced_vault_needs_backup(super::untouched_starter_vault(app)?, target)
+                .then_some(root)
+        }
+        ReplacedVault::KeepOther => None,
+    };
+    if let Some(root) = root
+        && staging.exists()
+        && replaces_independent_vault(target, expected_vault_id)
+    {
+        let now_ms = i64::try_from(crate::sync::now_ms()?)
+            .map_err(|_| "current time is out of range".to_string())?;
+        super::replaced_vaults::write_replaced_vault_backup(root, target, now_ms).await?;
+    }
+    Ok(())
+}
+
+/// Moves `staging` into `target`, which is missing or an empty folder.
+pub(super) fn move_into_new_folder(staging: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        fs::remove_dir(target)
+            .map_err(|error| format!("prepare the linked vault folder: {error}"))?;
+    }
+    fs::rename(staging, target).map_err(|error| format!("activate the linked vault: {error}"))
+}
+
+/// Carries this device's synced changes, device state, and local managed assets into the staged
+/// replacement when `target` holds the same vault. A replacement by another vault carries nothing.
 async fn carry_forward_local_changes<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -997,22 +827,86 @@ async fn carry_forward_local_changes<R: Runtime>(
         return Ok(());
     }
     let files = crate::sync::sync_files(app, expected_vault_id)?;
-    crate::sync::export_for_replacement(
-        app,
-        &database_path(target),
-        &database_path(staging),
+    carry_into_replacement(
+        &ganbaru_sync::Engine::vault(),
+        staging,
+        target,
         &files,
+        crate::sync::now_ms()?,
     )
     .await
-    .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
+}
+
+/// Runs inside snapshot quiescence, before the staged folder is renamed over `target`: stores
+/// and applies the operations of `target` that the staged database lacks, deletes the carry
+/// bundle, copies the `Local` rows and columns of `target` into the staged database, and copies
+/// the managed asset files only this device holds. `target` stays the vault until the rename, so
+/// a failure at any step keeps it whole and a retry repeats the steps harmlessly.
+async fn carry_into_replacement(
+    engine: &ganbaru_sync::Engine,
+    staging: &Path,
+    target: &Path,
+    files: &ganbaru_sync_replica::writer::SyncFiles,
+    now_ms: u64,
+) -> Result<(), String> {
+    use ganbaru_sync_replica::carry_forward;
+    let (current, replacement) = (database_path(target), database_path(staging));
+    carry_forward::carry_into_replacement(engine, &current, &replacement, files, now_ms)
+        .await
+        .map_err(|error| format!("keep local synced changes: {error}"))?;
+    failpoints::check("replace.before_restore")?;
+    carry_forward::restore_into_replacement(engine, &current, &replacement)
+        .await
+        .map_err(|error| format!("keep device state: {error}"))?;
     let (current, replacement) = (target.to_path_buf(), staging.to_path_buf());
+    let manifest = engine.manifest();
     tauri::async_runtime::spawn_blocking(move || {
-        ganbaru_quick_notes::images::carry_images(&current, &replacement)
+        carry_forward::carry_assets(manifest, &current, &replacement)
     })
     .await
-    .map_err(|error| format!("keep local Quick note images: {error}"))?
-    .map(|_| ())
-    .map_err(|error| format!("keep local Quick note images: {error}"))
+    .map_err(|error| format!("keep local managed assets: {error}"))?
+    .map_err(|error| format!("keep local managed assets: {error}"))?;
+    failpoints::check("replace.before_rename")
+}
+
+/// Failpoints on the replacement sequence. Tests arm one on their own thread; outside tests
+/// every check passes.
+mod failpoints {
+    #[cfg(test)]
+    thread_local! {
+        static ARMED: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Arms `name` on this thread until it is cleared or another failpoint is armed.
+    #[cfg(test)]
+    pub(super) fn arm(name: &'static str) {
+        ARMED.set(Some(name));
+    }
+
+    /// Clears the armed failpoint of this thread.
+    #[cfg(test)]
+    pub(super) fn clear() {
+        ARMED.set(None);
+    }
+
+    /// Fails when `name` is armed on this thread.
+    pub(super) fn check(name: &'static str) -> Result<(), String> {
+        if armed(name) {
+            Err(format!("failpoint {name}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    fn armed(name: &'static str) -> bool {
+        ARMED.get() == Some(name)
+    }
+
+    #[cfg(not(test))]
+    const fn armed(_name: &'static str) -> bool {
+        false
+    }
 }
 
 fn preserved_handoff_path(parent: &Path, target: &Path, transfer_id: &str) -> PathBuf {
@@ -1051,12 +945,23 @@ fn replace_vault_preserving_previous(
     Ok(())
 }
 
-fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), String> {
+/// Finishes a replacement an exit interrupted: puts `rollback` back when `target` is missing,
+/// and otherwise keeps it as a rollback copy of `target`, a whole copy when it holds another
+/// vault, so an interrupted restore of another vault never deletes the replaced one.
+pub(super) fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), String> {
     if !rollback.exists() {
         return Ok(());
     }
     if target.exists() {
-        finish_retained_replacement(target, rollback, false)
+        let other_vault = matches!(
+            (vault_info_from_path(target), vault_info_from_path(rollback)),
+            (Ok(current), Ok(replaced)) if current.vault_id != replaced.vault_id
+        );
+        if other_vault {
+            finish_other_vault_replacement(target, rollback)
+        } else {
+            finish_retained_replacement(target, rollback, false)
+        }
     } else {
         fs::rename(rollback, target)
             .map_err(|error| format!("recover interrupted data restore: {error}"))
@@ -1069,172 +974,112 @@ pub(crate) fn recover_interrupted_restore_for_app(app: &tauri::AppHandle) -> Res
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-/// Save a consistent portable copy of the active vault to Android Downloads.
-pub async fn vault_backup_to_downloads(
-    app: tauri::AppHandle,
-) -> Result<VaultBackupOutcome, String> {
-    let transfer = unique_transfer_directory(&app, "backup")?;
-    let result = async {
-        let vault_root = active_vault_path(&app)?;
-        let database_snapshot = transfer.join("database.sqlite");
-        let archive_path = transfer.join("backup.ganbaru-backup");
-        create_database_snapshot(&app, &database_snapshot).await?;
-        create_backup_archive(&vault_root, &database_snapshot, &archive_path)?;
-        let file_name = backup_file_name();
-        let archive_path = path_to_string(&archive_path, "backup archive")?;
-        let saved_name = app.mobile_documents().save_file_download(
-            &archive_path,
-            &file_name,
-            BACKUP_MAX_BYTES,
-            &[BACKUP_EXTENSION],
-            BACKUP_MIME_TYPE,
-            "Ganbaru backup",
-        )?;
-        Ok(VaultBackupOutcome {
-            file_name: saved_name,
-            destination: "downloads",
-        })
-    }
-    .await;
-    let _ = fs::remove_dir_all(&transfer);
-    result
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-/// Pick, validate, and transactionally restore a portable Android vault backup.
-pub async fn vault_pick_and_restore_backup(
-    app: tauri::AppHandle,
-) -> Result<Option<VaultInfo>, String> {
-    let transition = super::quiescence::reserve_vault_transition()?;
-    let expected_path = super::active_vault_path(&app)?;
-    let expected_vault_id = super::active_vault_id(&app)?;
-    let ownership_manager = app.state::<super::ownership::VaultOwnershipManager>();
-    ownership_manager.require_writable(&expected_vault_id)?;
-    let expected_ownership = ownership_manager.status(&expected_vault_id)?;
-    let transfer = unique_transfer_directory(&app, "restore")?;
-    let archive_path = transfer.join("selected.ganbaru-backup");
-    let result = async {
-        let target = default_vault_path(&app)?;
-        let preparation_app = app.clone();
-        let preparation_target = target.clone();
-        let preparation_transition = transition.clone();
-        let prepared = tauri::async_runtime::spawn_blocking(
-            move || -> Result<Option<(PathBuf, PathBuf)>, String> {
-                let _transition = preparation_transition;
-                let parent = preparation_target
-                    .parent()
-                    .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("create app data directory: {error}"))?;
-                let staging = parent.join(".ganbaru.restore");
-                let rollback = parent.join(".ganbaru.rollback");
-                recover_interrupted_restore(&preparation_target, &rollback)?;
-                if staging.exists() {
-                    fs::remove_dir_all(&staging)
-                        .map_err(|error| format!("remove stale restore staging: {error}"))?;
-                }
-                let archive_path_string = path_to_string(&archive_path, "selected backup")?;
-                let selected = preparation_app.mobile_documents().pick_document_to_path(
-                    &archive_path_string,
-                    BACKUP_MAX_BYTES,
-                    &[BACKUP_EXTENSION],
-                    &[BACKUP_MIME_TYPE, "application/octet-stream"],
-                    "Ganbaru backup",
-                )?;
-                if selected.is_none() {
-                    return Ok(None);
-                }
-                extract_backup_archive(&archive_path, &staging, None)?
-                    .report("Backup restore", "outside the vault layout");
-                Ok(Some((staging, rollback)))
-            },
-        )
-        .await
-        .map_err(|error| format!("backup preparation worker failed: {error}"))??;
-        let Some((staging, rollback)) = prepared else {
-            return Ok(None);
-        };
-        validate_restored_vault(&staging).await?;
-        let quiescence = super::quiescence::begin_reserved_quiescence(
-            &app,
-            transition.clone(),
-            super::quiescence::RunningTerminals::Block,
-        )
-        .await?;
-        let activation_app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let ownership_manager =
-                activation_app.state::<super::ownership::VaultOwnershipManager>();
-            ownership_manager.require_writable(&expected_vault_id)?;
-            let ownership = ownership_manager.status(&expected_vault_id)?;
-            if super::active_vault_path(&activation_app)? != expected_path
-                || super::active_vault_id(&activation_app)? != expected_vault_id
-                || ownership.generation != expected_ownership.generation
-            {
-                return Err(
-                    "active vault authority changed while preparing backup restore".to_string(),
-                );
-            }
-            ensure_vault_skeleton(&staging)?;
-            replace_vault(&staging, &target, &rollback)?;
-            let info = vault_info_from_path(&target)?;
-            select_quiesced_vault(&activation_app, &info, &quiescence)?;
-            quiescence.finish()?;
-            Ok(Some(info))
-        })
-        .await
-        .map_err(|error| format!("backup activation worker failed: {error}"))?
-    }
-    .await;
-    let cleanup = tauri::async_runtime::spawn_blocking(move || {
-        let _transition = transition;
-        let target = default_vault_path(&app)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-        let staging = parent.join(".ganbaru.restore");
-        if staging.exists() {
-            fs::remove_dir_all(staging)
-                .map_err(|error| format!("remove backup restore staging: {error}"))?;
+    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))?;
+    let backups = super::replaced_vaults::replaced_vaults_root(app)?;
+    for leftover in superseded_handoff_leftovers(parent, &target, &backups) {
+        if let Err(error) = fs::remove_dir_all(&leftover) {
+            eprintln!(
+                "Remove the replaced vault folder '{}': {error}",
+                leftover.display()
+            );
         }
-        fs::remove_dir_all(transfer)
-            .map_err(|error| format!("remove backup restore transfer: {error}"))
+    }
+    Ok(())
+}
+
+/// Name prefix of the folder an Android handoff moves a replaced vault into.
+#[cfg(any(test, target_os = "android"))]
+const HANDOFF_PREVIOUS_PREFIX: &str = ".ganbaru.handoff-previous-";
+
+/// Replaced vault folders in `parent` that an interrupted Android handoff left behind and that
+/// are safe to delete: the vault at `target` is a different readable vault, so the swap
+/// finished, and `backups` keeps a backup of the replaced vault written after its last change.
+/// A folder that is unreadable, still the active vault, or without such a backup is kept.
+#[cfg(any(test, target_os = "android"))]
+fn superseded_handoff_leftovers(parent: &Path, target: &Path, backups: &Path) -> Vec<PathBuf> {
+    let Ok(active) = vault_info_from_path(target) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(HANDOFF_PREVIOUS_PREFIX))
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .map(|entry| entry.path())
+        .filter(|leftover| {
+            let Ok(replaced) = vault_info_from_path(leftover) else {
+                return false;
+            };
+            replaced.vault_id != active.vault_id
+                && last_vault_change_ms(leftover).is_some_and(|changed_ms| {
+                    super::replaced_vaults::has_backup_since(
+                        backups,
+                        &replaced.vault_id,
+                        changed_ms,
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Latest modification time, in Unix milliseconds, of the vault marker and database files in
+/// `vault`, or `None` when none of them can be read.
+#[cfg(any(test, target_os = "android"))]
+fn last_vault_change_ms(vault: &Path) -> Option<i64> {
+    [
+        VAULT_MANIFEST_FILE.to_string(),
+        APP_SQLITE_FILE.to_string(),
+        format!("{APP_SQLITE_FILE}-wal"),
+    ]
+    .iter()
+    .filter_map(|name| {
+        fs::metadata(vault.join(name))
+            .and_then(|meta| meta.modified())
+            .ok()
     })
-    .await
-    .map_err(|error| format!("backup cleanup worker failed: {error}"))
-    .and_then(|cleanup| cleanup);
-    match (result, cleanup) {
-        (Ok(info), Ok(())) => Ok(info),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(cleanup)) => {
-            Err(format!("{error}; backup cleanup also failed: {cleanup}"))
-        }
-    }
+    .filter_map(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+    .filter_map(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+    .max()
 }
 
-#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
-#[tauri::command]
-/// Report that portable mobile backup is unavailable outside Android.
-pub async fn vault_backup_to_downloads() -> Result<VaultBackupOutcome, String> {
-    Err("portable mobile backups are only available on Android".to_string())
-}
-
-#[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
-#[tauri::command]
-/// Report that portable mobile restore is unavailable outside Android.
-pub async fn vault_pick_and_restore_backup() -> Result<Option<VaultInfo>, String> {
-    Err("portable mobile backup restore is only available on Android".to_string())
+/// Saves the portable backup archive at `archive_path` to Android Downloads under a fresh
+/// backup file name.
+#[cfg(target_os = "android")]
+pub(crate) fn save_backup_to_downloads(
+    app: &tauri::AppHandle,
+    archive_path: &Path,
+) -> Result<VaultBackupOutcome, String> {
+    let file_name = backup_file_name();
+    let archive_path = path_to_string(archive_path, "backup archive")?;
+    let saved_name = app.mobile_documents().save_file_download(
+        &archive_path,
+        &file_name,
+        BACKUP_MAX_BYTES,
+        &[BACKUP_EXTENSION],
+        BACKUP_MIME_TYPE,
+        "Ganbaru backup",
+    )?;
+    Ok(VaultBackupOutcome {
+        file_name: saved_name,
+        destination: "downloads",
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::APP_SQLITE_FILE;
+    use ganbaru_sync_replica::backup::{extract_backup_archive_within, safe_archive_path};
+    use std::io::Write;
+    use zip::ZipArchive;
+    use zip::write::{SimpleFileOptions, ZipWriter};
 
     fn unique_test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1287,32 +1132,220 @@ mod tests {
     }
 
     #[test]
-    fn backup_archive_uses_consistent_database_snapshot() {
-        let root = unique_test_path("root");
-        let snapshot = unique_test_path("snapshot.sqlite");
-        let archive_path = unique_test_path("backup.ganbaru-backup");
-        fs::create_dir_all(root.join("notes")).unwrap();
-        fs::write(root.join("vault.json"), b"vault").unwrap();
-        fs::write(root.join(APP_SQLITE_FILE), b"live database").unwrap();
-        fs::write(root.join("ganbaru.sqlite-wal"), b"wal").unwrap();
-        fs::write(root.join("notes/page.md"), b"note").unwrap();
-        fs::write(&snapshot, b"snapshot database").unwrap();
+    fn vault_folder_names_drop_reserved_characters_and_fall_back_when_empty() {
+        assert_eq!(vault_folder_name("Work vault", "Ganbaru"), "Work vault");
+        assert_eq!(vault_folder_name("a/b:c*", "Ganbaru"), "a b c");
+        assert_eq!(vault_folder_name("  Notes.  ", "Ganbaru"), "Notes");
+        assert_eq!(vault_folder_name("<>|?", "Ganbaru"), "Ganbaru");
+        assert_eq!(vault_folder_name("..", "Ganbaru"), "Ganbaru");
+    }
 
-        create_backup_archive(&root, &snapshot, &archive_path).unwrap();
-        let file = fs::File::open(&archive_path).unwrap();
-        let mut archive = ZipArchive::new(file).unwrap();
-        let mut database = String::new();
-        archive
-            .by_name(APP_SQLITE_FILE)
-            .unwrap()
-            .read_to_string(&mut database)
-            .unwrap();
-        assert_eq!(database, "snapshot database");
-        assert!(archive.by_name("ganbaru.sqlite-wal").is_err());
+    #[test]
+    fn link_folder_uses_the_default_when_free_and_an_empty_named_sibling_otherwise() {
+        let parent = unique_test_path("link-folder");
+        let default = parent.join("Ganbaru");
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            default
+        );
 
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_file(snapshot);
-        let _ = fs::remove_file(archive_path);
+        fs::create_dir_all(&default).unwrap();
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            default
+        );
+
+        fs::write(default.join("vault.json"), "{}").unwrap();
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            parent.join("Home")
+        );
+
+        fs::create_dir_all(parent.join("Home")).unwrap();
+        fs::write(parent.join("Home").join("note.md"), "kept").unwrap();
+        assert_eq!(
+            resolve_link_folder(None, &default, "Home").unwrap(),
+            parent.join("Home 2")
+        );
+        assert_eq!(
+            fs::read_to_string(parent.join("Home").join("note.md")).unwrap(),
+            "kept"
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn chosen_link_folder_must_be_missing_or_empty() {
+        let parent = unique_test_path("chosen-link-folder");
+        let default = parent.join("Ganbaru");
+        let chosen = parent.join("Elsewhere");
+        assert_eq!(
+            resolve_link_folder(Some(&chosen), &default, "Home").unwrap(),
+            chosen
+        );
+
+        fs::create_dir_all(&chosen).unwrap();
+        fs::write(chosen.join("file.txt"), "busy").unwrap();
+        assert_eq!(
+            resolve_link_folder(Some(&chosen), &default, "Home").unwrap_err(),
+            LINK_FOLDER_NOT_EMPTY
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn chosen_link_folder_must_not_lie_inside_another_vault() {
+        let parent = unique_test_path("link-folder-inside-vault");
+        let default = parent.join("Ganbaru");
+        let vault = parent.join("Vault");
+        fs::create_dir_all(&vault).unwrap();
+        crate::vault::initialize_vault(&vault).unwrap();
+
+        let empty_inside = vault.join("projects").join("Linked");
+        fs::create_dir_all(&empty_inside).unwrap();
+        for chosen in [empty_inside, vault.join("missing").join("Linked")] {
+            assert_eq!(
+                resolve_link_folder(Some(&chosen), &default, "Home").unwrap_err(),
+                LINK_FOLDER_INSIDE_VAULT,
+                "{}",
+                chosen.display()
+            );
+        }
+        let beside = parent.join("Beside");
+        assert_eq!(
+            resolve_link_folder(Some(&beside), &default, "Home").unwrap(),
+            beside
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn new_folder_placement_refuses_a_folder_that_gained_files() {
+        let parent = unique_test_path("new-folder-swap");
+        let target = parent.join("Linked");
+        let staging = parent.join("staging");
+        let placement = HandoffPlacement::NewFolder {
+            target: target.clone(),
+        };
+        assert!(matches!(
+            plan_swap(&placement, &parent, &staging, "t1", "vault-linked").unwrap(),
+            Swap::IntoNewFolder
+        ));
+
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("file.txt"), "busy").unwrap();
+        assert_eq!(
+            plan_swap(&placement, &parent, &staging, "t1", "vault-linked").unwrap_err(),
+            LINK_FOLDER_NOT_EMPTY
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn replaced_other_vault_is_discarded_only_after_a_backup_or_as_the_starter() {
+        let parent = unique_test_path("replaced-policy");
+        let target = parent.join("Ganbaru");
+        let staging = parent.join("staging");
+        fs::create_dir_all(&target).unwrap();
+        crate::vault::initialize_vault(&target).unwrap();
+        let discards = |previous: ReplacedVault| {
+            let placement = HandoffPlacement::Replace {
+                target: target.clone(),
+                previous,
+            };
+            match plan_swap(&placement, &parent, &staging, "t1", "vault-linked").unwrap() {
+                Swap::Replace {
+                    preserve,
+                    discard_preserved,
+                    ..
+                } => (preserve, discard_preserved),
+                Swap::IntoNewFolder => panic!("a replacement never moves into a new folder"),
+            }
+        };
+
+        assert_eq!(discards(ReplacedVault::KeepOther), (true, false));
+        assert_eq!(
+            discards(ReplacedVault::BackUpUnlessStarter(parent.join("backups"))),
+            (true, true)
+        );
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn a_replaced_starter_skips_its_backup_only_while_untouched_and_readable() {
+        let parent = unique_test_path("replaced-starter");
+        let target = parent.join("Ganbaru");
+        fs::create_dir_all(&target).unwrap();
+        crate::vault::initialize_vault(&target).unwrap();
+
+        assert!(!replaced_vault_needs_backup(true, &target));
+        assert!(
+            replaced_vault_needs_backup(false, &target),
+            "a starter the user entered while the copy downloaded is backed up"
+        );
+        fs::write(target.join("vault.json"), "invalid json").unwrap();
+        assert!(replaced_vault_needs_backup(true, &target));
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn handoff_leftovers_are_removed_only_when_superseded_and_backed_up() {
+        let parent = unique_test_path("handoff-leftovers");
+        let target = parent.join("Ganbaru");
+        let backed_up = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}backed-up"));
+        let without_backup = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}without-backup"));
+        let same_vault = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}same-vault"));
+        let unreadable = parent.join(format!("{HANDOFF_PREVIOUS_PREFIX}unreadable"));
+        let backups = parent.join("replaced-vaults");
+        for folder in [
+            &target,
+            &backed_up,
+            &without_backup,
+            &same_vault,
+            &unreadable,
+            &backups,
+        ] {
+            fs::create_dir_all(folder).unwrap();
+        }
+        for folder in [&target, &backed_up, &without_backup] {
+            crate::vault::initialize_vault(folder).unwrap();
+        }
+        fs::write(unreadable.join("vault.json"), "invalid json").unwrap();
+        fs::copy(target.join("vault.json"), same_vault.join("vault.json")).unwrap();
+        let active = fs::read(target.join("vault.json")).unwrap();
+        write_test_archive(
+            &backups.join("replaced-9000000000000.ganbaru-backup"),
+            &[("vault.json", active.as_slice())],
+        );
+
+        let backed_up_id = vault_info_from_path(&backed_up).unwrap().vault_id;
+        let changed_ms = last_vault_change_ms(&backed_up).unwrap();
+        let manifest = fs::read(backed_up.join("vault.json")).unwrap();
+        write_test_archive(
+            &backups.join(format!("replaced-{}.ganbaru-backup", changed_ms + 1)),
+            &[("vault.json", manifest.as_slice())],
+        );
+        let stale = fs::read(without_backup.join("vault.json")).unwrap();
+        let stale_ms = last_vault_change_ms(&without_backup).unwrap();
+        write_test_archive(
+            &backups.join(format!("replaced-{}.ganbaru-backup", stale_ms - 1)),
+            &[("vault.json", stale.as_slice())],
+        );
+
+        assert_eq!(
+            superseded_handoff_leftovers(&parent, &target, &backups),
+            vec![backed_up.clone()]
+        );
+        assert!(
+            vault_info_from_path(&backed_up).unwrap().vault_id == backed_up_id,
+            "the decision itself deletes nothing"
+        );
+        fs::write(target.join("vault.json"), "invalid json").unwrap();
+        assert!(
+            superseded_handoff_leftovers(&parent, &target, &backups).is_empty(),
+            "an unreadable active vault keeps every leftover"
+        );
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
@@ -1446,7 +1479,6 @@ mod tests {
         }
         for (path, directory) in [
             ("vault.json", false),
-            ("config.json", false),
             (APP_SQLITE_FILE, false),
             ("notes/daily/2026-10-18.md", false),
             ("assets/chat/attachments/context.txt", false),
@@ -1463,8 +1495,10 @@ mod tests {
             (".codex", true),
             (".vscode/settings.json", false),
             ("README.md", false),
+            ("config.json", false),
             ("notes", false),
             ("vault.json", true),
+            (super::super::vault_lock::VAULT_LOCK_FILE, false),
             ("projects/stray-file", false),
             ("unknown/file.txt", false),
         ] {
@@ -1476,12 +1510,26 @@ mod tests {
     }
 
     #[test]
-    fn database_sidecars_are_recognized_by_name() {
-        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-wal")));
-        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-shm")));
-        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-journal")));
-        assert!(!is_database_sidecar(Path::new(APP_SQLITE_FILE)));
-        assert!(!is_database_sidecar(Path::new("ganbaru.sqlite.bak")));
+    fn replacement_discards_the_previous_vault_lock_file() {
+        let parent = unique_test_path("lock-file");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
+        let lock_file = super::super::vault_lock::VAULT_LOCK_FILE;
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&rollback).unwrap();
+        fs::write(target.join(lock_file), b"").unwrap();
+        fs::write(rollback.join(lock_file), b"").unwrap();
+        fs::write(rollback.join("vault.json"), b"old").unwrap();
+
+        finish_replacement(&target, &rollback).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(
+            fs::read_dir(&parent).unwrap().count(),
+            1,
+            "only the replacement should remain"
+        );
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
@@ -1531,7 +1579,7 @@ mod tests {
         let marker = parent.join("git-hook-ran");
         let hook = parent.join("hook.sh");
         fs::create_dir_all(&source).unwrap();
-        let source_info = super::super::initialize_vault(&source).unwrap();
+        let source_info = initialize_migrated_vault(&source).await;
         fs::write(
             &hook,
             format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
@@ -1668,49 +1716,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vacuum_database_creates_a_consistent_readable_snapshot() {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-        let source = unique_test_path("source.sqlite");
-        let snapshot = unique_test_path("vacuum.sqlite");
-        let options = SqliteConnectOptions::new()
-            .filename(&source)
-            .create_if_missing(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE backup_test (value TEXT NOT NULL)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO backup_test (value) VALUES ('preserved')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        vacuum_database(&pool, &snapshot).await.unwrap();
-        pool.close().await;
-
-        let snapshot_options = SqliteConnectOptions::new().filename(&snapshot);
-        let snapshot_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(snapshot_options)
-            .await
-            .unwrap();
-        let value: String = sqlx::query_scalar("SELECT value FROM backup_test")
-            .fetch_one(&snapshot_pool)
-            .await
-            .unwrap();
-        assert_eq!(value, "preserved");
-        snapshot_pool.close().await;
-
-        let _ = fs::remove_file(source);
-        let _ = fs::remove_file(snapshot);
-    }
-
-    #[tokio::test]
     async fn whole_vault_snapshot_restores_database_and_managed_files() {
         let parent = unique_test_path("whole-vault");
         let source = parent.join("source");
@@ -1720,7 +1725,7 @@ mod tests {
         let snapshot = parent.join("snapshot.sqlite");
         let archive_path = parent.join("handoff.ganbaru-backup");
         fs::create_dir_all(&source).unwrap();
-        let source_info = super::super::initialize_vault(&source).unwrap();
+        let source_info = initialize_migrated_vault(&source).await;
 
         let source_registry = ganbaru_db::DatabasePoolRegistry::default();
         let source_pool = source_registry
@@ -1732,16 +1737,16 @@ mod tests {
             "INSERT INTO calendar_event_alarms (id, event_id, trigger_value) VALUES ('handoff-alarm', 'handoff-calendar', '-PT10M')",
             "INSERT INTO calendar_event_pomodoro_configs (event_id, rhythm_kind, rhythm_source, preset_key) VALUES ('handoff-calendar', 'count', 'preset', 'balanced')",
             "INSERT INTO pomodoro_runs (id, event_id, original_event_id, event_date, planned_start, planned_end, started_at, ended_at, end_reason, rhythm_kind, rhythm_source, preset_key, last_heartbeat) VALUES ('handoff-run', 'handoff-calendar', 'handoff-calendar', '2026-09-14', '2026-09-14T09:00:00Z', '2026-09-14T10:00:00Z', '2026-09-14T09:00:00Z', '2026-09-14T09:45:00Z', 'completed', 'count', 'preset', 'balanced', '2026-09-14T09:45:00Z')",
-            "INSERT INTO project_tasks (id, project_id, section_id, status_id, title) VALUES ('handoff-task', 'project-routine-learning', 'section-routine-learning-general', 'status-routine-learning-todo', 'Portable project task')",
+            "INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key) VALUES ('handoff-task', 'project-routine-learning', 'section-routine-learning-general', 'status-routine-learning-todo', 'Portable project task', 'a1', 'a1')",
             "INSERT INTO notes_pages (id, parent_type, title) VALUES ('handoff-note', 'workspace', 'Portable note')",
             "INSERT INTO chat_conversations (id, project_id, conversation_kind, last_activity_at, created_at, updated_at) VALUES ('handoff-conversation', 'project-routine-learning', 'channel', '2026-09-14T09:00:00Z', '2026-09-14T09:00:00Z', '2026-09-14T09:00:00Z')",
             "INSERT INTO chat_channels (id, project_id, conversation_id, name, created_at, updated_at) VALUES ('handoff-channel', 'project-routine-learning', 'handoff-conversation', 'Portable chat', '2026-09-14T09:00:00Z', '2026-09-14T09:00:00Z')",
             "INSERT INTO quick_notes (id, title, body_plain_text, order_key) VALUES ('handoff-quick-note', 'Portable quick note', 'Portable quick-note body', 'a0')",
             "INSERT INTO themes (id, display_name, blend_canvas, seed_blend_canvas, derivation_engine_version, created_at_ms, updated_at_ms, icon_label, seed_icon_label) VALUES ('handoff-theme', 'Portable theme', '{}', '{}', 1, 1, 1, 'dark', 'dark')",
             "INSERT INTO distractions_usage_samples (id, source_type, source_key, display_name, started_at_ms, elapsed_seconds, local_date, created_at_ms) VALUES ('handoff-usage', 'mobile-app', 'app.example', 'Portable usage', 1, 45, '2026-09-14', 1)",
-            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms) VALUES ('handoff-playlist', 'Portable playlist', 1, 1)",
+            "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms) VALUES ('handoff-playlist', 'Portable playlist', 'a0', 1, 1)",
             "INSERT INTO music_library_items (id, identity_key, source_kind, original_title, discovered_at_ms, updated_at_ms) VALUES ('handoff-track', 'local:portable-track', 'local-file', 'Portable track', 1, 1)",
-            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, position, created_at_ms, updated_at_ms) VALUES ('handoff-membership', 'handoff-playlist', 'handoff-track', 0, 1, 1)",
+            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms) VALUES ('handoff-membership', 'handoff-playlist', 'handoff-track', 'a0', 1, 1)",
         ] {
             sqlx::query(statement).execute(&source_pool).await.unwrap();
         }
@@ -1778,13 +1783,21 @@ mod tests {
         assert!(live_wal.exists(), "source should have an active WAL");
         assert!(live_shm.exists(), "source should have active shared memory");
 
-        vacuum_database(&source_pool, &snapshot).await.unwrap();
-        create_backup_archive(&source, &snapshot, &archive_path).unwrap();
+        ganbaru_sync_replica::backup::create_backup_archive(
+            &ArchiveGate::default(),
+            &source_pool,
+            &source,
+            &snapshot,
+            &archive_path,
+        )
+        .await
+        .unwrap();
 
         let file = fs::File::open(&archive_path).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();
         assert!(archive.by_name(&format!("{APP_SQLITE_FILE}-wal")).is_err());
         assert!(archive.by_name(&format!("{APP_SQLITE_FILE}-shm")).is_err());
+        assert!(archive.by_name("config.json").is_err());
         drop(archive);
 
         extract_backup_archive(&archive_path, &staging, None).unwrap();
@@ -1831,10 +1844,7 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing portable row in {table}");
         }
-        assert_eq!(
-            fs::read(target.join("config.json")).unwrap(),
-            br#"{"preferences":{"language":"es"},"theme":"handoff-theme"}"#
-        );
+        assert!(!target.join("config.json").exists());
         for (relative, contents) in managed_files {
             assert_eq!(fs::read(target.join(relative)).unwrap(), contents);
         }
@@ -1849,7 +1859,7 @@ mod tests {
     async fn restored_vault_with_an_extra_trigger_is_rejected() {
         let staging = unique_test_path("restore-extra-trigger");
         fs::create_dir_all(&staging).unwrap();
-        super::super::initialize_vault(&staging).unwrap();
+        initialize_migrated_vault(&staging).await;
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry
             .connect_path(database_path(&staging))
@@ -1871,13 +1881,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn desktop_bundle_activates_an_owner_and_refreshes_a_read_only_replica() {
-        use crate::vault::ownership::VaultOwnershipManager;
-
+    async fn a_vault_copy_activates_and_a_fresh_copy_replaces_it() {
         let parent = unique_test_path("desktop-android-handoff");
         let source = parent.join("desktop");
-        let owner_staging = parent.join("owner-staging");
-        let owner_target = parent.join("owner-target");
+        let first_staging = parent.join("first-staging");
+        let first_target = parent.join("first-target");
         let refresh_staging = parent.join("refresh-staging");
         let refresh_target = parent.join("refresh-target");
         let snapshot = parent.join("snapshot.sqlite");
@@ -1885,7 +1893,7 @@ mod tests {
         let refresh_snapshot = parent.join("refresh-snapshot.sqlite");
         let refresh_archive = parent.join("refresh.zip");
         fs::create_dir_all(&source).unwrap();
-        let source_info = super::super::initialize_vault(&source).unwrap();
+        let source_info = initialize_migrated_vault(&source).await;
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(&source)).await.unwrap();
         sqlx::query("INSERT INTO notes_link_facts_state (key, value) VALUES ('handoff_h04_probe', 'desktop')")
@@ -1900,84 +1908,30 @@ mod tests {
         create_handoff_archive(&source, &snapshot, &archive)
             .await
             .unwrap();
-        stage_handoff_archive(&archive, &owner_staging, &source_info.vault_id)
+        stage_handoff_archive(&archive, &first_staging, &source_info.vault_id)
             .await
             .unwrap();
 
-        let desktop_ownership = VaultOwnershipManager::default();
-        desktop_ownership
-            .initialize_from_path(parent.join("desktop-ownership.json"), "desktop".to_string())
-            .unwrap();
-        let phone_ownership = VaultOwnershipManager::default();
-        phone_ownership
-            .initialize_from_path(parent.join("phone-ownership.json"), "phone".to_string())
-            .unwrap();
-        phone_ownership
-            .register_remote_owner(&source_info.vault_id, "desktop".to_string(), 0)
-            .unwrap();
-        desktop_ownership
-            .begin_outgoing(
-                &source_info.vault_id,
-                0,
-                "ownership-transfer".to_string(),
-                "phone".to_string(),
-            )
-            .unwrap();
-        let generation = desktop_ownership
-            .commit_outgoing(&source_info.vault_id, "ownership-transfer")
-            .unwrap();
-        phone_ownership
-            .accept_incoming_grant(
-                &source_info.vault_id,
-                "ownership-transfer".to_string(),
-                "desktop".to_string(),
-                generation,
-            )
-            .unwrap();
         replace_vault(
-            &owner_staging,
-            &owner_target,
-            &parent.join("owner-rollback"),
+            &first_staging,
+            &first_target,
+            &parent.join("first-rollback"),
         )
         .unwrap();
-        phone_ownership
-            .finalize_incoming(&source_info.vault_id, "ownership-transfer", generation)
-            .unwrap();
-        desktop_ownership
-            .finish_outgoing_acknowledgement(
-                &source_info.vault_id,
-                "ownership-transfer",
-                generation,
-            )
-            .unwrap();
-        assert!(
-            !desktop_ownership
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
-        assert!(
-            phone_ownership
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
         assert_eq!(
-            fs::read(owner_target.join("assets/notes/files/h04.txt")).unwrap(),
+            fs::read(first_target.join("assets/notes/files/h04.txt")).unwrap(),
             b"desktop asset"
         );
+        let linked = ganbaru_db::DatabasePoolRegistry::default();
+        let linked_pool = linked
+            .connect_path(database_path(&first_target))
+            .await
+            .unwrap();
+        ganbaru_pomodoro::focus_read_execution_snapshot(&linked_pool, 0)
+            .await
+            .unwrap();
+        linked.close_all().await.unwrap();
 
-        let refresh_desktop = VaultOwnershipManager::default();
-        refresh_desktop
-            .initialize_from_path(parent.join("refresh-desktop.json"), "desktop".to_string())
-            .unwrap();
-        let refresh_phone = VaultOwnershipManager::default();
-        refresh_phone
-            .initialize_from_path(parent.join("refresh-phone.json"), "phone".to_string())
-            .unwrap();
-        refresh_phone
-            .register_remote_owner(&source_info.vault_id, "desktop".to_string(), 0)
-            .unwrap();
         let initial_staging = parent.join("initial-refresh-staging");
         stage_handoff_archive(&archive, &initial_staging, &source_info.vault_id)
             .await
@@ -2015,18 +1969,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            refresh_desktop
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
-        assert!(
-            !refresh_phone
-                .status(&source_info.vault_id)
-                .unwrap()
-                .can_write
-        );
         assert_eq!(
             fs::read(refresh_target.join("assets/notes/files/h04.txt")).unwrap(),
             b"refreshed asset"
@@ -2048,16 +1990,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn android_owner_refreshes_and_returns_the_whole_vault_to_desktop() {
-        use crate::vault::ownership::VaultOwnershipManager;
-
+    async fn a_copy_from_android_carries_the_whole_vault_to_a_desktop() {
         let parent = unique_test_path("android-desktop-return");
         let source = parent.join("android");
         let desktop = parent.join("desktop");
         let refresh_staging = parent.join("refresh-staging");
         let return_staging = parent.join("return-staging");
         fs::create_dir_all(&source).unwrap();
-        let info = super::super::initialize_vault(&source).unwrap();
+        let info = initialize_migrated_vault(&source).await;
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(&source)).await.unwrap();
         sqlx::query("INSERT INTO notes_link_facts_state (key, value) VALUES ('handoff_h05_probe', 'android edit')")
@@ -2069,18 +2009,6 @@ mod tests {
         fs::create_dir_all(asset.parent().unwrap()).unwrap();
         fs::write(&asset, b"Android managed asset").unwrap();
 
-        let phone = VaultOwnershipManager::default();
-        phone
-            .initialize_from_path(parent.join("phone-owner.json"), "phone".to_string())
-            .unwrap();
-        let desktop_owner = VaultOwnershipManager::default();
-        desktop_owner
-            .initialize_from_path(parent.join("desktop-owner.json"), "desktop".to_string())
-            .unwrap();
-        desktop_owner
-            .register_remote_owner(&info.vault_id, "phone".to_string(), 0)
-            .unwrap();
-
         let refresh_snapshot = parent.join("refresh.sqlite");
         let refresh_archive = parent.join("refresh.zip");
         create_handoff_archive(&source, &refresh_snapshot, &refresh_archive)
@@ -2090,8 +2018,6 @@ mod tests {
             .await
             .unwrap();
         replace_vault(&refresh_staging, &desktop, &parent.join("refresh-rollback")).unwrap();
-        assert!(phone.status(&info.vault_id).unwrap().can_write);
-        assert!(!desktop_owner.status(&info.vault_id).unwrap().can_write);
 
         let source_registry = ganbaru_db::DatabasePoolRegistry::default();
         let source_pool = source_registry
@@ -2112,35 +2038,7 @@ mod tests {
             .await
             .unwrap();
 
-        phone
-            .begin_outgoing(
-                &info.vault_id,
-                0,
-                "return-transfer".to_string(),
-                "desktop".to_string(),
-            )
-            .unwrap();
-        let generation = phone
-            .commit_outgoing(&info.vault_id, "return-transfer")
-            .unwrap();
-        desktop_owner
-            .accept_incoming_grant(
-                &info.vault_id,
-                "return-transfer".to_string(),
-                "phone".to_string(),
-                generation,
-            )
-            .unwrap();
         replace_vault(&return_staging, &desktop, &parent.join("return-rollback")).unwrap();
-        desktop_owner
-            .finalize_incoming(&info.vault_id, "return-transfer", generation)
-            .unwrap();
-        phone
-            .finish_outgoing_acknowledgement(&info.vault_id, "return-transfer", generation)
-            .unwrap();
-
-        assert!(!phone.status(&info.vault_id).unwrap().can_write);
-        assert!(desktop_owner.status(&info.vault_id).unwrap().can_write);
         assert_eq!(
             fs::read(desktop.join("assets/chat/attachments/android-return.txt")).unwrap(),
             b"Android managed asset"
@@ -2160,7 +2058,20 @@ mod tests {
         restored.close_all().await.unwrap();
         fs::remove_dir_all(parent).unwrap();
     }
+
+    /// Initializes a vault at `path` whose database holds the shared migrated template, so
+    /// opening it skips the migration chain.
+    async fn initialize_migrated_vault(path: &Path) -> VaultInfo {
+        let info = super::super::initialize_vault(path).unwrap();
+        ganbaru_db::test_support::write_migrated_database(database_path(path))
+            .await
+            .unwrap();
+        info
+    }
 }
+
+#[cfg(test)]
+mod carry_tests;
 
 #[cfg(test)]
 mod retention_tests {
@@ -2176,11 +2087,15 @@ mod retention_tests {
         parent
     }
 
+    /// Writes a migrated database marked with `marker` into a vault that has none yet.
     async fn write_marker(vault: &Path, marker: i64) {
         let pragma = match marker {
             PREVIOUS_MARKER => "PRAGMA application_id = 1",
             _ => "PRAGMA application_id = 2",
         };
+        ganbaru_db::test_support::write_migrated_database(database_path(vault))
+            .await
+            .unwrap();
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(vault)).await.unwrap();
         sqlx::query(pragma).execute(&pool).await.unwrap();

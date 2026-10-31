@@ -18,7 +18,9 @@ pub(super) async fn pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -73,16 +75,14 @@ pub(super) fn library_window() -> MusicItemWindowRequest {
 
 pub(super) fn membership(index: usize) -> MusicMembershipWrite {
     MusicMembershipWrite {
-        id: format!("membership-{index}"),
         playlist_id: "playlist-1".to_string(),
         item_id: format!("item-{index}"),
-        position: index as i64,
         weight: MusicWeight::Normal,
         enabled: true,
         start_ms: None,
         end_ms: None,
-        volume: None,
-        rate: None,
+        volume_milli: None,
+        rate_milli: None,
         expected_version: None,
         updated_at_ms: 1_700_000_000_000,
     }
@@ -106,7 +106,7 @@ fn review_selection_accepts_folders_larger_than_the_generic_bulk_limit() {
 }
 
 #[test]
-fn built_in_music_playlists_are_protected_localizable_and_repaired() {
+fn built_in_music_playlists_are_protected_and_localizable() {
     crate::test_support::block_on(async {
         let pool = pool().await;
         let summaries = queries::playlist_summaries(&pool, 1_700_000_000_000, 0, 50)
@@ -166,13 +166,39 @@ fn built_in_music_playlists_are_protected_localizable_and_repaired() {
             .execute(&pool)
             .await
             .unwrap();
-        let repaired = queries::playlist_summaries(&pool, 1_700_000_000_000, 0, 50)
+        let listed = queries::playlist_summaries(&pool, 1_700_000_000_000, 0, 50)
             .await
             .unwrap();
         assert!(
-            repaired
+            listed
                 .iter()
-                .any(|playlist| playlist.id == "playlist-default-work-focus")
+                .all(|playlist| playlist.id != "playlist-default-work-focus"),
+            "listing playlists never writes seed rows"
+        );
+    });
+}
+
+#[test]
+fn built_in_music_playlists_exist_after_migrations() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        let seeded: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, name, icon FROM music_playlists
+             WHERE id LIKE 'playlist-default-%' ORDER BY order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            seeded,
+            defaults::BUILT_IN_MUSIC_PLAYLISTS
+                .iter()
+                .map(|playlist| (
+                    playlist.id.to_string(),
+                    playlist.name.to_string(),
+                    playlist.icon.to_string()
+                ))
+                .collect::<Vec<_>>()
         );
     });
 }
@@ -183,15 +209,16 @@ fn local_root_creation_is_atomic_and_rejects_duplicate_identity() {
         let pool = pool().await;
         let request = MusicLocalRootCreate {
             root_id: "root-soundtracks".to_string(),
-            collection_id: "source-soundtracks".to_string(),
-            identity_key: "local-root:root-soundtracks".to_string(),
             name: "Soundtracks".to_string(),
             created_at_ms: 1_700_000_000_000,
         };
         let receipt = writes::create_local_root(&pool, request.clone())
             .await
             .unwrap();
-        assert_eq!(receipt.id, "source-soundtracks");
+        assert_eq!(
+            receipt.id,
+            crate::identity::collection_id("local-root:root-soundtracks")
+        );
         assert_eq!(queries::local_roots(&pool, 0, 10).await.unwrap().len(), 1);
         assert_eq!(
             queries::source_collections(&pool, 0, 10)
@@ -202,12 +229,42 @@ fn local_root_creation_is_atomic_and_rejects_duplicate_identity() {
         );
 
         let duplicate = MusicLocalRootCreate {
-            root_id: "root-other".to_string(),
-            collection_id: "source-other".to_string(),
+            name: "Other".to_string(),
             ..request
         };
         assert!(writes::create_local_root(&pool, duplicate).await.is_err());
         assert_eq!(queries::local_roots(&pool, 0, 10).await.unwrap().len(), 1);
+
+        let rename = |name: &str, updated_at_ms: i64| MusicCollectionWrite {
+            kind: MusicCollectionKind::LocalRoot,
+            name: name.to_string(),
+            local_root_id: Some("root-soundtracks".to_string()),
+            youtube_playlist_id: None,
+            updated_at_ms,
+        };
+        let renamed = writes::upsert_source_collection(&pool, rename("Scores", 1_700_000_000_100))
+            .await
+            .unwrap();
+        assert_eq!(
+            renamed,
+            MusicWriteReceipt {
+                id: receipt.id.clone(),
+                version: 2
+            }
+        );
+        let unchanged =
+            writes::upsert_source_collection(&pool, rename("Scores", 1_700_000_000_200))
+                .await
+                .unwrap();
+        assert_eq!(unchanged, renamed);
+        let stored: (String, i64, i64) = sqlx::query_as(
+            "SELECT name, version, updated_at_ms FROM music_source_collections WHERE id = ?",
+        )
+        .bind(&receipt.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, ("Scores".to_string(), 2, 1_700_000_000_100));
     });
 }
 
@@ -235,7 +292,6 @@ fn item_location_repair_requires_weak_match_confirmation_and_can_be_undone() {
         let mut request = MusicItemRepairApply {
             item_id: "repair-item".to_string(),
             root_id: "repair-root".to_string(),
-            location_id: "repair-location".to_string(),
             root_name: "Recovered".to_string(),
             folder_path: preview.folder_path.clone(),
             relative_path: preview.relative_path.clone(),
@@ -245,7 +301,11 @@ fn item_location_repair_requires_weak_match_confirmation_and_can_be_undone() {
         };
         assert!(item_repair::apply(&pool, request.clone()).await.is_err());
         request.accept_weak_mismatch = true;
-        item_repair::apply(&pool, request).await.unwrap();
+        let receipt = item_repair::apply(&pool, request).await.unwrap();
+        assert_eq!(
+            receipt.id,
+            crate::identity::location_id("repair-root", "replacement.wav")
+        );
         let available: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM music_local_locations
              WHERE item_id = 'repair-item' AND availability = 'available'",
@@ -255,13 +315,14 @@ fn item_location_repair_requires_weak_match_confirmation_and_can_be_undone() {
         .unwrap();
         assert_eq!(available, 1);
 
-        item_repair::undo(&pool, "repair-location", "repair-root")
+        item_repair::undo(&pool, &receipt.id, "repair-root")
             .await
             .unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM music_local_locations WHERE id = 'repair-location'",
+                "SELECT COUNT(*) FROM music_local_locations WHERE id = ?",
             )
+            .bind(&receipt.id)
             .fetch_one(&pool)
             .await
             .unwrap(),
@@ -309,13 +370,13 @@ fn row_mapping_rejects_unknown_persisted_enums_with_field_context() {
         id: "membership-1".to_string(),
         playlist_id: "playlist-1".to_string(),
         item_id: "item-1".to_string(),
-        position: 0,
+        order_key: "a0".to_string(),
         weight: "sometimes-ish".to_string(),
         enabled: 1,
         start_ms: None,
         end_ms: None,
-        volume: None,
-        rate: None,
+        volume_milli: None,
+        rate_milli: None,
         created_at_ms: 1_700_000_000_000,
         updated_at_ms: 1_700_000_000_000,
         version: 1,
@@ -352,6 +413,66 @@ fn playlist_create_update_and_stale_detection_are_transactional() {
         .await
         .unwrap();
         assert_eq!(updated.version, 2);
+
+        let unchanged = super::writes::update_playlist(
+            &pool,
+            MusicPlaylistUpdate {
+                id: "playlist-1".to_string(),
+                name: "Deep focus".to_string(),
+                icon: "emoji:🎧".to_string(),
+                shuffle_enabled: false,
+                mix_enabled: false,
+                repeat_mode: MusicRepeatMode::Off,
+                intended_uses: vec![MusicIntendedUse::Reading, MusicIntendedUse::Focus],
+                expected_version: 2,
+                updated_at_ms: 1_700_000_000_150,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(unchanged.version, 2);
+        let stored: (i64, i64) = sqlx::query_as(
+            "SELECT version, updated_at_ms FROM music_playlists WHERE id = 'playlist-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, (2, 1_700_000_000_100));
+
+        let uses_only = super::writes::update_playlist(
+            &pool,
+            MusicPlaylistUpdate {
+                id: "playlist-1".to_string(),
+                name: "Deep focus".to_string(),
+                icon: "emoji:🎧".to_string(),
+                shuffle_enabled: false,
+                mix_enabled: false,
+                repeat_mode: MusicRepeatMode::Off,
+                intended_uses: vec![MusicIntendedUse::Focus],
+                expected_version: 2,
+                updated_at_ms: 1_700_000_000_160,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(uses_only.version, 3);
+        let restored = super::writes::update_playlist(
+            &pool,
+            MusicPlaylistUpdate {
+                id: "playlist-1".to_string(),
+                name: "Deep focus".to_string(),
+                icon: "emoji:🎧".to_string(),
+                shuffle_enabled: false,
+                mix_enabled: false,
+                repeat_mode: MusicRepeatMode::Off,
+                intended_uses: vec![MusicIntendedUse::Focus, MusicIntendedUse::Reading],
+                expected_version: 3,
+                updated_at_ms: 1_700_000_000_170,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.version, 4);
 
         let stale = super::writes::update_playlist(
             &pool,
@@ -469,8 +590,8 @@ fn duplicate_playlist_preserves_membership_details_and_ranges() {
         .remove(0);
         sqlx::query(
             "INSERT INTO music_membership_skip_ranges
-                (id, membership_id, start_ms, end_ms, sort_order)
-             VALUES ('skip-1', ?, 10000, 12000, 0)",
+                (membership_id, ordinal, start_ms, end_ms)
+             VALUES (?, 0, 10000, 12000)",
         )
         .bind(&receipt.id)
         .execute(&pool)
@@ -566,12 +687,34 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
         .await
         .unwrap();
         transaction.commit().await.unwrap();
+        sqlx::query(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, focus_playlist_id, order_key)
+             VALUES ('project-1', 'group-1', 'Project', 'playlist-1', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO calendar_events (id, title, start_time, end_time, playlist_id)
+             VALUES ('event-2', 'Plain', '2026-07-16T09:00:00Z',
+                 '2026-07-16T10:00:00Z', 'playlist-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let impact = super::writes::playlist_delete_impact(&pool, "playlist-1")
             .await
             .unwrap();
         assert_eq!(impact.membership_count, 1);
-        assert_eq!(impact.calendar_assignment_count, 0);
+        assert_eq!(impact.project_focus_assignment_count, 1);
+        assert_eq!(impact.calendar_assignment_count, 1);
         assert_eq!(impact.context_assignment_count, 1);
         let mut stale_impact = impact.clone();
         stale_impact.context_assignment_count = 0;
@@ -599,12 +742,24 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
         )
         .await
         .unwrap();
-        let assignment: Option<String> =
-            sqlx::query_scalar("SELECT playlist_id FROM calendar_events WHERE id = 'event-1'")
+        let event_playlists: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT playlist_id FROM calendar_events ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            event_playlists,
+            vec![
+                Some("playlist-1".to_string()),
+                Some("playlist-1".to_string())
+            ]
+        );
+        let project_playlist: Option<String> =
+            sqlx::query_scalar("SELECT focus_playlist_id FROM projects WHERE id = 'project-1'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(assignment.as_deref(), Some("playlist-2"));
+        assert_eq!(project_playlist.as_deref(), Some("playlist-1"));
         let context_assignment: Option<String> = sqlx::query_scalar(
             "SELECT playlist_id FROM music_context_assignments
              WHERE owner_kind = 'event-override' AND owner_id = 'event-1' AND phase = 'focus'",
@@ -731,6 +886,7 @@ fn metadata_overrides_preserve_original_values_and_refresh_search() {
         seed_item(&pool, "item-1", "local:item-1").await;
         let receipt = super::writes::set_metadata_overrides(
             &pool,
+            std::path::Path::new("unused-vault"),
             MusicMetadataOverrideWrite {
                 item_id: "item-1".to_string(),
                 title_override: Some("Quiet focus".to_string()),
@@ -756,6 +912,80 @@ fn metadata_overrides_preserve_original_values_and_refresh_search() {
         let window = super::queries::item_window(&pool, request).await.unwrap();
         assert_eq!(window.total_count, 1);
         assert_eq!(window.items[0].title, "Quiet focus");
+    });
+}
+
+#[test]
+fn artwork_overrides_store_managed_references_with_their_verified_size() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        seed_item(&pool, "item-1", "local:item-1").await;
+        let vault = std::env::temp_dir().join(format!(
+            "ganbaru-music-artwork-override-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&vault).unwrap();
+        let bytes = crate::managed_artwork::tests::png(64, 64);
+        let artwork = crate::managed_artwork::import_artwork(&vault, &bytes).unwrap();
+        let write =
+            |artwork_override: Option<String>, expected_version: i64| MusicMetadataOverrideWrite {
+                item_id: "item-1".to_string(),
+                title_override: None,
+                artist_override: None,
+                album_override: None,
+                artwork_override,
+                expected_version,
+                updated_at_ms: 1_700_000_100_000,
+            };
+
+        for (reference, code) in [
+            (
+                "/custom/artwork.png".to_string(),
+                MusicLibraryErrorCode::Validation,
+            ),
+            (
+                format!("music/artwork/{}.png", "b".repeat(64)),
+                MusicLibraryErrorCode::NotFound,
+            ),
+        ] {
+            let error =
+                super::writes::set_metadata_overrides(&pool, &vault, write(Some(reference), 1))
+                    .await
+                    .unwrap_err();
+            assert_eq!(error.code, code);
+        }
+
+        super::writes::set_metadata_overrides(
+            &pool,
+            &vault,
+            write(Some(artwork.reference.clone()), 1),
+        )
+        .await
+        .unwrap();
+        let stored: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT artwork_override, artwork_override_byte_size
+             FROM music_library_items WHERE id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            (Some(artwork.reference.clone()), Some(bytes.len() as i64))
+        );
+
+        super::writes::set_metadata_overrides(&pool, &vault, write(None, 2))
+            .await
+            .unwrap();
+        let cleared: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT artwork_override, artwork_override_byte_size
+             FROM music_library_items WHERE id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cleared, (None, None));
+        std::fs::remove_dir_all(vault).unwrap();
     });
 }
 
@@ -811,6 +1041,25 @@ fn item_signals_replace_in_bulk_and_refresh_search() {
             .await
             .unwrap();
         assert_eq!(detail.signals, vec![MusicItemSignal::Calm]);
+
+        let unchanged = super::writes::set_item_signals(
+            &pool,
+            MusicItemSignalsWrite {
+                item_ids: vec!["item-1".to_string()],
+                signals: vec![MusicItemSignal::Calm],
+                updated_at_ms: 1_700_000_300_000,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(unchanged[0].version, detail.item.version);
+        let stored: (i64, i64) = sqlx::query_as(
+            "SELECT version, updated_at_ms FROM music_library_items WHERE id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, (detail.item.version, detail.item.updated_at_ms));
     });
 }
 
@@ -834,40 +1083,99 @@ fn advanced_membership_settings_replace_validated_skip_ranges_atomically() {
         let mut updated = initial;
         updated.start_ms = Some(1_000);
         updated.end_ms = Some(90_000);
-        updated.volume = Some(0.6);
-        updated.rate = Some(1.25);
+        updated.volume_milli = Some(600);
+        updated.rate_milli = Some(1_250);
         updated.expected_version = Some(1);
         let receipt = super::writes::save_advanced_membership(
             &pool,
             MusicAdvancedMembershipWrite {
                 membership: updated,
                 skip_ranges: vec![
-                    MusicMembershipSkipRange {
-                        id: "skip-1".to_string(),
-                        membership_id: "membership-1".to_string(),
+                    MusicMembershipSkipRangeWrite {
                         start_ms: 5_000,
                         end_ms: 10_000,
-                        sort_order: 0,
                     },
-                    MusicMembershipSkipRange {
-                        id: "skip-2".to_string(),
-                        membership_id: "membership-1".to_string(),
+                    MusicMembershipSkipRangeWrite {
                         start_ms: 20_000,
                         end_ms: 25_000,
-                        sort_order: 1,
                     },
                 ],
             },
         )
         .await
         .unwrap();
-        assert_eq!(receipt.version, 2);
+        assert_eq!(receipt.membership.version, 2);
+        let membership_id = crate::identity::membership_id("playlist-1", "item-1").unwrap();
+        assert_eq!(receipt.membership.id, membership_id);
+        assert_eq!(receipt.skip_ranges[1].membership_id, membership_id);
+        assert_eq!(receipt.skip_ranges[1].ordinal, 1);
+        let overrides: (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT volume_milli, rate_milli FROM music_playlist_memberships WHERE id = ?",
+        )
+        .bind(&membership_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(overrides, (Some(600), Some(1_250)));
         let detail = super::queries::inspector_detail(&pool, "item-1")
             .await
             .unwrap();
         assert_eq!(detail.memberships[0].start_ms, Some(1_000));
         assert_eq!(detail.membership_skip_ranges.len(), 2);
         assert_eq!(detail.membership_skip_ranges[1].start_ms, 20_000);
+    });
+}
+
+#[test]
+fn advanced_membership_save_diffs_skip_ranges_and_skips_unchanged_values() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        super::writes::create_playlist(&pool, playlist("playlist-1"))
+            .await
+            .unwrap();
+        seed_item(&pool, "item-1", "local:item-1").await;
+        let mut request = MusicAdvancedMembershipWrite {
+            membership: membership(1),
+            skip_ranges: vec![
+                MusicMembershipSkipRangeWrite {
+                    start_ms: 1_000,
+                    end_ms: 2_000,
+                },
+                MusicMembershipSkipRangeWrite {
+                    start_ms: 3_000,
+                    end_ms: 4_000,
+                },
+            ],
+        };
+        let first = super::writes::save_advanced_membership(&pool, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(first.membership.version, 1);
+
+        request.membership.expected_version = Some(1);
+        let unchanged = super::writes::save_advanced_membership(&pool, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(unchanged, first);
+
+        request.skip_ranges = vec![MusicMembershipSkipRangeWrite {
+            start_ms: 1_000,
+            end_ms: 2_500,
+        }];
+        let trimmed = super::writes::save_advanced_membership(&pool, request)
+            .await
+            .unwrap();
+        assert_eq!(trimmed.membership.version, 1);
+        assert_eq!(trimmed.skip_ranges.len(), 1);
+        assert_eq!(trimmed.skip_ranges[0].ordinal, 0);
+        let stored: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT ordinal, end_ms FROM music_membership_skip_ranges WHERE membership_id = ?",
+        )
+        .bind(&first.membership.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, vec![(0, 2_500)]);
     });
 }
 
@@ -936,6 +1244,32 @@ fn bulk_membership_edits_preserve_existing_settings_and_commit_as_one_change() {
         .await
         .unwrap();
         assert_eq!(weighted.changed_count, 2);
+        let added_id: String = sqlx::query_scalar(
+            "SELECT id FROM music_playlist_memberships WHERE playlist_id = 'playlist-1' AND item_id = 'item-2'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            added_id,
+            crate::identity::membership_id("playlist-1", "item-2").unwrap()
+        );
+
+        let repeated = super::playlist_edits::bulk_edit_memberships(
+            &pool,
+            MusicBulkMembershipEdit {
+                action_id: "bulk-weight-again".to_string(),
+                item_ids: vec!["item-1".to_string(), "item-2".to_string()],
+                add_playlist_ids: vec![],
+                remove_playlist_ids: vec![],
+                weight_playlist_ids: vec!["playlist-1".to_string()],
+                weight: Some(MusicWeight::MoreOften),
+                updated_at_ms: 1_700_000_000_250,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(repeated.changed_count, 0);
 
         let removed = super::playlist_edits::bulk_edit_memberships(
             &pool,
@@ -963,7 +1297,7 @@ fn bulk_membership_edits_preserve_existing_settings_and_commit_as_one_change() {
 }
 
 #[test]
-fn playlist_collection_reorder_persists_all_positions_atomically() {
+fn playlist_collection_reorder_rekeys_only_moved_playlists_atomically() {
     crate::test_support::block_on(async {
         let pool = pool().await;
         super::writes::create_playlist(&pool, playlist("playlist-1"))
@@ -973,7 +1307,7 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
             .await
             .unwrap();
         let rows: Vec<(String, i64)> =
-            sqlx::query_as("SELECT id, version FROM music_playlists ORDER BY sort_order, id")
+            sqlx::query_as("SELECT id, version FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1008,8 +1342,25 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
         .await
         .unwrap();
         assert_eq!(receipts.len(), reordered.len());
+        let versions: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, version FROM music_playlists ORDER BY order_key, id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            versions,
+            reordered
+                .iter()
+                .enumerate()
+                .map(|(index, (playlist_id, version))| (
+                    playlist_id.clone(),
+                    if index == 0 { version + 1 } else { *version }
+                ))
+                .collect::<Vec<_>>(),
+            "only the moved playlist takes a new key and version"
+        );
         let stored: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY sort_order, id")
+            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1018,6 +1369,20 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
             .map(|(playlist_id, _)| playlist_id.clone())
             .collect::<Vec<_>>();
         assert_eq!(stored, reordered_ids);
+        let stored_keys: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT id, order_key, version FROM music_playlists ORDER BY order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            receipts
+                .into_iter()
+                .map(|receipt| (receipt.id, receipt.order_key, receipt.version))
+                .collect::<Vec<_>>(),
+            stored_keys,
+            "receipts carry every playlist's stored key and version in the requested order"
+        );
 
         let stale_result = super::playlist_edits::reorder_playlists(
             &pool,
@@ -1035,7 +1400,7 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
         .await;
         assert!(stale_result.is_err());
         let stored_after_conflict: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY sort_order, id")
+            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1078,12 +1443,29 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .await
         .unwrap();
         assert_eq!(reordered.item_ids, vec!["item-3", "item-1", "item-2"]);
+        let versions: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT item_id, version FROM music_playlist_memberships
+             WHERE playlist_id = 'playlist-1' ORDER BY order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            versions,
+            vec![
+                ("item-3".to_string(), 2),
+                ("item-1".to_string(), 1),
+                ("item-2".to_string(), 1)
+            ],
+            "only the moved membership takes a new key and version"
+        );
 
         sqlx::query(
             "INSERT INTO music_membership_skip_ranges
-                (id, membership_id, start_ms, end_ms, sort_order)
-             VALUES ('skip-1', 'membership-1', 1000, 2000, 0)",
+                (membership_id, ordinal, start_ms, end_ms)
+             VALUES (?, 0, 1000, 2000)",
         )
+        .bind(crate::identity::membership_id("playlist-1", "item-1").unwrap())
         .execute(&pool)
         .await
         .unwrap();
@@ -1096,15 +1478,14 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE music_library_items
+        crate::test_support::execute_as_sync_apply(
+            &pool,
+            &["UPDATE music_library_items
              SET source_kind = 'youtube-video', youtube_video_id = 'abcdefghijk',
                  youtube_resolution_state = 'embedding-blocked'
-             WHERE id = 'item-3'",
+             WHERE id = 'item-3'"],
         )
-        .execute(&pool)
-        .await
-        .unwrap();
+        .await;
         sqlx::query(
             "UPDATE music_library_items
              SET original_artwork_identity = 'sidecar:album/cover.jpg'
@@ -1113,11 +1494,13 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .execute(&pool)
         .await
         .unwrap();
+        let artwork = format!("music/artwork/{}.webp", "d".repeat(64));
         sqlx::query(
             "UPDATE music_library_items
-             SET artwork_override = '/custom/artwork.png'
+             SET artwork_override = ?, artwork_override_byte_size = 2048
              WHERE id = 'item-2'",
         )
+        .bind(&artwork)
         .execute(&pool)
         .await
         .unwrap();
@@ -1147,7 +1530,7 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         );
         assert_eq!(
             entries[2].artwork_override.as_deref(),
-            Some("/custom/artwork.png")
+            Some(artwork.as_str())
         );
         assert!(entries[2].snoozed);
         assert_eq!(entries[2].snoozed_until, Some(1_700_000_001_000));

@@ -148,13 +148,13 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name) VALUES ('view-history', 'View history')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('view-history', 'View history', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         for project in [SOURCE_PROJECT, SHELL_PROJECT] {
-            sqlx::query("INSERT INTO projects (id, group_id, name) VALUES (?, 'view-history', ?)")
+            sqlx::query("INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'view-history', ?, 'a1')")
                 .bind(project)
                 .bind(project)
                 .execute(&pool)
@@ -164,8 +164,12 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
         create_page(&pool, PAGE_A, BLOCK_A).await;
         create_page(&pool, PAGE_B, BLOCK_B).await;
         for (page, project) in [(PAGE_A, SOURCE_PROJECT), (PAGE_B, SHELL_PROJECT)] {
-            sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.__ganbaru_project_id', ?) WHERE id = ?")
-                .bind(project).bind(page).execute(&pool).await.unwrap();
+            sqlx::query("UPDATE notes_pages SET project_id = ? WHERE id = ?")
+                .bind(project)
+                .bind(page)
+                .execute(&pool)
+                .await
+                .unwrap();
         }
         create_database(
             &pool,
@@ -217,12 +221,7 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
         )
         .await
         .unwrap();
-        let source_schema: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let source_schema = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
 
         for kind in ["table", "board", "gallery", "list", "calendar", "timeline"] {
             let loaded = attached_view(&pool, kind).await;
@@ -283,13 +282,7 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
             assert_eq!(checkpoints, 1);
         }
         assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT properties FROM notes_data_sources WHERE id = ?"
-            )
-            .bind(DATA_SOURCE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
+            stored_schema(&pool, DATA_SOURCE_A).await.to_string(),
             source_schema
         );
         assert_eq!(

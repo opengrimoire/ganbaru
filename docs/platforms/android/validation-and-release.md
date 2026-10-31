@@ -36,7 +36,7 @@ The release candidate must pass:
 
 ## Current validation state
 
-Reference-device checks cover the Android 10 shell, lifecycle, layout, navigation, and core feature flows. Still required before delivery: predictive Back, broader OEM background management, complete special-access revocation, all supported ABIs, physical cross-process Pomodoro and distraction blocker acceptance, multi-device handoff, signed minified artifacts, and the full release matrix. The detailed scenario matrix lives in [Android testing](../../testing/android.md).
+Reference-device checks cover the Android 10 shell, lifecycle, layout, navigation, and core feature flows. Still required before delivery: predictive Back, broader OEM background management, complete special-access revocation, all supported ABIs, physical cross-process Pomodoro and distraction blocker acceptance, multi-device linking, signed minified artifacts, and the full release matrix. The detailed scenario matrix lives in [Android testing](../../testing/android.md).
 
 ## Distribution and updates
 

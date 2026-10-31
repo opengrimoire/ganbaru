@@ -114,7 +114,7 @@ pub async fn project_provider_event_in_transaction(
                 }
                 _ => event.title.clone(),
             };
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -123,7 +123,10 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(false);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -146,7 +149,7 @@ pub async fn project_provider_event_in_transaction(
                 .map(|question| question.question.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -155,7 +158,10 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(false);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -179,8 +185,7 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
-            true
+            .await?
         }
         CanonicalEvent::TurnCompleted(event) => {
             let markdown: Option<String> = sqlx::query_scalar(
@@ -200,7 +205,7 @@ pub async fn project_provider_event_in_transaction(
             } else {
                 "ready_for_review"
             };
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -209,7 +214,10 @@ pub async fn project_provider_event_in_transaction(
                 None,
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(true);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -234,7 +242,7 @@ pub async fn project_provider_event_in_transaction(
             .await?
         }
         CanonicalEvent::TurnAborted(event) => {
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -243,7 +251,10 @@ pub async fn project_provider_event_in_transaction(
                 Some(&event.reason),
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(true);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -255,7 +266,7 @@ pub async fn project_provider_event_in_transaction(
             .await?
         }
         CanonicalEvent::RuntimeError(event) if !event.recoverable => {
-            update_assignment_and_run_state(
+            if !update_assignment_and_run_state(
                 transaction,
                 &assignment_id,
                 &run_id,
@@ -264,7 +275,10 @@ pub async fn project_provider_event_in_transaction(
                 Some(&event.message),
                 runtime.created_at.as_str(),
             )
-            .await?;
+            .await?
+            {
+                return Ok(true);
+            }
             insert_projected_teammate_message(
                 transaction,
                 runtime,
@@ -312,24 +326,22 @@ async fn insert_projected_teammate_message(
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1
-         FROM chat_conversation_items WHERE reply_thread_id = ?",
+    let order_key = crate::timeline::next_order_key(
+        transaction,
+        &conversation_id,
+        Some(target.reply_thread_id.as_str()),
     )
-    .bind(target.reply_thread_id.as_str())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     let revision_id = format!("organizational-revision:{event_hash}");
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(target.reply_thread_id.as_str())
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(runtime.created_at.as_str())
     .execute(&mut **transaction)
     .await
@@ -353,16 +365,17 @@ async fn insert_projected_teammate_message(
         "agentRunId": target.run_id,
         "payload": payload,
     });
+    let bounded = crate::timeline::bounded_projected_revision(markdown, rich_content.clone())?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
-    .bind(markdown)
-    .bind(serde_json::to_string(&rich_content).map_err(serialization_error)?)
+    .bind(&bounded.normalized_markdown)
+    .bind(&bounded.rich_content_data)
     .bind(runtime.created_at.as_str())
     .execute(&mut **transaction)
     .await
@@ -388,7 +401,7 @@ async fn insert_projected_teammate_message(
     .map_err(persistence_error)?;
     sqlx::query(
         "UPDATE chat_reply_threads
-         SET reply_count = reply_count + 1, last_activity_at = ?,
+         SET last_activity_at = ?,
              revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(runtime.created_at.as_str())
@@ -410,6 +423,11 @@ async fn insert_projected_teammate_message(
     Ok(true)
 }
 
+/// Moves the assignment `assignment_id` to `assignment_state` and its run `run_id` to
+/// `run_state`, reporting whether the assignment changed. An assignment that already settled
+/// keeps its state; its run then records only a settled state, since the provider turn really
+/// ended, and never waits or works again. Callers project no message for an assignment that
+/// did not change, so a settled assignment shows no late approval, question, or review.
 async fn update_assignment_and_run_state(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
@@ -418,12 +436,15 @@ async fn update_assignment_and_run_state(
     run_state: &str,
     reason: Option<&str>,
     occurred_at: &str,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     let terminal = matches!(assignment_state, "completed" | "failed" | "cancelled");
-    sqlx::query(
+    // A settled assignment never leaves its state, so provider events that arrive after a
+    // cancel applied from another device cannot reopen it.
+    let assignment = sqlx::query(
         "UPDATE chat_work_assignments
          SET state = ?, state_reason = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END,
-             revision = revision + 1, updated_at = ? WHERE id = ?",
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled')",
     )
     .bind(assignment_state)
     .bind(reason)
@@ -434,7 +455,11 @@ async fn update_assignment_and_run_state(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
+    let applied = assignment.rows_affected() == 1;
     let run_terminal = SETTLED_RUN_STATES.contains(&run_state);
+    if !applied && !run_terminal {
+        return Ok(false);
+    }
     sqlx::query(
         "UPDATE chat_agent_runs
          SET state = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
@@ -448,7 +473,7 @@ async fn update_assignment_and_run_state(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    Ok(())
+    Ok(applied)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

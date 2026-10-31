@@ -1,13 +1,15 @@
 //! Retained-reference disclosure checks for access previews and transactions.
 
 use super::{
-    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessValidationIssue, ChatChannelCapabilities,
-    ChatChannelId, ChatConversationId, ChatHistoryBoundary, ChatResult,
+    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessProfileRevisionId,
+    ChatAccessValidationIssue, ChatChannelCapabilities, ChatChannelId, ChatConversationId,
+    ChatHistoryBoundary, ChatResult,
 };
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, persistence_error, u64_value};
 use crate::chat::organization::common::{
-    parse_folder_capability, parse_history_boundary, parse_runtime_approval_policy,
+    from_grant_lower_order_key, parse_folder_capability, parse_history_boundary,
+    parse_runtime_approval_policy,
 };
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
@@ -24,8 +26,8 @@ pub(super) async fn retained_reference_issues(
         }
         let references = sqlx::query(
             "SELECT DISTINCT target.source_conversation_id,
-                    target.source_lower_ordinal,
-                    COALESCE(root_item.ordinal, item.ordinal) AS destination_root_ordinal
+                    target.source_lower_order_key,
+                    COALESCE(root_item.order_key, item.order_key) AS destination_root_order_key
              FROM chat_channel_reference_targets target
              JOIN chat_message_references reference
                ON reference.id = target.reference_id
@@ -51,26 +53,25 @@ pub(super) async fn retained_reference_issues(
             let source_conversation_id: String = reference
                 .try_get("source_conversation_id")
                 .map_err(persistence_error)?;
-            let source_lower_ordinal = u64_value(
-                reference
-                    .try_get("source_lower_ordinal")
-                    .map_err(persistence_error)?,
-            )?;
-            let destination_root_ordinal = u64_value(
-                reference
-                    .try_get("destination_root_ordinal")
-                    .map_err(persistence_error)?,
-            )?;
+            let Some(source_lower_order_key) = reference
+                .try_get::<Option<String>, _>("source_lower_order_key")
+                .map_err(persistence_error)?
+            else {
+                continue;
+            };
+            let destination_root_order_key: String = reference
+                .try_get("destination_root_order_key")
+                .map_err(persistence_error)?;
             if !retained_reference_is_visible(
                 &destination.history_boundary,
-                destination_root_ordinal,
+                &destination_root_order_key,
             ) {
                 continue;
             }
             if source_conversation_id != destination.conversation_id.as_str()
                 && !can_read_retained_source(
                     source_access.get(source_conversation_id.as_str()),
-                    source_lower_ordinal,
+                    &source_lower_order_key,
                 )
             {
                 issues.push(issue(
@@ -97,8 +98,8 @@ pub(super) async fn retained_reference_issues_in_transaction(
         }
         let references = sqlx::query(
             "SELECT DISTINCT target.source_conversation_id,
-                    target.source_lower_ordinal,
-                    COALESCE(root_item.ordinal, item.ordinal) AS destination_root_ordinal
+                    target.source_lower_order_key,
+                    COALESCE(root_item.order_key, item.order_key) AS destination_root_order_key
              FROM chat_channel_reference_targets target
              JOIN chat_message_references reference
                ON reference.id = target.reference_id
@@ -124,26 +125,25 @@ pub(super) async fn retained_reference_issues_in_transaction(
             let source_conversation_id: String = reference
                 .try_get("source_conversation_id")
                 .map_err(persistence_error)?;
-            let source_lower_ordinal = u64_value(
-                reference
-                    .try_get("source_lower_ordinal")
-                    .map_err(persistence_error)?,
-            )?;
-            let destination_root_ordinal = u64_value(
-                reference
-                    .try_get("destination_root_ordinal")
-                    .map_err(persistence_error)?,
-            )?;
+            let Some(source_lower_order_key) = reference
+                .try_get::<Option<String>, _>("source_lower_order_key")
+                .map_err(persistence_error)?
+            else {
+                continue;
+            };
+            let destination_root_order_key: String = reference
+                .try_get("destination_root_order_key")
+                .map_err(persistence_error)?;
             if !retained_reference_is_visible(
                 &destination.history_boundary,
-                destination_root_ordinal,
+                &destination_root_order_key,
             ) {
                 continue;
             }
             if source_conversation_id != destination.conversation_id.as_str()
                 && !can_read_retained_source(
                     source_access.get(source_conversation_id.as_str()),
-                    source_lower_ordinal,
+                    &source_lower_order_key,
                 )
             {
                 issues.push(issue(
@@ -168,7 +168,7 @@ pub(super) async fn retained_profile_reference_issues_in_transaction(
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = ai.conversation_id
           AND membership.participant_id = ai.teammate_id
-         WHERE ai.access_profile_id = ? AND membership.removed_at IS NULL
+         WHERE ai.access_profile_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
          ORDER BY ai.teammate_id",
     )
     .bind(access_profile_id.as_str())
@@ -200,7 +200,8 @@ async fn read_effective_disclosure_access_in_transaction(
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
                 channel.conversation_id, channel.name AS channel_name,
-                ai.access_profile_id, profile.latest_revision AS access_profile_revision,
+                ai.access_profile_id, profile_revision.id AS access_profile_revision_id,
+                profile_revision.revision AS access_profile_revision,
                 profile_revision.default_read_history AS profile_read_history,
                 profile_revision.default_participate AS profile_participate,
                 profile_revision.default_history_boundary AS profile_history_boundary,
@@ -208,7 +209,7 @@ async fn read_effective_disclosure_access_in_transaction(
                 ai.read_history, ai.read_history_inherits_profile,
                 ai.participate, ai.participate_inherits_profile,
                 ai.history_boundary, ai.history_boundary_inherits_profile,
-                ai.history_from_ordinal, ai.runtime_approval_policy,
+                ai.history_from_order_key, ai.runtime_approval_policy,
                 ai.scratch_runtime_approval_policy
          FROM chat_teammate_channel_memberships ai
          JOIN chat_conversation_memberships membership
@@ -217,10 +218,9 @@ async fn read_effective_disclosure_access_in_transaction(
          JOIN chat_channels channel ON channel.conversation_id = ai.conversation_id
          JOIN projects project ON project.id = channel.project_id
          JOIN chat_access_profiles profile ON profile.id = ai.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
-         WHERE ai.teammate_id = ? AND membership.removed_at IS NULL
+         WHERE ai.teammate_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )
     .bind(teammate_id)
@@ -242,7 +242,7 @@ async fn read_effective_disclosure_access_in_transaction(
         let stored_history_boundary = parse_history_boundary(
             &row.try_get::<String, _>("history_boundary")
                 .map_err(persistence_error)?,
-            row.try_get("history_from_ordinal")
+            row.try_get("history_from_order_key")
                 .map_err(persistence_error)?,
         )?;
         let history_boundary = if row
@@ -253,25 +253,18 @@ async fn read_effective_disclosure_access_in_transaction(
             match profile_history_boundary {
                 ChatHistoryBoundary::Entire => ChatHistoryBoundary::Entire,
                 ChatHistoryBoundary::FromGrant { .. } => ChatHistoryBoundary::FromGrant {
-                    lower_ordinal: match stored_history_boundary {
-                        ChatHistoryBoundary::FromGrant { lower_ordinal } => lower_ordinal,
+                    lower_order_key: match stored_history_boundary {
+                        ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key,
                         ChatHistoryBoundary::Entire => None,
                     },
                 },
             }
         } else if history_boundary_is_expansion(&profile_history_boundary, &stored_history_boundary)
         {
-            let lower_ordinal: i64 = sqlx::query_scalar(
-                "SELECT coalesce(max(ordinal), 0) + 1
-                 FROM chat_conversation_items
-                 WHERE conversation_id = ? AND reply_thread_id IS NULL",
-            )
-            .bind(conversation_id.as_str())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(persistence_error)?;
             ChatHistoryBoundary::FromGrant {
-                lower_ordinal: Some(u64_value(lower_ordinal)?),
+                lower_order_key: Some(
+                    from_grant_lower_order_key(transaction, conversation_id.as_str()).await?,
+                ),
             }
         } else {
             stored_history_boundary
@@ -327,6 +320,11 @@ async fn read_effective_disclosure_access_in_transaction(
                     .map_err(persistence_error)?,
             )
             .map_err(identifier_error)?,
+            access_profile_revision_id: ChatAccessProfileRevisionId::new(
+                row.try_get::<String, _>("access_profile_revision_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
             access_profile_revision: u64_value(
                 row.try_get("access_profile_revision")
                     .map_err(persistence_error)?,
@@ -373,7 +371,7 @@ fn proposed_source_access(
 
 fn can_read_retained_source(
     source: Option<&(&ChatChannelCapabilities, &ChatHistoryBoundary)>,
-    source_lower_ordinal: u64,
+    source_lower_order_key: &str,
 ) -> bool {
     let Some((capabilities, boundary)) = source else {
         return false;
@@ -383,21 +381,21 @@ fn can_read_retained_source(
     }
     match boundary {
         ChatHistoryBoundary::Entire => true,
-        ChatHistoryBoundary::FromGrant { lower_ordinal } => {
-            lower_ordinal.is_some_and(|lower_ordinal| lower_ordinal <= source_lower_ordinal)
-        }
+        ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key
+            .as_deref()
+            .is_some_and(|lower_order_key| lower_order_key <= source_lower_order_key),
     }
 }
 
 fn retained_reference_is_visible(
     destination_boundary: &ChatHistoryBoundary,
-    destination_root_ordinal: u64,
+    destination_root_order_key: &str,
 ) -> bool {
     match destination_boundary {
         ChatHistoryBoundary::Entire => true,
-        ChatHistoryBoundary::FromGrant { lower_ordinal } => {
-            lower_ordinal.is_none_or(|lower_ordinal| lower_ordinal <= destination_root_ordinal)
-        }
+        ChatHistoryBoundary::FromGrant { lower_order_key } => lower_order_key
+            .as_deref()
+            .is_none_or(|lower_order_key| lower_order_key <= destination_root_order_key),
     }
 }
 
@@ -408,14 +406,14 @@ mod tests {
     #[test]
     fn from_grant_exposes_only_references_at_or_after_its_root_boundary() {
         let boundary = ChatHistoryBoundary::FromGrant {
-            lower_ordinal: Some(12),
+            lower_order_key: Some("c012".to_owned()),
         };
-        assert!(!retained_reference_is_visible(&boundary, 11));
-        assert!(retained_reference_is_visible(&boundary, 12));
-        assert!(retained_reference_is_visible(&boundary, 13));
+        assert!(!retained_reference_is_visible(&boundary, "c011"));
+        assert!(retained_reference_is_visible(&boundary, "c012"));
+        assert!(retained_reference_is_visible(&boundary, "c012V"));
         assert!(retained_reference_is_visible(
             &ChatHistoryBoundary::Entire,
-            1,
+            "c000",
         ));
     }
 
@@ -423,9 +421,9 @@ mod tests {
     fn unresolved_from_grant_boundary_fails_closed_for_retained_references() {
         assert!(retained_reference_is_visible(
             &ChatHistoryBoundary::FromGrant {
-                lower_ordinal: None,
+                lower_order_key: None,
             },
-            1,
+            "c000",
         ));
     }
 }

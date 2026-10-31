@@ -1,8 +1,11 @@
-use crate::models::{NoteLoadedPage, NoteParent, parent_columns};
-use crate::validation::{
-    plain_text_from_payload, validate_block_payload, validate_parent, validate_sort_order,
+use crate::block_storage::{
+    BlockRowInsert, MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, insert_block_row,
+    split_rich_text_to_bounds,
 };
+use crate::models::{NoteLoadedPage, NoteParent, parent_columns};
+use crate::validation::{plain_text_from_payload, validate_block_payload, validate_parent};
 use crate::{assets, reads, writes};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
@@ -81,6 +84,7 @@ pub(crate) async fn create_imported_page(
         return Err("document imports cannot create database row pages".to_string());
     }
     validate_import_block_depth(&request.blocks)?;
+    request.blocks = split_oversized_import_blocks(std::mem::take(&mut request.blocks))?;
     if request.blocks.is_empty() {
         request.blocks.push(ImportBlock::new(
             "paragraph",
@@ -115,7 +119,7 @@ pub(crate) async fn create_imported_page(
     assign_block_ids(&mut request.blocks, &mut block_ids);
     insert_import_page(&mut tx, &page_id, &request).await?;
     insert_import_child_page_block(&mut tx, &page_id, &request).await?;
-    let flattened_blocks = flatten_blocks(&page_id, &request.blocks);
+    let flattened_blocks = flatten_blocks(&page_id, &request.blocks)?;
     for block in flattened_blocks {
         insert_raw_block_with_id(&mut tx, &request, block).await?;
     }
@@ -132,6 +136,7 @@ pub(crate) async fn create_imported_row_page(
     mut request: ImportedRowPageCreate<'_>,
 ) -> Result<NoteLoadedPage, String> {
     validate_import_block_depth(&request.blocks)?;
+    request.blocks = split_oversized_import_blocks(std::mem::take(&mut request.blocks))?;
     crate::project_history::ensure_data_source_baseline_for_mutation(pool, request.data_source_id)
         .await?;
     if request.blocks.is_empty() {
@@ -161,7 +166,7 @@ pub(crate) async fn create_imported_row_page(
     let mut block_ids = block_ids.into_iter();
     assign_block_ids(&mut request.blocks, &mut block_ids);
     insert_import_row_page(&mut tx, &page_id, &request).await?;
-    let flattened_blocks = flatten_blocks(&page_id, &request.blocks);
+    let flattened_blocks = flatten_blocks(&page_id, &request.blocks)?;
     let workspace_parent = NoteParent::Workspace { workspace: true };
     let page_request = ImportedPageCreate {
         parent: &workspace_parent,
@@ -213,6 +218,111 @@ pub(crate) fn validate_import_block_depth(blocks: &[ImportBlock]) -> Result<(), 
         );
     }
     Ok(())
+}
+
+/// Splits every block whose rich text is above the stored text bound into consecutive blocks, so
+/// long imported text becomes several blocks instead of failing the import. Continuations take the
+/// source block's type, except that a button continues as paragraphs.
+///
+/// The first block keeps the source identity and its own attributes. The continuations follow it
+/// in text order with neutral attributes, and the last one takes the children so they still come
+/// after all of the text. Blocks whose oversized text lives in `cells` or `caption` are left whole
+/// and are refused when stored.
+pub(crate) fn split_oversized_import_blocks(
+    blocks: Vec<ImportBlock>,
+) -> Result<Vec<ImportBlock>, String> {
+    let mut output = Vec::with_capacity(blocks.len());
+    for mut block in blocks {
+        block.children = split_oversized_import_blocks(std::mem::take(&mut block.children))?;
+        if block.block_type == "unsupported" {
+            bound_unsupported_raw(&mut block.payload);
+        }
+        let Some(rich_text) = block.payload.get("rich_text").and_then(Value::as_array) else {
+            output.push(block);
+            continue;
+        };
+        let encoded = Value::Array(rich_text.clone()).to_string().len();
+        if encoded <= MAX_BLOCK_TEXT_BYTES / 2 {
+            output.push(block);
+            continue;
+        }
+        let mut chunks = split_rich_text_to_bounds(rich_text)?.into_iter();
+        let first = chunks.next().unwrap_or_default();
+        let mut continuations: Vec<ImportBlock> = chunks
+            .map(|chunk| {
+                ImportBlock::new(
+                    continuation_type(block.block_type),
+                    continuation_payload(block.block_type, &block.payload, chunk),
+                    None,
+                    Vec::new(),
+                )
+            })
+            .collect();
+        if let Some(last) = continuations.last_mut() {
+            if !block.children.is_empty() {
+                last.children = std::mem::take(&mut block.children);
+                if let Some(toggleable) = block.payload.get("is_toggleable") {
+                    last.payload["is_toggleable"] = toggleable.clone();
+                }
+            }
+        }
+        block.payload["rich_text"] = Value::Array(first);
+        output.push(block);
+        output.extend(continuations);
+    }
+    Ok(output)
+}
+
+/// Block type of the continuations of a split block. A continuation keeps a presentational type
+/// such as a callout, but a button's continuations are paragraphs so only the first part runs the
+/// button's actions.
+fn continuation_type(block_type: &'static str) -> &'static str {
+    match block_type {
+        "button" => "paragraph",
+        _ => block_type,
+    }
+}
+
+/// Payload for a continuation of a split block: the text chunk, the presentation every chunk
+/// shares (`color`, indent, code `language`), the attributes the continuation type requires (a
+/// callout `icon`), and the neutral value of any required state, so state such as a to-do's
+/// `checked` or a code caption stays on the first block.
+fn continuation_payload(block_type: &str, source: &Value, chunk: Vec<Value>) -> Value {
+    let mut payload = json!({ "rich_text": chunk });
+    for key in ["color", "ganbaru_indent", "language"] {
+        if let Some(value) = source.get(key) {
+            payload[key] = value.clone();
+        }
+    }
+    match block_type {
+        "to_do" => payload["checked"] = Value::Bool(false),
+        "code" => payload["caption"] = Value::Array(Vec::new()),
+        "callout" => payload["icon"] = source.get("icon").cloned().unwrap_or(Value::Null),
+        _ => {}
+    }
+    payload
+}
+
+/// Largest raw source an importer should keep on an `unsupported` block, leaving room in the
+/// attribute bound for JSON escaping and the block's other keys.
+pub(crate) const MAX_UNSUPPORTED_RAW_BYTES: usize = MAX_BLOCK_ATTRS_BYTES / 2;
+
+/// Replaces the `raw` source of an `unsupported` block whose payload is above the attribute bound
+/// with its size and a warning. The raw source is diagnostic context, not editable content.
+fn bound_unsupported_raw(payload: &mut Value) {
+    let encoded = payload.to_string().len();
+    if encoded <= MAX_BLOCK_ATTRS_BYTES {
+        return;
+    }
+    let raw_bytes = payload.get("raw").map_or(0, |raw| raw.to_string().len());
+    payload["raw"] = json!({ "omitted_bytes": raw_bytes });
+    let warning = Value::String(
+        "The raw source was larger than a block can store and was not kept.".to_string(),
+    );
+    match payload.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(warnings) => warnings.push(warning),
+        None => payload["warnings"] = Value::Array(vec![warning]),
+    }
 }
 
 pub(crate) fn count_import_blocks(blocks: &[ImportBlock]) -> usize {
@@ -301,8 +411,9 @@ async fn insert_import_page(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
+            project_id,
             title,
-            properties,
             source_provider,
             source_object_id,
             source_workspace_id,
@@ -312,14 +423,18 @@ async fn insert_import_page(
             url,
             public_url
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(crate::structure::nested_page_block_id(parent_type, page_id))
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        request.project_id,
+    ))
     .bind(request.title)
-    .bind(import_page_properties(request.title, request.project_id)?.to_string())
     .bind(request.source_provider)
     .bind(request.source_object_id)
     .bind(request.source_workspace_id)
@@ -360,21 +475,6 @@ pub(crate) fn normalized_import_project_id(project_id: Option<String>) -> Option
         .filter(|value| !value.is_empty())
 }
 
-fn import_page_properties(title: &str, project_id: Option<&str>) -> Result<Value, String> {
-    let mut properties = writes::page_title_properties(title);
-    let Some(project_id) = project_id else {
-        return Ok(properties);
-    };
-    let object = properties
-        .as_object_mut()
-        .ok_or_else(|| "page properties must be an object".to_string())?;
-    object.insert(
-        crate::PAGE_PROJECT_ID_PROPERTY.to_string(),
-        Value::String(project_id.to_string()),
-    );
-    Ok(properties)
-}
-
 async fn insert_import_row_page(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
@@ -386,18 +486,16 @@ async fn insert_import_row_page(
             parent_type,
             parent_data_source_id,
             title,
-            properties,
             source_provider,
             source_object_id,
             source_workspace_id,
             source_last_edited_time
          )
-         VALUES (?, 'data_source_id', ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, 'data_source_id', ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(request.data_source_id)
     .bind(request.title)
-    .bind(request.properties.to_string())
     .bind(request.source_provider)
     .bind(request.source_object_id)
     .bind(request.source_workspace_id)
@@ -405,7 +503,7 @@ async fn insert_import_row_page(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create {} import row page: {e}", request.source_provider))?;
-    Ok(())
+    crate::page_property_storage::write_page_properties(tx, page_id, request.properties).await
 }
 
 async fn insert_import_child_page_block(
@@ -417,7 +515,9 @@ async fn insert_import_child_page_block(
         return Ok(());
     }
     let parent = writes::resolve_block_parent(tx, request.parent).await?;
-    let sort_order = writes::next_sort_orders(tx, &parent, request.after_block_id, 1).await?[0];
+    let order_key = writes::next_order_keys(tx, &parent, request.after_block_id, 1)
+        .await?
+        .remove(0);
     insert_raw_block_with_id(
         tx,
         request,
@@ -431,18 +531,17 @@ async fn insert_import_child_page_block(
             },
             block_type: "child_page",
             payload: json!({ "title": request.title }),
-            sort_order,
-            has_children: false,
+            order_key,
             source_object_id: request.source_object_id.map(str::to_string),
             source_last_edited_time: request.source_last_edited_time.map(str::to_string),
         },
     )
     .await?;
-    writes::refresh_parent_has_children(tx, &parent).await?;
+    writes::touch_parent_block(tx, &parent).await?;
     writes::touch_page(tx, &parent.page_id).await
 }
 
-fn flatten_blocks(page_id: &str, blocks: &[ImportBlock]) -> Vec<RawBlockInsert> {
+fn flatten_blocks(page_id: &str, blocks: &[ImportBlock]) -> Result<Vec<RawBlockInsert>, String> {
     let mut flattened = Vec::new();
     flatten_children(
         page_id,
@@ -453,8 +552,8 @@ fn flatten_blocks(page_id: &str, blocks: &[ImportBlock]) -> Vec<RawBlockInsert> 
         },
         blocks,
         &mut flattened,
-    );
-    flattened
+    )?;
+    Ok(flattened)
 }
 
 fn flatten_children(
@@ -462,16 +561,20 @@ fn flatten_children(
     parent: RawBlockParent,
     blocks: &[ImportBlock],
     output: &mut Vec<RawBlockInsert>,
-) {
+) -> Result<(), String> {
     for (index, block) in blocks.iter().enumerate() {
+        let position =
+            u32::try_from(index).map_err(|_| "too many imported sibling blocks".to_string())?;
+        let order_key = OrderKey::rank(position)
+            .map_err(|error| format!("order imported block: {error}"))?
+            .into_string();
         output.push(RawBlockInsert {
             id: block.id.clone(),
             page_id: page_id.to_string(),
             parent: parent.clone(),
             block_type: block.block_type,
             payload: block.payload.clone(),
-            sort_order: 1000.0 + index as f64 * 1000.0,
-            has_children: !block.children.is_empty(),
+            order_key,
             source_object_id: block.source_object_id.clone(),
             source_last_edited_time: block.source_last_edited_time.clone(),
         });
@@ -484,8 +587,9 @@ fn flatten_children(
             },
             &block.children,
             output,
-        );
+        )?;
     }
+    Ok(())
 }
 
 async fn insert_raw_block_with_id(
@@ -493,44 +597,27 @@ async fn insert_raw_block_with_id(
     request: &ImportedPageCreate<'_>,
     block: RawBlockInsert,
 ) -> Result<(), String> {
-    validate_sort_order(block.sort_order)?;
     validate_block_payload(block.block_type, &block.payload)?;
     let plain_text = plain_text_from_payload(block.block_type, &block.payload);
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: &block.id,
+            page_id: &block.page_id,
+            parent_type: block.parent.parent_type,
+            parent_page_id: block.parent.parent_page_id.as_deref(),
+            parent_block_id: block.parent.parent_block_id.as_deref(),
+            block_type: block.block_type,
+            payload: &block.payload,
+            plain_text: &plain_text,
+            order_key: &block.order_key,
+            source_provider: Some(request.source_provider),
+            source_object_id: block.source_object_id.as_deref(),
+            source_last_edited_time: block.source_last_edited_time.as_deref(),
+        },
     )
-    .bind(block.id)
-    .bind(block.page_id)
-    .bind(block.parent.parent_type)
-    .bind(block.parent.parent_page_id)
-    .bind(block.parent.parent_block_id)
-    .bind(if block.has_children { 1 } else { 0 })
-    .bind(block.block_type)
-    .bind(block.payload.to_string())
-    .bind(plain_text)
-    .bind(block.sort_order)
-    .bind(request.source_provider)
-    .bind(block.source_object_id)
-    .bind(block.source_last_edited_time)
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("insert {} import block: {e}", request.source_provider))?;
-    Ok(())
+    .map_err(|e| format!("insert {} import block: {e}", request.source_provider))
 }
 
 fn empty_rich_text() -> Value {
@@ -566,8 +653,7 @@ struct RawBlockInsert {
     parent: RawBlockParent,
     block_type: &'static str,
     payload: Value,
-    sort_order: f64,
-    has_children: bool,
+    order_key: String,
     source_object_id: Option<String>,
     source_last_edited_time: Option<String>,
 }

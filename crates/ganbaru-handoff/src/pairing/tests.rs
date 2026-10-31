@@ -1,5 +1,13 @@
 use super::*;
 use std::path::Path;
+use std::sync::LazyLock;
+
+/// A sync device key every enrolled test device presents.
+static SYNC_DEVICE_KEY: LazyLock<String> = LazyLock::new(|| {
+    crate::protocol::encode_sync_device_key(&ganbaru_sync_contracts::DevicePublicKey::from_bytes(
+        [3; 32],
+    ))
+});
 
 struct TestDirectory(PathBuf);
 
@@ -33,6 +41,8 @@ fn enrollment<'a>(invitation: &'a PairingInvitation, phone: &'a StoredIdentity) 
         device_label: "Phone",
         device_kind: DeviceKind::Phone,
         certificate_b64: &phone.certificate,
+        sync_device_key: &SYNC_DEVICE_KEY,
+        sync_admin_key: None,
     }
 }
 
@@ -52,7 +62,6 @@ fn enroll_identity(
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             vault_id.to_string(),
-            0,
             crate::protocol::test_compatibility(),
             now_ms,
         )
@@ -70,6 +79,8 @@ fn enroll_identity(
                 DeviceKind::Computer
             },
             certificate_b64: &identity.certificate,
+            sync_device_key: &SYNC_DEVICE_KEY,
+            sync_admin_key: None,
         },
         now_ms + 1,
     )
@@ -86,7 +97,6 @@ fn invitation_is_single_use_and_not_restored_after_restart() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -129,7 +139,6 @@ fn repeated_enrollment_updates_one_existing_membership() {
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 now_ms,
             )
@@ -156,7 +165,6 @@ fn revoked_peer_is_remembered_across_restart_and_removed_by_reenrollment() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -188,7 +196,6 @@ fn revoked_peer_is_remembered_across_restart_and_removed_by_reenrollment() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             200,
         )
@@ -223,7 +230,6 @@ fn stored_coordinator_pins_must_use_the_lowercase_fingerprint_format() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            1,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -290,7 +296,6 @@ fn stored_peer_fingerprints_must_equal_the_recomputed_lowercase_digest() {
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 100,
             )
@@ -331,7 +336,6 @@ fn linked_client_accepts_only_its_existing_coordinator() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            3,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -347,7 +351,6 @@ fn linked_client_accepts_only_its_existing_coordinator() {
 
     let mut refreshed = first_invitation.clone();
     refreshed.endpoint = "127.0.0.1:42000".to_string();
-    refreshed.generation = 4;
     phone
         .ensure_enrollment_target(&refreshed)
         .expect("same coordinator remains valid");
@@ -379,7 +382,6 @@ fn linked_client_accepts_only_its_existing_coordinator() {
         .create_invitation(
             "127.0.0.1:43000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            4,
             crate::protocol::test_compatibility(),
             200,
         )
@@ -436,6 +438,250 @@ fn linked_client_accepts_only_its_existing_coordinator() {
             .device_id,
         "device-first"
     );
+}
+
+/// A phone linked to a fresh desktop coordinator, with the coordinator's invitation and
+/// certificate.
+fn linked_phone(label: &str) -> (TestDirectory, PairingManager, PairingInvitation, Vec<u8>) {
+    let phone_root = TestDirectory::new(&format!("{label}-phone"));
+    let phone = PairingManager::default();
+    phone
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("initialize phone");
+    let desktop_root = TestDirectory::new(&format!("{label}-desktop"));
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(
+            desktop_root.path().to_path_buf(),
+            "device-desktop".to_string(),
+        )
+        .expect("initialize desktop");
+    let invitation = desktop
+        .create_invitation(
+            "192.168.1.20:43821".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let (_, desktop_identity) = desktop.identity().expect("desktop identity");
+    let certificate = desktop_identity.certificate.as_ref().to_vec();
+    phone
+        .record_coordinator(&invitation, &certificate, None)
+        .expect("record coordinator");
+    (phone_root, phone, invitation, certificate)
+}
+
+fn reported_contact(endpoints: &[&str]) -> CoordinatorContact {
+    CoordinatorContact {
+        last_endpoint: None,
+        reported_endpoints: Some(endpoints.iter().map(ToString::to_string).collect()),
+    }
+}
+
+fn pin_of(manager: &PairingManager) -> CoordinatorPin {
+    manager
+        .coordinator_pin()
+        .expect("coordinator pin")
+        .expect("coordinator")
+}
+
+#[test]
+fn a_pin_without_contact_fields_loads_as_a_pin_before_its_first_exchange() {
+    let (phone_root, phone, invitation, _) = linked_phone("pin-without-contact");
+    drop(phone);
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read state")).expect("decode state");
+    let coordinator = stored["coordinator"]
+        .as_object_mut()
+        .expect("stored coordinator");
+    for field in ["lastEndpoint", "reportedEndpoints"] {
+        assert!(coordinator.remove(field).is_some(), "{field}");
+    }
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&stored).expect("encode state"),
+    )
+    .expect("write state");
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("load a pin without contact fields");
+    let pin = pin_of(&restarted);
+    assert_eq!(pin.last_endpoint, None);
+    assert!(pin.reported_endpoints.is_empty());
+    assert_eq!(pin.current_endpoint(), invitation.endpoint);
+}
+
+#[test]
+fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
+    let (phone_root, phone, invitation, _) = linked_phone("coordinator-contact");
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let fingerprint = invitation.coordinator_fingerprint.clone();
+    assert_eq!(
+        pin_of(&phone).last_endpoint.as_deref(),
+        Some(invitation.endpoint.as_str()),
+        "enrollment reached the invitation endpoint"
+    );
+    let reported = ["192.168.1.30:43821", "[fd00::30]:43821"];
+
+    assert_eq!(
+        phone.record_coordinator_contact("vault-1", &fingerprint, reported_contact(&reported)),
+        Ok(true)
+    );
+    fs::remove_file(&state_path).expect("remove state to detect writes");
+    assert_eq!(
+        phone.record_coordinator_contact("vault-1", &fingerprint, reported_contact(&reported)),
+        Ok(false)
+    );
+    assert_eq!(
+        phone.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            CoordinatorContact {
+                last_endpoint: Some(invitation.endpoint.clone()),
+                ..CoordinatorContact::default()
+            }
+        ),
+        Ok(false)
+    );
+    for (vault_id, other_fingerprint) in [
+        ("vault-2", fingerprint.clone()),
+        ("vault-1", "c".repeat(64)),
+    ] {
+        assert_eq!(
+            phone.record_coordinator_contact(
+                vault_id,
+                &other_fingerprint,
+                reported_contact(&["10.0.0.9:43821"])
+            ),
+            Ok(false)
+        );
+    }
+    assert!(!state_path.exists(), "an unchanged contact must not write");
+
+    assert!(
+        phone
+            .record_coordinator_contact(
+                "vault-1",
+                &fingerprint,
+                reported_contact(&["203.0.113.5:43821"])
+            )
+            .is_err(),
+        "a public reported endpoint is refused"
+    );
+    assert!(
+        phone
+            .record_coordinator_contact(
+                "vault-1",
+                &fingerprint,
+                CoordinatorContact {
+                    last_endpoint: Some("8.8.8.8:43821".to_string()),
+                    ..CoordinatorContact::default()
+                }
+            )
+            .is_err(),
+        "a public last endpoint is refused"
+    );
+    assert_eq!(
+        phone.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            CoordinatorContact {
+                last_endpoint: Some("192.168.1.30:43821".to_string()),
+                ..CoordinatorContact::default()
+            }
+        ),
+        Ok(true)
+    );
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    let pin = pin_of(&restarted);
+    assert_eq!(pin.current_endpoint(), "192.168.1.30:43821");
+    assert_eq!(pin.reported_endpoints, reported);
+    assert_eq!(pin.endpoint, invitation.endpoint);
+
+    restarted.unlink().expect("unlink");
+    assert_eq!(
+        restarted.record_coordinator_contact("vault-1", &fingerprint, reported_contact(&reported)),
+        Ok(false),
+        "an exchange finishing after unlink never resurrects the pin"
+    );
+    assert!(restarted.coordinator_pin().expect("pin").is_none());
+}
+
+#[test]
+fn relinking_to_the_same_coordinator_keeps_its_reported_contact() {
+    let (_phone_root, phone, invitation, certificate) = linked_phone("relink-contact");
+    phone
+        .record_coordinator_contact(
+            "vault-1",
+            &invitation.coordinator_fingerprint,
+            reported_contact(&["192.168.1.30:43821"]),
+        )
+        .expect("record contact");
+    let mut refreshed = invitation.clone();
+    refreshed.endpoint = "192.168.1.40:43821".to_string();
+    phone
+        .record_coordinator(&refreshed, &certificate, None)
+        .expect("relink");
+    let pin = pin_of(&phone);
+    assert_eq!(pin.endpoint, refreshed.endpoint);
+    assert_eq!(pin.current_endpoint(), refreshed.endpoint);
+    assert_eq!(pin.reported_endpoints, ["192.168.1.30:43821"]);
+}
+
+#[test]
+fn stored_contact_fields_are_validated_on_load() {
+    let (phone_root, phone, invitation, _) = linked_phone("stored-contact");
+    phone
+        .record_coordinator_contact(
+            "vault-1",
+            &invitation.coordinator_fingerprint,
+            reported_contact(&["192.168.1.30:43821"]),
+        )
+        .expect("record contact");
+    drop(phone);
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let original = fs::read(&state_path).expect("read state");
+    for (field, value, expected) in [
+        (
+            "reportedEndpoints",
+            serde_json::json!(["203.0.113.5:43821"]),
+            "coordinator endpoint is refused",
+        ),
+        (
+            "reportedEndpoints",
+            serde_json::json!(vec![
+                "192.168.1.30:43821";
+                crate::protocol::MAX_COORDINATOR_ENDPOINTS + 1
+            ]),
+            "coordinator endpoint list is too large",
+        ),
+        (
+            "lastEndpoint",
+            serde_json::json!("8.8.8.8:43821"),
+            "last coordinator endpoint is refused",
+        ),
+    ] {
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&original).expect("decode state");
+        stored["coordinator"][field] = value;
+        fs::write(
+            &state_path,
+            serde_json::to_vec(&stored).expect("encode state"),
+        )
+        .expect("write state");
+        let error = PairingManager::default()
+            .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+            .expect_err("refuse invalid stored contact");
+        assert!(error.contains(expected), "{field}: {error}");
+    }
 }
 
 #[test]
@@ -682,38 +928,6 @@ fn obsolete_pairing_schema_is_rejected_without_rewriting_state() {
 }
 
 #[test]
-fn ownership_upload_request_cannot_be_downgraded_to_refresh() {
-    let temporary = TestDirectory::new("upload-priority");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-
-    manager
-        .request_upload(BundlePurpose::Ownership)
-        .expect("request ownership upload");
-    manager
-        .request_upload(BundlePurpose::Refresh)
-        .expect("request refresh upload");
-
-    assert_eq!(
-        manager.requested_upload().expect("requested upload"),
-        Some(BundlePurpose::Ownership)
-    );
-    manager
-        .cancel_requested_upload(BundlePurpose::Refresh)
-        .expect("ignore lower-priority cancellation");
-    assert_eq!(
-        manager.requested_upload().expect("requested upload"),
-        Some(BundlePurpose::Ownership)
-    );
-    manager
-        .cancel_requested_upload(BundlePurpose::Ownership)
-        .expect("cancel ownership upload");
-    assert_eq!(manager.requested_upload().expect("requested upload"), None);
-}
-
-#[test]
 fn expired_invitation_is_rejected() {
     let temporary = TestDirectory::new("expired");
     let manager = PairingManager::default();
@@ -724,7 +938,6 @@ fn expired_invitation_is_rejected() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -738,6 +951,19 @@ fn expired_invitation_is_rejected() {
     );
 }
 
+fn transfer_metadata(transfer_id: &str) -> BundleMetadata {
+    BundleMetadata {
+        protocol_version: PROTOCOL_VERSION,
+        compatibility: crate::protocol::test_compatibility(),
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        transfer_id: transfer_id.to_string(),
+        archive_bytes: 42,
+        archive_sha256: "a".repeat(64),
+        derived_state_stale: false,
+    }
+}
+
 #[test]
 fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
     let temporary = TestDirectory::new("unlink");
@@ -749,7 +975,6 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -759,17 +984,15 @@ fn unlink_clears_the_peer_but_refuses_active_transfer_state() {
         .enroll_peer(enrollment(&invitation, &phone), 101)
         .expect("enroll");
     manager
-        .request_upload(BundlePurpose::Refresh)
-        .expect("request upload");
+        .store_outgoing_transfer(StoredOutgoingTransfer {
+            metadata: transfer_metadata("transfer-unlink"),
+        })
+        .expect("store outgoing transfer");
 
     assert!(manager.unlink().is_err());
-    {
-        let mut inner = manager.lock().expect("pairing lock");
-        initialized_state_mut(&mut inner)
-            .expect("pairing state")
-            .requested_upload = None;
-        persist_initialized_state(&inner).expect("clear request");
-    }
+    manager
+        .clear_outgoing_transfer("transfer-unlink")
+        .expect("clear outgoing transfer");
     manager.unlink().expect("unlink stable pairing");
     assert!(manager.linked_peers().expect("peer status").is_empty());
 }
@@ -785,8 +1008,6 @@ fn activation_acknowledgement_survives_restart() {
         vault_id: "vault-1".to_string(),
         device_id: "device-phone".to_string(),
         transfer_id: "transfer-1".to_string(),
-        generation: 1,
-        purpose: BundlePurpose::Ownership,
     };
     manager
         .record_activation(pending.clone())
@@ -816,26 +1037,15 @@ fn activation_acknowledgement_survives_restart() {
 }
 
 #[test]
-fn bidirectional_transfer_state_survives_restart() {
-    let temporary = TestDirectory::new("bidirectional-restart");
+fn outgoing_transfer_and_its_completion_survive_restart() {
+    let temporary = TestDirectory::new("outgoing-restart");
     let manager = PairingManager::default();
     manager
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("initialize");
-    let metadata = BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: crate::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-desktop".to_string(),
-        transfer_id: "transfer-return".to_string(),
-        generation: 2,
-        archive_bytes: 42,
-        archive_sha256: "a".repeat(64),
-    };
+    let metadata = transfer_metadata("transfer-copy");
     let outgoing = StoredOutgoingTransfer {
         metadata: metadata.clone(),
-        purpose: BundlePurpose::Ownership,
-        committed: false,
     };
     manager
         .store_outgoing_transfer(outgoing.clone())
@@ -844,43 +1054,25 @@ fn bidirectional_transfer_state_survives_restart() {
 
     let restarted = PairingManager::default();
     restarted
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("restart");
     assert_eq!(
         restarted.outgoing_transfer().expect("outgoing transfer"),
         Some(outgoing)
     );
-    restarted
-        .mark_outgoing_committed("transfer-return")
-        .expect("commit outgoing transfer");
-    drop(restarted);
-
-    let committed = PairingManager::default();
-    committed
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
-        .expect("restart committed state");
-    assert!(
-        committed
-            .outgoing_transfer()
-            .expect("committed outgoing transfer")
-            .expect("stored transfer")
-            .committed
-    );
     let completed = PendingAcknowledgement {
         vault_id: metadata.vault_id,
         device_id: metadata.device_id,
         transfer_id: metadata.transfer_id,
-        generation: metadata.generation,
-        purpose: BundlePurpose::Ownership,
     };
-    committed
+    restarted
         .complete_outgoing_activation(completed.clone())
         .expect("complete outgoing activation");
-    drop(committed);
+    drop(restarted);
 
     let acknowledged = PairingManager::default();
     acknowledged
-        .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
         .expect("restart completed transfer");
     assert_eq!(
         acknowledged.outgoing_transfer().expect("cleared outgoing"),
@@ -895,76 +1087,6 @@ fn bidirectional_transfer_state_survives_restart() {
 }
 
 #[test]
-fn incoming_transfer_and_completion_survive_restart() {
-    let temporary = TestDirectory::new("incoming-restart");
-    let manager = PairingManager::default();
-    manager
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("initialize");
-    let metadata = BundleMetadata {
-        protocol_version: PROTOCOL_VERSION,
-        compatibility: crate::protocol::test_compatibility(),
-        vault_id: "vault-1".to_string(),
-        device_id: "device-desktop".to_string(),
-        transfer_id: "incoming-return".to_string(),
-        generation: 3,
-        archive_bytes: 84,
-        archive_sha256: "b".repeat(64),
-    };
-    let incoming = StoredIncomingTransfer {
-        metadata: metadata.clone(),
-        source_device_id: "device-phone".to_string(),
-        purpose: BundlePurpose::Ownership,
-    };
-    manager
-        .store_incoming_transfer(incoming.clone())
-        .expect("store incoming transfer");
-    manager
-        .request_upload(BundlePurpose::Ownership)
-        .expect("store upload request");
-    drop(manager);
-
-    let restarted = PairingManager::default();
-    restarted
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart incoming state");
-    assert_eq!(
-        restarted.incoming_transfer().expect("incoming transfer"),
-        Some(incoming)
-    );
-    let completed = PendingAcknowledgement {
-        vault_id: metadata.vault_id,
-        device_id: metadata.device_id,
-        transfer_id: metadata.transfer_id,
-        generation: metadata.generation,
-        purpose: BundlePurpose::Ownership,
-    };
-    restarted
-        .complete_incoming_activation(completed.clone())
-        .expect("complete incoming activation");
-    drop(restarted);
-
-    let acknowledged = PairingManager::default();
-    acknowledged
-        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
-        .expect("restart completed state");
-    assert_eq!(
-        acknowledged
-            .completed_activation()
-            .expect("completed activation"),
-        Some(completed)
-    );
-    assert_eq!(
-        acknowledged.incoming_transfer().expect("cleared incoming"),
-        None
-    );
-    assert_eq!(
-        acknowledged.requested_upload().expect("cleared request"),
-        None
-    );
-}
-
-#[test]
 fn enrollment_rejects_control_and_bidi_labels_without_spending_the_invitation() {
     let temporary = TestDirectory::new("label-rejection");
     let manager = PairingManager::default();
@@ -975,7 +1097,6 @@ fn enrollment_rejects_control_and_bidi_labels_without_spending_the_invitation() 
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -1097,7 +1218,6 @@ fn enrollment_verification_persists_nothing_and_returns_the_code_the_device_show
             .create_invitation(
                 "127.0.0.1:41000".parse().expect("endpoint"),
                 "vault-1".to_string(),
-                0,
                 crate::protocol::test_compatibility(),
                 now_ms,
             )
@@ -1170,7 +1290,6 @@ fn a_discarded_invitation_cannot_be_verified_or_enrolled() {
         .create_invitation(
             "127.0.0.1:41000".parse().expect("endpoint"),
             "vault-1".to_string(),
-            0,
             crate::protocol::test_compatibility(),
             100,
         )
@@ -1337,6 +1456,128 @@ fn a_lost_tls_key_blocks_a_linked_device_until_it_is_unlinked() {
 }
 
 #[test]
+fn a_device_unlinked_for_lost_key_protection_keeps_the_reason_until_it_links_again() {
+    use crate::key_wrap::{
+        KeyWrapper, ProtectedIdentityKeyStore, TestKeyWrapper, linking_key_alias,
+    };
+    let (phone_root, phone, invitation, certificate) = linked_phone("protection-lost");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = phone_root.path().join("linking");
+    phone
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+            keys.clone(),
+            wrapper.clone(),
+        )))
+        .expect("key store");
+    let (_, original) = phone.identity().expect("identity");
+    assert!(!state_text(phone_root.path()).contains("privateKey"));
+    assert!(phone.has_links().expect("links"));
+
+    phone
+        .unlink_for(UnlinkReason::KeyProtectionLost)
+        .expect("unlink");
+    wrapper
+        .forget(&linking_key_alias("device-phone"))
+        .expect("forget");
+    crate::key_wrap::remove_key_file(
+        &ProtectedIdentityKeyStore::new(keys.clone(), wrapper.clone()).path("device-phone"),
+    )
+    .expect("remove key");
+    phone
+        .forget_cached_identity_key()
+        .expect("forget cached key");
+    assert!(!phone.has_links().expect("links"));
+
+    let restarted = PairingManager::default();
+    restarted
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+            keys,
+            wrapper.clone(),
+        )))
+        .expect("key store");
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert_eq!(
+        restarted.unlink_reason().expect("reason"),
+        Some(UnlinkReason::KeyProtectionLost)
+    );
+    let (_, replaced) = restarted.identity().expect("fresh identity");
+    assert_ne!(replaced.certificate, original.certificate);
+
+    restarted
+        .record_coordinator(&invitation, &certificate, None)
+        .expect("link again");
+    assert_eq!(restarted.unlink_reason().expect("reason"), None);
+}
+
+#[test]
+fn an_unlinked_device_whose_sealed_key_is_lost_gets_a_fresh_identity() {
+    use crate::key_wrap::{
+        KeyWrapper, ProtectedIdentityKeyStore, TestKeyWrapper, linking_key_alias,
+    };
+    let temporary = TestDirectory::new("protection-lost-unlinked");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = temporary.path().join("linking");
+    let open = || {
+        let manager = PairingManager::default();
+        manager
+            .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+                keys.clone(),
+                wrapper.clone(),
+            )))
+            .expect("key store");
+        manager
+            .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+            .expect("initialize");
+        manager
+    };
+    let (_, original) = open().identity().expect("identity");
+    wrapper
+        .forget(&linking_key_alias("device-phone"))
+        .expect("forget");
+
+    let restarted = open();
+    assert!(!restarted.has_links().expect("links"));
+    let (_, replaced) = restarted.identity().expect("fresh identity");
+    assert_ne!(replaced.certificate, original.certificate);
+    let (_, reopened) = open().identity().expect("reopened identity");
+    assert_eq!(reopened.certificate, replaced.certificate);
+}
+
+#[test]
+fn a_linked_device_whose_sealed_key_is_lost_keeps_its_identity_until_unlinked() {
+    use crate::key_wrap::{
+        KeyWrapper, ProtectedIdentityKeyStore, TestKeyWrapper, linking_key_alias,
+    };
+    let (phone_root, phone, _, _) = linked_phone("protection-lost-linked");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = phone_root.path().join("linking");
+    phone
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+            keys.clone(),
+            wrapper.clone(),
+        )))
+        .expect("key store");
+    phone.identity().expect("identity");
+    let before = state_text(phone_root.path());
+    wrapper
+        .forget(&linking_key_alias("device-phone"))
+        .expect("forget");
+
+    let restarted = PairingManager::default();
+    restarted
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(keys, wrapper)))
+        .expect("key store");
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    let error = restarted.identity().map(|_| ()).unwrap_err();
+    assert_eq!(error, DEVICE_KEY_MISSING_ERROR);
+    assert_eq!(state_text(phone_root.path()), before);
+}
+
+#[test]
 fn an_unreadable_key_store_reports_the_failure_without_replacing_the_identity() {
     let temporary = TestDirectory::new("key-store-unreadable");
     let store = Arc::new(MemoryKeyStore::default());
@@ -1395,7 +1636,7 @@ fn handoff_staging_is_private_even_when_it_already_exists() {
 }
 
 #[test]
-fn device_certificate_subject_names_the_device() {
+fn device_certificate_subject_names_no_device() {
     let root = TestDirectory::new("certificate-subject");
     let manager = PairingManager::default();
     manager
@@ -1409,10 +1650,16 @@ fn device_certificate_subject_names_the_device() {
 
     assert_eq!(device_id, "device-subject-check");
     assert!(
-        certificate
+        !certificate
             .windows(device_id.len())
             .any(|window| window == device_id.as_bytes()),
-        "certificate subject should carry the device ID"
+        "certificate should not carry the device ID"
+    );
+    assert!(
+        certificate
+            .windows(DEVICE_CERTIFICATE_NAME.len())
+            .any(|window| window == DEVICE_CERTIFICATE_NAME.as_bytes()),
+        "certificate subject should carry the shared device name"
     );
     assert!(
         !certificate
@@ -1420,4 +1667,163 @@ fn device_certificate_subject_names_the_device() {
             .any(|window| window == b"rcgen self signed cert"),
         "certificate should not keep the generator's default subject"
     );
+}
+
+fn pinned_charter(
+    vault_id: &str,
+    anchor_device_id: &str,
+    certificate: &[u8],
+    person: &ganbaru_contacts::PersonKeyPair,
+) -> PinnedCharter {
+    let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin");
+    let charter = ganbaru_sync_contracts::sign_charter(
+        &ganbaru_sync_contracts::Charter {
+            space: ganbaru_sync_contracts::SpaceId::personal(vault_id),
+            anchor_device_id: anchor_device_id.to_string(),
+            anchor_device_key: ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32]),
+            anchor_tls_fingerprint: Sha256::digest(certificate).into(),
+            anchor_admin_key: admin.public_key(),
+            recovery_admin_key: admin.public_key(),
+            discovery_key: [7; 32],
+            created_at_ms: 1,
+        },
+        person,
+    )
+    .expect("sign charter");
+    PinnedCharter {
+        charter: crate::protocol::encode_sync_charter(&charter),
+        person_key: person.public_key().to_text(),
+    }
+}
+
+#[test]
+fn pairing_pins_a_signed_charter_of_the_vault_whichever_device_founded_it() {
+    let (phone_root, phone, invitation, certificate) = linked_phone("pin-charter");
+    let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person");
+    assert_eq!(pin_of(&phone).charter, None);
+
+    for foreign in [
+        pinned_charter("vault-2", "device-desktop", &certificate, &person),
+        PinnedCharter {
+            person_key: ganbaru_contacts::PersonKeyPair::from_seed(&[9; 32])
+                .expect("other person")
+                .public_key()
+                .to_text(),
+            ..pinned_charter("vault-1", "device-desktop", &certificate, &person)
+        },
+    ] {
+        assert!(
+            phone
+                .record_enrolled(&invitation, &certificate, None, Some(foreign.clone()))
+                .is_err(),
+            "{foreign:?}"
+        );
+    }
+    assert_eq!(
+        pin_of(&phone).charter,
+        None,
+        "a refused charter keeps the pin"
+    );
+
+    // A charter founded by another device: the coordinator presents it after the anchor or
+    // the vault moved, and the log it starts names the current anchor.
+    let founded_elsewhere = pinned_charter(
+        "vault-1",
+        "device-other",
+        b"another coordinator certificate",
+        &person,
+    );
+    phone
+        .record_enrolled(
+            &invitation,
+            &certificate,
+            None,
+            Some(founded_elsewhere.clone()),
+        )
+        .expect("pin a charter founded elsewhere");
+    assert_eq!(pin_of(&phone).charter, Some(founded_elsewhere));
+
+    let charter = pinned_charter("vault-1", "device-desktop", &certificate, &person);
+    phone
+        .record_enrolled(&invitation, &certificate, None, Some(charter.clone()))
+        .expect("pin the charter");
+    drop(phone);
+    let reloaded = PairingManager::default();
+    reloaded
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("reload phone");
+    assert_eq!(pin_of(&reloaded).charter, Some(charter));
+}
+
+#[test]
+fn only_linked_desktops_keep_the_admin_key_they_send_across_restarts() {
+    let temporary = TestDirectory::new("admin-key");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let admin_key = crate::protocol::encode_sync_admin_key(
+        &ganbaru_sync_contracts::AdminKeyPair::from_seed(&[4; 32])
+            .expect("admin key")
+            .public_key(),
+    );
+    let enroll = |device_id: &str, device_kind: DeviceKind, admin: &str| {
+        let identity = create_identity(device_id.to_string()).expect("identity");
+        let invitation = manager
+            .create_invitation(
+                "127.0.0.1:41000".parse().expect("endpoint"),
+                "vault-1".to_string(),
+                crate::protocol::test_compatibility(),
+                100,
+            )
+            .expect("invitation");
+        manager.enroll_peer(
+            Enrollment {
+                device_id,
+                device_kind,
+                certificate_b64: &identity.certificate,
+                sync_admin_key: Some(admin),
+                ..enrollment(&invitation, &identity)
+            },
+            101,
+        )
+    };
+    enroll("device-phone", DeviceKind::Phone, &admin_key).expect("enroll phone");
+    enroll("device-laptop", DeviceKind::Computer, &admin_key).expect("enroll laptop");
+    assert!(
+        enroll("device-other", DeviceKind::Computer, "not-a-key").is_err(),
+        "a malformed admin key refuses the enrollment"
+    );
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    let mut keys: Vec<(String, Option<String>)> = restarted
+        .linked_peers()
+        .expect("linked devices")
+        .into_iter()
+        .map(|peer| (peer.device_id, peer.sync_admin_key))
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            ("device-laptop".to_string(), Some(admin_key)),
+            ("device-phone".to_string(), None),
+        ]
+    );
+}
+
+#[test]
+fn device_certificates_name_no_device() {
+    let device_id = "device-phone-identifying";
+    let identity = create_identity(device_id.to_string()).expect("phone identity");
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(&identity.certificate)
+        .expect("certificate encoding");
+    let contains = |needle: &[u8]| der.windows(needle.len()).any(|window| window == needle);
+    assert!(!contains(device_id.as_bytes()));
+    assert!(contains(DEVICE_CERTIFICATE_NAME.as_bytes()));
+    assert_eq!(identity.device_id, device_id);
 }

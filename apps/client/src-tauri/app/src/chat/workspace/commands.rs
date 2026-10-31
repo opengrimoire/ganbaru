@@ -608,6 +608,7 @@ pub async fn projects_open_working_folder(
     open_authorized_workspace(&authorized)
 }
 
+/// Removes an external working folder. The removal cascades into Projects and Chat rows.
 #[tauri::command]
 pub async fn projects_remove_working_folder(
     app: tauri::AppHandle,

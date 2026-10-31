@@ -20,19 +20,19 @@ Accounting, totals, and enforcement are native and independent of WebView schedu
 
 - **Desktop:** one serialized Rust owner observes selected applications, records intervals, derives exhaustion, publishes browser snapshots, and executes authorized closes. Settings read its cached projection and cannot start observations, submit intervals, or request closes.
 - **Android:** the Guardian service observes and enforces selected packages, even if the app process is gone. A Rust publisher in the app process combines canonical and pending usage into shared totals and rule snapshots for Guardian; Guardian adds only later local observations on top.
-- **Linked read-only devices** compute totals from accepted usage plus applicable pending usage.
+- **Every linked device** adds the other devices' daily totals, which sync, to its own recorded and pending usage. Each device publishes its own totals at most every five minutes while limits are read, and immediately on desktop exit, when Android moves to the background, and before a vault snapshot.
 
-Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or handoff invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
+Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or a snapshot bootstrap invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
 
 ## Counting integrity
 
 Usage is evidence, so it must never be double-counted or invented:
 
 - Samples carry stable identities. Retried writes, compaction, and acknowledgement keep those identities so a retry cannot count the same usage twice.
-- Applying a linked snapshot and acknowledging the pending samples it includes happen in one transaction; failure retains both for retry.
+- Draining spooled or journaled usage into the device's usage record and acknowledging it are retried until both succeed; the record ignores samples it already holds.
 - Intervals use monotonic elapsed time and split at actual local midnights, including daylight-saving changes. Long gaps and clock discontinuities produce no inferred usage.
 - A full device-local spool or journal fails explicitly and stops capturing new usage rather than dropping or clamping it.
-- Linked usage is bound to the authenticated sender: a batch whose samples name another device is rejected whole. Samples dated more than one day past the receiver's UTC date, or before the retention window, are acknowledged but not counted, so a wrong clock or forged date cannot displace real days.
+- A device writes only its own daily totals, and a total never shrinks, so a retried or reordered sync cannot lower or double another device's usage. Samples dated more than one day past the device's UTC date, or before the retention window, are not counted, so a wrong clock cannot displace real days.
 
 ## Browser counting
 
@@ -60,6 +60,6 @@ Each budget shows used and available time with a stacked, labeled source breakdo
 
 ## History and privacy
 
-Usage history is local structured data. It supports totals and configuration guidance without becoming an activity diary. Retention keeps 400 days, far beyond the weekly budget window, so yearly trends survive while storage stays bounded; older samples are pruned when linked usage is imported.
+Usage samples stay on the device that recorded them; only one daily total per source and device syncs. Usage history supports totals and configuration guidance without becoming an activity diary. Retention keeps 400 days, far beyond the weekly budget window, so yearly trends survive while storage stays bounded; older samples are pruned when new usage is recorded. Daily totals from other devices are kept, but only the retention window is read.
 
 Status: real desktop lifecycle and Android background and process-restart acceptance are pending.

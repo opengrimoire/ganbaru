@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use crate::identity::local_item_id;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -66,17 +66,7 @@ pub(super) fn new_item_id(
     request: &MusicLocalRefreshRequest,
     media: &LocalMediaEvidence,
 ) -> String {
-    stable_id("item", &[&request.root_id, &media.relative_path])
-}
-
-pub(super) fn stable_id(kind: &str, values: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(kind.as_bytes());
-    for value in values {
-        hasher.update([0]);
-        hasher.update(value.as_bytes());
-    }
-    format!("music-{kind}-{:x}", hasher.finalize())
+    local_item_id(&request.root_id, &media.relative_path)
 }
 
 pub(super) fn now_ms() -> i64 {

@@ -168,6 +168,14 @@ export const music = {
       removeMessage: (name: string) => `¿Eliminar ${name}? Los proyectos y eventos que lo usan lo mostrarán como no disponible hasta que elijas otro sonido ambiental.`,
     },
   },
+  sync: {
+    playlistUntitled: "Lista sin título",
+    playlistRecoveryNote: "Al restaurarla se crea una lista nueva con las canciones que se añadieron en otro dispositivo.",
+    playlistRestored: "Lista restaurada con sus canciones nuevas",
+    playlistRestoreFailed: "No se pudo restaurar la lista",
+    itemUntitled: "Pista sin título",
+    itemRecoveryNote: "Esta pista se quitó de la biblioteca en otro dispositivo. Sus ediciones no se pueden restaurar, así que solo se pueden descartar.",
+  },
   builder: {
     defaultPlaylist: {
       startOfDay: "¡Inicio del día!",
@@ -307,7 +315,8 @@ export const music = {
     addLocalFolderHint: "Agrega una carpeta para explorar aquí su música.",
     addYouTubeLinkHint: "Agrega un enlace de vídeo o lista para explorarlo aquí.",
     noSourceItems: "Todavía no hay nada aquí",
-    unlinkedSourceFolder: (name: string) => `La fuente ${name} todavía no está vinculada a una carpeta en este dispositivo.`,
+    notOnThisDevice: "No está en este dispositivo",
+    unlinkedSourceFolder: (name: string) => `La fuente ${name} todavía no está en este dispositivo. Elige su carpeta para reproducirla aquí.`,
     missingSourceFolder: (name: string) => `No se encuentra la carpeta de la fuente ${name} en este dispositivo.`,
     sourceLocation: "Ubicación de la fuente",
     renameSource: "Renombrar fuente",
@@ -484,7 +493,7 @@ export const music = {
     playlistReorderPickedUp: (name: string) => `${name} seleccionada. Usa las flechas para moverla y pulsa Espacio para colocarla.`,
     playlistReorderCancelled: "Se canceló el reordenamiento de listas.",
     playlistReorderFailed: "No se pudo guardar el orden de las listas. Se restauró el orden anterior.",
-    deletePlaylistWarning: (name: string) => `Eliminar ${name} quita sus membresías y repara cada asignación actual en la misma transacción.`,
+    deletePlaylistWarning: (name: string) => `Eliminar ${name} quita sus membresías. Las asignaciones de fase pasan al reemplazo; las de proyectos y eventos quedan sin lista.`,
     projectAssignments: "Asignaciones de proyectos",
     eventAssignments: "Asignaciones de eventos",
     contextAssignments: "Asignaciones de fase",

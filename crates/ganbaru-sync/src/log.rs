@@ -6,9 +6,11 @@
 //! the previous operation's context was unknown when the operation was stored.
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
-use ganbaru_sync_contracts::{Digest32, Seq, SpaceId, VersionVector, WriterId, WriterPublicKey};
+use ganbaru_sync_contracts::{
+    Digest32, OperationKind, Seq, SpaceId, VersionVector, WriterId, WriterPublicKey,
+};
 use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt};
@@ -62,6 +64,11 @@ pub(crate) struct WriterRow {
     pub(crate) applied: Seq,
     pub(crate) head_hash: Digest32,
     pub(crate) head_clock: u64,
+    /// Highest sequence whose body compaction may have dropped.
+    pub(crate) compacted: Seq,
+    /// Cutoff the selected removal of the writer's device lists for it; later operations are
+    /// excluded.
+    pub(crate) removal_cutoff: Option<Seq>,
 }
 
 /// Operations a peer does not have, in an order that keeps every writer's chain contiguous.
@@ -76,6 +83,22 @@ pub struct OpsPage {
 /// Clamps Unix milliseconds into the stored integer range.
 pub(crate) fn clamp_ms(ms: u64) -> i64 {
     i64::try_from(ms).unwrap_or(i64::MAX)
+}
+
+/// Storage order of the next operation a space stores, one past the latest.
+///
+/// Chain opening follows storage order, which a wall clock step backward cannot reorder, while
+/// stored time stays the wall clock that acknowledgement intervals and dormancy measure.
+pub(crate) async fn next_stored_order(
+    conn: &mut SqliteConnection,
+    space: &SpaceId,
+) -> SyncResult<i64> {
+    let latest: Option<i64> =
+        sqlx::query_scalar("SELECT max(stored_order) FROM sync_ops WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(latest.unwrap_or(0).saturating_add(1))
 }
 
 /// Converts a stored non-negative integer.
@@ -135,7 +158,7 @@ pub(crate) async fn ensure_space(conn: &mut SqliteConnection, space: SpaceId) ->
 }
 
 const WRITER_COLUMNS: &str = "writer_id, public_key, device_id, state, cutoff_seq, stored_seq, \
-     applied_seq, head_hash, head_clock";
+     applied_seq, head_hash, head_clock, compacted_seq, removal_cutoff_seq";
 
 fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
     let id: Vec<u8> = row.try_get(0)?;
@@ -154,6 +177,11 @@ fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
         applied: stored_u64(row.try_get(6)?, "applied sequence")?,
         head_hash: digest(&head_hash)?,
         head_clock: stored_u64(row.try_get(8)?, "head clock")?,
+        compacted: stored_u64(row.try_get(9)?, "compacted sequence")?,
+        removal_cutoff: row
+            .try_get::<Option<i64>, _>(10)?
+            .map(|seq| stored_u64(seq, "removal cutoff"))
+            .transpose()?,
     })
 }
 
@@ -205,7 +233,7 @@ pub(crate) async fn load_context(
 }
 
 /// Contexts of operations, cached for one engine transaction.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ContextCache {
     contexts: HashMap<(WriterId, Seq), VersionVector>,
 }
@@ -270,6 +298,14 @@ pub(crate) async fn stored_vector(
     vector(conn, space, "stored_seq").await
 }
 
+/// Highest compacted sequence per writer, without writers that compacted nothing.
+pub(crate) async fn compacted_vector(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<VersionVector> {
+    vector(conn, space, "compacted_seq").await
+}
+
 /// One pending operation of a page with its arrival position.
 struct PageEntry {
     rowid: i64,
@@ -287,6 +323,9 @@ struct PageLane {
     entries: VecDeque<PageEntry>,
     after: Seq,
     exhausted: bool,
+    /// Whether the selection holds the writer's device for data, so the lane ends before its
+    /// first row change.
+    held: bool,
 }
 
 impl PageLane {
@@ -296,7 +335,7 @@ impl PageLane {
             return Ok(());
         }
         let rows = sqlx::query(
-            "SELECT rowid, seq, length(envelope) FROM sync_ops
+            "SELECT rowid, seq, length(envelope), kind FROM sync_ops
              WHERE space_id = ? AND writer_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )
         .bind(space.as_bytes().as_slice())
@@ -307,6 +346,10 @@ impl PageLane {
         .await?;
         self.exhausted = rows.len() < PAGE_LANE_CHUNK as usize;
         for row in &rows {
+            if self.held && row.try_get::<i64, _>(3)? == i64::from(OperationKind::Changes.as_u8()) {
+                self.exhausted = true;
+                break;
+            }
             let entry = PageEntry {
                 rowid: row.try_get(0)?,
                 seq: stored_u64(row.try_get(1)?, "sequence")?,
@@ -341,8 +384,13 @@ impl Engine {
     }
 
     /// Stored operations that `known` does not include, held operations among them, ordered by
-    /// arrival while keeping every writer's operations in sequence order. The page holds at
-    /// least one operation when any remains, then stops before `max_bytes`.
+    /// arrival while keeping every writer's operations in sequence order. A writer of a device
+    /// the selection holds for data is served only up to its first row change, so its
+    /// authorization records still spread while its data waits. The page holds at least one
+    /// operation when any remains, then stops before `max_bytes`.
+    ///
+    /// Fails with [`SyncError::Compacted`] when `known` lacks an operation whose body
+    /// compaction dropped, since the peer can then only bootstrap from a snapshot.
     pub async fn ops_after(
         &self,
         conn: &mut SqliteConnection,
@@ -350,59 +398,123 @@ impl Engine {
         known: &VersionVector,
         max_bytes: usize,
     ) -> SyncResult<OpsPage> {
-        ensure_space(conn, ctx.space).await?;
-        let mut lanes = Vec::new();
-        for writer in writers(conn, ctx.space).await? {
-            let from = known.get(&writer.id);
-            if writer.stored <= from {
-                continue;
-            }
-            let mut lane = PageLane {
-                writer: writer.id,
-                entries: VecDeque::new(),
-                after: from,
-                exhausted: false,
-            };
-            lane.refill(conn, ctx.space).await?;
-            if !lane.entries.is_empty() {
-                lanes.push(lane);
-            }
-        }
-        let mut page = OpsPage::default();
-        let mut total = 0usize;
-        loop {
-            let next = lanes
-                .iter()
-                .enumerate()
-                .filter_map(|(index, lane)| lane.entries.front().map(|entry| (entry.rowid, index)))
-                .min();
-            let Some((_, index)) = next else {
-                break;
-            };
-            let lane = &mut lanes[index];
-            let Some(entry) = lane.entries.front() else {
-                break;
-            };
-            if !page.ops.is_empty() && total.saturating_add(entry.bytes) > max_bytes {
-                page.more = true;
-                break;
-            }
-            let envelope: Vec<u8> = sqlx::query_scalar(
-                "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
-            )
-            .bind(ctx.space.as_bytes().as_slice())
-            .bind(lane.writer.as_bytes().as_slice())
-            .bind(seq_i64(entry.seq)?)
-            .fetch_one(&mut *conn)
-            .await?;
-            total = total.saturating_add(envelope.len());
-            page.ops.push(envelope);
-            lane.entries.pop_front();
-            lane.refill(conn, ctx.space).await?;
-        }
-        Ok(page)
+        page_after(conn, ctx, known, max_bytes, false).await
     }
 
+    /// [`Self::ops_after`] for a peer the selection holds for data: every writer's chain is
+    /// served only up to its first row change, so the peer still receives the authorization
+    /// records that can resolve the contest, but no data.
+    pub async fn authorization_ops_after(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        known: &VersionVector,
+        max_bytes: usize,
+    ) -> SyncResult<OpsPage> {
+        page_after(conn, ctx, known, max_bytes, true).await
+    }
+
+    /// Whether `device_id` is held for data by the selected chain of the space.
+    pub async fn device_held(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        device_id: &str,
+    ) -> SyncResult<bool> {
+        ensure_space(conn, ctx.space).await?;
+        let held: Option<i64> = sqlx::query_scalar(
+            "SELECT held FROM sync_devices WHERE space_id = ? AND device_id = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(device_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(held == Some(1))
+    }
+}
+
+/// The page of [`Engine::ops_after`], with every lane ending before its first row change when
+/// `authorization_only` is set.
+async fn page_after(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    known: &VersionVector,
+    max_bytes: usize,
+    authorization_only: bool,
+) -> SyncResult<OpsPage> {
+    ensure_space(conn, ctx.space).await?;
+    let held: BTreeSet<String> =
+        sqlx::query_scalar("SELECT device_id FROM sync_devices WHERE space_id = ? AND held = 1")
+            .bind(ctx.space.as_bytes().as_slice())
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
+    let mut lanes = Vec::new();
+    for writer in writers(conn, ctx.space).await? {
+        let from = known.get(&writer.id);
+        if writer.stored <= from {
+            continue;
+        }
+        if from < writer.compacted {
+            return Err(SyncError::Compacted {
+                writer: writer.id,
+                seq: writer.compacted,
+            });
+        }
+        let mut lane = PageLane {
+            writer: writer.id,
+            entries: VecDeque::new(),
+            after: from,
+            exhausted: false,
+            held: authorization_only || held.contains(&writer.device_id),
+        };
+        lane.refill(conn, ctx.space).await?;
+        if !lane.entries.is_empty() {
+            lanes.push(lane);
+        }
+    }
+    let mut page = OpsPage::default();
+    let mut total = 0usize;
+    loop {
+        let next = lanes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, lane)| lane.entries.front().map(|entry| (entry.rowid, index)))
+            .min();
+        let Some((_, index)) = next else {
+            break;
+        };
+        let lane = &mut lanes[index];
+        let Some(entry) = lane.entries.front() else {
+            break;
+        };
+        if !page.ops.is_empty() && total.saturating_add(entry.bytes) > max_bytes {
+            page.more = true;
+            break;
+        }
+        let envelope: Vec<u8> = sqlx::query_scalar(
+            "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(lane.writer.as_bytes().as_slice())
+        .bind(seq_i64(entry.seq)?)
+        .fetch_one(&mut *conn)
+        .await?;
+        if envelope.is_empty() {
+            return Err(corrupt(
+                "an operation above the compacted sequence has no body",
+            ));
+        }
+        total = total.saturating_add(envelope.len());
+        page.ops.push(envelope);
+        lane.entries.pop_front();
+        lane.refill(conn, ctx.space).await?;
+    }
+    Ok(page)
+}
+
+impl Engine {
     /// Hashes of a writer's stored operations from `from_seq`, at most `limit`, for locating
     /// where two copies of a chain diverge.
     pub async fn op_hashes(

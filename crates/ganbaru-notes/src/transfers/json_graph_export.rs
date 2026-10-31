@@ -163,8 +163,6 @@ pub async fn project_history_source_rows(
     let excluded = [
         "notes_backlink_index",
         "notes_backlink_index_state",
-        "notes_collaboration_operations",
-        "notes_data_source_relation_links",
         "notes_data_source_rollup_cache",
         "notes_link_facts",
         "notes_link_facts_state",
@@ -308,7 +306,7 @@ fn table_family(name: &str) -> TableFamily {
             | "notes_comment_thread_mutes"
             | "notes_page_notification_settings"
             | "notes_mention_notifications"
-            | "notes_collaboration_operations"
+            | "notes_block_view_state"
     ) {
         return TableFamily::LocalState;
     }
@@ -322,24 +320,18 @@ fn table_section(name: &str) -> &'static str {
     if name == "notes_blocks" {
         return "blocks";
     }
-    if name.starts_with("notes_comment")
-        || matches!(name, "notes_suggestions" | "notes_collaboration_operations")
-    {
+    if name.starts_with("notes_comment") || name == "notes_suggestions" {
         return "comments";
     }
     if name.starts_with("notes_database")
         || name.starts_with("notes_data_source")
+        || name == "notes_page_property_values"
+        || name == "notes_relation_edges"
         || name == "notes_databases"
     {
         return "data_sources";
     }
-    if matches!(
-        name,
-        "notes_assets"
-            | "notes_asset_references"
-            | "notes_page_icon_assets"
-            | "notes_page_cover_assets"
-    ) {
+    if matches!(name, "notes_assets" | "notes_asset_references") {
         return "files";
     }
     if table_family(name) == TableFamily::Index {
@@ -360,10 +352,10 @@ fn table_section(name: &str) -> &'static str {
 fn json_column(table: &str, column: &str) -> bool {
     matches!(
         (table, column),
-        ("notes_pages", "properties")
-            | ("notes_pages", "icon")
+        ("notes_pages", "icon")
             | ("notes_pages", "cover")
-            | ("notes_blocks", "payload")
+            | ("notes_blocks", "attrs")
+            | ("notes_blocks", "text")
             | ("notes_databases", "title_rich_text")
             | ("notes_databases", "description")
             | ("notes_databases", "icon")
@@ -371,7 +363,8 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_data_sources", "title_rich_text")
             | ("notes_data_sources", "description")
             | ("notes_data_sources", "icon")
-            | ("notes_data_sources", "properties")
+            | ("notes_data_source_properties", "config")
+            | ("notes_page_property_values", "value")
             | ("notes_database_views", "filter")
             | ("notes_database_views", "sorts")
             | ("notes_database_views", "configuration")
@@ -379,6 +372,7 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_page_history_snapshots", "icon")
             | ("notes_page_history_snapshots", "cover")
             | ("notes_page_history_snapshots", "blocks")
+            | ("notes_page_history_snapshots", "asset_ids")
             | ("notes_page_templates", "properties")
             | ("notes_page_templates", "icon")
             | ("notes_page_templates", "cover")
@@ -390,8 +384,6 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_comments", "attachments")
             | ("notes_comment_reactions", "display_name")
             | ("notes_suggestions", "display_name")
-            | ("notes_collaboration_operations", "actor_display_name")
-            | ("notes_collaboration_operations", "payload")
             | ("notes_data_source_rollup_cache", "value")
             | ("notes_undo_state", "state_json")
     )
@@ -415,15 +407,17 @@ fn order_by_columns(table: &str, columns: &[String]) -> String {
             "parent_type",
             "parent_page_id",
             "parent_block_id",
-            "sort_order",
+            "order_key",
             "id",
         ],
         "notes_asset_references" => vec!["owner_type", "owner_id", "role", "asset_id"],
-        "notes_data_source_relation_links" => {
-            vec!["source_page_id", "source_property_id", "target_page_id"]
-        }
+        "notes_relation_edges" => vec!["source_page_id", "source_property_id", "target_page_id"],
+        "notes_page_property_values" => vec!["page_id", "property_id"],
         "notes_data_source_rollup_cache" => vec!["source_page_id", "source_property_id"],
-        "notes_collaboration_operations" => vec!["sequence"],
+        "notes_data_source_properties" => vec!["data_source_id", "order_key", "property_id"],
+        "notes_data_source_property_options" => {
+            vec!["data_source_id", "property_id", "position", "option_id"]
+        }
         _ => vec!["id", "page_id", "created_time", "updated_at"],
     };
     let order_columns = preferred
@@ -503,16 +497,8 @@ fn build_summary(
             "notes_pages" => summary.exported_page_count = count,
             "notes_blocks" => summary.exported_block_count = count,
             "notes_comments" => summary.exported_comment_count = count,
-            "notes_data_sources" => {
-                summary.exported_data_source_count = count;
-                summary.exported_property_schema_count = exported
-                    .rows
-                    .iter()
-                    .filter_map(|row| row.get("properties"))
-                    .filter_map(Value::as_object)
-                    .map(|properties| properties.len() as i64)
-                    .sum();
-            }
+            "notes_data_sources" => summary.exported_data_source_count = count,
+            "notes_data_source_properties" => summary.exported_property_schema_count = count,
             "notes_assets" => summary.exported_file_count = count,
             _ => {
                 if exported.table.family == TableFamily::Index {

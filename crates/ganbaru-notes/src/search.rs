@@ -17,9 +17,26 @@ const FINGERPRINT_KEY: &str = "source_fingerprint";
 #[derive(Deserialize, Serialize)]
 struct SearchCursor {
     source_order: i64,
+    #[serde(with = "exact_rank")]
     rank: f64,
     sort_time: String,
     index_id: String,
+}
+
+/// Carries a cursor rank as its shortest round-trip decimal text, so the keyset comparison sees
+/// the exact rank SQLite returned; a parsed JSON number can be one unit in the last place off.
+mod exact_rank {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(rank: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(rank)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 pub async fn search_window(
@@ -354,11 +371,13 @@ async fn append_page_entries(
     pool: &SqlitePool,
     entries: &mut Vec<SearchIndexEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, SearchPageIndexRow>(
-        "SELECT id, title, properties, icon, cover, url, public_url, source_provider,
-                source_object_id, source_workspace_id, source_last_edited_time, last_edited_time
-         FROM notes_pages",
-    )
+    let rows = sqlx::query_as::<_, SearchPageIndexRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT page.id, page.title, {} AS properties, page.icon, page.cover, page.url,
+                page.public_url, page.source_provider, page.source_object_id,
+                page.source_workspace_id, page.source_last_edited_time, page.last_edited_time
+         FROM notes_pages AS page",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes pages for search index: {e}"))?;
@@ -430,26 +449,12 @@ async fn append_block_entries(
     pool: &SqlitePool,
     entries: &mut Vec<SearchIndexEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
-         FROM notes_blocks",
-    )
+    let rows = sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
+         FROM notes_blocks"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for search index: {e}"))?;
@@ -498,9 +503,14 @@ async fn append_comment_entries(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes comments for search index: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
     for row in rows {
         let attachment_text = indexable_json_text(&row.attachments, "comment attachments")?;
-        let display_name_text = indexable_json_text(&row.display_name, "comment display name")?;
+        let display_name = crate::local_user::resolved_display_name_json(
+            row.display_name.as_deref(),
+            &local_author_name,
+        );
+        let display_name_text = indexable_json_text(&display_name, "comment display name")?;
         entries.push(SearchIndexEntry {
             id: format!("comment:{}", row.id),
             source_type: "comment".to_string(),
@@ -531,7 +541,7 @@ async fn append_relation_entries(
             target_page.title AS target_title,
             max(source_page.last_edited_time, target_page.last_edited_time, link.created_time)
                 AS source_last_edited_time
-         FROM notes_data_source_relation_links AS link
+         FROM notes_relation_links AS link
          JOIN notes_pages AS source_page ON source_page.id = link.source_page_id
          JOIN notes_pages AS target_page ON target_page.id = link.target_page_id
          JOIN notes_data_sources AS source_data_source
@@ -662,6 +672,7 @@ async fn search_candidate(
                 target.status,
                 target.anchor,
                 snippet,
+                &crate::local_user::local_author_name_from_pool(pool).await?,
             )?,
         }));
     }
@@ -703,27 +714,13 @@ async fn load_page_summary(pool: &SqlitePool, page_id: &str) -> Result<NotePageS
 }
 
 async fn load_block_row(pool: &SqlitePool, block_id: &str) -> Result<NoteBlockRow, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
-         WHERE id = ?",
-    )
+         WHERE id = ?"
+    ))
     .bind(block_id)
     .fetch_one(pool)
     .await
@@ -733,7 +730,7 @@ async fn load_block_row(pool: &SqlitePool, block_id: &str) -> Result<NoteBlockRo
 async fn load_comment_row(pool: &SqlitePool, comment_id: &str) -> Result<NoteCommentRow, String> {
     sqlx::query_as::<_, NoteCommentRow>(
         "SELECT id, thread_id, rich_text, plain_text, created_by, display_name, attachments,
-                deleted_at, sync_version, created_time, last_edited_time
+                deleted_at, created_time, last_edited_time
          FROM notes_comments WHERE id = ?",
     )
     .bind(comment_id)
@@ -798,7 +795,7 @@ async fn search_source_fingerprint(pool: &SqlitePool) -> Result<SearchSourceFing
          FROM notes_databases
          UNION ALL
          SELECT 'relation_links', COUNT(*), COALESCE(MAX(created_time), '')
-         FROM notes_data_source_relation_links
+         FROM notes_relation_links
          UNION ALL
          SELECT 'rollup_cache', COUNT(*), COALESCE(MAX(computed_time), '')
          FROM notes_data_source_rollup_cache
@@ -1094,7 +1091,7 @@ struct CommentThreadSearchTargetRow {
 struct CommentIndexRow {
     id: String,
     plain_text: String,
-    display_name: String,
+    display_name: Option<String>,
     attachments: String,
     page_id: String,
     parent_block_id: Option<String>,

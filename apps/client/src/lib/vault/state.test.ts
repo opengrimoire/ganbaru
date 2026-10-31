@@ -77,10 +77,35 @@ describe("vault state api", () => {
     );
   });
 
+  it("explains a vault another Ganbaru app holds before generic folder guidance", async () => {
+    const { formatVaultError } = await loadModule();
+    const expected =
+      "This folder is open in another Ganbaru app. Close that app or choose another folder.";
+
+    expect(formatVaultError("this vault is open in another Ganbaru app", "change")).toBe(expected);
+    expect(
+      formatVaultError(new Error("this vault is open in another Ganbaru app"), "startup"),
+    ).toBe(expected);
+  });
+
+  it("reads the vault lock status and rejects unknown values", async () => {
+    const { getVaultLockStatus, parseVaultLockStatus } = await loadModule();
+
+    for (const status of ["notHeld", "exclusive", "unsupported"]) {
+      expect(parseVaultLockStatus(status)).toBe(status);
+    }
+    for (const value of ["Exclusive", "", null, undefined, 1, { status: "exclusive" }]) {
+      expect(() => parseVaultLockStatus(value)).toThrow("vault lock status response is invalid");
+    }
+
+    invokeMock.mockResolvedValue("unsupported");
+    await expect(getVaultLockStatus()).resolves.toBe("unsupported");
+    expect(invokeMock).toHaveBeenCalledWith("vault_lock_status");
+  });
+
   it("accepts complete vault info responses", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
@@ -91,14 +116,12 @@ describe("vault state api", () => {
 
     await expect(getActiveVaultInfo()).resolves.toEqual({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
     });
     expect(getCachedActiveVaultInfo()).toEqual({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
       displayName: "Ganbaru",
@@ -108,7 +131,6 @@ describe("vault state api", () => {
   it("rejects incomplete vault info responses", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",
-      configPath: "/home/user/Documents/Ganbaru/config.json",
       databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
     });
@@ -132,71 +154,6 @@ describe("vault state api", () => {
       folderName: "Ganbaru",
       developmentBuild: false,
     });
-  });
-
-  it("validates the native vault ownership status", async () => {
-    invokeMock.mockResolvedValue({
-      vaultId: "vault-1",
-      deviceId: "phone",
-      ownerDeviceId: "desktop",
-      generation: 4,
-      role: "read-only",
-      canWrite: false,
-      replicatedWrites: false,
-      transferPhase: { kind: "stable" },
-    });
-    const { getVaultOwnershipStatus } = await loadModule();
-
-    await expect(getVaultOwnershipStatus()).resolves.toEqual({
-      vaultId: "vault-1",
-      deviceId: "phone",
-      ownerDeviceId: "desktop",
-      generation: 4,
-      role: "read-only",
-      canWrite: false,
-      replicatedWrites: false,
-      transferPhase: { kind: "stable" },
-    });
-  });
-
-  it("rejects inconsistent writable ownership responses", async () => {
-    invokeMock.mockResolvedValue({
-      vaultId: "vault-1",
-      deviceId: "phone",
-      ownerDeviceId: "desktop",
-      generation: 4,
-      role: "read-only",
-      canWrite: true,
-      replicatedWrites: false,
-      transferPhase: { kind: "stable" },
-    });
-    const { getVaultOwnershipStatus } = await loadModule();
-
-    await expect(getVaultOwnershipStatus()).rejects.toThrow(
-      "vault ownership response has an inconsistent role",
-    );
-  });
-  it("accepts replicated writes only on read-only replicas", async () => {
-    const replica = {
-      vaultId: "vault-1",
-      deviceId: "phone",
-      ownerDeviceId: "desktop",
-      generation: 4,
-      role: "read-only",
-      canWrite: false,
-      replicatedWrites: true,
-      transferPhase: { kind: "stable" },
-    };
-    invokeMock.mockResolvedValueOnce(replica);
-    const { getVaultOwnershipStatus } = await loadModule();
-    await expect(getVaultOwnershipStatus()).resolves.toMatchObject({ replicatedWrites: true, canWrite: false });
-
-    invokeMock.mockResolvedValueOnce({ ...replica, role: "owner", canWrite: true });
-    await expect(getVaultOwnershipStatus()).rejects.toThrow("inconsistent replicated writes");
-
-    const { replicatedWrites: _omitted, ...withoutFlag } = replica;
-    invokeMock.mockResolvedValueOnce(withoutFlag);
-    await expect(getVaultOwnershipStatus()).rejects.toThrow("vault ownership response is incomplete");
   });
 });
 
@@ -253,5 +210,152 @@ describe("database rollbacks", () => {
     invokeMock.mockResolvedValueOnce(undefined);
     await restoreDatabaseRollback(rollback.id);
     expect(invokeMock).toHaveBeenCalledWith("vault_restore_database_rollback", { id: rollback.id });
+  });
+});
+
+describe("replaced vault backups", () => {
+  const backup = {
+    id: "replaced-1761700000000.ganbaru-backup",
+    displayName: "Ganbaru",
+    replacedAtMs: 1_761_700_000_000,
+    sizeBytes: 8192,
+  };
+
+  it("lists backups in the order Rust returned, with or without a vault name", async () => {
+    const { listReplacedVaultBackups } = await loadModule();
+    const unnamed = { ...backup, id: "replaced-1761600000000.ganbaru-backup", displayName: null };
+    invokeMock.mockResolvedValueOnce([backup, unnamed]);
+    await expect(listReplacedVaultBackups()).resolves.toEqual([backup, unnamed]);
+    expect(invokeMock).toHaveBeenCalledWith("vault_replaced_backups");
+  });
+
+  it("rejects malformed backup entries", async () => {
+    const { parseReplacedVaultBackups } = await loadModule();
+    expect(() => parseReplacedVaultBackups({})).toThrow("not a list");
+    expect(() => parseReplacedVaultBackups([7])).toThrow("not an object");
+    expect(() => parseReplacedVaultBackups([{ ...backup, id: " " }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, displayName: "" }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, displayName: 3 }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, replacedAtMs: -1 }])).toThrow("incomplete");
+    expect(() => parseReplacedVaultBackups([{ ...backup, sizeBytes: 0.5 }])).toThrow("incomplete");
+  });
+
+  it("exports a backup by its ID and validates the saved file", async () => {
+    const { exportReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ fileName: "replaced.ganbaru-backup", destination: "downloads" });
+    await expect(exportReplacedVaultBackup(backup.id)).resolves.toEqual({
+      fileName: "replaced.ganbaru-backup",
+      destination: "downloads",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_export_replaced_backup", { id: backup.id });
+    invokeMock.mockResolvedValueOnce({ fileName: "x", destination: "elsewhere" });
+    await expect(exportReplacedVaultBackup(backup.id)).rejects.toThrow("incomplete");
+  });
+
+  it("deletes a backup by its ID only", async () => {
+    const { deleteReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce(undefined);
+    await deleteReplacedVaultBackup(backup.id);
+    expect(invokeMock).toHaveBeenCalledWith("vault_delete_replaced_backup", { id: backup.id });
+  });
+
+  it("restores a backup by its ID and returns a refusal for a linked phone", async () => {
+    const { restoreReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "linkedAndroid" });
+    await expect(restoreReplacedVaultBackup(backup.id)).resolves.toEqual({
+      kind: "refused",
+      reason: "linkedAndroid",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_replaced_backup", { id: backup.id });
+    invokeMock.mockResolvedValueOnce({ kind: "restored", placement: "elsewhere" });
+    await expect(restoreReplacedVaultBackup(backup.id)).rejects.toThrow("unknown");
+  });
+
+  it("asks to unlink when a linked phone restores another vault's rollback copy", async () => {
+    const { formatVaultError } = await loadModule();
+    expect(
+      formatVaultError(
+        "this phone is linked to other devices; unlink it before restoring another vault",
+      ),
+    ).toBe("This phone is linked to other devices. Unlink this phone first, then restore.");
+  });
+});
+
+describe("encrypted backups", () => {
+  const vault = {
+    path: "/home/user/Restored",
+    databasePath: "/home/user/Restored/ganbaru.sqlite",
+    vaultId: "vault-restored",
+    displayName: "Restored",
+  };
+
+  it("parses every save outcome and rejects unknown refusals", async () => {
+    const { parseBackupSaveOutcome } = await loadModule();
+    expect(parseBackupSaveOutcome({ kind: "cancelled" })).toEqual({ kind: "cancelled" });
+    expect(parseBackupSaveOutcome({ kind: "saved", fileName: "a.ganbaru-backup" })).toEqual({
+      kind: "saved",
+      fileName: "a.ganbaru-backup",
+    });
+    expect(parseBackupSaveOutcome({ kind: "refused", reason: "noRecoveryKit" })).toEqual({
+      kind: "refused",
+      reason: "noRecoveryKit",
+    });
+    expect(() => parseBackupSaveOutcome({ kind: "refused", reason: "other" })).toThrow("unknown");
+    expect(() => parseBackupSaveOutcome({ kind: "saved", fileName: " " })).toThrow("incomplete");
+    expect(() => parseBackupSaveOutcome({ kind: "written" })).toThrow("unknown");
+    expect(() => parseBackupSaveOutcome(null)).toThrow("not an object");
+  });
+
+  it("requires a token and a kit flag on a ready inspection", async () => {
+    const { parseBackupInspection } = await loadModule();
+    expect(parseBackupInspection({ kind: "ready", token: "t1", needsKit: true })).toEqual({
+      kind: "ready",
+      token: "t1",
+      needsKit: true,
+    });
+    expect(() => parseBackupInspection({ kind: "ready", token: "t1" })).toThrow("incomplete");
+    expect(() => parseBackupInspection({ kind: "ready", token: "", needsKit: false })).toThrow(
+      "incomplete",
+    );
+    expect(parseBackupInspection({ kind: "refused", reason: "notBackup" })).toEqual({
+      kind: "refused",
+      reason: "notBackup",
+    });
+  });
+
+  it("validates the restored vault and its placement", async () => {
+    const { parseBackupRestoreOutcome } = await loadModule();
+    expect(
+      parseBackupRestoreOutcome({ kind: "restored", vault, placement: "independentCopy" }),
+    ).toEqual({ kind: "restored", vault, placement: "independentCopy" });
+    expect(() =>
+      parseBackupRestoreOutcome({ kind: "restored", vault, placement: "merged" }),
+    ).toThrow("placement");
+    expect(() =>
+      parseBackupRestoreOutcome({ kind: "restored", vault: { ...vault, vaultId: "" }, placement: "inPlace" }),
+    ).toThrow("incomplete");
+  });
+
+  it("sends the inspected token and kit, and caches the restored vault as active", async () => {
+    const { getCachedActiveVaultInfo, restoreInspectedBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "restored", vault, placement: "inPlace" });
+    await expect(restoreInspectedBackup("t1", "KIT")).resolves.toEqual({
+      kind: "restored",
+      vault,
+      placement: "inPlace",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_backup", { token: "t1", kit: "KIT" });
+    expect(getCachedActiveVaultInfo()).toEqual(vault);
+  });
+
+  it("leaves the cached vault alone after a refused restore", async () => {
+    const { getCachedActiveVaultInfo, restoreInspectedBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "wrongKit" });
+    await expect(restoreInspectedBackup("t1", null)).resolves.toEqual({
+      kind: "refused",
+      reason: "wrongKit",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_backup", { token: "t1", kit: null });
+    expect(getCachedActiveVaultInfo()).toBeUndefined();
   });
 });

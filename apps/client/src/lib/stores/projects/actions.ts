@@ -1,4 +1,5 @@
 import type { ProjectDependencyCascadePreview } from "$lib/api/project-cascade";
+import { resolveProjectConflict, type ProjectConflictResolution } from "$lib/api/project-conflicts";
 import {
   applyProjectTaskBulk,
   reorderProjectItem,
@@ -65,7 +66,8 @@ import {
   type ProjectTaskListColumnWidths,
 } from "$lib/projects/list/view";
 import { normalizeProjectName } from "$lib/projects/text";
-import { mergeReorderedSubset, sortSidebarItems } from "$lib/utils/sidebar-order";
+import { mergeReorderedSubset } from "$lib/utils/sidebar-order";
+import { adjacentPlacement, compareProjectOrder, provisionalOrderKeys } from "$lib/projects/order";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import { PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery, type ProjectViewQuery } from "$lib/projects/view-query";
@@ -80,6 +82,7 @@ import {
   sectionUpdatePayload,
   tagUpdatePayload,
   taskUpdatePayload,
+  type PlacementPatch,
   type ProjectTaskUpdatePatch,
 } from "$lib/projects/snapshot/update-payloads";
 import {
@@ -99,6 +102,7 @@ import {
   type ProjectCustomFieldOption,
   type ProjectCustomFieldType,
   type ProjectCustomFieldValueUpdate,
+  type ProjectDraftIdentity,
   type ProjectGroup,
   type ProjectLifecycleStatus,
   type ProjectLinkableEvent,
@@ -117,6 +121,7 @@ import {
   type ProjectTaskType,
   type ProjectUpdate,
   type ProjectViewType,
+  type MoveDirection,
 } from "$lib/projects/types";
 import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import type { ProjectStoreSelectors } from "./selectors";
@@ -148,25 +153,13 @@ export interface ProjectMutationActivity {
   committed: number;
 }
 
-/** Spacing between custom sidebar ranks, matching the backend reorder commands. */
-const SIDEBAR_ORDER_SPACING = 1000;
-
 /** Ids of `items` in their current custom sidebar order. */
 function customOrderIds(items: readonly (Project | ProjectGroup)[]): string[] {
-  return sortSidebarItems(
-    items,
-    "custom",
-    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: item.sortOrder }),
-  ).map((item) => item.id);
+  return items.toSorted(compareProjectOrder).map((item) => item.id);
 }
 
-/** The rank the backend stores for each id of a complete custom order. */
-function sidebarSortOrders(ids: readonly string[]): Map<string, number> {
-  return new Map(ids.map((id, index) => [id, (index + 1) * SIDEBAR_ORDER_SPACING]));
-}
-
-function withSortOrder<T extends { sortOrder: number }>(item: T, sortOrder: number | undefined): T {
-  return sortOrder === undefined || sortOrder === item.sortOrder ? item : { ...item, sortOrder };
+function withOrderKey<T extends { orderKey: string }>(item: T, orderKey: string | undefined): T {
+  return orderKey === undefined || orderKey === item.orderKey ? item : { ...item, orderKey };
 }
 
 /**
@@ -312,7 +305,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       name: displayName,
       icon,
       color: null,
-      sortOrder: selectors.nextGroupSortOrder(),
     }));
   }
 
@@ -327,18 +319,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function reorderGroups(orderedIds: readonly string[]): Promise<void> {
     const previous = readSnapshot().groups;
     const groupIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
-    const orders = sidebarSortOrders(groupIds);
+    const orders = provisionalOrderKeys(groupIds);
     updateSnapshot((current) => ({
       ...current,
-      groups: current.groups.map((group) => withSortOrder(group, orders.get(group.id))),
+      groups: current.groups.map((group) => withOrderKey(group, orders.get(group.id))),
     }));
     try {
       await commitMutation("group-order", () => reorderProjectGroups(groupIds));
     } catch (error: unknown) {
-      const restored = new Map(previous.map((group) => [group.id, group.sortOrder]));
+      const restored = new Map(previous.map((group) => [group.id, group.orderKey]));
       updateSnapshot((current) => ({
         ...current,
-        groups: current.groups.map((group) => withSortOrder(group, restored.get(group.id))),
+        groups: current.groups.map((group) => withOrderKey(group, restored.get(group.id))),
       }));
       throw error;
     }
@@ -351,18 +343,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function reorderProjectsInGroup(groupId: string, orderedIds: readonly string[]): Promise<void> {
     const previous = readSnapshot().projects.filter((project) => project.groupId === groupId);
     const projectIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
-    const orders = sidebarSortOrders(projectIds);
+    const orders = provisionalOrderKeys(projectIds);
     updateSnapshot((current) => ({
       ...current,
-      projects: current.projects.map((project) => withSortOrder(project, orders.get(project.id))),
+      projects: current.projects.map((project) => withOrderKey(project, orders.get(project.id))),
     }));
     try {
       await commitMutation(`project-order:${groupId}`, () => reorderGroupProjects(groupId, projectIds));
     } catch (error: unknown) {
-      const restored = new Map(previous.map((project) => [project.id, project.sortOrder]));
+      const restored = new Map(previous.map((project) => [project.id, project.orderKey]));
       updateSnapshot((current) => ({
         ...current,
-        projects: current.projects.map((project) => withSortOrder(project, restored.get(project.id))),
+        projects: current.projects.map((project) => withOrderKey(project, restored.get(project.id))),
       }));
       throw error;
     }
@@ -370,7 +362,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
   async function updateGroup(
     group: ProjectGroup,
-    patch: Partial<Pick<ProjectGroup, "name" | "icon" | "color" | "sortOrder" | "collapsed">>,
+    patch: Partial<Pick<ProjectGroup, "name" | "icon" | "color" | "collapsed">> & PlacementPatch,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? group.name);
     if (!nextName) return;
@@ -395,7 +387,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       groupId,
       name: displayName,
       icon,
-      sortOrder: selectors.nextProjectSortOrder(groupId),
     };
     await commitMutation(`project:${project.id}`, () => createProjectBackend(project));
     return project.id;
@@ -432,11 +423,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     if (!selectors.visibleGroups().some((group) => group.id === groupId)) {
       throw new Error(`Project group ${groupId} is not available`);
     }
-    const sortOrder = Math.max(
-      0,
-      ...selectors.projectsForGroupIncludingInactive(groupId).map((entry) => entry.sortOrder),
-    ) + 1000;
-    await updateProject(projectUpdatePayload(project, { groupId, sortOrder }));
+    await updateProject(projectUpdatePayload(project, { groupId, placement: { kind: "end" } }));
   }
 
   /** Sets whether a project is active, hidden, or archived. */
@@ -465,13 +452,12 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       id,
       projectId,
       name: displayName,
-      sortOrder: selectors.nextSectionSortOrder(projectId),
     }));
   }
 
   async function updateSection(
     section: ProjectSection,
-    patch: Partial<Pick<ProjectSection, "name" | "sortOrder" | "collapsed" | "hiddenAt" | "archivedAt">>,
+    patch: Partial<Pick<ProjectSection, "name" | "collapsed" | "hiddenAt" | "archivedAt">> & PlacementPatch,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? section.name);
     if (!nextName) return;
@@ -506,7 +492,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     name: string,
     category: ProjectStatusCategory,
     color: EventColor,
-    identity?: { id: string; sortOrder: number },
+    identity?: ProjectDraftIdentity,
   ): Promise<void> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
@@ -517,14 +503,14 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       name: displayName,
       category,
       color,
-      sortOrder: identity?.sortOrder ?? selectors.nextStatusSortOrder(projectId),
+      placement: identity?.placement,
       terminal: category === "done",
     }));
   }
 
   async function updateStatus(
     status: ProjectStatus,
-    patch: Partial<Pick<ProjectStatus, "name" | "category" | "color" | "sortOrder">>,
+    patch: Partial<Pick<ProjectStatus, "name" | "category" | "color">> & PlacementPatch,
   ): Promise<void> {
     const displayName = normalizeProjectName(patch.name ?? status.name);
     if (!displayName) return;
@@ -534,32 +520,14 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       name: displayName,
       category,
       color: patch.color ?? status.color,
-      sortOrder: patch.sortOrder ?? status.sortOrder,
+      placement: patch.placement,
       terminal: category === "done",
     }));
   }
 
-  async function moveStatus(status: ProjectStatus, direction: -1 | 1): Promise<void> {
-    const ordered = selectors.statusesForProject(status.projectId);
-    const index = ordered.findIndex((entry) => entry.id === status.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`status:${status.id}`, () => updateProjectStatus({
-      id: status.id,
-      name: status.name,
-      category: status.category,
-      color: status.color,
-      sortOrder: target.sortOrder,
-      terminal: status.category === "done",
-    }));
-    await commitMutation(`status:${target.id}`, () => updateProjectStatus({
-      id: target.id,
-      name: target.name,
-      category: target.category,
-      color: target.color,
-      sortOrder: status.sortOrder,
-      terminal: target.category === "done",
-    }));
+  async function moveStatus(status: ProjectStatus, direction: MoveDirection): Promise<void> {
+    const placement = adjacentPlacement(selectors.statusesForProject(status.projectId), status.id, direction);
+    if (placement) await updateStatus(status, { placement });
   }
 
   async function removeStatus(statusId: string): Promise<void> {
@@ -571,7 +539,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     projectId: string,
     name: string,
     color: EventColor,
-    identity?: { id: string; sortOrder: number },
+    identity?: ProjectDraftIdentity,
   ): Promise<void> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
@@ -581,13 +549,13 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       projectId,
       name: displayName,
       color,
-      sortOrder: identity?.sortOrder ?? selectors.nextPrioritySortOrder(projectId),
+      placement: identity?.placement,
     }));
   }
 
   async function updatePriority(
     priority: ProjectPriorityConfig,
-    patch: Partial<Pick<ProjectPriorityConfig, "name" | "color" | "sortOrder">>,
+    patch: Partial<Pick<ProjectPriorityConfig, "name" | "color">> & PlacementPatch,
   ): Promise<void> {
     const displayName = normalizeProjectName(patch.name ?? priority.name);
     if (!displayName) return;
@@ -596,29 +564,13 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       projectId: priority.projectId,
       name: displayName,
       color: patch.color ?? priority.color,
-      sortOrder: patch.sortOrder ?? priority.sortOrder,
+      placement: patch.placement,
     }));
   }
 
-  async function movePriority(priority: ProjectPriorityConfig, direction: -1 | 1): Promise<void> {
-    const ordered = selectors.prioritiesForProject(priority.projectId);
-    const index = ordered.findIndex((entry) => entry.id === priority.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`priority:${priority.id}`, () => updateProjectPriority({
-      id: priority.id,
-      projectId: priority.projectId,
-      name: priority.name,
-      color: priority.color,
-      sortOrder: target.sortOrder,
-    }));
-    await commitMutation(`priority:${target.id}`, () => updateProjectPriority({
-      id: target.id,
-      projectId: target.projectId,
-      name: target.name,
-      color: target.color,
-      sortOrder: priority.sortOrder,
-    }));
+  async function movePriority(priority: ProjectPriorityConfig, direction: MoveDirection): Promise<void> {
+    const placement = adjacentPlacement(selectors.prioritiesForProject(priority.projectId), priority.id, direction);
+    if (placement) await updatePriority(priority, { placement });
   }
 
   async function removePriority(priority: ProjectPriorityConfig): Promise<void> {
@@ -661,7 +613,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       id,
       taskId,
       title: displayTitle,
-      sortOrder: selectors.nextChecklistSortOrder(taskId),
     }));
     return changedById(mutation.changed.checklistItems, id, "created checklist item");
   }
@@ -677,7 +628,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
   async function updateChecklistItem(
     item: ProjectChecklistItem,
-    patch: Partial<Pick<ProjectChecklistItem, "title" | "sortOrder">>,
+    patch: Partial<Pick<ProjectChecklistItem, "title">> & PlacementPatch,
   ): Promise<void> {
     const nextTitle = normalizeProjectName(patch.title ?? item.title);
     if (!nextTitle) return;
@@ -685,15 +636,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       updateProjectChecklistItem(checklistItemUpdatePayload(item, { ...patch, title: nextTitle })));
   }
 
-  async function moveChecklistItem(item: ProjectChecklistItem, direction: -1 | 1): Promise<void> {
-    const ordered = selectors.checklistItemsForTask(item.taskId);
-    const index = ordered.findIndex((entry) => entry.id === item.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
+  async function moveChecklistItem(item: ProjectChecklistItem, direction: MoveDirection): Promise<void> {
+    const placement = adjacentPlacement(selectors.checklistItemsForTask(item.taskId), item.id, direction);
+    if (!placement) return;
     await commitMutation(`checklist:${item.id}`, () =>
-      updateProjectChecklistItem(checklistItemUpdatePayload(item, { sortOrder: target.sortOrder })));
-    await commitMutation(`checklist:${target.id}`, () =>
-      updateProjectChecklistItem(checklistItemUpdatePayload(target, { sortOrder: item.sortOrder })));
+      updateProjectChecklistItem(checklistItemUpdatePayload(item, { placement })));
   }
 
   async function removeChecklistItem(itemId: string): Promise<void> {
@@ -705,7 +652,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     projectId: string,
     name: string,
     color: ProjectTag["color"] | null = PROJECT_TAG_DEFAULT_COLOR,
-    identity?: { id: string; sortOrder: number },
+    identity?: ProjectDraftIdentity,
   ): Promise<ProjectTag | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return undefined;
@@ -720,14 +667,14 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       projectId,
       name: displayName,
       color: color ?? PROJECT_TAG_DEFAULT_COLOR,
-      sortOrder: identity?.sortOrder ?? selectors.nextTagSortOrder(projectId),
+      placement: identity?.placement,
     }));
     return changedById(mutation.changed.tags, tagId, "created tag");
   }
 
   async function updateTag(
     tag: ProjectTag,
-    patch: Partial<Pick<ProjectTag, "name" | "color" | "sortOrder">>,
+    patch: Partial<Pick<ProjectTag, "name" | "color">> & PlacementPatch,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? tag.name);
     if (!nextName) return;
@@ -735,15 +682,10 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       updateProjectTag(tagUpdatePayload(tag, { ...patch, name: nextName })));
   }
 
-  async function moveTag(tag: ProjectTag, direction: -1 | 1): Promise<void> {
-    const ordered = selectors.tagsForProject(tag.projectId);
-    const index = ordered.findIndex((entry) => entry.id === tag.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`tag:${tag.id}`, () =>
-      updateProjectTag(tagUpdatePayload(tag, { sortOrder: target.sortOrder })));
-    await commitMutation(`tag:${target.id}`, () =>
-      updateProjectTag(tagUpdatePayload(target, { sortOrder: tag.sortOrder })));
+  async function moveTag(tag: ProjectTag, direction: MoveDirection): Promise<void> {
+    const placement = adjacentPlacement(selectors.tagsForProject(tag.projectId), tag.id, direction);
+    if (!placement) return;
+    await commitMutation(`tag:${tag.id}`, () => updateProjectTag(tagUpdatePayload(tag, { placement })));
   }
 
   async function removeTag(tagId: string): Promise<void> {
@@ -772,7 +714,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       id: emojiId,
       name: displayName,
       assetPath,
-      sortOrder: selectors.nextCustomEmojiSortOrder(),
     }));
     return changedById(mutation.changed.customEmojis, emojiId, "created custom emoji");
   }
@@ -800,7 +741,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       projectId,
       name: displayName,
       fieldType,
-      sortOrder: selectors.nextCustomFieldSortOrder(projectId),
       icon,
     }));
     return changedById(mutation.changed.customFields, fieldId, "created custom field");
@@ -808,7 +748,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
   async function updateCustomField(
     field: ProjectCustomField,
-    patch: Partial<Pick<ProjectCustomField, "name" | "sortOrder" | "icon">>,
+    patch: Partial<Pick<ProjectCustomField, "name" | "icon">> & PlacementPatch,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? field.name);
     if (!nextName) return;
@@ -826,13 +766,13 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     const fieldId = crypto.randomUUID();
     const mutation = await commitMutation(`field:${fieldId}`, () => createProjectCustomField({
       id: fieldId, projectId: field.projectId, name: displayName, fieldType: field.fieldType,
-      sortOrder: selectors.nextCustomFieldSortOrder(field.projectId), icon: field.icon, duplicateSourceId: field.id,
+      icon: field.icon, duplicateSourceId: field.id,
     }));
     return changedById(mutation.changed.customFields, fieldId, "duplicated custom field");
   }
 
-  async function moveCustomField(field: ProjectCustomField, direction: -1 | 1): Promise<void> {
-    await reorderItem(field.projectId, { kind: "custom_field", id: field.id, expectedOrder: field.sortOrder }, direction);
+  async function moveCustomField(field: ProjectCustomField, direction: MoveDirection): Promise<void> {
+    await reorderItem(field.projectId, { kind: "custom_field", id: field.id, expectedOrderKey: field.orderKey }, direction);
   }
 
   async function removeCustomField(fieldId: string): Promise<void> {
@@ -852,14 +792,13 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       id: optionId,
       fieldId,
       name: displayName,
-      sortOrder: selectors.nextCustomFieldOptionSortOrder(fieldId),
     }));
     return changedById(mutation.changed.customFieldOptions, optionId, "created custom field option");
   }
 
   async function updateCustomFieldOption(
     option: ProjectCustomFieldOption,
-    patch: Partial<Pick<ProjectCustomFieldOption, "name" | "sortOrder">>,
+    patch: Partial<Pick<ProjectCustomFieldOption, "name">> & PlacementPatch,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? option.name);
     if (!nextName) return;
@@ -867,11 +806,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       updateProjectCustomFieldOption(customFieldOptionUpdatePayload(option, { ...patch, name: nextName })));
   }
 
-  async function moveCustomFieldOption(option: ProjectCustomFieldOption, direction: -1 | 1): Promise<void> {
+  async function moveCustomFieldOption(option: ProjectCustomFieldOption, direction: MoveDirection): Promise<void> {
     const field = selectors.customFieldById(option.fieldId);
     if (!field) throw new Error("The custom field is no longer loaded");
     await reorderItem(field.projectId, {
-      kind: "custom_field_option", id: option.id, fieldId: option.fieldId, expectedOrder: option.sortOrder,
+      kind: "custom_field_option", id: option.id, fieldId: option.fieldId, expectedOrderKey: option.orderKey,
     }, direction);
   }
 
@@ -998,32 +937,32 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await updateTask(task, { taskType });
   }
 
-  async function moveTaskInSection(task: ProjectTask, direction: -1 | 1): Promise<void> {
+  async function moveTaskInSection(task: ProjectTask, direction: MoveDirection): Promise<void> {
     if (task.parentTaskId) return;
     await reorderTask(task, "section", direction);
   }
 
-  async function moveTaskInStatus(task: ProjectTask, direction: -1 | 1): Promise<void> {
+  async function moveTaskInStatus(task: ProjectTask, direction: MoveDirection): Promise<void> {
     if (task.parentTaskId) return;
     await reorderTask(task, "status", direction);
   }
 
-  async function moveSubtask(task: ProjectTask, direction: -1 | 1): Promise<void> {
+  async function moveSubtask(task: ProjectTask, direction: MoveDirection): Promise<void> {
     if (!task.parentTaskId) return;
     await reorderTask(task, "section", direction);
   }
 
   /** Reorder natively, since sibling selection must include rows outside the loaded view. */
-  async function reorderTask(task: ProjectTask, axis: "section" | "status", direction: -1 | 1): Promise<void> {
+  async function reorderTask(task: ProjectTask, axis: "section" | "status", direction: MoveDirection): Promise<void> {
     await reorderItem(task.projectId, {
       kind: "task", id: task.id, axis, parentTaskId: task.parentTaskId ?? null,
       groupId: axis === "section" ? task.sectionId : task.statusId,
-      expectedOrder: axis === "section" ? task.sectionSortOrder : task.statusSortOrder,
+      expectedOrderKey: axis === "section" ? task.sectionOrderKey : task.statusOrderKey,
     }, direction);
   }
 
   /** Reorder one item, reusing the intent's operation id until a response is accepted. */
-  async function reorderItem(projectId: string, item: ProjectReorderItem, direction: -1 | 1): Promise<void> {
+  async function reorderItem(projectId: string, item: ProjectReorderItem, direction: MoveDirection): Promise<void> {
     const loadGeneration = readLoadGeneration();
     if (bulkLoadGeneration !== loadGeneration) {
       pendingBulkOperations.clear();
@@ -1040,8 +979,8 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     if (!task.parentTaskId) return;
     await updateTask(task, {
       parentTaskId: undefined,
-      sectionSortOrder: selectors.nextTaskSectionSortOrder(task.projectId, task.sectionId),
-      statusSortOrder: selectors.nextTaskStatusSortOrder(task.projectId, task.statusId),
+      sectionPlacement: { kind: "end" },
+      statusPlacement: { kind: "end" },
     });
   }
 
@@ -1052,7 +991,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await updateTask(task, {
       parentTaskId: parentTask.id,
       sectionId: parentTask.sectionId,
-      sectionSortOrder: selectors.nextSubtaskSortOrder(parentTask.id),
+      sectionPlacement: { kind: "end" },
     });
   }
 
@@ -1083,9 +1022,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
   async function addTaskDependency(blockingTaskId: string, blockedTaskId: string): Promise<void> {
     if (!blockingTaskId || !blockedTaskId || blockingTaskId === blockedTaskId) return;
-    const id = crypto.randomUUID();
-    await commitMutation(`dependency:${id}`, () => createProjectTaskDependency({
-      id,
+    await commitMutation(`dependency:${blockingTaskId}:${blockedTaskId}`, () => createProjectTaskDependency({
       blockingTaskId,
       blockedTaskId,
       dependencyType: "blocks",
@@ -1095,6 +1032,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function removeTaskDependency(dependencyId: string): Promise<void> {
     await commitMutation(`dependency:${dependencyId}`, () =>
       deleteProjectTaskDependency(dependencyId));
+  }
+
+  /**
+   * Resolve a sync conflict on every linked device and apply the rows it changed.
+   *
+   * @throws {ProjectConflictError} When the conflict is gone or restoring a hidden dependency would recreate its cycle.
+   */
+  async function resolveConflict(resolution: ProjectConflictResolution): Promise<void> {
+    const key = resolution.kind === "field"
+      ? `conflict:${resolution.target}:${resolution.id}:${resolution.field}`
+      : `conflict:dependency:${resolution.blockingTaskId}:${resolution.blockedTaskId}`;
+    await commitMutation(key, () => resolveProjectConflict(resolution));
   }
 
 
@@ -1148,13 +1097,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   /** Apply a complete view order optimistically and restore the previous order when the backend refuses it. */
   async function reorderViews(projectId: string, viewIds: readonly string[]): Promise<void> {
     const previous = readSnapshot().views;
-    const orders = new Map(viewIds.map((id, index) => [id, (index + 1) * 1000]));
+    const orders = provisionalOrderKeys(viewIds);
     updateSnapshot((current) => ({
       ...current,
-      views: current.views.map((view) => {
-        const sortOrder = orders.get(view.id);
-        return view.projectId === projectId && sortOrder !== undefined ? { ...view, sortOrder } : view;
-      }),
+      views: current.views.map((view) =>
+        view.projectId === projectId ? withOrderKey(view, orders.get(view.id)) : view),
     }));
     try {
       await commitMutation(`view-order:${projectId}`, () => reorderProjectViews(projectId, viewIds));
@@ -1248,6 +1195,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     searchLinkableEvents,
     addTaskDependency,
     removeTaskDependency,
+    resolveConflict,
     saveViewPreference,
     saveTaskListColumns,
     saveTaskListColumnWidths,

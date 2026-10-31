@@ -1,28 +1,27 @@
 //! Note images: ordered rows that reference content-addressed files under
-//! [`IMAGES_DIR`], importing and reading those files, and removing files that nothing
-//! references any more.
+//! [`IMAGES_DIR`], and importing and reading those files. The managed asset sweep of
+//! `ganbaru-sync-replica` removes files that nothing references any more.
 //!
 //! A file is named by the lowercase hex SHA-256 of its bytes and the extension of its type, so
 //! notes on every device share one copy of identical images and a name proves its contents.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use ganbaru_image_metadata::{
     ManagedImageKind, ManagedImageMetadataError, parse_display_image_metadata,
     validate_image_dimensions,
 };
+use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::domains::quick_notes::{
     ImageError, NoteImage, decode_images, images_blob, validate_image, validate_images,
 };
 pub use ganbaru_sync::domains::quick_notes::{
     MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, MAX_IMAGES,
 };
-use ganbaru_sync::local::retained_group_values;
-use ganbaru_sync::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use ganbaru_sync_contracts::Value;
 use ring::digest::{SHA256, digest};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -34,11 +33,6 @@ pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
 
 /// Vault-relative directory of note image files.
 pub const IMAGES_DIR: &str = "assets/quick-notes/images";
-
-/// How long an unreferenced file survives. A file imported for a note that has not saved yet,
-/// or one that a sync exchange just delivered, is unreferenced for a moment; the grace period
-/// keeps cleanup from racing those writes.
-const UNREFERENCED_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// A note's reference to an image file, with the displayed dimensions for layout.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -112,44 +106,6 @@ impl QuickNoteImageFile {
             ));
         }
         Ok(format!("{}.{}", self.sha256, kind.extension()))
-    }
-}
-
-/// An image file that something in the vault references, with its exact size, as sync
-/// compares and moves files between devices.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReferencedImage {
-    file: QuickNoteImageFile,
-    byte_size: u32,
-}
-
-impl ReferencedImage {
-    /// Checks the digest, type, and size of a reference.
-    pub fn new(
-        sha256: String,
-        content_type: String,
-        byte_size: u32,
-    ) -> Result<Self, QuickNoteImageError> {
-        if !is_digest(&sha256) {
-            return Err(QuickNoteImageError::Unsupported);
-        }
-        let file = QuickNoteImageFile::new(sha256, content_type);
-        file.file_name()?;
-        if byte_size == 0 {
-            return Err(QuickNoteImageError::Unsupported);
-        }
-        if byte_size > MAX_IMAGE_BYTES {
-            return Err(QuickNoteImageError::TooLarge);
-        }
-        Ok(Self { file, byte_size })
-    }
-
-    pub fn file(&self) -> &QuickNoteImageFile {
-        &self.file
-    }
-
-    pub fn byte_size(&self) -> u32 {
-        self.byte_size
     }
 }
 
@@ -488,202 +444,22 @@ pub fn read_image(
     Ok(bytes)
 }
 
-/// Every image file that a note, an open conflict, or a recovery offer references, ordered by
-/// digest.
-pub async fn referenced_images(pool: &SqlitePool) -> Result<Vec<ReferencedImage>, String> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|error| format!("open quick note image references: {error}"))?;
-    let rows = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT DISTINCT sha256, content_type, byte_size FROM quick_note_images",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|error| format!("load quick note image references: {error}"))?;
-    let mut referenced = BTreeMap::new();
-    for (sha256, content_type, byte_size) in rows {
-        let byte_size = stored_u32(byte_size, "image size")?;
-        referenced.insert(sha256.clone(), (sha256, content_type, byte_size));
+/// Checks a Quick note image that sync received, given the file that holds its bytes after
+/// their size and digest matched the reference: the bytes must be a supported image within the
+/// limits, of the content type the reference names. Sync registers it as the check of
+/// [`ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS`].
+pub fn check_synced_image(asset: &AssetRef, path: &Path) -> Result<(), String> {
+    let bytes = read_capped(path)
+        .map_err(|error| format!("read synced quick note image: {error}"))?
+        .map_err(|_| "the image exceeds the image size limit".to_string())?;
+    let described = describe_image(&bytes)
+        .map_err(|error| format!("the bytes are not a supported image: {error:?}"))?;
+    if described.content_type != asset.content_type() {
+        return Err(format!(
+            "the bytes are {} but the reference names {}",
+            described.content_type,
+            asset.content_type()
+        ));
     }
-    let retained = retained_group_values(&mut conn, NOTES_TABLE, note_group::IMAGES)
-        .await
-        .map_err(|error| format!("load retained quick note images: {error}"))?;
-    for value in retained {
-        for image in images_from_value(&value)? {
-            referenced.insert(
-                image.sha256.clone(),
-                (image.sha256, image.content_type, image.byte_size),
-            );
-        }
-    }
-    referenced
-        .into_values()
-        .map(|(sha256, content_type, byte_size)| {
-            ReferencedImage::new(sha256, content_type, byte_size)
-                .map_err(|error| format!("quick note image reference is invalid: {error:?}"))
-        })
-        .collect()
-}
-
-/// Digests that a note, an open conflict, or a recovery offer still references.
-async fn referenced_digests(pool: &SqlitePool) -> Result<HashSet<String>, String> {
-    Ok(referenced_images(pool)
-        .await?
-        .into_iter()
-        .map(|image| image.file.sha256)
-        .collect())
-}
-
-/// Whether the vault holds a regular file for the image at its exact size. The digest is
-/// checked when the file is read, not here, so the check stays cheap for every reference.
-pub fn holds_image(
-    vault_root: &Path,
-    image: &ReferencedImage,
-) -> Result<bool, QuickNoteImageError> {
-    let path = image_path(vault_root, &image.file)?;
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) => Ok(metadata.is_file() && metadata.len() == u64::from(image.byte_size)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(io_failure("inspect quick note image", error)),
-    }
-}
-
-/// Reads at most `max_len` bytes of an image file from `offset`. The file must be held at its
-/// exact size; the receiver verifies the assembled bytes.
-pub fn read_image_chunk(
-    vault_root: &Path,
-    image: &ReferencedImage,
-    offset: u32,
-    max_len: usize,
-) -> Result<Vec<u8>, QuickNoteImageError> {
-    if offset >= image.byte_size || !holds_image(vault_root, image)? {
-        return Err(QuickNoteImageError::Unavailable);
-    }
-    let path = image_path(vault_root, &image.file)?;
-    let mut file =
-        fs::File::open(&path).map_err(|error| io_failure("open quick note image", error))?;
-    file.seek(SeekFrom::Start(u64::from(offset)))
-        .map_err(|error| io_failure("read quick note image", error))?;
-    let len = max_len.min((image.byte_size - offset) as usize);
-    let mut bytes = Vec::with_capacity(len);
-    file.take(len as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_failure("read quick note image", error))?;
-    if bytes.len() != len {
-        return Err(QuickNoteImageError::Unavailable);
-    }
-    Ok(bytes)
-}
-
-/// Stores image bytes that another device sent for a reference, after checking that they are
-/// a supported image within the limits and that their digest and type match the reference.
-/// Bytes that do not match the reference are `Unavailable`; only `Failed` is a local fault.
-pub fn store_image(
-    vault_root: &Path,
-    image: &ReferencedImage,
-    bytes: &[u8],
-) -> Result<(), QuickNoteImageError> {
-    if bytes.len() != image.byte_size as usize {
-        return Err(QuickNoteImageError::Unavailable);
-    }
-    let described = describe_image(bytes)?;
-    if described.sha256 != image.file.sha256 || described.content_type != image.file.content_type {
-        return Err(QuickNoteImageError::Unavailable);
-    }
-    write_image_file(&images_dir(vault_root), &image.file.file_name()?, bytes)
-}
-
-/// Copies the image files of `current` that `replacement` lacks into `replacement`, before a
-/// whole-vault replacement, so images only this device holds survive until sync sends them.
-/// Files whose bytes do not match their names are left behind. Returns how many were copied.
-pub fn carry_images(current: &Path, replacement: &Path) -> Result<usize, String> {
-    let entries = match fs::read_dir(images_dir(current)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("list quick note images: {error}")),
-    };
-    let target = images_dir(replacement);
-    let mut copied = 0;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("list quick note images: {error}"))?;
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        let Some((digest, extension)) = name.split_once('.') else {
-            continue;
-        };
-        if !is_digest(digest) || ManagedImageKind::from_extension(extension).is_none() {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|error| format!("inspect quick note image: {error}"))?;
-        if !metadata.is_file() || target.join(&name).exists() {
-            continue;
-        }
-        let bytes = match read_capped(&entry.path())
-            .map_err(|error| format!("read quick note image: {error}"))?
-        {
-            Ok(bytes) if hex_digest(&bytes) == digest => bytes,
-            _ => continue,
-        };
-        write_image_file(&target, &name, &bytes)
-            .map_err(|error| format!("keep quick note image: {error:?}"))?;
-        copied += 1;
-    }
-    Ok(copied)
-}
-
-/// Deletes image files that nothing references and that are older than the grace period.
-/// Returns how many files were deleted.
-pub async fn collect_unreferenced_images(
-    pool: &SqlitePool,
-    vault_root: &Path,
-) -> Result<u64, String> {
-    collect_unreferenced_images_before(pool, vault_root, SystemTime::now()).await
-}
-
-pub(crate) async fn collect_unreferenced_images_before(
-    pool: &SqlitePool,
-    vault_root: &Path,
-    now: SystemTime,
-) -> Result<u64, String> {
-    let referenced = referenced_digests(pool).await?;
-    let dir = images_dir(vault_root);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("list quick note images: {error}")),
-    };
-    let mut deleted = 0;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("list quick note images: {error}"))?;
-        let name = entry.file_name();
-        let digest = name
-            .to_str()
-            .and_then(|name| name.split_once('.'))
-            .map(|(stem, _)| stem);
-        if digest.is_some_and(|digest| referenced.contains(digest)) {
-            continue;
-        }
-        // Only regular files are removed; links and directories are not the app's to delete.
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|error| format!("inspect quick note image: {error}"))?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let modified = metadata
-            .modified()
-            .map_err(|error| format!("inspect quick note image: {error}"))?;
-        let age = now.duration_since(modified).unwrap_or_default();
-        if age < UNREFERENCED_GRACE {
-            continue;
-        }
-        match fs::remove_file(entry.path()) {
-            Ok(()) => deleted += 1,
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("delete quick note image: {error}")),
-        }
-    }
-    Ok(deleted)
+    Ok(())
 }

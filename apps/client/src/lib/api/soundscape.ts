@@ -7,6 +7,7 @@ import {
   parseMusicSoundscapes,
   parseMusicSoundscapeSnapshot,
   parseMusicSoundscapeState,
+  presetWriteWire,
   type MusicSoundscapeDefinition,
   type MusicSoundscapePreset,
   type MusicSoundscapePresetWrite,
@@ -16,10 +17,11 @@ import {
   type MusicSoundscapeStateWrite,
   type MusicSoundscapeWrite,
 } from "$lib/music/soundscape/contracts";
+import { toThousandths } from "$lib/music/thousandths";
 
 export const getMusicSoundscapes = async (): Promise<MusicSoundscapeDefinition[]> => parseMusicSoundscapes(await invoke<unknown>("music_library_soundscapes", { dbUrl: dbUrl() }));
 export const getMusicSoundscapePresets = async (): Promise<MusicSoundscapePreset[]> => parseMusicSoundscapePresets(await invoke<unknown>("music_library_soundscape_presets", { dbUrl: dbUrl() }));
-export const upsertMusicSoundscapePreset = async (request: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_upsert_soundscape_preset", { dbUrl: dbUrl(), request }));
+export const upsertMusicSoundscapePreset = async (request: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_upsert_soundscape_preset", { dbUrl: dbUrl(), request: presetWriteWire(request) }));
 export const removeMusicSoundscapePreset = (presetId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape_preset", { dbUrl: dbUrl(), presetId, expectedVersion });
 export const upsertMusicSoundscape = async (request: MusicSoundscapeWrite): Promise<MusicSoundscapeDefinition> => parseMusicSoundscape(await invoke<unknown>("music_library_upsert_soundscape", { dbUrl: dbUrl(), request }));
 export const removeMusicSoundscape = (soundscapeId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape", { dbUrl: dbUrl(), soundscapeId, expectedVersion });
@@ -31,8 +33,8 @@ export const resumeSoundscape = async (): Promise<MusicSoundscapeSnapshot> => pa
 export const stopSoundscape = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_stop"));
 /** Applies a preset level to the output that is playing, without saving it. */
 export const setSoundscapePresetLevel = async (level: number): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_set_preset_level", { level }));
-/** Saves a preset level; the latest write wins instead of conflicting, because it follows a slider. */
-export const saveMusicSoundscapePresetLevel = async (presetId: string, level: number, updatedAtMs: number): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_set_soundscape_preset_level", { dbUrl: dbUrl(), presetId, level, updatedAtMs }));
+/** Saves a preset level multiplier as thousandths; the latest write wins instead of conflicting, because it follows a slider. */
+export const saveMusicSoundscapePresetLevel = async (presetId: string, level: number, updatedAtMs: number): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_set_soundscape_preset_level", { dbUrl: dbUrl(), presetId, levelMilli: toThousandths(level), updatedAtMs }));
 export const setSoundscapeLevels = async (levels: number[]): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_set_levels", { levels }));
 export const recoverSoundscape = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_recover"));
 export const getSoundscapeSnapshot = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_snapshot"));

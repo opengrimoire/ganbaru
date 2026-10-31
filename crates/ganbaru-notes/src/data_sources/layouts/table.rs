@@ -263,7 +263,7 @@ async fn write_row_property_tx(
     let row = load_active_row_page_tx(tx, data_source_id, page_id).await?;
     page_history::record_page_snapshot_tx(tx, page_id, "update_database_row_property").await?;
     let current_properties = parse_json(&row.properties, "row page properties")?;
-    let (mut title, mut properties) =
+    let (mut title, properties) =
         normalized_row_properties(schema, &current_properties, &row.title)?;
     let previous_date = properties
         .get(&property.key)
@@ -272,39 +272,35 @@ async fn write_row_property_tx(
     if property.property_type == "title" {
         title = title_from_property_value(&next_value).unwrap_or_default();
     }
-    properties[property.key.as_str()] = next_value;
-    let relation_value = if property.property_type == "relation" {
-        Some(
-            properties
-                .get(&property.key)
-                .cloned()
-                .ok_or_else(|| "relation property value was not stored".to_string())?,
-        )
-    } else {
-        None
-    };
     sqlx::query(
         "UPDATE notes_pages
          SET title = ?,
-             properties = ?,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND parent_type = 'data_source_id' AND parent_data_source_id = ?",
     )
     .bind(&title)
-    .bind(properties.to_string())
     .bind(page_id.trim())
     .bind(data_source_id.trim())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("update notes data source row property: {e}"))?;
-    if let Some(relation_value) = relation_value {
+    let property_type = property.property_type.as_str();
+    if property_type == "relation" {
         data_sources::relations::replace_relation_property_links_tx(
             tx,
             data_source_id.trim(),
             page_id.trim(),
             &property.schema,
-            &relation_value,
-            true,
+            &next_value,
+        )
+        .await?;
+    } else if !crate::page_property_storage::UNSTORED_VALUE_TYPES.contains(&property_type) {
+        crate::page_property_storage::write_page_property_value(
+            tx,
+            page_id.trim(),
+            &property.id,
+            property_type,
+            next_value.get(property_type).unwrap_or(&Value::Null),
         )
         .await?;
     }
@@ -440,7 +436,7 @@ pub(crate) async fn ensure_table_view_row_tx(
         "generated_database_view_id",
     )
     .await?;
-    let sort_order = data_sources::views::next_view_sort_order_tx(tx, database_id).await?;
+    let order_key = data_sources::views::next_view_order_key_tx(tx, database_id).await?;
     sqlx::query(
         "INSERT INTO notes_database_views (
             id,
@@ -450,7 +446,7 @@ pub(crate) async fn ensure_table_view_row_tx(
             type,
             sorts,
             configuration,
-            sort_order
+            order_key
          )
          VALUES (?, ?, ?, 'Table', 'table', '[]', ?, ?)",
     )
@@ -461,7 +457,7 @@ pub(crate) async fn ensure_table_view_row_tx(
         &data_source.properties,
         "data source properties",
     )?)?)
-    .bind(sort_order)
+    .bind(order_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert notes table view: {e}"))?;
@@ -480,15 +476,16 @@ pub(crate) async fn load_active_row_pages_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<Vec<NotePageRow>, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          WHERE page.parent_type = 'data_source_id'
            AND page.parent_data_source_id = ?
            AND page.in_trash = 0
            AND page.archived = 0
          ORDER BY page.last_edited_time DESC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(data_source_id.trim())
     .fetch_all(&mut **tx)
     .await
@@ -500,15 +497,16 @@ pub(crate) async fn load_active_row_page_tx(
     data_source_id: &str,
     page_id: &str,
 ) -> Result<NotePageRow, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          WHERE page.id = ?
            AND page.parent_type = 'data_source_id'
            AND page.parent_data_source_id = ?
            AND page.in_trash = 0
            AND page.archived = 0",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(page_id.trim())
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
@@ -754,6 +752,7 @@ fn normalized_row_properties(
         }
         let value = existing_property_value(current_object, property)
             .and_then(|value| canonical_stored_property_value(property, value).ok())
+            .or_else(|| mismatched_property_value(current_object, property))
             .unwrap_or_else(|| default_property_value(property, fallback_title));
         if property.property_type == "title" {
             title = title_from_property_value(&value).unwrap_or_else(|| fallback_title.to_string());
@@ -775,6 +774,26 @@ fn existing_property_value<'a>(
                 .values()
                 .find(|value| property_value_matches_schema(property, value))
         })
+}
+
+/// A stored value for `property` written under another property type. It reads with its own type until the next
+/// edit of that cell replaces it, so a schema type change never discards it silently.
+fn mismatched_property_value(
+    current: &Map<String, Value>,
+    property: &TableProperty,
+) -> Option<Value> {
+    current
+        .get(&property.key)
+        .into_iter()
+        .chain(current.values())
+        .find(|value| {
+            crate::page_property_storage::is_mismatched_value(
+                value,
+                &property.id,
+                &property.property_type,
+            )
+        })
+        .cloned()
 }
 
 fn property_value_matches_schema(property: &TableProperty, value: &Value) -> bool {

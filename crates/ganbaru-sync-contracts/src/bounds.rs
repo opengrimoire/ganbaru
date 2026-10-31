@@ -1,4 +1,5 @@
-//! Size limits every replica enforces when encoding and decoding operations.
+//! Size limits every replica enforces when encoding and decoding operations, certificates, and
+//! authorization entries.
 //!
 //! The limits derive from the 1 MiB transport control frame. Tightening one changes which
 //! operations are valid, so it requires a manifest version bump that keeps the old rule for
@@ -35,3 +36,73 @@ pub const MAX_WRITERS_PER_SPACE: usize = 4_096;
 /// successor only after a restore, a copied database, a lost key, or a clone, so this is far
 /// above honest use while it keeps one linked device from flooding the space.
 pub const MAX_WRITERS_PER_DEVICE: usize = 64;
+/// Largest device label in an enrollment, matching the handoff device label rule.
+pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
+/// Length of a TLS certificate fingerprint: the SHA-256 of the DER certificate.
+pub const TLS_FINGERPRINT_BYTES: usize = 32;
+/// Length of a vault discovery key.
+pub const DISCOVERY_KEY_BYTES: usize = 32;
+/// Largest writer certificate encoding: the longest device id and a predecessor.
+pub const MAX_CERTIFICATE_BYTES: usize =
+    1 + 32 + (1 + MAX_DEVICE_ID_BYTES) + 32 + 8 + (1 + 16) + 64;
+/// Largest space charter encoding: the longest anchor device id.
+pub const MAX_CHARTER_BYTES: usize = 1
+    + 16
+    + (1 + MAX_DEVICE_ID_BYTES)
+    + 32
+    + TLS_FINGERPRINT_BYTES
+    + 32
+    + 32
+    + DISCOVERY_KEY_BYTES
+    + 8
+    + 64;
+/// Cutoffs one removal lists: one per writer the removed device certified.
+pub const MAX_REMOVAL_CUTOFFS: usize = MAX_WRITERS_PER_DEVICE;
+/// Rows one late change resolution decides.
+pub const MAX_LATE_RESOLUTIONS: usize = MAX_CHANGES_PER_OPERATION;
+/// Most operations one apply group spans. A group is a run of one writer's operations that a
+/// receiver applies in one transaction, see [`crate::op::ends_group`]. [`MAX_GROUP_BYTES`]
+/// bounds the changes of a group; this bound caps the per-operation work, such as decoding and
+/// readiness checks, that a writer marking every operation as continuing adds to one transaction.
+/// Honest groups stay far below it: filled operations reach hundreds of KiB, so the byte bound
+/// ends a group of them after a few operations.
+pub const MAX_OPERATIONS_PER_GROUP: usize = 64;
+/// Envelope bytes at which an apply group ends: the operation that reaches them closes it
+/// whatever its header says, so a group holds at most this plus one operation. The densest group
+/// a writer can force, small Music updates each marked as continuing, holds about 15,000 changes
+/// and applies in about 7 seconds on a release build.
+pub const MAX_GROUP_BYTES: usize = 1 << 20;
+/// Most operations of one chain: a run of a writer's operations that each mark the next as
+/// continuing, which a local edit too large for one group seals as. A receiver applies no
+/// group of a chain until the whole chain is stored and closed, then applies it in bounded
+/// groups over several transactions. Between two of its groups, a receiver that can seal defers
+/// every repair, so a state between two groups of one edit never becomes a repair; after its
+/// last group, the rows it touched are taken back and repaired a bounded number per
+/// transaction, together with the rows that reference them. A receiver that can seal starts one
+/// chain at a time, and only once the rows the previous one deferred were taken back, so every
+/// deferral ends. Of the chains that could start, the one whose last operation the receiver
+/// stored first starts, whatever the clocks say, so a writer cannot keep another writer's chain
+/// waiting by sending chains with low clocks. A chain closes at an operation that does not
+/// continue, before its writer's cutoff, an excluded operation, or an invalid one, and at this
+/// many operations. A chain that never closes applies nothing and holds back only its writer's
+/// later operations. A dense Music library refresh of 6,000 items spans 9 operations and one of
+/// the longest metadata 19.
+pub const MAX_OPERATIONS_PER_CHAIN: usize = 256;
+/// Envelopes one key epoch entry carries: one per live device key plus the recovery key. Every
+/// device certifies at least one writer, so the writer bound caps the devices.
+pub const MAX_KEY_RECIPIENTS: usize = MAX_WRITERS_PER_SPACE + 1;
+/// Endpoints one server configuration lists.
+pub const MAX_SERVER_ENDPOINTS: usize = 4;
+/// Largest server endpoint, `host:port`, in bytes.
+pub const MAX_SERVER_ENDPOINT_BYTES: usize = 255;
+/// Largest relay record plaintext: one operation and one writer certificate, each with a u32
+/// length.
+pub const MAX_RELAY_RECORD_PLAINTEXT_BYTES: usize =
+    MAX_OPERATION_BYTES + MAX_CERTIFICATE_BYTES + 4 + 4;
+/// Plaintext bytes of every relay asset chunk but the last, equal to the chunk of a paired sync
+/// asset pull.
+pub const RELAY_ASSET_CHUNK_BYTES: usize = 600 * 1024;
+/// Largest asset a relay carries, equal to the largest asset a paired sync pull moves.
+pub const MAX_RELAY_ASSET_BYTES: usize = 64 * 1024 * 1024;
+/// Most chunks of one relay asset.
+pub const MAX_RELAY_ASSET_CHUNKS: usize = MAX_RELAY_ASSET_BYTES.div_ceil(RELAY_ASSET_CHUNK_BYTES);

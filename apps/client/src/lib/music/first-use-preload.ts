@@ -1,5 +1,7 @@
 import { musicBuilderLoader } from "$lib/music/builder/loader";
-import { onMusicLibraryChanged } from "$lib/music/library/events";
+import { listenSyncApplied } from "$lib/api/sync";
+import { notifyMusicLibraryChanged, onMusicLibraryChanged } from "$lib/music/library/events";
+import { listenForMusicReplication } from "$lib/music/library/replication";
 import { getMusicPlaylistSummaryCache } from "$lib/music/playlists/summary-cache.svelte";
 import { getMusicSourcesController } from "$lib/music/sources/controller.svelte";
 import {
@@ -49,8 +51,12 @@ export function startMusicFirstUsePreload(): () => void {
   const stopLibraryListener = onMusicLibraryChanged(() => {
     void getMusicPlaylistSummaryCache().refresh();
   });
+  const stopReplicationListener = listenForMusicReplication(listenSyncApplied, () => {
+    void getMusicSourcesController().load().then(() => notifyMusicLibraryChanged());
+  });
   return () => {
     stopVaultListener();
     stopLibraryListener();
+    stopReplicationListener();
   };
 }

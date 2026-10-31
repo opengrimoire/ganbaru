@@ -48,6 +48,8 @@ pub async fn projects_unlink_task_tag<R: Runtime>(
     relationship_commands::unlink_task_tag(&pool, task_id, tag_id).await
 }
 
+/// Links a task to a Calendar event. The link and the event's project live in Calendar tables,
+/// which linked replicas write like the owner.
 #[tauri::command]
 pub async fn projects_link_task_event<R: Runtime>(
     app: AppHandle<R>,
@@ -58,6 +60,7 @@ pub async fn projects_link_task_event<R: Runtime>(
     relationship_commands::link_task_event(&pool, link).await
 }
 
+/// Unlinks a task from a Calendar event.
 #[tauri::command]
 pub async fn projects_unlink_task_event<R: Runtime>(
     app: AppHandle<R>,

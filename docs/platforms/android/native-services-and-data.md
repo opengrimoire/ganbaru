@@ -4,7 +4,7 @@
 
 Android creates the active vault in application-private storage. The user cannot choose another live-vault path because Android document providers do not offer a safe writable folder with desktop semantics. The displayed data location is informational; reveal-in-file-manager and live-folder switching are absent.
 
-First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of a portable Android backup.
+First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of an encrypted backup with its recovery kit.
 
 ## Folder import
 
@@ -12,15 +12,15 @@ Import uses the system directory-tree picker and streams the selected folder int
 
 ## Portable backup and restore
 
-Backup writes a consistent SQLite snapshot and bounded archive to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded.
+Backup writes an encrypted backup (see [backups](../../data/sync.md#bootstrap-assets-backup-and-compaction)) of a consistent SQLite snapshot to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded. The vault needs a recovery kit first, which Settings > Data creates; Android shows its code to copy by hand and offers no printable page or text file.
 
-Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure.
+Restore uses the system document picker without a file type filter, because providers report backup files under arbitrary types, and relies on the format's magic and authentication instead. The kit opens a backup on a fresh install. Restore decrypts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure. It replaces the active vault, keeping the replaced database in `.database-rollbacks/`; a phone linked to other devices refuses and asks the user to restore on a computer or unlink first.
 
-The portable format is the recovery path after reinstall. Android system backup and device transfer exclude the unencrypted live vault until a deliberate encrypted design exists.
+The encrypted backup is the recovery path after reinstall. Android system backup and device transfer exclude the live vault.
 
-## Linked desktop handoff
+## Linked desktop copies
 
-The handoff protocol is owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, ownership generation, transfer state, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before the first ownership activation replaces an independent vault, Android exports it to Downloads and also keeps a private rollback copy; backup failure aborts the transfer.
+Linking and snapshot bootstrap are owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, the pending copy, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before a first link replaces an independent vault, Android writes it as a portable backup into application-private replaced-vault storage, keeping the two newest; Settings > Data lists them with Restore, Export to Downloads, and Delete. Restore reads the copy only from that private storage by its identifier, places it like a restored backup with the active vault kept as a rollback copy, and is refused while the phone is linked; devices its sync log enrolled earlier and removed do not count. Restoring a rollback copy of another vault is refused the same way. Backup failure refuses the link with a storage message and leaves the vault in use. Replaced-vault backups are local only, so uninstalling the app removes them unless they were exported.
 
 After activation, startup reconciles Calendar notifications and anti-distraction projections. Device-local alarms, native enforcement, Media3 state, permissions, and document-tree grants are not replaced by the incoming vault.
 
@@ -59,9 +59,9 @@ Local audio uses a Media3 session service and ExoPlayer, which own background pl
 
 Selected-app rules run in a private `:guardian` process that holds alarm handling, ongoing notification coordination, Usage Access reads, the opt-in Accessibility Service, validated rule projections, and a bounded native journal. Only the guardian opens its private preferences and journal database, and non-exported providers validate rule projections and journal imports.
 
-The current owner writes normalized usage and block history to canonical SQLite. A non-owner keeps usage in the private journal and exchanges stable sample IDs through the authenticated coordinator, as described in [device linking](../../data/sync.md). User configuration remains in the active vault `config.json`.
+The app imports its journaled usage and block history into canonical SQLite, where they replicate as described in [device linking](../../data/sync.md); until then they stay in the private journal. Rules are replicated vault data in SQLite; Android reads the assembled rules natively.
 
-One serialized Rust publisher synchronizes the journal and derives budgets from persisted configuration. The guardian captures its counter baseline and pending journal under one lock so usage is never counted twice. The frontend supplies only localized copy and reads cached budgets; it has no accounting or enforcement authority. Configuration, vault, handoff, and failed-publication boundaries revoke obsolete rules. If the application process exits, the guardian keeps enforcing its last accepted local policy.
+One serialized Rust publisher synchronizes the journal and derives budgets from persisted configuration. The guardian captures its counter baseline and pending journal under one lock so usage is never counted twice. The frontend supplies only localized copy and reads cached budgets; it has no accounting or enforcement authority. Configuration, vault, snapshot bootstrap, and failed-publication boundaries revoke obsolete rules. If the application process exits, the guardian keeps enforcing its last accepted local policy.
 
 ## Managed files
 
@@ -69,4 +69,4 @@ Profile images, project icons, custom emoji, Notes icons, covers, attachments, a
 
 ## Deferrable work
 
-WorkManager is appropriate for deferrable maintenance and future sync. It must not own Pomodoro deadlines, Calendar reminders, active Music playback, or real-time selected-app enforcement.
+WorkManager owns background sync and is appropriate for other deferrable maintenance. Sync work never runs as a foreground service; see [sync](../../data/sync.md#settings-and-android-delivery). The member sync listener belongs to the visible app only: the WebView reports visibility changes to Rust, which starts the listener on the next app pass and stops it when the app is hidden, so a WorkManager pass never accepts connections. While the sync space uses a relay, a separate periodic relay worker runs on any connected network rather than only the local one; it tells Rust whether the network is metered (unknown counts as metered), and a metered pass moves asset files only up to 1 MiB, leaving larger ones for an unmetered pass. WorkManager must not own Pomodoro deadlines, Calendar reminders, active Music playback, or real-time selected-app enforcement.

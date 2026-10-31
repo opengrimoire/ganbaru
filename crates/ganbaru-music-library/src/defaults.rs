@@ -1,7 +1,3 @@
-use std::collections::HashSet;
-
-use sqlx::SqlitePool;
-
 use super::{MusicLibraryError, MusicLibraryResult};
 
 #[derive(Clone, Copy)]
@@ -82,46 +78,4 @@ pub(super) fn reject_built_in_playlist_delete(id: &str) -> MusicLibraryResult<()
         ));
     }
     Ok(())
-}
-
-pub(super) async fn ensure_built_in_music_playlists(pool: &SqlitePool) -> MusicLibraryResult<()> {
-    let mut query =
-        sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT id FROM music_playlists WHERE id IN (");
-    {
-        let mut separated = query.separated(", ");
-        for playlist in BUILT_IN_MUSIC_PLAYLISTS {
-            separated.push_bind(playlist.id);
-        }
-    }
-    query.push(")");
-    let existing: HashSet<String> = query
-        .build_query_scalar()
-        .fetch_all(pool)
-        .await
-        .map_err(|error| MusicLibraryError::database("check built-in music playlists", error))?
-        .into_iter()
-        .collect();
-    if existing.len() == BUILT_IN_MUSIC_PLAYLISTS.len() {
-        return Ok(());
-    }
-
-    let mut transaction = pool.begin().await.map_err(|error| {
-        MusicLibraryError::database("begin built-in music playlist repair", error)
-    })?;
-    for playlist in BUILT_IN_MUSIC_PLAYLISTS {
-        sqlx::query(
-            "INSERT OR IGNORE INTO music_playlists
-                (id, name, icon, shuffle_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms, version)
-             VALUES (?, ?, ?, 1, 'all', (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM music_playlists), 1, 1, 1)",
-        )
-        .bind(playlist.id)
-        .bind(playlist.name)
-        .bind(playlist.icon)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("restore built-in music playlist", error))?;
-    }
-    transaction.commit().await.map_err(|error| {
-        MusicLibraryError::database("commit built-in music playlist repair", error)
-    })
 }

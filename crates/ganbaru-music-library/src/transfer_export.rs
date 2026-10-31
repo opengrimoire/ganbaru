@@ -54,7 +54,7 @@ pub(super) async fn snapshot_with_budget(
         ));
     }
     let memberships = budget.read::<MusicMembershipRow>(transaction,
-        "SELECT * FROM music_playlist_memberships WHERE playlist_id IN (SELECT value FROM json_each(?)) ORDER BY playlist_id, position, id", &["id", "playlist_id", "item_id", "weight"], &[&selected], MAX_MEMBERSHIPS).await?;
+        "SELECT * FROM music_playlist_memberships WHERE playlist_id IN (SELECT value FROM json_each(?)) ORDER BY playlist_id, order_key, id", &["id", "playlist_id", "item_id", "order_key", "weight"], &[&selected], MAX_MEMBERSHIPS).await?;
     let item_ids: Vec<_> = memberships.iter().map(|entry| &entry.item_id).collect();
     let item_ids =
         serde_json::to_string(&item_ids).map_err(|error| validation(error.to_string()))?;
@@ -65,7 +65,7 @@ pub(super) async fn snapshot_with_budget(
     let signals = budget.read::<(String, String)>(transaction,
         "SELECT item_id, signal FROM music_item_signals WHERE item_id IN (SELECT value FROM json_each(?)) ORDER BY item_id, signal", &["item_id", "signal"], &[&item_ids], MAX_CHILD_ROWS).await?;
     let ranges = budget.read::<(String, i64, i64)>(transaction,
-        "SELECT membership_id, start_ms, end_ms FROM music_membership_skip_ranges WHERE membership_id IN (SELECT id FROM music_playlist_memberships WHERE playlist_id IN (SELECT value FROM json_each(?))) ORDER BY membership_id, sort_order, id", &["membership_id"], &[&selected], MAX_CHILD_ROWS).await?;
+        "SELECT membership_id, start_ms, end_ms FROM music_membership_skip_ranges WHERE membership_id IN (SELECT id FROM music_playlist_memberships WHERE playlist_id IN (SELECT value FROM json_each(?))) ORDER BY membership_id, ordinal", &["membership_id"], &[&selected], MAX_CHILD_ROWS).await?;
     let snoozes = budget.read::<MusicSnoozeRow>(transaction,
         "SELECT * FROM music_snoozes WHERE item_id IN (SELECT value FROM json_each(?)) AND (scope = 'all-playlists' OR playlist_id IN (SELECT value FROM json_each(?))) ORDER BY item_id, starts_at_ms, id", &["id", "item_id", "scope", "playlist_id", "reason"], &[&item_ids, &selected], MAX_CHILD_ROWS).await?;
     let uses = budget.read::<(String, String)>(transaction,
@@ -148,13 +148,12 @@ pub(super) async fn snapshot_with_budget(
             .collect();
         let exported = MusicInterchangeMembership {
             item: item.clone(),
-            position: membership.position,
             weight: membership.weight,
             enabled: membership.enabled,
             start_ms: membership.start_ms,
             end_ms: membership.end_ms,
-            volume: membership.volume,
-            rate: membership.rate,
+            volume_milli: membership.volume_milli,
+            rate_milli: membership.rate_milli,
             skip_ranges: ranges_by_membership
                 .remove(&membership.id)
                 .unwrap_or_default(),
@@ -203,7 +202,7 @@ pub(super) async fn snapshot_with_budget(
         .collect();
     let document = MusicInterchangeDocument {
         format: super::transfer_codec::FORMAT.to_string(),
-        version: 1,
+        version: super::transfer_codec::VERSION,
         exported_at,
         roots: roots
             .into_iter()

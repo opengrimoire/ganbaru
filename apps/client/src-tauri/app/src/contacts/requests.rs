@@ -17,13 +17,13 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use ganbaru_contacts::{
-    PersonPublicKey, TrustKind, decode_card_text, encode_nonce, request_signature_payload,
-    status_signature_payload,
+    PersonPublicKey, SignedCard, TrustKind, decode_card_text, encode_nonce,
+    request_signature_payload, status_signature_payload,
 };
 #[cfg(any(desktop, test))]
-use ganbaru_contacts::{SIGNATURE_BYTES, SignedCard, decode_nonce, nonces_match, verify};
+use ganbaru_contacts::{SIGNATURE_BYTES, decode_nonce, nonces_match, verify};
 use sqlx::SqlitePool;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 
 /// How long a request stays pending on both sides.
 pub(crate) const REQUEST_TTL_DAYS: i64 = 7;
@@ -168,13 +168,13 @@ pub(crate) async fn receive_request(
     {
         return Ok(acknowledged);
     }
-    if let Some(existing) = store::request_by_id(pool, request_id).await? {
-        if existing.public_key != public_key {
-            return Ok(PeerReply::invalid());
-        }
-        if RequestState::parse(&existing.state) != Some(RequestState::Pending) {
-            return Ok(acknowledged);
-        }
+    // A repeated delivery of a stored request writes nothing: a pending row keeps its id, so
+    // linked devices see no churn, and an answered row keeps its answer.
+    if store::received_request_by_peer(pool, &public_key, request_id)
+        .await?
+        .is_some()
+    {
+        return Ok(acknowledged);
     }
     let mut tx = pool
         .begin()
@@ -187,12 +187,16 @@ pub(crate) async fn receive_request(
     prune_handled(&mut *tx, now).await?;
     let digest = store::encode_hex(&signed.digest);
     let fingerprint = fingerprint_hex(&signed);
+    // The row gets its own id: the requester's id is only unique for that person, and a
+    // deleted row's id must not be reused.
+    let id = random_token("contact-request")?;
     store::insert_request(
         &mut *tx,
         NewRequest {
-            id: request_id,
+            id: &id,
             direction: RequestDirection::Received,
             public_key: &public_key,
+            peer_request_id: Some(request_id),
             display_name: &signed.card.display_name,
             color: signed.card.color,
             card: requester_card,
@@ -240,14 +244,10 @@ pub(crate) async fn request_state(
     if verify(&public_key, &payload, &signature).is_err() {
         return Ok(StatusOutcome::Invalid);
     }
-    let Some(row) = store::request_by_id(pool, request_id).await? else {
+    let Some(row) = store::received_request_by_peer(pool, requester_public_key, request_id).await?
+    else {
         return Ok(StatusOutcome::Pending);
     };
-    if row.public_key != requester_public_key
-        || RequestDirection::parse(&row.direction) != Some(RequestDirection::Received)
-    {
-        return Ok(StatusOutcome::Pending);
-    }
     if let Some(contact) = store::contact_by_key(pool, &row.public_key).await?
         && ContactState::parse(&contact.state) == Some(ContactState::Blocked)
     {
@@ -267,7 +267,7 @@ async fn coordinator_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<Option<LocalIdentity>, String> {
-    if !crate::vault::ownership::active_status(app)?.can_write {
+    if follows_coordinator(app)? {
         return Ok(None);
     }
     let Some(row) = super::identity::load_identity_row(pool).await? else {
@@ -333,7 +333,7 @@ pub(crate) async fn request_state_for_coordinator<R: Runtime>(
         },
         StatusOutcome::Accepted => {
             identity.key = super::identity::person_key_matching(app, &identity.public_key).await?;
-            match sign_local_card(app, &identity) {
+            match sign_local_card(app, &identity).await {
                 Ok(card) => PeerReply::State {
                     state: ContactRequestOutcome::Accepted,
                     recipient_card: Some(card.text()),
@@ -379,7 +379,7 @@ pub(crate) async fn send_request<R: Runtime>(
         ));
     }
     let key = identity.signing_key()?;
-    let own_card = sign_local_card(app, identity)?;
+    let own_card = sign_local_card(app, identity).await?;
     let request_id = random_token("contact")?;
     let signature = key.sign(&request_signature_payload(
         &recipient.card.nonce,
@@ -419,6 +419,7 @@ pub(crate) async fn send_request<R: Runtime>(
             id: &request_id,
             direction: RequestDirection::Sent,
             public_key: &public_key,
+            peer_request_id: None,
             display_name: &recipient.card.display_name,
             color: recipient.card.color,
             card: card_text,
@@ -452,20 +453,41 @@ fn revision_conflict() -> ContactsError {
     ContactsError::RevisionConflict("the request changed since it was last read".to_string())
 }
 
+/// The pending request with this id in the given direction. A request past its deadline
+/// counts as handled even before a poll marks it expired.
 async fn pending_row_in_direction(
     pool: &SqlitePool,
     id: &str,
     direction: RequestDirection,
+    now: DateTime<Utc>,
 ) -> Result<RequestRow, ContactsError> {
     let row = store::request_by_id(pool, id)
         .await?
         .ok_or_else(revision_conflict)?;
     if RequestDirection::parse(&row.direction) != Some(direction)
         || RequestState::parse(&row.state) != Some(RequestState::Pending)
+        || row.expires_at <= store::format_time(now)
     {
         return Err(revision_conflict());
     }
     Ok(row)
+}
+
+/// The signed card a received request carries, checked again before it grants trust. A
+/// request row may arrive from a linked device, so its stored columns are not proof that the
+/// card was ever verified here.
+async fn verified_request_card(pool: &SqlitePool, row: &RequestRow) -> Result<SignedCard, String> {
+    let (card_text, card_digest) = store::request_card(pool, &row.id)
+        .await?
+        .ok_or_else(|| "the contact request has no stored card".to_string())?;
+    let signed = decode_card_text(&card_text)
+        .map_err(|error| format!("the stored contact card is invalid: {error}"))?;
+    if signed.card.public_key.to_text() != row.public_key
+        || store::encode_hex(&signed.digest) != card_digest
+    {
+        return Err("the stored contact card does not match its request".to_string());
+    }
+    Ok(signed)
 }
 
 /// Accepts a received request: the row becomes accepted and the person an active contact.
@@ -477,7 +499,10 @@ pub(crate) async fn accept_request(
     message_trust: TrustKind,
     now: DateTime<Utc>,
 ) -> Result<(), ContactsError> {
-    let row = pending_row_in_direction(pool, id, RequestDirection::Received).await?;
+    let row = pending_row_in_direction(pool, id, RequestDirection::Received, now).await?;
+    let card = verified_request_card(pool, &row)
+        .await
+        .map_err(ContactsError::Failed)?;
     let mut tx = pool
         .begin()
         .await
@@ -498,8 +523,8 @@ pub(crate) async fn accept_request(
         &mut *tx,
         NewContact {
             public_key: &row.public_key,
-            display_name: &row.display_name,
-            color: store::color_from_row(row.color),
+            display_name: &card.card.display_name,
+            color: card.card.color,
         },
         &TrustGrant::new(invite_trust, now),
         &TrustGrant::new(message_trust, now),
@@ -531,10 +556,10 @@ pub(crate) async fn close_request(
     direction: RequestDirection,
     state: RequestState,
 ) -> Result<(), ContactsError> {
-    pending_row_in_direction(pool, id, direction).await?;
+    let now = store::now();
+    pending_row_in_direction(pool, id, direction, now).await?;
     let updated =
-        store::set_request_state(pool, id, Some(expected_revision), state, None, store::now())
-            .await?;
+        store::set_request_state(pool, id, Some(expected_revision), state, None, now).await?;
     if updated {
         Ok(())
     } else {
@@ -607,7 +632,7 @@ pub(crate) async fn poll_sent_requests(
     store::expire_stale_requests(pool, now).await?;
     prune_handled(pool, now).await?;
     let mut still_pending = false;
-    for row in store::pending_requests(pool, RequestDirection::Sent).await? {
+    for row in store::pending_requests(pool, RequestDirection::Sent, now).await? {
         if row.endpoint_hint.is_empty() || row.coordinator_fingerprint.is_empty() {
             store::touch_request_attempt(pool, &row.id, now, Some(RECIPIENT_UNAVAILABLE_CODE))
                 .await?;
@@ -693,6 +718,14 @@ pub(super) async fn apply_status_response(
                     .await?;
                 return Ok(true);
             }
+            store::close_pending_from(
+                &mut *tx,
+                RequestDirection::Sent,
+                &row.public_key,
+                RequestState::Expired,
+                now,
+            )
+            .await?;
             tx.commit()
                 .await
                 .map_err(|error| format!("commit accepted request: {error}"))?;
@@ -702,8 +735,25 @@ pub(super) async fn apply_status_response(
             state: ContactRequestOutcome::Declined,
             ..
         }) => {
-            store::set_request_state(pool, &row.id, None, RequestState::Declined, None, now)
+            // Linked devices may each hold a pending row for this person; the answer closes
+            // them all so no duplicate keeps polling.
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|error| format!("begin declined transaction: {error}"))?;
+            store::set_request_state(&mut *tx, &row.id, None, RequestState::Declined, None, now)
                 .await?;
+            store::close_pending_from(
+                &mut *tx,
+                RequestDirection::Sent,
+                &row.public_key,
+                RequestState::Expired,
+                now,
+            )
+            .await?;
+            tx.commit()
+                .await
+                .map_err(|error| format!("commit declined request: {error}"))?;
             Ok(true)
         }
         Ok(ControlMessage::ContactRequestState { .. }) => {
@@ -738,8 +788,17 @@ pub(super) async fn apply_status_response(
     }
 }
 
+/// Whether this device follows a pinned coordinator, which delivers and answers contact
+/// requests for the person instead of it.
+pub(crate) fn follows_coordinator<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+    Ok(app
+        .state::<crate::vault::handoff::pairing::PairingManager>()
+        .coordinator_pin()?
+        .is_some())
+}
+
 /// Runs the background loop that fetches a missing person key on linked devices and polls
-/// pending sent requests while this device can write.
+/// pending sent requests while this device does not follow a coordinator.
 pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_POLL_DELAY).await;
@@ -755,10 +814,7 @@ pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
 
 async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     super::identity::try_release(app).await;
-    let Ok(status) = crate::vault::ownership::active_status(app) else {
-        return Ok(());
-    };
-    if !status.can_write {
+    if follows_coordinator(app).unwrap_or(true) {
         return Ok(());
     }
     let Ok(pool) = contacts_pool(app).await else {
@@ -770,7 +826,7 @@ async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     if identity.key.is_none() {
         return Ok(());
     }
-    let has_pending = store::pending_requests(&pool, RequestDirection::Sent)
+    let has_pending = store::pending_requests(&pool, RequestDirection::Sent, store::now())
         .await
         .map(|rows| !rows.is_empty())
         .unwrap_or(false);

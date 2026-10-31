@@ -3,6 +3,7 @@
 use super::{ContactRequestView, ContactView};
 use chrono::{DateTime, Utc};
 use ganbaru_contacts::{PersonPublicKey, TrustKind};
+use ganbaru_sync::manifest::vault::contacts::CONTACT_ID_PREFIX;
 use serde::{Deserialize, Serialize};
 use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite};
 
@@ -219,8 +220,8 @@ const CONTACT_COLUMNS: &str = "id, public_key, display_name, color, state, invit
     invite_trust_expires_at, message_trust, message_trust_expires_at, accepted_at, blocked_at, \
     revision, created_at, updated_at";
 
-const REQUEST_COLUMNS: &str = "id, direction, public_key, display_name, color, endpoint_hint, \
-    coordinator_fingerprint, invite_trust, message_trust, state, expires_at, \
+const REQUEST_COLUMNS: &str = "id, direction, public_key, display_name, color, \
+    endpoint_hint, coordinator_fingerprint, invite_trust, message_trust, state, expires_at, \
     last_attempt_at, last_error_code, revision, created_at, updated_at";
 
 fn db_error(context: &str, error: sqlx::Error) -> String {
@@ -232,13 +233,15 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT {CONTACT_COLUMNS} FROM contacts ORDER BY state, lower(display_name), id"
+        "SELECT {CONTACT_COLUMNS} FROM contacts WHERE state <> 'removed'
+         ORDER BY state, lower(display_name), id"
     )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contacts", error))
 }
 
+/// The active or blocked contact for a person. A removed row counts as no contact.
 pub(crate) async fn contact_by_key<'e, E>(
     executor: E,
     public_key: &str,
@@ -247,7 +250,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ?"
+        "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ? AND state <> 'removed'"
     )))
     .bind(public_key)
     .fetch_optional(executor)
@@ -272,6 +275,12 @@ where
     .map_err(|error| db_error("load contact", error))
 }
 
+/// The row id of the contact for a person, derived from the public key so every linked device
+/// names the same person with the same row.
+pub(crate) fn contact_id(public_key: &str) -> String {
+    format!("{CONTACT_ID_PREFIX}{public_key}")
+}
+
 /// A person to store as a contact row.
 pub(crate) struct NewContact<'a> {
     pub public_key: &'a str,
@@ -292,7 +301,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let time = format_time(now);
-    let id = crate::vault::handoff::pairing::random_token("contact")?;
+    let id = contact_id(contact.public_key);
     let result = sqlx::query(
         "INSERT INTO contacts (
             id, public_key, display_name, color, state, invite_trust, invite_trust_expires_at,
@@ -337,7 +346,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let time = format_time(now);
-    let id = crate::vault::handoff::pairing::random_token("contact")?;
+    let id = contact_id(contact.public_key);
     sqlx::query(
         "INSERT INTO contacts (
             id, public_key, display_name, color, state, invite_trust, invite_trust_expires_at,
@@ -396,23 +405,36 @@ where
     Ok(result.rows_affected() == 1)
 }
 
-/// Deletes a contact row in the given state. Returns false on a revision or state mismatch.
-pub(crate) async fn delete_contact<'e, E>(
+/// Removes a contact in the given state by giving it the removed standing with no trust.
+/// Returns false on a revision or state mismatch.
+///
+/// The row stays so a removal merges with concurrent edits on linked devices as a standing:
+/// a concurrent block still wins, and a concurrent accept or trust change cannot revive the
+/// contact. Readers treat a removed row as no contact.
+pub(crate) async fn remove_contact<'e, E>(
     executor: E,
     id: &str,
     expected_revision: i64,
     state: ContactState,
+    now: DateTime<Utc>,
 ) -> Result<bool, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let result = sqlx::query("DELETE FROM contacts WHERE id = ? AND revision = ? AND state = ?")
-        .bind(id)
-        .bind(expected_revision)
-        .bind(state.as_str())
-        .execute(executor)
-        .await
-        .map_err(|error| db_error("delete contact", error))?;
+    let result = sqlx::query(
+        "UPDATE contacts
+         SET state = 'removed', invite_trust = 'not_allowed', invite_trust_expires_at = NULL,
+             message_trust = 'not_allowed', message_trust_expires_at = NULL, accepted_at = NULL,
+             blocked_at = NULL, updated_at = ?
+         WHERE id = ? AND revision = ? AND state = ?",
+    )
+    .bind(format_time(now))
+    .bind(id)
+    .bind(expected_revision)
+    .bind(state.as_str())
+    .execute(executor)
+    .await
+    .map_err(|error| db_error("remove contact", error))?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -429,16 +451,28 @@ where
     .map_err(|error| db_error("list contact requests", error))
 }
 
-/// Pending requests in both directions, newest first. Handled requests are never listed.
-pub(crate) async fn list_pending_requests<'e, E>(executor: E) -> Result<Vec<RequestRow>, String>
+/// Pending requests in both directions, newest first, one per direction and person. Linked
+/// devices can each store a pending row for the same person, so only the newest is listed.
+/// Handled requests and pending ones past their deadline are never listed.
+pub(crate) async fn list_pending_requests<'e, E>(
+    executor: E,
+    now: DateTime<Utc>,
+) -> Result<Vec<RequestRow>, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT {REQUEST_COLUMNS} FROM contact_requests
-         WHERE state = 'pending'
+        "SELECT {REQUEST_COLUMNS} FROM (
+            SELECT *, row_number() OVER (
+                PARTITION BY direction, public_key ORDER BY created_at DESC, id
+            ) AS newest
+            FROM contact_requests
+            WHERE state = 'pending' AND expires_at > ?
+         )
+         WHERE newest = 1
          ORDER BY created_at DESC, id"
     )))
+    .bind(format_time(now))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contact requests", error))
@@ -460,37 +494,61 @@ where
     .map_err(|error| db_error("load contact request", error))
 }
 
+/// The card text and digest stored with a request.
+pub(crate) async fn request_card<'e, E>(
+    executor: E,
+    id: &str,
+) -> Result<Option<(String, String)>, String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as("SELECT card, card_digest FROM contact_requests WHERE id = ?")
+        .bind(id)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| db_error("load contact request card", error))
+}
+
+/// The newest unexpired pending request in one direction with a person. Linked devices may
+/// each have stored one, so several rows can be pending at once.
 pub(crate) async fn pending_request<'e, E>(
     executor: E,
     direction: RequestDirection,
     public_key: &str,
+    now: DateTime<Utc>,
 ) -> Result<Option<RequestRow>, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
-         WHERE direction = ? AND public_key = ? AND state = 'pending'"
+         WHERE direction = ? AND public_key = ? AND state = 'pending' AND expires_at > ?
+         ORDER BY created_at DESC, id LIMIT 1"
     )))
     .bind(direction.as_str())
     .bind(public_key)
+    .bind(format_time(now))
     .fetch_optional(executor)
     .await
     .map_err(|error| db_error("load pending contact request", error))
 }
 
+/// Unexpired pending requests in one direction, oldest first.
 pub(crate) async fn pending_requests<'e, E>(
     executor: E,
     direction: RequestDirection,
+    now: DateTime<Utc>,
 ) -> Result<Vec<RequestRow>, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
-         WHERE direction = ? AND state = 'pending' ORDER BY created_at, id"
+         WHERE direction = ? AND state = 'pending' AND expires_at > ?
+         ORDER BY created_at, id"
     )))
     .bind(direction.as_str())
+    .bind(format_time(now))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list pending contact requests", error))
@@ -514,11 +572,35 @@ where
     .map_err(|error| db_error("load latest contact request", error))
 }
 
+/// The newest received request a person stored under the id they chose, in any state.
+#[cfg(any(desktop, test))]
+pub(crate) async fn received_request_by_peer<'e, E>(
+    executor: E,
+    public_key: &str,
+    peer_request_id: &str,
+) -> Result<Option<RequestRow>, String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT {REQUEST_COLUMNS} FROM contact_requests
+         WHERE public_key = ? AND peer_request_id = ? AND direction = 'received'
+         ORDER BY created_at DESC, id LIMIT 1"
+    )))
+    .bind(public_key)
+    .bind(peer_request_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|error| db_error("load received contact request", error))
+}
+
 /// A request row to insert.
 pub(crate) struct NewRequest<'a> {
     pub id: &'a str,
     pub direction: RequestDirection,
     pub public_key: &'a str,
+    /// The requester's id for a received request; `None` for a sent one.
+    pub peer_request_id: Option<&'a str>,
     pub display_name: &'a str,
     pub color: u8,
     pub card: &'a str,
@@ -541,14 +623,15 @@ where
     let time = format_time(now);
     sqlx::query(
         "INSERT INTO contact_requests (
-            id, direction, public_key, display_name, color, card, card_digest, endpoint_hint,
-            coordinator_fingerprint, invite_trust, message_trust, state, expires_at, created_at,
-            updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            id, direction, public_key, peer_request_id, display_name, color, card, card_digest,
+            endpoint_hint, coordinator_fingerprint, invite_trust, message_trust, state,
+            expires_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
     )
     .bind(request.id)
     .bind(request.direction.as_str())
     .bind(request.public_key)
+    .bind(request.peer_request_id)
     .bind(request.display_name)
     .bind(i64::from(request.color))
     .bind(request.card)
@@ -683,7 +766,8 @@ where
 }
 
 /// Deletes handled (accepted, declined, or expired) requests last changed before `cutoff`,
-/// and the oldest handled requests beyond the newest `keep`.
+/// and the oldest handled requests beyond the newest `keep`. Requests changed at the same time
+/// count the one stored last on this device as newer, because ids are random.
 pub(crate) async fn prune_handled_requests<'e, E>(
     executor: E,
     cutoff: DateTime<Utc>,
@@ -699,7 +783,7 @@ where
             OR id IN (
                 SELECT id FROM contact_requests
                 WHERE state <> 'pending'
-                ORDER BY updated_at DESC, id DESC
+                ORDER BY updated_at DESC, created_at DESC, rowid DESC
                 LIMIT -1 OFFSET ?
             )
          )",
@@ -712,7 +796,8 @@ where
     Ok(())
 }
 
-/// Records a delivery or polling attempt on a sent request.
+/// Records a delivery or polling attempt on a sent request. Attempts are device-local and
+/// leave the replicated columns untouched, so polling publishes nothing to linked devices.
 pub(crate) async fn touch_request_attempt<'e, E>(
     executor: E,
     id: &str,
@@ -724,12 +809,11 @@ where
 {
     sqlx::query(
         "UPDATE contact_requests
-         SET last_attempt_at = ?, last_error_code = ?, updated_at = ?
+         SET last_attempt_at = ?, last_error_code = ?
          WHERE id = ?",
     )
     .bind(format_time(now))
     .bind(error_code)
-    .bind(format_time(now))
     .bind(id)
     .execute(executor)
     .await

@@ -3,7 +3,6 @@ use super::{
     ensure_project_baseline_for_mutation, flush_due_checkpoints, history_schedule,
     initialize_project_history, mark_project_dirty_tx, mutation_result, restore,
 };
-use ganbaru_db::run_migrations;
 use sqlx::SqlitePool;
 
 const PROJECT_ID: &str = "10101010-1010-4010-8010-101010101010";
@@ -22,17 +21,19 @@ async fn migrated_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 
 async fn seed_project(pool: &SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-history', 'History')")
+    sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('group-history', 'History', 'a1')")
         .execute(pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES (?, 'group-history', 'Learning')",
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'group-history', 'Learning', 'a1')",
     )
     .bind(PROJECT_ID)
     .execute(pool)
@@ -42,12 +43,12 @@ async fn seed_project(pool: &SqlitePool) {
 }
 
 async fn seed_empty_project(pool: &SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-history', 'History')")
+    sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('group-history', 'History', 'a1')")
         .execute(pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES (?, 'group-history', 'Learning')",
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'group-history', 'Learning', 'a1')",
     )
     .bind(PROJECT_ID)
     .execute(pool)
@@ -57,8 +58,8 @@ async fn seed_empty_project(pool: &SqlitePool) {
 
 async fn insert_project_page(pool: &SqlitePool, page_id: &str, block_id: &str, text: &str) {
     sqlx::query(
-        "INSERT INTO notes_pages (id, parent_type, title, properties)
-         VALUES (?, 'workspace', ?, json_object('__ganbaru_project_id', ?, 'title', json_object()))",
+        "INSERT INTO notes_pages (id, parent_type, title, project_id)
+         VALUES (?, 'workspace', ?, ?)",
     )
     .bind(page_id)
     .bind(text)
@@ -68,31 +69,28 @@ async fn insert_project_page(pool: &SqlitePool, page_id: &str, block_id: &str, t
     .unwrap();
     sqlx::query(
         "INSERT INTO notes_blocks (
-            id, page_id, parent_type, parent_page_id, type, payload, plain_text, sort_order
-         ) VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+            id, page_id, parent_type, parent_page_id, type, attrs, text, plain_text, order_key
+         ) VALUES (?, ?, 'page_id', ?, 'paragraph', '{\"color\":\"default\"}', ?, ?, 'a0')",
     )
     .bind(block_id)
     .bind(page_id)
     .bind(page_id)
     .bind(
         serde_json::json!({
-            "paragraph": {
-                "rich_text": [{
-                    "type": "text",
-                    "text": { "content": text, "link": null },
-                    "annotations": {
-                        "bold": false,
-                        "italic": false,
-                        "strikethrough": false,
-                        "underline": false,
-                        "code": false,
-                        "color": "default"
-                    },
-                    "plain_text": text,
-                    "href": null
-                }],
-                "color": "default"
-            }
+            "rich_text": [{
+                "type": "text",
+                "text": { "content": text, "link": null },
+                "annotations": {
+                    "bold": false,
+                    "italic": false,
+                    "strikethrough": false,
+                    "underline": false,
+                    "code": false,
+                    "color": "default"
+                },
+                "plain_text": text,
+                "href": null
+            }]
         })
         .to_string(),
     )

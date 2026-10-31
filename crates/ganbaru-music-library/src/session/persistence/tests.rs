@@ -9,7 +9,9 @@ async fn pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO music_library_items (id, identity_key, source_kind, original_title, availability, review_state, discovered_at_ms, updated_at_ms) VALUES ('item', 'portable:árbol', 'local-file', 'Árbol', 'available', 'unreviewed', 1, 1)")
         .execute(&pool).await.unwrap();
     pool

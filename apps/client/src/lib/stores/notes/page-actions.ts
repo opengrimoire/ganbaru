@@ -14,6 +14,7 @@ import { invalidateNotesPageCoverAssetUrl } from "$lib/api/notes/page-covers";
 import { invalidateNotesPageIconAssetUrl } from "$lib/api/notes/page-icons";
 import { blockPlainText, createBlockUpdate } from "$lib/notes/blocks/factory";
 import { planNotesInsertedBlockFocus, planNotesPageLoadFocus } from "$lib/notes/editor/focus";
+import { NotesHeldEditError } from "./held-edit-notice.svelte";
 import { nextSelectedNotesPageIdInProject } from "$lib/notes/pages/selection";
 import { notesPageCoverAssetPath } from "$lib/notes/pages/cover";
 import { notesPageIconAssetPath } from "$lib/notes/pages/icon";
@@ -22,7 +23,6 @@ import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 import {
   normalizeNotesProjectId,
   notesPageProjectId,
-  notesPageProjectProperties,
   type NotesCreatePageOptions,
 } from "$lib/notes/project-membership";
 import type { NotesPostMutationResult, NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
@@ -139,7 +139,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
       folder_id: folderId,
       first_block_id: firstBlockId,
       after_block_id: null,
-      properties: notesPageProjectProperties(projectId),
+      project_id: projectId,
     };
     const provisional = createProvisionalNotesPage(request);
     if (provisional.page.folder_id) context.setFolderCollapsed(provisional.page.folder_id, false);
@@ -170,11 +170,9 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     const block = context.readBlocksById()[blockId];
     if (!sourcePageId || !block || block.type === "child_page") return Promise.resolve();
     const firstBlockId = crypto.randomUUID();
-    const page = context.readLoadedPage();
     const request = {
       first_block_id: firstBlockId,
       title: clearText ? "" : blockPlainText(block).trim(),
-      properties: notesPageProjectProperties(page ? notesPageProjectId(page) : null),
     };
     context.localApplyBlockUpdate(blockId, createBlockUpdate("child_page", request.title));
     context.resetUndoHistory(sourcePageId);
@@ -200,7 +198,6 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     await context.flushPendingWrites();
     const pageId = crypto.randomUUID();
     const firstBlockId = crypto.randomUUID();
-    const page = context.readLoadedPage();
     const loaded = await createNotesPage({
       id: pageId,
       title: "",
@@ -208,7 +205,6 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
       folder_id: null,
       first_block_id: firstBlockId,
       after_block_id: blockId,
-      properties: notesPageProjectProperties(page ? notesPageProjectId(page) : null),
     });
     const blocks = await hydrateNotesBlocks({ page_id: sourcePageId, block_ids: [loaded.page.id] });
     context.applyPostMutation({
@@ -352,7 +348,10 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
         await context.selectPageAfterRemoval(next);
       }
     } catch (error) {
-      if (!removalConfirmed) context.setTrashActionError(error instanceof Error ? error.message : String(error));
+      // A held edit refuses the trash; the page's conflict strip already asks the user to choose first.
+      if (!removalConfirmed && !(error instanceof NotesHeldEditError)) {
+        context.setTrashActionError(error instanceof Error ? error.message : String(error));
+      }
       throw error;
     } finally {
       context.endPageRemoval(pageId);

@@ -1,8 +1,12 @@
-//! A shell-local editing preference that protects database structure from accidental changes.
+//! A device-local editing preference that protects database structure from accidental changes.
+//!
+//! The lock lives in `notes_block_view_state`, so it is not page content: setting it records no
+//! page history and leaves the block's edit time unchanged.
 
-use crate::models::{NoteBlockRow, NoteDatabaseReferenceDto};
-use crate::validation::{require_uuid, validate_block_payload};
-use crate::{databases, page_history, project_history};
+use crate::block_storage::{BlockViewState, write_block_view_state};
+use crate::databases;
+use crate::models::NoteDatabaseReferenceDto;
+use crate::validation::require_uuid;
 use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -20,10 +24,7 @@ pub(crate) async fn ensure_unlocked_tx(
     tx: &mut Transaction<'_, Sqlite>,
     database_id: &str,
 ) -> Result<(), String> {
-    let block = load_shell_tx(tx, database_id).await?;
-    let payload: Value = serde_json::from_str(&block.payload)
-        .map_err(|error| format!("read database editing lock: {error}"))?;
-    if is_editing_locked(&payload)? {
+    if shell_locked_tx(tx, database_id).await? {
         return Err("database layout is locked; unlock it before changing structure".to_string());
     }
     Ok(())
@@ -34,21 +35,34 @@ pub(crate) async fn shell_locked_tx(
     tx: &mut Transaction<'_, Sqlite>,
     database_id: &str,
 ) -> Result<bool, String> {
-    let block = load_shell_tx(tx, database_id).await?;
-    let payload: Value = serde_json::from_str(&block.payload)
-        .map_err(|error| format!("read database editing lock: {error}"))?;
-    is_editing_locked(&payload)
+    Ok(load_shell_view_tx(tx, database_id)
+        .await?
+        .editing_locked
+        .unwrap_or(false))
 }
 
-async fn load_shell_tx(
+async fn load_shell_view_tx(
     tx: &mut Transaction<'_, Sqlite>,
     database_id: &str,
-) -> Result<NoteBlockRow, String> {
+) -> Result<BlockViewState, String> {
     require_uuid(database_id, "database_id")?;
-    sqlx::query_as("SELECT block.*, block.type AS block_type FROM notes_blocks AS block JOIN notes_databases AS database ON database.id = block.id WHERE block.id = ? AND block.type = 'child_database' AND block.in_trash = 0 AND database.in_trash = 0")
-        .bind(database_id).fetch_optional(&mut **tx).await
-        .map_err(|error| format!("load database editing preference: {error}"))?
-        .ok_or_else(|| "database shell not found".to_string())
+    let row: Option<(Option<bool>, Option<bool>)> = sqlx::query_as(
+        "SELECT view_state.open, view_state.editing_locked
+         FROM notes_blocks AS block
+         JOIN notes_databases AS database ON database.id = block.id
+         LEFT JOIN notes_block_view_state AS view_state ON view_state.block_id = block.id
+         WHERE block.id = ? AND block.type = 'child_database'
+           AND block.in_trash = 0 AND database.in_trash = 0",
+    )
+    .bind(database_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| format!("load database editing preference: {error}"))?;
+    let (open, editing_locked) = row.ok_or_else(|| "database shell not found".to_string())?;
+    Ok(BlockViewState {
+        open,
+        editing_locked,
+    })
 }
 
 /// Persist the local editing preference without changing data-source or row authority.
@@ -61,23 +75,14 @@ pub async fn set_database_editing_lock(
         .begin()
         .await
         .map_err(|error| format!("begin database editing lock update: {error}"))?;
-    let block = load_shell_tx(&mut tx, database_id).await?;
-    let mut payload: Value = serde_json::from_str(&block.payload)
-        .map_err(|error| format!("read database editing preference: {error}"))?;
-    if is_editing_locked(&payload)? != locked {
-        page_history::record_page_snapshot_tx(&mut tx, &block.page_id, "database_editing_lock")
-            .await?;
-        project_history::mark_page_dirty_tx(
-            &mut tx,
-            &block.page_id,
-            "Database editing lock",
-            false,
-        )
-        .await?;
-        payload["editing_locked"] = Value::Bool(locked);
-        validate_block_payload("child_database", &payload)?;
-        sqlx::query("UPDATE notes_blocks SET payload = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-            .bind(payload.to_string()).bind(database_id).execute(&mut *tx).await
+    let view = load_shell_view_tx(&mut tx, database_id).await?;
+    if view.editing_locked.unwrap_or(false) != locked {
+        let view = BlockViewState {
+            editing_locked: Some(locked),
+            ..view
+        };
+        write_block_view_state(&mut tx, database_id, view)
+            .await
             .map_err(|error| format!("save database editing preference: {error}"))?;
     }
     tx.commit()

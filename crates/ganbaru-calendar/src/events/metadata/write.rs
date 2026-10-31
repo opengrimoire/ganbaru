@@ -106,6 +106,13 @@ impl PreparedSide {
                 .execute(&mut *connection)
                 .await
                 .map_err(|error| format!("clear prepared Calendar overrides: {error}"))?;
+            sqlx::query(
+                "DELETE FROM calendar_event_override_extended_properties WHERE event_id = ?1",
+            )
+            .bind(&event.id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("clear prepared Calendar override properties: {error}"))?;
             sqlx::query("DELETE FROM calendar_event_rdates WHERE event_id = ?1")
                 .bind(&event.id)
                 .execute(&mut *connection)
@@ -116,12 +123,28 @@ impl PreparedSide {
                 .execute(&mut *connection)
                 .await
                 .map_err(|error| format!("clear prepared Calendar focus_configs: {error}"))?;
-            sqlx::query("DELETE FROM music_context_assignments WHERE owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')").bind(&event.id).execute(&mut *connection).await.map_err(|error| format!("clear prepared Calendar music_assignments: {error}"))?;
-            sqlx::query("DELETE FROM project_task_event_links WHERE event_id = ?1")
-                .bind(&event.id)
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| format!("clear prepared Calendar task_links: {error}"))?;
+            sqlx::query(
+                "DELETE FROM calendar_event_pomodoro_config_count_rhythms WHERE event_id = ?1",
+            )
+            .bind(&event.id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("clear prepared Calendar focus rhythms: {error}"))?;
+            sqlx::query(
+                "DELETE FROM calendar_event_pomodoro_config_sequence_steps WHERE event_id = ?1",
+            )
+            .bind(&event.id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("clear prepared Calendar focus steps: {error}"))?;
+            super::rows::MusicAssignment::remove_stale(
+                connection,
+                &event.id,
+                &metadata.music_assignments,
+            )
+            .await?;
+            super::rows::TaskLink::remove_stale(connection, &event.id, &metadata.task_links)
+                .await?;
         } else {
             event.insert(connection).await?;
         }
@@ -165,10 +188,10 @@ impl PreparedSide {
             row.insert(connection).await?;
         }
         for row in &metadata.music_assignments {
-            row.insert(connection).await?;
+            row.upsert(connection).await?;
         }
         for row in &metadata.task_links {
-            row.insert(connection).await?;
+            row.upsert(connection).await?;
         }
         Ok(())
     }

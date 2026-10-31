@@ -246,7 +246,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
         .map((channel) => ({
           channelId: channel.channelId,
           accessProfileId: channel.accessProfileId,
-          accessProfileRevision: channel.accessProfileRevision,
+          accessProfileRevisionId: channel.accessProfileRevisionId,
           capabilities: { ...channel.capabilities },
           historyBoundary: channel.historyBoundary.kind === "entire"
             ? { kind: "entire" as const }
@@ -314,7 +314,7 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       capabilities: { ...channel.capabilities },
       historyBoundary: channel.historyBoundary.kind === "entire"
         ? { kind: "entire" }
-        : { kind: "fromGrant", lowerOrdinal: channel.historyBoundary.lowerOrdinal },
+        : { kind: "fromGrant", lowerOrderKey: channel.historyBoundary.lowerOrderKey },
       folderGrants: channel.folderGrants.map((grant) => ({ ...grant })),
     }));
   }

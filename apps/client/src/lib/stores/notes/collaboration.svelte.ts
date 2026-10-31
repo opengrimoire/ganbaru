@@ -14,7 +14,6 @@ import {
   setNotesPageNotificationLevel,
   toggleNotesCommentReaction,
   updateNotesComment,
-  updateNotesLocalUser,
 } from "$lib/api/notes";
 import { blockPlainText } from "$lib/notes/blocks/factory";
 import {
@@ -161,26 +160,18 @@ export function createNotesCollaborationController(
     }
   }
 
-  async function updateLocalUserDisplayName(displayName: string): Promise<NotesLocalUser | null> {
-    const requestId = ++localUserRequestId;
-    localUserLoading = true;
-    localUserError = null;
-    try {
-      const next = await updateNotesLocalUser({ display_name: displayName });
-      if (requestId !== localUserRequestId) return localUser;
-      localUser = next;
-      await Promise.all([
-        commentsPageId !== null ? reloadComments() : Promise.resolve(),
-        context.isPanelOpen("suggestions") ? reloadSuggestions() : Promise.resolve(),
-      ]);
-      return next;
-    } catch (error) {
-      if (requestId !== localUserRequestId) return localUser;
-      localUserError = errorMessage(error);
-      return null;
-    } finally {
-      if (requestId === localUserRequestId) localUserLoading = false;
-    }
+  /**
+   * Reload the local author and the open comments and suggestions after the profile name changes, since
+   * local authors show the profile name instead of a stored copy.
+   */
+  async function refreshLocalAuthor(): Promise<NotesLocalUser | null> {
+    const next = await loadLocalUser();
+    if (next === null) return null;
+    await Promise.all([
+      commentsPageId !== null ? reloadComments() : Promise.resolve(),
+      context.isPanelOpen("suggestions") ? reloadSuggestions() : Promise.resolve(),
+    ]);
+    return next;
   }
 
   async function loadPageNotificationSettings(pageId = context.readSelectedPageId()): Promise<void> {
@@ -449,7 +440,7 @@ export function createNotesCollaborationController(
     reloadComments,
     reloadSuggestions,
     loadLocalUser,
-    updateLocalUserDisplayName,
+    refreshLocalAuthor,
     setActiveCommentParent,
     startBlockComment,
     startInlineComment,

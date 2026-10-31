@@ -1,5 +1,5 @@
 import type { NotesDatabaseTableColumn } from "./table";
-import { notesDatabaseTableCellText } from "./table";
+import { notesDatabaseMatchingPayload, notesDatabaseTableCellText } from "./table";
 import { notesDatabaseIsFilterPredicate } from "./filters";
 import type { NotesDatabaseTableFilter, NotesDatabaseTableFilterCondition, NotesPage } from "$lib/notes/types";
 
@@ -9,14 +9,6 @@ const WHITE_SPACE_ONLY = /^[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u
 /** Match SQLite's default case folding without changing non-ASCII letters. */
 function sqliteAsciiCaseFold(value: string): string {
   return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
-}
-
-function propertyPayload(row: NotesPage, column: NotesDatabaseTableColumn): unknown {
-  const property = Object.values(row.properties).find((value) => typeof value === "object" && value !== null
-    && !Array.isArray(value) && (("id" in value && value.id === column.id)
-      || (column.type === "title" && "type" in value && value.type === "title")));
-  return typeof property === "object" && property !== null && !Array.isArray(property)
-    ? (property as Record<string, unknown>)[column.type] : undefined;
 }
 
 function dateNumber(value: unknown, dayOnly: boolean): number | null {
@@ -46,7 +38,7 @@ export function notesDatabaseRowMatchesFilters(row: NotesPage, columns: readonly
     if (!notesDatabaseIsFilterPredicate(filter)) return filter.type === "and" ? filter.filters.every(matches) : filter.filters.some(matches);
     const column = columns.find((candidate) => candidate.id === filter.property_id);
     if (!column || ["formula", "rollup", "button"].includes(column.type)) return false;
-    const payload = propertyPayload(row, column);
+    const payload = notesDatabaseMatchingPayload(row, column);
     const text = column.type === "created_time" ? row.created_time : column.type === "last_edited_time" ? row.last_edited_time
       : column.type === "checkbox" ? typeof payload === "boolean" ? String(payload) : ""
       : notesDatabaseTableCellText(row, column);

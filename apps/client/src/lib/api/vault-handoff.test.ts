@@ -19,7 +19,6 @@ describe("linked-device status cache", () => {
       devices: [{
         deviceId: "phone-1",
         label: "Phone",
-        isOwner: false,
         isCoordinator: false,
         kind: "phone",
       }],
@@ -27,11 +26,8 @@ describe("linked-device status cache", () => {
       peerLabel: "Phone",
       coordinatorEndpoint: null,
       vaultId: "vault-1",
-      canWrite: true,
-      recoveryRequired: false,
       revokedByCoordinator: false,
       replicaReady: true,
-      pendingTransfer: false,
       canInvite: true,
       untouchedStarterVault: false,
     });
@@ -53,11 +49,8 @@ describe("linked-device status cache", () => {
       peerLabel: null,
       coordinatorEndpoint: null,
       vaultId: "vault-1",
-      canWrite: true,
-      recoveryRequired: false,
       revokedByCoordinator: false,
       replicaReady: false,
-      pendingTransfer: false,
       canInvite: false,
     });
     const { getCachedPairingStatus, readPairingStatus } = await import("./vault-handoff");
@@ -76,11 +69,8 @@ describe("pending enrollment status", () => {
     peerLabel: null,
     coordinatorEndpoint: null,
     vaultId: "vault-1",
-    canWrite: true,
-    recoveryRequired: false,
     revokedByCoordinator: false,
     replicaReady: false,
-    pendingTransfer: false,
     canInvite: true,
     untouchedStarterVault: false,
   };
@@ -150,5 +140,82 @@ describe("desktop network access", () => {
     await expect(grantDesktopNetworkAccess()).rejects.toThrow(
       "Invalid desktop network access response",
     );
+  });
+});
+
+describe("vault link status", () => {
+  it("reports a linked device that still needs its first copy", async () => {
+    invokeMock.mockResolvedValue({ linked: true, coordinatorDeviceId: "desktop-1", bootstrap: "required" });
+    const { vaultLinkStatus } = await import("./vault-handoff");
+
+    await expect(vaultLinkStatus()).resolves.toEqual({
+      linked: true,
+      coordinatorDeviceId: "desktop-1",
+      bootstrap: "required",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("vault_link_status");
+  });
+
+  it("reports an unlinked device without a coordinator", async () => {
+    invokeMock.mockResolvedValue({ linked: false, coordinatorDeviceId: null, bootstrap: "none" });
+    const { vaultLinkStatus } = await import("./vault-handoff");
+
+    await expect(vaultLinkStatus()).resolves.toEqual({
+      linked: false,
+      coordinatorDeviceId: null,
+      bootstrap: "none",
+    });
+  });
+
+  it("refuses an unknown bootstrap state", async () => {
+    invokeMock.mockResolvedValue({ linked: true, coordinatorDeviceId: "desktop-1", bootstrap: "owner" });
+    const { vaultLinkStatus } = await import("./vault-handoff");
+
+    await expect(vaultLinkStatus()).rejects.toThrow("Invalid vault link status response");
+  });
+
+  it("refuses a linked status without a coordinator", async () => {
+    invokeMock.mockResolvedValue({ linked: true, coordinatorDeviceId: null, bootstrap: "none" });
+    const { vaultLinkStatus } = await import("./vault-handoff");
+
+    await expect(vaultLinkStatus()).rejects.toThrow("Invalid vault link status response");
+  });
+
+  it("refuses a coordinator on an unlinked status", async () => {
+    invokeMock.mockResolvedValue({ linked: false, coordinatorDeviceId: "desktop-1", bootstrap: "none" });
+    const { vaultLinkStatus } = await import("./vault-handoff");
+
+    await expect(vaultLinkStatus()).rejects.toThrow("Invalid vault link status response");
+  });
+});
+
+describe("vault bootstrap", () => {
+  it("copies the linked vault and reports the activated copy", async () => {
+    invokeMock.mockResolvedValue({ transferId: "transfer-1", activated: true, inProgress: false });
+    const { requestVaultBootstrap } = await import("./vault-handoff");
+
+    await expect(requestVaultBootstrap()).resolves.toEqual({
+      transferId: "transfer-1",
+      activated: true,
+      inProgress: false,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("handoff_request_bootstrap");
+  });
+
+  it("refuses an outcome without the in-progress flag", async () => {
+    invokeMock.mockResolvedValue({ transferId: null, activated: false });
+    const { requestVaultBootstrap } = await import("./vault-handoff");
+
+    await expect(requestVaultBootstrap()).rejects.toThrow("Invalid vault bootstrap response");
+  });
+});
+
+describe("local copy recovery", () => {
+  it("keeps this device's copy without a response value", async () => {
+    invokeMock.mockResolvedValue(null);
+    const { recoverLocalVaultCopy } = await import("./vault-handoff");
+
+    await expect(recoverLocalVaultCopy()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("handoff_recover_local_copy");
   });
 });

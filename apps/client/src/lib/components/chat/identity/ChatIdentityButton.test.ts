@@ -62,7 +62,6 @@ const teammate: ChatAiTeammateRead = {
   },
   channelCount: 1,
   activeAssignmentCount: 0,
-  hasDurableHistory: false,
 };
 
 function channel(runtimeApprovalOverride: ChatRuntimeApprovalPolicy): ChatChannelRead {

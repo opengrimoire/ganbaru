@@ -4,17 +4,21 @@
 //! writer and continues that writer's chain; whether it can be applied is decided separately, so
 //! an operation this version cannot read is kept, forwarded to peers, and held.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
     Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
-    VersionVector, WriterId,
+    SignedCertificate, VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
+use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::log::{self, WriterRow, clamp_ms, seq_i64};
-use crate::{Engine, SpaceContext, validate};
+use crate::exclusion;
+use crate::log::{self, WriterRow, WriterState, clamp_ms, seq_i64};
+use crate::{Engine, SpaceContext, fork, records, validate};
 
 /// Why a stored operation cannot be applied yet or ever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,17 +78,26 @@ pub enum StoreRefusal {
     NewerFormatGenesis,
     /// The writer key did not sign the operation.
     BadSignature,
-    /// The writer is not certified by the space anchor.
+    /// The genesis certificate names an enrolled device but not its enrolled device key.
     Untrusted,
+    /// The genesis names a device the selected authorization chain has not enrolled, or the
+    /// space has no charter yet. The writer may be accepted once its enrollment arrives.
+    Unenrolled,
     /// A different operation is stored at `seq` in the writer's chain.
     Fork {
         /// First sequence where the stored chain and the offered chain differ.
         seq: Seq,
     },
-    /// The writer was revoked, forked, or re-sealed and the operation is above its cutoff.
+    /// The writer was forked or re-sealed and the operation is above its cutoff, its device was
+    /// removed and the operation is more than
+    /// [`MAX_EXCLUDED_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_PER_WRITER) past the removal's
+    /// cutoff (an authorization entry, up to
+    /// [`MAX_EXCLUDED_ENTRIES_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_ENTRIES_PER_WRITER)
+    /// further, contiguous from it), or the writer is one the removal does not name outside the
+    /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](crate::exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+    /// lowest writer ids of its device: its genesis while that many lower ones are stored, and
+    /// its later operations other than contiguous entries once lower ones displaced it.
     Revoked,
-    /// A revocation issued by a writer of a device other than the coordinator.
-    UnauthorizedRevoke,
     /// The genesis would exceed the writers its device or the space may have.
     WriterLimit,
     /// Earlier operations of the writer are missing.
@@ -92,6 +105,9 @@ pub enum StoreRefusal {
         /// Next sequence the writer's chain needs.
         expected: Seq,
     },
+    /// This device quarantined the device that certified the writer. Nothing is excluded: the
+    /// operation is stored once the quarantine is lifted, and dependents wait for it.
+    Quarantined,
 }
 
 /// How a stored operation enters the log.
@@ -101,6 +117,10 @@ pub(crate) enum Classified {
     Waiting {
         clock: Hlc,
         dependencies: Vec<(WriterId, Seq)>,
+        /// Authorization revision the operation was sealed against.
+        revision: u64,
+        /// Whether the writer's next operation belongs to the same apply group.
+        continues: bool,
     },
     /// Held, with the signed header fields when they could be read.
     Held {
@@ -118,12 +138,30 @@ impl Classified {
             Self::Waiting {
                 clock,
                 dependencies,
+                ..
             } => Some((*clock, dependencies)),
             Self::Held {
                 header: Some((clock, dependencies)),
                 ..
             } => Some((*clock, dependencies)),
             Self::Held { header: None, .. } | Self::Malformed => None,
+        }
+    }
+
+    /// Authorization revision of a waiting operation; 0 for one that is held or malformed.
+    pub(crate) fn revision(&self) -> u64 {
+        match self {
+            Self::Waiting { revision, .. } => *revision,
+            Self::Held { .. } | Self::Malformed => 0,
+        }
+    }
+
+    /// Whether a waiting operation's apply group continues; false for one that is held or
+    /// malformed, which blocks its writer's chain anyway.
+    pub(crate) fn continues(&self) -> bool {
+        match self {
+            Self::Waiting { continues, .. } => *continues,
+            Self::Held { .. } | Self::Malformed => false,
         }
     }
 
@@ -185,8 +223,10 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
                 None
             }
         }
-        Content::Genesis(_) | Content::Revoke(_) => None,
+        Content::Genesis(_) | Content::Acknowledgement | Content::Authorization(_) => None,
     };
+    let revision = operation.header.authorization_revision;
+    let continues = operation.header.group_continues;
     let dependencies = operation.header.dependencies;
     match reason {
         Some(reason) => Classified::Held {
@@ -196,6 +236,8 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
         None => Classified::Waiting {
             clock,
             dependencies,
+            revision,
+            continues,
         },
     }
 }
@@ -221,23 +263,38 @@ pub(crate) async fn derive_context(
     Ok(previous.map(|previous| log::next_context(&previous, writer, seq, dependencies)))
 }
 
+/// Signed header fields a stored operation copies into its log row.
+struct StoredHeader {
+    clock: Hlc,
+    revision: u64,
+    continues: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_op(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     envelope: &Envelope<'_>,
     bytes: &[u8],
-    clock: Hlc,
+    header: StoredHeader,
     context: Option<&VersionVector>,
     held: Option<HoldReason>,
+    excluded: Option<u64>,
     now_ms: u64,
 ) -> SyncResult<()> {
+    let StoredHeader {
+        clock,
+        revision,
+        continues,
+    } = header;
     let state = if held.is_some() { "held" } else { "waiting" };
+    let order = log::next_stored_order(conn, &ctx.space).await?;
     sqlx::query(
         "INSERT INTO sync_ops
-            (space_id, writer_id, seq, kind, hash, clock, context, envelope, state, hold_reason,
-             stored_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
+             envelope, state, hold_reason, stored_at_ms, stored_order, excluded_revision,
+             group_continues)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
@@ -245,21 +302,27 @@ async fn insert_op(
     .bind(i64::from(envelope.kind))
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
+    .bind(seq_i64(revision)?)
     .bind(log::encode_context(context))
     .bind(bytes)
     .bind(state)
     .bind(held.map(HoldReason::as_str))
     .bind(clamp_ms(now_ms))
+    .bind(order)
+    .bind(excluded.map(seq_i64).transpose()?)
+    .bind(continues)
     .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
 async fn store_genesis(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     envelope: &Envelope<'_>,
     bytes: &[u8],
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> SyncResult<StoreOutcome> {
     if envelope.seq != 1 {
@@ -275,56 +338,114 @@ async fn store_genesis(
         }
         Err(_) => return Ok(StoreOutcome::Refused(StoreRefusal::Malformed)),
     };
-    if certificate.certificate.person_key != ctx.anchor {
-        return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted));
+    let cert = &certificate.certificate;
+    if quarantined.contains(&cert.device_id) {
+        return Ok(StoreOutcome::Refused(StoreRefusal::Quarantined));
+    }
+    // A writer of a removed device that this replica never stored takes the cutoff the removal
+    // lists for it, 0 when the removal does not name it. Its excluded operations are stored up
+    // to the bound, so the late changes other replicas applied before the removal are derived
+    // here too, but only the few unnamed writers per removed device with the lowest ids keep
+    // operations past their genesis.
+    let enrollment =
+        authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await?;
+    let selected = !matches!(enrollment, Enrollment::Absent);
+    let removal = match enrollment {
+        Enrollment::Enrolled => None,
+        Enrollment::WrongKey => return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted)),
+        Enrollment::Removed => Some((
+            exclusion::removal_revision(conn, ctx.space, &cert.device_id).await?,
+            authorization::removal_cutoff(conn, ctx.space, &cert.device_id, envelope.writer)
+                .await?,
+        )),
+        // A chain this replica did not select may enroll the device, and its entries can be the
+        // evidence that vetoes the selected one. The writer's operations still apply only once
+        // the selected chain enrolls the device, and until then they are bounded as excluded
+        // ones are and the writer counts toward the unselected writers of the space.
+        Enrollment::Absent
+            if authorization::enrolled_on_any_chain(
+                conn,
+                &engine.enrolled,
+                ctx.space,
+                &cert.device_id,
+                &cert.device_key,
+            )
+            .await? =>
+        {
+            None
+        }
+        Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
+    };
+    if matches!(removal, Some((_, 0)))
+        && highest_kept_unnamed(conn, ctx, &cert.device_id)
+            .await?
+            .is_some_and(|highest| envelope.writer.as_bytes().as_slice() > highest.as_slice())
+    {
+        return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
     }
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
-    let cert = &certificate.certificate;
-    if !within_writer_limits(conn, ctx, &cert.device_id).await? {
+    if !within_writer_limits(conn, ctx, &cert.device_id, selected).await? {
         return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
     }
     sqlx::query(
         "INSERT INTO sync_writers
             (space_id, writer_id, public_key, device_id, certificate, state, predecessor,
-             cutoff_seq, stored_seq, applied_seq, head_hash, head_clock, created_at_ms)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, 1, 0, ?, ?, ?)",
+             cutoff_seq, stored_seq, applied_seq, head_hash, head_clock, created_at_ms,
+             removal_cutoff_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
     .bind(cert.writer_key.as_bytes().as_slice())
     .bind(cert.device_id.as_str())
     .bind(certificate.encode())
+    .bind(if removal.is_some() {
+        "revoked"
+    } else {
+        "active"
+    })
     .bind(
         cert.predecessor
             .map(|predecessor| predecessor.as_bytes().to_vec()),
     )
+    .bind(removal.map(|(_, cutoff)| seq_i64(cutoff)).transpose()?)
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
     .bind(cert.created_at_ms.max(0))
+    .bind(removal.map(|(_, cutoff)| seq_i64(cutoff)).transpose()?)
     .execute(&mut *conn)
     .await?;
+    // The genesis is past only a cutoff of 0, and the removed device never excludes its own.
+    let excluded = match removal {
+        Some((revision, 0))
+            if exclusion::local_device(conn, ctx.space).await?.as_deref()
+                != Some(cert.device_id.as_str()) =>
+        {
+            Some(revision)
+        }
+        _ => None,
+    };
+    let held = excluded.map(|_| HoldReason::Invalid);
     insert_op(
         conn,
         ctx,
         envelope,
         bytes,
-        clock,
+        StoredHeader {
+            clock,
+            revision: operation.header.authorization_revision,
+            continues: false,
+        },
         Some(&VersionVector::new()),
-        None,
+        held,
+        excluded,
         now_ms,
     )
     .await?;
-    Ok(StoreOutcome::Stored { held: None })
-}
-
-/// Whether `writer` may issue an operation of wire `kind`. Only writers of the coordinator device
-/// revoke, because the coordinator alone decides which devices stay linked. Wire kind 2 stays
-/// reserved for revocations in every format, so the check needs no payload decoding.
-pub(crate) fn may_issue(ctx: &SpaceContext, writer: &WriterRow, kind: u8) -> bool {
-    kind != OperationKind::Revoke.as_u8() || writer.device_id == ctx.coordinator_device_id
+    Ok(StoreOutcome::Stored { held })
 }
 
 async fn store_next(
@@ -340,8 +461,8 @@ async fn store_next(
         return Ok(StoreOutcome::Refused(StoreRefusal::BadSignature));
     }
     if envelope.seq <= writer.stored {
-        let stored: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT hash FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
+        let stored: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT hash, envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
         )
         .bind(ctx.space.as_bytes().as_slice())
         .bind(writer.id.as_bytes().as_slice())
@@ -349,13 +470,77 @@ async fn store_next(
         .fetch_optional(&mut *conn)
         .await?;
         return Ok(match stored {
-            Some(hash) if hash != envelope.hash() => {
+            Some((hash, stored)) if hash != envelope.hash() => {
+                if !stored.is_empty() {
+                    records::admit_fork(
+                        conn,
+                        ctx.space,
+                        writer.id,
+                        envelope.seq,
+                        [&stored, bytes],
+                        now_ms,
+                    )
+                    .await?;
+                }
+                // Both operations are signed by the writer key: the pair is fork evidence,
+                // unless compaction dropped the stored body or the pair proves no revision.
+                if !stored.is_empty()
+                    && let Ok(previous) = Envelope::decode(&stored)
+                    && fork::unprovable(
+                        conn,
+                        ctx.space,
+                        writer.id,
+                        envelope.seq,
+                        [&previous, envelope],
+                    )
+                    .await?
+                    .is_none()
+                {
+                    fork::record(
+                        conn,
+                        ctx.space,
+                        writer.id,
+                        envelope.seq,
+                        [(&stored, log::digest(&hash)?), (bytes, envelope.hash())],
+                        now_ms,
+                    )
+                    .await?;
+                }
                 StoreOutcome::Refused(StoreRefusal::Fork { seq: envelope.seq })
             }
             _ => StoreOutcome::Duplicate,
         });
     }
-    if writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff) {
+    // A removed device's writer is revoked at its removal cutoff, but the operations past it are
+    // still stored, up to a bound, so their late changes can be derived and forwarded. Its
+    // authorization entries have a bound of their own past that one: on a chain this replica
+    // did not select the device may be an anchor whose entries veto the selected chain.
+    // A surplus unnamed writer keeps only its genesis and the entries contiguous from it.
+    let bounds = match writer.removal_cutoff {
+        Some(0) if exclusion::is_surplus_unnamed(conn, ctx.space, writer.id).await? => {
+            Some((exclusion::SURPLUS_LIMIT, exclusion::SURPLUS_ENTRY_LIMIT))
+        }
+        Some(cutoff) => Some((
+            exclusion::excluded_limit(cutoff),
+            exclusion::entry_limit(cutoff),
+        )),
+        // A writer whose device the selected chain does not name with the key of its certificate,
+        // which a chain it did not select enrolls, is bounded as an unnamed writer of a removed
+        // device is.
+        None if envelope.seq > exclusion::excluded_limit(0)
+            && !names_writer_device(conn, ctx, writer.id).await? =>
+        {
+            Some((exclusion::excluded_limit(0), exclusion::entry_limit(0)))
+        }
+        None => None,
+    };
+    let beyond_removal = bounds.is_some_and(|(limit, entry_limit)| {
+        envelope.seq > limit
+            && (envelope.kind != OperationKind::Authorization.as_u8() || envelope.seq > entry_limit)
+    });
+    let beyond_cutoff = writer.state != WriterState::Revoked
+        && writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff);
+    if beyond_removal || beyond_cutoff {
         return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
     }
     if envelope.seq > writer.stored + 1 {
@@ -367,9 +552,6 @@ async fn store_next(
         return Ok(StoreOutcome::Refused(StoreRefusal::Fork {
             seq: writer.stored,
         }));
-    }
-    if !may_issue(ctx, writer, envelope.kind) {
-        return Ok(StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke));
     }
     let classified = classify(engine, envelope);
     if matches!(classified, Classified::Malformed) {
@@ -385,15 +567,53 @@ async fn store_next(
     )
     .await?;
     let clock = header.map_or(Hlc::ZERO, |(clock, _)| clock);
-    let held = classified.hold();
+    let mut held = classified.hold();
+    // The removed device itself never excludes its own operations.
+    let excluded = match writer.removal_cutoff {
+        Some(cutoff)
+            if envelope.seq > cutoff
+                && exclusion::local_device(conn, ctx.space).await?.as_deref()
+                    != Some(writer.device_id.as_str()) =>
+        {
+            let removal = exclusion::removal_revision(conn, ctx.space, &writer.device_id).await?;
+            if let Ok(operation) = envelope.operation() {
+                exclusion::fold(
+                    engine,
+                    conn,
+                    removal,
+                    writer.id,
+                    envelope.seq,
+                    clock,
+                    &operation.content,
+                )
+                .await?;
+                exclusion::mark_stale(engine, conn, &operation.content).await?;
+                // An earlier anchor may have stored the operation, which released what it
+                // displaced, so the anchor seals the groups it writes again.
+                if fork::reseals_excluded(conn, ctx.space).await? {
+                    let mut groups = BTreeMap::new();
+                    fork::written_groups(engine, &operation.content, &mut groups);
+                    fork::capture_groups(engine, conn, groups, now_ms).await?;
+                }
+            }
+            held = Some(HoldReason::Invalid);
+            Some(removal)
+        }
+        _ => None,
+    };
     insert_op(
         conn,
         ctx,
         envelope,
         bytes,
-        clock,
+        StoredHeader {
+            clock,
+            revision: classified.revision(),
+            continues: classified.continues(),
+        },
         context.as_ref(),
         held,
+        excluded,
         now_ms,
     )
     .await?;
@@ -416,6 +636,7 @@ async fn store_one(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     bytes: &[u8],
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> SyncResult<StoreOutcome> {
     let Ok(envelope) = Envelope::decode(bytes) else {
@@ -425,7 +646,10 @@ async fn store_one(
         return Ok(StoreOutcome::Refused(StoreRefusal::WrongSpace));
     }
     match log::writer(conn, ctx.space, envelope.writer).await? {
-        None => store_genesis(conn, ctx, &envelope, bytes, now_ms).await,
+        None => store_genesis(engine, conn, ctx, &envelope, bytes, quarantined, now_ms).await,
+        Some(writer) if quarantined.contains(&writer.device_id) => {
+            Ok(StoreOutcome::Refused(StoreRefusal::Quarantined))
+        }
         Some(writer) => store_next(engine, conn, ctx, &writer, &envelope, bytes, now_ms).await,
     }
 }
@@ -456,11 +680,150 @@ impl Engine {
         operations: &[Vec<u8>],
         now_ms: u64,
     ) -> SyncResult<Vec<StoreOutcome>> {
+        self.store_many_quarantined(conn, ctx, operations, &BTreeSet::new(), now_ms)
+            .await
+    }
+
+    /// Like [`Self::store_many`], refusing operations of writers certified by a device in
+    /// `quarantined` with [`StoreRefusal::Quarantined`], which does not stop the page.
+    pub async fn store_many_quarantined(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        operations: &[Vec<u8>],
+        quarantined: &BTreeSet<String>,
+        now_ms: u64,
+    ) -> SyncResult<Vec<StoreOutcome>> {
+        let page: Vec<_> = operations
+            .iter()
+            .map(|bytes| (bytes.as_slice(), None))
+            .collect();
+        self.store_page(conn, ctx, &page, quarantined, now_ms).await
+    }
+
+    /// Stores the operations opened from relay records, in order, each with the writer
+    /// certificate its record carried, under the rules of [`Self::store_many_quarantined`].
+    /// A carried certificate never enrolls or introduces a writer: it must equal the one the
+    /// writer's genesis embeds or the stored writer holds, and an operation whose record carried
+    /// another certificate is refused as [`StoreRefusal::Untrusted`] and not stored.
+    pub async fn store_relay_records(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        records: &[(Vec<u8>, SignedCertificate)],
+        quarantined: &BTreeSet<String>,
+        now_ms: u64,
+    ) -> SyncResult<Vec<StoreOutcome>> {
+        let page: Vec<_> = records
+            .iter()
+            .map(|(bytes, certificate)| (bytes.as_slice(), Some(certificate)))
+            .collect();
+        self.store_page(conn, ctx, &page, quarantined, now_ms).await
+    }
+
+    /// The signed certificate of a stored writer, which a relay record carries beside each of
+    /// its operations.
+    pub async fn writer_certificate(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: WriterId,
+    ) -> SyncResult<Option<SignedCertificate>> {
+        let stored: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT certificate FROM sync_writers WHERE space_id = ? AND writer_id = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_optional(&mut *conn)
+        .await?;
+        stored
+            .map(|bytes| {
+                SignedCertificate::decode(&bytes)
+                    .map_err(|_| corrupt("a stored writer certificate does not decode"))
+            })
+            .transpose()
+    }
+
+    /// The operation bytes of the key epoch entry the selected chain holds for `epoch`, which a
+    /// device registers on a relay together with that epoch's access key, so members that lag
+    /// behind open their envelope before they can open records sealed under the epoch.
+    pub async fn key_epoch_entry(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        epoch: u32,
+    ) -> SyncResult<Option<Vec<u8>>> {
+        Ok(sqlx::query_scalar(
+            "SELECT e.envelope FROM sync_space_keys k
+             JOIN sync_auth_selected s
+               ON s.space_id = k.space_id AND s.revision = k.sequenced_revision
+             JOIN sync_auth_envelopes e
+               ON e.space_id = s.space_id AND e.envelope_hash = s.envelope_hash
+                  AND e.role = 'record'
+             WHERE k.space_id = ? AND k.epoch = ?
+             LIMIT 1",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(i64::from(epoch))
+        .fetch_optional(&mut *conn)
+        .await?)
+    }
+
+    /// Whether `bytes`, a key epoch record some untrusted source such as a relay serves for
+    /// `epoch`, authenticates against this replica's stored verified envelope set and charter
+    /// alone, without reading the selected chain. A record a device without the anchor's device
+    /// and writer keys made never passes, so a relay holding one for an epoch the selected chain
+    /// does not name yet means this replica lags behind a real rotation.
+    pub async fn authenticates_key_epoch(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        bytes: &[u8],
+        epoch: u32,
+    ) -> SyncResult<bool> {
+        log::ensure_space(conn, ctx.space).await?;
+        let Some(charter) = authorization::load_charter(conn, ctx.space).await? else {
+            return Ok(false);
+        };
+        records::authentic_key_epoch(conn, ctx.space, &charter, bytes, epoch).await
+    }
+
+    async fn store_page(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        operations: &[(&[u8], Option<&SignedCertificate>)],
+        quarantined: &BTreeSet<String>,
+        now_ms: u64,
+    ) -> SyncResult<Vec<StoreOutcome>> {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
         let mut outcomes = Vec::with_capacity(operations.len());
-        for bytes in operations {
-            let outcome = store_one(self, &mut tx, ctx, bytes, now_ms).await?;
+        // Writers refused as quarantined in this page. A refused genesis stores no writer row,
+        // so the writer's later operations would otherwise read as unknown.
+        let mut refused_writers = BTreeSet::new();
+        for &(bytes, carried) in operations {
+            // Checked inside the ordered loop, so a genesis stored earlier in the page counts.
+            if let Some(carried) = carried
+                && !carried_certificate_matches(&mut tx, ctx, bytes, carried).await?
+            {
+                outcomes.push(StoreOutcome::Refused(StoreRefusal::Untrusted));
+                continue;
+            }
+            // The record store keeps every certificate and record that passes its intrinsic
+            // checks, whatever the slot and transport rules below refuse.
+            records::admit(&mut tx, ctx.space, bytes, now_ms).await?;
+            let writer = Envelope::decode(bytes).ok().map(|envelope| envelope.writer);
+            if writer.is_some_and(|writer| refused_writers.contains(&writer)) {
+                outcomes.push(StoreOutcome::Refused(StoreRefusal::Quarantined));
+                continue;
+            }
+            let outcome = store_one(self, &mut tx, ctx, bytes, quarantined, now_ms).await?;
+            if let (StoreOutcome::Refused(StoreRefusal::Quarantined), Some(writer)) =
+                (outcome, writer)
+            {
+                refused_writers.insert(writer);
+            }
             outcomes.push(outcome);
             if matches!(outcome, StoreOutcome::Refused(StoreRefusal::Fork { .. })) {
                 break;
@@ -472,20 +835,120 @@ impl Engine {
     }
 }
 
+/// Whether the certificate a relay record carried for the operation `bytes` equals the one the
+/// writer's stored row holds or, for a writer not stored yet, the one its genesis embeds.
+/// Operations the store refuses on their own, malformed or of an unknown writer without a
+/// genesis, pass here and are refused by the store.
+async fn carried_certificate_matches(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    bytes: &[u8],
+    carried: &SignedCertificate,
+) -> SyncResult<bool> {
+    let Ok(envelope) = Envelope::decode(bytes) else {
+        return Ok(true);
+    };
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT certificate FROM sync_writers WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(envelope.writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(stored) = stored {
+        let stored = SignedCertificate::decode(&stored)
+            .map_err(|_| corrupt("a stored writer certificate does not decode"))?;
+        return Ok(stored == *carried);
+    }
+    Ok(match envelope.operation() {
+        Ok(Operation {
+            content: Content::Genesis(embedded),
+            ..
+        }) => embedded == *carried,
+        _ => true,
+    })
+}
+
+/// The highest writer id among the stored writers of the removed device `device_id` its removal
+/// does not name that keep excluded operations, once there are
+/// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+/// of them, `None` while there are fewer.
+async fn highest_kept_unnamed(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    device_id: &str,
+) -> SyncResult<Option<Vec<u8>>> {
+    Ok(sqlx::query_scalar(
+        "SELECT writer_id FROM sync_writers
+         WHERE space_id = ? AND device_id = ? AND removal_cutoff_seq = 0
+         ORDER BY writer_id LIMIT 1 OFFSET ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(device_id)
+    .bind(exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE - 1)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+/// Most stored writers of devices the selected chain does not enroll, which another stored chain
+/// enrolls. They never count toward the writers of devices the selected chain names, which may
+/// fill [`MAX_WRITERS_PER_SPACE`] less this many, so the space never stores more than it.
+pub(crate) const MAX_UNSELECTED_WRITERS_PER_SPACE: usize = 2 * MAX_WRITERS_PER_DEVICE;
+
 /// Whether the space can admit one more writer of `device_id` within
-/// [`MAX_WRITERS_PER_DEVICE`] and [`MAX_WRITERS_PER_SPACE`].
+/// [`MAX_WRITERS_PER_DEVICE`], and within [`MAX_UNSELECTED_WRITERS_PER_SPACE`] when `selected` is
+/// false, or the rest of [`MAX_WRITERS_PER_SPACE`] when it is true: whether the selected chain
+/// names the device.
 async fn within_writer_limits(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     device_id: &str,
+    selected: bool,
 ) -> SyncResult<bool> {
-    let (device, space): (i64, i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(device_id = ?), 0), COUNT(*) FROM sync_writers WHERE space_id = ?",
+    let (device, total, named): (i64, i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(w.device_id = ?1), 0), COUNT(*), COALESCE(SUM(EXISTS (
+            SELECT 1 FROM sync_devices d
+            WHERE d.space_id = w.space_id AND d.device_id = w.device_id
+         )), 0)
+         FROM sync_writers w WHERE w.space_id = ?2",
     )
     .bind(device_id)
     .bind(ctx.space.as_bytes().as_slice())
     .fetch_one(&mut *conn)
     .await?;
     let below = |count: i64, limit: usize| usize::try_from(count).is_ok_and(|count| count < limit);
-    Ok(below(device, MAX_WRITERS_PER_DEVICE) && below(space, MAX_WRITERS_PER_SPACE))
+    let space = if selected {
+        below(
+            named,
+            MAX_WRITERS_PER_SPACE - MAX_UNSELECTED_WRITERS_PER_SPACE,
+        )
+    } else {
+        below(total - named, MAX_UNSELECTED_WRITERS_PER_SPACE)
+    };
+    Ok(below(device, MAX_WRITERS_PER_DEVICE) && space)
+}
+
+/// Whether the selected chain names the device of `writer`, enrolled or removed, with the device
+/// key its certificate carries. Another chain may enroll the same device id with another key.
+async fn names_writer_device(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: WriterId,
+) -> SyncResult<bool> {
+    let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT d.device_key, w.certificate
+         FROM sync_writers w
+         JOIN sync_devices d ON d.space_id = w.space_id AND d.device_id = w.device_id
+         WHERE w.space_id = ? AND w.writer_id = ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((device_key, certificate)) = row else {
+        return Ok(false);
+    };
+    let certificate = SignedCertificate::decode(&certificate)
+        .map_err(|_| corrupt("a stored writer certificate does not decode"))?;
+    Ok(certificate.certificate.device_key.as_bytes().as_slice() == device_key.as_slice())
 }

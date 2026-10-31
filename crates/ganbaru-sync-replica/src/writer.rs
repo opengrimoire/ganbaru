@@ -1,17 +1,23 @@
 //! The local writer: its signing key, its device-local record, and the high-water check that
 //! detects a restored or copied database.
 
+use super::keys::SpaceKeys;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_contacts::PersonKeyPair;
+use ganbaru_handoff::key_wrap::{self, KeyWrapper};
 use ganbaru_sync::local::LocalWriterHead;
-use ganbaru_sync::{Engine, LocalWriter, SequenceReservation, SpaceContext, WriterState};
+use ganbaru_sync::{
+    Engine, LocalWriter, SequenceReservation, SpaceContext, SpaceKeyHolder, WriterState,
+};
 use ganbaru_sync_contracts::{
-    SignedCertificate, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+    DeviceKeyPair, DevicePublicKey, Digest32, SignedCertificate, WriterCertificate, WriterId,
+    WriterKeyPair, sign_certificate,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 /// Sequences one reservation write makes durable ahead of sealing.
@@ -34,17 +40,139 @@ pub struct WriterRecord {
     pub paused: bool,
     /// Retired writers whose keys still wait to be removed.
     pub retired_keys: Vec<String>,
+    /// The last authorization entry this installation reserved as the anchor, kept across
+    /// successor writers of the same charter, so a database restored behind it can be detected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequenced: Option<SequencedEntry>,
 }
 
-/// Storage of writer signing keys outside the vault.
-pub trait WriterKeyStore: Send + Sync {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String>;
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String>;
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String>;
+/// An authorization revision the anchor reserved before sealing its entry.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequencedEntry {
+    /// Hash of the charter the log starts from, base64url without padding.
+    pub charter: String,
+    /// Epoch of the entry; a handover the anchor seals opens the next one.
+    #[serde(default)]
+    pub epoch: u32,
+    /// Revision of the entry.
+    pub revision: u64,
+    /// Entry hash, base64url without padding.
+    pub entry_hash: String,
+    /// The writer that reserved the entry was retired because the database lost part of its
+    /// chain, so a selected head one revision behind is a restore, not a rolled back seal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restored: bool,
 }
 
-fn key_reference(vault_id: &str, writer_id: &str) -> String {
-    format!("writer-key:{vault_id}:{writer_id}")
+impl SequencedEntry {
+    /// The decoded entry hash, or `None` when the record holds a malformed one.
+    pub fn hash(&self) -> Option<Digest32> {
+        decode_digest(&self.entry_hash)
+    }
+
+    /// The decoded charter hash, or `None` when the record holds a malformed one.
+    pub fn charter(&self) -> Option<Digest32> {
+        decode_digest(&self.charter)
+    }
+}
+
+fn decode_digest(text: &str) -> Option<Digest32> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+}
+
+/// How the anchor's recorded high-water compares with the selected log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequencedCheck {
+    /// The log holds the recorded entry, or nothing is recorded.
+    Current,
+    /// The record is ahead by exactly the entry it reserved last: that seal rolled back.
+    RolledBack,
+    /// The record is ahead by more than one entry, or names an epoch the selected log never
+    /// reached, so the database is older than the log this installation sequenced: it was
+    /// restored from a backup or copied.
+    Restored {
+        /// The revision the record reached.
+        recorded: u64,
+    },
+}
+
+/// The selected head the recorded high-water is compared with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedHead {
+    /// Hash of the charter the selected chain starts from.
+    pub charter: Digest32,
+    /// Epoch of the selected head.
+    pub epoch: u32,
+    /// Revision of the selected head.
+    pub revision: u64,
+}
+
+/// Compares the recorded high-water with the selected head. A reservation is written before its
+/// seal commits, so being ahead by one is a rolled back seal, not a restore, unless the writer
+/// that reserved it was retired because the database lost part of its chain. A record of another
+/// charter belongs to a log a Reset cleared and is current. Every chain this installation sealed
+/// an epoch of stays stored, and selection prefers the highest epoch, so a selected head of a
+/// lower epoch than the record means the database lost that epoch. A record of an earlier
+/// epoch than the selected head is current: a handover sealed elsewhere continued the log, and
+/// entries this installation sealed past its starting revision were superseded, not lost.
+pub fn sequenced_check(
+    sequenced: Option<&SequencedEntry>,
+    selected: SelectedHead,
+) -> SequencedCheck {
+    let Some(entry) = sequenced.filter(|entry| entry.charter() == Some(selected.charter)) else {
+        return SequencedCheck::Current;
+    };
+    if entry.epoch < selected.epoch {
+        return SequencedCheck::Current;
+    }
+    let next = selected.revision.saturating_add(1);
+    if entry.revision == next && !entry.restored {
+        SequencedCheck::RolledBack
+    } else if entry.revision >= next || entry.epoch > selected.epoch {
+        SequencedCheck::Restored {
+            recorded: entry.revision,
+        }
+    } else {
+        SequencedCheck::Current
+    }
+}
+
+/// A secret the sync key store holds for one vault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncKey<'a> {
+    /// A writer signing key, by hex writer id.
+    Writer(&'a str),
+    /// The installation's device signing key, which certifies its writers.
+    Device,
+    /// The anchor's admin signing key, which signs its authorization proposals.
+    Admin,
+    /// The recovery seed, kept until the user saves the recovery kit.
+    RecoverySeed,
+    /// The installation's static X25519 device encryption key, which space key envelopes
+    /// name.
+    DeviceEncryption,
+}
+
+/// Storage of sync secrets outside the vault.
+pub trait SyncKeyStore: Send + Sync {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String>;
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String>;
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String>;
+}
+
+/// The name a sync secret is stored under.
+pub fn key_reference(vault_id: &str, key: SyncKey<'_>) -> String {
+    match key {
+        SyncKey::Writer(writer_id) => format!("writer-key:{vault_id}:{writer_id}"),
+        SyncKey::Device => format!("device-key:{vault_id}"),
+        SyncKey::Admin => format!("admin-key:{vault_id}"),
+        SyncKey::RecoverySeed => format!("recovery-seed:{vault_id}"),
+        SyncKey::DeviceEncryption => format!("device-encryption-key:{vault_id}"),
+    }
 }
 
 /// Desktop key store in the operating-system keyring.
@@ -55,79 +183,145 @@ pub struct KeyringStore;
 impl KeyringStore {
     const SERVICE: &'static str = "com.ganbaru.sync";
 
-    fn entry(vault_id: &str, writer_id: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(Self::SERVICE, &key_reference(vault_id, writer_id))
-            .map_err(|error| format!("open writer key store: {error}"))
+    fn entry(vault_id: &str, key: SyncKey<'_>) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(Self::SERVICE, &key_reference(vault_id, key))
+            .map_err(|error| format!("open sync key store: {error}"))
     }
 }
 
 #[cfg(desktop)]
-impl WriterKeyStore for KeyringStore {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String> {
-        match Self::entry(vault_id, writer_id)?.get_password() {
+impl SyncKeyStore for KeyringStore {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
+        match Self::entry(vault_id, key)?.get_password() {
             Ok(encoded) => URL_SAFE_NO_PAD
                 .decode(encoded)
                 .map(Some)
-                .map_err(|error| format!("decode stored writer key: {error}")),
+                .map_err(|error| format!("decode stored sync key: {error}")),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(format!("read writer key: {error}")),
+            Err(error) => Err(format!("read sync key: {error}")),
         }
     }
 
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String> {
-        Self::entry(vault_id, writer_id)?
-            .set_password(&URL_SAFE_NO_PAD.encode(pkcs8))
-            .map_err(|error| format!("store writer key: {error}"))
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
+        Self::entry(vault_id, key)?
+            .set_password(&URL_SAFE_NO_PAD.encode(secret))
+            .map_err(|error| format!("store sync key: {error}"))
     }
 
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String> {
-        match Self::entry(vault_id, writer_id)?.delete_credential() {
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
+        match Self::entry(vault_id, key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(format!("remove writer key: {error}")),
+            Err(error) => Err(format!("remove sync key: {error}")),
         }
     }
 }
 
-/// Key store of one private file per writer, used on Android and in tests.
-#[cfg(any(mobile, test))]
+/// Key store of one private file per secret, used on Android and in tests. Each file holds only
+/// the envelope the vault's platform key sealed, never the secret itself; a file that does not
+/// open reports [`ganbaru_handoff::key_wrap::KEY_PROTECTION_LOST_ERROR`].
 pub struct FileKeyStore {
-    pub directory: PathBuf,
+    directory: PathBuf,
+    wrapper: Arc<dyn KeyWrapper>,
 }
 
-#[cfg(any(mobile, test))]
 impl FileKeyStore {
-    fn path(&self, vault_id: &str, writer_id: &str) -> PathBuf {
+    pub fn new(directory: PathBuf, wrapper: Arc<dyn KeyWrapper>) -> Self {
+        Self { directory, wrapper }
+    }
+
+    fn path(&self, vault_id: &str, key: SyncKey<'_>) -> PathBuf {
         self.directory.join(format!(
-            "{}.key",
-            key_reference(vault_id, writer_id).replace(':', "-")
+            "{}.{}",
+            key_reference(vault_id, key).replace(':', "-"),
+            key_wrap::KEY_FILE_EXTENSION
         ))
     }
 }
 
-#[cfg(any(mobile, test))]
-impl WriterKeyStore for FileKeyStore {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String> {
-        match std::fs::read(self.path(vault_id, writer_id)) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("read writer key: {error}")),
-        }
-    }
-
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String> {
-        ganbaru_handoff::pairing::write_private_file_atomically(
-            &self.path(vault_id, writer_id),
-            pkcs8,
+impl SyncKeyStore for FileKeyStore {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
+        key_wrap::read_protected_file(
+            self.wrapper.as_ref(),
+            &key_wrap::vault_keys_alias(vault_id),
+            &key_reference(vault_id, key),
+            &self.path(vault_id, key),
         )
+        .map_err(|error| format!("read sync key: {error}"))
     }
 
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String> {
-        match std::fs::remove_file(self.path(vault_id, writer_id)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("remove writer key: {error}")),
-        }
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
+        key_wrap::write_protected_file(
+            self.wrapper.as_ref(),
+            &key_wrap::vault_keys_alias(vault_id),
+            &key_reference(vault_id, key),
+            &self.path(vault_id, key),
+            secret,
+        )
+        .map_err(|error| format!("store sync key: {error}"))
     }
+
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
+        key_wrap::remove_key_file(&self.path(vault_id, key))
+            .map_err(|error| format!("remove sync key: {error}"))
+    }
+}
+
+/// Key store that keeps secrets in memory only, for tests and hosts without a keyring.
+#[derive(Debug, Default)]
+pub struct MemoryKeyStore {
+    secrets: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl MemoryKeyStore {
+    fn secrets(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, Vec<u8>>>, String> {
+        self.secrets
+            .lock()
+            .map_err(|_| "sync memory key store is poisoned".to_string())
+    }
+}
+
+impl SyncKeyStore for MemoryKeyStore {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.secrets()?.get(&key_reference(vault_id, key)).cloned())
+    }
+
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
+        self.secrets()?
+            .insert(key_reference(vault_id, key), secret.to_vec());
+        Ok(())
+    }
+
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
+        self.secrets()?.remove(&key_reference(vault_id, key));
+        Ok(())
+    }
+}
+
+/// The installation's device key for a vault, or `None` before the installation paired or
+/// founded the vault's space. Key stores may block, so callers run this off the async runtime.
+pub fn read_device_key(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<Option<DeviceKeyPair>, String> {
+    keys.read(vault_id, SyncKey::Device)?
+        .map(|pkcs8| {
+            DeviceKeyPair::from_pkcs8(&pkcs8)
+                .map_err(|error| format!("decode sync device key: {error}"))
+        })
+        .transpose()
+}
+
+/// The installation's device key for a vault, created once and never replaced, because the
+/// space's log enrolls its public half. Key stores may block, so callers run this off the async
+/// runtime.
+pub fn ensure_device_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<DeviceKeyPair, String> {
+    if let Some(device) = read_device_key(keys, vault_id)? {
+        return Ok(device);
+    }
+    let (pkcs8, device) =
+        DeviceKeyPair::generate().map_err(|error| format!("create sync device key: {error}"))?;
+    keys.write(vault_id, SyncKey::Device, &pkcs8)?;
+    Ok(device)
 }
 
 /// Device-local sync files of one vault under the app config directory.
@@ -160,10 +354,57 @@ impl SyncFiles {
     pub fn carry_path(&self) -> PathBuf {
         self.directory.join(format!("{}.carry", self.vault_id))
     }
+
+    /// Directory of the vault's other device-local sync files.
+    pub fn vault_directory(&self) -> PathBuf {
+        self.directory.join(&self.vault_id)
+    }
+
+    /// Marks a copy recovered through an anchor server after every device was lost. Such a device
+    /// has no link to the devices it inherited, so it never proposes removing them for that.
+    pub fn server_recovery_path(&self) -> PathBuf {
+        self.vault_directory().join("server-recovery")
+    }
+
+    /// The proposal outbox of this installation.
+    pub fn outbox_path(&self) -> PathBuf {
+        self.vault_directory().join("outbox.json")
+    }
+
+    /// The devices this installation quarantined.
+    pub fn quarantine_path(&self) -> PathBuf {
+        self.vault_directory().join("quarantine.json")
+    }
+
+    /// Where the other members of the vault last listened.
+    pub fn peers_path(&self) -> PathBuf {
+        self.vault_directory().join("peers.json")
+    }
+
+    /// Which device anchors the vault and the certificate its enrollment recorded.
+    pub fn anchor_path(&self) -> PathBuf {
+        self.vault_directory().join("anchor.json")
+    }
+
+    /// The discovery keys the log names and when this device first saw the current one.
+    pub fn discovery_keys_path(&self) -> PathBuf {
+        self.vault_directory().join("discovery.json")
+    }
 }
 
+/// Largest writer record read. A record holds one certificate, a few counters, and the ids of
+/// retired writers whose keys wait to be removed, far below this.
+const MAX_WRITER_RECORD_BYTES: u64 = 1024 * 1024;
+
+/// Reads the writer record at `path`, `None` when the file does not exist. Refuses a symbolic
+/// link, a file over [`MAX_WRITER_RECORD_BYTES`], and a record that does not parse, has another
+/// schema version, or names a malformed writer id.
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match ganbaru_atomic_files::read_regular_file_capped(
+        path,
+        MAX_WRITER_RECORD_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    ) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read sync writer record: {error}")),
@@ -185,7 +426,7 @@ fn names_writer(id: &str) -> bool {
     WriterId::from_hex(id).is_some_and(|writer| writer.to_hex() == id)
 }
 
-fn write_record(path: &Path, record: &WriterRecord) -> Result<(), String> {
+pub(crate) fn write_record(path: &Path, record: &WriterRecord) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(record)
         .map_err(|error| format!("encode sync writer record: {error}"))?;
     ganbaru_handoff::pairing::write_private_file_atomically(path, &bytes)
@@ -209,11 +450,17 @@ pub struct ActiveWriter {
     key: WriterKeyPair,
     certificate: SignedCertificate,
     reservation: RecordReservation,
+    keys: Option<Arc<SpaceKeys>>,
 }
 
 impl ActiveWriter {
     pub fn id(&self) -> WriterId {
         self.certificate.certificate.writer_id()
+    }
+
+    /// The device whose device key certified this writer.
+    pub fn device_id(&self) -> &str {
+        &self.certificate.certificate.device_id
     }
 
     pub fn record(&self) -> &WriterRecord {
@@ -226,7 +473,19 @@ impl ActiveWriter {
             key: &self.key,
             certificate: &self.certificate,
             reservation: &mut self.reservation,
+            keys: self.keys.as_deref().map(|keys| keys as &dyn SpaceKeyHolder),
         }
+    }
+
+    /// Gives the writer the installation's space keys, which an anchor seals key epochs and
+    /// key envelopes with.
+    pub fn attach_keys(&mut self, keys: Arc<SpaceKeys>) {
+        self.keys = Some(keys);
+    }
+
+    /// The installation's space keys, once attached.
+    pub fn space_keys(&self) -> Option<&Arc<SpaceKeys>> {
+        self.keys.as_ref()
     }
 
     /// Records the highest committed sequence after a seal commits.
@@ -237,6 +496,24 @@ impl ActiveWriter {
         let mut next = self.reservation.record.clone();
         next.last_committed_seq = seq;
         next.reserved_through = next.reserved_through.max(seq);
+        self.reservation.replace(next)
+    }
+
+    /// Clears the recorded high-water when the space starts from another charter, because it
+    /// then describes a log a Reset cleared. A space without a charter keeps it: the database
+    /// was restored from before the space was founded, and founding refuses to start a new log
+    /// over it until Reset sync state removes the record.
+    pub fn settle_sequenced(&mut self, charter: Option<Digest32>) -> Result<(), String> {
+        let (Some(sequenced), Some(charter)) =
+            (self.reservation.record.sequenced.as_ref(), charter)
+        else {
+            return Ok(());
+        };
+        if sequenced.charter() == Some(charter) {
+            return Ok(());
+        }
+        let mut next = self.reservation.record.clone();
+        next.sequenced = None;
         self.reservation.replace(next)
     }
 
@@ -290,6 +567,38 @@ impl SequenceReservation for RecordReservation {
             .ok_or_else(|| std::io::Error::other("writer sequence space is exhausted"))?;
         self.replace(next).map_err(std::io::Error::other)
     }
+
+    fn reserve_entry(
+        &mut self,
+        charter: Digest32,
+        epoch: u32,
+        revision: u64,
+        entry_hash: Digest32,
+    ) -> std::io::Result<()> {
+        let entry = SequencedEntry {
+            charter: URL_SAFE_NO_PAD.encode(charter),
+            epoch,
+            revision,
+            entry_hash: URL_SAFE_NO_PAD.encode(entry_hash),
+            restored: false,
+        };
+        // A high-water of another charter belongs to a log a Reset cleared, so it never holds
+        // back the current one. An entry of another epoch replaces the record even at a lower
+        // revision: the selected epoch never falls below one this installation sealed unless
+        // the database was restored, and then the service seals only the self-handover, which
+        // continues from the older head.
+        let current = self
+            .record
+            .sequenced
+            .as_ref()
+            .filter(|current| current.charter == entry.charter && current.epoch == epoch);
+        if current.is_some_and(|current| current.revision > revision || *current == entry) {
+            return Ok(());
+        }
+        let mut next = self.record.clone();
+        next.sequenced = Some(entry);
+        self.replace(next).map_err(std::io::Error::other)
+    }
 }
 
 /// The recorded writer with the key copy it names, read before the database check.
@@ -302,12 +611,12 @@ pub struct StoredWriter {
 /// async runtime.
 pub fn read_stored_writer(
     files: &SyncFiles,
-    keys: &dyn WriterKeyStore,
+    keys: &dyn SyncKeyStore,
 ) -> Result<Option<StoredWriter>, String> {
     let Some(record) = read_record(&files.record_path())? else {
         return Ok(None);
     };
-    let key = keys.read(&files.vault_id, &record.writer_id)?;
+    let key = keys.read(&files.vault_id, SyncKey::Writer(&record.writer_id))?;
     Ok(Some(StoredWriter { record, key }))
 }
 
@@ -317,6 +626,7 @@ pub struct SuccessorPlan {
     predecessor: Option<WriterId>,
     paused: bool,
     retired_keys: Vec<String>,
+    sequenced: Option<SequencedEntry>,
 }
 
 impl SuccessorPlan {
@@ -330,12 +640,35 @@ impl SuccessorPlan {
             predecessor: WriterId::from_hex(&record.writer_id),
             paused: record.paused,
             retired_keys,
+            sequenced: record.sequenced.clone(),
         }
+    }
+
+    /// The plan that retires `record` because the database lost part of its chain or of the
+    /// log it sequenced: the successor keeps the high-water marked as restored, so the anchor
+    /// treats a head one revision behind it as a restore too.
+    fn restored(record: &WriterRecord) -> Self {
+        let mut plan = Self::retiring(record);
+        if let Some(sequenced) = plan.sequenced.as_mut() {
+            sequenced.restored = true;
+        }
+        plan
+    }
+
+    /// The last authorization entry the retired record reserved, which the successor keeps.
+    pub fn sequenced(&self) -> Option<&SequencedEntry> {
+        self.sequenced.as_ref()
     }
 
     /// The plan that replaces a writer the database no longer accepts.
     pub fn after(writer: &ActiveWriter) -> Self {
         Self::retiring(writer.record())
+    }
+
+    /// The plan that replaces the writer of an anchor whose database was restored behind the
+    /// log it sequenced.
+    pub fn after_restore(writer: &ActiveWriter) -> Self {
+        Self::restored(writer.record())
     }
 }
 
@@ -347,12 +680,14 @@ pub enum WriterCheck {
 }
 
 /// Keeps the recorded writer when the database still holds its chain. A copied or restored
-/// database, a lost key, or a writer the space no longer accepts needs a successor.
+/// database, a lost key, a writer certified by another device key, or a writer the space no
+/// longer accepts needs a successor.
 pub async fn check_writer(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     files: &SyncFiles,
+    device_key: &DevicePublicKey,
     stored: Option<StoredWriter>,
 ) -> Result<WriterCheck, String> {
     let Some(StoredWriter { record, key }) = stored else {
@@ -367,7 +702,7 @@ pub async fn check_writer(
         return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
     };
     let certificate_matches = certificate.certificate.writer_key == key.public_key()
-        && certificate.certificate.person_key == ctx.anchor
+        && certificate.certificate.device_key == *device_key
         && certificate.certificate.writer_id().to_hex() == record.writer_id;
     if !certificate_matches {
         return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
@@ -377,6 +712,37 @@ pub async fn check_writer(
         .await
         .map_err(|error| format!("check sync writer: {error}"))?;
     if !record_matches(&record, head) {
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
+    }
+    // A database behind the anchor's authorization high-water lost entries members may hold
+    // at this writer's later sequences, so the writer must not seal again even when its own
+    // committed head survived, for instance when its commit was never recorded.
+    if let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        && matches!(
+            sequenced_check(
+                record.sequenced.as_ref(),
+                SelectedHead {
+                    charter: view.charter,
+                    epoch: view.epoch,
+                    revision: view.revision,
+                },
+            ),
+            SequencedCheck::Restored { .. }
+        )
+    {
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
+    }
+    // A forked writer, or one of a device the selected chain removed, seals no more: the
+    // device key certifies a successor that names it as predecessor.
+    if engine
+        .writer_retirement(conn, ctx, certificate.certificate.writer_id())
+        .await
+        .map_err(|error| format!("check sync writer retirement: {error}"))?
+        .is_some()
+    {
         return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
     }
     Ok(WriterCheck::Ready(Box::new(ActiveWriter {
@@ -386,16 +752,17 @@ pub async fn check_writer(
             path: files.record_path(),
             record,
         },
+        keys: None,
     })))
 }
 
-/// Creates a writer certified by the person key and makes its key and record durable, then
+/// Creates a writer certified by the device key and makes its key and record durable, then
 /// removes the keys it retires. Key stores may block, so callers run this off the async runtime.
 pub fn create_writer(
     files: &SyncFiles,
-    keys: &dyn WriterKeyStore,
+    keys: &dyn SyncKeyStore,
     plan: SuccessorPlan,
-    person: &PersonKeyPair,
+    device: &DeviceKeyPair,
     device_id: &str,
     now_ms: u64,
 ) -> Result<ActiveWriter, String> {
@@ -405,16 +772,16 @@ pub fn create_writer(
     let certificate = sign_certificate(
         &WriterCertificate {
             writer_key: key.public_key(),
-            person_key: person.public_key(),
             device_id: device_id.to_string(),
+            device_key: device.public_key(),
             created_at_ms,
             predecessor: plan.predecessor,
         },
-        person,
+        device,
     )
     .map_err(|error| format!("certify writer: {error}"))?;
     let writer_id = certificate.certificate.writer_id().to_hex();
-    keys.write(&files.vault_id, &writer_id, &pkcs8)?;
+    keys.write(&files.vault_id, SyncKey::Writer(&writer_id), &pkcs8)?;
     let record = WriterRecord {
         schema_version: RECORD_SCHEMA_VERSION,
         writer_id,
@@ -423,6 +790,7 @@ pub fn create_writer(
         last_committed_seq: 0,
         paused: plan.paused,
         retired_keys: plan.retired_keys,
+        sequenced: plan.sequenced,
     };
     let path = files.record_path();
     write_record(&path, &record)?;
@@ -430,6 +798,7 @@ pub fn create_writer(
         key,
         certificate,
         reservation: RecordReservation { path, record },
+        keys: None,
     };
     remove_retired_keys(&mut writer, files, keys)?;
     Ok(writer)
@@ -439,14 +808,14 @@ pub fn create_writer(
 pub fn remove_retired_keys(
     writer: &mut ActiveWriter,
     files: &SyncFiles,
-    keys: &dyn WriterKeyStore,
+    keys: &dyn SyncKeyStore,
 ) -> Result<(), String> {
     if writer.record().retired_keys.is_empty() {
         return Ok(());
     }
     for retired in &writer.record().retired_keys {
         if *retired != writer.record().writer_id {
-            keys.remove(&files.vault_id, retired)?;
+            keys.remove(&files.vault_id, SyncKey::Writer(retired))?;
         }
     }
     let mut next = writer.record().clone();

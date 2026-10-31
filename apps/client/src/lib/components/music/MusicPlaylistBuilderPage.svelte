@@ -580,7 +580,7 @@
     const collection = collectionById(collectionId);
     if (!collection?.localRootId) return;
     // Without a folder on this device there are no prior locations to match, so the folder is chosen directly.
-    const neverLinked = sources.unlinkedLocalSources([collection.id])[0]?.status === "needs-relink";
+    const neverLinked = sources.unlinkedLocalSources([collection.id])[0]?.status === "unbound";
     if (supportsRootReselection || neverLinked) {
       try {
         if (await sources.reselectLocalRoot(collection)) await library.refreshAfterMutation();
@@ -592,6 +592,11 @@
     if (!supportsRelinkPlans) return;
     sourceSurfaceCollection = collection;
     sourceSurface = "relink";
+  }
+
+  function chooseRootFolder(rootId: string): void {
+    const collection = sources.collections.find((entry) => entry.localRootId === rootId);
+    if (collection) void openRelink(collection.id);
   }
 
   function repairIssue(issue: MusicIssue): void {
@@ -735,15 +740,19 @@
     const previous = orderMusicPlaylists(library.playlistSummaries).map((entry) => ({ ...entry, intendedUses: [...entry.intendedUses] }));
     const byId = new Map(previous.map((entry) => [entry.id, entry]));
     if (playlistIds.length !== previous.length || playlistIds.some((id) => !byId.has(id))) return false;
-    const next = playlistIds.map((id, sortOrder) => ({ ...byId.get(id)!, sortOrder }));
+    // The optimistic order reuses the current keys in their sorted order; the receipts then supply the stored keys.
+    const next = playlistIds.map((id, index) => ({ ...byId.get(id)!, orderKey: previous[index].orderKey }));
     library.playlistSummaries = next;
     try {
       const receipts = await reorderMusicPlaylists({
         playlists: next.map((entry) => ({ playlistId: entry.id, expectedVersion: entry.version })),
         updatedAtMs: Date.now(),
       });
-      const versions = new Map(receipts.map((receipt) => [receipt.id, receipt.version]));
-      library.playlistSummaries = next.map((entry) => ({ ...entry, version: versions.get(entry.id) ?? entry.version }));
+      const stored = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+      library.playlistSummaries = next.map((entry) => {
+        const receipt = stored.get(entry.id);
+        return receipt ? { ...entry, orderKey: receipt.orderKey, version: receipt.version } : entry;
+      });
       playlist.clear();
       return true;
     } catch {
@@ -1198,7 +1207,7 @@
             {/if}
           </div>
         {:else}
-          <MusicReviewWorkspace items={reviewItems} totalCount={reviewItems.length} {library} {inspector} {sources} {audition} {review} {bulk} {active} selectedItemIds={reviewTreeViewState.selectedItemIds} selectedFolderIds={reviewTreeViewState.selectedFolderIds} onClearSelection={clearReviewSelection} autoplay={reviewAutoplay} onAutoplayChange={setReviewAutoplay} onOpenPlayer={openPlayerFromBuilder} compactPlayerLabel={mobilePresentation} showPanelButton={layout.contextPanelPresentation === "sheet"} onOpenPanel={() => contextViewState.contextPanelOpen = true} onEditPlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDeletePlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorderPlaylists={reorderPlaylistSummaries} issue={activeReviewIssue} repairAvailable={activeReviewIssue ? canRepairIssue(activeReviewIssue) : false} onRepairIssue={repairIssue} bind:viewState={reviewWorkspaceViewState} />
+          <MusicReviewWorkspace items={reviewItems} totalCount={reviewItems.length} {library} {inspector} {sources} {audition} {review} {bulk} {active} selectedItemIds={reviewTreeViewState.selectedItemIds} selectedFolderIds={reviewTreeViewState.selectedFolderIds} onClearSelection={clearReviewSelection} autoplay={reviewAutoplay} onAutoplayChange={setReviewAutoplay} onOpenPlayer={openPlayerFromBuilder} compactPlayerLabel={mobilePresentation} showPanelButton={layout.contextPanelPresentation === "sheet"} onOpenPanel={() => contextViewState.contextPanelOpen = true} onEditPlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDeletePlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorderPlaylists={reorderPlaylistSummaries} issue={activeReviewIssue} repairAvailable={activeReviewIssue ? canRepairIssue(activeReviewIssue) : false} onRepairIssue={repairIssue} onChooseFolder={chooseRootFolder} bind:viewState={reviewWorkspaceViewState} />
         {/if}
       {:else if playlistManagementOpen && (destination.kind === "playlists" || destination.kind === "playlist")}
         <div class="min-h-0 flex-1 overflow-y-auto p-3" data-music-scrollable="true"><MusicPlaylistManager bind:this={playlistManager} bind:actionsDisabled={playlistManagerActionsDisabled} playlists={library.playlistSummaries} onEdit={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDelete={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorder={reorderPlaylistSummaries} onDone={() => playlistManagementOpen = false} showHeader={false} /></div>

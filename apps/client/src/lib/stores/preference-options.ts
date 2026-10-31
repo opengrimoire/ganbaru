@@ -103,12 +103,14 @@ export const DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE = true;
 export const DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC = true;
 export const DEFAULT_PROFILE_DISPLAY_NAME = "";
 export const DEFAULT_PROFILE_FULL_NAME = "";
-export const DEFAULT_PROFILE_IMAGE_PATH: string | null = null;
+export const DEFAULT_PROFILE_IMAGE: ProfileImage | null = null;
 export const DEFAULT_PROFILE_USE_IMAGE = true;
 export const PROFILE_DISPLAY_NAME_FALLBACK = "You";
 export const PROFILE_DISPLAY_NAME_MAX_CHARS = 25;
 export const PROFILE_FULL_NAME_MAX_CHARS = 50;
-const PROFILE_IMAGE_PATH_PATTERN = /^profile\/[a-f0-9]{64}\.(?:png|jpe?g|webp)$/i;
+const PROFILE_IMAGE_PATH_PATTERN = /^profile\/[a-f0-9]{64}\.(?:png|jpg|webp)$/;
+/** Largest profile picture in bytes, as native code and sync check it. */
+export const PROFILE_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 export const DEFAULT_NOTES_MENTION_NOTIFICATIONS_ENABLED = true;
 export const DEFAULT_NOTES_REMINDER_NOTIFICATIONS_ENABLED = true;
 export const DEFAULT_NOTES_USER_MENTION_NOTIFICATIONS_ENABLED = true;
@@ -209,9 +211,27 @@ export type ProfileFullNameValidation =
   | { ok: true; value: string }
   | { ok: false; reason: "too_long" | "disallowed_characters" };
 
-/** Returns true when a profile image points to one managed raster asset. */
+/** The saved profile picture: the managed file and its exact size, which sync uses to fetch it on other devices. */
+export interface ProfileImage {
+  path: string;
+  byteSize: number;
+}
+
+/** Returns true when a profile image path names one managed raster asset. */
 export function isProfileImagePath(value: unknown): value is string {
-  return typeof value === "string" && PROFILE_IMAGE_PATH_PATTERN.test(value.trim());
+  return typeof value === "string" && PROFILE_IMAGE_PATH_PATTERN.test(value);
+}
+
+/** Returns true for a profile picture value of exactly the shape native code and sync accept. */
+export function isProfileImage(value: unknown): value is ProfileImage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 2
+    && isProfileImagePath(record.path)
+    && typeof record.byteSize === "number"
+    && Number.isInteger(record.byteSize)
+    && record.byteSize >= 1
+    && record.byteSize <= PROFILE_IMAGE_MAX_BYTES;
 }
 
 /** Returns true when a profile color names one slot of the theme event palette. */

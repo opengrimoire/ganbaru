@@ -24,6 +24,7 @@
   import ThemeContrastNotice from "./ThemeContrastNotice.svelte";
   import ThemeEventPaletteSection from "./ThemeEventPaletteSection.svelte";
   import ThemeJsonSection from "./ThemeJsonSection.svelte";
+  import ThemeConflictBanner from "./ThemeConflictBanner.svelte";
   import ThemeRebakeBanner from "./ThemeRebakeBanner.svelte";
   import ThemeEditorNavigation from "./ThemeEditorNavigation.svelte";
   import ThemeSourcePairRow from "./ThemeSourcePairRow.svelte";
@@ -623,6 +624,14 @@
         )}
       >
         <!-- Body: grouped editor for user themes and read-only built-in views. -->
+        {#if userTheme && themeStore.hasConflict(userTheme.id)}
+          <ThemeConflictBanner
+            themeId={userTheme.id}
+            displayName={userTheme.displayName}
+            iconLabel={userTheme.iconLabel}
+            onResolve={(choice) => themeStore.resolveConflict({ id: userTheme.id, choice })}
+          />
+        {/if}
         {#if userTheme && offerRebake}
           <ThemeRebakeBanner
             savedVersion={userTheme.derivationEngineVersion}

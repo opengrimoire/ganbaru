@@ -1,6 +1,6 @@
 import type { CollectionPropertyKind, CollectionPropertyTypeOption } from "$lib/components/collections/property-icons";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import type { NotesDataSourcePropertyType } from "$lib/notes/types";
+import { NOTES_DATA_SOURCE_PROPERTY_TYPES, type NotesDataSourcePropertyType } from "$lib/notes/types";
 
 const PROPERTY_KINDS = {
   title: "title",
@@ -69,6 +69,15 @@ export function notesPropertyKind(type: NotesDataSourcePropertyType): Collection
 /** Return the localized name of a Notes property type. */
 export function notesPropertyTypeLabel(type: NotesDataSourcePropertyType, t: Translate): string {
   return t(PROPERTY_LABEL_KEYS[type]);
+}
+
+/**
+ * Return the localized name of a type read from stored data, such as a row value written under another type than
+ * its property's. A type this app does not know is shown as stored.
+ */
+export function notesStoredPropertyTypeLabel(type: string, t: Translate): string {
+  const known = NOTES_DATA_SOURCE_PROPERTY_TYPES.find((candidate) => candidate === type);
+  return known ? notesPropertyTypeLabel(known, t) : type;
 }
 
 /** List every type a new Notes property can use, grouped into picker sections; the title property is unique per source. */

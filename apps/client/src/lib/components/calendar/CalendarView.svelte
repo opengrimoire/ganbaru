@@ -7,12 +7,14 @@
     getWeekDays, getWorkCycleDays,
     getLocalTimezone,
   } from "$lib/calendar/utils";
+  import { isTimingTooLargeMessage, isValueTooLargeMessage } from "$lib/calendar/bound-errors";
   import { useCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { calendarIdentityEmail } from "$lib/calendar/display";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -687,8 +689,10 @@
   }
 
   function saveErrorMessage(error: unknown): string {
-    if (error instanceof Error && error.message.trim()) return error.message;
-    if (typeof error === "string" && error.trim()) return error;
+    const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+    if (isTimingTooLargeMessage(message)) return t("calendar.view.tooManyChangedOccurrences");
+    if (isValueTooLargeMessage(message)) return t("calendar.view.valueTooLarge");
+    if (message.trim()) return message;
     return t("calendar.view.unknownSaveError");
   }
 
@@ -861,6 +865,12 @@
     return mobileBackStack.activate({
       handle: handlePanelClose,
     });
+  });
+
+  // Reads the open sync conflicts for event badges, and again after sync or a resolution marks them stale.
+  $effect(() => {
+    void calendarConflicts.revision;
+    void calendarConflicts.ensure();
   });
 
   onMount(() => {

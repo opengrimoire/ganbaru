@@ -4,7 +4,7 @@
 
 One Rust-owned Music session per device owns the active source, queue, source generation, eligibility, listening records, and playback boundaries. The Music panel, playlist builder, title bar, tray, media keys, and Calendar and Focus automation all issue commands to that owner. Browser media (YouTube and local video) remain frontend adapters that report observations and execute generation-tagged effects; they never choose the next track.
 
-Why native: playback must survive closed panels, suspended WebView JavaScript, detached windows, and vault handoff, and automation must not race a second frontend decision. A single serialized owner makes queue progression, automation, and recovery deterministic.
+Why native: playback must survive closed panels, suspended WebView JavaScript, detached windows, and vault replacement, and automation must not race a second frontend decision. A single serialized owner makes queue progression, automation, and recovery deterministic.
 
 Status: implemented in source. Physical desktop controls and Android background, Activity destruction, and lock-screen behavior still need acceptance before release readiness is claimed.
 
@@ -19,7 +19,7 @@ Key rules:
 
 ## Vault lifecycle
 
-Vault changes revoke new playback admission immediately and wait a bounded time for the native owner to pause, stop its backend, and release its database context. Handoff waits for acknowledged shutdown of music and soundscapes or reports a timeout. A newer resume always wins over an older queued freeze, and reactivation rereads the authorized vault without resuming playback automatically. Focus and Music share these lifecycle revision rules.
+Vault changes revoke new playback admission immediately and wait a bounded time for the native owner to pause, stop its backend, and release its database context. A snapshot bootstrap waits for acknowledged shutdown of music and soundscapes or reports a timeout. A newer resume always wins over an older queued freeze, and reactivation rereads the authorized vault without resuming playback automatically. Focus and Music share these lifecycle revision rules.
 
 ## Transport and queue
 
@@ -47,11 +47,11 @@ The current-track playlist button edits the track's memberships as a draft appli
 
 Playback position, duration, status, queue context, and source generation persist with monotonic ordering, so a late save from an older source cannot overwrite newer state. Source transitions and listening outcomes commit immediately; position is checkpointed periodically.
 
-Checkpoints are keyed by local device identity and contain only portable item and membership identifiers, bounded navigation history, selection, and playback settings. They never contain resolved file paths, Android content URIs, or decoder handles. A copied vault may carry another device's checkpoint, but it never becomes this device's live session; each device restores its own checkpoint paused. After an app launch the queue continues on the next track from its start, following the saved playback order and starting the queue or shuffle pass over when it was finished, so returning feels like a fresh start; Previous returns to the track that was playing. Reopening a vault during the same run, such as after a handoff or a vault switch, keeps the saved track and position. A restart is not reported as an interruption, but the first Play reloads the restored selection, including browser sources restored before their host was available. Ad hoc path or URL sources are transient and create no portable checkpoint.
+Checkpoints are keyed by local device identity and contain only portable item and membership identifiers, bounded navigation history, selection, and playback settings. They never contain resolved file paths, Android content URIs, or decoder handles. A copied vault may carry another device's checkpoint, but it never becomes this device's live session; each device restores its own checkpoint paused. After an app launch the queue continues on the next track from its start, following the saved playback order and starting the queue or shuffle pass over when it was finished, so returning feels like a fresh start; Previous returns to the track that was playing. Reopening a vault during the same run, such as after a snapshot bootstrap or a vault switch, keeps the saved track and position. A restart is not reported as an interruption, but the first Play reloads the restored selection, including browser sources restored before their host was available. Ad hoc path or URL sources are transient and create no portable checkpoint.
 
 Resume respects membership start and end boundaries, never resumes an ended item as paused, and reports changed or unsupported media as recoverable instead of seeking blindly.
 
-WebViews receive small notices and read retained, ordered frames through typed commands, with at most one unacknowledged frame per window. Re-reading or re-acknowledging a frame after a lost response cannot replay queue intent, and an expired frame cannot start browser playback. Vault handoff or a changed native context revokes retained frames and sends a terminal invalidation; the frontend then drops pending browser work and old presentation before subscribing to the new context.
+WebViews receive small notices and read retained, ordered frames through typed commands, with at most one unacknowledged frame per window. Re-reading or re-acknowledging a frame after a lost response cannot replay queue intent, and an expired frame cannot start browser playback. Vault replacement or a changed native context revokes retained frames and sends a terminal invalidation; the frontend then drops pending browser work and old presentation before subscribing to the new context.
 
 The configured primary window alone hosts browser decoders. Detached windows show snapshots and send native commands without creating another player. Losing the primary host does not stop native audio; browser-owned playback pauses with an explicit unavailable-host state and returns paused when the host does.
 
@@ -77,7 +77,7 @@ See the [Media3 background playback contract](https://developer.android.com/medi
 
 ## YouTube playback and redesign gap
 
-YouTube plays through an embedded IFrame player on a host page that supplies the required HTTP embedding context: a token-gated loopback host on desktop, and a separate native WebView on Android. Embedding failures and owner restrictions are surfaced explicitly. If the queue reaches a browser-owned source while its host is unavailable, the item stays selected and playback pauses; the session does not skip it or promise background YouTube playback.
+YouTube plays through an embedded IFrame player on a host page that supplies the required HTTP embedding context: a token-gated loopback host on desktop, and a separate native WebView on Android. Embedding failures and owner restrictions are surfaced explicitly. A YouTube item is eligible unless its resolution state is embedding-blocked or unavailable, and resolution state replicates with the library, so a video resolved on one linked device plays on another with no refresh; a video still resolving or timed out is attempted. Playlist eligible and unavailable counts and review issues use the same rule, while a timed-out video also appears as a review issue. If the queue reaches a browser-owned source while its host is unavailable, the item stays selected and playback pauses; the session does not skip it or promise background YouTube playback.
 
 The current presentation disables pointer input on the embedded frame and places a transparent Ganbaru hit target over it. [YouTube Required Minimum Functionality](https://developers.google.com/youtube/terms/required-minimum-functionality) forbids overlays over the embedded player, so this is an unresolved redesign gap and must not be described as compliant. A redesign must keep usable Ganbaru controls without covering required player interaction and be reviewed against the current policy. The gap never justifies scraping, proxying, downloading, or bypassing embedding restrictions.
 

@@ -51,6 +51,78 @@ fn failed_writes_keep_the_previous_target_and_remove_the_temporary_file() {
 }
 
 #[test]
+fn temporary_file_names_are_recognized_only_in_their_exact_shape() {
+    let directory = test_directory("temporary-names");
+    let staged = StagedFile::create(&directory.join("asset.png"), FileAccess::Default).unwrap();
+    let staged_name = staged.staged_path().file_name().unwrap().to_os_string();
+    assert!(is_temporary_file_name(&staged_name));
+    drop(staged);
+
+    let nonce = "0123456789abcdef0123456789abcdef";
+    assert!(is_temporary_file_name(OsStr::new(&format!(
+        ".a.b.{nonce}.tmp"
+    ))));
+    for name in [
+        "asset.png".to_string(),
+        "asset.png.tmp".to_string(),
+        format!("asset.png.{nonce}.tmp"),
+        format!("..{nonce}.tmp"),
+        format!(".asset.png.{}.tmp", &nonce[1..]),
+        format!(".asset.png.{}.tmp", nonce.to_uppercase()),
+        format!(".asset.png.{nonce}g.tmp"),
+        format!(".asset.png.{nonce}.temp"),
+        format!(".asset.png.{nonce}"),
+    ] {
+        assert!(!is_temporary_file_name(OsStr::new(&name)), "{name}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn staged_files_replace_the_target_only_when_committed() {
+    let directory = test_directory("staged-commit");
+    let path = directory.join("asset.png");
+    fs::write(&path, b"previous").unwrap();
+    let mut staged = StagedFile::create(&path, FileAccess::OwnerOnly).unwrap();
+    staged.write_all(b"first ").unwrap();
+    staged.write_all(b"second").unwrap();
+    assert_eq!(staged.written(), 12);
+    assert_eq!(staged.target(), path);
+    assert_eq!(fs::read(&path).unwrap(), b"previous");
+    assert_eq!(entry_names(&directory).len(), 2);
+    staged.commit().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"first second");
+    assert_eq!(entry_names(&directory), vec!["asset.png".to_string()]);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn dropped_staged_files_leave_no_temporary_file_or_target() {
+    let directory = test_directory("staged-drop");
+    let path = directory.join("asset.png");
+    let mut staged = StagedFile::create(&path, FileAccess::Default).unwrap();
+    staged.write_all(b"partial").unwrap();
+    drop(staged);
+    assert!(entry_names(&directory).is_empty());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn failed_staged_commits_keep_the_target_and_remove_the_temporary_file() {
+    let directory = test_directory("staged-failure");
+    // A non-empty directory as the target makes the rename fail.
+    let path = directory.join("occupied");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("inner"), b"kept").unwrap();
+    let mut staged = StagedFile::create(&path, FileAccess::Default).unwrap();
+    staged.write_all(b"bytes").unwrap();
+    assert!(staged.commit().is_err());
+    assert_eq!(entry_names(&directory), vec!["occupied".to_string()]);
+    assert_eq!(fs::read(path.join("inner")).unwrap(), b"kept");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn rejects_paths_without_a_parent_directory() {
     let error =
         write_file_atomically(Path::new("relative.txt"), b"data", FileAccess::Default).unwrap_err();

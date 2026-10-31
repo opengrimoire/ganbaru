@@ -7,7 +7,6 @@ use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use std::collections::{HashSet, VecDeque};
 
 const JOURNAL_KEY: &str = "__ganbaru_trash";
-pub(super) const OWNER_KEY: &str = "__ganbaru_trash_owner";
 const MAX_TRASH_OBJECTS: usize = super::database_copy::MAX_COPY_OBJECTS;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -45,49 +44,24 @@ pub(super) async fn set_page_trash(
     set_graph_trash(tx, TrashObject::Page(id.to_string()), in_trash).await
 }
 
-/// Reassign only owned note pages when a database or note block moves between projects.
-pub(super) async fn adopt_block_project(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    project_id: Option<&str>,
-) -> Result<(), String> {
-    let graph = collect_graph(tx, TrashObject::Block(id.to_string()), None).await?;
-    for page in graph.pages {
-        let properties = match project_id {
-            Some(_) => "json_set(properties, '$.__ganbaru_project_id', ?)",
-            None => "json_remove(properties, '$.__ganbaru_project_id')",
-        };
-        let statement = format!("UPDATE notes_pages SET properties = {properties} WHERE id = ?");
-        let mut query = sqlx::query(AssertSqlSafe(statement.as_str()));
-        if let Some(project_id) = project_id {
-            query = query.bind(project_id);
-        }
-        query
-            .bind(&page)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("adopt moved Notes graph project: {e}"))?;
-        project_history::mark_page_dirty_tx(tx, &page, "Move Notes content", true).await?;
-    }
-    Ok(())
-}
-
 async fn set_graph_trash(
     tx: &mut Transaction<'_, Sqlite>,
     root: TrashObject,
     in_trash: bool,
 ) -> Result<(), String> {
     let (table, column, id) = root_location(&root);
-    let (state, raw): (i64, String) = sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT in_trash, {column} FROM {table} WHERE id = ?"
+    let state: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT in_trash FROM {table} WHERE id = ?"
     )))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| format!("load Notes trash root: {e}"))?
     .ok_or_else(|| "Notes trash target not found".to_string())?;
-    let mut metadata: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("parse Notes trash metadata: {e}"))?;
+    let mut metadata = match column {
+        Some(column) => read_metadata(tx, table, column, id).await?,
+        None => Value::Object(serde_json::Map::new()),
+    };
     if in_trash {
         if state != 0 {
             return Ok(());
@@ -98,14 +72,14 @@ async fn set_graph_trash(
             page_history::record_page_snapshot_tx(tx, page, "trash_page").await?;
             project_history::mark_page_dirty_tx(tx, page, "Trash Notes content", true).await?;
             sqlx::query("UPDATE notes_pages SET in_trash = 1, trashed_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                properties = json_set(properties, '$.__ganbaru_trash_owner', ?),
+                trash_owner = ?,
                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND in_trash = 0")
                 .bind(&journal.token).bind(page).execute(&mut **tx).await
                 .map_err(|e| format!("trash owned Notes page: {e}"))?;
             data_sources::rollups::invalidate_rollup_cache_for_page_tx(tx, page).await?;
         }
         for block in &journal.blocks {
-            sqlx::query("UPDATE notes_blocks SET in_trash = 1, payload = json_set(payload, '$.__ganbaru_trash_owner', ?),
+            sqlx::query("UPDATE notes_blocks SET in_trash = 1, trash_owner = ?,
                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND in_trash = 0")
                 .bind(&journal.token).bind(block).execute(&mut **tx).await
                 .map_err(|e| format!("trash owned Notes block: {e}"))?;
@@ -120,11 +94,13 @@ async fn set_graph_trash(
                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND in_trash = 0")
                 .bind(source).execute(&mut **tx).await.map_err(|e| format!("trash owned Notes database source: {e}"))?;
         }
-        // The journal lists only active records changed by this operation.
-        metadata[JOURNAL_KEY] = serde_json::to_value(&journal)
-            .map_err(|e| format!("serialize Notes trash journal: {e}"))?;
-        metadata[OWNER_KEY] = journal.token.into();
-        write_metadata(tx, table, column, id, &metadata).await?;
+        // The journal lists only active records changed by this operation. Page roots keep no
+        // journal: their trash owner token finds the same graph on restore.
+        if let Some(column) = column {
+            metadata[JOURNAL_KEY] = serde_json::to_value(&journal)
+                .map_err(|e| format!("serialize Notes trash journal: {e}"))?;
+            write_metadata(tx, table, column, id, &metadata).await?;
+        }
     } else {
         let journal = metadata
             .get(JOURNAL_KEY)
@@ -132,25 +108,17 @@ async fn set_graph_trash(
             .map(serde_json::from_value::<TrashJournal>)
             .transpose()
             .map_err(|e| format!("parse Notes trash journal: {e}"))?;
-        if let Some(journal) = journal {
+        if let (Some(journal), Some(column)) = (journal, column) {
             validate_journal(&journal)?;
             restore_journal(tx, &journal).await?;
-            let raw: String = sqlx::query_scalar(AssertSqlSafe(format!(
-                "SELECT {column} FROM {table} WHERE id = ?"
-            )))
-            .bind(id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| format!("reload restored Notes metadata: {e}"))?;
-            metadata = serde_json::from_str(&raw)
-                .map_err(|e| format!("parse restored Notes metadata: {e}"))?;
+            metadata = read_metadata(tx, table, column, id).await?;
             if let Some(object) = metadata.as_object_mut() {
                 object.remove(JOURNAL_KEY);
             }
             write_metadata(tx, table, column, id, &metadata).await?;
-        } else if let Some(token) = metadata.get(OWNER_KEY).and_then(Value::as_str) {
-            let mut journal = collect_graph(tx, root.clone(), Some(token)).await?;
-            journal.token = token.to_string();
+        } else if let Some(token) = root_trash_owner(tx, &root).await? {
+            let mut journal = collect_graph(tx, root.clone(), Some(&token)).await?;
+            journal.token = token;
             validate_journal(&journal)?;
             restore_journal(tx, &journal).await?;
         } else {
@@ -176,13 +144,54 @@ async fn set_graph_trash(
     Ok(())
 }
 
-fn root_location(root: &TrashObject) -> (&'static str, &'static str, &str) {
+/// Read the deletion token stored on a trashed page or block root.
+async fn root_trash_owner(
+    tx: &mut Transaction<'_, Sqlite>,
+    root: &TrashObject,
+) -> Result<Option<String>, String> {
+    let table = match root {
+        TrashObject::Page(_) => "notes_pages",
+        TrashObject::Block(_) => "notes_blocks",
+        TrashObject::Database(_) | TrashObject::Source(_) => return Ok(None),
+    };
+    let (_, _, id) = root_location(root);
+    let owner: Option<Option<String>> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT trash_owner FROM {table} WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load Notes trash owner: {e}"))?;
+    Ok(owner.flatten())
+}
+
+/// The table of a trash graph object and the JSON column that holds its trash journal when it is
+/// the root. Only block roots keep a journal: page roots restore through their trash owner token,
+/// and databases and sources are trashed only as part of a page or block graph.
+fn root_location(root: &TrashObject) -> (&'static str, Option<&'static str>, &str) {
     match root {
-        TrashObject::Page(id) => ("notes_pages", "properties", id),
-        TrashObject::Block(id) => ("notes_blocks", "payload", id),
-        TrashObject::Database(id) => ("notes_databases", "description", id),
-        TrashObject::Source(id) => ("notes_data_sources", "properties", id),
+        TrashObject::Page(id) => ("notes_pages", None, id),
+        TrashObject::Block(id) => ("notes_blocks", Some("attrs"), id),
+        TrashObject::Database(id) => ("notes_databases", None, id),
+        TrashObject::Source(id) => ("notes_data_sources", None, id),
     }
+}
+
+/// Reads the JSON metadata column that holds a trash root's journal.
+async fn read_metadata(
+    tx: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    column: &str,
+    id: &str,
+) -> Result<Value, String> {
+    let raw: String = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT {column} FROM {table} WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("load Notes trash metadata: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("parse Notes trash metadata: {e}"))
 }
 
 async fn write_metadata(
@@ -220,10 +229,10 @@ async fn collect_graph(
         }
         let (table, _, id) = root_location(&object);
         let (state_query, owner) = match (&object, token) {
-            (TrashObject::Page(_), Some(_)) => ("in_trash = 1 AND json_extract(properties, '$.__ganbaru_trash_owner') = ?".to_string(), true),
-            (TrashObject::Block(_), Some(_)) => ("in_trash = 1 AND json_extract(payload, '$.__ganbaru_trash_owner') = ?".to_string(), true),
-            (TrashObject::Database(_), Some(_)) => ("in_trash = 1 AND EXISTS(SELECT 1 FROM notes_blocks WHERE id = notes_databases.id AND json_extract(payload, '$.__ganbaru_trash_owner') = ?)".to_string(), true),
-            (TrashObject::Source(_), Some(_)) => ("in_trash = 1 AND EXISTS(SELECT 1 FROM notes_blocks WHERE id = notes_data_sources.database_id AND json_extract(payload, '$.__ganbaru_trash_owner') = ?)".to_string(), true),
+            (TrashObject::Page(_), Some(_)) => ("in_trash = 1 AND trash_owner = ?".to_string(), true),
+            (TrashObject::Block(_), Some(_)) => ("in_trash = 1 AND trash_owner = ?".to_string(), true),
+            (TrashObject::Database(_), Some(_)) => ("in_trash = 1 AND EXISTS(SELECT 1 FROM notes_blocks WHERE id = notes_databases.id AND trash_owner = ?)".to_string(), true),
+            (TrashObject::Source(_), Some(_)) => ("in_trash = 1 AND EXISTS(SELECT 1 FROM notes_blocks WHERE id = notes_data_sources.database_id AND trash_owner = ?)".to_string(), true),
             _ => ("in_trash = 0".to_string(), false),
         };
         let statement =
@@ -336,27 +345,33 @@ async fn restore_journal(
 ) -> Result<(), String> {
     // Restore shells and sources only while their owning block still carries this deletion's token.
     for id in &journal.databases {
-        sqlx::query("UPDATE notes_databases SET in_trash = 0,
+        sqlx::query(
+            "UPDATE notes_databases SET in_trash = 0,
             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND EXISTS (
-            SELECT 1 FROM notes_blocks WHERE id = notes_databases.id AND json_extract(payload, '$.__ganbaru_trash_owner') = ?)")
-            .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore Notes database shell: {e}"))?;
+            SELECT 1 FROM notes_blocks WHERE id = notes_databases.id AND trash_owner = ?)",
+        )
+        .bind(id)
+        .bind(&journal.token)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("restore Notes database shell: {e}"))?;
     }
     for id in &journal.sources {
         sqlx::query("UPDATE notes_data_sources SET in_trash = 0,
             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND EXISTS (
-            SELECT 1 FROM notes_blocks WHERE id = notes_data_sources.database_id AND json_extract(payload, '$.__ganbaru_trash_owner') = ?)")
+            SELECT 1 FROM notes_blocks WHERE id = notes_data_sources.database_id AND trash_owner = ?)")
             .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes data source: {e}"))?;
     }
     for id in &journal.pages {
         sqlx::query("UPDATE notes_pages SET in_trash = 0, trashed_time = NULL,
-            properties = json_remove(properties, '$.__ganbaru_trash_owner'),
-            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND json_extract(properties, '$.__ganbaru_trash_owner') = ?")
+            trash_owner = NULL,
+            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?")
             .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes page: {e}"))?;
         data_sources::rollups::invalidate_rollup_cache_for_page_tx(tx, id).await?;
     }
     for id in &journal.blocks {
-        sqlx::query("UPDATE notes_blocks SET in_trash = 0, payload = json_remove(payload, '$.__ganbaru_trash_owner'),
-            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND json_extract(payload, '$.__ganbaru_trash_owner') = ?")
+        sqlx::query("UPDATE notes_blocks SET in_trash = 0, trash_owner = NULL,
+            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND trash_owner = ?")
             .bind(id).bind(&journal.token).execute(&mut **tx).await.map_err(|e| format!("restore owned Notes block: {e}"))?;
     }
     Ok(())

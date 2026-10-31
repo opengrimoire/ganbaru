@@ -1,5 +1,6 @@
 import type { Translate } from "$lib/i18n/translator.svelte";
 import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
+import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
 export const SYSTEM_MUSIC_PLAYLIST_IDS = [
   "playlist-default-start-of-day",
@@ -21,10 +22,9 @@ export function isSystemMusicPlaylistId(id: string): id is SystemMusicPlaylistId
   return SYSTEM_MUSIC_PLAYLIST_IDS.includes(id as SystemMusicPlaylistId);
 }
 
+/** Orders playlists like the native list: by order key, then id, compared by code unit. */
 export function orderMusicPlaylists(playlists: readonly MusicPlaylistSummary[]): MusicPlaylistSummary[] {
-  return playlists.toSorted((left, right) => {
-    return left.sortOrder - right.sortOrder || left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
-  });
+  return playlists.toSorted((left, right) => compareOrderKeyThenId(left.orderKey, left.id, right.orderKey, right.id));
 }
 
 export function systemMusicPlaylistName(id: string, storedName: string, t: Translate): string {

@@ -25,6 +25,7 @@ Working-folder Markdown never becomes a Notes page automatically and does not ga
 | Markdown, HTML, Notion API and export-folder, CSV, graph, and agent-bridge transfer | Implemented with loss diagnostics |
 | Page and project history, page templates, and safety versions | Implemented |
 | Backlinks, aliases, unresolved links, mentions, and local notifications | Implemented |
+| Sync between linked devices, written on every device, with editor conflict choices | Partial |
 | Daily-note product surface | Planned |
 | Multi-person encrypted sync | Planned |
 

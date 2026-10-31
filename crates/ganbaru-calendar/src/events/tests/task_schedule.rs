@@ -12,8 +12,8 @@ fn request(start: &str, zone: &str) -> ScheduleRequest {
 
 async fn seed() -> sqlx::SqlitePool {
     let pool = super::metadata::seed().await;
-    sqlx::raw_sql("INSERT INTO project_tasks (id, project_id, section_id, status_id, title, completed_at, due_date)
-        VALUES ('task-2', 'project', 'section', 'status', 'Second', '2026-01-01T09:00:00Z', '2099-12-01');
+    sqlx::raw_sql("INSERT INTO project_tasks (id, project_id, section_id, status_id, title, completed_at, due_date, section_order_key, status_order_key)
+        VALUES ('task-2', 'project', 'section', 'status', 'Second', '2026-01-01T09:00:00Z', '2099-12-01', 'a2', 'a2');
         UPDATE projects SET default_event_duration_minutes = 120, color = 3;")
         .execute(&pool).await.unwrap();
     pool
@@ -181,11 +181,11 @@ fn scheduling_rejects_stale_archived_foreign_duplicate_and_oversized_selections(
     crate::test_support::block_on(async {
         let pool = seed().await;
         let base = serde_json::to_value(request("2099-05-10T09:00", "UTC")).unwrap();
-        sqlx::raw_sql("INSERT INTO projects (id, group_id, name) VALUES ('foreign', 'group', 'Foreign');
-            INSERT INTO project_sections (id, project_id, name) VALUES ('foreign-section', 'foreign', 'General');
-            INSERT INTO project_statuses (id, project_id, name, category) VALUES ('foreign-status', 'foreign', 'Open', 'not_started');
-            INSERT INTO project_tasks (id, project_id, section_id, status_id, title)
-                VALUES ('foreign-task', 'foreign', 'foreign-section', 'foreign-status', 'Foreign task');")
+        sqlx::raw_sql("INSERT INTO projects (id, group_id, name, order_key) VALUES ('foreign', 'group', 'Foreign', 'a1');
+            INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('foreign-section', 'foreign', 'General', 'a1');
+            INSERT INTO project_statuses (id, project_id, name, category, order_key) VALUES ('foreign-status', 'foreign', 'Open', 'not_started', 'a1');
+            INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+                VALUES ('foreign-task', 'foreign', 'foreign-section', 'foreign-status', 'Foreign task', 'a1', 'a1');")
             .execute(&pool).await.unwrap();
         for patch in [
             json!([{"id":"task","revision":1}]),
@@ -324,9 +324,9 @@ fn scheduling_reviews_project_defaults_and_uses_elapsed_dst_intervals() {
 fn scheduling_snapshots_soundtrack_and_custom_idle_and_rejects_changed_review() {
     crate::test_support::block_on(async {
         let pool = seed().await;
-        sqlx::raw_sql("INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms) VALUES ('playlist', 'Focus', 1, 1);
-            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms)
-                VALUES ('project-default', 'project', 'focus', 'play-automatically', 'playlist', 'explicit', 1);
+        sqlx::raw_sql("INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms) VALUES ('playlist', 'Focus', 'a0', 1, 1);
+            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms, sync_key)
+                VALUES ('project-default', 'project', 'focus', 'play-automatically', 'playlist', 'explicit', 1, lower(hex(randomblob(16))));
             UPDATE projects SET default_pomodoro_mode='custom', default_pomodoro_preset_key=NULL, default_pomodoro_focus_minutes=35,
                 default_pomodoro_short_break_minutes=7, default_pomodoro_long_break_minutes=12,
                 default_pomodoro_long_break_after_focus_count=3, default_idle_settings_source='custom',

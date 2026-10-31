@@ -11,6 +11,9 @@ use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
 };
+use ganbaru_chat::project_defaults::{
+    current_folder_environment_id, ensure_working_folder_chat_defaults,
+};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -24,7 +27,7 @@ pub(super) async fn freeze_context_package(
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     let thread_row = sqlx::query(
-        "SELECT thread.conversation_id, thread.root_item_id, root_item.ordinal AS root_ordinal,
+        "SELECT thread.conversation_id, thread.root_item_id, root_item.order_key AS root_order_key,
                 channel.project_id
          FROM chat_reply_threads thread
          JOIN chat_conversation_items root_item ON root_item.id = thread.root_item_id
@@ -50,11 +53,9 @@ pub(super) async fn freeze_context_package(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let root_ordinal = u64_value(
-        thread_row
-            .try_get("root_ordinal")
-            .map_err(persistence_error)?,
-    )?;
+    let root_order_key: String = thread_row
+        .try_get("root_order_key")
+        .map_err(persistence_error)?;
     let access = read_assignment_access(
         transaction,
         &conversation_id,
@@ -64,9 +65,9 @@ pub(super) async fn freeze_context_package(
     .await?;
     // The trigger is addressed to the teammate; the rest of the thread is
     // channel history at the root's position.
-    let thread_visible = access.history.admits_position(root_ordinal);
+    let thread_visible = access.history.admits_position(&root_order_key);
     let source_rows = sqlx::query(
-        "SELECT item.id, item.ordinal, revision.revision, revision.normalized_markdown,
+        "SELECT item.id, revision.revision, revision.normalized_markdown,
                 CASE
                   WHEN item.id = ? THEN 'trigger'
                   WHEN item.id = ? THEN 'thread_root'
@@ -74,11 +75,12 @@ pub(super) async fn freeze_context_package(
                 END AS source_kind
          FROM chat_conversation_items item
          JOIN chat_communication_messages message ON message.item_id = item.id
-         JOIN chat_communication_message_revisions revision
+         JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
          WHERE message.deleted_at IS NULL
            AND (item.id = ? OR (? AND (item.reply_thread_id = ? OR item.id = ?)))
-         ORDER BY CASE WHEN item.id = ? THEN 0 ELSE 1 END, item.ordinal DESC
+         ORDER BY CASE WHEN item.id = ? THEN 0 WHEN item.id = ? THEN 1 ELSE 2 END,
+                  item.order_key DESC, item.id DESC
          LIMIT ?",
     )
     .bind(triggering_message_item_id.as_str())
@@ -88,23 +90,24 @@ pub(super) async fn freeze_context_package(
     .bind(reply_thread_id.as_str())
     .bind(root_item_id.as_str())
     .bind(triggering_message_item_id.as_str())
+    .bind(root_item_id.as_str())
     .bind(i64::try_from(MAX_THREAD_CONTEXT_REPLIES + 2).unwrap_or(52))
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    let channel_visible_from = access.history.visible_from().map(i64_value).transpose()?;
+    let channel_visible_from = access.history.visible_from();
     let channel_rows = if let Some(visible_from) = channel_visible_from {
         sqlx::query(
-            "SELECT item.id, item.ordinal, revision.revision, revision.normalized_markdown
+            "SELECT item.id, revision.revision, revision.normalized_markdown
          FROM chat_conversation_items item
          JOIN chat_communication_messages message ON message.item_id = item.id
-         JOIN chat_communication_message_revisions revision
+         JOIN chat_communication_message_revisions_numbered revision
            ON revision.id = message.current_revision_id
          WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
            AND item.id != ?
            AND message.deleted_at IS NULL
-           AND item.ordinal >= ?
-         ORDER BY item.ordinal DESC LIMIT ?",
+           AND item.order_key >= ?
+         ORDER BY item.order_key DESC, item.id DESC LIMIT ?",
         )
         .bind(conversation_id.as_str())
         .bind(root_item_id.as_str())
@@ -135,7 +138,7 @@ pub(super) async fn freeze_context_package(
              JOIN chat_communication_messages message ON message.item_id = item.id
              WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
                AND item.id != ? AND message.deleted_at IS NULL
-               AND item.ordinal >= ?",
+               AND item.order_key >= ?",
         )
         .bind(conversation_id.as_str())
         .bind(root_item_id.as_str())
@@ -157,6 +160,12 @@ pub(super) async fn freeze_context_package(
                 .map_err(persistence_error)?,
         });
     }
+    // The root leads the thread, replies keep their order, and the trigger closes it.
+    sources.sort_by_key(|source| match source.kind.as_str() {
+        "thread_root" => 0,
+        "trigger" => 2,
+        _ => 1,
+    });
     for row in channel_rows.into_iter().rev() {
         sources.push(ContextSource {
             id: row.try_get("id").map_err(persistence_error)?,
@@ -178,7 +187,7 @@ pub(super) async fn freeze_context_package(
         }
         serialized.push_str(&line);
     }
-    let context_id = new_id("context");
+    let context_id = new_id("context")?;
     let context_hash = sha256_hex(serialized.as_bytes());
     sqlx::query(
         "INSERT INTO chat_assignment_context_packages
@@ -241,6 +250,7 @@ pub(super) async fn freeze_context_package(
             grants: &grants,
             referenced_folder_ids: &referenced_folder_ids,
             referenced_execution_environments: &referenced_execution_environments,
+            now,
         },
     )
     .await?;
@@ -304,8 +314,10 @@ pub(super) async fn freeze_context_package(
         "channels": channel_sources.iter().map(|source| serde_json::json!({
             "referenceId": &source.message_reference_id,
             "conversationId": &source.conversation_id,
-            "lowerOrdinal": source.lower_ordinal,
-            "highOrdinal": source.high_ordinal,
+            "lowerOrderKey": &source.lower_order_key,
+            "lowerItemId": &source.lower_item_id,
+            "highOrderKey": &source.high_order_key,
+            "highItemId": &source.high_item_id,
             "revisionCutoffId": &source.source_revision_cutoff_id,
             "audienceRevision": source.destination_audience_revision,
         })).collect::<Vec<_>>(),
@@ -324,7 +336,7 @@ pub(super) async fn freeze_context_package(
             .as_slice(),
     );
     let authorization_id =
-        ChatAuthorizationRevisionId::new(new_id("authorization")).map_err(identifier_error)?;
+        ChatAuthorizationRevisionId::new(new_id("authorization")?).map_err(identifier_error)?;
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
@@ -354,17 +366,20 @@ pub(super) async fn freeze_context_package(
         sqlx::query(
             "INSERT INTO chat_assignment_authorized_channel_sources
                 (authorization_revision_id, source_handle, message_reference_id,
-                 conversation_id, label_snapshot, lower_ordinal, high_ordinal,
-                 source_revision_cutoff_id, destination_audience_revision, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 conversation_id, label_snapshot, lower_order_key, lower_item_id,
+                 high_order_key, high_item_id, source_revision_cutoff_id,
+                 destination_audience_revision, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(authorization_id.as_str())
         .bind(&source.source_handle)
         .bind(&source.message_reference_id)
         .bind(&source.conversation_id)
         .bind(&source.label_snapshot)
-        .bind(i64_value(source.lower_ordinal)?)
-        .bind(i64_value(source.high_ordinal)?)
+        .bind(&source.lower_order_key)
+        .bind(&source.lower_item_id)
+        .bind(&source.high_order_key)
+        .bind(&source.high_item_id)
         .bind(&source.source_revision_cutoff_id)
         .bind(i64_value(source.destination_audience_revision)?)
         .bind(now.as_str())
@@ -471,8 +486,10 @@ struct FrozenChannelSource {
     message_reference_id: String,
     conversation_id: String,
     label_snapshot: String,
-    lower_ordinal: u64,
-    high_ordinal: u64,
+    lower_order_key: String,
+    lower_item_id: String,
+    high_order_key: String,
+    high_item_id: String,
     source_revision_cutoff_id: String,
     destination_audience_revision: u64,
 }
@@ -498,13 +515,14 @@ struct ResolveExecutionTargetInput<'a> {
     grants: &'a [FolderGrant],
     referenced_folder_ids: &'a [String],
     referenced_execution_environments: &'a [ReferencedExecutionEnvironment],
+    now: &'a UtcTimestamp,
 }
 
 struct ChannelDisclosureInput<'a> {
     destination_id: &'a ChatConversationId,
     destination_message_item_id: &'a ChatConversationItemId,
     source_id: &'a str,
-    lower_ordinal: u64,
+    lower_order_key: &'a str,
     frozen_audience_revision: u64,
     requester_id: &'a ChatParticipantId,
     teammate_id: &'a ChatParticipantId,
@@ -527,7 +545,7 @@ async fn read_assignment_access(
                 channel_access.read_history_inherits_profile,
                 channel_access.participate_inherits_profile,
                 channel_access.history_boundary_inherits_profile,
-                channel_access.history_from_ordinal,
+                channel_access.history_from_order_key,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
                 channel_access.scratch_runtime_approval_policy,
                 policy.safety_mode AS teammate_safety_mode
@@ -535,21 +553,20 @@ async fn read_assignment_access(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_teammate_access_state access_state
            ON access_state.teammate_id = membership.participant_id
           AND access_state.access_revision >= 1
          JOIN chat_access_profiles profile
            ON profile.id = channel_access.access_profile_id
           AND profile.archived_at IS NULL
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
           AND profile_revision.default_participate = 1
          JOIN chat_teammates teammate
            ON teammate.participant_id = membership.participant_id
-         JOIN chat_teammate_policy_revisions policy
+         JOIN chat_teammate_effective_policies policy
            ON policy.teammate_id = teammate.participant_id
-          AND policy.revision = teammate.latest_policy_revision
          JOIN chat_communication_messages message ON message.item_id = ?
          JOIN chat_conversation_memberships requester_membership
            ON requester_membership.conversation_id = membership.conversation_id
@@ -579,11 +596,9 @@ async fn read_assignment_access(
             true,
         )
     })?;
-    let history_from_ordinal = row
-        .try_get::<Option<i64>, _>("history_from_ordinal")
-        .map_err(persistence_error)?
-        .map(u64_value)
-        .transpose()?;
+    let history_from_order_key = row
+        .try_get::<Option<String>, _>("history_from_order_key")
+        .map_err(persistence_error)?;
     let profile_read_history = row
         .try_get::<i64, _>("default_read_history")
         .map_err(persistence_error)?
@@ -613,7 +628,7 @@ async fn read_assignment_access(
         read_history,
         profile_history_boundary == "from_grant"
             || (!history_inherits && stored_history_boundary == "from_grant"),
-        history_from_ordinal,
+        history_from_order_key,
     );
     Ok(AssignmentAccess {
         requester_participant_id: ChatParticipantId::new(
@@ -793,6 +808,7 @@ async fn resolve_execution_target(
         grants,
         referenced_folder_ids,
         referenced_execution_environments,
+        now,
     } = input;
     let referenced_execution_environment =
         unique_referenced_execution_environment(referenced_execution_environments)?;
@@ -807,6 +823,7 @@ async fn resolve_execution_target(
                     transaction,
                     working_folder_id.as_str(),
                     execution_environment_id.as_str(),
+                    now,
                 )
                 .await?;
                 Ok(ResolvedExecutionTarget {
@@ -859,6 +876,7 @@ async fn resolve_execution_target(
                 transaction,
                 &environment.working_folder_id,
                 &environment.execution_environment_id,
+                now,
             )
             .await?;
             return Ok(ResolvedExecutionTarget {
@@ -889,9 +907,14 @@ async fn resolve_execution_target(
             .map(|grant| grant.working_folder_id.clone())
     };
     if let Some(working_folder_id) = selected {
-        let execution_environment_id = format!("current-folder:{working_folder_id}");
-        verify_folder_environment(transaction, &working_folder_id, &execution_environment_id)
-            .await?;
+        let execution_environment_id = current_folder_environment_id(&working_folder_id);
+        verify_folder_environment(
+            transaction,
+            &working_folder_id,
+            &execution_environment_id,
+            now,
+        )
+        .await?;
         return Ok(ResolvedExecutionTarget {
             execution_environment_id: Some(execution_environment_id),
             working_folder_id: Some(working_folder_id),
@@ -964,17 +987,26 @@ async fn verify_explicit_scratch(
     }
 }
 
+/// Verifies that `execution_environment_id` is an available environment of the working folder,
+/// first creating the folder's Chat defaults when the id is its current-folder environment.
 async fn verify_folder_environment(
     transaction: &mut Transaction<'_, Sqlite>,
     working_folder_id: &str,
     execution_environment_id: &str,
+    now: &UtcTimestamp,
 ) -> ChatResult<()> {
+    if execution_environment_id == current_folder_environment_id(working_folder_id) {
+        ensure_working_folder_chat_defaults(transaction, working_folder_id, now).await?;
+    }
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(
-           SELECT 1 FROM chat_execution_environments
-           WHERE id = ? AND working_folder_id = ?
-             AND scratch_generation_id IS NULL
-             AND lifecycle_state = 'available' AND archived_at IS NULL
+           SELECT 1 FROM chat_execution_environments environment
+           JOIN project_working_folders folder ON folder.id = environment.working_folder_id
+           WHERE environment.id = ? AND environment.working_folder_id = ?
+             AND environment.scratch_generation_id IS NULL
+             AND environment.lifecycle_state = 'available'
+             AND environment.archived_at IS NULL
+             AND folder.archived_at IS NULL
          )",
     )
     .bind(execution_environment_id)
@@ -1018,16 +1050,19 @@ async fn read_channel_sources(
 ) -> ChatResult<Vec<FrozenChannelSource>> {
     let rows = sqlx::query(
         "SELECT reference.id AS reference_id, reference.label_snapshot,
-                target.source_conversation_id, target.source_lower_ordinal,
-                target.source_high_ordinal, target.source_revision_cutoff_id,
-                target.destination_audience_revision
+                target.source_conversation_id, target.source_lower_order_key,
+                target.source_lower_item_id, target.source_high_order_key,
+                target.source_high_item_id, target.source_revision_cutoff_id,
+                audience.revision AS destination_audience_revision
          FROM chat_communication_messages message
          JOIN chat_message_references reference
            ON reference.message_revision_id = message.current_revision_id
           AND reference.reference_kind = 'channel'
          JOIN chat_channel_reference_targets target ON target.reference_id = reference.id
+         JOIN chat_conversation_audience_state audience
+           ON audience.conversation_id = target.destination_conversation_id
          WHERE message.item_id = ? AND target.destination_conversation_id = ?
-           AND target.source_high_ordinal > 0
+           AND target.source_high_order_key IS NOT NULL
            AND target.source_revision_cutoff_id IS NOT NULL
          ORDER BY reference.ordinal",
     )
@@ -1041,10 +1076,9 @@ async fn read_channel_sources(
         let conversation_id: String = row
             .try_get("source_conversation_id")
             .map_err(persistence_error)?;
-        let lower_ordinal = u64_value(
-            row.try_get("source_lower_ordinal")
-                .map_err(persistence_error)?,
-        )?;
+        let lower_order_key: String = row
+            .try_get("source_lower_order_key")
+            .map_err(persistence_error)?;
         let destination_audience_revision = u64_value(
             row.try_get("destination_audience_revision")
                 .map_err(persistence_error)?,
@@ -1055,7 +1089,7 @@ async fn read_channel_sources(
                 destination_id: destination_conversation_id,
                 destination_message_item_id: triggering_message_item_id,
                 source_id: &conversation_id,
-                lower_ordinal,
+                lower_order_key: &lower_order_key,
                 frozen_audience_revision: destination_audience_revision,
                 requester_id,
                 teammate_id,
@@ -1067,11 +1101,16 @@ async fn read_channel_sources(
             message_reference_id: row.try_get("reference_id").map_err(persistence_error)?,
             conversation_id,
             label_snapshot: row.try_get("label_snapshot").map_err(persistence_error)?,
-            lower_ordinal,
-            high_ordinal: u64_value(
-                row.try_get("source_high_ordinal")
-                    .map_err(persistence_error)?,
-            )?,
+            lower_order_key,
+            lower_item_id: row
+                .try_get("source_lower_item_id")
+                .map_err(persistence_error)?,
+            high_order_key: row
+                .try_get("source_high_order_key")
+                .map_err(persistence_error)?,
+            high_item_id: row
+                .try_get("source_high_item_id")
+                .map_err(persistence_error)?,
             source_revision_cutoff_id: row
                 .try_get("source_revision_cutoff_id")
                 .map_err(persistence_error)?,
@@ -1089,7 +1128,7 @@ async fn verify_channel_disclosure(
         destination_id,
         destination_message_item_id,
         source_id,
-        lower_ordinal,
+        lower_order_key,
         frozen_audience_revision,
         requester_id,
         teammate_id,
@@ -1112,12 +1151,12 @@ async fn verify_channel_disclosure(
            JOIN chat_teammate_channel_memberships teammate_access
              ON teammate_access.conversation_id = teammate.conversation_id
             AND teammate_access.teammate_id = teammate.participant_id
+            AND teammate_access.removed_at IS NULL
            JOIN chat_access_profiles teammate_profile
              ON teammate_profile.id = teammate_access.access_profile_id
             AND teammate_profile.archived_at IS NULL
-           JOIN chat_access_profile_revisions teammate_profile_revision
+           JOIN chat_access_profile_effective_revisions teammate_profile_revision
              ON teammate_profile_revision.access_profile_id = teammate_profile.id
-            AND teammate_profile_revision.revision = teammate_profile.latest_revision
            WHERE audience.conversation_id = ? AND audience.revision >= ?
              AND CASE
                    WHEN teammate_access.read_history_inherits_profile = 1
@@ -1135,8 +1174,8 @@ async fn verify_channel_disclosure(
                  ELSE 'entire'
                END = 'entire'
                OR (
-                 teammate_access.history_from_ordinal IS NOT NULL
-                 AND teammate_access.history_from_ordinal <= ?
+                 teammate_access.history_from_order_key IS NOT NULL
+                 AND teammate_access.history_from_order_key <= ?
                )
              )
              AND (
@@ -1147,11 +1186,11 @@ async fn verify_channel_disclosure(
                  JOIN chat_access_profiles requester_profile
                    ON requester_profile.id = requester_access.access_profile_id
                   AND requester_profile.archived_at IS NULL
-                 JOIN chat_access_profile_revisions requester_profile_revision
+                 JOIN chat_access_profile_effective_revisions requester_profile_revision
                    ON requester_profile_revision.access_profile_id = requester_profile.id
-                  AND requester_profile_revision.revision = requester_profile.latest_revision
                  WHERE requester_access.conversation_id = ?
                    AND requester_access.teammate_id = ?
+                   AND requester_access.removed_at IS NULL
                    AND CASE
                          WHEN requester_access.read_history_inherits_profile = 1
                            THEN requester_profile_revision.default_read_history
@@ -1168,8 +1207,8 @@ async fn verify_channel_disclosure(
                        ELSE 'entire'
                      END = 'entire'
                      OR (
-                       requester_access.history_from_ordinal IS NOT NULL
-                       AND requester_access.history_from_ordinal <= ?
+                       requester_access.history_from_order_key IS NOT NULL
+                       AND requester_access.history_from_order_key <= ?
                      )
                    )
                )
@@ -1189,11 +1228,11 @@ async fn verify_channel_disclosure(
                      JOIN chat_access_profiles destination_profile
                        ON destination_profile.id = destination_ai.access_profile_id
                       AND destination_profile.archived_at IS NULL
-                     JOIN chat_access_profile_revisions destination_profile_revision
+                     JOIN chat_access_profile_effective_revisions destination_profile_revision
                        ON destination_profile_revision.access_profile_id = destination_profile.id
-                      AND destination_profile_revision.revision = destination_profile.latest_revision
                      WHERE destination_ai.conversation_id = ?
                        AND destination_ai.teammate_id = destination_member.participant_id
+                       AND destination_ai.removed_at IS NULL
                        AND CASE
                              WHEN destination_ai.read_history_inherits_profile = 1
                                THEN destination_profile_revision.default_read_history
@@ -1210,8 +1249,15 @@ async fn verify_channel_disclosure(
                            ELSE 'entire'
                          END = 'entire'
                          OR (
-                           destination_ai.history_from_ordinal IS NOT NULL
-                           AND destination_ai.history_from_ordinal <= destination_item.ordinal
+                           destination_ai.history_from_order_key IS NOT NULL
+                           AND destination_ai.history_from_order_key <= coalesce(
+                             (SELECT root_item.order_key
+                              FROM chat_reply_threads destination_thread
+                              JOIN chat_conversation_items root_item
+                                ON root_item.id = destination_thread.root_item_id
+                              WHERE destination_thread.id = destination_item.reply_thread_id),
+                             destination_item.order_key
+                           )
                          )
                        )
                    )
@@ -1231,11 +1277,11 @@ async fn verify_channel_disclosure(
                        JOIN chat_access_profiles source_profile
                          ON source_profile.id = source_ai.access_profile_id
                         AND source_profile.archived_at IS NULL
-                       JOIN chat_access_profile_revisions source_profile_revision
+                       JOIN chat_access_profile_effective_revisions source_profile_revision
                          ON source_profile_revision.access_profile_id = source_profile.id
-                        AND source_profile_revision.revision = source_profile.latest_revision
                        WHERE source_ai.conversation_id = ?
                          AND source_ai.teammate_id = destination_member.participant_id
+                         AND source_ai.removed_at IS NULL
                          AND CASE
                                WHEN source_ai.read_history_inherits_profile = 1
                                  THEN source_profile_revision.default_read_history
@@ -1252,8 +1298,8 @@ async fn verify_channel_disclosure(
                              ELSE 'entire'
                            END = 'entire'
                            OR (
-                             source_ai.history_from_ordinal IS NOT NULL
-                             AND source_ai.history_from_ordinal <= ?
+                             source_ai.history_from_order_key IS NOT NULL
+                             AND source_ai.history_from_order_key <= ?
                            )
                          )
                      )
@@ -1269,15 +1315,15 @@ async fn verify_channel_disclosure(
     .bind(teammate_id.as_str())
     .bind(destination_id.as_str())
     .bind(i64_value(frozen_audience_revision)?)
-    .bind(i64_value(lower_ordinal)?)
+    .bind(lower_order_key)
     .bind(source_id)
     .bind(requester_id.as_str())
-    .bind(i64_value(lower_ordinal)?)
+    .bind(lower_order_key)
     .bind(destination_id.as_str())
     .bind(destination_id.as_str())
     .bind(source_id)
     .bind(source_id)
-    .bind(i64_value(lower_ordinal)?)
+    .bind(lower_order_key)
     .fetch_one(&mut **transaction)
     .await
     .map_err(persistence_error)?;

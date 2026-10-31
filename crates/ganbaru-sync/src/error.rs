@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{OperationError, WriterId};
+use ganbaru_sync_contracts::{CryptoError, OperationError, WriterId};
 
 /// An engine failure. Store refusals and held operations are outcomes, not errors.
 #[derive(Debug)]
@@ -11,11 +11,12 @@ pub enum SyncError {
     Database(sqlx::Error),
     /// Engine state breaks an invariant the engine maintains.
     Corrupt(String),
-    /// The manifest names an adapter that is not registered.
-    UnregisteredAdapter(&'static str),
+    /// The manifest is malformed or does not match the registered adapters.
+    InvalidManifest(String),
     /// A space has no row in `sync_spaces`.
     UnknownSpace,
-    /// The local writer cannot seal: its certificate does not match its key or the space anchor.
+    /// The local writer cannot seal: its certificate does not match its key or the enrolled
+    /// device key.
     WriterMismatch,
     /// The local writer is no longer active in this space.
     WriterInactive(WriterId),
@@ -25,10 +26,42 @@ pub enum SyncError {
     Seal(OperationError),
     /// A re-seal request does not match the stored chain.
     InvalidReseal(&'static str),
-    /// A revocation request does not match the stored chain.
-    InvalidRevoke(&'static str),
+    /// The space holds sync state this build does not read; resetting sync state recovers it.
+    ResetRequired(&'static str),
+    /// A charter does not verify with the space person key, names another space, or differs
+    /// from the installed one.
+    InvalidCharter,
+    /// The selected authorization chain removed the local device.
+    DeviceRemoved,
+    /// The selected authorization chain has not enrolled the local device yet, so its writer
+    /// cannot seal a genesis.
+    NotEnrolled,
+    /// The authorization record store crossed its storage backstop: record exchange stores only
+    /// kit and contest records and their ancestors, and the operation lanes stop, until the user
+    /// frees space, raises the bound, or re-founds the space.
+    AuthorizationStorageFull,
     /// A request names a row, group, or table the engine cannot act on.
     InvalidRequest(&'static str),
+    /// A replicated row of the named table still holds a `pending:` placeholder key, which a
+    /// domain must replace with its final key before the transaction that inserted it commits.
+    PendingKey(&'static str),
+    /// A peer lacks operations of `writer` whose bodies compaction dropped, up to `seq`, so it
+    /// must bootstrap from a snapshot.
+    Compacted {
+        /// The writer whose operations were compacted.
+        writer: WriterId,
+        /// Highest compacted sequence of the writer.
+        seq: u64,
+    },
+    /// Sealing a key epoch or a key envelope failed, as when the system random source fails.
+    Crypto(CryptoError),
+    /// A materialize hook of the named table failed.
+    Hook {
+        /// Table of the hook.
+        table: &'static str,
+        /// What the hook reported.
+        error: crate::hooks::HookError,
+    },
     /// A test failpoint aborted the transaction.
     #[cfg(test)]
     Failpoint(&'static str),
@@ -39,8 +72,8 @@ impl fmt::Display for SyncError {
         match self {
             Self::Database(error) => write!(formatter, "sync database error: {error}"),
             Self::Corrupt(detail) => write!(formatter, "sync state is inconsistent: {detail}"),
-            Self::UnregisteredAdapter(name) => {
-                write!(formatter, "sync adapter {name} is not registered")
+            Self::InvalidManifest(detail) => {
+                write!(formatter, "sync manifest is invalid: {detail}")
             }
             Self::UnknownSpace => formatter.write_str("sync space is not initialized"),
             Self::WriterMismatch => {
@@ -54,8 +87,31 @@ impl fmt::Display for SyncError {
             }
             Self::Seal(error) => write!(formatter, "operation could not be sealed: {error}"),
             Self::InvalidReseal(detail) => write!(formatter, "invalid re-seal: {detail}"),
-            Self::InvalidRevoke(detail) => write!(formatter, "invalid revocation: {detail}"),
+            Self::ResetRequired(detail) => {
+                write!(formatter, "reset sync state: {detail}")
+            }
+            Self::InvalidCharter => formatter.write_str("sync charter is invalid for this space"),
+            Self::DeviceRemoved => formatter.write_str("this device was removed from the space"),
+            Self::NotEnrolled => {
+                formatter.write_str("this device is not enrolled in the space yet")
+            }
+            Self::AuthorizationStorageFull => formatter.write_str(
+                "authorization storage is full; sync stores only recovery and contest records",
+            ),
             Self::InvalidRequest(detail) => write!(formatter, "invalid sync request: {detail}"),
+            Self::PendingKey(table) => write!(
+                formatter,
+                "a replicated row of {table} still holds a pending placeholder key"
+            ),
+            Self::Compacted { writer, seq } => write!(
+                formatter,
+                "operations of writer {} through {seq} were compacted",
+                writer.to_hex()
+            ),
+            Self::Crypto(error) => write!(formatter, "sync key operation failed: {error}"),
+            Self::Hook { table, error } => {
+                write!(formatter, "materialize hook of {table}: {error}")
+            }
             #[cfg(test)]
             Self::Failpoint(name) => write!(formatter, "failpoint {name}"),
         }
@@ -68,6 +124,8 @@ impl std::error::Error for SyncError {
             Self::Database(error) => Some(error),
             Self::Reservation(error) => Some(error),
             Self::Seal(error) => Some(error),
+            Self::Crypto(error) => Some(error),
+            Self::Hook { error, .. } => Some(error.as_ref()),
             _ => None,
         }
     }

@@ -1,18 +1,12 @@
 //! Desktop coordinator dispatch and shared single-transfer state.
 
-mod incoming;
 mod outgoing;
 
 use super::pairing::{LinkedPeer, PairingManager};
-use super::protocol::{
-    BundleMetadata, BundlePurpose, DistractionsSampleMessage, HandoffCompatibility,
-};
-use crate::vault::ownership::VaultOwnershipManager;
-use crate::vault::quiescence::SourceQuiescence;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use super::protocol::{BundleMetadata, HandoffCompatibility};
+use ganbaru_sync_replica::serve::bundles::BundlePreparationWindows;
 use std::fs;
-use std::time::{Duration, Instant};
-use tauri::{Manager, Runtime};
+use tauri::Runtime;
 
 #[derive(Debug)]
 pub(crate) enum CoordinatorOperation {
@@ -20,48 +14,11 @@ pub(crate) enum CoordinatorOperation {
         compatibility: HandoffCompatibility,
         vault_id: String,
         device_id: String,
-        generation: u64,
-        purpose: BundlePurpose,
-    },
-    CommitOwnership {
-        metadata: BundleMetadata,
     },
     Activated {
         vault_id: String,
         device_id: String,
         transfer_id: String,
-        generation: u64,
-        purpose: BundlePurpose,
-    },
-    PollUpload {
-        compatibility: HandoffCompatibility,
-        vault_id: String,
-        device_id: String,
-        generation: u64,
-    },
-    RequestUpload {
-        purpose: BundlePurpose,
-    },
-    DistractionsExchange {
-        vault_id: String,
-        device_id: String,
-        samples: Vec<DistractionsSampleMessage>,
-        acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DistractionsSampleMessage>,
-    },
-    Uploaded {
-        metadata: BundleMetadata,
-        source_device_id: String,
-        purpose: BundlePurpose,
-    },
-    AuthorizeUpload {
-        metadata: BundleMetadata,
-        source_device_id: String,
-        purpose: BundlePurpose,
-    },
-    CommitUploadedOwnership {
-        metadata: BundleMetadata,
-        source_device_id: String,
     },
     Cancel {
         transfer_id: String,
@@ -79,42 +36,12 @@ pub(crate) enum CoordinatorOperation {
 pub(crate) enum CoordinatorResponse {
     Prepared {
         metadata: BundleMetadata,
-        purpose: BundlePurpose,
-    },
-    BundlePending {
-        owner_device_id: String,
-        generation: u64,
-    },
-    OwnershipGrant {
-        vault_id: String,
-        transfer_id: String,
-        owner_device_id: String,
-        generation: u64,
     },
     ActivationAcknowledged {
         transfer_id: String,
     },
     Cancelled {
         transfer_id: String,
-    },
-    UploadStatus {
-        generation: u64,
-        requested_upload: Option<BundlePurpose>,
-    },
-    UploadRequested {
-        purpose: BundlePurpose,
-    },
-    IncomingStaged {
-        transfer_id: String,
-    },
-    UploadAuthorized {
-        transfer_id: String,
-        already_received: bool,
-    },
-    DistractionsAcknowledged {
-        acknowledged_sample_ids: Vec<String>,
-        peer_samples: Vec<DistractionsSampleMessage>,
-        combined_samples: Vec<DistractionsSampleMessage>,
     },
     PersonKeyReleased {
         public_key: String,
@@ -137,10 +64,7 @@ pub(crate) type CoordinatorSender = tokio::sync::mpsc::Sender<CoordinatorRequest
 
 struct PreparedTransfer {
     metadata: BundleMetadata,
-    purpose: BundlePurpose,
     archive_path: std::path::PathBuf,
-    quiescence: Option<SourceQuiescence>,
-    committed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,85 +72,6 @@ struct CompletedActivation {
     vault_id: String,
     device_id: String,
     transfer_id: String,
-    generation: u64,
-    purpose: BundlePurpose,
-}
-
-/// Span of the sliding window that bounds ownership grants to linked devices.
-const OWNERSHIP_GRANT_WINDOW: Duration = Duration::from_secs(60 * 60);
-/// Most ownership grants to linked devices within [`OWNERSHIP_GRANT_WINDOW`]. Switching
-/// devices a few times an hour stays far below it; a device that keeps taking ownership to
-/// replace the vault does not.
-const MAX_OWNERSHIP_GRANTS_PER_WINDOW: usize = 20;
-/// Error returned when ownership changed too often; the frontend maps it to localized
-/// guidance.
-pub(crate) const OWNERSHIP_GRANT_LIMIT: &str =
-    "vault ownership changed too often; wait before switching devices again";
-
-/// Recent ownership grants to linked devices, kept in memory for the sliding-window limit.
-#[derive(Debug, Default)]
-struct OwnershipGrantWindow {
-    grants: VecDeque<Instant>,
-}
-
-/// Drops events that left the sliding window ending at `now`.
-fn forget_expired(events: &mut VecDeque<Instant>, now: Instant, window: Duration) {
-    while events
-        .front()
-        .is_some_and(|event| now.saturating_duration_since(*event) >= window)
-    {
-        events.pop_front();
-    }
-}
-
-impl OwnershipGrantWindow {
-    /// Refuses another grant while the window already holds the maximum.
-    fn check(&mut self, now: Instant) -> Result<(), String> {
-        forget_expired(&mut self.grants, now, OWNERSHIP_GRANT_WINDOW);
-        if self.grants.len() >= MAX_OWNERSHIP_GRANTS_PER_WINDOW {
-            return Err(OWNERSHIP_GRANT_LIMIT.to_string());
-        }
-        Ok(())
-    }
-
-    fn record(&mut self, now: Instant) {
-        forget_expired(&mut self.grants, now, OWNERSHIP_GRANT_WINDOW);
-        self.grants.push_back(now);
-    }
-}
-
-/// Span of the sliding window that bounds how often one linked device makes a vault snapshot.
-const BUNDLE_PREPARATION_WINDOW: Duration = Duration::from_secs(60 * 60);
-/// Most vault snapshots one linked device can start within [`BUNDLE_PREPARATION_WINDOW`]. Each
-/// one pauses writers and builds a full archive, here or on the owning device. Manual refreshes,
-/// reconnect refreshes, and device switches stay far below it; a device that keeps requesting and
-/// cancelling bundles does not.
-const MAX_BUNDLE_PREPARATIONS_PER_PEER: usize = 30;
-/// Error returned when one device requested too many snapshots; the frontend maps it to
-/// localized guidance.
-pub(crate) const BUNDLE_PREPARATION_LIMIT: &str =
-    "this device requested the vault too often; wait before refreshing or switching again";
-
-/// Recent vault snapshots started for each linked device, kept in memory for the per-device limit.
-#[derive(Debug, Default)]
-struct BundlePreparationWindows {
-    peers: BTreeMap<String, VecDeque<Instant>>,
-}
-
-impl BundlePreparationWindows {
-    /// Records a snapshot for the device, or refuses it while that device's window is full.
-    fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
-        self.peers.retain(|_, events| {
-            forget_expired(events, now, BUNDLE_PREPARATION_WINDOW);
-            !events.is_empty()
-        });
-        let events = self.peers.entry(device_id.to_string()).or_default();
-        if events.len() >= MAX_BUNDLE_PREPARATIONS_PER_PEER {
-            return Err(BUNDLE_PREPARATION_LIMIT.to_string());
-        }
-        events.push_back(now);
-        Ok(())
-    }
 }
 
 struct CoordinatorState<R: Runtime> {
@@ -234,34 +79,14 @@ struct CoordinatorState<R: Runtime> {
     pairing: PairingManager,
     prepared: Option<PreparedTransfer>,
     completed: Option<CompletedActivation>,
-    last_owner_poll: Option<(String, Instant)>,
-    waiting_refresh_targets: BTreeSet<String>,
-    relay_refresh_generation: Option<u64>,
-    ownership_grants: OwnershipGrantWindow,
     bundle_preparations: BundlePreparationWindows,
 }
-
-const PEER_RECONNECT_GAP: Duration = Duration::from_secs(75);
-const OWNER_REACHABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) async fn run<R: Runtime>(
     app: tauri::AppHandle<R>,
     pairing: PairingManager,
     mut receiver: tokio::sync::mpsc::Receiver<CoordinatorRequest>,
 ) {
-    if pairing.requested_upload().ok().flatten().is_none() {
-        if let Ok(status) = crate::vault::ownership::active_status(&app) {
-            if !status.can_write
-                && pairing
-                    .linked_peer(&status.owner_device_id)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            {
-                let _ = pairing.request_upload(BundlePurpose::Refresh);
-            }
-        }
-    }
     let prepared = restore_prepared(&pairing).ok().flatten();
     let completed = pairing
         .completed_activation()
@@ -271,23 +96,16 @@ pub(crate) async fn run<R: Runtime>(
             vault_id: activation.vault_id,
             device_id: activation.device_id,
             transfer_id: activation.transfer_id,
-            generation: activation.generation,
-            purpose: activation.purpose,
         });
     let mut state = CoordinatorState {
         app,
         pairing,
         prepared,
         completed,
-        last_owner_poll: None,
-        waiting_refresh_targets: BTreeSet::new(),
-        relay_refresh_generation: None,
-        ownership_grants: OwnershipGrantWindow::default(),
         bundle_preparations: BundlePreparationWindows::default(),
     };
     while let Some(request) = receiver.recv().await {
         if matches!(request.operation, CoordinatorOperation::Shutdown) {
-            state.shutdown();
             let _ = request.response.send(Ok(CoordinatorResponse::Cancelled {
                 transfer_id: "shutdown".to_string(),
             }));
@@ -296,7 +114,6 @@ pub(crate) async fn run<R: Runtime>(
         let response = state.handle(request.operation).await;
         let _ = request.response.send(response);
     }
-    state.shutdown();
 }
 
 impl<R: Runtime> CoordinatorState<R> {
@@ -309,77 +126,19 @@ impl<R: Runtime> CoordinatorState<R> {
                 compatibility,
                 vault_id,
                 device_id,
-                generation,
-                purpose,
             } => {
                 super::protocol::ensure_compatible(
                     &super::current_compatibility(&self.app),
                     &compatibility,
                 )?;
-                self.prepare(vault_id, device_id, generation, purpose).await
+                self.prepare(vault_id, device_id).await
             }
-            CoordinatorOperation::CommitOwnership { metadata } => self.commit_ownership(metadata),
             CoordinatorOperation::Activated {
                 vault_id,
                 device_id,
                 transfer_id,
-                generation,
-                purpose,
-            } => self.activated(vault_id, device_id, transfer_id, generation, purpose),
-            CoordinatorOperation::PollUpload {
-                compatibility,
-                vault_id,
-                device_id,
-                generation,
-            } => {
-                super::protocol::ensure_compatible(
-                    &super::current_compatibility(&self.app),
-                    &compatibility,
-                )?;
-                self.poll_upload(vault_id, device_id, generation)
-            }
-            CoordinatorOperation::RequestUpload { purpose } => self.request_upload(purpose),
-            CoordinatorOperation::DistractionsExchange {
-                vault_id,
-                device_id,
-                samples,
-                acknowledged_peer_sample_ids,
-                owner_snapshot,
-            } => {
-                self.distractions_exchange(
-                    vault_id,
-                    device_id,
-                    samples,
-                    acknowledged_peer_sample_ids,
-                    owner_snapshot,
-                )
-                .await
-            }
-            CoordinatorOperation::Uploaded {
-                metadata,
-                source_device_id,
-                purpose,
-            } => {
-                let generation = metadata.generation;
-                let response = self.uploaded(metadata, source_device_id, purpose).await;
-                if response.is_ok() && purpose == BundlePurpose::Refresh {
-                    self.relay_refresh_generation = Some(generation);
-                }
-                response
-            }
-            CoordinatorOperation::AuthorizeUpload {
-                metadata,
-                source_device_id,
-                purpose,
-            } => self.authorize_upload(&metadata, &source_device_id, purpose),
-            CoordinatorOperation::CommitUploadedOwnership {
-                metadata,
-                source_device_id,
-            } => {
-                self.commit_uploaded_ownership(metadata, source_device_id)
-                    .await
-            }
-            CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id).await,
+            } => self.activated(vault_id, device_id, transfer_id),
+            CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id),
             CoordinatorOperation::ReleasePersonKey {
                 vault_id,
                 device_id,
@@ -399,150 +158,6 @@ impl<R: Runtime> CoordinatorState<R> {
         crate::contacts::identity::release_key_for_coordinator(&self.app, &vault_id).await
     }
 
-    fn poll_upload(
-        &mut self,
-        vault_id: String,
-        device_id: String,
-        generation: u64,
-    ) -> Result<CoordinatorResponse, String> {
-        require_active_vault(&crate::vault::active_vault_id(&self.app)?, &vault_id)?;
-        let status = self
-            .app
-            .state::<VaultOwnershipManager>()
-            .status(&vault_id)?;
-        if self.pairing.linked_peer(&device_id)?.is_none() {
-            return Err("polling device is not linked to this coordinator".to_string());
-        }
-        if status.owner_device_id != device_id {
-            if generation > status.generation {
-                return Err("polling replica is ahead of the coordinator".to_string());
-            }
-            return Ok(CoordinatorResponse::UploadStatus {
-                generation: status.generation,
-                requested_upload: None,
-            });
-        }
-        if status.generation != generation {
-            return Err("polling owner generation does not match the coordinator".to_string());
-        }
-        let reconnected = self
-            .last_owner_poll
-            .as_ref()
-            .filter(|(owner_device_id, _)| owner_device_id == &device_id)
-            .is_none_or(|(_, activity)| activity.elapsed() >= PEER_RECONNECT_GAP);
-        self.last_owner_poll = Some((device_id, Instant::now()));
-        if reconnected
-            && self.pairing.requested_upload()?.is_none()
-            && self.pairing.incoming_transfer()?.is_none()
-        {
-            self.pairing.request_upload(BundlePurpose::Refresh)?;
-        }
-        Ok(CoordinatorResponse::UploadStatus {
-            generation,
-            requested_upload: self.pairing.requested_upload()?,
-        })
-    }
-
-    fn request_upload(&self, purpose: BundlePurpose) -> Result<CoordinatorResponse, String> {
-        let status = crate::vault::ownership::active_status(&self.app)?;
-        if status.can_write || self.pairing.linked_peer(&status.owner_device_id)?.is_none() {
-            return Err("a linked device is not the current vault owner".to_string());
-        }
-        self.ensure_owner_is_reachable(&status.owner_device_id, purpose)?;
-        if let Some(incoming) = self.pairing.incoming_transfer()? {
-            if incoming.purpose != purpose {
-                return Err("another uploaded vault transfer requires recovery".to_string());
-            }
-        }
-        self.pairing.request_upload(purpose)?;
-        Ok(CoordinatorResponse::UploadRequested { purpose })
-    }
-
-    fn ensure_owner_is_reachable(
-        &self,
-        owner_device_id: &str,
-        purpose: BundlePurpose,
-    ) -> Result<(), String> {
-        if owner_poll_is_fresh(self.last_owner_poll.as_ref(), owner_device_id) {
-            Ok(())
-        } else {
-            self.pairing.cancel_requested_upload(purpose)?;
-            Err("the current vault owner is unreachable".to_string())
-        }
-    }
-
-    async fn distractions_exchange(
-        &mut self,
-        vault_id: String,
-        device_id: String,
-        samples: Vec<DistractionsSampleMessage>,
-        acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DistractionsSampleMessage>,
-    ) -> Result<CoordinatorResponse, String> {
-        let status = self
-            .app
-            .state::<VaultOwnershipManager>()
-            .status(&vault_id)?;
-        if status.can_write {
-            if !owner_snapshot.is_empty() || !acknowledged_peer_sample_ids.is_empty() {
-                return Err(
-                    "the non-owner cannot publish authoritative Distractions state".to_string(),
-                );
-            }
-            let pool = crate::db::connect_vault(&self.app).await?;
-            crate::distractions::linked::drain_local_spool(
-                &self.app,
-                &pool,
-                &vault_id,
-                &status.device_id,
-            )
-            .await?;
-            let acknowledged_sample_ids =
-                crate::distractions::linked::import_linked_samples(&pool, &device_id, &samples)
-                    .await?;
-            let combined_samples =
-                crate::distractions::linked::aggregate_owner_samples(&pool).await?;
-            return Ok(CoordinatorResponse::DistractionsAcknowledged {
-                acknowledged_sample_ids,
-                peer_samples: Vec::new(),
-                combined_samples,
-            });
-        }
-        if status.owner_device_id != device_id || !samples.is_empty() {
-            return Err("Distractions exchange does not match the current vault owner".to_string());
-        }
-        if !owner_snapshot.is_empty() {
-            crate::distractions::linked::apply_owner_snapshot(
-                &self.app,
-                &vault_id,
-                &status.device_id,
-                &acknowledged_peer_sample_ids,
-                &owner_snapshot,
-            )
-            .await?;
-        } else {
-            crate::distractions::linked::acknowledge(
-                &self.app,
-                &vault_id,
-                &status.device_id,
-                &acknowledged_peer_sample_ids,
-            )
-            .await?;
-        }
-        let peer_samples =
-            crate::distractions::linked::pending(&self.app, &vault_id, &status.device_id).await?;
-        let combined_samples = if peer_samples.is_empty() {
-            crate::distractions::linked::accepted(&self.app, &vault_id).await?
-        } else {
-            Vec::new()
-        };
-        Ok(CoordinatorResponse::DistractionsAcknowledged {
-            acknowledged_sample_ids: Vec::new(),
-            peer_samples,
-            combined_samples,
-        })
-    }
-
     fn cleanup_prepared(&mut self) {
         if let Some(prepared) = self.prepared.take() {
             let _ = self
@@ -553,26 +168,6 @@ impl<R: Runtime> CoordinatorState<R> {
                 .clear_outgoing_transfer(&prepared.metadata.transfer_id);
             let _ = fs::remove_file(prepared.archive_path);
         }
-    }
-
-    fn shutdown(&mut self) {
-        if let Some(quiescence) = self
-            .prepared
-            .as_mut()
-            .and_then(|prepared| prepared.quiescence.take())
-        {
-            quiescence.retain_outgoing();
-        }
-    }
-
-    fn reload_shell(&self) -> Result<(), String> {
-        let window = self
-            .app
-            .get_webview_window("main")
-            .ok_or_else(|| "main application window is unavailable".to_string())?;
-        window
-            .eval("window.location.reload()")
-            .map_err(|error| format!("reload application after vault activation: {error}"))
     }
 }
 
@@ -585,17 +180,8 @@ fn restore_prepared(pairing: &PairingManager) -> Result<Option<PreparedTransfer>
     pairing.register_outgoing_bundle(transfer.metadata.clone(), archive_path.clone())?;
     Ok(Some(PreparedTransfer {
         metadata: transfer.metadata,
-        purpose: transfer.purpose,
         archive_path,
-        quiescence: None,
-        committed: transfer.committed,
     }))
-}
-
-fn owner_poll_is_fresh(last_owner_poll: Option<&(String, Instant)>, owner_device_id: &str) -> bool {
-    last_owner_poll.is_some_and(|(polled_device_id, activity)| {
-        polled_device_id == owner_device_id && activity.elapsed() <= OWNER_REACHABILITY_TIMEOUT
-    })
 }
 
 pub(crate) async fn request(
@@ -647,6 +233,8 @@ mod tests {
             vault_id: vault_id.to_string(),
             certificate: String::new(),
             certificate_fingerprint: String::new(),
+            sync_device_key: String::new(),
+            sync_admin_key: None,
             linked_at_ms: 0,
         }
     }
@@ -661,62 +249,6 @@ mod tests {
         assert!(inactive.contains("not active on the coordinator"));
         assert!(require_linked_for(Some(&peer_linked_for("vault-a")), "vault-b").is_err());
         assert!(require_linked_for(None, "vault-a").is_err());
-    }
-
-    #[test]
-    fn ownership_grants_are_limited_per_sliding_window() {
-        let start = Instant::now();
-        let mut window = OwnershipGrantWindow::default();
-        for _ in 0..MAX_OWNERSHIP_GRANTS_PER_WINDOW {
-            window.check(start).unwrap();
-            window.record(start);
-        }
-        assert_eq!(window.check(start).unwrap_err(), OWNERSHIP_GRANT_LIMIT);
-        let almost = start + OWNERSHIP_GRANT_WINDOW - Duration::from_millis(1);
-        assert!(window.check(almost).is_err());
-        window.check(start + OWNERSHIP_GRANT_WINDOW).unwrap();
-    }
-
-    #[test]
-    fn bundle_preparations_are_limited_per_device_and_sliding_window() {
-        let start = Instant::now();
-        let mut windows = BundlePreparationWindows::default();
-        for _ in 0..MAX_BUNDLE_PREPARATIONS_PER_PEER {
-            windows.admit("phone-a", start).unwrap();
-        }
-        assert_eq!(
-            windows.admit("phone-a", start).unwrap_err(),
-            BUNDLE_PREPARATION_LIMIT
-        );
-        // Another linked device keeps its own budget.
-        windows.admit("phone-b", start).unwrap();
-        let almost = start + BUNDLE_PREPARATION_WINDOW - Duration::from_millis(1);
-        assert!(windows.admit("phone-a", almost).is_err());
-        windows
-            .admit("phone-a", start + BUNDLE_PREPARATION_WINDOW)
-            .unwrap();
-        // Refused requests do not extend the window.
-        assert_eq!(
-            windows.peers["phone-a"].len(),
-            1,
-            "only the admitted snapshot after expiry is kept"
-        );
-    }
-
-    #[test]
-    fn owner_reachability_requires_a_recent_poll_from_the_current_owner() {
-        let now = Instant::now();
-        let current = ("phone-owner".to_string(), now);
-        let stale = (
-            "phone-owner".to_string(),
-            now - OWNER_REACHABILITY_TIMEOUT - Duration::from_millis(1),
-        );
-        let other = ("other-phone".to_string(), now);
-
-        assert!(owner_poll_is_fresh(Some(&current), "phone-owner"));
-        assert!(!owner_poll_is_fresh(Some(&stale), "phone-owner"));
-        assert!(!owner_poll_is_fresh(Some(&other), "phone-owner"));
-        assert!(!owner_poll_is_fresh(None, "phone-owner"));
     }
 
     #[test]
@@ -739,15 +271,13 @@ mod tests {
             vault_id: "vault".to_string(),
             device_id: "phone".to_string(),
             transfer_id: transfer_id.to_string(),
-            generation: 1,
             archive_bytes: archive_path.metadata().unwrap().len(),
             archive_sha256: super::super::sha256_file(&archive_path).unwrap(),
+            derived_state_stale: false,
         };
         manager
             .store_outgoing_transfer(StoredOutgoingTransfer {
                 metadata: metadata.clone(),
-                purpose: BundlePurpose::Ownership,
-                committed: false,
             })
             .unwrap();
         drop(manager);
@@ -759,7 +289,6 @@ mod tests {
         let prepared = restore_prepared(&restarted).unwrap().unwrap();
         assert_eq!(prepared.metadata, metadata);
         assert_eq!(prepared.archive_path, archive_path);
-        assert!(!prepared.committed);
         assert_eq!(
             restarted.outgoing_bundle(transfer_id).unwrap().metadata,
             prepared.metadata

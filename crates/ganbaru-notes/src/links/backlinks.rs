@@ -228,26 +228,12 @@ async fn append_block_entries(
     link_resolver: &LocalLinkResolver,
     entries: &mut Vec<BacklinkIndexEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
-         FROM notes_blocks",
-    )
+    let rows = sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
+         FROM notes_blocks"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for backlink index: {e}"))?;
@@ -349,7 +335,7 @@ async fn append_relation_entries(
             link.target_page_id,
             link.created_time,
             source_page.last_edited_time
-         FROM notes_data_source_relation_links AS link
+         FROM notes_relation_links AS link
          JOIN notes_pages AS source_page ON source_page.id = link.source_page_id
          JOIN notes_pages AS target_page ON target_page.id = link.target_page_id
          JOIN notes_data_sources AS source_data_source
@@ -571,7 +557,7 @@ async fn backlink_source_fingerprint(
          FROM notes_page_aliases
          UNION ALL
          SELECT 'relation_links', COUNT(*), COALESCE(MAX(created_time), '')
-         FROM notes_data_source_relation_links
+         FROM notes_relation_links
          UNION ALL
          SELECT 'data_sources', COUNT(*), COALESCE(MAX(last_edited_time), '')
          FROM notes_data_sources

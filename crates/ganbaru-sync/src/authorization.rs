@@ -1234,6 +1234,28 @@ struct Walk<'a> {
     children: Vec<Vec<usize>>,
     /// Device ids and keys any check-valid chain enrolls.
     enrolled: EnrolledSet,
+    /// Tour positions of each visit, see [`tour_spans`].
+    spans: Vec<(usize, usize)>,
+}
+
+/// Enter and leave positions of each node in a depth-first tour from node 0, so that one node is
+/// an ancestor-or-self of another exactly when its span contains the other's. Ancestry checks
+/// run once per visit, and a span keeps each one constant however long the chain grows.
+pub(crate) fn tour_spans(children: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    let mut spans = vec![(0, 0); children.len()];
+    let mut position = 0;
+    let mut stack = vec![(0, false)];
+    while let Some((node, left)) = stack.pop() {
+        position += 1;
+        if left {
+            spans[node].1 = position;
+            continue;
+        }
+        spans[node].0 = position;
+        stack.push((node, true));
+        stack.extend(children[node].iter().map(|child| (*child, false)));
+    }
+    spans
 }
 
 impl<'a> Walk<'a> {
@@ -1267,6 +1289,7 @@ impl<'a> Walk<'a> {
             }],
             children: vec![Vec::new()],
             enrolled: BTreeSet::new(),
+            spans: Vec::new(),
         };
         // Entries name their parent by hash and duplicates are dropped, so the walk visits each
         // entry at most once, and a visit always comes after its parent. Only forks copy the
@@ -1292,6 +1315,7 @@ impl<'a> Walk<'a> {
             }
             stack.push(walk.visit(visit, last, bound, state));
         }
+        walk.spans = tour_spans(&walk.children);
         walk
     }
 
@@ -1368,17 +1392,9 @@ impl<'a> Walk<'a> {
     }
 
     /// Whether `ancestor` is `visit` or one of its ancestors.
-    fn is_ancestor(&self, ancestor: usize, mut visit: usize) -> bool {
-        let floor = self.visits[ancestor].revision;
-        loop {
-            if visit == ancestor {
-                return true;
-            }
-            match self.visits[visit].parent {
-                Some(parent) if self.visits[visit].revision > floor => visit = parent,
-                _ => return false,
-            }
-        }
+    fn is_ancestor(&self, ancestor: usize, visit: usize) -> bool {
+        let (outer, inner) = (self.spans[ancestor], self.spans[visit]);
+        outer.0 <= inner.0 && inner.1 <= outer.1
     }
 
     /// The deepest common ancestor-or-self of `a` and `b`.

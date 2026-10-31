@@ -15,6 +15,7 @@ use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, device_key,
     enroll_entry, person, proposal, recovery_admin, tls_fingerprint,
 };
+use crate::authorization::tour_spans;
 use crate::store::MAX_UNSELECTED_WRITERS_PER_SPACE;
 use crate::{
     AuthorizationView, HoldReason, LateChange, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
@@ -1970,4 +1971,43 @@ fn a_writer_keeps_the_unselected_bound_when_the_selection_enrolls_its_device_und
         );
         observer.check_invariants().await;
     });
+}
+
+#[test]
+fn tour_spans_nest_exactly_along_ancestry() {
+    // Siblings take consecutive indexes when discovered, so index order is not tour order.
+    let children = vec![
+        vec![1, 2],
+        vec![3],
+        vec![4, 5],
+        vec![6],
+        vec![],
+        vec![],
+        vec![],
+    ];
+    let parents = [None, Some(0), Some(0), Some(1), Some(2), Some(2), Some(3)];
+    let spans = tour_spans(&children);
+    for (ancestor, outer) in spans.iter().enumerate() {
+        for (descendant, inner) in spans.iter().enumerate() {
+            let mut walked = Some(descendant);
+            while walked.is_some_and(|at| at != ancestor) {
+                walked = walked.and_then(|at| parents[at]);
+            }
+            let nested = outer.0 <= inner.0 && inner.1 <= outer.1;
+            assert_eq!(nested, walked.is_some(), "{ancestor} over {descendant}");
+        }
+    }
+}
+
+#[test]
+fn tour_spans_cover_a_chain_too_deep_to_recurse() {
+    let depth = 200_000;
+    let mut children: Vec<Vec<usize>> = (1..depth).map(|child| vec![child]).collect();
+    children.push(Vec::new());
+    let spans = tour_spans(&children);
+    assert!(
+        spans
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0 && pair[1].1 < pair[0].1)
+    );
 }

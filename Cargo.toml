@@ -223,6 +223,40 @@ opt-level = 3
 [profile.dev.package.string_cache]
 opt-level = 3
 
-# Every database test applies the migration chain, which costs about twice as much against unoptimized bundled SQLite.
+# Every database test copies a migrated template and runs its statements against this bundle.
 [profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# Sync tests sign, hash, and seal every record and bind every statement through these crates.
+[profile.dev.package.ring]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3
+
+[profile.dev.package.hkdf]
+opt-level = 3
+
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.sqlx-core]
+opt-level = 3
+
+[profile.dev.package.sqlx-sqlite]
 opt-level = 3

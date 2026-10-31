@@ -1145,11 +1145,12 @@ fn churn(log: &mut Log, at: &At, count: usize) -> At {
     head
 }
 
-/// Records a long-lived founder seals while it is trusted, before a planned move: past 65,536,
-/// so a record count per device never takes authority from an honest anchor.
-const FOUNDER_HISTORY: usize = 65_600;
+/// Records a long-lived founder seals while it is trusted, before a planned move: past every
+/// chain and space bound, so a record count per device never takes authority from an honest
+/// anchor.
+const FOUNDER_HISTORY: usize = 5_000;
 /// Records a removed founder seals on a fresh writer past the take that removed it.
-const FOUNDER_FLOOD: usize = 70_000;
+const FOUNDER_FLOOD: usize = 6_000;
 
 #[test]
 fn a_planned_move_after_a_long_founder_history_hands_the_log_to_the_new_anchor() {

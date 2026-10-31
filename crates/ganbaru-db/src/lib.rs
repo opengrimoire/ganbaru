@@ -470,14 +470,11 @@ async fn build_reference_catalog(version: i64) -> Result<SchemaCatalog, String> 
     built
 }
 
-/// Records the reference catalog of a database that the embedded migrations through `version`
-/// built from empty, so test fixtures that already ran the chain do not run it again for
-/// validation.
+/// Records the reference catalog of a database that every embedded migration built from empty,
+/// so test fixtures that already built the schema do not build it again for validation.
 #[cfg(any(test, feature = "test-support"))]
-async fn remember_reference_catalog(
-    version: i64,
-    conn: &mut SqliteConnection,
-) -> Result<(), String> {
+async fn remember_reference_catalog(conn: &mut SqliteConnection) -> Result<(), String> {
+    let version = latest_migration_version().ok_or_else(|| "no embedded migrations".to_string())?;
     let catalog = Arc::new(read_schema_catalog(conn).await?);
     REFERENCE_CATALOGS
         .lock()

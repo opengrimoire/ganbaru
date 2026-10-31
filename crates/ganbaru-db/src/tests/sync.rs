@@ -1,13 +1,9 @@
-use super::helpers::memory_pool_migrated_through;
-use crate::run_migrations;
-
-/// Last migration before retained sync versions may elide their value.
-const BEFORE_ELIDED_VERSIONS: i64 = 20261022142807;
+use super::helpers::migrated_memory_pool;
 
 #[test]
-fn version_rebuild_migrations_keep_versions_and_references() {
+fn version_values_may_be_elided_and_references_follow_their_row() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_ELIDED_VERSIONS).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO sync_rows (table_id, row_key, state) VALUES (1, 'row-a', 'live');
              INSERT INTO sync_register_versions
@@ -21,8 +17,6 @@ fn version_rebuild_migrations_keep_versions_and_references() {
         .execute(&pool)
         .await
         .unwrap();
-
-        run_migrations(&pool).await.unwrap();
 
         let versions: Vec<(i64, i64, i64, Option<Vec<u8>>)> = sqlx::query_as(
             "SELECT group_id, seq, clock, value FROM sync_register_versions ORDER BY group_id",
@@ -77,13 +71,10 @@ fn version_rebuild_migrations_keep_versions_and_references() {
     });
 }
 
-/// Last migration before sync writers record how far compaction reached.
-const BEFORE_COMPACTION: i64 = 20261022205249;
-
 #[test]
-fn compaction_migration_starts_writers_uncompacted_and_adds_the_stable_vector() {
+fn writers_start_uncompacted_and_the_stable_vector_goes_with_its_space() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_COMPACTION).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
              VALUES (zeroblob(16), 'vault-a', 1);
@@ -96,8 +87,6 @@ fn compaction_migration_starts_writers_uncompacted_and_adds_the_stable_vector() 
         .execute(&pool)
         .await
         .unwrap();
-
-        run_migrations(&pool).await.unwrap();
 
         let compacted: i64 = sqlx::query_scalar("SELECT compacted_seq FROM sync_writers")
             .fetch_one(&pool)
@@ -135,13 +124,10 @@ fn compaction_migration_starts_writers_uncompacted_and_adds_the_stable_vector() 
     });
 }
 
-/// Last migration before the sync authorization log.
-const BEFORE_AUTHORIZATION_LOG: i64 = 20261023071334;
-
 #[test]
-fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devices() {
+fn authorization_log_constrains_entries_envelopes_and_devices() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_AUTHORIZATION_LOG).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
              VALUES (zeroblob(16), 'vault-a', 1);
@@ -160,8 +146,6 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
         .await
         .unwrap();
 
-        run_migrations(&pool).await.unwrap();
-
         let ops: Vec<(i64, i64)> =
             sqlx::query_as("SELECT seq, authorization_revision FROM sync_ops ORDER BY seq")
                 .fetch_all(&pool)
@@ -170,7 +154,7 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
         assert_eq!(
             ops,
             [(1, 0), (2, 0)],
-            "the writer rebuild keeps its operations"
+            "operations start before any authorization revision"
         );
         sqlx::query("UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0")
             .execute(&pool)
@@ -291,13 +275,10 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
     });
 }
 
-/// Last migration before removal cutoffs exclude operations.
-const BEFORE_REMOVAL_EXCLUSION: i64 = 20261023094450;
-
 #[test]
-fn removal_exclusion_migration_starts_unreached_and_constrains_resolutions() {
+fn spaces_start_unreached_and_late_change_resolutions_are_constrained() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_REMOVAL_EXCLUSION).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
              VALUES (zeroblob(16), 'vault-a', 1);
@@ -307,8 +288,6 @@ fn removal_exclusion_migration_starts_unreached_and_constrains_resolutions() {
         .execute(&pool)
         .await
         .unwrap();
-
-        run_migrations(&pool).await.unwrap();
 
         let space: (i64, Option<String>, Option<String>) = sqlx::query_as(
             "SELECT reachable_revision, anchor_device_id, local_device_id FROM sync_spaces",
@@ -322,7 +301,7 @@ fn removal_exclusion_migration_starts_unreached_and_constrains_resolutions() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(resolution, None, "an existing late change stays unresolved");
+        assert_eq!(resolution, None, "a late change starts unresolved");
 
         sqlx::query("UPDATE sync_late_changes SET resolution = 'discard', resolved_revision = 3")
             .execute(&pool)
@@ -343,13 +322,10 @@ fn removal_exclusion_migration_starts_unreached_and_constrains_resolutions() {
     });
 }
 
-/// Last migration before fork evidence records its settlement.
-const BEFORE_FORK_SETTLEMENT: i64 = 20261023120329;
-
 #[test]
-fn fork_settlement_migration_leaves_stored_evidence_unsettled() {
+fn fork_evidence_starts_unsettled() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_FORK_SETTLEMENT).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
              VALUES (zeroblob(16), 'vault-a', 1);
@@ -360,8 +336,6 @@ fn fork_settlement_migration_leaves_stored_evidence_unsettled() {
         .execute(&pool)
         .await
         .unwrap();
-
-        run_migrations(&pool).await.unwrap();
 
         let settled: i64 = sqlx::query_scalar("SELECT settled FROM sync_fork_evidence")
             .fetch_one(&pool)
@@ -378,13 +352,10 @@ fn fork_settlement_migration_leaves_stored_evidence_unsettled() {
     });
 }
 
-/// Last migration before rows record their creations.
-const BEFORE_ROW_CREATIONS: i64 = 20261023162759;
-
 #[test]
-fn row_creation_migration_keeps_existing_rows_created_and_cascades_creations() {
+fn rows_start_visible_and_creations_cascade_with_their_row() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_ROW_CREATIONS).await;
+        let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO sync_rows (table_id, row_key, state) VALUES (1, 'row-a', 'live');",
         )
@@ -392,13 +363,11 @@ fn row_creation_migration_keeps_existing_rows_created_and_cascades_creations() {
         .await
         .unwrap();
 
-        run_migrations(&pool).await.unwrap();
-
         let pending: i64 = sqlx::query_scalar("SELECT creation_pending FROM sync_rows")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(pending, 0, "an existing row stays visible");
+        assert_eq!(pending, 0, "a row starts visible");
         sqlx::query("UPDATE sync_rows SET creation_pending = 2")
             .execute(&pool)
             .await

@@ -1,7 +1,4 @@
-use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
-use crate::run_migrations;
-
-const BEFORE_CONTACTS_REPLICATION: i64 = 20261022191859;
+use super::helpers::migrated_memory_pool;
 
 const PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const OTHER_KEY: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
@@ -232,42 +229,26 @@ fn contact_requests_allow_duplicate_pending_rows_from_concurrent_devices() {
 }
 
 #[test]
-fn replication_migration_rekeys_received_requests_whose_ids_exceed_a_row_key() {
+fn contact_request_ids_fit_a_sync_row_key_and_peer_ids_may_be_longer() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_CONTACTS_REPLICATION).await;
+        let pool = migrated_memory_pool().await;
         let long_id = "r".repeat(150);
-        for (id, key) in [(long_id.as_str(), PUBLIC_KEY), ("short-id", OTHER_KEY)] {
-            sqlx::query(
-                "INSERT INTO contact_requests
-                 (id, direction, public_key, display_name, card, card_digest, expires_at,
-                  created_at, updated_at)
-                 VALUES (?, 'received', ?, 'Ana', 'Y2FyZA', ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(key)
-            .bind("0".repeat(64))
-            .bind(NOW)
-            .bind(NOW)
-            .bind(NOW)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-
-        run_migrations(&pool).await.unwrap();
-
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, peer_request_id FROM contact_requests ORDER BY length(peer_request_id)",
+        sqlx::query(
+            "INSERT INTO contact_requests
+             (id, direction, public_key, peer_request_id, display_name, card, card_digest,
+              expires_at, created_at, updated_at)
+             VALUES ('short-id', 'received', ?, ?, 'Ana', 'Y2FyZA', ?, ?, ?, ?)",
         )
-        .fetch_all(&pool)
+        .bind(PUBLIC_KEY)
+        .bind(&long_id)
+        .bind("0".repeat(64))
+        .bind(NOW)
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
         .await
         .unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], ("short-id".to_owned(), "short-id".to_owned()));
-        let (rekeyed, peer) = &rows[1];
-        assert_eq!(peer, &long_id, "status polls still find the requester id");
-        assert!(rekeyed.starts_with("contact-request-"));
-        assert!(rekeyed.len() <= 128, "every id fits a sync row key");
+
         let too_long = sqlx::query("UPDATE contact_requests SET id = ? WHERE id = 'short-id'")
             .bind(&long_id)
             .execute(&pool)

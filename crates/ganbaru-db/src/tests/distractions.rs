@@ -1,7 +1,4 @@
-use super::helpers::{
-    insert_event, insert_open_run, memory_pool_migrated_through, migrate_through,
-    migrated_memory_pool,
-};
+use super::helpers::{insert_event, insert_open_run, migrated_memory_pool};
 
 #[test]
 fn schema_creates_distractions_usage_samples() {
@@ -147,6 +144,15 @@ fn deleting_a_focus_run_deletes_its_block_events() {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO distractions_block_event_rule_snapshots
+                (block_event_id, rule_kind, rule_label, blocker_mode)
+             VALUES ('block-run', 'site', 'Reddit', 'strict'),
+                    ('block-free', 'site', 'Reddit', 'strict')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         sqlx::query("DELETE FROM pomodoro_runs WHERE id = 'run-1'")
             .execute(&pool)
@@ -158,106 +164,12 @@ fn deleting_a_focus_run_deletes_its_block_events() {
                 .await
                 .unwrap();
         assert_eq!(remaining, ["block-free"]);
-    });
-}
-
-/// Migration that makes block history replicate; the one before it is the last old shape.
-const BEFORE_BLOCK_HISTORY: i64 = 20261024142304;
-const BLOCK_HISTORY: i64 = 20261024182105;
-
-#[test]
-fn block_history_migration_keeps_events_and_rule_snapshots() {
-    super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_BLOCK_HISTORY).await;
-        insert_event(&pool).await;
-        insert_open_run(&pool, "run-1").await.unwrap();
-        sqlx::raw_sql(
-            "UPDATE pomodoro_runs SET ended_at = '2026-05-23T10:00:00Z', end_reason = 'completed'
-             WHERE id = 'run-1';
-             INSERT INTO distractions_block_events
-                (id, run_id, occurred_at, source_type, source_key, phase, decision)
-             VALUES ('block-run', 'run-1', '2026-05-23T09:10:00Z', 'browser',
-                     'reddit.com', 'focus', 'blocked'),
-                    ('block-free', NULL, '2026-05-23T11:00:00Z', 'mobile_app',
-                     'com.example.video', NULL, 'limit_exhausted');
-             INSERT INTO distractions_block_event_rule_snapshots
-                (block_event_id, rule_kind, rule_label, blocker_mode)
-             VALUES ('block-run', 'domain', 'Social', 'blacklist'),
-                    ('block-free', 'mobile_app', 'Video', 'limit');",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        migrate_through(&pool, BLOCK_HISTORY).await.unwrap();
-
-        let events: Vec<(String, Option<String>, String, String)> = sqlx::query_as(
-            "SELECT id, run_id, source_key, decision FROM distractions_block_events ORDER BY id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            events,
-            [
-                (
-                    "block-free".to_owned(),
-                    None,
-                    "com.example.video".to_owned(),
-                    "limit_exhausted".to_owned()
-                ),
-                (
-                    "block-run".to_owned(),
-                    Some("run-1".to_owned()),
-                    "reddit.com".to_owned(),
-                    "blocked".to_owned()
-                ),
-            ]
-        );
-        let snapshots: Vec<(String, i64, String, String)> = sqlx::query_as(
-            "SELECT block_event_id, ordinal, rule_label, blocker_mode
-             FROM distractions_block_event_rule_snapshots ORDER BY block_event_id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            snapshots,
-            [
-                (
-                    "block-free".to_owned(),
-                    0,
-                    "Video".to_owned(),
-                    "limit".to_owned()
-                ),
-                (
-                    "block-run".to_owned(),
-                    0,
-                    "Social".to_owned(),
-                    "blacklist".to_owned()
-                ),
-            ]
-        );
-        let enabled: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(enabled, 1);
-
-        sqlx::query("DELETE FROM pomodoro_runs WHERE id = 'run-1'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let remaining: Vec<String> = sqlx::query_scalar(
+        let snapshots: Vec<String> = sqlx::query_scalar(
             "SELECT block_event_id FROM distractions_block_event_rule_snapshots",
         )
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            remaining,
-            ["block-free"],
-            "an upgraded run takes its block events and their snapshots with it"
-        );
+        assert_eq!(snapshots, ["block-free"]);
     });
 }

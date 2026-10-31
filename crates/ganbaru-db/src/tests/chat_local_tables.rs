@@ -1,12 +1,5 @@
-use super::helpers::{
-    load_project_chat_graph, memory_pool_migrated_through, migrate_through, migrated_memory_pool,
-};
-use crate::run_migrations;
-use sqlx::{AssertSqlSafe, Row, SqlitePool};
-use std::collections::BTreeMap;
-
-const BEFORE_CHAT_LOCAL_TABLES: i64 = 20261024093938;
-const CHAT_LOCAL_TABLES: i64 = 20261024142304;
+use super::helpers::{load_project_chat_graph, migrated_memory_pool};
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 /// A queued access revocation job for the fixture authorization.
 const REVOCATION_JOB: &str = "INSERT INTO chat_access_revocation_jobs
@@ -16,7 +9,7 @@ VALUES ('revocation-1', 'participant-teammate', 'conversation-general', 'authori
         'Access was reduced', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
         '2026-10-23T00:00:00.000Z');";
 
-/// Tables the migration rebuilds.
+/// Tables whose foreign keys follow their organizational parents.
 const REBUILT_TABLES: [&str; 11] = [
     "chat_access_revocation_jobs",
     "chat_assignment_authorization_revisions",
@@ -31,8 +24,8 @@ const REBUILT_TABLES: [&str; 11] = [
     "chat_scheduled_message_references",
 ];
 
-/// Foreign keys the migration drops, as (table, column), so the id stays unchecked.
-const DROPPED_FOREIGN_KEYS: [(&str, &str); 2] = [
+/// Columns that carry no foreign key, as (table, column), so the id stays unchecked.
+const UNCHECKED_COLUMNS: [(&str, &str); 2] = [
     (
         "chat_execution_environment_reference_targets",
         "execution_environment_id",
@@ -43,8 +36,8 @@ const DROPPED_FOREIGN_KEYS: [(&str, &str); 2] = [
     ),
 ];
 
-/// Foreign keys whose delete action the migration keeps, as (table, parent).
-const KEPT_FOREIGN_KEY_ACTIONS: [(&str, &str); 3] = [
+/// Foreign keys that do not cascade, as (table, parent).
+const NON_CASCADING_FOREIGN_KEYS: [(&str, &str); 3] = [
     (
         "chat_access_revocation_jobs",
         "chat_assignment_authorization_revisions",
@@ -112,45 +105,6 @@ async fn load_seeded_graph(pool: &SqlitePool) {
     sqlx::raw_sql(REVOCATION_JOB).execute(pool).await.unwrap();
 }
 
-async fn row_counts(pool: &SqlitePool) -> BTreeMap<String, i64> {
-    let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM sqlite_schema
-         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '_sqlx_migrations'
-         ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap();
-    let mut counts = BTreeMap::new();
-    for table in tables {
-        let count: i64 =
-            sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM \"{table}\"")))
-                .fetch_one(pool)
-                .await
-                .unwrap();
-        counts.insert(table, count);
-    }
-    counts
-}
-
-/// Index and trigger names on the rebuilt tables, as (type, name).
-async fn rebuilt_table_objects(pool: &SqlitePool) -> Vec<(String, String)> {
-    let mut objects = Vec::new();
-    for table in REBUILT_TABLES {
-        let rows = sqlx::query(
-            "SELECT type, name FROM sqlite_schema
-             WHERE tbl_name = ? AND type IN ('index', 'trigger')",
-        )
-        .bind(table)
-        .fetch_all(pool)
-        .await
-        .unwrap();
-        objects.extend(rows.iter().map(|row| (row.get("type"), row.get("name"))));
-    }
-    objects.sort();
-    objects
-}
-
 /// Every foreign key of a table as (parent, child column, delete action).
 async fn foreign_keys(pool: &SqlitePool, table: &str) -> Vec<(String, String, String)> {
     sqlx::query_as(
@@ -188,63 +142,18 @@ async fn set_applying(pool: &SqlitePool, applying: bool) {
 }
 
 #[test]
-fn chat_local_tables_migration_keeps_rows_and_objects_and_cascades_from_organizational_rows() {
+fn chat_local_tables_cascade_from_organizational_rows_and_gated_triggers_stand_down() {
     super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_CHAT_LOCAL_TABLES).await;
+        let pool = migrated_memory_pool().await;
         load_seeded_graph(&pool).await;
-        let counts_before = row_counts(&pool).await;
-        let objects_before = rebuilt_table_objects(&pool).await;
-        let runs_before: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT assignment_id, authorization_revision_id, provider_turn_id
-             FROM chat_agent_runs ORDER BY id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        let mut foreign_keys_before = BTreeMap::new();
-        for table in REBUILT_TABLES {
-            foreign_keys_before.insert(table, foreign_keys(&pool, table).await);
-        }
-
-        migrate_through(&pool, CHAT_LOCAL_TABLES).await.unwrap();
-
-        let mut counts_after = row_counts(&pool).await;
-        assert_eq!(
-            counts_after.remove("chat_scheduled_message_dispatch"),
-            Some(0),
-            "the dispatch table starts empty"
-        );
-        assert_eq!(counts_after, counts_before);
-        assert_eq!(foreign_key_violations(&pool).await, 0);
-        let enabled: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(enabled, 1);
-        assert_eq!(rebuilt_table_objects(&pool).await, objects_before);
-        let runs_after: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT assignment_id, authorization_revision_id, provider_turn_id
-             FROM chat_agent_runs ORDER BY id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(runs_after, runs_before);
 
         for table in REBUILT_TABLES {
-            let before: Vec<_> = foreign_keys_before[table]
-                .iter()
-                .filter(|(_, column, _)| !DROPPED_FOREIGN_KEYS.contains(&(table, column.as_str())))
-                .collect();
-            let after = foreign_keys(&pool, table).await;
-            assert_eq!(after.len(), before.len(), "{table} keeps its foreign keys");
-            for ((parent, column, old_action), (new_parent, new_column, action)) in
-                before.into_iter().zip(&after)
-            {
-                assert_eq!((parent, column), (new_parent, new_column));
-                if KEPT_FOREIGN_KEY_ACTIONS.contains(&(table, parent.as_str())) {
-                    assert_eq!(action, old_action, "{table}.{column} -> {parent}");
-                } else {
+            for (parent, column, action) in foreign_keys(&pool, table).await {
+                assert!(
+                    !UNCHECKED_COLUMNS.contains(&(table, column.as_str())),
+                    "{table}.{column} carries no foreign key"
+                );
+                if !NON_CASCADING_FOREIGN_KEYS.contains(&(table, parent.as_str())) {
                     assert_eq!(action, "CASCADE", "{table}.{column} -> {parent}");
                 }
             }
@@ -467,58 +376,6 @@ fn derived_state_triggers_run_for_commands_and_stand_down_while_sync_applies() {
     });
 }
 
-#[test]
-fn chat_local_tables_migration_rolls_back_when_a_foreign_key_is_violated() {
-    super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_CHAT_LOCAL_TABLES).await;
-        load_seeded_graph(&pool).await;
-        let mut connection = pool.acquire().await.unwrap();
-        sqlx::raw_sql(
-            "PRAGMA foreign_keys = OFF;
-             INSERT INTO chat_access_revocation_jobs
-                 (id, teammate_id, reason, available_at, created_at, updated_at)
-             VALUES ('revocation-orphan', 'participant-missing', 'Access was reduced',
-                     '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
-                     '2026-10-23T00:00:00.000Z');
-             PRAGMA foreign_keys = ON;",
-        )
-        .execute(&mut *connection)
-        .await
-        .unwrap();
-        drop(connection);
-        let counts_before = row_counts(&pool).await;
-        let runs_before = foreign_keys(&pool, "chat_agent_runs").await;
-
-        let error = run_migrations(&pool).await.unwrap_err();
-        assert!(error.contains("CHECK constraint failed"), "{error}");
-        // A no-transaction migration owns its BEGIN, so a failure leaves that transaction open on the
-        // pool's only connection, and an in-memory database cannot be reopened on a fresh connection.
-        // The test rolls it back and restores the pragmas that the migration changed.
-        sqlx::raw_sql("ROLLBACK; PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        assert_eq!(row_counts(&pool).await, counts_before);
-        assert_eq!(foreign_keys(&pool, "chat_agent_runs").await, runs_before);
-        let applied: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version = ?")
-                .bind(CHAT_LOCAL_TABLES)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(applied, 0);
-        let leftovers: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM sqlite_schema
-             WHERE name LIKE '%\\_next' ESCAPE '\\' OR name = 'chat_scheduled_message_dispatch'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(leftovers, 0);
-    });
-}
-
 /// Device-local `NO ACTION` edges, as (child, column), whose child row always cascades from the same
 /// root as its parent. SQLite checks `NO ACTION` at the end of the statement, so these never stop a
 /// delete: a restore operation and its checkpoint both cascade from their thread.
@@ -572,86 +429,5 @@ fn replicated_chat_deletes_never_stop_on_a_device_local_foreign_key() {
             blocking_foreign_key_edges(&pool).await,
             Vec::<String>::new()
         );
-    });
-}
-
-const BEFORE_CHAT_ASSIGNMENTS_REPLICATION: i64 = 20261028072808;
-const CHAT_ASSIGNMENTS_REPLICATION: i64 = 20261028081009;
-
-/// The sync space a vault copy records before the assignments replication migration.
-struct RecordedSyncSpace<'a> {
-    local_device_id: &'a str,
-    anchor_device_id: Option<&'a str>,
-}
-
-/// The executing devices the assignments replication migration gives the graph's scheduled
-/// messages and assignments of a vault copy that recorded `space`, if any.
-async fn executors_after_assignments_replication(
-    space: Option<RecordedSyncSpace<'_>>,
-) -> Vec<Option<String>> {
-    let pool = memory_pool_migrated_through(BEFORE_CHAT_ASSIGNMENTS_REPLICATION).await;
-    load_project_chat_graph(&pool).await;
-    if let Some(space) = space {
-        sqlx::query(
-            "INSERT INTO sync_spaces
-                 (space_id, vault_id, created_at_ms, local_device_id, anchor_device_id)
-             VALUES (zeroblob(16), 'vault-migrating', 0, ?, ?)",
-        )
-        .bind(space.local_device_id)
-        .bind(space.anchor_device_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    }
-    migrate_through(&pool, CHAT_ASSIGNMENTS_REPLICATION)
-        .await
-        .unwrap();
-    let executors: Vec<Option<String>> = sqlx::query_scalar(
-        "SELECT executing_device_id FROM chat_scheduled_messages
-         UNION ALL SELECT executing_device_id FROM chat_work_assignments",
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    assert!(executors.len() >= 2, "the graph holds scheduled work");
-    executors
-}
-
-#[test]
-fn assignments_replication_gives_existing_work_to_the_anchor_on_every_linked_copy() {
-    super::block_on(async {
-        let coordinator = executors_after_assignments_replication(Some(RecordedSyncSpace {
-            local_device_id: "device:coordinator",
-            anchor_device_id: Some("device:coordinator"),
-        }))
-        .await;
-        let replica = executors_after_assignments_replication(Some(RecordedSyncSpace {
-            local_device_id: "device:replica",
-            anchor_device_id: Some("device:coordinator"),
-        }))
-        .await;
-        assert!(
-            coordinator
-                .iter()
-                .all(|executor| executor.as_deref() == Some("device:coordinator"))
-        );
-        assert_eq!(
-            replica, coordinator,
-            "the coordinator and replica copies name the same executor"
-        );
-
-        let unanchored = executors_after_assignments_replication(Some(RecordedSyncSpace {
-            local_device_id: "device:migrating",
-            anchor_device_id: None,
-        }))
-        .await;
-        assert!(
-            unanchored
-                .iter()
-                .all(|executor| executor.as_deref() == Some("device:migrating")),
-            "a space without an anchor yet keeps the local sync writer"
-        );
-        let unsynced = executors_after_assignments_replication(None).await;
-        assert!(unsynced.iter().all(Option::is_none));
     });
 }

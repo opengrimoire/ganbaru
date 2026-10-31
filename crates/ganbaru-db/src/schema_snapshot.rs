@@ -1,11 +1,11 @@
 //! Committed reference catalog for the complete embedded migration chain.
 //!
-//! Building the reference catalog runs every migration on an empty database, which costs
-//! seconds even in release builds because SQLite reparses the whole schema after each
-//! `ALTER TABLE`. Schema validation instead reads the catalog that the full chain produces from
-//! `schema-catalog.txt` beside the crate manifest. The file lists the identity of every
-//! migration it was built from, so it is used only while the embedded chain is exactly that
-//! chain, and a test rebuilds the catalog from the real migrations and requires an exact match.
+//! Building the reference catalog applies the schema to an empty database, which costs a
+//! noticeable fraction of a second on every vault open. Schema validation instead reads the
+//! catalog that the full chain produces from `schema-catalog.txt` beside the crate manifest. The
+//! file lists the identity of every migration it was built from, so it is used only while the
+//! embedded chain is exactly that chain, and a test rebuilds the catalog from the real migrations
+//! and requires an exact match.
 //!
 //! The file starts with [`HEADER`], then one `migration` line per up migration with its version
 //! and hexadecimal checksum, then one `object` line per `sqlite_schema` row in catalog order.

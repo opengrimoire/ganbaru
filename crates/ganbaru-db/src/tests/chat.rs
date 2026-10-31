@@ -1,12 +1,5 @@
-use super::helpers::{
-    insert_default_channel, memory_pool_migrated_through, migrate_through, migrated_memory_pool,
-};
+use super::helpers::{insert_default_channel, migrated_memory_pool};
 use sqlx::{AssertSqlSafe, Row};
-
-/// The migration before Chat conversations replication.
-const BEFORE_CONVERSATIONS_REPLICATION: i64 = 20261025015209;
-/// The migration that replicates Chat conversations and removes empty random default channels.
-const CONVERSATIONS_REPLICATION: i64 = 20261025183055;
 
 const NOW: &str = "2026-07-20T12:00:00Z";
 
@@ -404,52 +397,6 @@ fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys()
             .unwrap();
             assert_eq!(pending, 0, "{table}");
         }
-    });
-}
-
-#[test]
-fn the_migration_removes_empty_random_default_channels_and_keeps_used_ones() {
-    super::block_on(async {
-        let pool = memory_pool_migrated_through(BEFORE_CONVERSATIONS_REPLICATION).await;
-        let channels: Vec<(String, String)> = sqlx::query_as(
-            "SELECT id, conversation_id FROM chat_channels WHERE is_default = 1 ORDER BY id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert!(channels.len() >= 2);
-        let (used_channel, used_conversation) = channels[0].clone();
-        sqlx::query(
-            "INSERT INTO chat_conversation_read_cursors
-                 (conversation_id, participant_id, last_read_root_ordinal, updated_at)
-             VALUES (?, 'participant:local-owner', 1, '2026-10-25T00:00:00.000Z')",
-        )
-        .bind(&used_conversation)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        migrate_through(&pool, CONVERSATIONS_REPLICATION)
-            .await
-            .unwrap();
-        let kept: Vec<String> = sqlx::query_scalar("SELECT id FROM chat_channels ORDER BY id")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        assert_eq!(kept, [used_channel]);
-        let membership_keys: Vec<String> = sqlx::query_scalar(
-            "SELECT sync_key FROM chat_conversation_memberships WHERE conversation_id = ?",
-        )
-        .bind(&used_conversation)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(membership_keys, ["pending:1"]);
-        let conversations: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversations")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(conversations, 1);
     });
 }
 

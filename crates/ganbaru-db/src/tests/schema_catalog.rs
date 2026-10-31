@@ -217,13 +217,42 @@ fn migration_history_view_is_rejected() {
 }
 
 #[test]
+fn history_that_is_not_a_prefix_of_the_embedded_migrations_is_rejected() {
+    block_on(async {
+        for (tamper, expected) in [
+            (
+                "INSERT INTO _sqlx_migrations
+                    (version, description, success, checksum, execution_time)
+                 SELECT version + 1, 'later', 1, X'00', 0 FROM _sqlx_migrations",
+                "does not match the current migration set",
+            ),
+            (
+                "UPDATE _sqlx_migrations SET version = version - 1",
+                "incompatible",
+            ),
+            ("UPDATE _sqlx_migrations SET success = 0", "incompatible"),
+            (
+                "DELETE FROM _sqlx_migrations",
+                "schema without migration history",
+            ),
+        ] {
+            let pool = super::helpers::migrated_memory_pool().await;
+            crate::validate_current_schema(&pool).await.unwrap();
+            sqlx::query(tamper).execute(&pool).await.unwrap();
+            let error = crate::validate_current_schema(&pool).await.unwrap_err();
+            assert!(error.contains(expected), "{tamper}: {error}");
+        }
+    });
+}
+
+#[test]
 fn modified_column_default_is_rejected() {
     const ORIGINAL: &str = "CREATE TABLE notes_link_facts_state (
-    key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
-    value TEXT NOT NULL,";
+  key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
+  value TEXT NOT NULL,";
     const FORGED: &str = "CREATE TABLE notes_link_facts_state (
-    key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
-    value TEXT NOT NULL DEFAULT 'forged',";
+  key TEXT PRIMARY KEY CHECK (trim(key) <> ''),
+  value TEXT NOT NULL DEFAULT 'forged',";
     block_on(async {
         assert_eq!(
             crate::up_migrations()

@@ -66,7 +66,7 @@ At run start, the owner may evaluate the bounded candidate catalog against at mo
 
 ## Evidence bounds
 
-Evidence reads are bounded in the same snapshot as the calculation: a history read admits at most 100,000 aggregate input rows, a replay read shares 1,000,000 rows across all opportunities, and each policy admits at most 4,096 experiments. Exceeding a bound fails explicitly and rolls back the attempted execution; it never substitutes an empty aggregate, truncates evidence, or deletes history. Raising a bound requires measured work and memory evidence.
+Evidence reads are bounded in the same snapshot as the calculation: a history read admits at most 100,000 aggregate input rows, a replay read shares 1,000,000 rows across all opportunities, and each policy admits at most 4,096 experiments. Replicated rows can exceed these bounds on any linked device, so exceeding one narrows the decision and never fails the Focus transition. Oversized current history skips the adaptive decision: the transition commits on the configured rhythm with no decision row. Oversized replay evidence, or a replay input past the 4,096 local instants resolved for one decision, keeps the baseline decision with no replay candidate. The native owner logs the reason. A bound never substitutes an empty aggregate, truncates evidence, or deletes history, and storage failures still reject the transition. Raising a bound requires measured work and memory evidence.
 
 Rationale: a truncated aggregate looks complete and would silently bias decisions.
 

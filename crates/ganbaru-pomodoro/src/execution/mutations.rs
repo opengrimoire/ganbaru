@@ -13,6 +13,8 @@ pub(super) struct Session {
     pub changed_segments: Vec<String>,
     pub local_time: Option<std::sync::Arc<dyn FocusLocalTimeResolver>>,
     pub planned_blocks: Vec<super::super::PomodoroAdaptivePlannedBlockWrite>,
+    /// Set when oversized adaptive evidence narrowed a decision in this transition.
+    pub adaptive_degraded: Option<String>,
 }
 
 impl Session {
@@ -43,6 +45,7 @@ impl Session {
             segment,
             changed_segments: Vec::new(),
             local_time: context.local_time.clone(),
+            adaptive_degraded: None,
             planned_blocks: context.planned_blocks.clone(),
         })
     }

@@ -232,6 +232,8 @@ struct Owner {
     app: tauri::AppHandle,
     pool: Option<SqlitePool>,
     projection: FocusProjection,
+    /// The last logged reason a transition skipped adaptive evidence.
+    adaptive_degraded: Option<String>,
     recovered_vault: Option<(String, u64)>,
     foreground: bool,
     /// Cached stable device id for the activity row.
@@ -343,6 +345,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
                 snapshot: None,
                 error: None,
             },
+            adaptive_degraded: None,
             recovered_vault: None,
             foreground: platform() == FocusPlatform::Desktop,
             device_id: None,
@@ -1242,11 +1245,23 @@ impl Owner {
         self.publish_committed(snapshot, now).await
     }
 
+    /// Log each new degraded reason once while one keeps recurring. The transition
+    /// already committed, so this runs before any check that can skip publishing.
+    fn note_adaptive_degraded(&mut self, degraded: Option<String>) {
+        if let Some(reason) = degraded.as_deref()
+            && self.adaptive_degraded.as_deref() != Some(reason)
+        {
+            eprintln!("Focus skipped adaptive evidence: {reason}");
+        }
+        self.adaptive_degraded = degraded;
+    }
+
     async fn publish_committed(
         &mut self,
-        snapshot: FocusExecutionSnapshot,
+        mut snapshot: FocusExecutionSnapshot,
         now: i64,
     ) -> Result<(), FocusExecutionError> {
+        self.note_adaptive_degraded(snapshot.adaptive_degraded.take());
         self.verify_authority()?;
         // A receipt can describe an earlier successful command. It cannot roll a
         // newer canonical projection or its native effects back to that revision.

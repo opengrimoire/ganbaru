@@ -1,6 +1,6 @@
-//! Domain adapters: composite value codecs, intrinsic validation, derived projections, coupled
-//! priorities, asset references, and recovery presentation for tables whose manifest names an
-//! adapter.
+//! Domain adapters: composite value codecs, intrinsic validation, derived projections, forced
+//! group values, coupled priorities, asset references, and recovery presentation for tables whose
+//! manifest names an adapter.
 
 use std::fmt;
 
@@ -98,6 +98,18 @@ pub trait DomainAdapter: Send + Sync {
         group: GroupId,
         value: &Value,
     ) -> Result<Vec<(&'static str, Field)>, AdapterError>;
+
+    /// Values a row materializes in place of its merge winners, given the winning value of each
+    /// group. The winners stay in merge state and a group left out materializes its winner, so
+    /// every replica stores the same row and none needs to seal a repair.
+    fn forced_groups(
+        &self,
+        table: TableId,
+        winners: &[(GroupId, &Value)],
+    ) -> Result<Vec<(GroupId, Value)>, AdapterError> {
+        let _ = (table, winners);
+        Ok(Vec::new())
+    }
 
     /// Priority of a coupled group value; greater wins before clocks are compared.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8;

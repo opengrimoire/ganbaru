@@ -1086,16 +1086,25 @@ fn replicated_archive_of_a_managed_folder_materializes_unarchived() {
 fn local_restore_of_an_archived_managed_folder_seals_a_null_archive() {
     block_on(async {
         let mut replicas = shared(2, &folders_sql()).await;
-        let archive = format!(
-            "UPDATE project_working_folders SET archived_at = {} WHERE id = {}",
-            quoted(EDITED),
-            quoted(MANAGED_FOLDER)
-        );
+        let forged = forge_change(
+            &mut replicas[1],
+            folder_timestamp_write(MANAGED_FOLDER, folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+        replicas[0].receive(std::slice::from_ref(&forged)).await;
+        replicas[0].apply_all().await.unwrap();
+
+        // Applying materializes null, so the row only holds the timestamp if it is written past
+        // the gated triggers and capture.
         replicas[0]
-            .exec("DROP TRIGGER project_working_folders_protect_managed_update")
+            .exec(&format!(
+                "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+                 UPDATE project_working_folders SET archived_at = {} WHERE id = {};
+                 UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+                quoted(EDITED),
+                quoted(MANAGED_FOLDER)
+            ))
             .await;
-        replicas[0].exec(&archive).await;
-        assert_eq!(replicas[0].seal().await.unwrap().sealed_ops, 1);
         assert_eq!(
             stored_archive(&mut replicas[0], MANAGED_FOLDER).await,
             [EDITED]

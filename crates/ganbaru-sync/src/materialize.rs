@@ -1,16 +1,16 @@
 //! Writing the merge state of dirty rows into the domain tables.
 //!
 //! A live row materializes with the winning value of every group, its references resolved
-//! through redirects and duplicate hiding, and the derived columns its adapter computes. A
-//! tombstoned row and a row [`Visibility`] hides are deleted. A reference to a hidden row
-//! materializes as null, and so does the parent of a detached tree row. An owned row whose
-//! reference reaches no shown row is left out with its nested rows, while it stays in the group
-//! value. Engine writes run with capture suppressed and foreign keys deferred, so rows of
-//! several tables, including the tables of one reference cycle and rows referencing their own
+//! through redirects and duplicate hiding, the values its adapter forces, and the derived columns
+//! its adapter computes. A tombstoned row and a row [`Visibility`] hides are deleted. A reference
+//! to a hidden row materializes as null, and so does the parent of a detached tree row. An owned
+//! row whose reference reaches no shown row is left out with its nested rows, while it stays in
+//! the group value. Engine writes run with capture suppressed and foreign keys deferred, so rows
+//! of several tables, including the tables of one reference cycle and rows referencing their own
 //! table, can change in steps and are checked at commit. After the writes, hooks settle the
 //! concurrent versions of the groups they name, then run with the keys of every row that
-//! changed. Values elided from a row are stored again before the row is updated or deleted,
-//! see [`crate::hydrate`].
+//! changed. Values elided from a row are stored again before the row is updated or deleted, see
+//! [`crate::hydrate`].
 //!
 //! A constraint or aborting trigger of a domain table refuses one row, never the whole write, see
 //! [`crate::refused`]. A refused delete leaves its row as it is. A refused write undoes the
@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, WriterId};
+use ganbaru_sync_contracts::{Field, GroupId, TableId, Value, WriterId};
 use sqlx::error::ErrorKind;
 use sqlx::{AssertSqlSafe, SqliteConnection};
 
@@ -233,6 +233,18 @@ async fn desired(
         .filter(|_| visibility.is_detached(table.id, key))
         .map(|tree| tree.parent_group);
     let adapter = engine.adapter(table);
+    let forced = match adapter {
+        Some(adapter) => {
+            let values: Vec<(GroupId, &Value)> = winners
+                .iter()
+                .map(|(group, version)| (*group, &version.value))
+                .collect();
+            adapter
+                .forced_groups(table.id, &values)
+                .map_err(|error| corrupt(format!("stored value: {error}")))?
+        }
+        None => Vec::new(),
+    };
     let mut present = Present {
         columns: Vec::new(),
         owned: Vec::new(),
@@ -251,9 +263,13 @@ async fn desired(
         let Some(version) = winners.get(&group.id) else {
             continue;
         };
+        let value = forced
+            .iter()
+            .find(|(forced_group, _)| *forced_group == group.id)
+            .map_or(&version.value, |(_, value)| value);
         if let Some(adapter) = adapter {
             let derived = adapter
-                .derived(table.id, group.id, &version.value)
+                .derived(table.id, group.id, value)
                 .map_err(|error| corrupt(format!("stored value: {error}")))?;
             if let Some((column, _)) = derived
                 .iter()
@@ -265,11 +281,13 @@ async fn desired(
             }
             present.derived.extend(derived);
         }
-        if version.value.fields().len() != group.field_count() {
+        if version.value.fields().len() != group.field_count()
+            || value.fields().len() != group.field_count()
+        {
             return Err(corrupt("stored value does not match its group"));
         }
         let stored = &version.value.fields()[..group.columns().len()];
-        let mut fields = stored.to_vec();
+        let mut fields = value.fields()[..group.columns().len()].to_vec();
         let identity = table.has_composite_key() && group.kind == MergeKind::Immutable;
         for (field, reference) in group.reference_columns().filter(|_| !identity) {
             if detached_parent == Some(group.id) {
@@ -291,12 +309,16 @@ async fn desired(
                 return Ok(Some(Desired::Absent));
             }
         }
-        // The domain row holds the winning value exactly when resolution changed no column
-        // and every owned row is kept unchanged, re-encoding to the stored blob.
-        let mut holds_value = !version.elided && table.may_elide(group) && fields == stored;
+        // The domain row holds the winning value exactly when no forced value replaced it,
+        // resolution changed no column, and every owned row is kept unchanged, re-encoding to
+        // the stored blob.
+        let mut holds_value = !version.elided
+            && table.may_elide(group)
+            && *value == version.value
+            && fields == stored;
         present.columns.push((group, fields));
         for (index, owned) in group.owned_tables().iter().enumerate() {
-            let blob = codec::owned_blob(group, &version.value, index)
+            let blob = codec::owned_blob(group, value, index)
                 .map_err(|error| corrupt(format!("stored value: {error}")))?;
             let rows = codec::decode_table(engine, table, owned, blob)
                 .map_err(|error| corrupt(format!("stored value: {error}")))?;

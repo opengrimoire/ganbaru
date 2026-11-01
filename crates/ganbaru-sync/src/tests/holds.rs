@@ -33,13 +33,13 @@ const WRITTEN_AT: &str = "2027-01-01T00:00:00.000Z";
 const PERSON_KEY: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
 
 /// A theme id outside the built-in themes.
-const THEME_KEY: &str = "theme-shared";
+pub(super) const THEME_KEY: &str = "theme-shared";
 
 /// Honest rows of the tables whose key CHECK narrows a row key, with keys it refuses.
 const NARROWED_KEYS: [(TableId, &str, &[&str]); 4] = [
     (CARD_TABLE, CARD_KEY, &["x"]),
     (SETTINGS_TABLE, SETTINGS_KEY, &["other"]),
-    (THEMES_TABLE, THEME_KEY, &["light", "dark"]),
+    (THEMES_TABLE, THEME_KEY, &["light", "dark", "Evil"]),
     (CONTACTS_TABLE, PERSON_KEY, &["short", "contact-short"]),
 ];
 
@@ -927,7 +927,7 @@ fn apply_over_too_many_constrained_captures_waits_for_batched_seals_and_then_pro
 }
 
 /// Two replicas sharing one sealed row of every table in [`NARROWED_KEYS`].
-async fn narrowed_rows() -> Vec<Replica> {
+pub(super) async fn narrowed_rows() -> Vec<Replica> {
     let mut replicas = replicas(2).await;
     let writer = &mut replicas[1];
     let now = writer.now_ms;

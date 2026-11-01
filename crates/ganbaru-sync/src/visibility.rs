@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use ganbaru_sync_contracts::{Field, TableId};
+use ganbaru_sync_contracts::{Field, TableId, VersionVector};
 use sqlx::SqliteConnection;
 
 use crate::error::{SyncResult, corrupt};
@@ -170,6 +170,12 @@ impl WalkValue for Roots {
         {
             self.cause = Some(cause.clone());
         }
+    }
+}
+
+impl WalkValue for VersionVector {
+    fn join(&mut self, other: &Self) {
+        self.merge(other);
     }
 }
 
@@ -378,6 +384,9 @@ pub(crate) struct Visibility {
     pub(crate) scope: Option<BTreeSet<TableId>>,
     /// Complete roots per row a walk finished; a shown row maps to no roots.
     cascade: HashMap<RowRef, Arc<Roots>>,
+    /// Complete recovery coverage per row a walk finished. Coverage follows cascade causes, so
+    /// it is dropped with them.
+    coverage: HashMap<RowRef, Arc<VersionVector>>,
     /// No late change is recorded, so no row is hidden as one. Unknown unless loaded.
     no_late: bool,
     /// Sync state per row read so far.
@@ -585,7 +594,18 @@ impl Visibility {
         self.refusals_on = refused::any(conn).await?;
         self.retrying = retrying;
         self.cascade.clear();
+        self.coverage.clear();
         Ok(())
+    }
+
+    /// The recovery coverage a walk finished for a row.
+    pub(crate) fn known_coverage(&self, row: &RowRef) -> Option<Arc<VersionVector>> {
+        self.coverage.get(row).cloned()
+    }
+
+    /// Keeps the rows a coverage walk finished.
+    pub(crate) fn keep_coverage(&mut self, rows: Vec<(RowRef, Arc<VersionVector>)>) {
+        self.coverage.extend(rows);
     }
 
     /// Whether a row is hidden because a domain constraint refused it.

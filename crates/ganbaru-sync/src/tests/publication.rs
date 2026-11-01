@@ -7,13 +7,14 @@ use ganbaru_sync_contracts::{Cause, Change, ChangeAction, RowKey, TableId, Versi
 use sqlx::Connection;
 
 use super::block_on;
+use super::engine::pull_without_writer;
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, DRAFT_NOTES_TABLE, DRAFT_PARTS_TABLE, DRAFTS_TABLE,
-    FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
+    FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMBERSHIPS_TABLE, MEMOS_TABLE, membership_key,
 };
-use super::replica::{Replica, converge};
+use super::replica::{Replica, converge, pair};
 use crate::apply::{Constrained, finish_sealed};
-use crate::merge::Batch;
+use crate::merge::{self, Batch};
 use crate::seal::{SealReport, SealSlot};
 use crate::visibility::{
     CascadeWalk, DeriveScope, Root, RootKind, Roots, RowRef, Visibility, WalkValue,
@@ -734,7 +735,7 @@ async fn coverages(replica: &mut Replica, keys: &[String]) -> (Vec<VersionVector
         .unwrap();
     let mut covering = Vec::with_capacity(keys.len());
     for key in keys {
-        let contexts = recovery::coverage(
+        let coverage = recovery::coverage(
             &replica.engine,
             &mut replica.conn,
             &mut batch,
@@ -744,11 +745,7 @@ async fn coverages(replica: &mut Replica, keys: &[String]) -> (Vec<VersionVector
         )
         .await
         .unwrap();
-        let mut joined = VersionVector::new();
-        for context in &contexts {
-            joined.merge(context);
-        }
-        covering.push(joined);
+        covering.push(coverage.as_ref().clone());
     }
     (covering, visibility.coverage_rows)
 }
@@ -802,5 +799,125 @@ fn tombstone_cause_chain_reads_each_row_once() {
         let (covering, read) = coverages(&mut replica, &cycle).await;
         assert_eq!(read, cycle.len());
         assert_eq!(covering, vec![own; cycle.len()]);
+    });
+}
+
+/// Joining the contexts of a row into one vector decides every retained version the way the
+/// contexts do one by one, for each way a row reaches its coverage: its own tombstone, a deleted
+/// cause, a cause that is live, a cycle of causes, a cascade, and a removal.
+#[test]
+fn coverage_join_keeps_the_same_flagged_rows() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let member = membership_key("item-1", "a-member");
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 INSERT INTO fixture_cycle_b (id, label) VALUES ('b-1', 'B');
+                 INSERT INTO fixture_cycle_a (id, label) VALUES
+                     ('a-plain', 'plain'), ('a-root', 'root'), ('a-caused', 'caused'),
+                     ('a-live', 'live'), ('a-freed', 'freed'), ('a-x', 'x'), ('a-y', 'y'),
+                     ('a-hidden', 'hidden'), ('a-member', 'member');
+                 INSERT INTO fixture_memberships (item_id, end_id, sync_key, created_at, role)
+                     VALUES ('item-1', 'a-member', '{member}', '2027-01-01T00:00:00.000Z', 'r');"
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        replicas[1]
+            .exec(
+                "UPDATE fixture_cycle_a SET label = label || '-edited';
+                 UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-hidden';
+                 UPDATE fixture_memberships SET role = 'edited';",
+            )
+            .await;
+        replicas[1].seal().await.unwrap();
+
+        let deleter = &mut replicas[0];
+        seal_tombstone(deleter, "a-plain", None).await;
+        seal_tombstone(deleter, "a-root", None).await;
+        seal_tombstone(deleter, "a-caused", Some("a-root")).await;
+        seal_tombstone(deleter, "a-freed", Some("a-live")).await;
+        seal_tombstone(deleter, "a-x", Some("a-y")).await;
+        seal_tombstone(deleter, "a-y", Some("a-x")).await;
+        seal_tombstone(deleter, "a-x", None).await;
+        deleter
+            .exec(
+                "DELETE FROM fixture_cycle_b WHERE id = 'b-1';
+                 DELETE FROM fixture_memberships WHERE sync_key IS NOT NULL;",
+            )
+            .await;
+        deleter.seal().await.unwrap();
+
+        for source in [0, 1] {
+            let (observer, from) = pair(&mut replicas, 2, source);
+            pull_without_writer(observer, from).await;
+        }
+        let observer = &mut replicas[2];
+        let mut visibility = loaded_visibility(observer).await;
+        let mut batch = Batch::load(&mut observer.conn, observer.ctx.space)
+            .await
+            .unwrap();
+        let mut rows: Vec<RowRef> = [
+            "a-plain", "a-root", "a-caused", "a-live", "a-freed", "a-x", "a-y", "a-hidden",
+            "a-member",
+        ]
+        .map(|key| (CYCLE_A_TABLE, key.to_string()))
+        .into();
+        rows.push((CYCLE_B_TABLE, "b-1".to_string()));
+        rows.push((MEMBERSHIPS_TABLE, member));
+
+        let mut seen = 0;
+        let mut unseen = BTreeSet::new();
+        for (table, key) in &rows {
+            let versions = merge::versions(&observer.engine, &mut observer.conn, *table, key)
+                .await
+                .unwrap();
+            assert!(!versions.is_empty(), "{key} retains versions");
+            let contexts = recovery::coverage_contexts(
+                &observer.engine,
+                &mut observer.conn,
+                &mut batch,
+                &mut visibility,
+                *table,
+                key,
+            )
+            .await
+            .unwrap();
+            let joined = recovery::coverage(
+                &observer.engine,
+                &mut observer.conn,
+                &mut batch,
+                &mut visibility,
+                *table,
+                key,
+            )
+            .await
+            .unwrap();
+            for version in &versions {
+                let listed = !contexts
+                    .iter()
+                    .any(|context| context.covers(&version.writer, version.seq));
+                assert_eq!(
+                    recovery::uncovered(version, &joined),
+                    listed,
+                    "{key} version {}",
+                    version.seq
+                );
+                if listed {
+                    unseen.insert(key.clone());
+                } else {
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 0, "some version is covered");
+        let edited: BTreeSet<String> = rows
+            .iter()
+            .filter(|(table, _)| *table != CYCLE_B_TABLE)
+            .map(|(_, key)| key.clone())
+            .collect();
+        assert_eq!(unseen, edited);
     });
 }

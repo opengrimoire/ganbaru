@@ -134,6 +134,16 @@ export class EventPanelSessionController {
     });
   }
 
+  /** Whether the title draft may be a shortened window value the full event has yet to replace. */
+  get titleEditBlocked(): boolean {
+    return false;
+  }
+
+  /** Whether the location draft may be a shortened window value the full event has yet to replace. */
+  get locationEditBlocked(): boolean {
+    return false;
+  }
+
   get timedSectionsVisible(): boolean {
     return !this.allDay;
   }

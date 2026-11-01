@@ -27,7 +27,7 @@ function event(id = "series::2024-03-11", startTime = "2024-03-11 09:00"): Calen
 function snapshot(events = [event()]): MappedNativeCalendarWindow {
   return { sourceEvents: [{ ...event("series"), recurringParentId: undefined,
     recurrence: { frequency: "daily", interval: 1, end: { type: "never" } } }],
-  windowEvents: events, totalEventCount: 1, diagnostics: [] };
+  windowEvents: events, totalEventCount: 1, diagnostics: [], omittedTemplateCount: 0 };
 }
 
 function deferred<T>() {

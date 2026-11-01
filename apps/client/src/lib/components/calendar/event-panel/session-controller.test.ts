@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { WINDOW_TEXT_CHARS } from "$lib/calendar/db-rows";
 import type { CalendarEvent } from "$lib/calendar/types";
 import type { Project } from "$lib/projects/types";
 import {
@@ -57,6 +58,24 @@ function controller(selectedProject?: Project) {
 }
 
 describe("EventPanelSessionController", () => {
+  it("replaces a shortened window title and location with the full event and blocks their edit until then", () => {
+    const shortened = "T".repeat(WINDOW_TEXT_CHARS);
+    const opened = event("long", { title: shortened, location: shortened });
+    const { session } = controller();
+    session.initializeEdit(opened);
+    const token = session.beginHeavyLoad(opened.id);
+    expect(session.titleEditBlocked).toBe(true);
+    expect(session.locationEditBlocked).toBe(true);
+    session.completeHeavyLoad(token, event("long", {
+      title: `${shortened} and the rest`,
+      location: `${shortened} and the place`,
+    }));
+    expect(session.title).toBe(`${shortened} and the rest`);
+    expect(session.location).toBe(`${shortened} and the place`);
+    expect(session.titleEditBlocked).toBe(false);
+    expect(session.locationEditBlocked).toBe(false);
+  });
+
   it("loads recurring occurrence details from the parent identity", () => {
     expect(eventPanelHeavyLookupId(event("instance", { recurringParentId: "parent" }))).toBe("parent");
     expect(eventPanelHeavyLookupId(event("standalone"))).toBe("standalone");

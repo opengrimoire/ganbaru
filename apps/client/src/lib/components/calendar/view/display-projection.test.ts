@@ -51,7 +51,7 @@ describe("native Calendar edit display", () => {
     value.nativePreview = { vaultId: "vault", vaultGeneration: 1, commandId: "command",
       sourceId: "source", editedId: nativeEvent.id, reviewRevision: "a".repeat(64), changed: true,
       scope: { effectiveScope: "this", selectedStarted: false, selectedHasHistory: false, selectedActive: false },
-      window: { sourceEvents: [nativeEvent], windowEvents: [nativeEvent], totalEventCount: null, diagnostics: [] },
+      window: { sourceEvents: [nativeEvent], windowEvents: [nativeEvent], totalEventCount: null, diagnostics: [], omittedTemplateCount: 0 },
       previewedIds: new Set([nativeEvent.id]), editingId: nativeEvent.id };
     const result = projectCalendarDisplay(value);
     expect(result.events.map((candidate) => candidate.id)).toEqual(["unrelated", "native-detach"]);
@@ -84,7 +84,7 @@ describe("native Calendar edit display", () => {
     const nativePreview: CalendarEditPreview = { vaultId: "vault", vaultGeneration: 1, commandId: "create",
       sourceId: created.id, editedId: created.id, reviewRevision: "a".repeat(64), changed: true,
       scope: { effectiveScope: "this", selectedStarted: false, selectedHasHistory: false, selectedActive: false },
-      window: { sourceEvents: [created], windowEvents: [created, following], totalEventCount: null, diagnostics: [] },
+      window: { sourceEvents: [created], windowEvents: [created, following], totalEventCount: null, diagnostics: [], omittedTemplateCount: 0 },
       previewedIds: new Set([created.id, following.id]), editingId: created.id };
     const state: EditSessionState = { mode: "create", sessionKey: 2, start: created.start, end: created.end,
       anchor: { x: 0, y: 0, width: 0, height: 0 } };

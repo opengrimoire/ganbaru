@@ -38,6 +38,7 @@ export interface MappedNativeCalendarWindow {
   windowEvents: CalendarEvent[];
   totalEventCount: number | null;
   diagnostics: CalendarExpansionDiagnostic[];
+  omittedTemplateCount: number;
 }
 
 type Validator<T> = (value: unknown) => value is T;
@@ -176,7 +177,13 @@ export function mapNativeCalendarWindow(value: unknown, renderZone: string): Map
     }
     return event;
   });
-  return { sourceEvents, windowEvents, totalEventCount: rows.total_event_count, diagnostics: rows.diagnostics };
+  return {
+    sourceEvents,
+    windowEvents,
+    totalEventCount: rows.total_event_count,
+    diagnostics: rows.diagnostics,
+    omittedTemplateCount: 0,
+  };
 }
 
 /** Fetch canonical source rows and occurrences without sending a frontend recurrence projection back to Rust. */

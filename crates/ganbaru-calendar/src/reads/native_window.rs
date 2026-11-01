@@ -58,6 +58,7 @@ pub struct NativeCalendarWindow {
     pub total_event_count: Option<i64>,
     pub occurrences: Vec<NativeOccurrence>,
     pub diagnostics: Vec<ExpansionDiagnostic>,
+    pub omitted_template_count: usize,
 }
 
 #[derive(Serialize)]
@@ -434,6 +435,7 @@ impl WindowSource {
             total_event_count: self.total_event_count,
             occurrences,
             diagnostics,
+            omitted_template_count: 0,
         };
         super::export::bound_snapshot_output(&snapshot)?;
         Ok(snapshot)

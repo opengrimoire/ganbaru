@@ -47,7 +47,7 @@ table 33 contact_requests replicated key id rule any
   group 0 immutable direction:text(..=8) public_key:text(..=43) peer_request_id:optional_text(..=160) display_name:trimmed_text(1..=160) color:integer(0..=31) card:text(..=1024) card_digest:text(..=64) endpoint_hint:text(..=64) coordinator_fingerprint:text(..=64) expires_at:timestamp created_at:timestamp
   group 1 coupled state:text(..=8) invite_trust:text(..=13) message_trust:text(..=13)
   group 2 max updated_at:timestamp
-table 34 contact_card replicated key key rule fixed(card)
+table 34 contact_card replicated key key rule fixed(card) never_deleted
   group 0 coupled card_nonce:text(..=22) card_revision:integer(1..=9223372036854775807)
   group 1 max updated_at:timestamp
 table 48 music_local_roots replicated key id rule any
@@ -450,7 +450,7 @@ table 226 pomodoro_run_events replicated key id rule any
   group 2 immutable event_type:text(..=32) occurred_at:timestamp phase:optional_text(..=32) reason:optional_text(..=262144) duration_seconds:optional_integer(-9223372036854775808..=9223372036854775807) created_at:timestamp
 table 227 pomodoro_device_activity replicated key device_id rule any
   group 0 coupled state:text(..=32) run_id:optional_text(..=128) occurrence_id:optional_text(..=262144) event_title:optional_text(..=262144) phase_started_at_ms:optional_integer(0..=9223372036854775807) phase_ends_at_ms:optional_integer(0..=9223372036854775807) expires_at_ms:integer(0..=9223372036854775807) updated_at_ms:integer(0..=9223372036854775807)
-table 272 distractions_settings replicated key id rule fixed(vault)
+table 272 distractions_settings replicated key id rule fixed(vault) never_deleted
   group 0 register recoverable mode:text(..=16)
   group 1 register recoverable enabled:flag
   group 2 coupled recoverable block_during_focus:flag block_during_short_breaks:flag block_during_long_breaks:flag pause_during_focus_pause:flag
@@ -633,12 +633,12 @@ table 308 notes_assets replicated key id rule any
   group 0 immutable asset_path:text(..=200) kind:text(..=200) content_type:text(..=64) byte_size:integer(1..=52428800) sha256:text(..=200)
   group 1 register source_type:text(..=200) original_name:optional_text(..=262144) created_at:timestamp
   check kind,content_type within 0
-table 352 chat_participants replicated key id rule any
+table 352 chat_participants replicated key id rule any never_deleted
   group 0 immutable participant_kind:text(..=32) created_at:timestamp
   group 1 register surfaced recoverable display_name:trimmed_text(1..=160) avatar_schema_version:integer(1..=9223372036854775807) avatar_data:text(..=16384)
   group 2 register archived_at:optional_timestamp
   group 3 max updated_at:timestamp
-table 353 chat_teammates replicated key participant_id rule any
+table 353 chat_teammates replicated key participant_id rule any never_deleted
   key parent 352
   group 0 immutable created_at:timestamp
   group 1 register surfaced recoverable role:trimmed_text(1..=1000) instructions:text(..=65536)
@@ -646,9 +646,9 @@ table 353 chat_teammates replicated key participant_id rule any
   group 3 register home_device_id:optional_text(..=160)
   group 4 max updated_at:timestamp
   check current_policy_revision_id,current_policy_safety_mode within 2
-table 354 chat_teammate_policy_revisions replicated key id rule any
+table 354 chat_teammate_policy_revisions replicated key id rule any never_deleted
   group 0 immutable teammate_id:row_key->353:cascade provider_instance_id:text(..=1024) model_selection_schema_version:integer(1..=9223372036854775807) model_selection_data:text(..=16384) effort:optional_text(..=32) speed:optional_text(..=32) provider_options_schema_version:integer(1..=9223372036854775807) provider_options_data:text(..=16384) interaction_mode:text(..=32) created_at:timestamp safety_mode:text(..=32)
-table 355 chat_access_profiles replicated key id rule any redirects
+table 355 chat_access_profiles replicated key id rule any redirects never_deleted
   group 0 immutable builtin_key:optional_text(..=32) created_at:timestamp
   group 1 register display_name:trimmed_text(1..=160)
   group 2 coupled current_revision_id:optional_row_key current_maximum_folder_capability:optional_text(..=32)
@@ -656,7 +656,7 @@ table 355 chat_access_profiles replicated key id rule any redirects
   group 4 max updated_at:timestamp
   unique builtin_key binary
   check current_revision_id,current_maximum_folder_capability within 2
-table 356 chat_access_profile_revisions replicated key id rule any
+table 356 chat_access_profile_revisions replicated key id rule any never_deleted
   group 0 immutable access_profile_id:row_key->355:cascade default_read_history:flag default_participate:flag default_history_boundary:text(..=32) maximum_folder_capability:text(..=32) created_at:timestamp
 table 360 chat_conversations replicated key id rule any
   group 0 immutable project_id:row_key->97:cascade conversation_kind:text(..=32) created_at:timestamp

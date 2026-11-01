@@ -350,6 +350,7 @@ pub const SETTINGS: TableSpec = TableSpec {
         register(settings_group::LIMITS, "limits", &[flag("limits_enabled")]),
     ],
     key_rule: RowKeyRule::Fixed(SETTINGS_KEY),
+    deletion: Deletion::Never,
     ..BASE
 };
 

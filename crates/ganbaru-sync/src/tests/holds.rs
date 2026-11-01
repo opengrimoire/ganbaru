@@ -12,7 +12,6 @@ use super::replica::{Replica, connection_from, converge, forge_change, quoted, r
 use crate::domains::themes::PALETTE_SIZE;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::MergeKind;
 use crate::manifest::vault::chat::{
     PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
     TEAMMATES_TABLE,
@@ -20,6 +19,7 @@ use crate::manifest::vault::chat::{
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::themes::THEMES_TABLE;
+use crate::manifest::{Deletion, MergeKind};
 use crate::{HoldReason, MAX_OPS_PER_SEAL, StoreOutcome, SyncError};
 
 /// Rows in the first seal of a large domain, enough to exceed one seal transaction with keys of
@@ -1020,12 +1020,15 @@ fn key_rule_refused_for_each_action() {
                     continue;
                 }
                 let mut change = with_action(&create, action);
-                assert_eq!(
-                    crate::validate::change(&replicas[1].engine, &change),
-                    Ok(()),
-                    "{action:?} of {} under its own key",
-                    table.name
-                );
+                // A tombstone of a never-deleted row is refused under any key.
+                if action != ChangeAction::Tombstone || table.deletion != Deletion::Never {
+                    assert_eq!(
+                        crate::validate::change(&replicas[1].engine, &change),
+                        Ok(()),
+                        "{action:?} of {} under its own key",
+                        table.name
+                    );
+                }
                 for key in refused_keys {
                     change.row = RowKey::new(*key).unwrap();
                     let forged = forge_change(&mut replicas[1], change.clone()).await;

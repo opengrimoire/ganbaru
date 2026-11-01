@@ -355,7 +355,7 @@ pub const CARD: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Fixed(CARD_KEY),
-    deletion: Deletion::Ordinary,
+    deletion: Deletion::Never,
 };
 
 /// The contacts domain, table ids 32 to 47.

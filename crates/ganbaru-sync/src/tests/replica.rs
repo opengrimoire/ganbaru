@@ -862,6 +862,31 @@ impl Replica {
         self.conn.serialize(None).await.unwrap().to_vec()
     }
 
+    /// Checks the class index against a full scan of the merge state.
+    pub(super) async fn check_class_index(&mut self) {
+        let (entries, contested) = crate::repair::recompute_classes(&self.engine, &mut self.conn)
+            .await
+            .unwrap();
+        let stored: Vec<(i64, i64, Vec<u8>, String)> = sqlx::query_as(
+            "SELECT table_id, rule_index, class_key, row_key FROM sync_unique_classes",
+        )
+        .fetch_all(&mut self.conn)
+        .await
+        .unwrap();
+        let stored: BTreeSet<_> = stored
+            .into_iter()
+            .map(|(table, rule, class, key)| ((table, rule, class), key))
+            .collect();
+        assert_eq!(stored, entries, "replica {} class entries", self.index);
+        let stored: Vec<(i64, i64, Vec<u8>)> =
+            sqlx::query_as("SELECT table_id, rule_index, class_key FROM sync_contested_classes")
+                .fetch_all(&mut self.conn)
+                .await
+                .unwrap();
+        let stored: BTreeSet<_> = stored.into_iter().collect();
+        assert_eq!(stored, contested, "replica {} contested classes", self.index);
+    }
+
     /// Checks invariants that hold between engine calls.
     pub(super) async fn check_invariants(&mut self) {
         let violations = self

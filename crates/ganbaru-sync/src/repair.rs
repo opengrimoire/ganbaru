@@ -142,6 +142,35 @@ async fn classes(
     Ok(classes)
 }
 
+/// One class of a table under the rule at a position in its duplicate rules.
+#[cfg(test)]
+pub(crate) type ClassId = (i64, i64, Vec<u8>);
+
+/// What the class index must hold, from a full scan of the merge state: every class entry as a
+/// class and its row, and every class of two or more rows.
+#[cfg(test)]
+pub(crate) async fn recompute_classes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+) -> SyncResult<(BTreeSet<(ClassId, String)>, BTreeSet<ClassId>)> {
+    let mut entries = BTreeSet::new();
+    let mut contested = BTreeSet::new();
+    for table in engine.manifest().tables {
+        for (rule, (columns, collation)) in (0_i64..).zip(rules(table)) {
+            let locations = locate(table, columns)?;
+            let classes = classes(engine, conn, table, &locations, collation).await?;
+            for (class, members) in classes {
+                let id = (table_param(table.id), rule, class);
+                if members.len() > 1 {
+                    contested.insert(id.clone());
+                }
+                entries.extend(members.into_iter().map(|key| (id.clone(), key)));
+            }
+        }
+    }
+    Ok((entries, contested))
+}
+
 /// Colliding classes of live rows per table: every class of two or more rows under any duplicate
 /// rule of the table.
 pub(crate) type Contested = BTreeMap<TableId, Vec<BTreeSet<String>>>;

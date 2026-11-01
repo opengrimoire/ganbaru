@@ -217,7 +217,7 @@ fn validate_card(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (card_group::CARD, [nonce, revision]) => {
             exact_chars(nonce, CARD_NONCE_CHARS, "contact card nonce")?;
-            if integer(revision)? >= 1 {
+            if (1..=MAX_CONTACT_CARD_REVISION).contains(&integer(revision)?) {
                 Ok(())
             } else {
                 Err(AdapterError("contact card revision"))

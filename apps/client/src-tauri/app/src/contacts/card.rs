@@ -9,6 +9,7 @@ use ganbaru_contacts::{
     SignedCard, decode_card, encode_nonce, is_disallowed_display_character, random_bytes,
     sign_card,
 };
+use ganbaru_sync::domains::contacts::MAX_CONTACT_CARD_REVISION;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -175,7 +176,10 @@ pub(crate) async fn local_card_view<R: Runtime>(
     })
 }
 
-/// Rotates the card nonce so every card issued so far stops being accepted.
+/// Rotates the card nonce so every card issued so far stops being accepted. The revision advances
+/// up to `MAX_CONTACT_CARD_REVISION` and stays there, so a replicated revision at the bound never
+/// stops a nonce from rotating. The stored revision is lowered before it is incremented, which
+/// keeps the arithmetic in integers for any value the column holds.
 pub(crate) async fn rotate_card(
     pool: &SqlitePool,
     mut identity: LocalIdentity,
@@ -186,11 +190,12 @@ pub(crate) async fn rotate_card(
     let now = super::store::format_time(super::store::now());
     let revision: i64 = sqlx::query_scalar(
         "UPDATE contact_card
-         SET card_nonce = ?, card_revision = card_revision + 1, updated_at = ?
+         SET card_nonce = ?, card_revision = MIN(card_revision, ? - 1) + 1, updated_at = ?
          WHERE key = 'card'
          RETURNING card_revision",
     )
     .bind(encode_nonce(&card_nonce))
+    .bind(MAX_CONTACT_CARD_REVISION)
     .bind(now)
     .fetch_one(pool)
     .await
@@ -218,7 +223,6 @@ mod tests {
     use super::super::tests::migrated_memory_pool;
     use super::*;
     use ganbaru_contacts::PersonKeyPair;
-    use ganbaru_sync::domains::contacts::MAX_CONTACT_CARD_REVISION;
 
     const AT: &str = "2026-10-22T10:51:41.000Z";
 
@@ -281,7 +285,11 @@ mod tests {
 
         let rotated = rotate_card(&pool, identity).await;
 
-        assert!(rotated.is_ok(), "rotation failed: {:?}", rotated.as_ref().err());
+        assert!(
+            rotated.is_ok(),
+            "rotation failed: {:?}",
+            rotated.as_ref().err()
+        );
         let rotated = rotated.unwrap();
         assert_ne!(rotated.card_nonce, issued);
         assert_eq!(rotated.card_revision, MAX_CONTACT_CARD_REVISION);

@@ -5,9 +5,9 @@
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use crate::domains::contacts::{
-    CARD_NONCE_CHARS, DIGEST_CHARS, MAX_CARD_CHARS, MAX_CONTACT_STATE_CHARS, MAX_DIRECTION_CHARS,
-    MAX_DISPLAY_NAME_CHARS, MAX_ENDPOINT_HINT_CHARS, MAX_REQUEST_ID_CHARS, MAX_REQUEST_STATE_CHARS,
-    MAX_TRUST_CHARS, PUBLIC_KEY_CHARS,
+    CARD_NONCE_CHARS, DIGEST_CHARS, MAX_CARD_CHARS, MAX_CONTACT_CARD_REVISION,
+    MAX_CONTACT_STATE_CHARS, MAX_DIRECTION_CHARS, MAX_DISPLAY_NAME_CHARS, MAX_ENDPOINT_HINT_CHARS,
+    MAX_REQUEST_ID_CHARS, MAX_REQUEST_STATE_CHARS, MAX_TRUST_CHARS, PUBLIC_KEY_CHARS,
 };
 use crate::manifest::{
     ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
@@ -314,7 +314,7 @@ const CARD_GROUPS: [GroupSpec; 2] = [
                 name: "card_revision",
                 ty: ColumnType::Integer {
                     min: 1,
-                    max: i64::MAX,
+                    max: MAX_CONTACT_CARD_REVISION,
                 },
             },
         ],

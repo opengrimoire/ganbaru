@@ -48,7 +48,7 @@ table 33 contact_requests replicated key id rule any
   group 1 coupled state:text(..=8) invite_trust:text(..=13) message_trust:text(..=13)
   group 2 max updated_at:timestamp
 table 34 contact_card replicated key key rule fixed(card) never_deleted
-  group 0 coupled card_nonce:text(..=22) card_revision:integer(1..=9223372036854775807)
+  group 0 coupled card_nonce:text(..=22) card_revision:integer(1..=1000000000)
   group 1 max updated_at:timestamp
 table 48 music_local_roots replicated key id rule any
   group 0 immutable created_at_ms:integer(1..=9223372036854775807)

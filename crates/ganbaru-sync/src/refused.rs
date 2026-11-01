@@ -161,6 +161,15 @@ impl Refusals {
         &self.refused
     }
 
+    /// Tables of the rows this finish plans without marking them dirty.
+    pub(crate) fn tables(&self) -> BTreeSet<TableId> {
+        self.oldest
+            .iter()
+            .chain(&self.refused)
+            .map(|(table, _)| *table)
+            .collect()
+    }
+
     /// Rows this finish leaves unwritten because their delete was refused.
     pub(crate) fn kept(&self) -> &BTreeSet<RowRef> {
         &self.kept

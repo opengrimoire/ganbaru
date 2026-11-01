@@ -152,7 +152,9 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
                 }
             }
             if let Some(cause) = &change.cause {
-                if engine.manifest().table(cause.table).is_none() {
+                // Every honest cause is reached along references, and derivation scoped to a
+                // component relies on a recovery read never crossing one.
+                if !engine.same_component(table.id, cause.table) {
                     return Err("tombstone cause");
                 }
             }

@@ -1158,7 +1158,7 @@ pub(crate) async fn finish(
         let mut repaired = false;
         let mut visibility = loop {
             let scope = DeriveScope::Dirty {
-                alongside: BTreeSet::new(),
+                alongside: refusals.tables(),
             };
             let mut visibility = Visibility::load(engine, conn, &mut batch.dirty, scope).await?;
             repair::expand_references(engine, conn, batch, &mut visibility).await?;

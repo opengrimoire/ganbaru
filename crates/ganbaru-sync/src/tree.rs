@@ -201,7 +201,7 @@ pub(crate) async fn detached(
 ) -> SyncResult<BTreeSet<RowRef>> {
     let mut detached = BTreeSet::new();
     for table in engine.manifest().tables {
-        let Some(tree) = table.tree else {
+        let Some(tree) = table.tree.filter(|_| visibility.in_scope(table.id)) else {
             continue;
         };
         #[cfg(test)]

@@ -972,6 +972,29 @@ impl Replica {
         self.check_compacted_state().await;
     }
 
+    /// Duplicates, detached rows, severed edges, and repairs of a full derivation of the merge
+    /// state, without changing it. The last round of a run compares these, since a scoped
+    /// finish may leave repairs for the next finish of their component.
+    pub(super) async fn full_derivation(&mut self) -> String {
+        let mut dirty = BTreeSet::new();
+        let mut visibility = crate::visibility::Visibility::load(
+            &self.engine,
+            &mut self.conn,
+            &mut dirty,
+            crate::visibility::DeriveScope::All,
+        )
+        .await
+        .unwrap();
+        let repairs =
+            crate::repair::repair_changes(&self.engine, &mut self.conn, &mut visibility, &dirty)
+                .await
+                .unwrap();
+        format!(
+            "duplicates {:?}\ndetached {:?}\nsevered {:?}\nrepairs {repairs:?}",
+            visibility.duplicates, visibility.detached, visibility.severed
+        )
+    }
+
     /// Asserts that every retained version reads back to a value with its stored hash, elided
     /// or not. Returns the value bytes stored and the value bytes with nothing elided.
     pub(super) async fn check_version_values(&mut self) -> (usize, usize) {

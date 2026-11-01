@@ -1526,6 +1526,10 @@ impl PeerSim {
             .unwrap();
         let authorization = view(replica).await;
         parts.push((
+            "full derivation".to_owned(),
+            vec![replica.full_derivation().await],
+        ));
+        parts.push((
             "conflicts".to_owned(),
             conflicts.iter().map(|item| format!("{item:?}")).collect(),
         ));

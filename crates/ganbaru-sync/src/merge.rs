@@ -870,7 +870,13 @@ pub(crate) async fn refresh_flags(
         merged.insert((table_id, key), (state, versions));
     }
     if recheck_flagged {
-        roots.extend(recovery::flagged_rows(conn).await?);
+        // A flag follows references, so a change cannot reach one of another component.
+        let flagged = recovery::flagged_rows(conn).await?;
+        roots.extend(
+            flagged
+                .into_iter()
+                .filter(|(table, _)| visibility.in_scope(*table)),
+        );
     }
     for (table_id, key) in roots {
         if merged.contains_key(&(table_id, key.clone())) {

@@ -12,12 +12,13 @@
 //! Every engine entry point takes the vault connection and runs in its own transaction, so a
 //! failure leaves engine state and domain tables as they were.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
     DeviceKeyPair, Digest32, EncryptionPublicKey, KeyEnvelope, SignedCertificate, SpaceId,
-    SpaceKey, WriterId, WriterKeyPair,
+    SpaceKey, TableId, WriterId, WriterKeyPair,
 };
 use sqlx::SqliteConnection;
 
@@ -186,6 +187,8 @@ pub struct Engine {
     enrolled: authorization::EnrolledCache,
     /// Operation bodies read last for elided values.
     bodies: hydrate::BodyCache,
+    /// The component of every table, see [`Manifest::reference_components`].
+    components: BTreeMap<TableId, TableId>,
 }
 
 impl Engine {
@@ -262,7 +265,29 @@ impl Engine {
             hooks,
             enrolled: authorization::EnrolledCache::default(),
             bodies: hydrate::BodyCache::default(),
+            components: manifest.reference_components(),
         })
+    }
+
+    /// Whether two replicated tables share a reference component.
+    pub(crate) fn same_component(&self, left: TableId, right: TableId) -> bool {
+        match (self.components.get(&left), self.components.get(&right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    /// Every table sharing a reference component with one of `tables`.
+    pub(crate) fn components_of(&self, tables: &BTreeSet<TableId>) -> BTreeSet<TableId> {
+        let components: BTreeSet<&TableId> = tables
+            .iter()
+            .filter_map(|table| self.components.get(table))
+            .collect();
+        self.components
+            .iter()
+            .filter(|(_, component)| components.contains(component))
+            .map(|(table, _)| *table)
+            .collect()
     }
 
     /// The engine for the vault manifest with its built-in adapters and hooks.

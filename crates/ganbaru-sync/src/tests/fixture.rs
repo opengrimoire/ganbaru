@@ -579,7 +579,10 @@ pub(super) const EDGE_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 19);
 pub(super) const NOTE_POINTERS: TableSpec = TableSpec {
     id: NOTE_POINTERS_TABLE,
     name: "fixture_note_pointers",
-    groups: &[LABEL, reference("note", NODE_NOTES_TABLE, OnDelete::SetNull)],
+    groups: &[
+        LABEL,
+        reference("note", NODE_NOTES_TABLE, OnDelete::SetNull),
+    ],
     resolutions: &[],
     redirects: false,
     ..CYCLE_A

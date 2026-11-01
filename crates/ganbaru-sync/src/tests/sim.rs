@@ -1373,7 +1373,10 @@ impl Sim {
     async fn edit_notes(&mut self, index: usize) {
         let rng = &mut self.notes.rng;
         let (table, targets_sql) = match rng.below(3) {
-            0 => ("fixture_node_notes", "SELECT id FROM fixture_nodes ORDER BY id"),
+            0 => (
+                "fixture_node_notes",
+                "SELECT id FROM fixture_nodes ORDER BY id",
+            ),
             1 => (
                 "fixture_edge_notes",
                 "SELECT sync_key FROM fixture_edges ORDER BY sync_key",
@@ -2201,6 +2204,15 @@ impl Sim {
                 replica.dump().await,
                 expected,
                 "replica {} diverged",
+                replica.index
+            );
+        }
+        let derivation = self.hub.full_derivation().await;
+        for replica in &mut self.replicas {
+            assert_eq!(
+                replica.full_derivation().await,
+                derivation,
+                "replica {} derives other repairs",
                 replica.index
             );
         }

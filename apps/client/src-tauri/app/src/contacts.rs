@@ -242,6 +242,11 @@ fn request_views(rows: &[store::RequestRow]) -> Vec<ContactRequestView> {
         .collect()
 }
 
+#[cfg(test)]
+fn contact_views(rows: Vec<store::ContactRow>) -> Vec<ContactView> {
+    rows.into_iter().filter_map(|row| row.view().ok()).collect()
+}
+
 async fn snapshot<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,

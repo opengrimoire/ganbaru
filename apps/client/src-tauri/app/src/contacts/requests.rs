@@ -812,6 +812,15 @@ pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
+#[cfg(test)]
+pub(crate) async fn sweep_pending_requests(
+    pool: &SqlitePool,
+    _follows: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    store::expire_stale_requests(pool, now).await
+}
+
 async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     super::identity::try_release(app).await;
     let Ok(pool) = contacts_pool(app).await else {

@@ -359,6 +359,13 @@ mod tests {
         "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
     ];
+    /// Times the table checks admit and the frontend reader refuses: a five digit year, a leap
+    /// second, and text of the stored length.
+    const UNREADABLE_TIMES: [&str; 3] = [
+        "+10000-01-01T00:00:00.000Z",
+        "2026-10-22T10:51:60.000Z",
+        "zzzzzzzzzzzzzzzzzzzzzzzz",
+    ];
 
     fn value(fields: Vec<Field>) -> Value {
         Value::new(fields).unwrap()
@@ -541,6 +548,52 @@ mod tests {
             created(KEY, "9999-12-31T23:59:59.000Z", AT).is_err(),
             "an expiry far past the request lifetime"
         );
+    }
+
+    #[test]
+    fn unreadable_times_are_held_invalid_in_every_contacts_table() {
+        let adapter = ContactsAdapter;
+        let time = |at: &str| value(vec![t(at)]);
+        let far = "9999-12-31T23:59:59.000Z";
+        assert_eq!(
+            adapter.validate(REQUESTS_TABLE, request_group::UPDATED, &time(AT)),
+            Ok(())
+        );
+        for at in UNREADABLE_TIMES {
+            for (table, group) in [
+                (CONTACTS_TABLE, contact_group::CREATED),
+                (CONTACTS_TABLE, contact_group::UPDATED),
+                (REQUESTS_TABLE, request_group::UPDATED),
+                (CARD_TABLE, card_group::UPDATED),
+            ] {
+                assert!(
+                    adapter.validate(table, group, &time(at)).is_err(),
+                    "{at} in group {group:?} of table {table:?}"
+                );
+            }
+            for position in [1, 2, 4, 6] {
+                let mut fields = standing("active").fields().to_vec();
+                fields[position] = t(at);
+                assert!(
+                    adapter
+                        .validate(CONTACTS_TABLE, contact_group::STANDING, &value(fields))
+                        .is_err(),
+                    "{at} at standing position {position}"
+                );
+            }
+            for (expires_at, created_at) in [(AT, at), (at, AT), (far, at)] {
+                assert!(
+                    adapter
+                        .validate(
+                            REQUESTS_TABLE,
+                            request_group::CREATED,
+                            &request_row(KEY, Field::Null, "", expires_at, created_at),
+                        )
+                        .is_err(),
+                    "expires {expires_at}, created {created_at}"
+                );
+            }
+        }
     }
 
     #[test]

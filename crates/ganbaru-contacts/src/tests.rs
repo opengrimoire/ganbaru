@@ -54,6 +54,17 @@ fn request_window_refuses_text_that_sorts_apart_from_its_time() {
 }
 
 #[test]
+fn request_window_refuses_times_the_frontend_cannot_read() {
+    for (created, expires) in [
+        ("+10000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.000Z"),
+        ("2026-10-22T10:51:60.000Z", "2026-10-29T10:51:41.000Z"),
+        ("2026-10-22T10:51:41.000Z", "2026-10-29T10:51:60.000Z"),
+    ] {
+        assert!(!is_valid_request_window(created, expires), "{created}");
+    }
+}
+
+#[test]
 fn request_window_survives_the_last_representable_date() {
     assert!(!is_valid_request_window(
         "+262142-12-31T23:59:59.000Z",

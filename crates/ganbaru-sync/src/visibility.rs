@@ -10,8 +10,9 @@
 //! composite-key identity reference, a hidden duplicate or a row that was never published.
 //! Cascading references other than identity references follow redirects and duplicate keepers
 //! first. A required reference that reaches nothing hides its row until the target arrives, and
-//! a nullable reference to a row that was never published is ignored. The walk keeps a
-//! visited set, so a reference cycle hides nothing on its own. Every input is merge state, so
+//! a nullable reference to a row that was never published is ignored. Rows of a reference cycle
+//! share one result, so a cycle hides nothing on its own, and a walk keeps the result of every row
+//! it finishes, so each row is walked once per [`Visibility`]. Every input is merge state, so
 //! replicas that cannot seal repairs still agree on which rows are shown.
 //!
 //! The one local input is a row a domain constraint refused, see [`crate::refused`]. It joins
@@ -19,6 +20,7 @@
 //! what materializes on this replica.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use ganbaru_sync_contracts::{Field, TableId};
 use sqlx::SqliteConnection;
@@ -124,19 +126,207 @@ pub(crate) struct Root {
     pub(crate) kind: RootKind,
 }
 
-/// The roots a cascade-hidden row reaches, lowest first; empty while the row is shown.
+/// What the roots a row reaches decide: whether any hides it, and the lowest deleted one. Its size
+/// is constant, so a row's result does not grow with the rows below it, each of which may reach a
+/// root of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Roots(BTreeSet<Root>);
+pub(crate) struct Roots {
+    hides: bool,
+    cause: Option<Root>,
+}
 
 impl Roots {
+    /// The result of reaching one root.
+    pub(crate) fn of(root: Root) -> Self {
+        Self {
+            hides: true,
+            cause: root.kind.deleted().then_some(root),
+        }
+    }
+
     /// Whether the row is hidden by cascade.
     pub(crate) fn hides(&self) -> bool {
-        !self.0.is_empty()
+        self.hides
     }
 
     /// The lowest deleted root, which a repair tombstone names as its cause.
     pub(crate) fn cause(&self) -> Option<&Root> {
-        self.0.iter().find(|root| root.kind.deleted())
+        self.cause.as_ref()
+    }
+}
+
+/// The result of a row in a [`CascadeWalk`], which joins the results of the rows it reaches.
+pub(crate) trait WalkValue: Clone + Default {
+    /// Adds what `other` holds. Joining is commutative and idempotent, so the order of a walk
+    /// and a row reached twice change nothing.
+    fn join(&mut self, other: &Self);
+}
+
+impl WalkValue for Roots {
+    fn join(&mut self, other: &Self) {
+        self.hides |= other.hides;
+        if let Some(cause) = &other.cause
+            && self.cause.as_ref().is_none_or(|lowest| cause < lowest)
+        {
+            self.cause = Some(cause.clone());
+        }
+    }
+}
+
+/// A row a [`CascadeWalk`] has reached.
+struct WalkNode<V> {
+    row: RowRef,
+    /// The row's own value, from when it is supplied until its component closes.
+    own: Option<V>,
+    /// Successors not looked at yet.
+    remaining: std::vec::IntoIter<RowRef>,
+    /// Successors looked at, as node indexes.
+    reached: Vec<usize>,
+    /// Lowest node index known to be reachable while its component is open.
+    low: usize,
+    /// The complete result, once the row's component has closed.
+    result: Option<Arc<V>>,
+}
+
+/// One walk over rows and the rows they reach, as an iterative strongly connected component pass,
+/// so the depth of a chain never reaches the stack.
+///
+/// The driver reads rows, which may be asynchronous, and the walk only keeps count: `next_row`
+/// names the row it needs and `supply` answers with the row's own value and successors, until
+/// `next_row` returns `None`. A row the driver has a finished result for is supplied with that
+/// result and no successors, which ends the walk there.
+///
+/// Components close successors first. A component's result joins the own values of its members
+/// and the results of the components they reach, and every member shares it, so a row in a cycle
+/// never holds a partial result.
+pub(crate) struct CascadeWalk<V> {
+    nodes: Vec<WalkNode<V>>,
+    ids: HashMap<RowRef, usize>,
+    /// Rows being walked, each reached from the one before it.
+    path: Vec<usize>,
+    /// Rows of components that have not closed, in the order they were reached.
+    open: Vec<usize>,
+}
+
+impl<V: WalkValue> CascadeWalk<V> {
+    /// A walk from `start`.
+    pub(crate) fn new(start: RowRef) -> Self {
+        let mut walk = Self {
+            nodes: Vec::new(),
+            ids: HashMap::new(),
+            path: Vec::new(),
+            open: Vec::new(),
+        };
+        walk.enter(start);
+        walk
+    }
+
+    /// The row the walk needs supplied next, or `None` once every row reached has finished.
+    pub(crate) fn next_row(&mut self) -> Option<RowRef> {
+        while let Some(&id) = self.path.last() {
+            let node = &mut self.nodes[id];
+            if node.own.is_none() {
+                return Some(node.row.clone());
+            }
+            match node.remaining.next() {
+                Some(next) => self.look_at(id, next),
+                None => self.leave(id),
+            }
+        }
+        None
+    }
+
+    /// Answers the row [`Self::next_row`] named.
+    pub(crate) fn supply(&mut self, row: RowRef, own: V, successors: Vec<RowRef>) {
+        let Some(&id) = self.path.last() else {
+            debug_assert!(false, "supplied a row to a finished walk");
+            return;
+        };
+        let node = &mut self.nodes[id];
+        debug_assert_eq!(node.row, row, "supplied a row the walk did not name");
+        node.own = Some(own);
+        node.remaining = successors.into_iter();
+    }
+
+    /// Every row the walk finished with its complete result, once [`Self::next_row`] has
+    /// returned `None`.
+    pub(crate) fn finish(self) -> Vec<(RowRef, Arc<V>)> {
+        self.nodes
+            .into_iter()
+            .filter_map(|node| Some((node.row, node.result?)))
+            .collect()
+    }
+
+    /// Starts walking a row reached for the first time.
+    fn enter(&mut self, row: RowRef) -> usize {
+        let id = self.nodes.len();
+        self.ids.insert(row.clone(), id);
+        self.nodes.push(WalkNode {
+            row,
+            own: None,
+            remaining: Vec::new().into_iter(),
+            reached: Vec::new(),
+            low: id,
+            result: None,
+        });
+        self.path.push(id);
+        self.open.push(id);
+        id
+    }
+
+    /// Follows the reference from node `id` to `next`.
+    fn look_at(&mut self, id: usize, next: RowRef) {
+        let target = match self.ids.get(&next) {
+            Some(target) => *target,
+            None => self.enter(next),
+        };
+        let open = self.nodes[target].result.is_none();
+        let node = &mut self.nodes[id];
+        node.reached.push(target);
+        if open {
+            node.low = node.low.min(target);
+        }
+    }
+
+    /// Ends the walk of node `id`, whose successors have all been looked at.
+    fn leave(&mut self, id: usize) {
+        self.path.pop();
+        let low = self.nodes[id].low;
+        if let Some(&parent) = self.path.last() {
+            let parent = &mut self.nodes[parent];
+            parent.low = parent.low.min(low);
+        }
+        if low == id {
+            self.close(id);
+        }
+    }
+
+    /// Closes the component whose first reached row is node `first`.
+    fn close(&mut self, first: usize) {
+        let start = self
+            .open
+            .iter()
+            .rposition(|id| *id == first)
+            .unwrap_or_default();
+        let members = self.open.split_off(start);
+        let mut value = V::default();
+        for &member in &members {
+            let node = &mut self.nodes[member];
+            let own = node.own.take();
+            let reached = std::mem::take(&mut node.reached);
+            if let Some(own) = own {
+                value.join(&own);
+            }
+            for target in reached {
+                if let Some(result) = &self.nodes[target].result {
+                    value.join(result);
+                }
+            }
+        }
+        let value = Arc::new(value);
+        for member in members {
+            self.nodes[member].result = Some(Arc::clone(&value));
+        }
     }
 }
 
@@ -186,8 +376,8 @@ pub(crate) struct Visibility {
     pub(crate) severed: BTreeSet<RowRef>,
     /// Tables whose tree and edge state was derived, or `None` for every table.
     pub(crate) scope: Option<BTreeSet<TableId>>,
-    /// Roots per row; a shown row maps to no roots.
-    cascade: HashMap<RowRef, Roots>,
+    /// Complete roots per row a walk finished; a shown row maps to no roots.
+    cascade: HashMap<RowRef, Arc<Roots>>,
     /// No late change is recorded, so no row is hidden as one. Unknown unless loaded.
     no_late: bool,
     /// Sync state per row read so far.
@@ -200,6 +390,9 @@ pub(crate) struct Visibility {
     retrying: BTreeSet<RowRef>,
     /// Whether a row is listed as hidden, per row read so far.
     refused: HashMap<RowRef, bool>,
+    /// Rows whose cascading references were read.
+    #[cfg(test)]
+    pub(crate) cascade_walks: usize,
 }
 
 impl Visibility {
@@ -507,6 +700,10 @@ impl Visibility {
         table: &TableSpec,
         key: &str,
     ) -> SyncResult<Vec<CascadeTarget>> {
+        #[cfg(test)]
+        {
+            self.cascade_walks += 1;
+        }
         let mut targets: Vec<CascadeTarget> = table
             .key_parent
             .map(|parent| CascadeTarget {
@@ -570,53 +767,56 @@ impl Visibility {
         conn: &mut SqliteConnection,
         table: TableId,
         key: &str,
-    ) -> SyncResult<Roots> {
+    ) -> SyncResult<Arc<Roots>> {
         let start = (table, key.to_string());
         if let Some(roots) = self.cascade.get(&start) {
-            return Ok(roots.clone());
+            return Ok(Arc::clone(roots));
         }
-        let mut visited = BTreeSet::from([start.clone()]);
-        let mut pending = vec![start.clone()];
-        let mut roots = BTreeSet::new();
-        while let Some((table, key)) = pending.pop() {
-            let spec = engine
-                .manifest()
-                .table(table)
-                .ok_or_else(|| corrupt("cascade through an unknown table"))?;
-            for target in self.cascade_targets(engine, conn, spec, &key).await? {
-                let next = target.row;
-                if target.unresolved {
-                    roots.insert(Root {
-                        table: next.0,
-                        key: next.1,
-                        kind: RootKind::Missing,
-                    });
-                } else if let Some(kind) =
-                    self.root_kind(engine, conn, &next, target.identity).await?
-                {
-                    roots.insert(Root {
-                        table: next.0,
-                        key: next.1,
-                        kind,
-                    });
-                } else if let Some(known) = self.cascade.get(&next) {
-                    // The roots a row reaches are cached whole, so they stand for its walk.
-                    roots.extend(known.0.iter().cloned());
-                } else if visited.insert(next.clone()) {
-                    pending.push(next);
-                }
+        let mut walk = CascadeWalk::new(start.clone());
+        while let Some(row) = walk.next_row() {
+            if let Some(known) = self.cascade.get(&row) {
+                let known = known.as_ref().clone();
+                walk.supply(row, known, Vec::new());
+            } else {
+                let (own, successors) = self.direct_roots(engine, conn, &row).await?;
+                walk.supply(row, own, successors);
             }
         }
-        let roots = Roots(roots);
-        if roots.hides() {
-            self.cascade.insert(start, roots.clone());
-        } else {
-            // No visited row reaches a root either, so all of them are shown.
-            for row in visited {
-                self.cascade.insert(row, Roots::default());
+        self.cascade.extend(walk.finish());
+        self.cascade
+            .get(&start)
+            .cloned()
+            .ok_or_else(|| corrupt("cascade walk left its start row"))
+    }
+
+    /// The roots the cascading references of a row reach directly, and the rows they reach that
+    /// a walk continues through.
+    async fn direct_roots(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        (table, key): &RowRef,
+    ) -> SyncResult<(Roots, Vec<RowRef>)> {
+        let spec = engine
+            .manifest()
+            .table(*table)
+            .ok_or_else(|| corrupt("cascade through an unknown table"))?;
+        let mut roots = Roots::default();
+        let mut successors = Vec::new();
+        for target in self.cascade_targets(engine, conn, spec, key).await? {
+            let kind = if target.unresolved {
+                Some(RootKind::Missing)
+            } else {
+                self.root_kind(engine, conn, &target.row, target.identity)
+                    .await?
+            };
+            let (table, key) = target.row;
+            match kind {
+                Some(kind) => roots.join(&Roots::of(Root { table, key, kind })),
+                None => successors.push((table, key)),
             }
         }
-        Ok(roots)
+        Ok((roots, successors))
     }
 
     /// Whether a row is hidden by its own merge state, before cascade: tombstoned, removed,

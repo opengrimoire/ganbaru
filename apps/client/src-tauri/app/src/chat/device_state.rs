@@ -58,6 +58,9 @@ pub struct ChatDeviceScope {
     pub provider_instances: BTreeMap<ProviderInstanceId, ChatProviderDeviceState>,
     pub full_access_trust:
         BTreeMap<ProviderInstanceId, BTreeMap<ProjectWorkingFolderId, UtcTimestamp>>,
+    /// Local acceptances of synced Chat work, keyed by hex acceptance digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assignment_acceptances: BTreeMap<String, UtcTimestamp>,
     pub preferences: ChatMachinePreferences,
     pub diagnostics: ChatDiagnosticPreferences,
     pub execution_environment_paths: BTreeMap<String, String>,
@@ -137,6 +140,38 @@ pub fn set_full_access_trust(
     workspaces.remove(&working_folder_id);
     if workspaces.is_empty() {
         scope.full_access_trust.remove(&provider_instance_id);
+    }
+}
+
+/// Most local acceptances one device scope keeps; a dropped acceptance at worst asks again.
+#[cfg(desktop)]
+pub const MAX_ASSIGNMENT_ACCEPTANCES: usize = 4096;
+
+/// Whether this device accepted the synced Chat work with the acceptance digest `digest`.
+#[cfg(desktop)]
+pub fn assignment_is_accepted(scope: &ChatDeviceScope, digest: &str) -> bool {
+    scope.assignment_acceptances.contains_key(digest)
+}
+
+/// Records the local acceptance of `digest` at `now`, dropping the oldest acceptance past
+/// [`MAX_ASSIGNMENT_ACCEPTANCES`].
+#[cfg(desktop)]
+pub fn record_assignment_acceptance(
+    scope: &mut ChatDeviceScope,
+    digest: String,
+    now: UtcTimestamp,
+) {
+    scope.assignment_acceptances.insert(digest, now);
+    if scope.assignment_acceptances.len() <= MAX_ASSIGNMENT_ACCEPTANCES {
+        return;
+    }
+    let oldest = scope
+        .assignment_acceptances
+        .iter()
+        .min_by_key(|(_, accepted_at)| accepted_at.as_str())
+        .map(|(digest, _)| digest.clone());
+    if let Some(oldest) = oldest {
+        scope.assignment_acceptances.remove(&oldest);
     }
 }
 

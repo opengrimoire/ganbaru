@@ -9,6 +9,8 @@ use super::workflow::{
     read_assignment_executing_device, require_participating_teammate, set_assignment_state,
 };
 use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error};
+use crate::chat::device_state::{ChatDeviceScope, read_active_device_scope};
+use crate::chat::settings::device_state_error;
 use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -21,9 +23,10 @@ pub(super) async fn recover_assignment_dispatch_jobs(
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let writers = chat_writers(&app, &pool).await?;
     let device = PostingDevice::this_device(&device_id, &writers);
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
     let now = now_timestamp()?;
-    take_over_stranded_assignments(&pool, device, &now).await?;
-    recover_stranded_follow_up_assignments(&pool, device, &now).await?;
+    take_over_stranded_assignments(&pool, device, &scope, &now).await?;
+    recover_stranded_follow_up_assignments(&pool, device, &scope, &now).await?;
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = 'queued', claimed_at = NULL, claim_token = NULL, updated_at = ?
@@ -104,6 +107,7 @@ fn stranded_executor(executing_device_id: Option<&str>, device: PostingDevice<'_
 pub(super) async fn take_over_stranded_assignments(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
+    _scope: &ChatDeviceScope,
     now: &UtcTimestamp,
 ) -> ChatResult<u32> {
     if !device.runs_new_work() {
@@ -316,6 +320,7 @@ async fn move_pending_inputs(
 pub(super) async fn recover_stranded_follow_up_assignments(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
+    _scope: &ChatDeviceScope,
     now: &UtcTimestamp,
 ) -> ChatResult<u32> {
     let device_id = device.id;
@@ -645,7 +650,24 @@ async fn queue_dispatch_here(
 }
 
 /// Reason a synced assignment records when its executing device cannot freeze its context.
-const ADOPTION_FAILED_REASON: &str = "The work could not start on its executing device";
+pub(super) const ADOPTION_FAILED_REASON: &str = "The work could not start on its executing device";
+
+/// Hex acceptance digest of what `assignment_id` would run.
+pub(super) async fn assignment_acceptance_digest(
+    _pool: &SqlitePool,
+    _assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<String> {
+    Ok(String::new())
+}
+
+/// Whether `assignment_id` waits for a local action to start on `device`.
+pub(super) async fn assignment_awaits_local_acceptance(
+    _pool: &SqlitePool,
+    _assignment_id: &ChatWorkAssignmentId,
+    _device: PostingDevice<'_>,
+) -> ChatResult<bool> {
+    Ok(false)
+}
 
 /// Queues the dispatch of the synced queued assignment `assignment_id` when the device
 /// `device_id` executes it and has not queued it yet, reporting whether it did. An assignment
@@ -654,6 +676,7 @@ pub(super) async fn adopt_synced_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     device_id: &str,
+    _scope: &ChatDeviceScope,
 ) -> ChatResult<bool> {
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
@@ -775,6 +798,7 @@ async fn run_synced_assignment_work(
     let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
     let mut released = false;
     for assignment_id in work.queued.iter().chain(&work.started) {
         let assignment_id =
@@ -786,7 +810,7 @@ async fn run_synced_assignment_work(
     }
     for assignment_id in work.queued {
         let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
-        if adopt_synced_assignment(&pool, &assignment_id, &device_id).await? {
+        if adopt_synced_assignment(&pool, &assignment_id, &device_id, &scope).await? {
             dispatch_assignment_job(app.clone(), db_url.clone(), assignment_id).await?;
         }
     }

@@ -759,9 +759,9 @@ fn tombstone_cause_chain_reads_each_row_once() {
         let mut replica = Replica::new(0, 3).await;
         let rows: Vec<String> = (0..CAUSE_ROWS).map(cause_row).collect();
         seal_cycle_rows(&mut replica, &rows).await;
-        for index in 0..CAUSE_ROWS {
+        for (index, row) in rows.iter().enumerate() {
             let cause = index.checked_sub(1).map(cause_row);
-            seal_tombstone(&mut replica, &rows[index], cause.as_deref()).await;
+            seal_tombstone(&mut replica, row, cause.as_deref()).await;
         }
         let root = tombstone_context(&mut replica, &rows[0]).await;
 

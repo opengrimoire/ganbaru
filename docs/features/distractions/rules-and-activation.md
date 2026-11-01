@@ -20,6 +20,8 @@ Environment overrides should reuse the same deterministic matcher while preservi
 
 Desktop and Android app enforcement is blocklist-only. Application allowlisting is represented by absence from the selected block targets plus mandatory protected-app rules.
 
+An Android rule's identity must be a valid package name; a synced rule that is not is refused at sync admission. Guardian publication skips any stored rule it cannot enforce, such as one with an invalid package or name, or one past its rule count bound, and logs a diagnostic. One bad rule therefore never stops the valid rules from publishing.
+
 ## Browser rule kinds
 
 Implemented browser rules cover normalized hosts, built-in categories, custom category stacks, explicit blocked hosts, explicit allowed hosts, and exceptions. Planned richer rules may target paths, videos, playlists, channels, creators, or locally extracted task metadata.

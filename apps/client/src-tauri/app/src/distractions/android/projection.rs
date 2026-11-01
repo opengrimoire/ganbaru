@@ -1,7 +1,8 @@
 //! Typed Guardian capture and rule projection derived from persisted native policy.
 
-use super::{MAX_JOURNAL_EVENTS, PendingEvent, is_valid_package_name, normalize_event};
+use super::{MAX_JOURNAL_EVENTS, PendingEvent, normalize_event};
 use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay, UsageWindow};
+use ganbaru_sync::domains::distractions::is_android_package_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -96,7 +97,7 @@ impl GuardianCapture {
         for source in &mut capture.local_sources {
             source.source_key = source.source_key.to_ascii_lowercase();
             if source.source_type != "mobile-app"
-                || !is_valid_package_name(&source.source_key)
+                || !is_android_package_name(&source.source_key)
                 || !limits::is_valid_local_date(&source.local_date)
                 || source.local_date < capture.week_start_local_date
                 || source.local_date > capture.local_date
@@ -252,6 +253,49 @@ impl Default for MobileSchedule {
     }
 }
 
+/// Whether Guardian accepts `rule`. The display name comes from a separate replicated group, so
+/// sync admission cannot check it together with the identity.
+fn is_publishable_rule(rule: &MobileRule, package: &str) -> bool {
+    is_android_package_name(package)
+        && !rule.name.trim().is_empty()
+        && rule.name.chars().count() <= MAX_RULE_NAME_CHARS
+}
+
+/// The rules Guardian enforces: rows with a package, one per lowercase package, up to
+/// [`MAX_MOBILE_RULES`]. An invalid or surplus row is dropped with a diagnostic, because failing
+/// publication would revoke every rule Guardian holds.
+fn publishable_rules(rules: Vec<MobileRule>) -> Vec<MobileRule> {
+    let mut skipped = 0_usize;
+    let mut packages_seen = HashSet::new();
+    let mut publishable = Vec::new();
+    for mut rule in rules {
+        let Some(package) = rule.package_name.take() else {
+            continue;
+        };
+        if !is_publishable_rule(&rule, &package) {
+            skipped += 1;
+            eprintln!("Guardian skipped an invalid application rule: {package:?}");
+            continue;
+        }
+        let package = package.to_ascii_lowercase();
+        if packages_seen.insert(package.clone()) {
+            rule.package_name = Some(package);
+            publishable.push(rule);
+        }
+    }
+    if skipped > 0 {
+        eprintln!("Guardian skipped {skipped} invalid application rules");
+    }
+    if publishable.len() > MAX_MOBILE_RULES {
+        eprintln!(
+            "Guardian publishes the first {MAX_MOBILE_RULES} of {} application rules",
+            publishable.len()
+        );
+        publishable.truncate(MAX_MOBILE_RULES);
+    }
+    publishable
+}
+
 /// Build enforcement and display views from one accepted source window and one captured baseline.
 pub(super) fn build(
     root: &Value,
@@ -269,29 +313,7 @@ pub(super) fn build(
             .unwrap_or_else(|| json!({})),
     )
     .map_err(|error| format!("invalid persisted Guardian schedule: {error}"))?;
-    if mobile.blocked_apps.len() > MAX_MOBILE_RULES {
-        return Err("too many Guardian application rules".into());
-    }
-    let mut packages_seen = HashSet::new();
-    mobile
-        .blocked_apps
-        .retain(|rule| rule.package_name.is_some());
-    for rule in &mut mobile.blocked_apps {
-        let package = rule
-            .package_name
-            .as_mut()
-            .ok_or("Guardian application package is missing")?;
-        if !is_valid_package_name(package)
-            || rule.name.trim().is_empty()
-            || rule.name.chars().count() > MAX_RULE_NAME_CHARS
-        {
-            return Err("persisted Guardian application identity is invalid".into());
-        }
-        *package = package.to_ascii_lowercase();
-    }
-    mobile
-        .blocked_apps
-        .retain(|rule| packages_seen.insert(rule.package_name.clone()));
+    mobile.blocked_apps = publishable_rules(mobile.blocked_apps);
     let mut items = Vec::new();
     for limit in &config.items {
         let packages: HashSet<String> = limit
@@ -306,7 +328,7 @@ pub(super) fn build(
         if packages.len() > MAX_MOBILE_RULES
             || packages
                 .iter()
-                .any(|package| !is_valid_package_name(package))
+                .any(|package| !is_android_package_name(package))
         {
             return Err("persisted Guardian limit packages are invalid".into());
         }

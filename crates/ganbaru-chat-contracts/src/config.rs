@@ -108,8 +108,8 @@ impl Default for ChatPanelPreferences {
     }
 }
 
-/// The portable Chat behavior. Each field is stored as its own vault preference, so a field
-/// missing from storage reads as its default.
+/// The Chat behavior. Each field is stored as its own preference, so a field missing from storage
+/// reads as its default. Fields are portable vault preferences unless noted.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ChatBehaviorPreferences {
@@ -119,6 +119,7 @@ pub struct ChatBehaviorPreferences {
     pub automatically_fold_settled_work: bool,
     pub terminal_scrollback_lines: u32,
     pub idle_session_timeout_seconds: u32,
+    /// Stored per device, so a linked device cannot remove this safety prompt.
     pub confirm_multiline_terminal_paste: bool,
 }
 

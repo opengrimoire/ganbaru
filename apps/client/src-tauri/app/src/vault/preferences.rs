@@ -720,6 +720,26 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn preferences_chat_behavior_batch_keeps_paste_confirmation_on_the_device() {
+        let behavior = ganbaru_chat_contracts::config::ChatBehaviorPreferences {
+            confirm_multiline_terminal_paste: false,
+            ..Default::default()
+        };
+        let patches = crate::chat::configuration::behavior_patches(&behavior).unwrap();
+        let fields = patches.len();
+
+        let plan = plan_patches(patches).unwrap();
+        assert_eq!(
+            plan.device,
+            [DeviceOp::Set {
+                key: "chat.behavior.confirmMultilineTerminalPaste".to_owned(),
+                value: json!(false),
+            }]
+        );
+        assert_eq!(plan.portable.len(), fields - 1);
+    }
+
     #[tokio::test]
     async fn preferences_portable_writes_replace_children_and_keep_unchanged_timestamps() {
         let pool = memory_pool().await;

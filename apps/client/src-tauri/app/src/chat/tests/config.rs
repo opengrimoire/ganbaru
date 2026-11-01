@@ -129,7 +129,7 @@ fn behavior_validation_refuses_values_outside_the_bounds() {
 }
 
 #[test]
-fn behavior_writes_one_portable_preference_per_field() {
+fn behavior_writes_one_preference_per_field() {
     let behavior = ChatBehaviorPreferences {
         send_key: ChatSendKey::ModEnter,
         terminal_scrollback_lines: 2_000,
@@ -144,6 +144,7 @@ fn behavior_writes_one_portable_preference_per_field() {
     assert_eq!(patches.len(), 7);
     assert!(patches.iter().all(|patch| !patch.remove));
     assert!(paths.iter().all(|path| path.starts_with("chat.behavior.")));
+    assert!(paths.contains(&"chat.behavior.confirmMultilineTerminalPaste".to_owned()));
     let send_key = patches
         .iter()
         .find(|patch| patch.path.join(".") == "chat.behavior.sendKey")

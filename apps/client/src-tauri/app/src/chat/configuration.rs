@@ -1,9 +1,10 @@
 //! Chat settings storage shared by desktop and mobile.
 //!
-//! Behavior preferences are portable `chat.behavior.*` vault preferences that the preferences
-//! sync domain replicates. Provider entries, remembered selections, working folder provider
-//! preferences, and panel layout stay in this device's preference file under a native entry
-//! that generic preference patches never reach.
+//! Behavior preferences are `chat.behavior.*` preferences. They are portable vault preferences
+//! that the preferences sync domain replicates, except the multiline paste confirmation, which
+//! the registry scopes to this device so a safety prompt never follows a peer. Provider entries,
+//! remembered selections, working folder provider preferences, and panel layout stay in this
+//! device's preference file under a native entry that generic preference patches never reach.
 
 use crate::vault::VaultConfigPatch;
 use crate::vault::preferences::{
@@ -15,7 +16,7 @@ use ganbaru_chat_contracts::config::{
 };
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 
-/// The registry path whose portable keys hold the Chat behavior preferences.
+/// The registry path whose keys hold the Chat behavior preferences.
 pub(crate) const CHAT_BEHAVIOR_PREFERENCE_PATH: &str = "chat.behavior";
 
 /// Maps a storage failure to the public Chat error without exposing local paths.
@@ -70,8 +71,9 @@ pub(crate) async fn with_behavior<R: tauri::Runtime>(
     })
 }
 
-/// Stores every field of `behavior` as its portable `chat.behavior.*` preference, which the
-/// preferences sync domain replicates to the other devices of the vault.
+/// Stores every field of `behavior` as its `chat.behavior.*` preference. The registry routes
+/// each one to its scope: portable fields replicate to the other devices of the vault, and
+/// device fields stay on this device.
 pub(crate) async fn write_chat_behavior<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     behavior: &ChatBehaviorPreferences,

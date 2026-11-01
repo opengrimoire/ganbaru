@@ -34,7 +34,7 @@ import {
   type PanelSaveData,
 } from "./payloads";
 import { hasMeetingState } from "$lib/calendar/meeting-state";
-import { WINDOW_TEXT_CHARS } from "$lib/calendar/db-rows";
+import { mayBeShortenedWindowText } from "$lib/calendar/db-rows";
 import {
   COUNT_PRESET_RHYTHMS,
   type SequencePomodoroRhythmStep,
@@ -64,11 +64,6 @@ export interface EventPanelHeavyLoadToken {
   generation: number;
   openedEventId: string;
   projectId: string | undefined;
-}
-
-/** A window keeps exactly this many characters of longer text, so anything shorter is whole. */
-function mayBeShortenedWindowText(value: string): boolean {
-  return value.length >= WINDOW_TEXT_CHARS && [...value].length === WINDOW_TEXT_CHARS;
 }
 
 export function eventPanelHeavyLookupId(event: Pick<CalendarEvent, "id" | "recurringParentId">): string {

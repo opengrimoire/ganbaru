@@ -42,7 +42,10 @@ export interface ChatPanelPreferences {
   inspectorWidthPx: number;
 }
 
-/** Portable Chat behavior, stored as `chat.behavior.*` vault preferences that replicate. */
+/**
+ * Chat behavior, stored as `chat.behavior.*` preferences. Fields are portable vault preferences
+ * that replicate, except `confirmMultilineTerminalPaste`, which is stored per device.
+ */
 export interface ChatBehaviorPreferences {
   sendKey: ChatSendKey;
   restoreLastSelectedThread: boolean;
@@ -56,7 +59,7 @@ export interface ChatBehaviorPreferences {
 /**
  * Chat settings as one read: the device-local fields (providers, remembered selections,
  * working folder provider preferences, panels) stay in this device's preference file and never
- * replicate; `behavior` is portable.
+ * replicate; `behavior` is portable apart from its per-device fields.
  */
 export interface ChatConfiguration {
   providers: ChatPortableProviderConfig[];

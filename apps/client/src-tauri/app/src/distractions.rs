@@ -42,6 +42,8 @@ pub(crate) mod rule_commands;
 pub(crate) mod rule_store;
 #[cfg(desktop)]
 pub(crate) mod runtime;
+#[cfg(all(desktop, target_os = "linux"))]
+mod session_anchors;
 #[cfg(desktop)]
 pub(crate) mod spool;
 #[cfg(desktop)]
@@ -87,6 +89,8 @@ use rules::{
     normalize_process_match_names, trusted_process_match_names,
     unavailable_foreground_desktop_app_status, validate_foreground_status_is_closeable,
 };
+#[cfg(all(desktop, target_os = "linux"))]
+use session_anchors::{current_session_anchors, drop_anchored_matches, refuse_anchored_close};
 #[cfg(desktop)]
 pub use state_files::clear_distractions_enforcement_state;
 #[cfg(desktop)]

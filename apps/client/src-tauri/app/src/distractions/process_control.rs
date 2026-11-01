@@ -191,7 +191,8 @@ where
     Ok(true)
 }
 
-/// Recheck runtime authority and the `config` rules immediately before each process signal.
+/// Recheck runtime authority, the session guard, and the `config` rules immediately before each
+/// process signal.
 #[cfg(target_os = "linux")]
 pub(super) fn close_desktop_process_checked<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -202,6 +203,10 @@ pub(super) fn close_desktop_process_checked<R: Runtime>(
     let mut controller = SystemDesktopProcessController;
     close_desktop_process_with(&request, &mut controller, |observed| {
         before_close()?;
+        refuse_anchored_close(
+            request.process_id,
+            current_session_anchors(|| false).as_deref(),
+        )?;
         let authorization = load_close_authorization(app, config, &request.rule_identity)?;
         validate_names_authorized(observed.match_names.clone(), &authorization)
     })

@@ -23,6 +23,7 @@
 //! outranks the other active states.
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
+use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
@@ -80,13 +81,15 @@ pub const SPEEDS: [&str; 2] = ["standard", "fast"];
 /// Interaction modes.
 pub const INTERACTION_MODES: [&str; 1] = ["build"];
 /// Built-in access profile keys.
-pub const BUILTIN_PROFILE_KEYS: [&str; 5] = [
-    "conversation_only",
-    "read_only",
-    "edit_files",
-    "build_and_test",
-    "publish_changes",
-];
+pub const BUILTIN_PROFILE_KEYS: [&str; BUILTIN_ACCESS_PROFILES.len()] = {
+    let mut keys = [""; BUILTIN_ACCESS_PROFILES.len()];
+    let mut index = 0;
+    while index < keys.len() {
+        keys[index] = BUILTIN_ACCESS_PROFILES[index].1;
+        index += 1;
+    }
+    keys
+};
 /// History boundaries of an access profile revision.
 pub const HISTORY_BOUNDARIES: [&str; 2] = ["entire", "from_grant"];
 /// Maximum folder capabilities, least restrictive first.
@@ -415,6 +418,23 @@ fn validate_profile(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         (profile_group::UPDATED, [at]) => timestamp(at),
         _ => Err(AdapterError("chat access profile value")),
     }
+}
+
+/// Refuses a built-in key on any row but the one seeded with it, and a seeded row without its
+/// own key. Custom profiles carry no key.
+fn validate_profile_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let claimed = groups
+        .iter()
+        .find(|value| value.group == profile_group::CREATED)
+        .and_then(|value| value.value.fields().first())
+        .and_then(|builtin| match builtin {
+            Field::Text(key) => Some(key.as_str()),
+            _ => None,
+        });
+    if claimed != builtin_profile_key(row.as_str()) {
+        return Err(AdapterError("chat built-in profile identity"));
+    }
+    Ok(())
 }
 
 fn validate_profile_revision(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
@@ -1296,6 +1316,8 @@ impl DomainAdapter for ChatAdapter {
     ) -> Result<(), AdapterError> {
         if table == PARTICIPANTS_TABLE {
             validate_participant_row(row, groups)
+        } else if table == PROFILES_TABLE {
+            validate_profile_row(row, groups)
         } else {
             Ok(())
         }
@@ -1474,8 +1496,11 @@ fn group_fields(values: &[(GroupId, Value)], group: GroupId) -> Option<&[Field]>
 
 #[cfg(test)]
 mod tests {
+    use ganbaru_sync_contracts::{Change, ChangeAction};
+
     use super::*;
     use crate::codec::OwnedRow;
+    use crate::{Engine, validate};
 
     const AT: &str = "2026-10-24T10:51:41.000Z";
 
@@ -2136,6 +2161,60 @@ mod tests {
                 )
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// A create of access profile `id` carrying `builtin_key`.
+    fn profile_create(id: &str, builtin_key: Option<&str>) -> Change {
+        let group = |group, fields| GroupValue::new(PROFILES_TABLE, group, value(fields));
+        Change {
+            table: PROFILES_TABLE,
+            row: RowKey::new(id).unwrap(),
+            action: ChangeAction::Create,
+            groups: vec![
+                group(profile_group::CREATED, vec![optional(builtin_key), t(AT)]),
+                group(profile_group::NAME, vec![t("Claim")]),
+                group(profile_group::CURRENT, vec![Field::Null, Field::Null]),
+                group(profile_group::LIFECYCLE, vec![Field::Null]),
+                group(profile_group::UPDATED, vec![t(AT)]),
+            ],
+            replaced_by: None,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn custom_profile_claiming_builtin_key_is_held_invalid() {
+        let engine = Engine::vault();
+        for id in ["access-profile:aaa", "access-profile:zzz"] {
+            for key in BUILTIN_PROFILE_KEYS {
+                assert_eq!(
+                    validate::change(&engine, &profile_create(id, Some(key))),
+                    Err("chat built-in profile identity"),
+                    "{id} {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_id_with_wrong_key_is_held_invalid() {
+        let engine = Engine::vault();
+        for key in [Some("edit_files"), None] {
+            assert_eq!(
+                validate::change(&engine, &profile_create("access-profile:read-only", key)),
+                Err("chat built-in profile identity"),
+                "{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_profile_with_null_key_stays_valid() {
+        let engine = Engine::vault();
+        assert_eq!(
+            validate::change(&engine, &profile_create("access-profile:reviewers", None)),
+            Ok(())
         );
     }
 

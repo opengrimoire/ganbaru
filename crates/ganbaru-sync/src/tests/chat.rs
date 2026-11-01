@@ -20,8 +20,9 @@ use super::block_on;
 use super::fixture::{
     FixtureHook, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, test_adapters,
 };
+use super::holds::sealed_create;
 use super::refusal::take;
-use super::replica::{Replica, converge, quoted};
+use super::replica::{Replica, converge, forge_change, quoted};
 use super::sim::Rng;
 use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
 use crate::error::failpoints;
@@ -30,10 +31,11 @@ use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
     CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATION_CURSOR_KEY_PREFIX,
     CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
-    PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
-    REPLY_THREADS_TABLE, REVISIONS_TABLE,
+    PARTICIPANTS_TABLE, PROFILES_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE,
+    REPLY_THREAD_KEY_PREFIX, REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
+use crate::validate;
 use crate::{Engine, HoldReason, MAX_UNSEEN_PRESENTATIONS, StoreOutcome, SyncError, SyncResult};
 
 const SALT: u64 = 73;
@@ -125,6 +127,85 @@ fn built_in_profile_write_does_not_stop_apply() {
                 )
                 .await,
             1
+        );
+    });
+}
+
+/// Each device seeds the same built-in profiles, every create passes admission, and none is held
+/// on a replica that received them.
+#[test]
+fn every_seed_capture_stays_valid() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let seeded: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, builtin_key FROM chat_access_profiles WHERE builtin_key IS NOT NULL",
+        )
+        .fetch_all(&mut replicas[0].conn)
+        .await
+        .unwrap();
+        assert_eq!(seeded.len(), 5);
+        for replica in &mut replicas {
+            for (id, _) in &seeded {
+                let create = sealed_create(replica, PROFILES_TABLE, id).await;
+                assert_eq!(validate::change(&replica.engine, &create), Ok(()), "{id}");
+            }
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_ops WHERE state <> 'applied'")
+                    .await,
+                0
+            );
+        }
+    });
+}
+
+/// A claim of a built-in key under a lower row key stays out of merge state, so the seeded row
+/// keeps its place and an honest row that references it materializes.
+#[test]
+fn builtin_key_claim_leaves_referrers_of_the_seeded_row_visible() {
+    const SEEDED: &str = "access-profile:read-only";
+    const CLAIM: &str = "access-profile:aaa";
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let mut claim = sealed_create(&mut replicas[2], PROFILES_TABLE, SEEDED).await;
+        claim.row = RowKey::new(CLAIM).unwrap();
+        let forged = forge_change(&mut replicas[2], claim).await;
+
+        let conversation = conversation_sql().replace(&quoted(PROFILE), &quoted(SEEDED));
+        replicas[0]
+            .exec(&format!("{}{conversation}", identity_sql()))
+            .await;
+        replicas[0].seal().await.unwrap();
+
+        let outcomes = replicas[1].receive(&[forged]).await;
+        replicas[1].apply_all().await.unwrap();
+        take(&mut replicas, 1, 0).await.unwrap();
+
+        let receiver = &mut replicas[1];
+        assert_eq!(
+            receiver
+                .count(&format!(
+                    "SELECT count(*) FROM chat_teammate_channel_memberships
+                     WHERE access_profile_id = {}",
+                    quoted(SEEDED)
+                ))
+                .await,
+            1
+        );
+        assert_eq!(
+            receiver
+                .count(&format!(
+                    "SELECT count(*) FROM chat_access_profiles WHERE id = {}",
+                    quoted(CLAIM)
+                ))
+                .await,
+            0
+        );
+        assert_eq!(
+            outcomes,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
         );
     });
 }

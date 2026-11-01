@@ -9,6 +9,7 @@
 pub mod authorization;
 pub mod backup;
 pub mod bounds;
+pub mod builtin_profiles;
 pub mod certificate;
 pub mod charter;
 pub mod codec;

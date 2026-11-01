@@ -3,23 +3,37 @@
 //! stands for another build by not enforcing the receiver's constraint, so its operations are
 //! validly sealed and its merge state is the one the receiver must reach.
 
-use ganbaru_sync_contracts::ChangeAction;
+use std::collections::VecDeque;
 
+use ganbaru_sync_contracts::{ChangeAction, Field, GroupId, RowKey, TableId, Value};
+
+use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::domains::chat::ChatAdapter;
 use crate::manifest::vault::chat::{PROFILE_REVISIONS_TABLE, PROFILES_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE, settings_group};
 use crate::refused::MAX_REFUSED_RETRIES_PER_FINISH;
-use crate::{ApplyReport, StoreOutcome, SyncResult};
+use crate::{ApplyReport, HoldReason, StoreOutcome, SyncResult};
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::distractions::block_sql;
 use super::exclusion::note;
-use super::fixture::{ASK, FORBIDDEN, REFUSED, RESERVED, UNATTENDED};
+use super::fixture::{ASK, FORBIDDEN, REFUSED, RESERVED, UNATTENDED, test_engine_adapting};
 use super::focus::{close_run_sql, open_run_sql, segment_id};
 use super::holds::sealed_create;
 use super::replica::{Replica, converge, forge_change, pair, quoted, rank};
+use super::sim::Rng;
 
 const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
+
+/// Seeds of the built-in key claim simulation.
+const CLAIM_SEEDS: u64 = 8;
+/// Replicas of the claim simulation, the last of them hostile.
+const CLAIM_REPLICAS: usize = 3;
+/// First vault salt of the claim simulation.
+const CLAIM_SALT: u64 = 7300;
+/// The seeded profile whose values the hostile create copies.
+const CLAIMED_SEED: &str = "access-profile:read-only";
 
 /// A replica that does not enforce `CHECK` constraints, so it seals values others refuse.
 async fn unchecked(index: usize, salt: u64) -> Replica {
@@ -373,13 +387,48 @@ fn claiming_profile_sql(id: &str, builtin_key: &str) -> String {
     )
 }
 
+/// The Chat adapter without its row checks, so a duplicate built-in key passes admission and the
+/// repair behind it can be reached.
+#[derive(Debug)]
+struct ChatWithoutRowChecks;
+
+impl DomainAdapter for ChatWithoutRowChecks {
+    fn name(&self) -> &'static str {
+        ChatAdapter.name()
+    }
+
+    fn derived(
+        &self,
+        table: TableId,
+        group: GroupId,
+        value: &Value,
+    ) -> Result<Vec<(&'static str, Field)>, AdapterError> {
+        ChatAdapter.derived(table, group, value)
+    }
+
+    fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
+        ChatAdapter.priority(table, group, value)
+    }
+
+    fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
+        ChatAdapter.validate(table, group, value)
+    }
+
+    fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
+        ChatAdapter.presentation(table, values)
+    }
+}
+
 /// A writer without the unique index claims built-in keys under keys on both sides of the seeded
-/// ones: repair seals nothing in the tables no operation deletes from, and the seeded rows and
-/// their revisions stay in the domain tables.
+/// ones, past an admission check that would hold them: repair seals nothing in the tables no
+/// operation deletes from, and the seeded rows and their revisions stay in the domain tables.
 #[test]
 fn repair_seals_no_tombstone_in_a_never_deleted_table() {
     block_on(async {
         let mut replicas = seeded_replicas(2, 70).await;
+        for replica in &mut replicas {
+            replica.engine = test_engine_adapting(Box::new(ChatWithoutRowChecks));
+        }
         replicas[1]
             .exec("DROP INDEX idx_chat_access_profiles_builtin")
             .await;
@@ -414,6 +463,77 @@ fn repair_seals_no_tombstone_in_a_never_deleted_table() {
                 .await,
             1
         );
+    });
+}
+
+/// A hostile writer claims a built-in key under a lower row key while the seeds of every device
+/// are still in flight. Whatever order the operations arrive in, the claim is held, apply never
+/// fails, and the honest replicas converge on the seeded profiles alone.
+#[test]
+fn simulation_builtin_key_claim_never_stops_apply() {
+    block_on(async {
+        for seed in 0..CLAIM_SEEDS {
+            let mut rng = Rng(seed);
+            let mut replicas = Vec::with_capacity(CLAIM_REPLICAS);
+            for index in 0..CLAIM_REPLICAS {
+                let mut replica = Replica::new(index, CLAIM_SALT + seed).await;
+                let now = replica.now_ms;
+                replica
+                    .engine
+                    .seed_captures(&mut replica.conn, now)
+                    .await
+                    .unwrap();
+                replica.seal().await.unwrap();
+                replicas.push(replica);
+            }
+
+            let attacker = CLAIM_REPLICAS - 1;
+            let mut claim =
+                sealed_create(&mut replicas[attacker], PROFILES_TABLE, CLAIMED_SEED).await;
+            claim.row = RowKey::new("access-profile:aaa").unwrap();
+            let forged = forge_change(&mut replicas[attacker], claim).await;
+
+            let mut sent = Vec::with_capacity(CLAIM_REPLICAS);
+            for replica in &mut replicas {
+                sent.push(replica.own_ops().await);
+            }
+            sent[attacker].push(forged.clone());
+
+            for (receiver, replica) in replicas.iter_mut().enumerate().take(attacker) {
+                let mut streams: Vec<VecDeque<Vec<u8>>> = (0..CLAIM_REPLICAS)
+                    .filter(|writer| *writer != receiver)
+                    .map(|writer| sent[writer].iter().cloned().collect())
+                    .collect();
+                while !streams.is_empty() {
+                    let stream = rng.below(streams.len());
+                    let op = streams[stream].pop_front().unwrap();
+                    let outcomes = replica.receive(std::slice::from_ref(&op)).await;
+                    if op == forged {
+                        assert_eq!(
+                            outcomes,
+                            vec![StoreOutcome::Stored {
+                                held: Some(HoldReason::Invalid)
+                            }],
+                            "seed {seed}"
+                        );
+                    }
+                    let applied = replica.apply_all().await;
+                    assert!(applied.is_ok(), "seed {seed}: {applied:?}");
+                    if streams[stream].is_empty() {
+                        streams.swap_remove(stream);
+                    }
+                }
+            }
+
+            converge(&mut replicas[..attacker]).await;
+            let other = merge_state(&mut replicas[1]).await;
+            assert_eq!(merge_state(&mut replicas[0]).await, other, "seed {seed}");
+            for replica in &mut replicas[..attacker] {
+                let profiles = keys(replica, "chat_access_profiles").await;
+                assert_eq!(profiles.len(), 5, "seed {seed}: {profiles:?}");
+                assert!(!profiles.iter().any(|key| key == "access-profile:aaa"));
+            }
+        }
     });
 }
 

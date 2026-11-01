@@ -86,7 +86,26 @@ pub fn profile_revision_is_expansion(
 
 #[cfg(test)]
 mod tests {
+    use ganbaru_sync_contracts::builtin_profiles::BUILTIN_ACCESS_PROFILES;
+
     use super::*;
+
+    /// The spelling a built-in key has in the database, which differs from its wire spelling.
+    fn stored_key(key: ChatAccessProfileBuiltinKey) -> &'static str {
+        match key {
+            ChatAccessProfileBuiltinKey::ConversationOnly => "conversation_only",
+            ChatAccessProfileBuiltinKey::ReadOnly => "read_only",
+            ChatAccessProfileBuiltinKey::EditFiles => "edit_files",
+            ChatAccessProfileBuiltinKey::BuildAndTest => "build_and_test",
+            ChatAccessProfileBuiltinKey::PublishChanges => "publish_changes",
+        }
+    }
+
+    #[test]
+    fn builtin_table_matches_seed_definitions() {
+        let seeded = builtin_access_profiles().map(|profile| (profile.id, stored_key(profile.key)));
+        assert_eq!(seeded, BUILTIN_ACCESS_PROFILES);
+    }
 
     #[test]
     fn builtins_are_recipes_without_a_principal() {

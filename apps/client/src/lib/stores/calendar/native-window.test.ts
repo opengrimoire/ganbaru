@@ -26,6 +26,7 @@ function snapshot() {
       start_time: "2024-03-11T13:00:00.000Z", end_time: "2024-03-11T14:00:00.000Z", override_id: null,
     }],
     diagnostics: [],
+    omitted_template_count: 0,
   };
 }
 
@@ -104,6 +105,11 @@ describe("native Calendar window boundary", () => {
     expect(mapped.windowEvents).toEqual([]);
     expect(mapped.sourceEvents).toHaveLength(1);
     expect(mapped.diagnostics).toEqual(input.diagnostics);
+  });
+
+  it.each([-1, 1.5, "3", null, undefined])("rejects an omitted template count of %s", (count) => {
+    expect(() => parseNativeCalendarWindow(JSON.stringify({ ...snapshot(), omitted_template_count: count })))
+      .toThrow();
   });
 
   it("parses a window at the native text budget with its omitted template count", () => {

@@ -57,6 +57,25 @@ describe("Calendar store native occurrence ownership", () => {
     expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes the omitted count of the loaded window", async () => {
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValue({ ...snapshot(), omittedTemplateCount: 4 });
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    await store.loadWindow(start, end);
+    expect(store.omittedTemplateCount).toBe(4);
+  });
+
+  it("reports a failed load and clears the report once a window arrives", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(loadNativeCalendarWindow).mockRejectedValueOnce(new Error("window failed"));
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    await expect(store.load()).rejects.toThrow("window failed");
+    expect(store.windowLoadFailed).toBe(true);
+    await store.load();
+    expect(store.windowLoadFailed).toBe(false);
+  });
+
   it("refreshes canonical occurrences after a committed deletion instead of regenerating local rows", async () => {
     const { getCalendar } = await import("./calendar.svelte");
     const store = getCalendar();

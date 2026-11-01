@@ -279,7 +279,7 @@ fn native_window_reports_preservation_only_rules_without_silently_reinterpreting
 }
 
 #[test]
-fn native_window_rejects_excess_templates_and_bad_windows_without_truncating() {
+fn native_window_counts_excess_templates_and_rejects_bad_windows() {
     crate::test_support::block_on(async {
         let pool = pool().await;
         sqlx::query("WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10000)
@@ -287,18 +287,16 @@ fn native_window_rejects_excess_templates_and_bad_windows_without_truncating() {
             SELECT 'extra-' || value, 'Extra', '2024-03-09T09:00:00Z', '2024-03-09T10:00:00Z', 'UTC', 'native-calendar', 'FREQ=DAILY' FROM n")
             .execute(&pool).await.unwrap();
         let mut tx = pool.begin().await.unwrap();
-        assert!(
-            read(
-                &mut tx,
-                &window("2024-03-09", "2024-03-09"),
-                WindowPurpose::Render,
-                false
-            )
-            .await
-            .err()
-            .unwrap()
-            .contains("10000")
-        );
+        let source = read(
+            &mut tx,
+            &window("2024-03-09", "2024-03-09"),
+            WindowPurpose::Render,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(source.events.len(), 10_000);
+        assert_eq!(source.omitted_template_count, 1);
         assert!(
             Window::new(
                 "2024-03-10",
@@ -348,7 +346,10 @@ fn assert_frontend_accepts(result: &NativeCalendarWindow, label: &str) {
     );
     assert!(result.events.len() <= 10_000);
     let bytes = serde_json::to_vec(result).unwrap().len();
-    assert!(bytes <= FRONTEND_JSON_BYTES, "{label} window is {bytes} bytes");
+    assert!(
+        bytes <= FRONTEND_JSON_BYTES,
+        "{label} window is {bytes} bytes"
+    );
 }
 
 #[test]
@@ -400,13 +401,18 @@ fn template_flood_keeps_honest_events_in_the_window() {
             assert!(
                 source.is_ok(),
                 "{label} read failed: {:?}",
-                source.err().map(|error| error.chars().take(200).collect::<String>())
+                source
+                    .err()
+                    .map(|error| error.chars().take(200).collect::<String>())
             );
             let result = source.ok().unwrap().expand(&window);
             assert!(result.is_ok(), "{label} expansion failed");
             let result = result.ok().unwrap();
             assert_frontend_accepts(&result, label);
-            assert!(result.omitted_template_count > 0, "{label} hid the omission");
+            assert!(
+                result.omitted_template_count > 0,
+                "{label} hid the omission"
+            );
             assert!(
                 result.occurrences.iter().any(|row| row.id == "honest"),
                 "{label} lost the honest event"
@@ -439,6 +445,39 @@ fn template_flood_keeps_honest_events_in_the_window() {
 }
 
 #[test]
+fn expansion_omits_templates_past_the_frontend_text_charge() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("
+            WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<10000)
+            INSERT INTO calendar_events(id, title, location, start_time, end_time, timezone, calendar_id)
+            SELECT printf('%.120d', value), replace(hex(zeroblob(1024)), '00', 'x'), replace(hex(zeroblob(1024)), '00', 'y'),
+                   '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar' FROM n")
+            .execute(&pool).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM calendar_events ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let ids = serde_json::to_string(&ids).unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let events: Vec<DbCalendarEventRow> =
+            read_rows(&mut connection, &ids, &admitted_events_sql())
+                .await
+                .unwrap();
+        drop(connection);
+        let serialized = serde_json::to_vec(&events).unwrap().len();
+        assert!(serialized < FRONTEND_JSON_BYTES);
+        let result = WindowSource::from_prepared(events, Vec::new(), Vec::new())
+            .expand(&window("2024-03-09", "2024-03-09"));
+        let result = result.ok().unwrap();
+        assert!(result.omitted_template_count > 0);
+        assert!(!result.events.is_empty());
+        let charged = text_units(&serde_json::to_value(&result).unwrap()) * 3;
+        assert!(charged <= FRONTEND_JSON_BYTES, "charged {charged} bytes");
+    });
+}
+
+#[test]
 fn control_character_flood_stays_inside_the_serialized_limit() {
     crate::test_support::block_on(async {
         let pool = pool().await;
@@ -464,8 +503,11 @@ fn control_character_flood_stays_inside_the_serialized_limit() {
         assert_frontend_accepts(&result, "render");
         assert!(result.omitted_template_count > 0);
         assert!(result.occurrences.iter().any(|row| row.id == "honest"));
-        let kept: std::collections::BTreeSet<_> =
-            result.events.iter().map(|event| event.id.as_str()).collect();
+        let kept: std::collections::BTreeSet<_> = result
+            .events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect();
         assert!(
             result
                 .occurrences

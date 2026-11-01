@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use chrono::{NaiveDate, NaiveDateTime, Weekday};
 
-const MAX_RULE_BYTES: usize = 8_192;
+pub(crate) const MAX_RULE_BYTES: usize = 8_192;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Frequency {

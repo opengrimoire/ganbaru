@@ -34,6 +34,7 @@ import {
   type PanelSaveData,
 } from "./payloads";
 import { hasMeetingState } from "$lib/calendar/meeting-state";
+import { WINDOW_TEXT_CHARS } from "$lib/calendar/db-rows";
 import {
   COUNT_PRESET_RHYTHMS,
   type SequencePomodoroRhythmStep,
@@ -63,6 +64,11 @@ export interface EventPanelHeavyLoadToken {
   generation: number;
   openedEventId: string;
   projectId: string | undefined;
+}
+
+/** A window keeps exactly this many characters of longer text, so anything shorter is whole. */
+function mayBeShortenedWindowText(value: string): boolean {
+  return value.length >= WINDOW_TEXT_CHARS && [...value].length === WINDOW_TEXT_CHARS;
 }
 
 export function eventPanelHeavyLookupId(event: Pick<CalendarEvent, "id" | "recurringParentId">): string {
@@ -120,6 +126,10 @@ export class EventPanelSessionController {
   lastFullKey = "";
   lastHeavyAppliedKey = "";
   private heavyLoadGeneration = 0;
+  private titleShortened = $state(false);
+  private locationShortened = $state(false);
+  private titleRestored = false;
+  private locationRestored = false;
 
   readonly dateTime: EventPanelDateTimeController;
 
@@ -136,12 +146,12 @@ export class EventPanelSessionController {
 
   /** Whether the title draft may be a shortened window value the full event has yet to replace. */
   get titleEditBlocked(): boolean {
-    return false;
+    return this.titleShortened;
   }
 
   /** Whether the location draft may be a shortened window value the full event has yet to replace. */
   get locationEditBlocked(): boolean {
-    return false;
+    return this.locationShortened;
   }
 
   get timedSectionsVisible(): boolean {
@@ -230,6 +240,8 @@ export class EventPanelSessionController {
 
   initializeEdit(event: CalendarEvent): void {
     this.title = event.title;
+    this.titleShortened = mayBeShortenedWindowText(event.title);
+    this.titleRestored = false;
     this.assignTimes(event.start, event.end);
     this.color = event.color;
     this.projectId = event.projectId;
@@ -240,6 +252,8 @@ export class EventPanelSessionController {
     this.allDay = event.allDay ?? false;
     this.dateTime.resetAllDayStash();
     this.location = event.location ?? "";
+    this.locationShortened = mayBeShortenedWindowText(this.location);
+    this.locationRestored = false;
     this.transparency = event.transparency ?? "opaque";
     this.eventStatus = event.status ?? "confirmed";
     this.rdate = event.rdate;
@@ -266,6 +280,10 @@ export class EventPanelSessionController {
   ): void {
     const initialStart = createData.start ?? fallbackStart;
     const initialEnd = createData.end ?? fallbackEnd;
+    this.titleShortened = false;
+    this.locationShortened = false;
+    this.titleRestored = false;
+    this.locationRestored = false;
     this.title = createData.title ?? "";
     this.assignTimes(initialStart, initialEnd);
     this.color = createData.color;
@@ -321,6 +339,17 @@ export class EventPanelSessionController {
   }
 
   applyHeavyEvent(fullEvent: CalendarEvent, preserveProjectSelection = false): void {
+    if (this.titleShortened && fullEvent.title.startsWith(this.title)) {
+      this.titleRestored = fullEvent.title !== this.title;
+      this.title = fullEvent.title;
+    }
+    this.titleShortened = false;
+    const fullLocation = fullEvent.location ?? "";
+    if (this.locationShortened && fullLocation.startsWith(this.location)) {
+      this.locationRestored = fullLocation !== this.location;
+      this.location = fullLocation;
+    }
+    this.locationShortened = false;
     this.description = fullEvent.description ?? "";
     if (!preserveProjectSelection) {
       this.projectId = fullEvent.projectId;
@@ -459,8 +488,14 @@ export class EventPanelSessionController {
     return buildEventPanelChangesPayload(this.currentPayloadInput());
   }
 
+  /** Restored text was uneditable until now, so it joins the baseline with the heavy fields. */
   heavyPayload(): Partial<CalendarEvent> {
-    return buildEventPanelHeavyInitPayload(this.currentPayloadInput());
+    const changes = this.changesPayload();
+    return {
+      ...buildEventPanelHeavyInitPayload(this.currentPayloadInput()),
+      ...(this.titleRestored ? { title: changes.title } : {}),
+      ...(this.locationRestored ? { location: changes.location } : {}),
+    };
   }
 
   saveData(): PanelSaveData {

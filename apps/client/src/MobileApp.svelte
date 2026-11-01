@@ -559,6 +559,15 @@
     perfMark("boot.mobile-standard-surfaces-ready");
   }
 
+  /** A failed window stays on the Calendar view with a retry; the rest of the shell still opens. */
+  async function loadCalendarWindow(): Promise<void> {
+    try {
+      await calendar.load();
+    } catch (error) {
+      console.error("Failed to load calendar:", error);
+    }
+  }
+
   async function initializeWorkspace(): Promise<void> {
     if (initializingWorkspace) return;
     initializingWorkspace = true;
@@ -573,7 +582,7 @@
         criticalSurfaces,
         recoverFocusRun(),
         calendars.load(),
-        calendar.load(),
+        loadCalendarWindow(),
       ]);
       perfMark("boot.mobile-calendar-data-ready");
       backendReady = true;

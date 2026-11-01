@@ -1,25 +1,43 @@
 //! One consistent native Calendar read and home-zone recurrence projection.
 
 use ganbaru_db::impl_sqlite_from_row;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{AssertSqlSafe, FromRow, SqliteConnection, SqlitePool};
 
-use super::event_music::{
-    EVENT_MUSIC_SQL, EVENT_MUSIC_TEXT_COLUMNS, EventMusicAssignment, event_music_flags,
-};
-use super::export::ExportBudget;
+use super::event_music::{EVENT_MUSIC_SQL, EventMusicAssignment, event_music_flags};
+use super::export::MAX_EXPORT_BYTES;
 use super::{DbCalendarEventRow, DbOverrideRow, DbWindowAttendeeRow};
 use crate::recurrence::canonical::{
     Occurrence, StoredOverride, StoredTemplate, Template, Window, expand_each_template,
 };
+use crate::recurrence::rule::MAX_RULE_BYTES;
 use crate::work_gate::WorkGate;
 use ganbaru_civil_time as civil_time;
 
 const MAX_TEMPLATES: usize = 10_000;
+/// The frontend window parser rejects a payload above this many occurrences.
+const MAX_WINDOW_OCCURRENCES: usize = 10_000;
 const MAX_ID_BYTES: usize = 1_024;
+/// Code points of title and location a window carries; the full text loads with the event.
+const WINDOW_TEXT_CHARS: usize = 1_024;
+/// Longest timestamp, zone, or repeat-until value a window admits.
+const WINDOW_STRUCTURAL_CHARS: usize = 128;
+/// Largest integer the frontend window parser accepts.
+const WINDOW_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+const WINDOW_TEXT_BUDGET_BYTES: usize = 16 * 1024 * 1024;
+const WINDOW_RECORD_BUDGET: usize = 100_000;
+/// A template above this share of a budget is admitted only after every lighter template.
+const HEAVY_TEMPLATE_DIVISOR: usize = 16;
+const ROW_OVERHEAD_BYTES: usize = 64;
+const SEQUENCE_STEP_BYTES: usize = 128;
+const NOTIFICATION_ROW_BYTES: usize = 24;
+const LIST_VALUE_OVERHEAD_BYTES: usize = 3;
+/// The frontend window parser charges three bytes for each UTF-16 unit of text.
+const FRONTEND_BYTES_PER_TEXT_UNIT: usize = 3;
 const SECONDS_PER_DAY: f64 = 86_400.0;
 static WINDOW_GATE: WorkGate = WorkGate::new();
 
@@ -58,7 +76,67 @@ pub struct NativeCalendarWindow {
     pub total_event_count: Option<i64>,
     pub occurrences: Vec<NativeOccurrence>,
     pub diagnostics: Vec<ExpansionDiagnostic>,
+    /// Selected templates left out to keep the window inside its bounds.
     pub omitted_template_count: usize,
+}
+
+impl NativeCalendarWindow {
+    /// Removes templates with their children, occurrences, and diagnostics, so that every
+    /// remaining row keeps a selected owner.
+    fn remove_templates(&mut self, removed: &BTreeSet<String>) {
+        self.events.retain(|row| !removed.contains(&row.id));
+        self.overrides
+            .retain(|row| !removed.contains(&row.parent_event_id));
+        self.attendees
+            .retain(|row| !removed.contains(&row.event_id));
+        self.occurrences
+            .retain(|row| !removed.contains(&row.template_id));
+        self.diagnostics
+            .retain(|row| !removed.contains(&row.event_id));
+        self.omitted_template_count += removed.len();
+    }
+
+    /// Keeps the first occurrence of each identity, since the frontend rejects a repeated one, and
+    /// reports the template that lost its occurrence.
+    fn remove_repeated_occurrences(&mut self) {
+        let mut seen = HashSet::new();
+        let mut repeated = Vec::new();
+        self.occurrences.retain(|row| {
+            let unique = seen.insert(row.id.clone());
+            if !unique {
+                repeated.push(ExpansionDiagnostic {
+                    event_id: row.template_id.clone(),
+                    message: format!("Occurrence identity {} is already in use", row.id),
+                });
+            }
+            unique
+        });
+        self.diagnostics.append(&mut repeated);
+    }
+
+    /// Whether both the serialized payload and the frontend text charge fit their limit.
+    fn fits_limits(&self) -> bool {
+        let Ok(bytes) = super::export::bound_snapshot_output(self) else {
+            return false;
+        };
+        // Serialized text is never shorter than its UTF-16 form, so most windows stop here.
+        if bytes.saturating_mul(FRONTEND_BYTES_PER_TEXT_UNIT) <= MAX_EXPORT_BYTES {
+            return true;
+        }
+        serde_json::to_value(self).is_ok_and(|value| {
+            text_units(&value).saturating_mul(FRONTEND_BYTES_PER_TEXT_UNIT) <= MAX_EXPORT_BYTES
+        })
+    }
+}
+
+/// UTF-16 units across every string value of a serialized window.
+fn text_units(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::String(text) => text.encode_utf16().count(),
+        serde_json::Value::Array(values) => values.iter().map(text_units).sum(),
+        serde_json::Value::Object(fields) => fields.values().map(text_units).sum(),
+        _ => 0,
+    }
 }
 
 #[derive(Serialize)]
@@ -81,11 +159,12 @@ struct Selection {
     purpose: WindowPurpose,
 }
 
-const EVENTS_SQL: &str = r#"
-    SELECT ce.id, ce.title, ce.start_time, ce.end_time, ce.timezone,
+/// The window columns of a template, except its shortened title and location.
+const EVENT_COLUMNS_SQL: &str = r#"
+           ce.id, ce.start_time, ce.end_time, ce.timezone,
            ce.calendar_id, ce.project_id, ce.environment_id, ce.playlist_id, ce.color, ce.rrule,
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
-           ce.all_day, ce.location, ce.transparency, ce.status,
+           ce.all_day, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
            ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
            ce.local_rsvp_status, ce.created_at,
@@ -101,6 +180,10 @@ const EVENTS_SQL: &str = r#"
              FROM calendar_event_pomodoro_config_sequence_steps pcss WHERE pcss.event_id = ce.id ORDER BY pcss.step_index
            )) AS sequence_steps,
            pc.idle_timeout_minutes
+"#;
+
+/// Every template a window selects. `?1` is the serialized selection.
+const SELECTED_SOURCE_SQL: &str = r#"
     FROM calendar_events ce
     LEFT JOIN calendar_event_pomodoro_configs pc ON pc.event_id = ce.id
     LEFT JOIN calendar_event_pomodoro_config_count_rhythms pcc ON pcc.event_id = ce.id
@@ -121,31 +204,180 @@ const EVENTS_SQL: &str = r#"
           AND julianday(ce.start_time) < julianday(json_extract(?1, '$.end_exclusive_utc'))
               + json_extract(?1, '$.maximum_home_offset_days'))
     )
-    ORDER BY ce.start_time, ce.id
 "#;
 
-const EVENT_TEXT_COLUMNS: &[&str] = &[
-    "id",
-    "title",
-    "start_time",
-    "end_time",
-    "timezone",
-    "calendar_id",
-    "project_id",
-    "environment_id",
-    "playlist_id",
-    "rrule",
-    "repeat_until",
-    "location",
-    "transparency",
-    "status",
-    "local_rsvp_status",
-    "created_at",
-    "rhythm_kind",
-    "rhythm_source",
-    "preset_key",
-    "sequence_steps",
-];
+/// The SQL sum of the stored bytes of each column.
+fn stored_bytes_sql(columns: &[&str]) -> String {
+    columns
+        .iter()
+        .map(|column| format!("COALESCE(length(CAST({column} AS BLOB)), 0)"))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+/// A window column truncated to the text a window carries.
+fn window_text_sql(column: &str) -> String {
+    format!("substr({column}, 1, {WINDOW_TEXT_CHARS})")
+}
+
+/// Price every selected template with what it owns, then admit a prefix of them, lightest tier
+/// first, so that a flood of templates cannot displace honest ones or fail the read. A template
+/// the frontend cannot represent is never admitted, and neither are the ones past a budget.
+fn admission_sql() -> String {
+    let id_bytes = stored_bytes_sql(&["ce.id"]);
+    let rule_bytes = stored_bytes_sql(&["ce.rrule"]);
+    let override_id_bytes = stored_bytes_sql(&["o.id"]);
+    let event_bytes = stored_bytes_sql(&[
+        "ce.id",
+        &window_text_sql("ce.title"),
+        &window_text_sql("ce.location"),
+        "ce.start_time",
+        "ce.end_time",
+        "ce.timezone",
+        "ce.calendar_id",
+        "ce.project_id",
+        "ce.environment_id",
+        "ce.playlist_id",
+        "ce.rrule",
+        "ce.repeat_until",
+        "ce.transparency",
+        "ce.status",
+        "ce.local_rsvp_status",
+        "ce.created_at",
+        "pc.rhythm_kind",
+        "pc.rhythm_source",
+        "pc.preset_key",
+    ]);
+    let override_bytes = stored_bytes_sql(&[
+        "o.id",
+        "o.parent_event_id",
+        "o.recurrence_id",
+        "o.recurrence_range",
+        "o.title",
+        "o.start_time",
+        "o.end_time",
+        "o.status",
+        "o.transparency",
+    ]);
+    let sequence_steps = "(SELECT COUNT(*) FROM calendar_event_pomodoro_config_sequence_steps pcss
+                           WHERE pcss.event_id = ce.id)";
+    let attendee_bytes = stored_bytes_sql(&["a.event_id", "a.email", "a.status"]);
+    let exdate_bytes = stored_bytes_sql(&["x.occurrence_date"]);
+    let rdate_bytes = stored_bytes_sql(&["r.occurrence_start"]);
+    let heavy_bytes = WINDOW_TEXT_BUDGET_BYTES / HEAVY_TEMPLATE_DIVISOR;
+    let heavy_records = WINDOW_RECORD_BUDGET / HEAVY_TEMPLATE_DIVISOR;
+    format!(
+        r#"
+    WITH selected AS MATERIALIZED (
+      SELECT ce.id, ce.start_time,
+        (COALESCE(ce.rrule, '') = ''
+          AND NOT EXISTS (SELECT 1 FROM calendar_event_rdates r WHERE r.event_id = ce.id)
+          AND NOT EXISTS (SELECT 1 FROM calendar_event_overrides o WHERE o.parent_event_id = ce.id)
+        ) AS simple,
+        ({id_bytes} > {MAX_ID_BYTES}
+          OR {rule_bytes} > {MAX_RULE_BYTES}
+          OR length(ce.timezone) > {WINDOW_STRUCTURAL_CHARS}
+          OR length(ce.start_time) > {WINDOW_STRUCTURAL_CHARS}
+          OR length(ce.end_time) > {WINDOW_STRUCTURAL_CHARS}
+          OR COALESCE(length(ce.repeat_until), 0) > {WINDOW_STRUCTURAL_CHARS}
+          OR COALESCE(pc.idle_timeout_minutes, 0) > {WINDOW_MAX_SAFE_INTEGER}
+          OR COALESCE(pcc.focus_duration_minutes, 0) > {WINDOW_MAX_SAFE_INTEGER}
+          OR COALESCE(pcc.short_break_minutes, 0) > {WINDOW_MAX_SAFE_INTEGER}
+          OR COALESCE(pcc.long_break_minutes, 0) > {WINDOW_MAX_SAFE_INTEGER}
+          OR COALESCE(pcc.long_break_after_focus_count, 0) > {WINDOW_MAX_SAFE_INTEGER}
+          OR EXISTS (SELECT 1 FROM calendar_event_overrides o
+                     WHERE o.parent_event_id = ce.id AND {override_id_bytes} > {MAX_ID_BYTES})
+        ) AS rejected,
+        1 + {sequence_steps} AS records,
+        {ROW_OVERHEAD_BYTES} + {event_bytes} + {sequence_steps} * {SEQUENCE_STEP_BYTES} AS bytes
+      {SELECTED_SOURCE_SQL}
+    ),
+    owned(event_id, records, bytes) AS (
+      SELECT o.parent_event_id, 1, {ROW_OVERHEAD_BYTES} + {override_bytes}
+        FROM calendar_event_overrides o JOIN selected s ON s.id = o.parent_event_id
+      UNION ALL
+      SELECT a.event_id, 1, {ROW_OVERHEAD_BYTES} + {attendee_bytes}
+        FROM calendar_event_attendees a JOIN selected s ON s.id = a.event_id
+        WHERE json_extract(?1, '$.purpose') = 'render'
+      UNION ALL
+      SELECT n.event_id, 1, {NOTIFICATION_ROW_BYTES}
+        FROM calendar_event_notifications n JOIN selected s ON s.id = n.event_id
+      UNION ALL
+      SELECT x.event_id, 1, {LIST_VALUE_OVERHEAD_BYTES} + {exdate_bytes}
+        FROM calendar_event_exdates x JOIN selected s ON s.id = x.event_id
+      UNION ALL
+      SELECT r.event_id, 1, {LIST_VALUE_OVERHEAD_BYTES} + {rdate_bytes}
+        FROM calendar_event_rdates r JOIN selected s ON s.id = r.event_id
+    ),
+    totals AS (
+      SELECT event_id, SUM(records) AS records, SUM(bytes) AS bytes FROM owned GROUP BY event_id
+    ),
+    priced AS (
+      SELECT s.id, s.start_time, s.simple,
+             s.records + COALESCE(t.records, 0) AS records,
+             s.bytes + COALESCE(t.bytes, 0) AS bytes
+      FROM selected s LEFT JOIN totals t ON t.event_id = s.id
+      WHERE NOT s.rejected
+    ),
+    tiered AS (
+      SELECT id, start_time, records, bytes,
+             CASE WHEN bytes > {heavy_bytes} OR records > {heavy_records} THEN 2
+                  WHEN simple THEN 0 ELSE 1 END AS tier
+      FROM priced
+    ),
+    running AS (
+      SELECT id, ROW_NUMBER() OVER prefix AS position,
+             SUM(bytes) OVER prefix AS total_bytes,
+             SUM(records) OVER prefix AS total_records
+      FROM tiered
+      WINDOW prefix AS (ORDER BY tier, start_time, id)
+    ),
+    admitted AS (
+      SELECT id, position FROM running
+      WHERE position <= {MAX_TEMPLATES}
+        AND total_bytes <= {WINDOW_TEXT_BUDGET_BYTES}
+        AND total_records <= {WINDOW_RECORD_BUDGET}
+    )
+    SELECT (SELECT json_group_array(id ORDER BY position) FROM admitted) AS ids,
+           (SELECT COUNT(*) FROM selected) - (SELECT COUNT(*) FROM admitted) AS omitted
+    "#
+    )
+}
+
+fn admitted_events_sql() -> String {
+    format!(
+        "SELECT {title} AS title, {location} AS location, {EVENT_COLUMNS_SQL}
+         FROM json_each(?1) admitted
+         JOIN calendar_events ce ON ce.id = admitted.value
+         LEFT JOIN calendar_event_pomodoro_configs pc ON pc.event_id = ce.id
+         LEFT JOIN calendar_event_pomodoro_config_count_rhythms pcc ON pcc.event_id = ce.id
+         ORDER BY admitted.key",
+        title = window_text_sql("ce.title"),
+        location = window_text_sql("ce.location"),
+    )
+}
+
+/// Reads the rows of the admitted templates. Admission has already priced them.
+async fn read_rows<T>(
+    connection: &mut SqliteConnection,
+    ids: &str,
+    sql: &str,
+) -> Result<Vec<T>, String>
+where
+    for<'row> T: FromRow<'row, SqliteRow> + Send + Unpin,
+{
+    sqlx::query_as(AssertSqlSafe(sql))
+        .bind(ids)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| format!("read native Calendar window rows: {error}"))
+}
+
+struct WindowAdmission {
+    ids: String,
+    omitted: i64,
+}
+impl_sqlite_from_row!(WindowAdmission { ids, omitted });
 
 struct ProjectionField {
     event_id: String,
@@ -163,6 +395,7 @@ pub struct WindowSource {
     overrides: Vec<DbOverrideRow>,
     attendees: Vec<DbWindowAttendeeRow>,
     total_event_count: Option<i64>,
+    omitted_template_count: usize,
 }
 
 pub(crate) fn utc(epoch_ms: i64) -> Result<String, String> {
@@ -223,21 +456,14 @@ pub async fn read(
         purpose,
     })
     .map_err(|error| error.to_string())?;
-    let mut budget = ExportBudget::default();
-    let mut events: Vec<DbCalendarEventRow> = budget
-        .read(
-            connection,
-            &selection,
-            &format!("SELECT * FROM ({EVENTS_SQL} LIMIT {})", MAX_TEMPLATES + 1),
-            EVENT_TEXT_COLUMNS,
-        )
-        .await?;
-    if events.len() > MAX_TEMPLATES {
-        return Err(
-            "Calendar window exceeds 10000 canonical templates; narrow or reduce recurring sources"
-                .into(),
-        );
-    }
+    let admission: WindowAdmission = sqlx::query_as(AssertSqlSafe(admission_sql()))
+        .bind(&selection)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| format!("admit native Calendar templates: {error}"))?;
+    let omitted_template_count = usize::try_from(admission.omitted)
+        .map_err(|_| "Invalid omitted Calendar template count")?;
+    let ids = admission.ids;
     let total_event_count = if include_total {
         Some(
             sqlx::query_scalar("SELECT COUNT(*) FROM calendar_events")
@@ -250,51 +476,36 @@ pub async fn read(
     };
     // Native Focus and Music poll empty windows too. No selected parent means
     // there are no children to read or statement plans to retain for this window.
-    if events.is_empty() {
+    if ids == "[]" {
         return Ok(WindowSource {
-            events,
+            events: Vec::new(),
             overrides: Vec::new(),
             attendees: Vec::new(),
             total_event_count,
+            omitted_template_count,
         });
     }
-    if events
-        .iter()
-        .any(|event| event.id.trim().is_empty() || event.id.len() > MAX_ID_BYTES)
-    {
-        return Err("Calendar template identity is empty or exceeds 1024 bytes".into());
-    }
-    let ids = serde_json::to_string(&events.iter().map(|event| &event.id).collect::<Vec<_>>())
-        .map_err(|error| error.to_string())?;
-    let overrides: Vec<DbOverrideRow> = budget.read(connection, &ids,
+    let mut events: Vec<DbCalendarEventRow> =
+        read_rows(connection, &ids, &admitted_events_sql()).await?;
+    let overrides: Vec<DbOverrideRow> = read_rows(connection, &ids,
         "SELECT id, parent_event_id, recurrence_id, recurrence_range, title, start_time, end_time, color, status, transparency
          FROM calendar_event_overrides WHERE parent_event_id IN (SELECT value FROM json_each(?1))
          ORDER BY parent_event_id, recurrence_id, id",
-        &["id", "parent_event_id", "recurrence_id", "recurrence_range", "title", "start_time", "end_time", "status", "transparency"],
     ).await?;
-    if overrides
-        .iter()
-        .any(|row| row.id.trim().is_empty() || row.id.len() > MAX_ID_BYTES)
-    {
-        return Err("Calendar override identity is empty or exceeds 1024 bytes".into());
-    }
     let attendees = if !render {
         Vec::new()
     } else {
-        budget
-            .read(
-                connection,
-                &ids,
-                "SELECT event_id, email, status FROM calendar_event_attendees
+        read_rows(
+            connection,
+            &ids,
+            "SELECT event_id, email, status FROM calendar_event_attendees
              WHERE event_id IN (SELECT value FROM json_each(?1)) ORDER BY event_id, sort_order, id",
-                &["event_id", "email", "status"],
-            )
-            .await?
+        )
+        .await?
     };
     if render {
-        let assignments: Vec<EventMusicAssignment> = budget
-            .read(connection, &ids, EVENT_MUSIC_SQL, EVENT_MUSIC_TEXT_COLUMNS)
-            .await?;
+        let assignments: Vec<EventMusicAssignment> =
+            read_rows(connection, &ids, EVENT_MUSIC_SQL).await?;
         let mut by_event: BTreeMap<&str, Vec<&EventMusicAssignment>> = BTreeMap::new();
         for row in &assignments {
             by_event.entry(&row.owner_id).or_default().push(row);
@@ -329,11 +540,15 @@ pub async fn read(
             "occurrence_start",
         ),
     ] {
-        let rows: Vec<ProjectionField> = budget.read(connection, &ids,
-            &format!("SELECT event_id, '{field}' AS field, CAST({column} AS TEXT) AS value FROM {table}
-             WHERE event_id IN (SELECT value FROM json_each(?1)) ORDER BY event_id, {order}, id"),
-            &["event_id", "field", "value"],
-        ).await?;
+        let rows: Vec<ProjectionField> = read_rows(
+            connection,
+            &ids,
+            &format!(
+                "SELECT event_id, '{field}' AS field, CAST({column} AS TEXT) AS value FROM {table}
+             WHERE event_id IN (SELECT value FROM json_each(?1)) ORDER BY event_id, {order}, id"
+            ),
+        )
+        .await?;
         for row in rows {
             fields
                 .entry((row.event_id, row.field))
@@ -367,6 +582,7 @@ pub async fn read(
         overrides,
         attendees,
         total_event_count,
+        omitted_template_count,
     })
 }
 
@@ -382,9 +598,12 @@ impl WindowSource {
             overrides,
             attendees,
             total_event_count: None,
+            omitted_template_count: 0,
         }
     }
 
+    /// Expands the admitted templates, omitting whichever ones would break a window bound.
+    /// Templates go in admission order, so the last admitted are the first omitted.
     pub fn expand(self, window: &Window) -> Result<NativeCalendarWindow, String> {
         let mut templates = Vec::new();
         let mut indices = Vec::new();
@@ -409,6 +628,7 @@ impl WindowSource {
             }
         }
         let mut occurrences = Vec::new();
+        let mut over_occurrence_limit = BTreeSet::new();
         for (index, expanded) in indices
             .into_iter()
             .zip(expand_each_template(&templates, window))
@@ -416,6 +636,9 @@ impl WindowSource {
             let event = &self.events[index];
             let overrides = grouped_overrides.get(event.id.as_str());
             match expanded.and_then(|expanded| native_occurrences(event, overrides, expanded)) {
+                Ok(values) if occurrences.len() + values.len() > MAX_WINDOW_OCCURRENCES => {
+                    over_occurrence_limit.insert(event.id.clone());
+                }
                 Ok(values) => occurrences.extend(values),
                 Err(message) => diagnostics.push(ExpansionDiagnostic {
                     event_id: event.id.clone(),
@@ -428,16 +651,31 @@ impl WindowSource {
                 .cmp(&right.start_time)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        let snapshot = NativeCalendarWindow {
+        let mut snapshot = NativeCalendarWindow {
             events: self.events,
             overrides: self.overrides,
             attendees: self.attendees,
             total_event_count: self.total_event_count,
             occurrences,
             diagnostics,
-            omitted_template_count: 0,
+            omitted_template_count: self.omitted_template_count,
         };
+        snapshot.remove_templates(&over_occurrence_limit);
+        snapshot.remove_repeated_occurrences();
+        // Escaped text can outgrow what admission charged for it. Each pass removes a quarter of
+        // the templates, so the number of serializations stays logarithmic.
+        while !snapshot.events.is_empty() && !snapshot.fits_limits() {
+            let kept = snapshot.events.len() - snapshot.events.len().div_ceil(4);
+            let removed = snapshot.events[kept..]
+                .iter()
+                .map(|event| event.id.clone())
+                .collect();
+            snapshot.remove_templates(&removed);
+        }
         super::export::bound_snapshot_output(&snapshot)?;
+        snapshot.events.sort_by(|left, right| {
+            (&left.start_time, &left.id).cmp(&(&right.start_time, &right.id))
+        });
         Ok(snapshot)
     }
 }

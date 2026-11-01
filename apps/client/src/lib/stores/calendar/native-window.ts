@@ -24,6 +24,7 @@ export interface CalendarExpansionDiagnostic {
 interface NativeCalendarWindow extends CalendarWindowRows {
   occurrences: NativeOccurrence[];
   diagnostics: CalendarExpansionDiagnostic[];
+  omitted_template_count: number;
 }
 
 export interface NativeCalendarWindowRequest {
@@ -116,6 +117,7 @@ export function parseNativeCalendarWindow(value: unknown): NativeCalendarWindow 
       start_time: instant, end_time: instant, override_id: nullableText,
     })),
     diagnostics: array(record<CalendarExpansionDiagnostic>({ event_id: text, message: text })),
+    omitted_template_count: (value): value is number => number(value) && value >= 0,
   });
   if (!payload(value)) throw new Error("Invalid native Calendar window");
   const events = new Map(value.events.map((event) => [event.id, event]));
@@ -182,7 +184,7 @@ export function mapNativeCalendarWindow(value: unknown, renderZone: string): Map
     windowEvents,
     totalEventCount: rows.total_event_count,
     diagnostics: rows.diagnostics,
-    omittedTemplateCount: 0,
+    omittedTemplateCount: rows.omitted_template_count,
   };
 }
 

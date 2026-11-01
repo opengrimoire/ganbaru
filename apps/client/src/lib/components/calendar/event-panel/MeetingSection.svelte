@@ -36,6 +36,7 @@
     eventTitle = "",
     description,
     readOnly = false,
+    locationReadOnly = false,
     allowReadOnlyExpand = false,
     expanded,
     onChange,
@@ -59,6 +60,8 @@
     eventTitle?: string;
     description: string;
     readOnly?: boolean;
+    /** Keeps the location unchanged while it may be a shortened window value. */
+    locationReadOnly?: boolean;
     allowReadOnlyExpand?: boolean;
     expanded: boolean;
     onChange: () => void;
@@ -259,7 +262,7 @@
       <div class="meeting-detail-row flex items-center gap-3 text-[0.8rem] leading-none">
         <MapPin size={14} class="shrink-0 text-foreground" />
         <input type="text" bind:value={location} placeholder={t("calendar.meeting.addLocation")}
-          disabled={readOnly}
+          disabled={readOnly || locationReadOnly}
           class="min-w-0 flex-1 bg-transparent leading-none text-foreground outline-none placeholder:text-muted-foreground/40"
           oninput={onChange} onkeydown={panelInputKeydown} />
         {#if geo}

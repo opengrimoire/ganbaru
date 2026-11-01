@@ -685,8 +685,14 @@
   // reverting all edits back to the original values disables the button
   // again, matching the click-outside cancellation behavior.
   const saveReady = $derived(mode === "create" || externalDirty || musicAssignmentsDirty || dateTime.hasSaveableTimeDraft);
+  const titleEditBlocked = $derived(!detailsLoaded && session.titleEditBlocked);
+  const locationEditBlocked = $derived(!detailsLoaded && session.locationEditBlocked);
   const saveControlsDisabled = $derived(
-    (controlsDisabled && !pomodoroReadOnlyInteractive) || session.savePending || !saveReady,
+    (controlsDisabled && !pomodoroReadOnlyInteractive)
+      || session.savePending
+      || !saveReady
+      || titleEditBlocked
+      || locationEditBlocked,
   );
   const isBodyConstrained = $derived(mobileLayout || geometry.isBodyConstrained);
 
@@ -741,6 +747,7 @@
   }
 
   function canSave(): boolean {
+    if (titleEditBlocked || locationEditBlocked) return false;
     return canRunEventPanelSave({
       parked,
       controlsDisabled,
@@ -1128,7 +1135,7 @@
           type="text"
           bind:value={session.title}
           placeholder={t("calendar.eventPanel.titlePlaceholder")}
-          disabled={controlsDisabled}
+          disabled={controlsDisabled || titleEditBlocked}
           class="w-full bg-transparent py-0.5 text-[1rem] font-semibold text-foreground outline-none placeholder:text-event-panel-placeholder"
           oninput={() => session.emitChange()}
           onkeydown={handleInputKeydown}
@@ -1409,6 +1416,7 @@
           eventTitle={session.title}
           description={session.description}
           readOnly={controlsDisabled}
+          locationReadOnly={locationEditBlocked}
           allowReadOnlyExpand={readOnly && !parked}
           expanded={openSection === "meeting"}
           onToggle={() => handleToggle("meeting")}

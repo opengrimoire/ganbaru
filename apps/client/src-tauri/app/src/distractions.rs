@@ -42,6 +42,8 @@ pub(crate) mod rule_commands;
 pub(crate) mod rule_store;
 #[cfg(desktop)]
 pub(crate) mod runtime;
+#[cfg(all(desktop, target_os = "linux"))]
+mod session_anchors;
 #[cfg(desktop)]
 pub(crate) mod spool;
 #[cfg(desktop)]

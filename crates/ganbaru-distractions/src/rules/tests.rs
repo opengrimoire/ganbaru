@@ -74,6 +74,30 @@ fn protects_session_services_multiplexers_terminals_and_compositors() {
 }
 
 #[test]
+fn is_protected_observed_process_name_covers_session_managers() {
+    for name in [
+        "i3",
+        "sway",
+        "awesome",
+        "openbox",
+        "bspwm",
+        "cinnamon",
+        "cinnamon-session",
+        "cinnamon-sessio",
+        "xfce4-session",
+        "xfwm4",
+        "xfdesktop",
+        "mate-session",
+        "marco",
+        "mate-terminal",
+        "lxsession",
+        "lxqt-session",
+    ] {
+        assert!(super::is_protected_observed_process_name(name), "{name}");
+    }
+}
+
+#[test]
 fn protects_truncated_comm_names_of_protected_processes() {
     assert!(super::is_protected_observed_process_name("gnome-terminal-"));
     assert!(super::is_protected_observed_process_name("gnome-session-b"));

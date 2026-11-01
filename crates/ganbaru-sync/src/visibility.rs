@@ -138,6 +138,62 @@ impl Roots {
     pub(crate) fn cause(&self) -> Option<&Root> {
         self.0.iter().find(|root| root.kind.deleted())
     }
+
+    #[cfg(test)]
+    pub(crate) fn of(root: Root) -> Self {
+        Self(BTreeSet::from([root]))
+    }
+}
+
+#[cfg(test)]
+pub(crate) trait WalkValue: Clone + Default {
+    fn join(&mut self, other: &Self);
+}
+
+#[cfg(test)]
+impl WalkValue for Roots {
+    fn join(&mut self, other: &Self) {
+        self.0.extend(other.0.iter().cloned());
+    }
+}
+
+/// The flat walk of [`Visibility::cascade_roots`], which finishes only its start row.
+#[cfg(test)]
+pub(crate) struct CascadeWalk<V> {
+    start: RowRef,
+    visited: BTreeSet<RowRef>,
+    pending: Vec<RowRef>,
+    value: V,
+}
+
+#[cfg(test)]
+impl<V: WalkValue> CascadeWalk<V> {
+    pub(crate) fn new(start: RowRef) -> Self {
+        Self {
+            visited: BTreeSet::from([start.clone()]),
+            pending: vec![start.clone()],
+            start,
+            value: V::default(),
+        }
+    }
+
+    pub(crate) fn next_row(&mut self) -> Option<RowRef> {
+        self.pending.last().cloned()
+    }
+
+    pub(crate) fn supply(&mut self, _row: RowRef, own: V, successors: Vec<RowRef>) {
+        self.pending.pop();
+        self.value.join(&own);
+        for next in successors {
+            if self.visited.insert(next.clone()) {
+                self.pending.push(next);
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> Vec<(RowRef, std::sync::Arc<V>)> {
+        vec![(self.start, std::sync::Arc::new(self.value))]
+    }
 }
 
 /// A cascading reference of a row: the row it reaches and whether it is a composite-key
@@ -200,6 +256,9 @@ pub(crate) struct Visibility {
     retrying: BTreeSet<RowRef>,
     /// Whether a row is listed as hidden, per row read so far.
     refused: HashMap<RowRef, bool>,
+    /// Rows whose cascading references were read.
+    #[cfg(test)]
+    pub(crate) cascade_walks: usize,
 }
 
 impl Visibility {
@@ -507,6 +566,10 @@ impl Visibility {
         table: &TableSpec,
         key: &str,
     ) -> SyncResult<Vec<CascadeTarget>> {
+        #[cfg(test)]
+        {
+            self.cascade_walks += 1;
+        }
         let mut targets: Vec<CascadeTarget> = table
             .key_parent
             .map(|parent| CascadeTarget {

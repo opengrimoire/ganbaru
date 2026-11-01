@@ -1,14 +1,21 @@
 //! Publication predicates, rows published with their parent, and capture seeding.
 
-use ganbaru_sync_contracts::TableId;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+
+use ganbaru_sync_contracts::{ChangeAction, TableId};
 use sqlx::Connection;
 
 use super::block_on;
 use super::fixture::{
-    DRAFT_NOTES_TABLE, DRAFT_PARTS_TABLE, DRAFTS_TABLE, FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, DRAFT_NOTES_TABLE, DRAFT_PARTS_TABLE, DRAFTS_TABLE,
+    FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
 };
 use super::replica::{Replica, converge};
-use crate::{SyncError, seed};
+use crate::visibility::{
+    CascadeWalk, DeriveScope, Root, RootKind, Roots, RowRef, Visibility, WalkValue,
+};
+use crate::{SyncError, repair, seed};
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -370,4 +377,227 @@ fn seeding_captures_a_child_naming_no_parent() {
             ]
         );
     });
+}
+
+/// Rows of the hidden chain below its root.
+const CHAIN_ROWS: usize = 256;
+
+/// Rows of the in-memory chain, more than recursion could walk on a test thread's stack.
+const LONG_CHAIN_ROWS: usize = 262_144;
+
+/// A row of a chain that alternates between the cycle tables. Row 0 is the root.
+fn chain_row(index: usize) -> RowRef {
+    let table = if index % 2 == 0 {
+        CYCLE_A_TABLE
+    } else {
+        CYCLE_B_TABLE
+    };
+    (table, format!("chain-{index:03}"))
+}
+
+#[test]
+fn cascade_roots_walks_each_row_once() {
+    block_on(async {
+        let mut replica = Replica::new(0, 3).await;
+        let mut rows = String::new();
+        for index in 0..=CHAIN_ROWS {
+            let table = if chain_row(index).0 == CYCLE_A_TABLE {
+                "fixture_cycle_a"
+            } else {
+                "fixture_cycle_b"
+            };
+            let peer = index.checked_sub(1).map_or("NULL".to_string(), |below| {
+                format!("'{}'", chain_row(below).1)
+            });
+            rows.push_str(&format!(
+                "INSERT INTO {table} (id, label, peer_id) VALUES ('{}', 'label-{index}', {peer});\n",
+                chain_row(index).1
+            ));
+        }
+        replica.exec(&rows).await;
+        replica.seal().await.unwrap();
+        // The tombstone of a group whose cascaded rows have not been deleted yet.
+        let (root_table, root_key) = chain_row(0);
+        replica
+            .exec(&format!(
+                "UPDATE sync_rows SET state = 'tombstoned'
+                 WHERE table_id = {} AND row_key = '{root_key}'",
+                root_table.0
+            ))
+            .await;
+
+        let mut dirty: BTreeSet<RowRef> = (1..=CHAIN_ROWS).map(chain_row).collect();
+        let mut visibility = Visibility::load(
+            &replica.engine,
+            &mut replica.conn,
+            &mut dirty,
+            DeriveScope::All,
+        )
+        .await
+        .unwrap();
+        // The row furthest from the root first, so no walk meets a cached row above it.
+        for index in (1..=CHAIN_ROWS).rev() {
+            let (table, key) = chain_row(index);
+            let roots = visibility
+                .cascade_roots(&replica.engine, &mut replica.conn, table, &key)
+                .await
+                .unwrap();
+            let cause = roots.cause().expect("the chain reaches the deleted root");
+            assert_eq!((cause.table, &cause.key), (root_table, &root_key));
+        }
+
+        let repairs =
+            repair::repair_changes(&replica.engine, &mut replica.conn, &mut visibility, &dirty)
+                .await
+                .unwrap();
+        let tombstones: BTreeSet<(TableId, String, Option<(TableId, String)>)> = repairs
+            .iter()
+            .map(|change| {
+                assert_eq!(change.action, ChangeAction::Tombstone);
+                let cause = change.cause.as_ref();
+                (
+                    change.table,
+                    change.row.as_str().to_string(),
+                    cause.map(|cause| (cause.table, cause.row.as_str().to_string())),
+                )
+            })
+            .collect();
+        let expected: BTreeSet<_> = (1..=CHAIN_ROWS)
+            .map(|index| {
+                let (table, key) = chain_row(index);
+                (table, key, Some(chain_row(0)))
+            })
+            .collect();
+        assert_eq!(tombstones, expected, "cascade tombstones name their root");
+        assert_eq!(
+            visibility.cascade_walks, CHAIN_ROWS,
+            "each chain row is walked once"
+        );
+    });
+}
+
+/// A row of the in-memory graph.
+fn node(key: &str) -> RowRef {
+    (CYCLE_A_TABLE, key.to_string())
+}
+
+/// The value of a row that reaches one root by itself.
+fn reaching(key: &str, kind: RootKind) -> Roots {
+    Roots::of(Root {
+        table: CYCLE_A_TABLE,
+        key: key.to_string(),
+        kind,
+    })
+}
+
+/// Drives a walk over a graph of rows, with `known` rows standing for finished results. Returns
+/// every finished row and how many rows the graph had to answer for.
+fn walk_graph<V: WalkValue>(
+    start: &str,
+    graph: &HashMap<RowRef, (V, Vec<RowRef>)>,
+    known: &HashMap<RowRef, Arc<V>>,
+) -> (HashMap<RowRef, Arc<V>>, usize) {
+    let mut walk = CascadeWalk::new(node(start));
+    let mut read = 0;
+    while let Some(row) = walk.next_row() {
+        if let Some(value) = known.get(&row) {
+            let value = value.as_ref().clone();
+            walk.supply(row, value, Vec::new());
+            continue;
+        }
+        read += 1;
+        let (own, successors) = graph[&row].clone();
+        walk.supply(row, own, successors);
+    }
+    (walk.finish().into_iter().collect(), read)
+}
+
+/// A graph from `(row, own value, successors)` lines.
+fn graph(rows: Vec<(&str, Roots, &[&str])>) -> HashMap<RowRef, (Roots, Vec<RowRef>)> {
+    rows.into_iter()
+        .map(|(key, own, successors)| {
+            let successors = successors.iter().map(|next| node(next)).collect();
+            (node(key), (own, successors))
+        })
+        .collect()
+}
+
+#[test]
+fn cascade_walk_handles_a_cycle_and_a_long_chain() {
+    let shown = Roots::default;
+    let known = HashMap::new();
+
+    // A cycle hides nothing on its own, from whichever member the walk starts.
+    let cycle = graph(vec![
+        ("x", shown(), &["y"]),
+        ("y", shown(), &["z"]),
+        ("z", shown(), &["x"]),
+    ]);
+    for start in ["x", "y", "z"] {
+        let (finished, read) = walk_graph(start, &cycle, &known);
+        assert_eq!((finished.len(), read), (3, 3), "from {start}");
+        assert!(finished.values().all(|roots| !roots.hides()));
+    }
+
+    // Members of a cycle share one complete result, whichever member reaches the way out.
+    let exits = graph(vec![
+        ("tail", shown(), &["x"]),
+        ("x", shown(), &["y"]),
+        ("y", shown(), &["z", "out"]),
+        ("z", reaching("waiting", RootKind::Missing), &["x", "free"]),
+        ("out", reaching("gone", RootKind::Tombstoned), &[]),
+        ("free", shown(), &[]),
+        ("held", reaching("waiting", RootKind::Missing), &["free"]),
+    ]);
+    for start in ["tail", "x", "y", "z"] {
+        let (finished, read) = walk_graph(start, &exits, &known);
+        let expected = if start == "tail" { 6 } else { 5 };
+        assert_eq!((finished.len(), read), (expected, expected), "from {start}");
+        for member in ["x", "y", "z", "out"] {
+            let cause = finished[&node(member)]
+                .cause()
+                .map(|root| root.key.as_str());
+            assert_eq!(cause, Some("gone"), "{member} from {start}");
+        }
+        assert!(Arc::ptr_eq(&finished[&node("x")], &finished[&node("z")]));
+        assert!(!finished[&node("free")].hides(), "a successor stays shown");
+    }
+    let (finished, _) = walk_graph("held", &exits, &known);
+    let held = &finished[&node("held")];
+    assert!(
+        held.hides() && held.cause().is_none(),
+        "a missing root deletes nothing"
+    );
+
+    // A finished row ends the walk, with its result standing for every row behind it.
+    let cached = graph(vec![
+        ("above", shown(), &["below"]),
+        ("below", shown(), &["behind"]),
+        ("behind", reaching("gone", RootKind::Tombstoned), &[]),
+    ]);
+    let (first, read) = walk_graph("below", &cached, &known);
+    assert_eq!(read, 2);
+    let (second, read) = walk_graph("above", &cached, &first);
+    assert_eq!(read, 1, "only the row outside the cache is read");
+    let cause = second[&node("above")].cause().map(|root| root.key.as_str());
+    assert_eq!(cause, Some("gone"));
+
+    // Every row of a long chain reaches a root of its own, so a result that grew with the chain
+    // would cost memory quadratic in its length.
+    let key = |index: usize| format!("row-{index:06}");
+    let long: HashMap<RowRef, (Roots, Vec<RowRef>)> = (0..LONG_CHAIN_ROWS)
+        .map(|index| {
+            let own = reaching(&format!("root-{index:06}"), RootKind::Tombstoned);
+            let next = (index + 1 < LONG_CHAIN_ROWS).then(|| node(&key(index + 1)));
+            (node(&key(index)), (own, next.into_iter().collect()))
+        })
+        .collect();
+    let (finished, read) = walk_graph(&key(0), &long, &known);
+    assert_eq!((finished.len(), read), (LONG_CHAIN_ROWS, LONG_CHAIN_ROWS));
+    for index in [0, LONG_CHAIN_ROWS / 2, LONG_CHAIN_ROWS - 1] {
+        let cause = finished[&node(&key(index))]
+            .cause()
+            .map(|root| root.key.clone());
+        assert_eq!(cause, Some(format!("root-{index:06}")));
+    }
 }

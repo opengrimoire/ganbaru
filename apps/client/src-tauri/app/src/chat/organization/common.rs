@@ -610,7 +610,7 @@ pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRunti
 }
 
 #[cfg(desktop)]
-pub(super) fn wire_runtime_approval_policy(value: ChatRuntimeApprovalPolicy) -> &'static str {
+pub(crate) fn wire_runtime_approval_policy(value: ChatRuntimeApprovalPolicy) -> &'static str {
     match value {
         ChatRuntimeApprovalPolicy::Ask => "ask",
         ChatRuntimeApprovalPolicy::AutoApprove => "auto_approve",
@@ -776,12 +776,7 @@ pub(crate) fn teammate_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntim
 /// rank because the provider's own configuration decides it.
 #[cfg(desktop)]
 pub(crate) fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
-    match policy {
-        ChatRuntimeApprovalPolicy::Ask => Some(0),
-        ChatRuntimeApprovalPolicy::AutoApprove => Some(1),
-        ChatRuntimeApprovalPolicy::Unattended => Some(2),
-        ChatRuntimeApprovalPolicy::ProviderCustom => None,
-    }
+    ganbaru_chat::coordination::reductions::approval_rank(wire_runtime_approval_policy(policy))
 }
 
 /// Returns the runtime approval that applies to a teammate's work: the narrower of the runtime

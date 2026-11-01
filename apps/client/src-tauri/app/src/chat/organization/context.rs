@@ -909,6 +909,7 @@ async fn resolve_execution_target(
                     destination_conversation_id.as_str(),
                     teammate_id.as_str(),
                     requester_participant_id.as_str(),
+                    None,
                 )
                 .await?
                 {

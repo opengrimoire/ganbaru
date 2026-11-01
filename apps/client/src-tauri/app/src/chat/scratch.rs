@@ -5,6 +5,7 @@ pub(crate) mod commands;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
 use super::workspace::AuthorizedWorkingFolder;
 use crate::vault;
+use ganbaru_chat::coordination::reductions::teammate_policy_covers;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
@@ -242,6 +243,7 @@ pub(crate) async fn require_reusable_generation(
     let authorization = sqlx::query(
         "SELECT authorization.destination_conversation_id,
                 authorization.requester_participant_id,
+                authorization.resolved_runtime_approval_policy,
                 assignment.teammate_id
          FROM chat_scratch_generations generation
          JOIN chat_scratch_scopes scope ON scope.id = generation.scratch_scope_id
@@ -275,12 +277,16 @@ pub(crate) async fn require_reusable_generation(
     let teammate_id: String = authorization
         .try_get("teammate_id")
         .map_err(persistence_error)?;
+    let authorized_policy: String = authorization
+        .try_get("resolved_runtime_approval_policy")
+        .map_err(persistence_error)?;
     if generation_constraints_hold(
         pool,
         scratch_generation_id,
         &destination_conversation_id,
         &teammate_id,
         &requester_participant_id,
+        Some(&authorized_policy),
     )
     .await?
     {
@@ -290,12 +296,14 @@ pub(crate) async fn require_reusable_generation(
     }
 }
 
+/// See [`generation_constraints_hold_in_connection`].
 pub(crate) async fn generation_constraints_hold(
     pool: &SqlitePool,
     scratch_generation_id: &str,
     destination_conversation_id: &str,
     teammate_id: &str,
     requester_participant_id: &str,
+    authorized_policy: Option<&str>,
 ) -> ChatResult<bool> {
     let mut connection = pool.acquire().await.map_err(persistence_error)?;
     generation_constraints_hold_in_connection(
@@ -304,8 +312,44 @@ pub(crate) async fn generation_constraints_hold(
         destination_conversation_id,
         teammate_id,
         requester_participant_id,
+        authorized_policy,
     )
     .await
+}
+
+/// Returns whether the teammate may still run with `authorized_policy`, the runtime approval a
+/// scratch authorization froze: it is not archived, and its effective policy with the override
+/// that governs a scratch target still covers that approval, as a folder source's live check
+/// requires for folder work.
+async fn policy_still_covers(
+    connection: &mut SqliteConnection,
+    destination_conversation_id: &str,
+    teammate_id: &str,
+    authorized_policy: &str,
+) -> ChatResult<bool> {
+    let live: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT policy.safety_mode,
+                coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
+         FROM chat_participants participant
+         JOIN chat_teammate_effective_policies policy ON policy.teammate_id = participant.id
+         LEFT JOIN chat_teammate_channel_memberships access
+           ON access.conversation_id = ?
+          AND access.teammate_id = participant.id
+          AND access.removed_at IS NULL
+         WHERE participant.id = ? AND participant.archived_at IS NULL",
+    )
+    .bind(destination_conversation_id)
+    .bind(teammate_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(live.is_some_and(|(safety_mode, approval_override)| {
+        teammate_policy_covers(
+            &safety_mode,
+            approval_override.as_deref(),
+            authorized_policy,
+        )
+    }))
 }
 
 pub(crate) async fn generation_sources_readable_by(
@@ -344,12 +388,20 @@ pub(crate) async fn generation_sources_readable_by(
     Ok(true)
 }
 
+/// Returns whether the scratch generation still belongs to the destination and its retained
+/// sources are still readable by everyone who can read the destination.
+///
+/// `authorized_policy` is the runtime approval frozen by the authorization a run holds. With it,
+/// the teammate must also still cover that approval, so a scratch run stops at the same point a
+/// folder run does. Freezing a new authorization and owner scratch commands hold no frozen
+/// approval and pass `None`.
 pub(crate) async fn generation_constraints_hold_in_connection(
     connection: &mut SqliteConnection,
     scratch_generation_id: &str,
     destination_conversation_id: &str,
     teammate_id: &str,
     requester_participant_id: &str,
+    authorized_policy: Option<&str>,
 ) -> ChatResult<bool> {
     let owns_destination: bool = sqlx::query_scalar(
         "SELECT EXISTS(
@@ -373,6 +425,17 @@ pub(crate) async fn generation_constraints_hold_in_connection(
     .await
     .map_err(persistence_error)?;
     if !owns_destination {
+        return Ok(false);
+    }
+    if let Some(authorized_policy) = authorized_policy
+        && !policy_still_covers(
+            connection,
+            destination_conversation_id,
+            teammate_id,
+            authorized_policy,
+        )
+        .await?
+    {
         return Ok(false);
     }
     let sources = sqlx::query(

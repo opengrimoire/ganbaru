@@ -1018,6 +1018,7 @@ async fn an_applied_membership_deletion_revokes_the_authorization_it_covered() {
 async fn a_stricter_scratch_override_revokes_and_an_equal_one_keeps_authority() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
+    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
          VALUES ('scratch:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', '{NOW}', '{NOW}');
@@ -1181,6 +1182,7 @@ async fn authorization_state(pool: &SqlitePool, id: &str) -> String {
 async fn target_overrides_govern_their_authorizations_before_the_channel_override() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
+    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
     seed_folder_authorization(&pool, "unattended", "unattended").await;
 
     set_applying(&pool, true).await;
@@ -1224,6 +1226,7 @@ async fn target_overrides_govern_their_authorizations_before_the_channel_overrid
 async fn a_looser_scratch_override_keeps_scratch_work_under_a_stricter_channel_override() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
+    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
          VALUES ('scratch:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', '{NOW}', '{NOW}');
@@ -1576,6 +1579,7 @@ async fn settled(
 async fn an_inheriting_grant_edit_settles_onto_a_stricter_channel_override() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
+    insert_policy_revision(&pool, "policy:broad", 1, "full_access").await;
     seed_folder_authorization(&pool, "unattended", "unattended").await;
     let concurrent = [Some("unattended"), None];
 

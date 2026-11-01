@@ -265,10 +265,10 @@ async fn dispatch_claimed_assignment(
         .try_get("teammate_policy_revision_id")
         .map_err(persistence_error)?;
     let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
-    let resolved_runtime_approval = parse_runtime_approval_policy(
-        &row.try_get::<String, _>("resolved_runtime_approval_policy")
-            .map_err(persistence_error)?,
-    )?;
+    let frozen_runtime_approval: String = row
+        .try_get("resolved_runtime_approval_policy")
+        .map_err(persistence_error)?;
+    let resolved_runtime_approval = parse_runtime_approval_policy(&frozen_runtime_approval)?;
     let working_folder_id = row
         .try_get::<Option<String>, _>("working_folder_id")
         .map_err(persistence_error)?
@@ -324,6 +324,7 @@ async fn dispatch_claimed_assignment(
             &destination_conversation_id,
             teammate_id.as_str(),
             &requester_participant_id,
+            Some(&frozen_runtime_approval),
         )
         .await?
         {

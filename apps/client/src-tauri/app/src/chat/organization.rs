@@ -49,7 +49,7 @@ use common::{
 #[cfg(desktop)]
 pub(crate) use common::{
     effective_runtime_approval, native_assignment_safety_mode, parse_approval_policy,
-    parse_runtime_approval_policy, runtime_approval_rank, teammate_runtime_approval,
+    parse_runtime_approval_policy, teammate_runtime_approval, wire_runtime_approval_policy,
 };
 #[cfg(desktop)]
 use common::{

@@ -13,6 +13,7 @@ pub use channel_access::{
 };
 
 use crate::attachment_files;
+use crate::coordination::reductions::teammate_policy_covers;
 use crate::coordination::revocation::{
     revoke_assignment_authorizations, revoke_teammate_authorizations,
 };
@@ -151,6 +152,12 @@ impl ChatSyncEffects {
 /// differs from the revision it names, once both rows are present, it revokes the affected
 /// teammates' authorizations and reports the pointer instead of failing the apply. The effective
 /// revision views already give that pointer no effective revision.
+///
+/// A teammate or policy revision row revokes the teammate's authorizations once its effective
+/// policy no longer covers an approval they froze, and an archived teammate loses its
+/// authorizations. Both compare current rows, so arrival order does not matter and a widening or
+/// a repeated apply revokes nothing. A later widening or restore does not bring a revoked
+/// authorization back.
 pub async fn after_materialize(
     connection: &mut SqliteConnection,
     table: &str,
@@ -159,6 +166,11 @@ pub async fn after_materialize(
     let mut effects = ChatSyncEffects::default();
     let keys: BTreeSet<&str> = changed_keys.iter().map(String::as_str).collect();
     match table {
+        PARTICIPANTS_TABLE => {
+            for key in keys {
+                revoke_archived_teammate(connection, key, &mut effects).await?;
+            }
+        }
         TEAMMATES_TABLE => {
             for key in keys {
                 create_access_state(connection, key, &mut effects).await?;
@@ -170,6 +182,7 @@ pub async fn after_materialize(
                     &mut effects,
                 )
                 .await?;
+                revoke_on_policy_reduction(connection, key, &mut effects).await?;
             }
         }
         POLICY_REVISIONS_TABLE => {
@@ -182,6 +195,16 @@ pub async fn after_materialize(
                     &mut effects,
                 )
                 .await?;
+                let teammate_id: Option<String> = sqlx::query_scalar(
+                    "SELECT teammate_id FROM chat_teammate_policy_revisions WHERE id = ?",
+                )
+                .bind(key)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(persistence_error)?;
+                if let Some(teammate_id) = teammate_id {
+                    revoke_on_policy_reduction(connection, &teammate_id, &mut effects).await?;
+                }
             }
         }
         CONVERSATIONS_TABLE => {
@@ -684,6 +707,67 @@ async fn revoke(
     Ok(())
 }
 
+/// Revokes the teammate's active authorizations when its effective policy no longer covers one
+/// of them, so a narrowing applied from another device stops the runs it granted.
+async fn revoke_on_policy_reduction(
+    connection: &mut SqliteConnection,
+    teammate_id: &str,
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
+    if holds_authorization_beyond_policy(connection, teammate_id).await? {
+        revoke(
+            connection,
+            teammate_id,
+            &now(),
+            TEAMMATE_POLICY_REDUCED_REASON,
+            effects,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Revokes the active authorizations of the AI teammate `participant_id` when it is archived.
+///
+/// Archiving on one device refuses while the teammate has active work there, which cannot speak
+/// for work running on this device. Only active authorizations revoke, so a repeated apply
+/// changes nothing.
+async fn revoke_archived_teammate(
+    connection: &mut SqliteConnection,
+    participant_id: &str,
+    effects: &mut ChatSyncEffects,
+) -> ChatResult<()> {
+    let holds_authorization: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM chat_participants participant
+             JOIN chat_work_assignments assignment ON assignment.teammate_id = participant.id
+             JOIN chat_assignment_authorization_revisions authorization
+               ON authorization.assignment_id = assignment.id
+             WHERE participant.id = ?
+               AND participant.participant_kind = 'ai_teammate'
+               AND participant.archived_at IS NOT NULL
+               AND authorization.decision_state = 'allowed'
+               AND authorization.revoked_at IS NULL
+         )",
+    )
+    .bind(participant_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    if holds_authorization {
+        revoke(
+            connection,
+            participant_id,
+            &now(),
+            TEAMMATE_ARCHIVED_REASON,
+            effects,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Mirrors the command side of saving teammate access for applied membership or grant rows.
 ///
 /// A membership change bumps the audience of its conversation when `revises_audience` holds, as
@@ -811,18 +895,86 @@ const RESOLVED_OVERRIDE: &str = "CASE
     )
 END";
 
-/// Returns whether the teammate holds an active authorization that its current memberships and
-/// folder grants no longer cover.
+/// Frozen approvals of the active authorizations of teammate `?1`, each with the override that
+/// governs it and the teammate's effective safety mode: the execution target of every
+/// authorization, then every folder source with its own frozen approval. A folder source falls
+/// back from its grant override to the channel override, as the live tool check does. The safety
+/// mode is null while the teammate has no effective policy.
+fn frozen_approvals_sql() -> String {
+    format!(
+        "SELECT authorization.resolved_runtime_approval_policy AS frozen,
+                {RESOLVED_OVERRIDE} AS approval_override,
+                policy.safety_mode
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         LEFT JOIN chat_teammate_channel_memberships access
+           ON access.conversation_id = authorization.destination_conversation_id
+          AND access.teammate_id = assignment.teammate_id
+         LEFT JOIN chat_teammate_effective_policies policy
+           ON policy.teammate_id = assignment.teammate_id
+         WHERE assignment.teammate_id = ?1
+           AND authorization.decision_state = 'allowed'
+           AND authorization.revoked_at IS NULL
+         UNION ALL
+         SELECT source.resolved_runtime_approval_policy,
+                coalesce(folder_grant.runtime_approval_policy, access.runtime_approval_policy),
+                policy.safety_mode
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         JOIN chat_assignment_authorized_folder_sources source
+           ON source.authorization_revision_id = authorization.id
+         LEFT JOIN chat_teammate_channel_memberships access
+           ON access.conversation_id = authorization.destination_conversation_id
+          AND access.teammate_id = assignment.teammate_id
+         LEFT JOIN chat_teammate_working_folder_grants folder_grant
+           ON folder_grant.conversation_id = authorization.destination_conversation_id
+          AND folder_grant.teammate_id = assignment.teammate_id
+          AND folder_grant.working_folder_id = source.working_folder_id
+         LEFT JOIN chat_teammate_effective_policies policy
+           ON policy.teammate_id = assignment.teammate_id
+         WHERE assignment.teammate_id = ?1
+           AND authorization.decision_state = 'allowed'
+           AND authorization.revoked_at IS NULL
+           AND source.resolved_runtime_approval_policy IS NOT NULL"
+    )
+}
+
+/// Returns whether the teammate holds an active authorization that froze an approval its
+/// effective policy no longer covers. Without an effective policy nothing is covered, as the
+/// live tool checks refuse such a teammate.
+async fn holds_authorization_beyond_policy(
+    connection: &mut SqliteConnection,
+    teammate_id: &str,
+) -> ChatResult<bool> {
+    let approvals: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(frozen_approvals_sql()))
+            .bind(teammate_id)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
+    Ok(approvals.iter().any(|(frozen, approval_override, mode)| {
+        !mode
+            .as_deref()
+            .is_some_and(|mode| teammate_policy_covers(mode, approval_override.as_deref(), frozen))
+    }))
+}
+
+/// Returns whether the teammate holds an active authorization that its current rows no longer
+/// cover.
 ///
-/// An authorization is uncovered when the teammate's conversation membership or AI channel
-/// membership of its destination has ended, when a channel it disclosed can no longer be read
-/// from the disclosed lower bound, when a folder it was granted has no active grant of at least the
-/// authorized capability, or when the runtime approval override that governs its target (see
-/// [`RESOLVED_OVERRIDE`]) is now stricter than the authorized policy.
+/// An authorization is uncovered when the teammate is archived, when the teammate's conversation
+/// membership or AI channel membership of its destination has ended, when a channel it disclosed
+/// can no longer be read from the disclosed lower bound, when a folder it was granted has no
+/// active grant of at least the authorized capability, when the runtime approval override that
+/// governs its target (see [`RESOLVED_OVERRIDE`]) is now stricter than the authorized policy, or
+/// when the teammate's effective policy no longer covers an approval it froze.
 async fn holds_uncovered_authorization(
     connection: &mut SqliteConnection,
     teammate_id: &str,
 ) -> ChatResult<bool> {
+    if holds_authorization_beyond_policy(connection, teammate_id).await? {
+        return Ok(true);
+    }
     let sql = format!(
         "WITH {CAPABILITY_RANKS}, {APPROVAL_RANKS}
          SELECT EXISTS (
@@ -836,7 +988,11 @@ async fn holds_uncovered_authorization(
                AND authorization.decision_state = 'allowed'
                AND authorization.revoked_at IS NULL
                AND (
-                   NOT EXISTS (
+                   EXISTS (
+                       SELECT 1 FROM chat_participants participant
+                       WHERE participant.id = ?1 AND participant.archived_at IS NOT NULL
+                   )
+                   OR NOT EXISTS (
                        SELECT 1 FROM chat_conversation_memberships membership
                        JOIN chat_teammate_channel_memberships access
                          ON access.conversation_id = membership.conversation_id

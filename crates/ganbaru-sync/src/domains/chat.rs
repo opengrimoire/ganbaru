@@ -1474,8 +1474,11 @@ fn group_fields(values: &[(GroupId, Value)], group: GroupId) -> Option<&[Field]>
 
 #[cfg(test)]
 mod tests {
+    use ganbaru_sync_contracts::{Change, ChangeAction};
+
     use super::*;
     use crate::codec::OwnedRow;
+    use crate::{Engine, validate};
 
     const AT: &str = "2026-10-24T10:51:41.000Z";
 
@@ -2136,6 +2139,60 @@ mod tests {
                 )
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// A create of access profile `id` carrying `builtin_key`.
+    fn profile_create(id: &str, builtin_key: Option<&str>) -> Change {
+        let group = |group, fields| GroupValue::new(PROFILES_TABLE, group, value(fields));
+        Change {
+            table: PROFILES_TABLE,
+            row: RowKey::new(id).unwrap(),
+            action: ChangeAction::Create,
+            groups: vec![
+                group(profile_group::CREATED, vec![optional(builtin_key), t(AT)]),
+                group(profile_group::NAME, vec![t("Claim")]),
+                group(profile_group::CURRENT, vec![Field::Null, Field::Null]),
+                group(profile_group::LIFECYCLE, vec![Field::Null]),
+                group(profile_group::UPDATED, vec![t(AT)]),
+            ],
+            replaced_by: None,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn custom_profile_claiming_builtin_key_is_held_invalid() {
+        let engine = Engine::vault();
+        for id in ["access-profile:aaa", "access-profile:zzz"] {
+            for key in BUILTIN_PROFILE_KEYS {
+                assert_eq!(
+                    validate::change(&engine, &profile_create(id, Some(key))),
+                    Err("chat built-in profile identity"),
+                    "{id} {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_id_with_wrong_key_is_held_invalid() {
+        let engine = Engine::vault();
+        for key in [Some("edit_files"), None] {
+            assert_eq!(
+                validate::change(&engine, &profile_create("access-profile:read-only", key)),
+                Err("chat built-in profile identity"),
+                "{key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_profile_with_null_key_stays_valid() {
+        let engine = Engine::vault();
+        assert_eq!(
+            validate::change(&engine, &profile_create("access-profile:reviewers", None)),
+            Ok(())
         );
     }
 

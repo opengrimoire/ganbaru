@@ -11,7 +11,7 @@ use crate::domains::quick_notes::{
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
     LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, Resolution,
-    TableIdRange, TableSpec, TriggerPolicy, group_id,
+    RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Quick notes.
@@ -321,6 +321,7 @@ pub const TAGS: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `quick_notes`.
@@ -355,6 +356,7 @@ pub const NOTES: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.

@@ -26,7 +26,7 @@ use crate::manifest::vault::focus::{RUNS_TABLE, SEGMENTS_TABLE};
 use crate::manifest::{
     ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, GroupSpec, GroupStorage,
     MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, TableIdRange, TableSpec, group_id,
+    ReferenceColumn, RowKeyRule, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for distraction rules.
@@ -300,6 +300,7 @@ const BASE: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `distractions_settings`, the seeded singleton row [`SETTINGS_KEY`]. It is never deleted.

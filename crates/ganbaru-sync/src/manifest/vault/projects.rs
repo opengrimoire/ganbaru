@@ -21,8 +21,8 @@ use crate::manifest::AcyclicSpec;
 use crate::manifest::{
     ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec,
-    OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
-    TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
+    OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
+    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Projects.
@@ -673,6 +673,7 @@ const BASE: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `project_groups`.

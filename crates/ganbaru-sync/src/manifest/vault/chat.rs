@@ -55,8 +55,8 @@ use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
     GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedReference, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange,
-    TableSpec, TriggerPolicy, group_id,
+    OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Chat.
@@ -640,6 +640,7 @@ const BASE: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `chat_participants`, archive-only. The local owner keeps the id the baseline seeds, which an

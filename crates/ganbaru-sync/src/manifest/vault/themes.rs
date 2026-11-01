@@ -9,7 +9,7 @@ use crate::domains::themes::{
 };
 use crate::manifest::{
     ColumnSpec, ColumnType, DomainManifest, GroupSpec, GroupStorage, MergeKind, OwnedBound,
-    OwnedCodec, OwnedOrder, OwnedTable, TableIdRange, TableSpec, group_id,
+    OwnedCodec, OwnedOrder, OwnedTable, RowKeyRule, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for user themes.
@@ -243,6 +243,7 @@ pub const THEMES: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// The user themes domain, the rest of the 16 to 31 range after portable preferences.

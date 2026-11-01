@@ -743,6 +743,40 @@ pub struct TableSpec {
     /// `ON DELETE CASCADE` inherit the hold, see [`Manifest::may_hold_deletes`]. Device
     /// behavior, so it is not in the summary.
     pub holds_deletes: bool,
+    /// What the domain table's key CHECK accepts beyond the [`RowKey`] rules.
+    ///
+    /// [`RowKey`]: ganbaru_sync_contracts::RowKey
+    pub key_rule: RowKeyRule,
+}
+
+/// A rule on the row keys of a table, mirroring the key CHECK of its domain table. Every change
+/// carries the key, whatever its action, so a key the schema refuses never spreads. Lengths count
+/// characters, as `length()` does in SQLite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKeyRule {
+    /// Every valid [`RowKey`](ganbaru_sync_contracts::RowKey).
+    Any,
+    /// Only this key, for a singleton row.
+    Fixed(&'static str),
+    /// Keys of exactly this many characters.
+    ExactChars(usize),
+    /// Keys of at most this many characters.
+    MaxChars(usize),
+    /// Every key except these reserved ones.
+    Excluding(&'static [&'static str]),
+}
+
+impl RowKeyRule {
+    /// Whether the rule admits `key`.
+    pub fn admits(self, key: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Fixed(fixed) => key == fixed,
+            Self::ExactChars(chars) => key.chars().count() == chars,
+            Self::MaxChars(chars) => key.chars().count() <= chars,
+            Self::Excluding(reserved) => !reserved.contains(&key),
+        }
+    }
 }
 
 /// A child table published together with a row of a predicate table: while that row fails

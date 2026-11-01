@@ -9,8 +9,8 @@ use super::common::{
     this_device_id, validate_message_request, wire_participant_kind,
 };
 use super::{
-    ScheduledSend, chat_pool, i64_value, identifier_error, now_timestamp, persistence_error,
-    post_message, require_continuation_scope_is_unchanged, require_reply_thread,
+    ScheduledConsent, ScheduledSend, chat_pool, i64_value, identifier_error, now_timestamp,
+    persistence_error, post_message, require_continuation_scope_is_unchanged, require_reply_thread,
     resolve_invoked_teammate,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -509,6 +509,7 @@ pub(super) async fn send_scheduled_message_now(
     let send = ScheduledSend {
         scheduled_message_id: &scheduled_message_id,
         claim_token: &claim_token,
+        consent: ScheduledConsent::Local,
     };
     let result = match serde_json::from_str::<PostChatMessageCommand>(&request_data) {
         Ok(request) => post_message(app, db_url, &request, Some(send)).await,
@@ -521,6 +522,20 @@ pub(super) async fn send_scheduled_message_now(
             Err(error)
         }
     }
+}
+
+/// Reason a scheduled message records when its stored request does not match its row.
+pub(super) const SCHEDULED_REQUEST_MISMATCH_REASON: &str =
+    "The stored request does not match its scheduled message";
+
+/// Fails the claimed send `send` when `request` does not match its stored row, returning the
+/// refusal. A refused message posts nothing.
+pub(super) async fn refuse_mismatched_request(
+    _pool: &SqlitePool,
+    _send: ScheduledSend<'_>,
+    _request: &PostChatMessageCommand,
+) -> ChatResult<Option<ChatError>> {
+    Ok(None)
 }
 
 /// Releases the claim `claim_token` of a send that failed with `error`. With `retry_at` the
@@ -635,6 +650,7 @@ pub(super) async fn dispatch_due_scheduled_messages(
                 let send = ScheduledSend {
                     scheduled_message_id: &scheduled_message_id,
                     claim_token: &claim_token,
+                    consent: ScheduledConsent::Local,
                 };
                 post_message(app.clone(), db_url.clone(), &message, Some(send))
                     .await

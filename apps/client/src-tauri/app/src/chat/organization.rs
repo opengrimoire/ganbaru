@@ -265,6 +265,15 @@ pub async fn chat_post_message(
     post_message(app, db_url, &request, None).await
 }
 
+/// Whether the send of a scheduled message carries consent given on this device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScheduledConsent {
+    /// This device scheduled exactly this request, or the user pressed send now or retry.
+    Local,
+    /// A due message this device never consented to, as one scheduled or rewritten elsewhere.
+    Unattended,
+}
+
 /// A scheduled message being sent under the claim `claim_token`.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ScheduledSend<'a> {
@@ -272,6 +281,8 @@ pub(super) struct ScheduledSend<'a> {
     pub(super) scheduled_message_id: &'a ChatScheduledMessageId,
     /// Claim the sender holds on it.
     pub(super) claim_token: &'a str,
+    /// Consent behind this send, which decides whether its work starts by itself.
+    pub(super) consent: ScheduledConsent,
 }
 
 /// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the

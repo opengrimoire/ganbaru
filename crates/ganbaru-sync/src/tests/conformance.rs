@@ -25,8 +25,8 @@ use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
     OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution,
-    SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id,
-    is_sql_literal,
+    RowKeyRule, SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec,
+    group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -1228,6 +1228,241 @@ fn row_key_columns_match_their_not_null_constraint() {
         assert!(
             mismatches.is_empty(),
             "a row key column is required exactly when the schema says NOT NULL: {mismatches:#?}"
+        );
+    });
+}
+
+/// `text` without SQL comments, with runs of white space as one space.
+fn normalized_sql(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split_once("--").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The parts of `text` between `separator`s outside parentheses and strings. The `AND` of a
+/// `BETWEEN` does not separate.
+fn split_top_level<'a>(text: &'a str, separator: &str) -> Vec<&'a str> {
+    let mut parts = Vec::new();
+    let (mut start, mut depth, mut in_string, mut between) = (0, 0, false, false);
+    for (index, character) in text.char_indices() {
+        match character {
+            '\'' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => depth -= 1,
+            _ => {}
+        }
+        if in_string || depth > 0 {
+            continue;
+        }
+        let rest = &text[index..];
+        if rest.starts_with(" BETWEEN ") {
+            between = true;
+        } else if rest.starts_with(separator) {
+            if between && separator == " AND " {
+                between = false;
+            } else {
+                parts.push(text[start..index].trim());
+                start = index + separator.len();
+            }
+        }
+    }
+    parts.push(text[start..].trim());
+    parts
+}
+
+/// What follows an opening parenthesis in `text`, up to the parenthesis that closes it.
+fn inside_parentheses(text: &str) -> &str {
+    let (mut depth, mut in_string) = (1, false);
+    for (index, character) in text.char_indices() {
+        match character {
+            '\'' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[..index];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced SQL: {text}");
+}
+
+/// `atom` without the parentheses that enclose all of it.
+fn without_outer_parentheses(mut atom: &str) -> &str {
+    while let Some(rest) = atom.strip_prefix('(')
+        && inside_parentheses(rest).len() + 1 == rest.len()
+    {
+        atom = inside_parentheses(rest).trim();
+    }
+    atom
+}
+
+/// The body of every `CHECK` in `definition`.
+fn check_bodies(definition: &str) -> Vec<&str> {
+    let mut bodies = Vec::new();
+    let mut rest = definition;
+    while let Some((_, after)) = rest.split_once("CHECK") {
+        rest = after;
+        if let Some(open) = after.trim_start().strip_prefix('(') {
+            bodies.push(inside_parentheses(open));
+        }
+    }
+    bodies
+}
+
+/// The identifiers of `sql`, outside its strings.
+fn sql_words(sql: &str) -> BTreeSet<&str> {
+    sql.split('\'')
+        .step_by(2)
+        .flat_map(|code| {
+            code.split(|character: char| !character.is_alphanumeric() && character != '_')
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// The terms of the CHECK constraints of a `CREATE TABLE` that read `key` and no other column.
+fn key_check_terms(create: &str, key: &str, columns: &[String]) -> Vec<String> {
+    let create = normalized_sql(create);
+    let (_, after) = create.split_once('(').unwrap();
+    let mut terms = Vec::new();
+    for definition in split_top_level(inside_parentheses(after), ",") {
+        for body in check_bodies(definition) {
+            for term in split_top_level(body, " AND ") {
+                let term = without_outer_parentheses(term);
+                let words = sql_words(term);
+                let reads_only_key = words.contains(key)
+                    && !columns
+                        .iter()
+                        .any(|column| column != key && words.contains(column.as_str()));
+                if reads_only_key {
+                    terms.push(term.to_owned());
+                }
+            }
+        }
+    }
+    terms
+}
+
+/// Keys on both sides of a limit of `chars` characters, in one-byte and two-byte characters.
+fn keys_around(chars: usize) -> Vec<String> {
+    (chars.saturating_sub(1)..=chars + 1)
+        .flat_map(|count| ["a".repeat(count), "é".repeat(count)])
+        .collect()
+}
+
+/// Keys that tell a CHECK term from its neighbors, or `None` for a term of an unknown shape.
+fn check_term_probes(term: &str, key: &str) -> Option<Vec<String>> {
+    if term == format!("trim({key}) <> ''") || term == format!("{key} <> ''") {
+        return Some(Vec::new());
+    }
+    if let Some(literal) = term.strip_prefix(&format!("{key} = '")) {
+        return Some(vec![literal.strip_suffix('\'')?.to_owned()]);
+    }
+    if let Some(list) = term.strip_prefix(&format!("{key} NOT IN (")) {
+        let list = list.strip_suffix(')')?;
+        return split_top_level(list, ",")
+            .into_iter()
+            .map(|literal| {
+                let quoted = literal.strip_prefix('\'')?.strip_suffix('\'')?;
+                Some(quoted.to_owned())
+            })
+            .collect();
+    }
+    let characters = format!("length({key})");
+    let bytes = format!("length(CAST({key} AS BLOB))");
+    let bound = term
+        .strip_prefix(&characters)
+        .or_else(|| term.strip_prefix(&bytes))?;
+    let limit = [" = ", " <= ", " BETWEEN 1 AND "]
+        .into_iter()
+        .find_map(|comparison| bound.strip_prefix(comparison))?;
+    Some(keys_around(limit.parse().ok()?))
+}
+
+/// Keys on which `rule` differs from a schema that lacks it.
+fn key_rule_probes(rule: RowKeyRule) -> Vec<String> {
+    match rule {
+        RowKeyRule::Any => Vec::new(),
+        RowKeyRule::Fixed(key) => vec![key.to_owned()],
+        RowKeyRule::ExactChars(chars) | RowKeyRule::MaxChars(chars) => keys_around(chars),
+        RowKeyRule::Excluding(keys) => keys.iter().map(|key| (*key).to_owned()).collect(),
+    }
+}
+
+/// Whether the CHECK `terms` on the column `key` admit `value`. A null term passes, as it does
+/// in a CHECK.
+async fn check_terms_admit(pool: &SqlitePool, terms: &[String], key: &str, value: &str) -> bool {
+    let predicate = terms
+        .iter()
+        .map(|term| format!("coalesce(({term}), 1) <> 0"))
+        .chain(std::iter::once("1".to_owned()))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let sql = format!("SELECT {predicate} FROM (SELECT ? AS \"{key}\")");
+    let admits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(value)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|error| panic!("{terms:?}: {error}"));
+    admits != 0
+}
+
+/// A key the domain table refuses could never apply on any replica, so every table states what
+/// its key CHECK accepts. Each CHECK that reads only the key is recognized, then the rule and
+/// the schema must agree on every valid row key around their limits.
+#[test]
+fn row_key_rules_match_the_key_checks() {
+    block_on(async {
+        let mut problems = Vec::new();
+        for (manifest, pool) in cases().await {
+            for table in manifest.tables {
+                let create: String = sqlx::query_scalar(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                )
+                .bind(table.name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                let columns: Vec<String> =
+                    sqlx::query_scalar("SELECT name FROM pragma_table_info(?)")
+                        .bind(table.name)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                let key = table.key_column;
+                let terms = key_check_terms(&create, key, &columns);
+                let mut probes = key_rule_probes(table.key_rule);
+                probes.extend(["x", "other"].map(str::to_owned));
+                for term in &terms {
+                    match check_term_probes(term, key) {
+                        Some(found) => probes.extend(found),
+                        None => problems.push(format!("{}: unknown key CHECK {term}", table.name)),
+                    }
+                }
+                probes.retain(|probe| RowKey::new(probe.as_str()).is_ok());
+                probes.sort();
+                probes.dedup();
+                for probe in probes {
+                    let schema = check_terms_admit(&pool, &terms, key, &probe).await;
+                    if schema != table.key_rule.admits(&probe) {
+                        problems.push(format!(
+                            "{}: the schema admits {probe:?}: {schema}",
+                            table.name
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "a row key rule differs from its key CHECK: {problems:#?}"
         );
     });
 }

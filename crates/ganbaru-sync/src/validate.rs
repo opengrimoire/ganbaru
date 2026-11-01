@@ -110,6 +110,9 @@ pub(crate) fn group_value(
 /// Checks one change against the manifest.
 pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
     let table = engine.manifest().table(change.table).ok_or("table")?;
+    if !table.key_rule.admits(change.row.as_str()) {
+        return Err("row key rule");
+    }
     let mask = change.mask();
     let full = table.full_mask();
     match change.action {

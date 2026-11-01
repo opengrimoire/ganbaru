@@ -20,7 +20,7 @@ use crate::manifest::vault::projects::{PROJECTS_TABLE, TASKS_TABLE};
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
     GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
+    OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
     TriggerPolicy, group_id,
 };
 
@@ -553,6 +553,7 @@ const BASE: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `calendars`. Removal is a tombstone without redirect.

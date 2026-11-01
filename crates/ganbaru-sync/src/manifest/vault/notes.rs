@@ -42,8 +42,8 @@ use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
     GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec,
-    TriggerPolicy, group_id,
+    OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
+    TreeSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Notes.
@@ -614,6 +614,7 @@ const BASE: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `notes_local_users`.

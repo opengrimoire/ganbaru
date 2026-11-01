@@ -6,7 +6,7 @@ use crate::assets::AssetClass;
 use crate::domains::preferences::{MAX_PROFILE_IMAGE_BYTES, MAX_VALUE_BYTES};
 use crate::manifest::{
     ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec, GroupStorage, MergeKind,
-    TableIdRange, TableSpec, group_id,
+    RowKeyRule, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for portable preferences.
@@ -99,6 +99,7 @@ pub const PREFERENCES: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// Profile pictures that the profile image preference references.

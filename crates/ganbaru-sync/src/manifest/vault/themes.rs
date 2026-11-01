@@ -9,7 +9,7 @@ use crate::domains::themes::{
 };
 use crate::manifest::{
     ColumnSpec, ColumnType, DomainManifest, GroupSpec, GroupStorage, MergeKind, OwnedBound,
-    OwnedCodec, OwnedOrder, OwnedTable, TableIdRange, TableSpec, group_id,
+    OwnedCodec, OwnedOrder, OwnedTable, RowKeyRule, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for user themes.
@@ -17,6 +17,9 @@ pub const DOMAIN_NAME: &str = "themes";
 
 /// Domain adapter name for user themes.
 pub const ADAPTER: &str = "themes";
+
+/// Ids of the built-in themes, which the `themes` table refuses.
+pub const BUILT_IN_THEMES: [&str; 2] = ["light", "dark"];
 
 /// `themes`.
 pub const THEMES_TABLE: TableId = TableId(17);
@@ -243,6 +246,7 @@ pub const THEMES: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Excluding(&BUILT_IN_THEMES),
 };
 
 /// The user themes domain, the rest of the 16 to 31 range after portable preferences.

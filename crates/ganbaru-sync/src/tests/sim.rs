@@ -5,7 +5,8 @@
 //! they edit and excludes what they write past the cutoff, cloned spare installations fork their
 //! writer and re-seal once fork evidence reaches them, and conflicts and recovery offers are
 //! resolved along the way. Writers sometimes forge rows the schema refuses, which every other
-//! replica leaves out without stopping apply. Exchanges sometimes end with the hub and the
+//! replica leaves out without stopping apply, and row keys the manifest refuses, which a copy of
+//! the hub holds. Exchanges sometimes end with the hub and the
 //! exchanging replica compacting what is stable, except one replica that never compacts;
 //! compaction never changes domain rows. After every step the databases keep their invariants;
 //! at quiescence every installation holds the same replicated state once forging writers drop
@@ -22,8 +23,11 @@ mod relay;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Envelope, Field, Value, VersionVector, WriterId};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Content, Envelope, Field, RowKey, Value, VersionVector, WriterId,
+};
 
+use super::authorization::{seal_after, view};
 use super::block_on;
 use super::fixture::{
     ASK, BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES,
@@ -34,6 +38,7 @@ use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, ran
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
+use crate::manifest::vault::contacts::CARD_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::merge;
 use crate::stability::{CountedDevice, DeviceStanding};
@@ -132,6 +137,10 @@ const OVERRIDE_SEED_MIX: u64 = 0x6f76_6572_7269_6465;
 const OVERRIDE_EDIT_PERCENT: u64 = 6;
 /// Chance in percent that an override edit is a forged row the schema refuses.
 const HOSTILE_OVERRIDE_PERCENT: u64 = 25;
+/// A key the card table refuses.
+const HOSTILE_CARD_KEY: &str = "not-the-card";
+/// Bytes of a page of stored operations, more than any one operation.
+const MAX_OP_PAGE_BYTES: usize = 64 * 1024;
 /// Id prefix of forged overrides.
 const HOSTILE_OVERRIDE: &str = "hostile-override-";
 
@@ -1782,6 +1791,57 @@ impl Sim {
         }
     }
 
+    /// A replica's writer seals a change under a row key the schema refuses, the way a hostile
+    /// writer that skips its own rules would, and a copy of the hub holds it and applies nothing
+    /// of it. The run continues without the copies, since a held operation stops its writer.
+    async fn forge_refused_key(&mut self, index: usize) {
+        let mut writer = self.replicas[index].clone_device().await;
+        let id = writer.writer();
+        let mut before_last = writer.stored_vector().await;
+        let Some(last_seq) = before_last.get(&id).checked_sub(1) else {
+            return;
+        };
+        before_last.set(id, last_seq);
+        // Compaction may have taken the last operation, which the sequence must follow.
+        let Ok(page) = writer
+            .engine
+            .ops_after(
+                &mut writer.conn,
+                &writer.ctx,
+                &before_last,
+                MAX_OP_PAGE_BYTES,
+            )
+            .await
+        else {
+            return;
+        };
+        let mut receiver = self.hub.clone_device().await;
+        receiver.pull(&mut writer).await;
+        let change = Change {
+            table: CARD_TABLE,
+            row: RowKey::new(HOSTILE_CARD_KEY).unwrap(),
+            action: ChangeAction::Tombstone,
+            groups: Vec::new(),
+            replaced_by: None,
+            cause: None,
+        };
+        let revision = view(&mut writer).await.revision;
+        let forged = seal_after(
+            &page.ops[0],
+            &writer.identity.key,
+            Content::Changes(vec![change]),
+            revision,
+            writer.now_ms,
+        );
+        assert_eq!(
+            receiver.receive(&[forged]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }],
+            "the hub did not hold a refused key of replica {index}"
+        );
+    }
+
     async fn step(&mut self) {
         self.advance_clocks();
         let index = self.rng.below(self.replicas.len());
@@ -1796,7 +1856,8 @@ impl Sim {
             65..=74 => seal(&mut self.rng, &mut self.replicas[index]).await,
             75..=81 => self.resolve(index).await,
             82..=88 => self.recover(index).await,
-            89..=96 => self.offline[index] = !self.offline[index],
+            89..=94 => self.offline[index] = !self.offline[index],
+            95..=96 => self.forge_refused_key(index).await,
             97..=98 => self.remove_spare().await,
             _ => self.fork_spare(index).await,
         }

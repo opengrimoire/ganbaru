@@ -11,8 +11,8 @@ use crate::domains::contacts::{
 };
 use crate::manifest::{
     ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
-    GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, TableIdRange, TableSpec, TriggerPolicy,
-    group_id,
+    GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, RowKeyRule, TableIdRange, TableSpec,
+    TriggerPolicy, group_id,
 };
 
 /// Domain name for contacts.
@@ -27,6 +27,9 @@ pub const CONTACTS_TABLE: TableId = TableId(32);
 pub const REQUESTS_TABLE: TableId = TableId(33);
 /// `contact_card`.
 pub const CARD_TABLE: TableId = TableId(34);
+
+/// Row key of the singleton card row.
+pub const CARD_KEY: &str = "card";
 
 /// Prefix of a contact id before the public key.
 pub const CONTACT_ID_PREFIX: &str = "contact-";
@@ -208,6 +211,7 @@ pub const CONTACTS: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::ExactChars(PUBLIC_KEY_CHARS),
 };
 
 const REQUEST_GROUPS: [GroupSpec; 3] = [
@@ -292,6 +296,7 @@ pub const REQUESTS: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 const CARD_GROUPS: [GroupSpec; 2] = [
@@ -347,6 +352,7 @@ pub const CARD: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Fixed(CARD_KEY),
 };
 
 /// The contacts domain, table ids 32 to 47.

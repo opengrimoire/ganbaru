@@ -15,7 +15,7 @@ use crate::manifest::vault::calendar::{ARCHIVES_TABLE, EVENTS_TABLE};
 use crate::manifest::{
     ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
     MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    ReferenceColumn, RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Focus.
@@ -353,6 +353,7 @@ const BASE: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
+    key_rule: RowKeyRule::Any,
 };
 
 /// `pomodoro_runs`, published once closed. The plan, outcome, and inheritance groups change only

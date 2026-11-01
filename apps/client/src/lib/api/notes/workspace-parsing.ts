@@ -65,12 +65,16 @@ function parsePageSummaryIcon(value: string | null, pageId: string): unknown {
   if (value === null) return null;
   try {
     return JSON.parse(value) as unknown;
-  } catch {
-    throw new Error(`page.icon for page "${pageId}" must contain valid JSON`);
+  } catch (error) {
+    console.warn(`Ignoring unusable synced page.icon for page "${pageId}"`, error);
+    return null;
   }
 }
 
-/** Parse the compact persisted page row returned by Notes list commands. */
+/**
+ * Parse the compact persisted page row returned by Notes list commands. An unusable icon
+ * maps to null through the tolerant page reader, so the page stays listed and reachable.
+ */
 export function mapPageSummary(value: unknown): NotesPage {
   const row = notesWorkspaceShellRecord(value, "page");
   const parentType = shellString(row.parent_type, "page.parent_type");

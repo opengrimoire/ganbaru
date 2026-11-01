@@ -18,6 +18,34 @@ export function parseNullableNotesIcon(value: unknown, label: string): NotesCall
   return parseNotesIcon(value, label);
 }
 
+/** Run a strict parser, turning a refusal into null with a console diagnostic. */
+function readTolerantly<T>(
+  parse: (value: unknown, label: string) => T | null,
+  value: unknown,
+  label: string,
+): T | null {
+  try {
+    return parse(value, label);
+  } catch (error) {
+    console.warn(`Ignoring unusable synced ${label}`, error);
+    return null;
+  }
+}
+
+/**
+ * Reads a synced icon, returning null with a console diagnostic when it is unusable,
+ * so one row cannot fail a workspace, search, or history read. The null is display only:
+ * the stored value stays until someone sets a new icon. Input being written keeps
+ * {@link parseNullableNotesIcon}.
+ *
+ * @param value Stored icon value from a row read.
+ * @param label Field name reported in the diagnostic.
+ * @returns The validated icon, or null when none is stored or it is unusable.
+ */
+export function readTolerantNotesIcon(value: unknown, label: string): NotesCalloutIcon {
+  return readTolerantly(parseNullableNotesIcon, value, label);
+}
+
 function parseNotesIcon(value: unknown, label: string): NotesPageIcon {
   const record = readRecord(value, label);
   const type = readString(record.type, `${label}.type`);
@@ -272,6 +300,17 @@ export function parseNullablePageCover(value: unknown, label: string): NotesPage
     return value;
   };
   return { ...cover, focal_point: { x: coordinate(focal.x), y: coordinate(focal.y) } };
+}
+
+/**
+ * Reads a synced cover under the same contract as {@link readTolerantNotesIcon}.
+ *
+ * @param value Stored cover value from a row read.
+ * @param label Field name reported in the diagnostic.
+ * @returns The validated cover, or null when none is stored or it is unusable.
+ */
+export function readTolerantNotesCover(value: unknown, label: string): NotesPageCover | null {
+  return readTolerantly(parseNullablePageCover, value, label);
 }
 
 function parsePageCoverFileObject(value: unknown, label: string): Exclude<NotesPageCover, { type: "design" }> {

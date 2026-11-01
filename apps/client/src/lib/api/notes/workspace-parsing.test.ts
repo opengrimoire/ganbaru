@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mapNavigationDatabase, mapPageSummary } from "./workspace-parsing";
 
 function pageSummary(icon: string | null): Record<string, unknown> {
@@ -38,9 +38,10 @@ describe("Notes workspace parsing", () => {
     expect(pages[0]?.icon).toBeNull();
     expect(pages[1]?.icon).toEqual({ type: "emoji", emoji: "📌" });
   });
-  it("reports stored icon JSON failures with field context", () => {
-    expect(() => mapPageSummary(pageSummary("{{"))).toThrow(
-      'page.icon for page "page-1" must contain valid JSON',
-    );
+  it("maps stored icon text that is not JSON to no icon, reporting the page", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(mapPageSummary(pageSummary("{{")).icon).toBeNull();
+    expect(warn).toHaveBeenCalledWith('Ignoring unusable synced page.icon for page "page-1"', expect.any(SyntaxError));
+    warn.mockRestore();
   });
 });

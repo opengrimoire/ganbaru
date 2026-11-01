@@ -1,7 +1,7 @@
 import type { NotesChildDatabaseBlockPayload, NotesCreatedDatabase } from "../../contracts/core";
 import { NOTES_DATABASE_VIEW_TYPES } from "$lib/notes/contracts/database";
 import type { NotesDataSource, NotesDataSourceListItem, NotesDataSourceSchema, NotesDataSourceTemplate, NotesDatabase, NotesDatabaseDataSourceSummary, NotesDatabaseView, NotesDatabaseViewType } from "$lib/notes/contracts/database";
-import { parseNullableNotesIcon, parseNullablePageCover } from ".././assets";
+import { readTolerantNotesCover, readTolerantNotesIcon } from ".././assets";
 import { parseNotesBlock, parseNotesParent } from ".././blocks";
 import { containsControlCharacters, readBoolean, readDisplayString, readInteger, readNotesDatabaseViewType, readNullableRecord, readNullableString, readOptionalUuidString, readRecord, readRecordArray, readString, readStringArray } from ".././readers";
 import type { UnknownRecord } from ".././readers";
@@ -57,8 +57,8 @@ export function parseNotesDatabase(value: unknown): NotesDatabase {
     title: readString(record.title, "database.title"),
     title_rich_text: parseNotesRichTextArray(record.title_rich_text, "database.title_rich_text"),
     description: parseNotesRichTextArray(record.description, "database.description"),
-    icon: parseNullableNotesIcon(record.icon, "database.icon"),
-    cover: parseNullablePageCover(record.cover, "database.cover"),
+    icon: readTolerantNotesIcon(record.icon, "database.icon"),
+    cover: readTolerantNotesCover(record.cover, "database.cover"),
     in_trash: readBoolean(record.in_trash, "database.in_trash"),
     is_inline: readBoolean(record.is_inline, "database.is_inline"),
     data_sources: parseNotesDatabaseDataSources(record.data_sources, "database.data_sources"),
@@ -102,7 +102,7 @@ export function parseNotesDataSource(value: unknown): NotesDataSource {
       "data source.title_rich_text",
     ),
     description: parseNotesRichTextArray(record.description, "data source.description"),
-    icon: parseNullableNotesIcon(record.icon, "data source.icon"),
+    icon: readTolerantNotesIcon(record.icon, "data source.icon"),
     properties: readRecord(record.properties, "data source.properties"),
     in_trash: readBoolean(record.in_trash, "data source.in_trash"),
     source_provider: readNullableString(record.source_provider, "data source.source_provider"),

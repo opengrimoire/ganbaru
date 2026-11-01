@@ -31,7 +31,7 @@ Banners follow the page container width, including previews and tablet layouts. 
 
 ## Persistence and transfer
 
-Designed covers store a validated design identifier and palette choice; image covers store a managed asset reference and an optional normalized focal point. No user-supplied CSS or SVG is stored. Frontend and Rust boundaries validate design identifiers, palette bounds, finite focal coordinates, and asset references. Duplication, templates, history, and graph export preserve cover descriptors, while rendering always uses the viewer's current theme.
+Designed covers store a validated design identifier and palette choice; image covers store a managed asset reference and an optional normalized focal point. No user-supplied CSS or SVG is stored. Frontend and Rust boundaries validate design identifiers, palette bounds, finite focal coordinates, and asset references. A replicated page, template, database, or history row whose icon or cover the frontend refuses displays without it, so one row cannot fail a workspace, search, or history read; the stored value stays until someone chooses a new one. Duplication, templates, history, and graph export preserve cover descriptors, while rendering always uses the viewer's current theme.
 
 External image URL covers are disabled on every platform by the `notes.external-image-references` capability, so the picker offers no URL tab. Imported external cover variants remain part of the import contract.
 

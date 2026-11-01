@@ -1,11 +1,30 @@
 //! Positive guard for process closes on Linux: the processes that hold up the running graphical
 //! session are computed from that session instead of from names.
 
+use super::processes::{current_real_uid, linux_process_parent_id, linux_process_real_uid};
 use super::*;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
-/// Processes the running session depends on.
+const SESSION_ANCHOR_TTL: Duration = Duration::from_secs(30);
+const PROC_ROOT: &str = "/proc";
+const X11_SOCKET_DIR: &str = "/tmp/.X11-unix";
+/// Prefix `/proc/net/unix` gives abstract socket names.
+const ABSTRACT_SOCKET_PREFIX: &str = "@";
+/// `__SO_ACCEPTCON` in the `/proc/net/unix` flags column: the socket listens.
+const UNIX_SOCKET_LISTENING: u32 = 0x0001_0000;
+/// systemd slice that holds a session's services, as opposed to `app.slice` applications.
+const SESSION_SLICE_SEGMENT: &str = "/session.slice/";
+
+static CURRENT_ANCHORS: Mutex<Option<Arc<SessionAnchors>>> = Mutex::new(None);
+
+/// Processes the running session depends on: display and session bus listeners, their ancestors,
+/// the ancestors of Ganbaru, and session slice services.
+///
+/// Session leaders are not anchors, because launchers call `setsid` for ordinary applications.
 pub(super) struct SessionAnchors {
     protected_pids: HashSet<u32>,
+    collected_at: Instant,
 }
 
 /// Session environment values that name the display and session bus sockets.
@@ -17,22 +36,180 @@ pub(super) struct SessionVariables {
     pub(super) dbus_session_bus_address: Option<String>,
 }
 
+impl SessionVariables {
+    fn from_environment() -> Self {
+        let read = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+        Self {
+            wayland_display: read("WAYLAND_DISPLAY"),
+            xdg_runtime_dir: read("XDG_RUNTIME_DIR"),
+            display: read("DISPLAY"),
+            dbus_session_bus_address: read("DBUS_SESSION_BUS_ADDRESS"),
+        }
+    }
+}
+
 /// Socket paths as `/proc/net/unix` prints them, with `@` marking abstract sockets.
-pub(super) fn session_socket_paths(_variables: &SessionVariables) -> Vec<String> {
-    Vec::new()
+pub(super) fn session_socket_paths(variables: &SessionVariables) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(display) = &variables.wayland_display {
+        let display = Path::new(display);
+        if display.is_absolute() {
+            paths.push(display.to_string_lossy().into_owned());
+        } else if let Some(runtime_dir) = &variables.xdg_runtime_dir {
+            paths.push(
+                Path::new(runtime_dir)
+                    .join(display)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    if let Some(number) = variables.display.as_deref().and_then(x11_display_number) {
+        let path = format!("{X11_SOCKET_DIR}/X{number}");
+        let abstract_path = format!("{ABSTRACT_SOCKET_PREFIX}{path}");
+        paths.extend([path, abstract_path]);
+    }
+    if let Some(address) = &variables.dbus_session_bus_address {
+        paths.extend(address.split(';').filter_map(dbus_socket_path));
+    }
+    paths
+}
+
+/// Display number of a local `DISPLAY` value. A value with a host name goes over TCP and has no
+/// local socket.
+fn x11_display_number(display: &str) -> Option<&str> {
+    let (host, display) = display.rsplit_once(':')?;
+    if !matches!(host, "" | "unix") {
+        return None;
+    }
+    let number = display.split('.').next()?;
+    (!number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())).then_some(number)
+}
+
+/// Socket path of one D-Bus server address, such as `unix:path=/run/user/1000/bus,guid=abc`.
+fn dbus_socket_path(address: &str) -> Option<String> {
+    address
+        .strip_prefix("unix:")?
+        .split(',')
+        .find_map(|key_value| {
+            if let Some(path) = key_value.strip_prefix("path=") {
+                return Some(path.to_string());
+            }
+            key_value
+                .strip_prefix("abstract=")
+                .map(|name| format!("{ABSTRACT_SOCKET_PREFIX}{name}"))
+        })
+}
+
+/// Inodes of the sockets in a `/proc/net/unix` table that listen at one of `socket_paths`.
+fn listening_socket_inodes(table: &str, socket_paths: &[String]) -> HashSet<u64> {
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let flags = u32::from_str_radix(fields.nth(3)?, 16).ok()?;
+            let inode = fields.nth(2)?.parse().ok()?;
+            let path = fields.collect::<Vec<_>>().join(" ");
+            (flags & UNIX_SOCKET_LISTENING != 0 && socket_paths.contains(&path)).then_some(inode)
+        })
+        .collect()
+}
+
+fn socket_inode(descriptor_target: &Path) -> Option<u64> {
+    descriptor_target
+        .to_str()?
+        .strip_prefix("socket:[")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
+}
+
+fn holds_socket(process: &Path, inodes: &HashSet<u64>) -> bool {
+    let Ok(descriptors) = std::fs::read_dir(process.join("fd")) else {
+        return false;
+    };
+    descriptors.flatten().any(|descriptor| {
+        std::fs::read_link(descriptor.path())
+            .ok()
+            .and_then(|target| socket_inode(&target))
+            .is_some_and(|inode| inodes.contains(&inode))
+    })
+}
+
+fn runs_in_session_slice(process: &Path) -> bool {
+    std::fs::read_to_string(process.join("cgroup"))
+        .is_ok_and(|cgroup| cgroup.contains(SESSION_SLICE_SEGMENT))
+}
+
+/// Adds `process_id` and its ancestors below PID 1. Reaching a process already in `visited`
+/// means its ancestors are in too, which also ends a parent cycle.
+fn add_with_ancestors(proc_root: &Path, process_id: u32, visited: &mut HashSet<u32>) {
+    let mut current = process_id;
+    while current > 1 && visited.insert(current) {
+        let Some(parent) = linux_process_parent_id(&proc_root.join(current.to_string())) else {
+            break;
+        };
+        current = parent;
+    }
 }
 
 impl SessionAnchors {
+    /// Returns `None` when no display socket or session bus can be resolved, which keeps the name
+    /// list alone on minimal sessions, or when `is_cancelled` turns true.
+    fn collect(is_cancelled: impl Fn() -> bool) -> Option<Self> {
+        Self::collect_from(
+            Path::new(PROC_ROOT),
+            &session_socket_paths(&SessionVariables::from_environment()),
+            current_real_uid()?,
+            std::process::id(),
+            is_cancelled,
+        )
+    }
+
     /// Computes the anchors below `proc_root`, or returns `None` when no listening session socket
     /// is found or `is_cancelled` turns true.
     pub(super) fn collect_from(
-        _proc_root: &Path,
-        _socket_paths: &[String],
-        _real_uid: u32,
-        _own_process_id: u32,
-        _is_cancelled: impl Fn() -> bool,
+        proc_root: &Path,
+        socket_paths: &[String],
+        real_uid: u32,
+        own_process_id: u32,
+        is_cancelled: impl Fn() -> bool,
     ) -> Option<Self> {
-        None
+        let table = std::fs::read_to_string(proc_root.join("net/unix")).ok()?;
+        let listening = listening_socket_inodes(&table, socket_paths);
+        if listening.is_empty() {
+            return None;
+        }
+        let mut listeners = Vec::new();
+        let mut session_services = Vec::new();
+        for entry in std::fs::read_dir(proc_root).ok()?.flatten() {
+            if is_cancelled() {
+                return None;
+            }
+            let Some(process_id) = entry.file_name().to_str().and_then(|id| id.parse().ok()) else {
+                continue;
+            };
+            let process = entry.path();
+            if linux_process_real_uid(&process) != Some(real_uid) {
+                continue;
+            }
+            if holds_socket(&process, &listening) {
+                listeners.push(process_id);
+            }
+            if runs_in_session_slice(&process) {
+                session_services.push(process_id);
+            }
+        }
+        let mut protected_pids = HashSet::new();
+        for process_id in listeners.into_iter().chain([own_process_id]) {
+            add_with_ancestors(proc_root, process_id, &mut protected_pids);
+        }
+        protected_pids.extend(session_services);
+        Some(Self {
+            protected_pids,
+            collected_at: Instant::now(),
+        })
     }
 
     pub(super) fn protects(&self, process_id: u32) -> bool {
@@ -40,18 +217,42 @@ impl SessionAnchors {
     }
 }
 
+/// Returns the anchors collected within the TTL, collecting them when none are. Callers invoke
+/// this only once a rule found a candidate, so an idle observation pays nothing.
+pub(super) fn current_session_anchors(
+    is_cancelled: impl Fn() -> bool,
+) -> Option<Arc<SessionAnchors>> {
+    let mut current = CURRENT_ANCHORS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(anchors) = current
+        .as_ref()
+        .filter(|anchors| anchors.collected_at.elapsed() < SESSION_ANCHOR_TTL)
+    {
+        return Some(anchors.clone());
+    }
+    *current = SessionAnchors::collect(is_cancelled).map(Arc::new);
+    current.clone()
+}
+
 /// Removes matches on anchored processes. With no anchors the name list stands alone.
 pub(super) fn drop_anchored_matches(
-    _matches: &mut Vec<DistractionsRunningDesktopAppMatch>,
-    _anchors: Option<&SessionAnchors>,
+    matches: &mut Vec<DistractionsRunningDesktopAppMatch>,
+    anchors: Option<&SessionAnchors>,
 ) {
+    if let Some(anchors) = anchors {
+        matches.retain(|found| !anchors.protects(found.process_id));
+    }
 }
 
 /// Refuses a close of an anchored process. With no anchors the name list stands alone.
 pub(super) fn refuse_anchored_close(
-    _process_id: u32,
-    _anchors: Option<&SessionAnchors>,
+    process_id: u32,
+    anchors: Option<&SessionAnchors>,
 ) -> Result<(), String> {
+    if anchors.is_some_and(|anchors| anchors.protects(process_id)) {
+        return Err("refusing to close protected process".to_string());
+    }
     Ok(())
 }
 
@@ -171,8 +372,7 @@ mod tests {
     fn session_anchors_protect_listener_and_ancestors() {
         let fixture = session_fixture("listener");
         let anchors = fixture.collect(400);
-        let protects =
-            |process_id| anchors.as_ref().is_some_and(|set| set.protects(process_id));
+        let protects = |process_id| anchors.as_ref().is_some_and(|set| set.protects(process_id));
 
         assert!(protects(200), "the display socket listener");
         assert!(protects(100), "the listener's ancestor");
@@ -206,8 +406,7 @@ mod tests {
     #[test]
     fn missing_display_sockets_fall_back_to_name_list() {
         let fixture = session_fixture("fallback");
-        let no_socket =
-            SessionAnchors::collect_from(&fixture.root, &[], USER, 400, || false);
+        let no_socket = SessionAnchors::collect_from(&fixture.root, &[], USER, 400, || false);
         assert!(no_socket.is_none());
 
         fixture.unix_sockets(&[(LISTENING, 9003, "/run/user/1000/other")]);

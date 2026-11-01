@@ -19,6 +19,7 @@ use ganbaru_sync_contracts::bounds::{
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId, derived_key};
 
 use crate::assets::{AssetClass, LocalAssetColumn, local_asset_problems};
+use crate::domains::themes::is_theme_id;
 
 pub mod order;
 pub mod summary;
@@ -749,7 +750,7 @@ pub struct TableSpec {
     /// `ON DELETE CASCADE` inherit the hold, see [`Manifest::may_hold_deletes`]. Device
     /// behavior, so it is not in the summary.
     pub holds_deletes: bool,
-    /// What the domain table's key CHECK accepts beyond the [`RowKey`] rules.
+    /// What the table accepts as a key beyond the [`RowKey`] rules.
     ///
     /// [`RowKey`]: ganbaru_sync_contracts::RowKey
     pub key_rule: RowKeyRule,
@@ -797,9 +798,9 @@ impl RowOwner {
     }
 }
 
-/// A rule on the row keys of a table, mirroring the key CHECK of its domain table. Every change
-/// carries the key, whatever its action, so a key the schema refuses never spreads. Lengths count
-/// characters, as `length()` does in SQLite.
+/// A rule on the row keys of a table, mirroring the key CHECK of its domain table or a stricter
+/// rule of the table's insert value guard. Every change carries the key, whatever its action, so
+/// a key the schema refuses never spreads. Lengths count characters, as `length()` does in SQLite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKeyRule {
     /// Every valid [`RowKey`](ganbaru_sync_contracts::RowKey).
@@ -810,8 +811,9 @@ pub enum RowKeyRule {
     ExactChars(usize),
     /// Keys of at most this many characters.
     MaxChars(usize),
-    /// Every key except these reserved ones.
-    Excluding(&'static [&'static str]),
+    /// A theme id, see [`is_theme_id`]. The insert value guard states the rule, because the
+    /// table's CHECK only refuses the built-in themes.
+    ThemeSlug,
 }
 
 impl RowKeyRule {
@@ -822,7 +824,7 @@ impl RowKeyRule {
             Self::Fixed(fixed) => key == fixed,
             Self::ExactChars(chars) => key.chars().count() == chars,
             Self::MaxChars(chars) => key.chars().count() <= chars,
-            Self::Excluding(reserved) => !reserved.contains(&key),
+            Self::ThemeSlug => is_theme_id(key),
         }
     }
 }

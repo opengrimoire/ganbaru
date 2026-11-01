@@ -35,9 +35,11 @@ use ganbaru_sync_contracts::bounds::{
     MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
 };
 
+use crate::domains::themes::MAX_THEME_ID_CHARS;
+use crate::manifest::vault::themes::BUILT_IN_THEMES;
 use crate::manifest::{
     ColumnSpec, ColumnType, GroupSpec, MAX_TIMESTAMP_BYTES, Manifest, MergeKind, OwnedCodec,
-    OwnedOrder, OwnedTable, TableSpec,
+    OwnedOrder, OwnedTable, RowKeyRule, TableSpec,
 };
 use crate::publication;
 
@@ -165,6 +167,24 @@ pub(crate) fn row_key_rule(expr: &str) -> String {
     )
 }
 
+impl RowKeyRule {
+    /// SQL that is 1 exactly when the row key `expr` satisfies a rule the domain table's CHECK
+    /// does not state, for the insert value guard. `None` for a rule the CHECK states itself.
+    pub(crate) fn insert_sql(self, expr: &str) -> Option<String> {
+        match self {
+            Self::Any | Self::Fixed(_) | Self::ExactChars(_) | Self::MaxChars(_) => None,
+            Self::ThemeSlug => {
+                let reserved = BUILT_IN_THEMES.map(|id| format!("'{id}'")).join(", ");
+                Some(format!(
+                    "{} <= {MAX_THEME_ID_CHARS} AND {expr} GLOB '[a-z0-9]*' \
+                     AND {expr} NOT GLOB '*[^a-z0-9-]*' AND {expr} NOT IN ({reserved})",
+                    byte_length(expr)
+                ))
+            }
+        }
+    }
+}
+
 fn timestamp_rule(expr: &str) -> String {
     format!(
         "{} AND trim({expr}) <> '' AND {} <= {MAX_TIMESTAMP_BYTES}",
@@ -240,7 +260,14 @@ fn group_columns(table: &TableSpec) -> impl Iterator<Item = &'static ColumnSpec>
 
 /// Rejects writes whose key or group values break the manifest value rules.
 fn value_guard(table: &TableSpec, event: Event) -> TriggerSql {
-    let key = (event == Event::Insert).then(|| row_key_rule(&format!("NEW.{}", table.key_column)));
+    let key = (event == Event::Insert).then(|| {
+        let expr = format!("NEW.{}", table.key_column);
+        let generic = row_key_rule(&expr);
+        match table.key_rule.insert_sql(&expr) {
+            Some(clause) => format!("{generic} AND {clause}"),
+            None => generic,
+        }
+    });
     column_guard(table.name, key, group_columns(table), event)
 }
 

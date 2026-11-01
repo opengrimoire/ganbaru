@@ -203,7 +203,7 @@ fn row_key_rule(rule: RowKeyRule) -> String {
         RowKeyRule::Fixed(key) => format!("fixed({key})"),
         RowKeyRule::ExactChars(chars) => format!("exact_chars({chars})"),
         RowKeyRule::MaxChars(chars) => format!("max_chars({chars})"),
-        RowKeyRule::Excluding(keys) => format!("excluding({})", keys.join(",")),
+        RowKeyRule::ThemeSlug => "theme_slug".to_string(),
     }
 }
 

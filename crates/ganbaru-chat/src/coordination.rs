@@ -1,5 +1,6 @@
 //! Durable organizational workflow services.
 
+pub mod acceptance;
 pub mod access;
 pub mod access_profiles;
 pub mod contracts;

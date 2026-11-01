@@ -846,6 +846,9 @@ pub struct ChatWorkAssignmentRead {
     pub settled_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
     pub updated_at: UtcTimestamp,
+    /// Whether this work waits for a local action to start on the reading device. Computed on
+    /// read and never persisted.
+    pub local_acceptance_required: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

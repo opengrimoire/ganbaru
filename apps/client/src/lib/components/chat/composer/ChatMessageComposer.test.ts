@@ -60,6 +60,7 @@ function workingReplyThread(): ChatReplyThreadPageRead {
       settledAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      localAcceptanceRequired: false,
     },
     agentRuns: [],
     previousCursor: null,

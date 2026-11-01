@@ -639,6 +639,8 @@ export interface ChatWorkAssignmentRead {
   settledAt: UtcTimestamp | null;
   createdAt: UtcTimestamp;
   updatedAt: UtcTimestamp;
+  /** Whether this work waits for a local action to start on the reading device. */
+  localAcceptanceRequired: boolean;
 }
 
 export interface ChatAgentRunRead {

@@ -423,6 +423,15 @@ export async function retryChatAssignment(
   }));
 }
 
+/** Starts synced work that waits for a local action on this device. */
+export async function acceptChatAssignmentHere(
+  assignmentId: ChatWorkAssignmentId,
+): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead> {
+  return parseChatWorkAssignment(await invoke<unknown>("chat_accept_assignment_here", {
+    dbUrl: await ensureDbUrl(), assignmentId,
+  }));
+}
+
 export async function recoverChatAssignmentDispatchJobs(): Promise<number> {
   return invoke<number>("chat_recover_assignment_dispatch_jobs", { dbUrl: await ensureDbUrl() });
 }

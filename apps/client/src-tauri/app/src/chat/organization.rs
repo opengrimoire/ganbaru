@@ -287,6 +287,8 @@ pub(super) async fn post_message(
     let dispatch_app = app.clone();
     #[cfg(desktop)]
     let dispatch_db_url = db_url.clone();
+    #[cfg(desktop)]
+    let posted_by_user = scheduled.is_none();
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     let writers = chat_writers(&app, &pool).await?;
@@ -304,6 +306,10 @@ pub(super) async fn post_message(
         .clone()
         .filter(|_| posted.assignment_write.executes_here)
     {
+        // A scheduled send carries a stored request a peer can edit, so it is not a local gesture.
+        if posted_by_user {
+            assignments::record_gesture_acceptance(&app, &pool, &assignment_id).await;
+        }
         if posted.assignment_write.input_queued {
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {
@@ -741,14 +747,17 @@ pub async fn chat_read_reply_thread_page(
     cursor: Option<String>,
     limit: Option<u32>,
 ) -> ChatResult<ChatReplyThreadPageRead> {
-    let pool = chat_pool(app, db_url).await?;
-    read_reply_thread_page(
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let page = read_reply_thread_page(
         &pool,
         &reply_thread_id,
         parse_cursor(cursor.as_deref())?,
         limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE),
     )
-    .await
+    .await?;
+    #[cfg(desktop)]
+    let page = assignments::mark_local_acceptance(&app, &pool, page).await?;
+    Ok(page)
 }
 
 #[tauri::command]
@@ -879,6 +888,17 @@ pub async fn chat_retry_assignment(
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     assignments::retry_assignment(app, db_url, assignment_id, expected_revision).await
+}
+
+/// Starts synced work that waits for a local action on this device and records the acceptance.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_accept_assignment_here(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    assignments::accept_assignment_here(app, db_url, assignment_id).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

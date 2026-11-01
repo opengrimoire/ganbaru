@@ -1,7 +1,7 @@
 //! Work assignment cancellation, retry, and dispatch recovery.
 
 use super::common::{chat_writers, new_id, this_device_id, wire_work_state};
-use super::context::freeze_context_package;
+use super::context::{GrantedAccess, freeze_context_package, read_granted_access};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
@@ -9,7 +9,13 @@ use super::workflow::{
     read_assignment_executing_device, require_participating_teammate, set_assignment_state,
 };
 use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error};
+use crate::chat::device_state::{
+    ChatDeviceScope, assignment_is_accepted, read_active_device_scope,
+    record_assignment_acceptance, update_active_device_scope,
+};
+use crate::chat::settings::device_state_error;
 use crate::chat::sync::SyncedAssignmentWork;
+use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
@@ -21,9 +27,10 @@ pub(super) async fn recover_assignment_dispatch_jobs(
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let writers = chat_writers(&app, &pool).await?;
     let device = PostingDevice::this_device(&device_id, &writers);
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
     let now = now_timestamp()?;
-    take_over_stranded_assignments(&pool, device, &now).await?;
-    recover_stranded_follow_up_assignments(&pool, device, &now).await?;
+    take_over_stranded_assignments(&pool, device, &scope, &now).await?;
+    recover_stranded_follow_up_assignments(&pool, device, &scope, &now).await?;
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = 'queued', claimed_at = NULL, claim_token = NULL, updated_at = ?
@@ -100,10 +107,12 @@ fn stranded_executor(executing_device_id: Option<&str>, device: PostingDevice<'_
 /// Takes over the active assignments whose executing device can no longer write Chat, as after
 /// an unlink or a revoked writer, when `device` can run new work. Unstarted work moves to a
 /// successor this device runs; started work fails with a reason, since its provider session
-/// lives on the old device, and Retry or Start runs it again here.
+/// lives on the old device, and Retry or Start runs it again here. Unstarted work `scope` did
+/// not accept stays where it is until the user starts it here.
 pub(super) async fn take_over_stranded_assignments(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
     now: &UtcTimestamp,
 ) -> ChatResult<u32> {
     if !device.runs_new_work() {
@@ -139,7 +148,9 @@ pub(super) async fn take_over_stranded_assignments(
             )
             .map_err(identifier_error)?;
             let unstarted: bool = row.try_get("unstarted").map_err(persistence_error)?;
-            if take_over_stranded_assignment(pool, &assignment_id, unstarted, device, now).await? {
+            if take_over_stranded_assignment(pool, &assignment_id, unstarted, device, scope, now)
+                .await?
+            {
                 taken_over = taken_over.saturating_add(1);
             }
             after_id = assignment_id.as_str().to_owned();
@@ -155,16 +166,22 @@ pub(super) async fn take_over_stranded_assignments(
 const TAKEOVER_BATCH_SIZE: u16 = 32;
 
 /// Takes over the stranded assignment `assignment_id`, moving unstarted work to a successor
-/// `device` runs and failing started work, reporting whether it changed.
+/// `device` runs and failing started work, reporting whether it changed. Unstarted work `scope`
+/// did not accept stays unchanged.
 async fn take_over_stranded_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     unstarted: bool,
     device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
     now: &UtcTimestamp,
 ) -> ChatResult<bool> {
     let assignment = read_assignment(pool, assignment_id).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if unstarted && !assignment_subject_is_accepted(&mut transaction, assignment_id, scope).await? {
+        transaction.rollback().await.map_err(persistence_error)?;
+        return Ok(false);
+    }
     let moved = if unstarted {
         reroute_assignment(&mut transaction, &assignment, device, now)
             .await?
@@ -308,18 +325,18 @@ async fn move_pending_inputs(
     Ok(())
 }
 
-/// Moves the pending inputs that reached an assignment after it asked for review onto a new
-/// follow-up assignment, for the assignments `device` executes, ran without an executing
-/// device, or takes over from an executing device that can no longer write Chat. The inputs
-/// keep their ids, which derive from their messages, so a device that routed them concurrently
-/// merges into the same rows.
-pub(super) async fn recover_stranded_follow_up_assignments(
+/// Reads, past `after_id` and up to `limit`, the assignments with pending replies that arrived
+/// after they asked for review, which `device` executes, ran without an executing device, or
+/// takes over from an executing device that can no longer write Chat. `only` narrows the read
+/// to one assignment.
+async fn stranded_follow_up_ids(
     pool: &SqlitePool,
     device: PostingDevice<'_>,
-    now: &UtcTimestamp,
-) -> ChatResult<u32> {
-    let device_id = device.id;
-    let assignment_ids = sqlx::query_scalar::<_, String>(
+    only: Option<&ChatWorkAssignmentId>,
+    after_id: &str,
+    limit: u16,
+) -> ChatResult<Vec<String>> {
+    sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT assignment.id
          FROM chat_work_assignments assignment
          JOIN chat_work_assignment_inputs input ON input.assignment_id = assignment.id
@@ -333,73 +350,126 @@ pub(super) async fn recover_stranded_follow_up_assignments(
            )))
            AND input.routing_kind IN ('steer', 'queued_continuation')
            AND input.delivery_state = 'pending'
-         ORDER BY assignment.updated_at, assignment.id LIMIT 32",
+           AND (?4 IS NULL OR assignment.id = ?4)
+           AND assignment.id > ?5
+         ORDER BY assignment.id LIMIT ?6",
     )
-    .bind(device_id)
+    .bind(device.id)
     .bind(device.chat_writers.json()?)
     .bind(device.runs_new_work())
+    .bind(only.map(ChatWorkAssignmentId::as_str))
+    .bind(after_id)
+    .bind(i64::from(limit))
     .fetch_all(pool)
     .await
-    .map_err(persistence_error)?;
+    .map_err(persistence_error)
+}
+
+/// Moves the pending inputs that reached an assignment after it asked for review onto a new
+/// follow-up assignment, for the assignments `device` executes, ran without an executing
+/// device, or takes over from an executing device that can no longer write Chat. The inputs
+/// keep their ids, which derive from their messages, so a device that routed them concurrently
+/// merges into the same rows. Only work whose current subject `scope` accepted continues; the
+/// replies of other work stay pending until the user starts it here.
+pub(super) async fn recover_stranded_follow_up_assignments(
+    pool: &SqlitePool,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+    now: &UtcTimestamp,
+) -> ChatResult<u32> {
+    let mut after_id = String::new();
     let mut recovered = 0_u32;
-    for assignment_id in assignment_ids {
-        let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
-        let previous = read_assignment(pool, &assignment_id).await?;
-        let reply_thread_id = previous.reply_thread_id.clone();
-        let mut transaction = pool.begin().await.map_err(persistence_error)?;
-        let stranded = sqlx::query(
-            "SELECT input.id, input.message_item_id
-             FROM chat_work_assignment_inputs input
-             JOIN chat_work_assignments assignment ON assignment.id = input.assignment_id
-             WHERE input.assignment_id = ? AND assignment.state = 'ready_for_review'
-               AND input.routing_kind IN ('steer', 'queued_continuation')
-               AND input.delivery_state = 'pending'
-             ORDER BY input.ordinal",
-        )
-        .bind(assignment_id.as_str())
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        let Some(first) = stranded.first() else {
-            transaction.rollback().await.map_err(persistence_error)?;
-            continue;
-        };
-        let first_message_id = ChatConversationItemId::new(
-            first
-                .try_get::<String, _>("message_item_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?;
-        let teammate_id = previous.teammate.id.clone();
-        let recovered_assignment_id = create_assignment(
-            &mut transaction,
-            NewAssignment {
-                reply_thread_id: &reply_thread_id,
-                message_item_id: &first_message_id,
-                teammate_id: &teammate_id,
-                latest_assignment: Some(&previous),
-                executing_device_id: device_id,
-                execution_target: None,
-            },
-            device,
-            now,
-        )
-        .await?;
-        let following_input_ids = stranded
-            .iter()
-            .skip(1)
-            .map(|input| input.try_get::<String, _>("id").map_err(persistence_error))
-            .collect::<ChatResult<Vec<_>>>()?;
-        move_pending_inputs(
-            &mut transaction,
-            &following_input_ids,
-            &recovered_assignment_id,
-        )
-        .await?;
-        transaction.commit().await.map_err(persistence_error)?;
-        recovered = recovered.saturating_add(1);
+    loop {
+        let assignment_ids =
+            stranded_follow_up_ids(pool, device, None, &after_id, TAKEOVER_BATCH_SIZE).await?;
+        let batch_len = assignment_ids.len();
+        for assignment_id in assignment_ids {
+            let assignment_id =
+                ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
+            if recover_follow_up(pool, &assignment_id, device, scope, now)
+                .await?
+                .is_some()
+            {
+                recovered = recovered.saturating_add(1);
+            }
+            after_id = assignment_id.as_str().to_owned();
+        }
+        // Unaccepted rows stay in place, so the bound counts recoveries and not rows read.
+        if batch_len < usize::from(TAKEOVER_BATCH_SIZE)
+            || recovered >= u32::from(TAKEOVER_BATCH_SIZE)
+        {
+            return Ok(recovered);
+        }
     }
-    Ok(recovered)
+}
+
+/// Moves the pending inputs of `assignment_id` onto a follow-up assignment `device` runs, when
+/// `scope` accepted the current subject, and returns the follow-up.
+async fn recover_follow_up(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+    now: &UtcTimestamp,
+) -> ChatResult<Option<ChatWorkAssignmentId>> {
+    let previous = read_assignment(pool, assignment_id).await?;
+    let reply_thread_id = previous.reply_thread_id.clone();
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if !assignment_subject_is_accepted(&mut transaction, assignment_id, scope).await? {
+        transaction.rollback().await.map_err(persistence_error)?;
+        return Ok(None);
+    }
+    let stranded = sqlx::query(
+        "SELECT input.id, input.message_item_id
+         FROM chat_work_assignment_inputs input
+         JOIN chat_work_assignments assignment ON assignment.id = input.assignment_id
+         WHERE input.assignment_id = ? AND assignment.state = 'ready_for_review'
+           AND input.routing_kind IN ('steer', 'queued_continuation')
+           AND input.delivery_state = 'pending'
+         ORDER BY input.ordinal",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    let Some(first) = stranded.first() else {
+        transaction.rollback().await.map_err(persistence_error)?;
+        return Ok(None);
+    };
+    let first_message_id = ChatConversationItemId::new(
+        first
+            .try_get::<String, _>("message_item_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let teammate_id = previous.teammate.id.clone();
+    let recovered_assignment_id = create_assignment(
+        &mut transaction,
+        NewAssignment {
+            reply_thread_id: &reply_thread_id,
+            message_item_id: &first_message_id,
+            teammate_id: &teammate_id,
+            latest_assignment: Some(&previous),
+            executing_device_id: device.id,
+            execution_target: None,
+        },
+        device,
+        now,
+    )
+    .await?;
+    let following_input_ids = stranded
+        .iter()
+        .skip(1)
+        .map(|input| input.try_get::<String, _>("id").map_err(persistence_error))
+        .collect::<ChatResult<Vec<_>>>()?;
+    move_pending_inputs(
+        &mut transaction,
+        &following_input_ids,
+        &recovered_assignment_id,
+    )
+    .await?;
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(Some(recovered_assignment_id))
 }
 
 pub(super) async fn cancel_assignment(
@@ -497,6 +567,10 @@ pub(super) async fn retry_assignment(
         &now,
     )
     .await?;
+    let executor = read_assignment_executing_device(&pool, retried_id.as_str()).await?;
+    if executor.as_deref() == Some(device_id.as_str()) {
+        record_gesture_acceptance(&app, &pool, &retried_id).await;
+    }
     let retried = read_assignment(&pool, &retried_id).await?;
     tauri::async_runtime::spawn(async move {
         let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, retried_id).await;
@@ -645,15 +719,346 @@ async fn queue_dispatch_here(
 }
 
 /// Reason a synced assignment records when its executing device cannot freeze its context.
-const ADOPTION_FAILED_REASON: &str = "The work could not start on its executing device";
+pub(super) const ADOPTION_FAILED_REASON: &str = "The work could not start on its executing device";
+
+/// What `assignment_id` would run on this device, read from current rows.
+struct AssignmentSubject {
+    teammate_id: ChatParticipantId,
+    instructions: String,
+    provider_instance_id: String,
+    access: GrantedAccess,
+}
+
+impl AssignmentSubject {
+    fn digest(&self) -> String {
+        acceptance_digest(&AcceptanceSubject {
+            teammate_id: self.teammate_id.as_str(),
+            policy_revision_id: self.access.policy_revision_id.as_str(),
+            instructions: &self.instructions,
+            provider_instance_id: &self.provider_instance_id,
+            grants: &self.access.grants,
+            scratch_runtime_approval: self.access.scratch_runtime_approval,
+        })
+    }
+}
+
+async fn read_assignment_subject(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<AssignmentSubject> {
+    let row = sqlx::query(
+        "SELECT assignment.teammate_id, assignment.triggering_message_item_id,
+                thread.conversation_id, teammate.instructions
+         FROM chat_work_assignments assignment
+         JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
+         JOIN chat_teammates teammate ON teammate.participant_id = assignment.teammate_id
+         WHERE assignment.id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?
+    .ok_or_else(|| {
+        ChatError::new(
+            ChatErrorCode::NotFound,
+            "Work assignment was not found",
+            true,
+        )
+    })?;
+    let teammate_id = ChatParticipantId::new(
+        row.try_get::<String, _>("teammate_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let conversation_id = ChatConversationId::new(
+        row.try_get::<String, _>("conversation_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let message_item_id = ChatConversationItemId::new(
+        row.try_get::<String, _>("triggering_message_item_id")
+            .map_err(persistence_error)?,
+    )
+    .map_err(identifier_error)?;
+    let access = read_granted_access(
+        transaction,
+        &conversation_id,
+        &message_item_id,
+        &teammate_id,
+    )
+    .await?;
+    let provider_instance_id: String = sqlx::query_scalar(
+        "SELECT provider_instance_id FROM chat_teammate_policy_revisions WHERE id = ?",
+    )
+    .bind(access.policy_revision_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(AssignmentSubject {
+        teammate_id,
+        instructions: row.try_get("instructions").map_err(persistence_error)?,
+        provider_instance_id,
+        access,
+    })
+}
+
+/// Whether the synced references of `assignment_id` hold together: its trigger belongs to its
+/// reply thread and its teammate still participates in the conversation.
+async fn assignment_references_hold(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_work_assignments assignment
+           JOIN chat_reply_threads thread ON thread.id = assignment.reply_thread_id
+           JOIN chat_conversation_items trigger_item
+             ON trigger_item.id = assignment.triggering_message_item_id
+            AND trigger_item.conversation_id = thread.conversation_id
+           JOIN chat_conversation_memberships membership
+             ON membership.conversation_id = thread.conversation_id
+            AND membership.participant_id = assignment.teammate_id
+            AND membership.removed_at IS NULL
+           JOIN chat_participants participant
+             ON participant.id = assignment.teammate_id AND participant.archived_at IS NULL
+           WHERE assignment.id = ?
+             AND (trigger_item.reply_thread_id = thread.id OR thread.root_item_id = trigger_item.id)
+         )",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)
+}
+
+/// The refusal of an assignment whose synced references do not hold together.
+fn broken_references_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Conflict,
+        "This work names a message or teammate outside its reply thread",
+        true,
+    )
+}
+
+/// Whether `scope` accepted what `assignment_id` would run. Work that cannot run here counts as
+/// not accepted, so one bad row does not stop a recovery pass.
+async fn assignment_subject_is_accepted(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    scope: &ChatDeviceScope,
+) -> ChatResult<bool> {
+    if !assignment_references_hold(transaction, assignment_id).await? {
+        return Ok(false);
+    }
+    match read_assignment_subject(transaction, assignment_id).await {
+        Ok(subject) => Ok(assignment_is_accepted(scope, &subject.digest())),
+        Err(error) if error.code == ChatErrorCode::Persistence => Err(error),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Hex acceptance digest of what `assignment_id` would run.
+pub(super) async fn assignment_acceptance_digest(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<String> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if !assignment_references_hold(&mut transaction, assignment_id).await? {
+        return Err(broken_references_error());
+    }
+    let digest = read_assignment_subject(&mut transaction, assignment_id)
+        .await?
+        .digest();
+    transaction.rollback().await.map_err(persistence_error)?;
+    Ok(digest)
+}
+
+/// Whether `assignment_id` waits for a local action to start on `device`: it is queued with no
+/// local dispatch, on `device` or on a device that can no longer write Chat, or it holds pending
+/// replies that recovery leaves in place because `scope` did not accept its current subject.
+pub(super) async fn assignment_awaits_local_acceptance(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+) -> ChatResult<bool> {
+    if !device.runs_new_work() {
+        return Ok(false);
+    }
+    let unstarted: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_work_assignments assignment
+           WHERE assignment.id = ?1 AND assignment.state = 'queued'
+             AND (assignment.executing_device_id = ?2 OR (
+               assignment.executing_device_id IS NOT NULL
+               AND assignment.executing_device_id NOT IN (SELECT value FROM json_each(?3))
+             ))
+             AND NOT EXISTS (
+               SELECT 1 FROM chat_assignment_dispatch_jobs job
+               WHERE job.assignment_id = assignment.id
+             )
+         )",
+    )
+    .bind(assignment_id.as_str())
+    .bind(device.id)
+    .bind(device.chat_writers.json()?)
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
+    if unstarted {
+        return Ok(true);
+    }
+    if stranded_follow_up_ids(pool, device, Some(assignment_id), "", 1)
+        .await?
+        .is_empty()
+    {
+        return Ok(false);
+    }
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let accepted = assignment_subject_is_accepted(&mut transaction, assignment_id, scope).await?;
+    transaction.rollback().await.map_err(persistence_error)?;
+    Ok(!accepted)
+}
+
+/// Marks the assignment of `page` when it waits for a local action to start on this device.
+pub(super) async fn mark_local_acceptance(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    mut page: ChatReplyThreadPageRead,
+) -> ChatResult<ChatReplyThreadPageRead> {
+    if let Some(assignment) = page.assignment.as_mut() {
+        let device_id = this_device_id(app)?;
+        let writers = chat_writers(app, pool).await?;
+        let scope = read_active_device_scope(app).map_err(device_state_error)?;
+        assignment.local_acceptance_required = assignment_awaits_local_acceptance(
+            pool,
+            &assignment.id,
+            PostingDevice::this_device(&device_id, &writers),
+            &scope,
+        )
+        .await?;
+    }
+    Ok(page)
+}
+
+/// Records on this device the acceptance of what `assignment_id` would run.
+async fn record_local_acceptance(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let digest = assignment_acceptance_digest(pool, assignment_id).await?;
+    update_active_device_scope(app, |scope| {
+        record_assignment_acceptance(scope, digest, now.clone());
+        Ok(())
+    })
+    .map_err(device_state_error)
+}
+
+/// Records the acceptance a local post, Start, or Retry gives to what `assignment_id` runs, so
+/// its replies replay after a restart until a synced change alters that subject. The gesture
+/// already queued its work, so a failure only makes those replies ask again.
+pub(super) async fn record_gesture_acceptance(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) {
+    let recorded = match now_timestamp() {
+        Ok(now) => record_local_acceptance(app, pool, assignment_id, &now).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = recorded {
+        eprintln!(
+            "Chat assignment {} was not recorded as accepted: {error}",
+            assignment_id.as_str()
+        );
+    }
+}
+
+/// Starts on this device the assignment `assignment_id` that waits for a local action, and
+/// records the acceptance so later work with the same subject runs without asking. Pending
+/// replies move to a follow-up this device runs, and work stranded on a device that can no
+/// longer write Chat moves to a successor this device runs.
+pub(super) async fn accept_assignment_here(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    let device_id = this_device_id(&app)?;
+    let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let writers = chat_writers(&app, &pool).await?;
+    let device = PostingDevice::this_device(&device_id, &writers);
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    if !assignment_awaits_local_acceptance(&pool, &assignment_id, device, &scope).await? {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "This work no longer waits to start on this device",
+            true,
+        ));
+    }
+    let now = now_timestamp()?;
+    record_local_acceptance(&app, &pool, &assignment_id, &now).await?;
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let waiting = read_assignment(&pool, &assignment_id).await?;
+    let executor = read_assignment_executing_device(&pool, assignment_id.as_str()).await?;
+    let started_id = if waiting.state == ChatWorkAssignmentState::ReadyForReview {
+        recover_follow_up(&pool, &assignment_id, device, &scope, &now)
+            .await?
+            .ok_or_else(|| {
+                ChatError::new(
+                    ChatErrorCode::Conflict,
+                    "This work changed before it could start on this device",
+                    true,
+                )
+            })?
+    } else if executor.as_deref() == Some(device_id.as_str()) {
+        if !adopt_synced_assignment(&pool, &assignment_id, &device_id, &scope).await? {
+            return read_assignment(&pool, &assignment_id).await;
+        }
+        assignment_id
+    } else {
+        take_over_routed_assignment(&pool, &assignment_id, &waiting.teammate.id, device, &now)
+            .await?
+    };
+    let started = read_assignment(&pool, &started_id).await?;
+    tauri::async_runtime::spawn(async move {
+        let _ = dispatch_assignment_job(app, db_url, started_id).await;
+    });
+    Ok(started)
+}
+
+/// Checks the synced assignment `assignment_id` and queues its dispatch when `scope` accepted
+/// what it would run, reporting whether it queued.
+async fn queue_accepted_dispatch(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    scope: &ChatDeviceScope,
+    now: &UtcTimestamp,
+) -> ChatResult<bool> {
+    if !assignment_references_hold(transaction, assignment_id).await? {
+        return Err(broken_references_error());
+    }
+    let digest = read_assignment_subject(transaction, assignment_id)
+        .await?
+        .digest();
+    if !assignment_is_accepted(scope, &digest) {
+        return Ok(false);
+    }
+    queue_dispatch_here(transaction, assignment_id, now).await?;
+    Ok(true)
+}
 
 /// Queues the dispatch of the synced queued assignment `assignment_id` when the device
-/// `device_id` executes it and has not queued it yet, reporting whether it did. An assignment
-/// whose context cannot be frozen here fails with a reason instead of staying queued.
+/// `device_id` executes it, has not queued it yet, and `scope` accepted what it would run,
+/// reporting whether it did. Unaccepted work stays queued and visible. An assignment whose
+/// references do not hold or whose context cannot be frozen here fails with a reason instead of
+/// staying queued.
 pub(super) async fn adopt_synced_assignment(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
     device_id: &str,
+    scope: &ChatDeviceScope,
 ) -> ChatResult<bool> {
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
@@ -677,29 +1082,37 @@ pub(super) async fn adopt_synced_assignment(
         transaction.rollback().await.map_err(persistence_error)?;
         return Ok(false);
     }
-    if let Err(error) = queue_dispatch_here(&mut transaction, assignment_id, &now).await {
-        transaction.rollback().await.map_err(persistence_error)?;
-        eprintln!(
-            "Synced Chat assignment {} could not start: {error}",
-            assignment_id.as_str()
-        );
-        sqlx::query(
-            "UPDATE chat_work_assignments
-             SET state = 'failed', state_reason = ?, settled_at = ?,
-                 revision = revision + 1, updated_at = ?
-             WHERE id = ? AND state = 'queued'",
-        )
-        .bind(ADOPTION_FAILED_REASON)
-        .bind(now.as_str())
-        .bind(now.as_str())
-        .bind(assignment_id.as_str())
-        .execute(pool)
-        .await
-        .map_err(persistence_error)?;
-        return Ok(false);
+    match queue_accepted_dispatch(&mut transaction, assignment_id, scope, &now).await {
+        Ok(true) => {
+            transaction.commit().await.map_err(persistence_error)?;
+            Ok(true)
+        }
+        Ok(false) => {
+            transaction.rollback().await.map_err(persistence_error)?;
+            Ok(false)
+        }
+        Err(error) => {
+            transaction.rollback().await.map_err(persistence_error)?;
+            eprintln!(
+                "Synced Chat assignment {} could not start: {error}",
+                assignment_id.as_str()
+            );
+            sqlx::query(
+                "UPDATE chat_work_assignments
+                 SET state = 'failed', state_reason = ?, settled_at = ?,
+                     revision = revision + 1, updated_at = ?
+                 WHERE id = ? AND state = 'queued'",
+            )
+            .bind(ADOPTION_FAILED_REASON)
+            .bind(now.as_str())
+            .bind(now.as_str())
+            .bind(assignment_id.as_str())
+            .execute(pool)
+            .await
+            .map_err(persistence_error)?;
+            Ok(false)
+        }
     }
-    transaction.commit().await.map_err(persistence_error)?;
-    Ok(true)
 }
 
 /// Starts the assignment work sync handed to this device: queued assignments it executes
@@ -775,6 +1188,7 @@ async fn run_synced_assignment_work(
     let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
     let mut released = false;
     for assignment_id in work.queued.iter().chain(&work.started) {
         let assignment_id =
@@ -786,7 +1200,7 @@ async fn run_synced_assignment_work(
     }
     for assignment_id in work.queued {
         let assignment_id = ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
-        if adopt_synced_assignment(&pool, &assignment_id, &device_id).await? {
+        if adopt_synced_assignment(&pool, &assignment_id, &device_id, &scope).await? {
             dispatch_assignment_job(app.clone(), db_url.clone(), assignment_id).await?;
         }
     }
@@ -828,6 +1242,7 @@ pub(super) async fn start_mentioned_assignment(
         &now,
     )
     .await?;
+    record_gesture_acceptance(&app, &pool, &assignment_id).await;
     let started = read_assignment(&pool, &assignment_id).await?;
     tauri::async_runtime::spawn(async move {
         let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;

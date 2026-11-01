@@ -5,6 +5,7 @@
 //! concurrent accept on another. A request answer outranks a pending state, and acceptance
 //! outranks every other answer. A rotated card outranks every card with a lower revision.
 
+use ganbaru_contacts::{is_valid_public_key_text, is_valid_request_window};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -182,7 +183,9 @@ fn validate_request(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
             ],
         ) => {
             one_of(direction, &REQUEST_DIRECTIONS, "contact request direction")?;
-            exact_chars(public_key, PUBLIC_KEY_CHARS, "contact request public key")?;
+            if !is_valid_public_key_text(text(public_key)?) {
+                return Err(AdapterError("contact request public key"));
+            }
             if optional_text(peer_request_id)?
                 .is_some_and(|id| !(1..=MAX_REQUEST_ID_CHARS).contains(&id.chars().count()))
             {
@@ -201,7 +204,12 @@ fn validate_request(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
                 return Err(AdapterError("contact request fingerprint"));
             }
             timestamp(expires_at)?;
-            timestamp(created_at)
+            timestamp(created_at)?;
+            if is_valid_request_window(text(created_at)?, text(expires_at)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("contact request window"))
+            }
         }
         (request_group::STATE, [state, invite, message]) => {
             one_of(state, &REQUEST_STATES, "contact request state")?;
@@ -313,6 +321,16 @@ impl DomainAdapter for ContactsAdapter {
             validate_request(group, fields)
         } else if table == CARD_TABLE {
             validate_card(group, fields)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A contact row is keyed by the person public key, and the key's small-order form cannot
+    /// be expressed in the table check that the manifest's key rule mirrors.
+    fn validate_key(&self, table: TableId, key: &str) -> Result<(), AdapterError> {
+        if table == CONTACTS_TABLE && !is_valid_public_key_text(key) {
+            Err(AdapterError("contact public key"))
         } else {
             Ok(())
         }

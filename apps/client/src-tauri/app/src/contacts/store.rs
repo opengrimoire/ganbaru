@@ -1,11 +1,13 @@
 //! SQLite access for contacts and contact requests.
 
 use super::{ContactRequestView, ContactView};
-use chrono::{DateTime, Utc};
-use ganbaru_contacts::{PersonPublicKey, TrustKind};
+use chrono::{DateTime, Duration, Utc};
+use ganbaru_contacts::{
+    CLOCK_TOLERANCE_DAYS, PersonPublicKey, TrustKind, is_valid_public_key_text,
+};
 use ganbaru_sync::manifest::vault::contacts::CONTACT_ID_PREFIX;
 use serde::{Deserialize, Serialize};
-use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite};
+use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite, SqlitePool};
 
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
 
@@ -453,7 +455,8 @@ where
 
 /// Pending requests in both directions, newest first, one per direction and person. Linked
 /// devices can each store a pending row for the same person, so only the newest is listed.
-/// Handled requests and pending ones past their deadline are never listed.
+/// Handled requests, pending ones past their deadline, and ones created past the clock tolerance
+/// are never listed; the last would otherwise sort as newest and hide the person's real request.
 pub(crate) async fn list_pending_requests<'e, E>(
     executor: E,
     now: DateTime<Utc>,
@@ -467,12 +470,13 @@ where
                 PARTITION BY direction, public_key ORDER BY created_at DESC, id
             ) AS newest
             FROM contact_requests
-            WHERE state = 'pending' AND expires_at > ?
+            WHERE state = 'pending' AND expires_at > ? AND created_at <= ?
          )
          WHERE newest = 1
          ORDER BY created_at DESC, id"
     )))
     .bind(format_time(now))
+    .bind(latest_created_at(now))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contact requests", error))
@@ -821,24 +825,49 @@ where
     Ok(())
 }
 
-/// Expires every pending request whose deadline passed.
-pub(crate) async fn expire_stale_requests<'e, E>(
-    executor: E,
+/// Expires every pending request whose deadline passed, whose creation time sits past the clock
+/// tolerance, or whose public key does not parse. Admission refuses such keys and cannot judge a
+/// creation time against a clock, so this closes what reaches the table on every device.
+pub(crate) async fn expire_stale_requests(
+    pool: &SqlitePool,
     now: DateTime<Utc>,
-) -> Result<(), String>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
+) -> Result<(), String> {
     let time = format_time(now);
     sqlx::query(
         "UPDATE contact_requests
          SET state = 'expired', updated_at = ?
-         WHERE state = 'pending' AND expires_at <= ?",
+         WHERE state = 'pending' AND (expires_at <= ? OR created_at > ?)",
     )
     .bind(&time)
     .bind(&time)
-    .execute(executor)
+    .bind(latest_created_at(now))
+    .execute(pool)
     .await
     .map_err(|error| db_error("expire stale contact requests", error))?;
+    let pending: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, public_key FROM contact_requests WHERE state = 'pending'")
+            .fetch_all(pool)
+            .await
+            .map_err(|error| db_error("read pending contact request keys", error))?;
+    for (id, _) in pending
+        .iter()
+        .filter(|(_, key)| !is_valid_public_key_text(key))
+    {
+        sqlx::query(
+            "UPDATE contact_requests
+             SET state = 'expired', updated_at = ?
+             WHERE id = ? AND state = 'pending'",
+        )
+        .bind(&time)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|error| db_error("expire unusable contact request", error))?;
+    }
     Ok(())
+}
+
+/// The newest creation time a request can honestly carry at `now`.
+fn latest_created_at(now: DateTime<Utc>) -> String {
+    format_time(now + Duration::days(CLOCK_TOLERANCE_DAYS))
 }

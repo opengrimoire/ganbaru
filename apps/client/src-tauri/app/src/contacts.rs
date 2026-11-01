@@ -228,12 +228,18 @@ async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
     let _ = app;
 }
 
-#[cfg(test)]
+/// Views of the rows that can be shown. A row can arrive through sync, so one that cannot be
+/// read is skipped and logged and leaves the rest of the list usable.
 fn request_views(rows: &[store::RequestRow]) -> Vec<ContactRequestView> {
     rows.iter()
-        .map(store::RequestRow::view)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_default()
+        .filter_map(|row| {
+            row.view()
+                .inspect_err(|error| {
+                    eprintln!("skipping unreadable contact request {:?}: {error}", row.id);
+                })
+                .ok()
+        })
+        .collect()
 }
 
 async fn snapshot<R: Runtime>(
@@ -248,11 +254,7 @@ async fn snapshot<R: Runtime>(
         .into_iter()
         .map(store::ContactRow::view)
         .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_pending_requests(pool, store::now())
-        .await?
-        .iter()
-        .map(store::RequestRow::view)
-        .collect::<Result<Vec<_>, _>>()?;
+    let requests = request_views(&store::list_pending_requests(pool, store::now()).await?);
     Ok(ContactsSnapshot {
         identity,
         contacts,

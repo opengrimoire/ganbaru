@@ -25,8 +25,8 @@ use ganbaru_contacts::{SIGNATURE_BYTES, decode_nonce, nonces_match, verify};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, Runtime};
 
-/// How long a request stays pending on both sides.
-pub(crate) const REQUEST_TTL_DAYS: i64 = 7;
+pub(crate) use ganbaru_contacts::REQUEST_TTL_DAYS;
+
 /// Upper bound on pending received requests before the oldest are deleted.
 #[cfg(any(desktop, test))]
 pub(crate) const MAX_PENDING_RECEIVED: i64 = 64;
@@ -814,12 +814,15 @@ pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
 
 async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     super::identity::try_release(app).await;
-    if follows_coordinator(app).unwrap_or(true) {
-        return Ok(());
-    }
     let Ok(pool) = contacts_pool(app).await else {
         return Ok(());
     };
+    if let Err(error) = store::expire_stale_requests(&pool, store::now()).await {
+        eprintln!("contact request expiry failed: {error}");
+    }
+    if follows_coordinator(app).unwrap_or(true) {
+        return Ok(());
+    }
     let Ok(Some(identity)) = super::identity::load_identity(app, &pool).await else {
         return Ok(());
     };

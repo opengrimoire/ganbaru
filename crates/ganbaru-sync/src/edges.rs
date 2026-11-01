@@ -159,6 +159,39 @@ fn sever(mut edges: Vec<Edge>) -> BTreeSet<String> {
     severed
 }
 
+/// [`sever`] with a count of the edges visited. It stops counting at `limit`, so a test of a
+/// bound ends once the bound is broken.
+#[cfg(test)]
+fn sever_counted(mut edges: Vec<Edge>, limit: u64) -> (BTreeSet<String>, u64) {
+    edges.sort();
+    let mut taken: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut severed = BTreeSet::new();
+    let mut visits = 0;
+    for edge in edges {
+        let mut seen = BTreeSet::from([edge.to.as_str()]);
+        let mut pending = vec![edge.to.as_str()];
+        let mut closes = false;
+        while let Some(row) = pending.pop() {
+            closes |= row == edge.from;
+            for next in taken.get(row).into_iter().flatten() {
+                visits += 1;
+                if seen.insert(next.as_str()) {
+                    pending.push(next.as_str());
+                }
+            }
+            if visits > limit {
+                return (severed, visits);
+            }
+        }
+        if closes {
+            severed.insert(edge.key);
+        } else {
+            taken.entry(edge.from).or_default().push(edge.to);
+        }
+    }
+    (severed, visits)
+}
+
 /// Marks dirty the counted edges whose domain presence disagrees with their severing.
 async fn mark_mismatches(
     conn: &mut SqliteConnection,
@@ -201,6 +234,8 @@ pub(crate) async fn severed(
         let Some(acyclic) = table.acyclic else {
             continue;
         };
+        #[cfg(test)]
+        crate::visibility::record_derived(table.id);
         let edges = edges(engine, conn, visibility, &mut probe, table, acyclic).await?;
         let keys = sever(edges.clone());
         mark_mismatches(conn, table, &edges, &keys, dirty).await?;
@@ -249,5 +284,109 @@ mod tests {
     fn an_older_edge_that_arrives_late_severs_a_newer_one() {
         let edges = vec![edge("new", "b", "a", 9, 1), edge("old", "a", "b", 1, 1)];
         assert_eq!(sever(edges), BTreeSet::from(["new".to_string()]));
+    }
+
+    /// Edges at each hostile bound.
+    const HOSTILE_EDGES: u64 = 65_536;
+
+    /// A linear congruential generator, so a seed always replays the same graph.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+    }
+
+    /// Edges in rank order between the numbered rows of `ends`.
+    fn numbered(ends: impl IntoIterator<Item = (u64, u64)>) -> Vec<Edge> {
+        ends.into_iter()
+            .enumerate()
+            .map(|(at, (from, to))| {
+                let clock = at as u64 + 1;
+                edge(
+                    &format!("e{at:08}"),
+                    &format!("n{from:08}"),
+                    &format!("n{to:08}"),
+                    clock,
+                    1,
+                )
+            })
+            .collect()
+    }
+
+    /// The most edges a graph of `m` edges may visit.
+    fn bound(m: u64) -> u64 {
+        let root = m.isqrt();
+        8 * m * if root * root < m { root + 1 } else { root }
+    }
+
+    fn assert_within_bound(name: &str, edges: Vec<Edge>) {
+        let m = edges.len() as u64;
+        let limit = bound(m);
+        let (_, visits) = sever_counted(edges, limit);
+        assert!(visits <= limit, "{name} visited {visits} of {limit} edges");
+    }
+
+    #[test]
+    fn sever_stays_within_its_bound_on_hostile_shapes() {
+        let m = HOSTILE_EDGES;
+        // Each edge starts where the walk from the edges taken so far is longest.
+        assert_within_bound("reverse chain", numbered((0..m).rev().map(|at| (at, at + 1))));
+        let half = m / 2;
+        let chain = (0..half).map(|at| (at, at + 1));
+        let star = (0..half).map(|at| (m + at, 0));
+        assert_within_bound("chain and star", numbered(chain.chain(star)));
+        let mut rng = Lcg(1);
+        let rows = m / 4;
+        let random: Vec<(u64, u64)> = (0..m)
+            .map(|_| (rng.below(rows), rng.below(rows)))
+            .collect();
+        assert_within_bound("random", numbered(random));
+    }
+
+    #[test]
+    fn sever_matches_the_reference_on_random_graphs() {
+        let mut rng = Lcg(2);
+        for round in 0..400 {
+            let rows = 2 + rng.below(40);
+            let m = 1 + rng.below(rows * 4);
+            let edges: Vec<Edge> = (0..m)
+                .map(|at| {
+                    let (from, to) = (rng.below(rows), rng.below(rows));
+                    edge(
+                        &format!("e{at:04}"),
+                        &format!("n{from}"),
+                        &format!("n{to}"),
+                        rng.below(m / 2 + 1),
+                        (rng.below(3) + 1) as u8,
+                    )
+                })
+                .collect();
+            assert_eq!(sever(edges.clone()), reference(edges), "round {round}");
+        }
+    }
+
+    /// The severed edges found by walking the taken edges for every edge.
+    fn reference(mut edges: Vec<Edge>) -> BTreeSet<String> {
+        edges.sort();
+        let mut taken: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut severed = BTreeSet::new();
+        for edge in edges {
+            if reaches(&taken, &edge.to, &edge.from) {
+                severed.insert(edge.key);
+            } else {
+                taken.entry(edge.from).or_default().push(edge.to);
+            }
+        }
+        severed
     }
 }

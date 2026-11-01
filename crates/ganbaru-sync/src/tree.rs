@@ -204,6 +204,8 @@ pub(crate) async fn detached(
         let Some(tree) = table.tree else {
             continue;
         };
+        #[cfg(test)]
+        crate::visibility::record_derived(table.id);
         let parents = parents(engine, conn, visibility, table, tree).await?;
         let mut rows = cycle_breaks(&parents);
         if let Some(max_depth) = tree.max_depth {

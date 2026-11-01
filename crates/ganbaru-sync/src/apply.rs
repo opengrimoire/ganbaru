@@ -24,7 +24,7 @@ use crate::merge::{self, Batch};
 use crate::refused::Refusals;
 use crate::seal::{self, SealReport, SealSlot};
 use crate::store::HoldReason;
-use crate::visibility::{RowRef, Visibility};
+use crate::visibility::{DeriveScope, RowRef, Visibility};
 use crate::{
     Engine, LocalWriter, SpaceContext, authorization, exclusion, fork, hydrate, materialize,
     repair, sql, store,
@@ -1157,7 +1157,10 @@ pub(crate) async fn finish(
         }
         let mut repaired = false;
         let mut visibility = loop {
-            let mut visibility = Visibility::load(engine, conn, &mut batch.dirty).await?;
+            let scope = DeriveScope::Dirty {
+                alongside: BTreeSet::new(),
+            };
+            let mut visibility = Visibility::load(engine, conn, &mut batch.dirty, scope).await?;
             repair::expand_references(engine, conn, batch, &mut visibility).await?;
             let repairs =
                 repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;

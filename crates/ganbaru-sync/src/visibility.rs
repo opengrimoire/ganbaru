@@ -41,6 +41,34 @@ pub(crate) type RowRef = (TableId, String);
 /// Hidden duplicates per table, each with the key of the row it collides with and is kept.
 pub(crate) type Duplicates = BTreeMap<TableId, BTreeMap<String, String>>;
 
+/// Which tree and acyclic tables a [`Visibility`] derives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeriveScope {
+    /// Every table, for reads outside an apply.
+    All,
+    /// The components of the tables holding a dirty or contested row, and of `alongside`, the
+    /// tables of rows an apply writes without marking them dirty.
+    Dirty { alongside: BTreeSet<TableId> },
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tree and acyclic tables derived on this thread since the last [`take_derived`].
+    static DERIVED: std::cell::RefCell<Vec<TableId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records a derivation of a tree or acyclic table.
+#[cfg(test)]
+pub(crate) fn record_derived(table: TableId) {
+    DERIVED.with_borrow_mut(|derived| derived.push(table));
+}
+
+/// The tree and acyclic tables derived on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_derived() -> Vec<TableId> {
+    DERIVED.take()
+}
+
 /// Why a root hides the rows whose cascading references reach it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RootKind {
@@ -176,6 +204,7 @@ impl Visibility {
         engine: &Engine,
         conn: &mut SqliteConnection,
         dirty: &mut BTreeSet<RowRef>,
+        _scope: DeriveScope,
     ) -> SyncResult<Self> {
         let contested = repair::contested(engine, conn, dirty).await?;
         let mut excluded = BTreeSet::new();

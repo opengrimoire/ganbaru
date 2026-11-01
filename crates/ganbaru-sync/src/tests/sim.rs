@@ -115,19 +115,21 @@ struct Sim {
     spares: usize,
     /// Override edits, drawn apart from `rng` and keyed apart from `created`, so they leave
     /// every other choice of a seed as it was.
-    overrides: Overrides,
+    overrides: SideEdits,
+    /// Edits of rows that refer to a tree or an edge, kept apart in the same way.
+    notes: SideEdits,
 }
 
-/// Choices and ids of fixture override edits.
-struct Overrides {
+/// Choices and ids of a stream of edits kept apart from the rest of a run.
+struct SideEdits {
     rng: Rng,
     created: usize,
 }
 
-impl Overrides {
-    fn new(seed: u64) -> Self {
+impl SideEdits {
+    fn new(seed: u64, mix: u64) -> Self {
         Self {
-            rng: Rng(seed ^ OVERRIDE_SEED_MIX),
+            rng: Rng(seed ^ mix),
             created: 0,
         }
     }
@@ -135,8 +137,13 @@ impl Overrides {
 
 /// Mixed into a seed for the override edit stream.
 const OVERRIDE_SEED_MIX: u64 = 0x6f76_6572_7269_6465;
+/// Mixed into a seed for the note edit stream.
+const NOTE_SEED_MIX: u64 = 0x6e6f_7465_7369_6465;
 /// Chance in percent that a local edit is followed by an override edit.
 const OVERRIDE_EDIT_PERCENT: u64 = 6;
+/// Chance in percent that a local edit is followed by an edit of a row referring to a tree or
+/// an edge.
+const NOTE_EDIT_PERCENT: u64 = 12;
 /// Chance in percent that an override edit is a forged row the schema refuses.
 const HOSTILE_OVERRIDE_PERCENT: u64 = 25;
 /// A key the card table refuses.
@@ -538,7 +545,8 @@ impl Sim {
             clock_ms: START_MS,
             created: 0,
             spares: 0,
-            overrides: Overrides::new(seed),
+            overrides: SideEdits::new(seed, OVERRIDE_SEED_MIX),
+            notes: SideEdits::new(seed, NOTE_SEED_MIX),
         }
     }
 
@@ -628,6 +636,9 @@ impl Sim {
         let touch = format!("updated_at = {now}, revision = revision + 1");
         if self.overrides.rng.chance(OVERRIDE_EDIT_PERCENT) {
             self.edit_overrides(index, now.clone()).await;
+        }
+        if self.notes.rng.chance(NOTE_EDIT_PERCENT) {
+            self.edit_notes(index).await;
         }
         let kind = self.rng.below(45);
         if kind >= 43 {
@@ -1350,6 +1361,51 @@ impl Sim {
                     quoted(&id),
                     target.as_deref().map_or("NULL".to_string(), quoted),
                     quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of the rows that reach a tree or an edge set by reference: a note on a
+    /// node, a note on an edge, or a pointer to a note on a node. Each edit adds a row, moves
+    /// one, or deletes one.
+    async fn edit_notes(&mut self, index: usize) {
+        let rng = &mut self.notes.rng;
+        let (table, targets_sql) = match rng.below(3) {
+            0 => ("fixture_node_notes", "SELECT id FROM fixture_nodes ORDER BY id"),
+            1 => (
+                "fixture_edge_notes",
+                "SELECT sync_key FROM fixture_edges ORDER BY sync_key",
+            ),
+            _ => (
+                "fixture_note_pointers",
+                "SELECT id FROM fixture_node_notes ORDER BY id",
+            ),
+        };
+        let targets = ids(&mut self.replicas[index], targets_sql).await;
+        let rows = ids(
+            &mut self.replicas[index],
+            &format!("SELECT id FROM {table} ORDER BY id"),
+        )
+        .await;
+        let rng = &mut self.notes.rng;
+        let target = rng.pick(&targets).map(|id| quoted(id));
+        let row = rng.pick(&rows).map(|id| quoted(id));
+        let sql = match (rng.below(4), row) {
+            (1 | 2, Some(row)) => format!(
+                "UPDATE {table} SET peer_id = {} WHERE id = {row}",
+                target.unwrap_or("NULL".into())
+            ),
+            (3, Some(row)) => format!("DELETE FROM {table} WHERE id = {row}"),
+            _ => {
+                self.notes.created += 1;
+                let id = format!("note-{index}-{}", self.notes.created);
+                format!(
+                    "INSERT INTO {table} (id, label, peer_id) VALUES ({}, {}, {})",
+                    quoted(&id),
+                    quoted(rng.pick(TAG_NAMES).unwrap()),
+                    target.unwrap_or("NULL".into())
                 )
             }
         };

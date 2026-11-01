@@ -7,7 +7,9 @@
 //! are removed. The versions such an operation superseded come back from
 //! `sync_displaced_versions`, which a member fills while the anchor has not confirmed storing
 //! the superseding operation; the anchor never applies an operation past a cutoff, so it keeps
-//! none. After a handover the cutoff can still fall below what an earlier anchor installation
+//! none. Every replica also keeps there the value of a Create an Immutable group left out, on
+//! each version it saw, so that excluding those versions ends as if the Create arrived after
+//! the exclusion. After a handover the cutoff can still fall below what an earlier anchor installation
 //! stored and confirmed, which kept nothing either, so the anchor seals again the current value
 //! of every live group an operation it excludes writes. The charter epoch has no earlier
 //! anchor, and sealing again there would only bury late values an admin may still restore.
@@ -456,10 +458,37 @@ async fn release(
     Ok(!rows.is_empty())
 }
 
+/// Versions of one group as `(writer, seq)`.
+async fn group_versions(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    group: GroupId,
+) -> SyncResult<Vec<(WriterId, Seq)>> {
+    let rows: Vec<(Vec<u8>, i64)> = sqlx::query_as(
+        "SELECT writer_id, seq FROM sync_register_versions
+         WHERE table_id = ? AND row_key = ? AND group_id = ?",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(i64::from(group.get()))
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.iter()
+        .map(|(writer, seq)| {
+            Ok((
+                log::writer_id(writer)?,
+                stored_u64(*seq, "version sequence")?,
+            ))
+        })
+        .collect()
+}
+
 /// Restores the versions the operations of `writer` past `cutoff` superseded, unless the
-/// superseded version's own operation is excluded, its writer has a later version of the group,
-/// or a remaining version of the group saw it. Displaced rows of those operations, and those of
-/// versions the operations wrote, are dropped.
+/// superseded version's own operation is excluded or gone, its writer has a later version of the
+/// group, or a remaining version of the group saw it. Displaced rows of those operations, and
+/// those of versions the operations wrote, are dropped. Creates held back from an Immutable
+/// group follow [`restore_held`].
 pub(crate) async fn restore_displaced(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -469,7 +498,7 @@ pub(crate) async fn restore_displaced(
 ) -> SyncResult<()> {
     let rows = sqlx::query(
         "SELECT d.table_id, d.row_key, d.group_id, d.writer_id, d.seq, d.clock, d.value_hash,
-            d.value, o.excluded_revision IS NOT NULL
+            d.value, o.seq IS NULL OR o.excluded_revision IS NOT NULL
          FROM sync_displaced_versions d
          LEFT JOIN sync_ops o ON o.space_id = ?1 AND o.writer_id = d.writer_id AND o.seq = d.seq
          WHERE d.displaced_by_writer = ?2 AND d.displaced_by_seq > ?3
@@ -490,6 +519,7 @@ pub(crate) async fn restore_displaced(
             .execute(&mut *conn)
             .await?;
     }
+    let mut held: BTreeMap<(TableId, String, GroupId), Vec<merge::Stored>> = BTreeMap::new();
     for row in &rows {
         let excluded: bool = row.try_get(8)?;
         if excluded {
@@ -506,19 +536,18 @@ pub(crate) async fn restore_displaced(
         if merge::row_state(conn, table, &key).await?.is_none() {
             continue;
         }
-        let existing: Vec<(Vec<u8>, i64)> = sqlx::query_as(
-            "SELECT writer_id, seq FROM sync_register_versions
-             WHERE table_id = ? AND row_key = ? AND group_id = ?",
-        )
-        .bind(table_param(table))
-        .bind(&key)
-        .bind(i64::from(stored.group.get()))
-        .fetch_all(&mut *conn)
-        .await?;
+        let group = spec
+            .group(stored.group)
+            .ok_or_else(|| corrupt("displaced version of an unknown group"))?;
+        if merge::keeps_immutable(spec, group) {
+            held.entry((table, key, stored.group))
+                .or_default()
+                .push(stored);
+            continue;
+        }
+        let existing = group_versions(conn, table, &key, stored.group).await?;
         let mut superseded = false;
-        for (other, other_seq) in &existing {
-            let other = log::writer_id(other)?;
-            let other_seq = stored_u64(*other_seq, "version sequence")?;
+        for (other, other_seq) in existing {
             if other == stored.writer
                 || batch
                     .contexts
@@ -538,6 +567,75 @@ pub(crate) async fn restore_displaced(
             .clone()
             .ok_or_else(|| corrupt("a displaced version has no value"))?;
         merge::restore_version(conn, spec, &key, &stored, value).await?;
+        batch.dirty.insert((table, key));
+    }
+    for ((table, key, group), creates) in held {
+        restore_held(engine, conn, batch, table, key, group, creates).await?;
+    }
+    Ok(())
+}
+
+/// Puts `creates`, each held back on a version an exclusion just removed, into one Immutable
+/// group, leaving it as if they had arrived after the exclusion: a Create stays out while the
+/// group or an earlier Create of the set holds a version of its writer or one it saw, whichever
+/// order they arrive in. A Create that stays out on a Create that comes in is held back on it,
+/// so a later exclusion of that Create can still restore it.
+async fn restore_held(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    table: TableId,
+    key: String,
+    group: GroupId,
+    creates: Vec<merge::Stored>,
+) -> SyncResult<()> {
+    let spec = engine
+        .manifest()
+        .table(table)
+        .ok_or_else(|| corrupt("displaced version of an unknown table"))?;
+    let existing = group_versions(conn, table, &key, group).await?;
+    let held: Vec<(WriterId, Seq)> = creates
+        .iter()
+        .map(|create| (create.writer, create.seq))
+        .collect();
+    let (mut entering, mut waiting) = (Vec::new(), Vec::new());
+    for create in creates {
+        let context = batch
+            .contexts
+            .get(conn, batch.space, create.writer, create.seq)
+            .await?
+            .clone();
+        let stays_out = existing
+            .iter()
+            .any(|(writer, seq)| *writer == create.writer || context.covers(writer, *seq))
+            || held.iter().any(|(writer, seq)| {
+                if *writer == create.writer {
+                    *seq < create.seq
+                } else {
+                    context.covers(writer, *seq)
+                }
+            });
+        if stays_out {
+            waiting.push((create, context));
+        } else {
+            entering.push(create);
+        }
+    }
+    for create in &entering {
+        let value = create
+            .value
+            .clone()
+            .ok_or_else(|| corrupt("a displaced version has no value"))?;
+        merge::restore_version(conn, spec, &key, create, value).await?;
+    }
+    let entered: Vec<(WriterId, Seq)> = entering
+        .iter()
+        .map(|create| (create.writer, create.seq))
+        .collect();
+    for (create, context) in &waiting {
+        merge::hold_back(conn, batch.space, table, &key, create, &entered, context).await?;
+    }
+    if !entering.is_empty() {
         batch.dirty.insert((table, key));
     }
     Ok(())

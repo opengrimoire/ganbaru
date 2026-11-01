@@ -205,6 +205,14 @@ pub(crate) async fn rotate_card(
     Ok(identity)
 }
 
+#[cfg(test)]
+pub(crate) async fn heal_unreadable_nonce(
+    _pool: &SqlitePool,
+    identity: LocalIdentity,
+) -> Result<LocalIdentity, ContactsError> {
+    Ok(identity)
+}
+
 /// Finds a contact card QR code in a grayscale frame and returns its text form.
 pub(crate) fn decode_card_qr(
     width: usize,
@@ -220,9 +228,10 @@ pub(crate) fn decode_card_qr(
 
 #[cfg(test)]
 mod tests {
+    use super::super::identity::{IdentityRow, identity_from_row, load_identity_row};
     use super::super::tests::migrated_memory_pool;
     use super::*;
-    use ganbaru_contacts::PersonKeyPair;
+    use ganbaru_contacts::{PersonKeyPair, decode_nonce};
 
     const AT: &str = "2026-10-22T10:51:41.000Z";
 
@@ -261,6 +270,48 @@ mod tests {
             .fetch_one(pool)
             .await
             .unwrap()
+    }
+
+    /// A vault whose stored card holds a nonce no reader can decode at `revision`, with its
+    /// identity row.
+    async fn unreadable_card_row(revision: i64) -> (SqlitePool, IdentityRow) {
+        let (pool, identity) = card_at_revision(revision).await;
+        sqlx::query("UPDATE contact_card SET card_nonce = ?")
+            .bind("!".repeat(22))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO contacts_local_identity (singleton, public_key, created_at)
+             VALUES (1, ?, ?)",
+        )
+        .bind(identity.public_key.to_text())
+        .bind(AT)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let row = load_identity_row(&pool).await.unwrap().unwrap();
+        (pool, row)
+    }
+
+    #[tokio::test]
+    async fn heal_stores_a_decodable_nonce_at_a_higher_revision() {
+        let (pool, row) = unreadable_card_row(5).await;
+
+        let identity = identity_from_row(row, None);
+        assert!(
+            identity.is_ok(),
+            "an unreadable nonce failed the identity: {:?}",
+            identity.as_ref().err()
+        );
+        let healed = heal_unreadable_nonce(&pool, identity.unwrap())
+            .await
+            .unwrap();
+
+        let (nonce, revision) = stored_card(&pool).await;
+        assert!(decode_nonce(&nonce).is_some(), "{nonce}");
+        assert_eq!(revision, 6);
+        assert_eq!(healed.card_revision, revision);
     }
 
     #[tokio::test]

@@ -490,6 +490,24 @@ mod tests {
     }
 
     #[test]
+    fn key_release_survives_an_unreadable_card_nonce() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let mut row = row_for(&key.public_key());
+        row.card_nonce = "!".repeat(22);
+
+        let released = key_release_response(Some(row), Some(pkcs8));
+
+        assert!(
+            matches!(
+                released,
+                Ok(CoordinatorResponse::PersonKeyReleased { ref public_key, .. })
+                    if *public_key == key.public_key().to_text()
+            ),
+            "the key is released whatever the card nonce holds"
+        );
+    }
+
+    #[test]
     fn key_release_refuses_a_key_copy_that_does_not_match_the_open_vault() {
         let (pkcs8, key) = PersonKeyPair::generate().unwrap();
         let (_, other) = PersonKeyPair::generate().unwrap();

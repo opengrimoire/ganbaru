@@ -148,20 +148,29 @@ pub(super) async fn insert_revision_attachments(
 /// Concurrent edits on two devices can each leave a default grant after sync merges them, so
 /// only the default grant with the lowest working folder id reads as the default. Execution
 /// context selection breaks the tie the same way.
+///
+/// A synced grant outside the conversation's project carries no authority, so it is left out as
+/// if revoked, and saving the membership's access then revokes it.
 pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
         folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
         (grant_row.is_default <> 0 AND NOT EXISTS (
             SELECT 1 FROM chat_teammate_working_folder_grants other
+            JOIN project_working_folders other_folder ON other_folder.id = other.working_folder_id
             WHERE other.conversation_id = grant_row.conversation_id
               AND other.teammate_id = grant_row.teammate_id
               AND other.revoked_at IS NULL AND other.is_default <> 0
               AND other.working_folder_id < grant_row.working_folder_id
+              AND other.project_id = conversation.project_id
+              AND other_folder.project_id = conversation.project_id
         )) AS is_default,
         grant_row.runtime_approval_policy, grant_row.revision, grant_row.revoked_at
  FROM chat_teammate_working_folder_grants grant_row
+ JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
  JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
  WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
    AND grant_row.revoked_at IS NULL
+   AND grant_row.project_id = conversation.project_id
+   AND folder.project_id = conversation.project_id
  ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
 
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {

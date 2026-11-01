@@ -721,6 +721,11 @@ async fn read_assignment_access(
     })
 }
 
+/// Reads the teammate's active grants that carry authority in the conversation.
+///
+/// Sync applies a grant row without the project triggers, since refusing one would stop the
+/// apply, so the match is enforced on read: a grant naming another project, or a folder of
+/// another project, reads as revoked.
 async fn read_folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
@@ -728,12 +733,17 @@ async fn read_folder_grants(
     maximum_capability: &str,
 ) -> ChatResult<Vec<FolderGrant>> {
     let rows = sqlx::query(
-        "SELECT working_folder_id, capability, capability_inherits_profile,
-                is_default, runtime_approval_policy
-         FROM chat_teammate_working_folder_grants
-         WHERE conversation_id = ? AND teammate_id = ?
-           AND revoked_at IS NULL
-         ORDER BY working_folder_id",
+        "SELECT grant_row.working_folder_id, grant_row.capability,
+                grant_row.capability_inherits_profile, grant_row.is_default,
+                grant_row.runtime_approval_policy
+         FROM chat_teammate_working_folder_grants grant_row
+         JOIN chat_conversations conversation ON conversation.id = grant_row.conversation_id
+         JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
+         WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
+           AND grant_row.revoked_at IS NULL
+           AND grant_row.project_id = conversation.project_id
+           AND folder.project_id = conversation.project_id
+         ORDER BY grant_row.working_folder_id",
     )
     .bind(conversation_id.as_str())
     .bind(teammate_id.as_str())

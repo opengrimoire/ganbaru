@@ -750,6 +750,18 @@ pub struct TableSpec {
     ///
     /// [`RowKey`]: ganbaru_sync_contracts::RowKey
     pub key_rule: RowKeyRule,
+    /// Whether rows of the table are ever deleted.
+    pub deletion: Deletion,
+}
+
+/// Whether a table's rows can be deleted through sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deletion {
+    /// Rows are deleted by tombstones, repairs, and cascades.
+    Ordinary,
+    /// No replicated operation deletes a row: a tombstone is invalid, repair seals none, and a
+    /// late one is neither listed nor restored.
+    Never,
 }
 
 /// How a row key names the device that owns the row, in a form a change carries whatever its
@@ -1077,8 +1089,9 @@ impl Manifest {
     /// `Local` column
     /// declares a SQL literal; key-derived columns are named apart from the key of a
     /// single-column key; references, owned tables, derived keys, trees, edges, and
-    /// publication are well formed; and tables follow the dependency order of their references.
-    /// Adapter and hook registration is checked by the engine.
+    /// publication are well formed; no delete can reach a never-deleted table; and tables follow
+    /// the dependency order of their references. Adapter and hook registration is checked by the
+    /// engine.
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = String::new();
         for (index, domain) in self.domains.iter().enumerate() {
@@ -1189,6 +1202,7 @@ impl Manifest {
                 .chain(self.acyclic_cascade_problems(table))
                 .chain(self.publication_problems(table))
                 .chain(self.key_parent_problems(table))
+                .chain(self.deletion_problems(table))
             {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
             }
@@ -1226,6 +1240,31 @@ impl Manifest {
                 problems.push("the key parent holds no deletes".to_string());
             }
             _ => {}
+        }
+        problems
+    }
+
+    /// Why a never-deleted table could still lose a row: a delete of a key parent or of a
+    /// cascading reference's table would reach it, so those tables are never deleted either.
+    fn deletion_problems(&self, table: &TableSpec) -> Vec<String> {
+        if table.deletion != Deletion::Never {
+            return Vec::new();
+        }
+        let deletable = |parent: TableId| {
+            self.table(parent)
+                .is_some_and(|spec| spec.deletion != Deletion::Never)
+        };
+        let mut problems = Vec::new();
+        if table.key_parent.is_some_and(deletable) {
+            problems.push("the key parent of a never-deleted table is never deleted".to_string());
+        }
+        for (_, _, reference) in table.references() {
+            if reference.on_delete == OnDelete::Cascade && deletable(reference.table) {
+                problems.push(format!(
+                    "{} cascades from a table that is not never deleted",
+                    reference.column
+                ));
+            }
         }
         problems
     }

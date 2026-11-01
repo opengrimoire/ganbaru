@@ -17,10 +17,10 @@ use crate::domains::music::{
     MAX_SKIP_RANGES, MAX_SOUND_LEVEL_MILLI, MAX_VOLUME_MILLI, MIN_RATE_MILLI,
 };
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange, TableSpec,
-    TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Music.
@@ -520,6 +520,7 @@ const BASE: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `music_local_roots`.

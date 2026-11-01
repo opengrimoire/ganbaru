@@ -9,8 +9,8 @@
 use std::fmt::Write as _;
 
 use super::{
-    ColumnType, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
-    Resolution, RowKeyRule, RowOwner,
+    ColumnType, Deletion, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
+    OwnedTable, Resolution, RowKeyRule, RowOwner,
 };
 
 impl Manifest {
@@ -21,12 +21,16 @@ impl Manifest {
         for table in self.tables {
             let _ = writeln!(
                 text,
-                "table {} {} replicated key {} rule {}{}",
+                "table {} {} replicated key {} rule {}{}{}",
                 table.id.0,
                 table.name,
                 table.key_column,
                 row_key_rule(table.key_rule),
-                if table.redirects { " redirects" } else { "" }
+                if table.redirects { " redirects" } else { "" },
+                match table.deletion {
+                    Deletion::Ordinary => "",
+                    Deletion::Never => " never_deleted",
+                }
             );
             if let Some(derived) = table.derived_key {
                 let _ = writeln!(

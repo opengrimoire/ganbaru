@@ -53,10 +53,10 @@ use crate::domains::chat::{
 };
 use crate::manifest::vault::projects::{FOLDERS_TABLE, PROJECTS_TABLE};
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
-    OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN,
-    TableIdRange, TableSpec, TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
+    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Chat.
@@ -642,6 +642,7 @@ const BASE: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `chat_participants`, archive-only. The local owner keeps the id the baseline seeds, which an
@@ -677,6 +678,7 @@ pub const PARTICIPANTS: TableSpec = TableSpec {
     local_columns: &[REVISION],
     revision_column: Some("revision"),
     triggers: &[applier_visible("chat_participants_local_user_identity")],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -717,6 +719,7 @@ pub const TEAMMATES: TableSpec = TableSpec {
         teammate_group::POLICY,
     )],
     triggers: &[gated("chat_teammate_create_access_state")],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -746,6 +749,7 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
         applier_visible("chat_teammate_policy_immutable_delete"),
         applier_visible("chat_teammate_policy_immutable_update"),
     ],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -801,6 +805,7 @@ pub const PROFILES: TableSpec = TableSpec {
         applier_visible("chat_access_profile_builtin_protected"),
         gated("chat_access_profile_revision_counter_monotonic"),
     ],
+    deletion: Deletion::Never,
     ..BASE
 };
 
@@ -826,6 +831,7 @@ pub const PROFILE_REVISIONS: TableSpec = TableSpec {
         applier_visible("chat_access_profile_revision_immutable_update"),
         gated("chat_access_profile_audience_publish"),
     ],
+    deletion: Deletion::Never,
     ..BASE
 };
 

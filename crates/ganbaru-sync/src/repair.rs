@@ -18,7 +18,7 @@ use sqlx::SqliteConnection;
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{Collation, Resolution, TableSpec, TreeSpec};
+use crate::manifest::{Collation, Deletion, Resolution, TableSpec, TreeSpec};
 use crate::materialize;
 use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::sql;
@@ -425,7 +425,8 @@ async fn detach_writes(
 /// Repairs for the merge state: null parents for detached tree rows, tombstones for hidden
 /// duplicates, redirecting to the kept row where the table allows it, and tombstones naming
 /// their cause for dirty live rows hidden by cascade from a deleted root, with referencing
-/// tables first. Derived-key rows are never tombstoned; a hidden one stays live in sync state.
+/// tables first. Derived-key rows and rows of never-deleted tables are never tombstoned; a hidden
+/// one stays live in sync state.
 pub(crate) async fn repair_changes(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -434,7 +435,7 @@ pub(crate) async fn repair_changes(
 ) -> SyncResult<Vec<Change>> {
     let mut changes = Vec::new();
     for table in engine.manifest().tables.iter().rev() {
-        if table.derived_key.is_some() {
+        if table.derived_key.is_some() || table.deletion == Deletion::Never {
             continue;
         }
         let duplicates = visibility

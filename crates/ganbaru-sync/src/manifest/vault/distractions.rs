@@ -24,9 +24,9 @@ use crate::domains::distractions::{
 };
 use crate::manifest::vault::focus::{RUNS_TABLE, SEGMENTS_TABLE};
 use crate::manifest::{
-    ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, GroupSpec, GroupStorage,
-    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, RowKeyRule, RowOwner, TableIdRange, TableSpec, group_id,
+    ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest, GroupSpec,
+    GroupStorage, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    PublishedWith, ReferenceColumn, RowKeyRule, RowOwner, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for distraction rules.
@@ -305,6 +305,7 @@ const BASE: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `distractions_settings`, the seeded singleton row [`SETTINGS_KEY`]. It is never deleted.
@@ -353,6 +354,7 @@ pub const SETTINGS: TableSpec = TableSpec {
         register(settings_group::LIMITS, "limits", &[flag("limits_enabled")]),
     ],
     key_rule: RowKeyRule::Fixed(SETTINGS_KEY),
+    deletion: Deletion::Never,
     ..BASE
 };
 

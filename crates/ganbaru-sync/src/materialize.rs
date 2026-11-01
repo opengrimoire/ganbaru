@@ -29,7 +29,7 @@ use crate::error::{SyncError, SyncResult, corrupt};
 use crate::hooks::{ChangeNotice, ConcurrentVersion, Notices};
 use crate::hydrate::{self, Elision};
 use crate::manifest::{
-    ColumnSpec, ColumnType, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec,
+    ColumnSpec, ColumnType, Deletion, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec,
 };
 use crate::merge::{self, MergedRows, RowState};
 use crate::refused::{Refusal, RefusalKind};
@@ -220,7 +220,17 @@ async fn desired(
             None => return Ok(None),
         },
     };
-    if state == RowState::Tombstoned || visibility.hidden(engine, conn, table.id, key).await? {
+    if state == RowState::Tombstoned {
+        return Ok(Some(Desired::Absent));
+    }
+    if visibility.hidden(engine, conn, table.id, key).await? {
+        // A hidden row of a never-deleted table stays as it is, unless it only exists through a
+        // removed device, which exclusion still undoes.
+        if table.deletion == Deletion::Never
+            && !visibility.is_late(engine, conn, table.id, key).await?
+        {
+            return Ok(None);
+        }
         return Ok(Some(Desired::Absent));
     }
     let versions = match versions {
@@ -1185,9 +1195,17 @@ async fn write_plans(
             if refused.unique && hiding {
                 return Ok(Written { changed, refusals });
             }
+            // A refused write of a never-deleted row leaves it as it was, since hiding it would
+            // ask for a delete.
+            let kept =
+                table.deletion == Deletion::Never && domain_exists(conn, table, &key).await?;
             refusals.push(Refusal {
                 row: (table.id, key.clone()),
-                kind: RefusalKind::Hidden,
+                kind: if kept {
+                    RefusalKind::Kept
+                } else {
+                    RefusalKind::Hidden
+                },
                 reason: refused.reason,
             });
             updates.retain(|(updated, _)| **updated != key);

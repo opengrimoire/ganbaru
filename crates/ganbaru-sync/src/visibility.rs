@@ -622,6 +622,17 @@ impl Visibility {
         exclusion::created_late(conn, table, key).await
     }
 
+    /// Whether a live row is hidden as a late change of a removed device.
+    pub(crate) async fn is_late(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        table: TableId,
+        key: &str,
+    ) -> SyncResult<bool> {
+        Ok(self.own_hiding(engine, conn, table, key).await?.late)
+    }
+
     /// Whether a published row is not materialized.
     pub(crate) async fn hidden(
         &mut self,

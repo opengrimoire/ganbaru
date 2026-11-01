@@ -12,10 +12,14 @@ use super::replica::{Replica, connection_from, converge, forge_change, quoted, r
 use crate::domains::themes::PALETTE_SIZE;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::MergeKind;
+use crate::manifest::vault::chat::{
+    PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
+    TEAMMATES_TABLE,
+};
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::themes::THEMES_TABLE;
+use crate::manifest::{Deletion, MergeKind};
 use crate::{HoldReason, MAX_OPS_PER_SEAL, StoreOutcome, SyncError};
 
 /// Rows in the first seal of a large domain, enough to exceed one seal transaction with keys of
@@ -38,6 +42,23 @@ const NARROWED_KEYS: [(TableId, &str, &[&str]); 4] = [
     (THEMES_TABLE, THEME_KEY, &["light", "dark"]),
     (CONTACTS_TABLE, PERSON_KEY, &["short", "contact-short"]),
 ];
+
+/// A row key of every table whose rows no replicated operation deletes.
+const NEVER_DELETED: [(TableId, &str); 7] = [
+    (CARD_TABLE, CARD_KEY),
+    (SETTINGS_TABLE, SETTINGS_KEY),
+    (PARTICIPANTS_TABLE, "participant:reviewer"),
+    (TEAMMATES_TABLE, "participant:reviewer"),
+    (POLICY_REVISIONS_TABLE, "policy-0"),
+    (PROFILES_TABLE, "access-profile:read-only"),
+    (
+        PROFILE_REVISIONS_TABLE,
+        "access-profile-revision:read-only:1",
+    ),
+];
+
+/// A key sorting before every key of [`NEVER_DELETED`], so a redirect to it is well formed.
+const LOWEST_KEY: &str = "0";
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -999,12 +1020,15 @@ fn key_rule_refused_for_each_action() {
                     continue;
                 }
                 let mut change = with_action(&create, action);
-                assert_eq!(
-                    crate::validate::change(&replicas[1].engine, &change),
-                    Ok(()),
-                    "{action:?} of {} under its own key",
-                    table.name
-                );
+                // A tombstone of a never-deleted row is refused under any key.
+                if action != ChangeAction::Tombstone || table.deletion != Deletion::Never {
+                    assert_eq!(
+                        crate::validate::change(&replicas[1].engine, &change),
+                        Ok(()),
+                        "{action:?} of {} under its own key",
+                        table.name
+                    );
+                }
                 for key in refused_keys {
                     change.row = RowKey::new(*key).unwrap();
                     let forged = forge_change(&mut replicas[1], change.clone()).await;
@@ -1032,6 +1056,36 @@ fn key_rule_refused_for_each_action() {
                         table.name
                     );
                 }
+            }
+        }
+    });
+}
+
+/// A forged tombstone of a table no operation deletes from is held by its bytes alone, with or
+/// without a redirect, whether or not the row exists on the receiver.
+#[test]
+fn tombstone_of_a_never_deleted_table_is_invalid() {
+    block_on(async {
+        let mut replicas = narrowed_rows().await;
+        for (table, key) in NEVER_DELETED {
+            for replaced_by in [None, Some(LOWEST_KEY)] {
+                let change = Change {
+                    table,
+                    row: RowKey::new(key).unwrap(),
+                    action: ChangeAction::Tombstone,
+                    groups: Vec::new(),
+                    replaced_by: replaced_by.map(|target| RowKey::new(target).unwrap()),
+                    cause: None,
+                };
+                let forged = forge_change(&mut replicas[1], change).await;
+                let mut receiver = replicas[0].clone_device().await;
+                assert_eq!(
+                    receiver.receive(&[forged]).await,
+                    vec![StoreOutcome::Stored {
+                        held: Some(HoldReason::Invalid)
+                    }],
+                    "tombstone of {key} replaced by {replaced_by:?}"
+                );
             }
         }
     });

@@ -9,9 +9,9 @@ use crate::domains::quick_notes::{
     MAX_RUNS, SHA256_HEX_CHARS,
 };
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, Resolution,
-    RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, Deletion, DomainManifest, DomainTrigger, GroupSpec,
+    GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    Resolution, RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Quick notes.
@@ -323,6 +323,7 @@ pub const TAGS: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `quick_notes`.
@@ -359,6 +360,7 @@ pub const NOTES: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.

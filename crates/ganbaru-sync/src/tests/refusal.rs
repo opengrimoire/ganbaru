@@ -3,15 +3,21 @@
 //! stands for another build by not enforcing the receiver's constraint, so its operations are
 //! validly sealed and its merge state is the one the receiver must reach.
 
+use ganbaru_sync_contracts::ChangeAction;
+
+use crate::manifest::vault::chat::{PROFILE_REVISIONS_TABLE, PROFILES_TABLE};
+use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE, settings_group};
 use crate::refused::MAX_REFUSED_RETRIES_PER_FINISH;
-use crate::{ApplyReport, SyncResult};
+use crate::{ApplyReport, StoreOutcome, SyncResult};
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::distractions::block_sql;
+use super::exclusion::note;
 use super::fixture::{ASK, FORBIDDEN, REFUSED, RESERVED, UNATTENDED};
 use super::focus::{close_run_sql, open_run_sql, segment_id};
-use super::replica::{Replica, converge, pair, quoted, rank};
+use super::holds::sealed_create;
+use super::replica::{Replica, converge, forge_change, pair, quoted, rank};
 
 const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
 
@@ -337,6 +343,203 @@ fn refusals_stay_out_of_keepers_and_repairs() {
         }
         let other = merge_state(&mut replicas[1]).await;
         assert_eq!(merge_state(&mut replicas[0]).await, other);
+    });
+}
+
+/// Replicas that seeded their existing rows and exchanged them, as the app does at vault open.
+async fn seeded_replicas(count: usize, salt: u64) -> Vec<Replica> {
+    let mut replicas = Vec::with_capacity(count);
+    for index in 0..count {
+        let mut replica = Replica::new(index, salt).await;
+        let now = replica.now_ms;
+        replica
+            .engine
+            .seed_captures(&mut replica.conn, now)
+            .await
+            .unwrap();
+        replicas.push(replica);
+    }
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// SQL creating access profile `id` with `builtin_key`.
+fn claiming_profile_sql(id: &str, builtin_key: &str) -> String {
+    format!(
+        "INSERT INTO chat_access_profiles (id, builtin_key, display_name, created_at, updated_at)
+         VALUES ({}, {}, 'Claim', {CREATED}, {CREATED});",
+        quoted(id),
+        quoted(builtin_key),
+    )
+}
+
+/// A writer without the unique index claims built-in keys under keys on both sides of the seeded
+/// ones: repair seals nothing in the tables no operation deletes from, and the seeded rows and
+/// their revisions stay in the domain tables.
+#[test]
+fn repair_seals_no_tombstone_in_a_never_deleted_table() {
+    block_on(async {
+        let mut replicas = seeded_replicas(2, 70).await;
+        replicas[1]
+            .exec("DROP INDEX idx_chat_access_profiles_builtin")
+            .await;
+        let claims = format!(
+            "{}{}",
+            claiming_profile_sql("access-profile:aaa", "edit_files"),
+            claiming_profile_sql("access-profile:zzz", "read_only"),
+        );
+        exec_and_seal(&mut replicas[1], &claims).await;
+
+        take(&mut replicas, 0, 1).await.unwrap();
+        take(&mut replicas, 1, 0).await.unwrap();
+
+        let tombstones = format!(
+            "SELECT count(*) FROM sync_tombstones WHERE table_id IN ({}, {})",
+            PROFILES_TABLE.0, PROFILE_REVISIONS_TABLE.0
+        );
+        for replica in &mut replicas {
+            assert_eq!(replica.count(&tombstones).await, 0);
+        }
+        let profiles = keys(&mut replicas[0], "chat_access_profiles").await;
+        for seeded in ["access-profile:read-only", "access-profile:edit-files"] {
+            assert!(profiles.iter().any(|key| key == seeded), "{profiles:?}");
+        }
+        assert!(!profiles.iter().any(|key| key == "access-profile:zzz"));
+        assert_eq!(
+            replicas[0]
+                .count(
+                    "SELECT count(*) FROM chat_access_profile_revisions
+                     WHERE id = 'access-profile-revision:edit-files:1'"
+                )
+                .await,
+            1
+        );
+    });
+}
+
+/// A write of the singleton from a writer whose create never arrives hides the row until one
+/// does, and the seeded row stays: nothing refuses that delete, so it would go unnoticed.
+#[test]
+fn distractions_settings_survive_a_hidden_row() {
+    block_on(async {
+        let mut other = seeded_replicas(1, 71).await.remove(0);
+        let mut write = sealed_create(&mut other, SETTINGS_TABLE, SETTINGS_KEY).await;
+        write.action = ChangeAction::Write;
+        write
+            .groups
+            .retain(|value| value.group == settings_group::LIMITS);
+
+        let mut replicas = vec![Replica::new(0, 71).await, Replica::new(1, 71).await];
+        exec_and_seal(&mut replicas[1], &note("note-1", "One", 0)).await;
+        take(&mut replicas, 0, 1).await.unwrap();
+        // The merge state a change from an excluded forked branch leaves for a row with no
+        // creation.
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO sync_rows (table_id, row_key, state, creation_pending)
+                 VALUES ({}, {}, 'live', 1)",
+                SETTINGS_TABLE.0,
+                quoted(SETTINGS_KEY),
+            ))
+            .await;
+        let forged = forge_change(&mut replicas[1], write).await;
+        assert_eq!(
+            replicas[0].receive(&[forged]).await,
+            vec![StoreOutcome::Stored { held: None }]
+        );
+        replicas[0].apply_all().await.unwrap();
+
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM distractions_settings")
+                .await,
+            1
+        );
+    });
+}
+
+/// A delete that reaches a trigger through a cascade the manifest does not declare keeps the
+/// row, whichever table refused it, and apply goes on.
+#[test]
+fn delete_of_a_parent_cascading_into_a_trigger_keeps_the_row() {
+    block_on(async {
+        let mut replicas = vec![Replica::new(0, 72).await, Replica::new(1, 72).await];
+        replicas[0]
+            .exec(
+                "CREATE TRIGGER fixture_links_keep BEFORE DELETE ON fixture_links
+                 BEGIN SELECT RAISE(ABORT, 'kept'); END",
+            )
+            .await;
+        exec_and_seal(
+            &mut replicas[1],
+            &format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('i-1', {CREATED}, 'One', 0);
+                 INSERT INTO fixture_links (id, owner_id, note) VALUES ('l-1', 'i-1', 'One');"
+            ),
+        )
+        .await;
+        take(&mut replicas, 0, 1).await.unwrap();
+
+        exec_and_seal(
+            &mut replicas[1],
+            "DELETE FROM fixture_items WHERE id = 'i-1'",
+        )
+        .await;
+        take(&mut replicas, 0, 1).await.unwrap();
+
+        assert_eq!(keys(&mut replicas[0], "fixture_items").await, ["i-1"]);
+        assert_eq!(keys(&mut replicas[0], "fixture_links").await, ["l-1"]);
+        assert!(
+            refused(&mut replicas[0], "kept")
+                .await
+                .contains(&"i-1".to_string())
+        );
+        assert!(refused(&mut replicas[0], "hidden").await.is_empty());
+        let sender = merge_state(&mut replicas[1]).await;
+        assert_eq!(merge_state(&mut replicas[0]).await, sender);
+    });
+}
+
+/// Deletes of ordinary tables and archives of never-deleted rows keep replicating.
+#[test]
+fn ordinary_deletes_and_archives_keep_replicating() {
+    block_on(async {
+        let mut replicas = seeded_replicas(2, 73).await;
+        exec_and_seal(
+            &mut replicas[1],
+            &format!(
+                "{}
+                 INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
+                 VALUES ('access-profile:custom', 'Custom', {CREATED}, {CREATED});",
+                note("note-1", "One", 0),
+            ),
+        )
+        .await;
+        converge(&mut replicas).await;
+        exec_and_seal(
+            &mut replicas[1],
+            &format!(
+                "DELETE FROM quick_notes WHERE id = 'note-1';
+                 UPDATE chat_access_profiles SET archived_at = {CREATED}
+                 WHERE id = 'access-profile:custom';"
+            ),
+        )
+        .await;
+        converge(&mut replicas).await;
+
+        for replica in &mut replicas {
+            assert_eq!(replica.count("SELECT count(*) FROM quick_notes").await, 0);
+            assert_eq!(
+                replica
+                    .count(
+                        "SELECT count(*) FROM chat_access_profiles
+                         WHERE id = 'access-profile:custom' AND archived_at IS NOT NULL"
+                    )
+                    .await,
+                1
+            );
+        }
     });
 }
 

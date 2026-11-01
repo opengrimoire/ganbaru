@@ -10,9 +10,9 @@ use crate::domains::contacts::{
     MAX_TRUST_CHARS, PUBLIC_KEY_CHARS,
 };
 use crate::manifest::{
-    ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
-    GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, RowKeyRule, TableIdRange, TableSpec,
-    TriggerPolicy, group_id,
+    ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
+    GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, RowKeyRule, TableIdRange,
+    TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for contacts.
@@ -213,6 +213,7 @@ pub const CONTACTS: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::ExactChars(PUBLIC_KEY_CHARS),
+    deletion: Deletion::Ordinary,
 };
 
 const REQUEST_GROUPS: [GroupSpec; 3] = [
@@ -299,6 +300,7 @@ pub const REQUESTS: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 const CARD_GROUPS: [GroupSpec; 2] = [
@@ -356,6 +358,7 @@ pub const CARD: TableSpec = TableSpec {
     owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Fixed(CARD_KEY),
+    deletion: Deletion::Never,
 };
 
 /// The contacts domain, table ids 32 to 47.

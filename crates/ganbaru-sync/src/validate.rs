@@ -12,7 +12,8 @@ use ganbaru_sync_contracts::{
 use crate::Engine;
 use crate::codec::{decode_table, owned_blob};
 use crate::manifest::{
-    ColumnType, DerivedKey, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, RowOwner, TableSpec,
+    ColumnType, Deletion, DerivedKey, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, RowOwner,
+    TableSpec,
 };
 
 /// Why a value or change breaks the manifest.
@@ -141,6 +142,9 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
         ChangeAction::Tombstone => {
             if table.derived_key.is_some() {
                 return Err("derived-key tombstone");
+            }
+            if table.deletion == Deletion::Never {
+                return Err("tombstone of a never-deleted table");
             }
             if let Some(target) = &change.replaced_by {
                 if !table.redirects || target >= &change.row {

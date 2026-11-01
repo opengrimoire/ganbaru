@@ -20,6 +20,7 @@ use super::block_on;
 use super::fixture::{
     FixtureHook, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, test_adapters,
 };
+use super::refusal::take;
 use super::replica::{Replica, converge, quoted};
 use super::sim::Rng;
 use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
@@ -74,6 +75,58 @@ async fn replicas(count: usize) -> Vec<Replica> {
     }
     converge(&mut replicas).await;
     replicas
+}
+
+/// A write of a built-in profile that the protecting trigger refuses keeps the seeded row and its
+/// revision, and apply goes on.
+#[test]
+fn built_in_profile_write_does_not_stop_apply() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[1]
+            .exec("DROP TRIGGER chat_access_profile_builtin_protected")
+            .await;
+        replicas[1]
+            .exec(
+                "UPDATE chat_access_profiles SET display_name = 'Renamed'
+                 WHERE id = 'access-profile:read-only'",
+            )
+            .await;
+        assert!(replicas[1].seal().await.unwrap().sealed_ops > 0);
+
+        take(&mut replicas, 0, 1).await.unwrap();
+
+        let receiver = &mut replicas[0];
+        assert_eq!(
+            receiver
+                .scalar_text(
+                    "SELECT display_name FROM chat_access_profiles
+                     WHERE id = 'access-profile:read-only'"
+                )
+                .await
+                .as_deref(),
+            Some("Read only")
+        );
+        assert_eq!(
+            receiver
+                .scalar_text(
+                    "SELECT kind FROM sync_refused_rows
+                     WHERE row_key = 'access-profile:read-only'"
+                )
+                .await
+                .as_deref(),
+            Some("kept")
+        );
+        assert_eq!(
+            receiver
+                .count(
+                    "SELECT count(*) FROM chat_access_profile_revisions
+                     WHERE id = 'access-profile-revision:read-only:1'"
+                )
+                .await,
+            1
+        );
+    });
 }
 
 /// A timestamp `minute` minutes after [`CREATED`], at `second` seconds.

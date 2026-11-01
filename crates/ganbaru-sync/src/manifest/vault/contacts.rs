@@ -28,6 +28,9 @@ pub const REQUESTS_TABLE: TableId = TableId(33);
 /// `contact_card`.
 pub const CARD_TABLE: TableId = TableId(34);
 
+/// Row key of the singleton card row.
+pub const CARD_KEY: &str = "card";
+
 /// Prefix of a contact id before the public key.
 pub const CONTACT_ID_PREFIX: &str = "contact-";
 
@@ -208,7 +211,7 @@ pub const CONTACTS: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
-    key_rule: RowKeyRule::Any,
+    key_rule: RowKeyRule::ExactChars(PUBLIC_KEY_CHARS),
 };
 
 const REQUEST_GROUPS: [GroupSpec; 3] = [
@@ -349,7 +352,7 @@ pub const CARD: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
-    key_rule: RowKeyRule::Any,
+    key_rule: RowKeyRule::Fixed(CARD_KEY),
 };
 
 /// The contacts domain, table ids 32 to 47.

@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use super::{
     ColumnType, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
-    Resolution,
+    Resolution, RowKeyRule,
 };
 
 impl Manifest {
@@ -21,10 +21,11 @@ impl Manifest {
         for table in self.tables {
             let _ = writeln!(
                 text,
-                "table {} {} replicated key {}{}",
+                "table {} {} replicated key {} rule {}{}",
                 table.id.0,
                 table.name,
                 table.key_column,
+                row_key_rule(table.key_rule),
                 if table.redirects { " redirects" } else { "" }
             );
             if let Some(derived) = table.derived_key {
@@ -177,6 +178,16 @@ const fn on_delete(action: OnDelete) -> &'static str {
     match action {
         OnDelete::SetNull => "set_null",
         OnDelete::Cascade => "cascade",
+    }
+}
+
+fn row_key_rule(rule: RowKeyRule) -> String {
+    match rule {
+        RowKeyRule::Any => "any".to_string(),
+        RowKeyRule::Fixed(key) => format!("fixed({key})"),
+        RowKeyRule::ExactChars(chars) => format!("exact_chars({chars})"),
+        RowKeyRule::MaxChars(chars) => format!("max_chars({chars})"),
+        RowKeyRule::Excluding(keys) => format!("excluding({})", keys.join(",")),
     }
 }
 

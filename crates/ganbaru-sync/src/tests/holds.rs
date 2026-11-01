@@ -13,7 +13,7 @@ use crate::domains::themes::PALETTE_SIZE;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::MergeKind;
-use crate::manifest::vault::contacts::{CARD_TABLE, CONTACTS_TABLE};
+use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::themes::THEMES_TABLE;
 use crate::{HoldReason, MAX_OPS_PER_SEAL, StoreOutcome, SyncError};
@@ -27,9 +27,6 @@ const WRITTEN_AT: &str = "2027-01-01T00:00:00.000Z";
 
 /// A person public key of the length `contacts` requires.
 const PERSON_KEY: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE";
-
-/// A key of the singleton card row, the only one its table takes.
-const CARD_KEY: &str = "card";
 
 /// A theme id outside the built-in themes.
 const THEME_KEY: &str = "theme-shared";

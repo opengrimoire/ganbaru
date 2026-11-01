@@ -18,6 +18,9 @@ pub const DOMAIN_NAME: &str = "themes";
 /// Domain adapter name for user themes.
 pub const ADAPTER: &str = "themes";
 
+/// Ids of the built-in themes, which the `themes` table refuses.
+pub const BUILT_IN_THEMES: [&str; 2] = ["light", "dark"];
+
 /// `themes`.
 pub const THEMES_TABLE: TableId = TableId(17);
 /// Owned live tokens of a theme.
@@ -243,7 +246,7 @@ pub const THEMES: TableSpec = TableSpec {
     published_with: None,
     key_parent: None,
     holds_deletes: false,
-    key_rule: RowKeyRule::Any,
+    key_rule: RowKeyRule::Excluding(&BUILT_IN_THEMES),
 };
 
 /// The user themes domain, the rest of the 16 to 31 range after portable preferences.

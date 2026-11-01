@@ -65,7 +65,7 @@ pub async fn focus_execute_command_tx(
     }
     session.state.last_transition_at_ms = session.state.last_transition_at_ms.max(context.now_ms);
     save_state(tx, &session.state, next_revision, context.now_ms).await?;
-    let result = load_snapshot(
+    let mut result = load_snapshot(
         tx,
         next_revision,
         &session.state,
@@ -73,6 +73,7 @@ pub async fn focus_execute_command_tx(
         &session.changed_segments,
     )
     .await?;
+    result.adaptive_degraded = session.adaptive_degraded;
     record_activity(tx, context, &result).await?;
     save_receipt(tx, command, &result).await?;
     Ok(result)
@@ -102,7 +103,7 @@ pub async fn focus_apply_observation_tx(
     } else {
         revision
     };
-    let snapshot = load_snapshot(
+    let mut snapshot = load_snapshot(
         tx,
         revision,
         &session.state,
@@ -110,6 +111,7 @@ pub async fn focus_apply_observation_tx(
         &session.changed_segments,
     )
     .await?;
+    snapshot.adaptive_degraded = session.adaptive_degraded;
     if changed {
         record_activity(tx, context, &snapshot).await?;
     }

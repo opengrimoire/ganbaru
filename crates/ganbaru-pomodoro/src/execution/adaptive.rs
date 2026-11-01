@@ -16,15 +16,25 @@ use crate::adaptive::replay::dataset::from_read;
 use crate::adaptive::replay::models::GateOptions;
 use crate::adaptive::replay::{decide_candidate, default_candidates, evaluate, select_for_context};
 use crate::adaptive::snapshots::SnapshotIds;
-use crate::reads::{load_adaptive_history_tx, load_adaptive_replay_dataset_tx};
+use crate::reads::{
+    AdaptiveEvidenceError, load_adaptive_history_tx, load_adaptive_replay_dataset_tx,
+};
 
 const HISTORY_SEGMENT_LIMIT: i64 = 80;
 const MAX_LOCAL_INSTANTS: usize = 4096;
 const REPLAY_OPPORTUNITY_LIMIT: i64 = 50;
+const LOCAL_INSTANT_LIMIT_MESSAGE: &str = "Adaptive local-day evidence exceeds its instant limit";
 
 impl Session {
+    /// Choose the adaptive rhythm for this transition.
+    ///
+    /// Replicated evidence can outgrow its bounds, and a linked device must not
+    /// be able to stop local Focus that way. Oversized current history returns
+    /// `None`, which keeps the configured rhythm with no decision row. Oversized
+    /// replay evidence keeps the baseline decision and considers no candidate.
+    /// Evidence is never truncated, and `adaptive_degraded` records the reason.
     pub(super) async fn adaptive_decision(
-        &self,
+        &mut self,
         tx: &mut Transaction<'_, Sqlite>,
         configuration: &FocusConfiguration,
         planned_start_ms: i64,
@@ -37,11 +47,19 @@ impl Session {
         }
         let resolver = self
             .local_time
-            .as_ref()
+            .clone()
             .ok_or_else(|| invalid_state("Native adaptive local-time adapter is unavailable"))?;
         let started_at = format_timestamp(now_ms)?;
         let history =
-            load_adaptive_history_tx(tx, &started_at, POLICY_ID, HISTORY_SEGMENT_LIMIT).await?;
+            match load_adaptive_history_tx(tx, &started_at, POLICY_ID, HISTORY_SEGMENT_LIMIT).await
+            {
+                Ok(history) => history,
+                Err(AdaptiveEvidenceError::Oversized(message)) => {
+                    self.adaptive_degraded = Some(message);
+                    return Ok(None);
+                }
+                Err(AdaptiveEvidenceError::Storage(message)) => return Err(message.into()),
+            };
         let input = AdaptiveDecisionInput {
             started_at,
             planned_start: format_timestamp(if is_run_start {
@@ -59,30 +77,38 @@ impl Session {
             },
             history: Some(history.into()),
         };
-        let dataset = if is_run_start {
-            Some(from_read(
-                load_adaptive_replay_dataset_tx(
-                    tx,
-                    &input.started_at,
-                    POLICY_ID,
-                    REPLAY_OPPORTUNITY_LIMIT,
-                    HISTORY_SEGMENT_LIMIT,
-                )
-                .await?,
-            )?)
+        let mut dataset = if is_run_start {
+            match load_adaptive_replay_dataset_tx(
+                tx,
+                &input.started_at,
+                POLICY_ID,
+                REPLAY_OPPORTUNITY_LIMIT,
+                HISTORY_SEGMENT_LIMIT,
+            )
+            .await
+            {
+                Ok(read) => Some(from_read(read)?),
+                Err(AdaptiveEvidenceError::Oversized(message)) => {
+                    self.adaptive_degraded = Some(message);
+                    None
+                }
+                Err(AdaptiveEvidenceError::Storage(message)) => return Err(message.into()),
+            }
         } else {
             None
         };
-        let mut instants = decision_local_instants(&input)?;
+        // The bounded segment window keeps the current input under the limit alone.
+        let input_instants = decision_local_instants(&input)?;
+        let mut instants = input_instants.clone();
         if let Some(dataset) = &dataset {
             for opportunity in &dataset.opportunities {
                 instants.extend(decision_local_instants(&opportunity.input)?);
             }
         }
         if instants.len() > MAX_LOCAL_INSTANTS {
-            return Err(invalid_state(
-                "Adaptive local-day evidence exceeds its instant limit",
-            ));
+            self.adaptive_degraded = Some(LOCAL_INSTANT_LIMIT_MESSAGE.to_owned());
+            dataset = None;
+            instants = input_instants;
         }
         let facts = resolver.resolve(instants.clone()).await?;
         if facts.len() != instants.len()

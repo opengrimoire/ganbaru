@@ -11,10 +11,17 @@ use chrono::Timelike;
 use super::*;
 use crate::adaptive::models::{CountRhythm, LocalTimeFact, LocalTimeFacts};
 
+const DAY: i64 = 24 * 60 * MINUTE;
+/// One row past the bound on each adaptive evidence domain.
+const EVIDENCE_ROWS_OVER_LIMIT: i64 = 4097;
+/// One more than the replay window, so its oldest opportunity also reads 80 segments.
+const REPLAY_FLOOD_RUNS: i64 = 51;
+
 #[derive(Default)]
 struct TestLocalTime {
     fail: AtomicBool,
     calls: AtomicUsize,
+    largest_request: AtomicUsize,
     incomplete: bool,
 }
 
@@ -26,6 +33,8 @@ impl FocusLocalTimeResolver for TestLocalTime {
     {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            self.largest_request
+                .fetch_max(instants.len(), Ordering::Relaxed);
             if self.fail.load(Ordering::Relaxed) {
                 return Err(decisions::invalid_state("Injected native timezone failure"));
             }
@@ -86,7 +95,6 @@ async fn seed_completed_focus_history(pool: &SqlitePool) {
 
 async fn seed_completed_focus_history_before(pool: &SqlitePool, before: i64) {
     use crate::{PomodoroRunClosure, PomodoroRunWrite, PomodoroSegmentWrite, writes};
-    const DAY: i64 = 24 * 60 * MINUTE;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
     for index in 1..=10 {
         let start = before - index * DAY;
@@ -148,7 +156,13 @@ async fn seed_completed_focus_history_before(pool: &SqlitePool, before: i64) {
     tx.commit().await.unwrap();
 }
 
-async fn seed_accepted_replay_candidates(pool: &SqlitePool, resolver: &TestLocalTime) {
+/// Record one accepted run-start opportunity at `start`.
+async fn seed_replay_run(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    resolver: &TestLocalTime,
+    index: i64,
+    start: i64,
+) {
     use crate::adaptive::{
         decision::{AdaptiveDecisionInput, POLICY_ID, decision_local_instants},
         replay::{decide_candidate, default_candidates},
@@ -158,103 +172,395 @@ async fn seed_accepted_replay_candidates(pool: &SqlitePool, resolver: &TestLocal
         PomodoroRunClosure, PomodoroRunWrite, PomodoroSegmentWrite,
         reads::load_adaptive_history_tx, writes,
     };
-    const DAY: i64 = 24 * 60 * MINUTE;
+    let at = persistence::format_timestamp(start).unwrap();
+    let end = persistence::format_timestamp(start + 240 * MINUTE).unwrap();
+    let history = load_adaptive_history_tx(tx, &at, POLICY_ID, 80)
+        .await
+        .unwrap();
+    let input = AdaptiveDecisionInput {
+        started_at: at.clone(),
+        planned_start: at.clone(),
+        planned_end: end.clone(),
+        current_rhythm: CountRhythm::BASELINE,
+        idle_detection_enabled: true,
+        history: Some(history.into()),
+    };
+    let facts = resolver
+        .resolve(decision_local_instants(&input).unwrap())
+        .await
+        .unwrap();
+    let decision = decide_candidate(&input, &default_candidates()[0], &facts).unwrap();
+    let run_id = format!("replay-run-{index}");
+    let segment_id = format!("replay-segment-{index}");
+    let snapshot = run_start_snapshot(
+        &decision,
+        SnapshotIds {
+            run: run_id.clone(),
+            segment: segment_id.clone(),
+            context: format!("replay-context-{index}"),
+            decision: format!("replay-decision-{index}"),
+            assignment: format!("replay-assignment-{index}"),
+        },
+        Vec::new(),
+    );
+    let date = chrono::DateTime::from_timestamp_millis(start)
+        .unwrap()
+        .format("%Y-%m-%d")
+        .to_string();
+    let ended = persistence::format_timestamp(
+        start + decision.selected_rhythm.focus_duration_minutes * MINUTE,
+    )
+    .unwrap();
+    writes::insert_run_tx(
+        tx,
+        &PomodoroRunWrite {
+            id: run_id.clone(),
+            event_id: "focus-event".to_owned(),
+            event_date: date.clone(),
+            planned_start: at.clone(),
+            planned_end: end,
+            started_at: at.clone(),
+            rhythm: decision.selected_rhythm.into_rhythm(),
+            rhythm_source: "preset".to_owned(),
+            preset_key: Some("adaptive".to_owned()),
+            idle_timeout_minutes: Some(1),
+            event_title_snapshot: None,
+            inherited_focus_minutes: 0,
+            inherited_rhythm_position: 1,
+            inherited_from_run_id: None,
+            start_trigger: "manual".to_owned(),
+            adaptive_snapshot: Some(snapshot),
+        },
+        &PomodoroSegmentWrite {
+            id: segment_id,
+            event_id: "focus-event".to_owned(),
+            event_date: date,
+            run_id: run_id.clone(),
+            rhythm_position: 1,
+            phase: "focus".to_owned(),
+            planned_start: at.clone(),
+            planned_end: ended.clone(),
+            actual_start: Some(at),
+            actual_end: None,
+            pauses: Vec::new(),
+            status: "active".to_owned(),
+            end_reason: None,
+        },
+    )
+    .await
+    .unwrap();
+    writes::close_run_tx(
+        tx,
+        &PomodoroRunClosure {
+            run_id,
+            ended_at: ended,
+            end_reason: "completed".to_owned(),
+            segment_status: "completed".to_owned(),
+            segment_end_reason: "completed".to_owned(),
+            event_type: "complete".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn seed_accepted_replay_candidates(pool: &SqlitePool, resolver: &TestLocalTime) {
     seed_completed_focus_history_before(pool, START - 10 * DAY).await;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
     for index in (1..=4).rev() {
-        let start = START - index * DAY;
-        let at = persistence::format_timestamp(start).unwrap();
-        let end = persistence::format_timestamp(start + 240 * MINUTE).unwrap();
-        let history = load_adaptive_history_tx(&mut tx, &at, POLICY_ID, 80)
-            .await
-            .unwrap();
-        let input = AdaptiveDecisionInput {
-            started_at: at.clone(),
-            planned_start: at.clone(),
-            planned_end: end.clone(),
-            current_rhythm: CountRhythm::BASELINE,
-            idle_detection_enabled: true,
-            history: Some(history.into()),
-        };
-        let facts = resolver
-            .resolve(decision_local_instants(&input).unwrap())
-            .await
-            .unwrap();
-        let decision = decide_candidate(&input, &default_candidates()[0], &facts).unwrap();
-        let run_id = format!("replay-run-{index}");
-        let segment_id = format!("replay-segment-{index}");
-        let snapshot = run_start_snapshot(
-            &decision,
-            SnapshotIds {
-                run: run_id.clone(),
-                segment: segment_id.clone(),
-                context: format!("replay-context-{index}"),
-                decision: format!("replay-decision-{index}"),
-                assignment: format!("replay-assignment-{index}"),
-            },
-            Vec::new(),
-        );
-        let date = chrono::DateTime::from_timestamp_millis(start)
-            .unwrap()
-            .format("%Y-%m-%d")
-            .to_string();
-        let ended = persistence::format_timestamp(
-            start + decision.selected_rhythm.focus_duration_minutes * MINUTE,
+        seed_replay_run(&mut tx, resolver, index, START - index * DAY).await;
+    }
+    tx.commit().await.unwrap();
+}
+
+/// Add `count` closed focus segments to a run, one per minute from `from_ms`.
+async fn seed_closed_segments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: &str,
+    from_ms: i64,
+    count: i64,
+) {
+    sqlx::query(
+        "WITH RECURSIVE items(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM items WHERE n + 1 < ?3)
+         INSERT INTO pomodoro_segments (id, event_id, event_date, run_id, rhythm_position, phase,
+            planned_start, planned_end, actual_start, actual_end, status, end_reason)
+         SELECT ?1 || '-closed-' || n, 'focus-event', date(?2), ?1, 1, 'focus',
+            strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '+' || n || ' minutes'),
+            strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '+' || (n + 1) || ' minutes'),
+            strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '+' || n || ' minutes'),
+            strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '+' || n || ' minutes', '+30 seconds'),
+            'completed', 'completed'
+         FROM items",
+    )
+    .bind(run_id)
+    .bind(persistence::format_timestamp(from_ms).unwrap())
+    .bind(count)
+    .execute(&mut **tx)
+    .await
+    .unwrap();
+}
+
+/// Give five seeded history segments every pause a segment may hold, which
+/// passes each segment's own limit and exceeds the aggregate pause evidence limit.
+async fn seed_oversized_pauses(pool: &SqlitePool) {
+    for index in 1..=5 {
+        sqlx::query(
+            "WITH RECURSIVE items(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM items WHERE n + 1 < ?2)
+             INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, ended_at, reason, detected_at)
+             SELECT s.id, n,
+                strftime('%Y-%m-%dT%H:%M:%fZ', s.actual_start, '+' || n || ' seconds'),
+                strftime('%Y-%m-%dT%H:%M:%fZ', s.actual_start, '+' || n || '.5 seconds'),
+                'manual',
+                strftime('%Y-%m-%dT%H:%M:%fZ', s.actual_start, '+' || n || ' seconds')
+             FROM pomodoro_segments s CROSS JOIN items WHERE s.id = ?1",
         )
-        .unwrap();
-        writes::insert_run_tx(
-            &mut tx,
-            &PomodoroRunWrite {
-                id: run_id.clone(),
-                event_id: "focus-event".to_owned(),
-                event_date: date.clone(),
-                planned_start: at.clone(),
-                planned_end: end,
-                started_at: at.clone(),
-                rhythm: decision.selected_rhythm.into_rhythm(),
-                rhythm_source: "preset".to_owned(),
-                preset_key: Some("adaptive".to_owned()),
-                idle_timeout_minutes: Some(1),
-                event_title_snapshot: None,
-                inherited_focus_minutes: 0,
-                inherited_rhythm_position: 1,
-                inherited_from_run_id: None,
-                start_trigger: "manual".to_owned(),
-                adaptive_snapshot: Some(snapshot),
-            },
-            &PomodoroSegmentWrite {
-                id: segment_id,
-                event_id: "focus-event".to_owned(),
-                event_date: date,
-                run_id: run_id.clone(),
-                rhythm_position: 1,
-                phase: "focus".to_owned(),
-                planned_start: at.clone(),
-                planned_end: ended.clone(),
-                actual_start: Some(at),
-                actual_end: None,
-                pauses: Vec::new(),
-                status: "active".to_owned(),
-                end_reason: None,
-            },
-        )
-        .await
-        .unwrap();
-        writes::close_run_tx(
-            &mut tx,
-            &PomodoroRunClosure {
-                run_id,
-                ended_at: ended,
-                end_reason: "completed".to_owned(),
-                segment_status: "completed".to_owned(),
-                segment_end_reason: "completed".to_owned(),
-                event_type: "complete".to_owned(),
-            },
-        )
+        .bind(format!("history-segment-{index}"))
+        .bind(persistence::MAX_SEGMENT_PAUSES)
+        .execute(pool)
         .await
         .unwrap();
     }
-    tx.commit().await.unwrap();
+}
+
+/// Exceed the run event evidence limit by one row on a single seeded run.
+async fn seed_oversized_run_events(pool: &SqlitePool) {
+    sqlx::query(
+        "WITH RECURSIVE items(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM items WHERE n + 1 < ?1)
+         INSERT INTO pomodoro_run_events (id, run_id, segment_id, event_type, occurred_at, phase, reason)
+         SELECT 'flood-event-' || n, s.run_id, s.id, 'pause_start',
+            strftime('%Y-%m-%dT%H:%M:%fZ', s.actual_start, '+' || n || ' seconds'), 'focus', 'manual'
+         FROM pomodoro_segments s CROSS JOIN items WHERE s.id = 'history-segment-1'",
+    )
+    .bind(EVIDENCE_ROWS_OVER_LIMIT)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The transition must commit and report why it skipped adaptive evidence.
+fn accepted_degraded(
+    result: Result<FocusExecutionSnapshot, FocusExecutionError>,
+    reason: &str,
+) -> FocusExecutionSnapshot {
+    assert!(
+        result.is_ok(),
+        "oversized adaptive evidence failed the Focus transition: {:?}",
+        result.err()
+    );
+    let snapshot = result.unwrap();
+    assert!(
+        snapshot
+            .adaptive_degraded
+            .as_deref()
+            .is_some_and(|message| message.contains(reason)),
+        "{:?} does not report {reason}",
+        snapshot.adaptive_degraded
+    );
+    snapshot
+}
+
+/// The decision the commitment reaches from its current history alone.
+async fn baseline_rhythm(
+    pool: &SqlitePool,
+    configured: &FocusExecutionContext,
+    resolver: &TestLocalTime,
+) -> PomodoroRunRhythm {
+    use crate::adaptive::decision::{
+        AdaptiveDecisionInput, POLICY_ID, decide_run_start, decision_local_instants,
+    };
+    use crate::reads::load_adaptive_history_tx;
+    let at = persistence::format_timestamp(configured.now_ms).unwrap();
+    let commitment = configured.commitment.as_ref().unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let history = load_adaptive_history_tx(&mut tx, &at, POLICY_ID, 80)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    let input = AdaptiveDecisionInput {
+        started_at: at,
+        planned_start: persistence::format_timestamp(commitment.start_ms).unwrap(),
+        planned_end: persistence::format_timestamp(commitment.end_ms).unwrap(),
+        current_rhythm: CountRhythm::from_rhythm(&commitment.configuration.rhythm).unwrap(),
+        idle_detection_enabled: true,
+        history: Some(history.into()),
+    };
+    let facts = resolver
+        .resolve(decision_local_instants(&input).unwrap())
+        .await
+        .unwrap();
+    decide_run_start(&input, &facts)
+        .unwrap()
+        .selected_rhythm
+        .into_rhythm()
+}
+
+async fn run_start_candidates(pool: &SqlitePool, run_id: &str) -> Vec<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT candidate_id FROM pomodoro_adaptive_decisions WHERE run_id = ? AND opportunity_kind = 'run_start'",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn decision_count(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM pomodoro_adaptive_decisions")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn adaptive_start_keeps_the_rhythm_on_oversized_evidence() {
+    block_on(async {
+        for (reason, oversized) in [("pause evidence", true), ("run event evidence", false)] {
+            let pool = pool().await;
+            seed_completed_focus_history(&pool).await;
+            if oversized {
+                seed_oversized_pauses(&pool).await;
+            } else {
+                seed_oversized_run_events(&pool).await;
+            }
+            let resolver = Arc::new(TestLocalTime::default());
+            let rhythm = CountRhythm {
+                focus_duration_minutes: 45,
+                ..CountRhythm::BASELINE
+            }
+            .into_rhythm();
+            let mut configured = adaptive_context(START, resolver.clone());
+            configured.commitment.as_mut().unwrap().configuration.rhythm = rhythm.clone();
+            let started = accepted_degraded(
+                execute(&pool, &adaptive_start_command(), &configured).await,
+                reason,
+            );
+            assert_eq!(started.mode, FocusMode::Running);
+            assert_eq!(started.run.as_ref().unwrap().configuration.rhythm, rhythm);
+            assert_eq!(decision_count(&pool).await, 0);
+
+            configured.now_ms = START + 2 * MINUTE;
+            let advanced = accepted_degraded(
+                execute(
+                    &pool,
+                    &command("adaptive-break", started.revision, FocusIntent::Advance),
+                    &configured,
+                )
+                .await,
+                reason,
+            );
+            assert_eq!(
+                advanced.segment.as_ref().unwrap().phase,
+                FocusPhase::ShortBreak
+            );
+            assert_eq!(advanced.run.as_ref().unwrap().configuration.rhythm, rhythm);
+            assert_eq!(decision_count(&pool).await, 0);
+            let restored = focus_read_execution_snapshot(&pool, configured.now_ms + 1)
+                .await
+                .unwrap();
+            assert_eq!(restored.run, advanced.run);
+        }
+    });
+}
+
+#[test]
+fn adaptive_start_keeps_the_baseline_decision_on_oversized_replay_evidence() {
+    block_on(async {
+        let pool = pool().await;
+        let resolver = Arc::new(TestLocalTime::default());
+        seed_accepted_replay_candidates(&pool, &resolver).await;
+        // Replay windows reach the oversized segments; the current window stops short of them.
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        seed_closed_segments(&mut tx, "replay-run-1", START - 12 * 60 * MINUTE, 80).await;
+        tx.commit().await.unwrap();
+        seed_oversized_pauses(&pool).await;
+        let configured = adaptive_context(START, resolver.clone());
+        let baseline = baseline_rhythm(&pool, &configured, &resolver).await;
+        let started = accepted_degraded(
+            execute(&pool, &adaptive_start_command(), &configured).await,
+            "pause evidence",
+        );
+        let run = started.run.as_ref().unwrap();
+        assert_eq!(run.configuration.rhythm, baseline);
+        assert_eq!(run_start_candidates(&pool, &run.id).await, vec![None]);
+    });
+}
+
+#[test]
+fn adaptive_start_keeps_the_baseline_decision_past_the_local_instant_limit() {
+    block_on(async {
+        let pool = pool().await;
+        let resolver = Arc::new(TestLocalTime::default());
+        seed_completed_focus_history_before(&pool, START - REPLAY_FLOOD_RUNS * DAY).await;
+        // Each opportunity reads the 80 disjoint segments that follow the next older one.
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        for index in (1..=REPLAY_FLOOD_RUNS).rev() {
+            let start = START - index * DAY;
+            seed_replay_run(&mut tx, &resolver, index, start).await;
+            let run = format!("replay-run-{index}");
+            seed_closed_segments(&mut tx, &run, start + 120 * MINUTE, 80).await;
+        }
+        tx.commit().await.unwrap();
+        let configured = adaptive_context(START, resolver.clone());
+        let baseline = baseline_rhythm(&pool, &configured, &resolver).await;
+        let started = accepted_degraded(
+            execute(&pool, &adaptive_start_command(), &configured).await,
+            "instant limit",
+        );
+        let run = started.run.as_ref().unwrap();
+        assert_eq!(run.configuration.rhythm, baseline);
+        assert_eq!(run_start_candidates(&pool, &run.id).await, vec![None]);
+        assert!(resolver.largest_request.load(Ordering::Relaxed) <= 4096);
+    });
+}
+
+#[test]
+fn adaptive_automatic_start_commits_and_reports_oversized_evidence() {
+    block_on(async {
+        let pool = pool().await;
+        seed_completed_focus_history(&pool).await;
+        seed_oversized_pauses(&pool).await;
+        let resolver = Arc::new(TestLocalTime::default());
+        let configured = adaptive_context(START + 1000, resolver);
+        let observation = FocusObservation::AutomaticAdmission(FocusActivityObservation {
+            observed_at_ms: configured.now_ms,
+            idle_ms: Some(0),
+            webcam_in_use: false,
+        });
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let result = focus_apply_observation_tx(&mut tx, &observation, &configured).await;
+        let started = accepted_degraded(result, "pause evidence");
+        tx.commit().await.unwrap();
+        assert_eq!(started.mode, FocusMode::Running);
+        assert_eq!(decision_count(&pool).await, 0);
+    });
+}
+
+#[test]
+fn adaptive_calendar_retarget_commits_and_reports_oversized_evidence() {
+    block_on(async {
+        let pool = pool().await;
+        seed_completed_focus_history(&pool).await;
+        let initial = start(&pool).await;
+        seed_oversized_pauses(&pool).await;
+        let mut target = super::calendar::target(&pool, START + 1000).await;
+        target.local_time = Some(Arc::new(TestLocalTime::default()));
+        let configuration = &mut target.commitment.as_mut().unwrap().configuration;
+        configuration.rhythm = CountRhythm::BASELINE.into_rhythm();
+        configuration.rhythm_source = "preset".to_owned();
+        configuration.preset_key = Some("adaptive".to_owned());
+        let change = super::calendar::change(&initial);
+        let mut tx = pool.begin().await.unwrap();
+        let result = focus_retarget_calendar_tx(&mut tx, initial.revision, &change, &target).await;
+        let retargeted = accepted_degraded(result, "pause evidence");
+        tx.commit().await.unwrap();
+        let run = retargeted.run.as_ref().unwrap();
+        assert_ne!(run.id, initial.run.as_ref().unwrap().id);
+        assert_eq!(
+            run.configuration.rhythm,
+            CountRhythm::BASELINE.into_rhythm()
+        );
+        assert_eq!(decision_count(&pool).await, 0);
+    });
 }
 
 #[test]
@@ -339,7 +645,7 @@ fn adaptive_execution_rejects_fractional_replay_evidence_and_can_retry_after_rep
 }
 
 #[test]
-fn oversized_adaptive_aggregate_rolls_back_execution_revision_and_receipt_before_retry() {
+fn oversized_adaptive_aggregate_degrades_and_commits_the_start() {
     use crate::adaptive::decision::POLICY_ID;
     use crate::execution::persistence::format_timestamp;
 
@@ -355,14 +661,13 @@ fn oversized_adaptive_aggregate_rolls_back_execution_revision_and_receipt_before
             .bind(format_timestamp(START - MINUTE).unwrap()).execute(&pool).await.unwrap();
         sqlx::query("WITH RECURSIVE items(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM items WHERE n < 100001) INSERT INTO pomodoro_adaptive_outcomes (id, assignment_id, outcome_window, outcome_key, numeric_value, measured_at) SELECT 'budget-outcome-' || n, 'budget-assignment', 'run', 'clean_focus_seconds', 1, ? FROM items")
             .bind(format_timestamp(START - MINUTE).unwrap()).execute(&pool).await.unwrap();
-        let configured = adaptive_context(START, resolver);
+        let configured = adaptive_context(START, resolver.clone());
         let request = adaptive_start_command();
-        let error = execute(&pool, &request, &configured).await.unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("aggregate exceeds its input work budget")
+        let result = accepted_degraded(
+            execute(&pool, &request, &configured).await,
+            "aggregate exceeds its input work budget",
         );
+        let run_id = result.run.as_ref().unwrap().id.clone();
         let open: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM pomodoro_runs WHERE ended_at IS NULL")
                 .fetch_one(&pool)
@@ -377,22 +682,41 @@ fn oversized_adaptive_aggregate_rolls_back_execution_revision_and_receipt_before
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!((open, revision, receipt_count), (0, 0, 0));
+        assert_eq!((open, revision, receipt_count), (1, 1, 1));
+        assert!(run_start_candidates(&pool, &run_id).await.is_empty());
+        let retry = execute(&pool, &request, &configured).await.unwrap();
+        assert_eq!(retry.revision, result.revision);
+        assert_eq!(retry.run, result.run);
+        assert_eq!(retry.adaptive_degraded, None);
         sqlx::query(
             "DELETE FROM pomodoro_adaptive_outcomes WHERE assignment_id = 'budget-assignment'",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let result = execute(&pool, &request, &configured).await.unwrap();
-        assert_eq!(result.mode, FocusMode::Running);
-        let revision: i64 = sqlx::query_scalar("SELECT revision FROM pomodoro_execution_state")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(revision, 1);
-        let retry = execute(&pool, &request, &configured).await.unwrap();
-        assert_eq!(retry, result);
+        let stopped = execute(
+            &pool,
+            &command("budget-stop", result.revision, FocusIntent::Stop),
+            &adaptive_context(START + MINUTE, resolver.clone()),
+        )
+        .await
+        .unwrap();
+        let next = execute(
+            &pool,
+            &command(
+                "budget-restart",
+                stopped.revision,
+                FocusIntent::StartScheduled {
+                    occurrence_id: None,
+                },
+            ),
+            &adaptive_context(START + 2 * MINUTE, resolver),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next.adaptive_degraded, None);
+        let next_id = &next.run.as_ref().unwrap().id;
+        assert_eq!(run_start_candidates(&pool, next_id).await.len(), 1);
     });
 }
 

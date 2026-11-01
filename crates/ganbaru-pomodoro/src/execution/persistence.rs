@@ -468,6 +468,7 @@ pub(super) async fn load_snapshot(
         return_started_at_ms: state.return_started_at_ms,
         activity_source_unavailable: state.activity_source_unavailable,
         effective_idle_timeout_minutes,
+        adaptive_degraded: None,
     })
 }
 

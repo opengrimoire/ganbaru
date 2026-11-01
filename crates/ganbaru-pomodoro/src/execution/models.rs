@@ -312,6 +312,10 @@ pub struct FocusExecutionSnapshot {
     pub return_started_at_ms: Option<i64>,
     pub activity_source_unavailable: bool,
     pub effective_idle_timeout_minutes: Option<i64>,
+    /// Why this transition skipped adaptive evidence, for the native owner's log.
+    /// It stays off the wire and out of stored receipts.
+    #[serde(skip)]
+    pub adaptive_degraded: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

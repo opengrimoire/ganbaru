@@ -230,7 +230,7 @@ fn removing_focus_configuration_closes_only_committed_execution_during_retarget(
     });
 }
 
-async fn target(pool: &SqlitePool, now: i64) -> FocusExecutionContext {
+pub(super) async fn target(pool: &SqlitePool, now: i64) -> FocusExecutionContext {
     sqlx::query("INSERT INTO calendar_events (id, title, start_time, end_time, timezone, rrule) VALUES ('edited', 'Edited', ?, ?, 'Pacific/Kiritimati', 'FREQ=DAILY;COUNT=3')")
         .bind(persistence::format_timestamp(START).unwrap()).bind(persistence::format_timestamp(START + 20 * MINUTE).unwrap()).execute(pool).await.unwrap();
     let mut target = context(now);
@@ -242,7 +242,7 @@ async fn target(pool: &SqlitePool, now: i64) -> FocusExecutionContext {
     target
 }
 
-fn change(snapshot: &FocusExecutionSnapshot) -> FocusCalendarReferenceChange {
+pub(super) fn change(snapshot: &FocusExecutionSnapshot) -> FocusCalendarReferenceChange {
     let run = snapshot.run.as_ref().unwrap();
     FocusCalendarReferenceChange {
         run_id: run.id.clone(),

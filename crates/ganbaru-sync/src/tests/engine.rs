@@ -4,19 +4,24 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Field, GroupMask, TableId, VersionVector, WriterId,
+    Change, Content, Envelope, Field, GroupId, GroupMask, GroupValue, Hlc, TableId, Value,
+    VersionVector, WriterId,
 };
 
+use super::authorization::{seal_at, view};
 use super::block_on;
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
     MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
+use super::holds::sealed_create;
 use super::replica::{
-    Replica, START_MS, VAULT_ID, converge, device_id, mint_writers, pair, person, rank,
-    spread_devices,
+    Replica, START_MS, VAULT_ID, converge, device_id, forge_change, mint_writers, pair, person,
+    rank, spread_devices,
 };
 use crate::error::failpoints;
+use crate::manifest::group_id;
+use crate::manifest::vault::chat::{CONVERSATIONS_TABLE, conversation_group};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::{ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
@@ -2387,4 +2392,265 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
         ]
     );
     assert!(!roots.contains(&MEMBERSHIPS_TABLE));
+}
+
+const ITEM: &str = "item-1";
+const ITEM_CREATED: GroupId = group_id(0);
+const ITEM_LABEL: GroupId = group_id(1);
+const FIRST_CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
+const OTHER_CREATED_AT: &str = "2027-06-01T00:00:00.000Z";
+const FORGED_LABEL: &str = "Forged";
+
+/// SQL creating [`ITEM`] with `created_at`.
+fn add_item(created_at: &str) -> String {
+    format!(
+        "INSERT INTO fixture_items (id, created_at, label, label_edits)
+         VALUES ('{ITEM}', '{created_at}', 'One', 0)"
+    )
+}
+
+/// Three replicas holding [`ITEM`] as the first created it. The second has sealed since, so the
+/// next operation of the first two covers the item's versions.
+async fn replicas_with_item() -> Vec<Replica> {
+    let mut replicas = replicas(3).await;
+    replicas[0].exec(&add_item(FIRST_CREATED_AT)).await;
+    converge(&mut replicas).await;
+    seed_note(&mut replicas[1]).await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// `change` with `fields` as the value of `group`.
+pub(super) fn with_group(mut change: Change, group: GroupId, fields: Vec<Field>) -> Change {
+    let value = GroupValue::new(change.table, group, Value::new(fields).unwrap());
+    *change
+        .groups
+        .iter_mut()
+        .find(|value| value.group == group)
+        .unwrap() = value;
+    change
+}
+
+pub(super) fn text_field(text: &str) -> Field {
+    Field::Text(text.to_owned())
+}
+
+/// The Create of [`ITEM`] again, with another Immutable value and another label.
+async fn forged_item_create(creator: &mut Replica) -> Change {
+    let create = sealed_create(creator, ITEMS_TABLE, ITEM).await;
+    let create = with_group(create, ITEM_CREATED, vec![text_field(OTHER_CREATED_AT)]);
+    with_group(create, ITEM_LABEL, vec![text_field(FORGED_LABEL)])
+}
+
+/// Stores `forged` on `replica`, as a valid operation, and applies it.
+async fn take_forged(replica: &mut Replica, forged: &[u8]) {
+    assert_eq!(replica.receive(&[forged.to_vec()]).await, vec![STORED]);
+    replica.apply_all().await.unwrap();
+}
+
+/// Asserts that both `receivers` take the forged Create of [`ITEM`] the same way: the first
+/// created value stands and the mutable group merges.
+async fn assert_item_keeps_created_at(
+    replicas: &mut [Replica],
+    receivers: [usize; 2],
+    forged: &[u8],
+) {
+    for index in receivers {
+        let replica = &mut replicas[index];
+        take_forged(replica, forged).await;
+        assert_eq!(
+            replica
+                .scalar_text("SELECT created_at FROM fixture_items WHERE id = 'item-1'")
+                .await
+                .as_deref(),
+            Some(FIRST_CREATED_AT),
+            "replica {index} keeps the first value"
+        );
+        assert_eq!(
+            replica
+                .scalar_text("SELECT label FROM fixture_items WHERE id = 'item-1'")
+                .await
+                .as_deref(),
+            Some(FORGED_LABEL),
+            "replica {index} merges the mutable group"
+        );
+    }
+    let [first, second] = receivers;
+    assert_eq!(replicas[first].dump().await, replicas[second].dump().await);
+}
+
+#[test]
+fn create_covering_an_immutable_version_keeps_it() {
+    const FIRST_PROJECT: &str = "project-routine-learning";
+    const OTHER_PROJECT: &str = "project-routine-reading";
+    const CONVERSATION: &str = "conversation:design";
+    const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
+    const LATER_ACTIVITY: &str = "2027-02-01T00:00:00.000Z";
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        for replica in &mut replicas {
+            let now = replica.now_ms;
+            replica
+                .engine
+                .seed_captures(&mut replica.conn, now)
+                .await
+                .unwrap();
+        }
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO chat_conversations
+                    (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+                 VALUES ('{CONVERSATION}', '{FIRST_PROJECT}', 'channel', '{CREATED_AT}',
+                         '{CREATED_AT}', '{CREATED_AT}')"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        seed_note(&mut replicas[1]).await;
+        converge(&mut replicas).await;
+
+        let create = sealed_create(&mut replicas[0], CONVERSATIONS_TABLE, CONVERSATION).await;
+        let create = with_group(
+            create,
+            conversation_group::CREATED,
+            vec![
+                text_field(OTHER_PROJECT),
+                text_field("channel"),
+                text_field(CREATED_AT),
+            ],
+        );
+        let create = with_group(
+            create,
+            conversation_group::ACTIVITY,
+            vec![text_field(LATER_ACTIVITY)],
+        );
+        let forged = forge_change(&mut replicas[1], create).await;
+
+        for index in [0, 2] {
+            let replica = &mut replicas[index];
+            take_forged(replica, &forged).await;
+            assert_eq!(
+                replica
+                    .scalar_text(&format!(
+                        "SELECT project_id FROM chat_conversations WHERE id = '{CONVERSATION}'"
+                    ))
+                    .await
+                    .as_deref(),
+                Some(FIRST_PROJECT),
+                "replica {index} keeps the first value"
+            );
+            assert_eq!(
+                replica
+                    .scalar_text(&format!(
+                        "SELECT last_activity_at FROM chat_conversations
+                         WHERE id = '{CONVERSATION}'"
+                    ))
+                    .await
+                    .as_deref(),
+                Some(LATER_ACTIVITY),
+                "replica {index} merges the mutable group"
+            );
+        }
+        assert_eq!(replicas[0].dump().await, replicas[2].dump().await);
+    });
+}
+
+#[test]
+fn create_with_a_low_clock_cannot_replace_an_immutable_version() {
+    block_on(async {
+        let mut replicas = replicas_with_item().await;
+        let change = forged_item_create(&mut replicas[0]).await;
+        let forger = &mut replicas[1];
+        let revision = view(forger).await.revision;
+        let last = forger.own_ops().await.pop().unwrap();
+        let forged = seal_at(
+            &last,
+            &forger.identity.key,
+            Content::Changes(vec![change]),
+            revision,
+            Hlc::new(1, 0),
+        );
+        assert_item_keeps_created_at(&mut replicas, [0, 2], &forged).await;
+    });
+}
+
+#[test]
+fn create_by_the_same_writer_keeps_its_immutable_version() {
+    block_on(async {
+        let mut replicas = replicas_with_item().await;
+        let change = forged_item_create(&mut replicas[0]).await;
+        let forged = forge_change(&mut replicas[0], change).await;
+        assert_item_keeps_created_at(&mut replicas, [1, 2], &forged).await;
+    });
+}
+
+#[test]
+fn concurrent_creates_converge_on_the_lowest_clock() {
+    const CLOCK_AHEAD_MS: u64 = 1_000;
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        // The first writer's clock runs ahead, so the second wins whichever writer ranks lower.
+        replicas[0].now_ms += CLOCK_AHEAD_MS;
+        replicas[0].exec(&add_item(OTHER_CREATED_AT)).await;
+        replicas[1].exec(&add_item(FIRST_CREATED_AT)).await;
+        replicas[0].seal().await.unwrap();
+        replicas[1].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .scalar_text("SELECT created_at FROM fixture_items WHERE id = 'item-1'")
+                    .await
+                    .as_deref(),
+                Some(FIRST_CREATED_AT)
+            );
+        }
+    });
+}
+
+#[test]
+fn derived_key_readd_rewrites_every_group() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "first"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_memberships WHERE item_id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        replicas[1]
+            .exec(&add_membership("item-1", "a-1", "again"))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let adder: String = replicas[1]
+            .writer()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let groups = TEST_MANIFEST.table(MEMBERSHIPS_TABLE).unwrap().groups.len();
+        let groups = i64::try_from(groups).unwrap();
+        let by_adder = format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {{table}} AND writer_id = x'{adder}'"
+        );
+        for replica in &mut replicas {
+            assert_eq!(memberships(replica).await, ["item-1>a-1:again"]);
+            assert_eq!(membership_rows(replica, &by_adder).await, groups);
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_register_versions WHERE table_id = {table}"
+                )
+                .await,
+                groups
+            );
+        }
+    });
 }

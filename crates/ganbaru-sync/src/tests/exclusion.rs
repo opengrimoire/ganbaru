@@ -3,15 +3,17 @@
 //! theirs, anchor marks release retained versions, and the late changes they leave are derived
 //! the same way on every replica and decided once.
 
-use ganbaru_sync_contracts::{Entry, LateResolution, LateRow, ResolveLate, RowKey};
+use ganbaru_sync_contracts::{Entry, Field, LateResolution, LateRow, ResolveLate, RowKey, Value};
 
 use super::authorization::admin_entry;
 use super::block_on;
-use super::replica::{Replica, converge, device_admin, quoted, rank};
+use super::engine::{text_field, with_group};
+use super::holds::sealed_create;
+use super::replica::{Replica, converge, device_admin, forge_change, quoted, rank};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
-use crate::manifest::vault::quick_notes::NOTES_TABLE;
+use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{HoldReason, LateChange, LateKind, StoreOutcome};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
@@ -74,6 +76,19 @@ pub(super) async fn title(replica: &mut Replica, id: &str) -> Option<String> {
         .scalar_text(&format!(
             "SELECT title FROM quick_notes WHERE id = {}",
             quoted(id)
+        ))
+        .await
+}
+
+/// How many versions of the Immutable creation group a note holds.
+pub(super) async fn created_versions(replica: &mut Replica, id: &str) -> i64 {
+    replica
+        .count(&format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {} AND row_key = {} AND group_id = {}",
+            NOTES_TABLE.0,
+            quoted(id),
+            note_group::CREATED.get()
         ))
         .await
 }
@@ -818,5 +833,379 @@ fn status_counts_own_changes_until_the_anchor_confirms_storing_them() {
             .await
             .unwrap();
         assert_eq!(status.unconfirmed, 0, "the anchor confirms its own changes");
+    });
+}
+
+#[test]
+fn republish_fills_an_immutable_group_left_without_a_version() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(214).await;
+        edit(&mut honest, &note("note-shared", "Draft", 0)).await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+
+        // The honest edit keeps the row in the merge state after the late create leaves it.
+        edit(&mut removed, &note("note-late", "Late", 1)).await;
+        let created_at = removed
+            .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-late'")
+            .await;
+        deliver(&mut honest, &mut removed).await;
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Honest' WHERE id = 'note-late'",
+        )
+        .await;
+        let device = removed.device_id.clone();
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(created_versions(replica, "note-late").await, 0);
+        }
+
+        let late = late_changes(&mut anchor).await.remove(0);
+        anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &late,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap();
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: NOTES_TABLE,
+                    row: RowKey::new("note-late".to_owned()).unwrap(),
+                    resolution: LateResolution::Restore,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        let mut observer = Replica::new(3, 214).await;
+        deliver(&mut observer, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest, &mut observer] {
+            assert_eq!(created_versions(replica, "note-late").await, 1);
+            assert_eq!(
+                replica
+                    .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-late'")
+                    .await,
+                created_at
+            );
+        }
+    });
+}
+
+const HELD_NOTE: &str = "note-held";
+const SECOND_CREATED_AT: &str = "2027-01-03T00:00:00.000Z";
+
+/// The anchor, two writers the anchor has not heard from, a writer of further Creates, and the
+/// two replicas whose delivery orders the tests compare.
+struct Orders {
+    anchor: Replica,
+    first: Replica,
+    second: Replica,
+    third: Replica,
+    before: Replica,
+    after: Replica,
+}
+
+impl Orders {
+    async fn new(salt: u64) -> Self {
+        let (mut anchor, mut first, mut second) = trio(salt).await;
+        let (mut third, mut before, mut after) = (
+            Replica::new(3, salt).await,
+            Replica::new(4, salt).await,
+            Replica::new(5, salt).await,
+        );
+        edit(&mut second, &note("note-shared", "Draft", 0)).await;
+        spread(&mut anchor, &mut second).await;
+        for replica in [&mut first, &mut third, &mut before, &mut after] {
+            deliver(replica, &mut anchor).await;
+        }
+        Self {
+            anchor,
+            first,
+            second,
+            third,
+            before,
+            after,
+        }
+    }
+
+    /// Removes `device` on the anchor and delivers the removal to `replica`.
+    async fn remove(anchor: &mut Replica, replica: &mut Replica, device: &str) {
+        anchor.remove(device).await.unwrap();
+        deliver(replica, anchor).await;
+    }
+}
+
+/// The Create of [`HELD_NOTE`] that `creator` sealed, signed again by `writer` with `created_at`.
+/// A forged operation sees what the writer's head saw, so `writer` first seals an edit.
+async fn create_again(creator: &mut Replica, writer: &mut Replica, created_at: &str) -> Vec<u8> {
+    edit(
+        writer,
+        &format!(
+            "UPDATE quick_notes SET title = {} WHERE id = 'note-shared'",
+            quoted(created_at)
+        ),
+    )
+    .await;
+    let create = sealed_create(creator, NOTES_TABLE, HELD_NOTE).await;
+    let create = with_group(create, note_group::CREATED, vec![text_field(created_at)]);
+    forge_change(writer, create).await
+}
+
+/// Stores `operations` on `replica` and applies them.
+async fn take(replica: &mut Replica, operations: &[Vec<u8>]) {
+    replica.receive(operations).await;
+    replica.apply_all().await.unwrap();
+}
+
+/// The creation times of the versions `replica` holds for [`HELD_NOTE`], sorted. They come from
+/// the merge state, since a row a late create started stays hidden until an admin restores it.
+async fn held_versions(replica: &mut Replica) -> Vec<String> {
+    let values: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT value FROM sync_register_versions
+         WHERE table_id = ? AND row_key = ? AND group_id = ?",
+    )
+    .bind(i64::from(NOTES_TABLE.0))
+    .bind(HELD_NOTE)
+    .bind(i64::from(note_group::CREATED.get()))
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap();
+    let mut times: Vec<String> = values
+        .iter()
+        .map(|value| match Value::decode(value).unwrap().fields() {
+            [Field::Text(text)] => text.clone(),
+            fields => panic!("a creation value holds one text field, not {fields:?}"),
+        })
+        .collect();
+    times.sort();
+    times
+}
+
+/// Kept rows that hold back a Create of [`HELD_NOTE`].
+async fn held_rows(replica: &mut Replica) -> i64 {
+    replica
+        .count(&format!(
+            "SELECT count(*) FROM sync_displaced_versions WHERE row_key = {} AND group_id = {}",
+            quoted(HELD_NOTE),
+            note_group::CREATED.get()
+        ))
+        .await
+}
+
+/// Asserts that both delivery orders hold the creation times `expected`, in sorted order, and
+/// end in the same state.
+async fn assert_same_end(orders: &mut Orders, expected: &[&str]) {
+    let Orders { before, after, .. } = orders;
+    assert_eq!(held_versions(before).await, expected, "the first order");
+    assert_eq!(held_versions(after).await, expected, "the second order");
+    assert_eq!(before.dump().await, after.dump().await);
+}
+
+/// A Create that saw a version the removal excludes ends the same whether it arrived before or
+/// after the removal, and its creation time stands.
+#[test]
+fn covering_create_and_exclusion_converge_in_either_order() {
+    block_on(async {
+        let mut orders = Orders::new(215).await;
+        let Orders {
+            anchor,
+            first,
+            second,
+            before,
+            after,
+            ..
+        } = &mut orders;
+        edit(first, &note(HELD_NOTE, "Late", 1)).await;
+        deliver(second, first).await;
+        let covering = create_again(first, second, EDITED_AT).await;
+
+        deliver(before, second).await;
+        take(before, std::slice::from_ref(&covering)).await;
+        assert_eq!(created_versions(before, HELD_NOTE).await, 1);
+        let device = first.device_id.clone();
+        Orders::remove(anchor, before, &device).await;
+
+        deliver(after, anchor).await;
+        deliver(after, second).await;
+        take(after, std::slice::from_ref(&covering)).await;
+
+        assert_same_end(&mut orders, &[EDITED_AT]).await;
+    });
+}
+
+/// The anchor confirming the version a Create saw puts it past every exclusion, which releases
+/// the Create's kept value.
+#[test]
+fn anchor_mark_releases_a_held_create() {
+    block_on(async {
+        let mut orders = Orders::new(219).await;
+        let Orders {
+            anchor,
+            first,
+            second,
+            before,
+            ..
+        } = &mut orders;
+        edit(first, &note(HELD_NOTE, "Late", 1)).await;
+        deliver(second, first).await;
+        let covering = create_again(first, second, EDITED_AT).await;
+        deliver(before, second).await;
+        take(before, std::slice::from_ref(&covering)).await;
+        assert_eq!(held_rows(before).await, 1);
+
+        deliver(anchor, second).await;
+        edit(
+            anchor,
+            "UPDATE quick_notes SET title = 'Seen' WHERE id = 'note-shared'",
+        )
+        .await;
+        deliver(before, anchor).await;
+        assert_eq!(held_rows(before).await, 0);
+    });
+}
+
+/// A Create stays out while another version it saw remains, and comes in once none does.
+#[test]
+fn excluding_one_of_two_covered_versions_keeps_the_other() {
+    block_on(async {
+        let mut orders = Orders::new(216).await;
+        let Orders {
+            anchor,
+            first,
+            second,
+            third,
+            before,
+            after,
+        } = &mut orders;
+        edit(first, &note(HELD_NOTE, "One", 1)).await;
+        edit(second, &note(HELD_NOTE, "Two", 1)).await;
+        let kept = second
+            .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-held'")
+            .await
+            .unwrap();
+        deliver(third, first).await;
+        deliver(third, second).await;
+        let covering = create_again(first, third, EDITED_AT).await;
+
+        deliver(before, third).await;
+        take(before, std::slice::from_ref(&covering)).await;
+        let (removed, removed_too) = (first.device_id.clone(), second.device_id.clone());
+        Orders::remove(anchor, before, &removed).await;
+
+        deliver(after, anchor).await;
+        deliver(after, third).await;
+        take(after, std::slice::from_ref(&covering)).await;
+
+        assert_same_end(&mut orders, &[kept.as_str()]).await;
+
+        let Orders {
+            anchor,
+            before,
+            after,
+            ..
+        } = &mut orders;
+        Orders::remove(anchor, before, &removed_too).await;
+        deliver(after, anchor).await;
+        assert_same_end(&mut orders, &[EDITED_AT]).await;
+    });
+}
+
+/// A version the Create did not see stays beside it, as it would had the Create arrived after
+/// the removal, and the two compete for the Immutable minimum.
+#[test]
+fn held_create_competes_with_a_version_it_did_not_see() {
+    block_on(async {
+        let mut orders = Orders::new(217).await;
+        let Orders {
+            anchor,
+            first,
+            second,
+            third,
+            before,
+            after,
+        } = &mut orders;
+        edit(first, &note(HELD_NOTE, "One", 1)).await;
+        edit(second, &note(HELD_NOTE, "Two", 1)).await;
+        let unseen = second
+            .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-held'")
+            .await
+            .unwrap();
+        deliver(third, first).await;
+        let covering = create_again(first, third, EDITED_AT).await;
+
+        deliver(before, third).await;
+        deliver(before, second).await;
+        take(before, std::slice::from_ref(&covering)).await;
+        let device = first.device_id.clone();
+        Orders::remove(anchor, before, &device).await;
+
+        deliver(after, anchor).await;
+        deliver(after, third).await;
+        deliver(after, second).await;
+        take(after, std::slice::from_ref(&covering)).await;
+
+        assert_same_end(&mut orders, &[unseen.as_str(), EDITED_AT]).await;
+    });
+}
+
+/// Of two Creates where the later saw the earlier, the earlier comes in, and the later stays
+/// recoverable from it through a second removal.
+#[test]
+fn chained_creates_restore_in_causal_order() {
+    block_on(async {
+        let mut orders = Orders::new(218).await;
+        let Orders {
+            anchor,
+            first,
+            second,
+            third,
+            before,
+            after,
+        } = &mut orders;
+        edit(first, &note(HELD_NOTE, "Late", 1)).await;
+        deliver(second, first).await;
+        let earlier = create_again(first, second, EDITED_AT).await;
+        deliver(third, first).await;
+        deliver(third, second).await;
+        take(third, std::slice::from_ref(&earlier)).await;
+        let later = create_again(first, third, SECOND_CREATED_AT).await;
+        let chain = [earlier, later];
+
+        deliver(before, second).await;
+        deliver(before, third).await;
+        take(before, &chain).await;
+        let (removed, removed_too) = (first.device_id.clone(), second.device_id.clone());
+        Orders::remove(anchor, before, &removed).await;
+
+        deliver(after, anchor).await;
+        deliver(after, second).await;
+        deliver(after, third).await;
+        take(after, &chain).await;
+
+        assert_same_end(&mut orders, &[EDITED_AT]).await;
+
+        let Orders {
+            anchor,
+            before,
+            after,
+            ..
+        } = &mut orders;
+        Orders::remove(anchor, before, &removed_too).await;
+        deliver(after, anchor).await;
+        assert_same_end(&mut orders, &[SECOND_CREATED_AT]).await;
     });
 }

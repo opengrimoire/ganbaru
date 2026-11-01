@@ -11,7 +11,9 @@ use ganbaru_sync_contracts::{Content, DeviceRole, Envelope, ProposalRejection, W
 
 use super::authorization::{admin_entry, forge_handover, remove_entry, superseded, view};
 use super::block_on;
-use super::exclusion::{deliver, displaced, edit, late_changes, note, own_head, title};
+use super::exclusion::{
+    created_versions, deliver, displaced, edit, late_changes, note, own_head, title,
+};
 use super::replica::{
     ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_admin, device_id, enroll_entry, pair,
     person, proposal,
@@ -689,6 +691,13 @@ async fn change_branch_row_on_the_anchor(space: u64, statement: &str, expected: 
             0
         );
         assert_eq!(title(replica, "note-3").await.as_deref(), expected);
+        if expected.is_some() {
+            assert_eq!(
+                created_versions(replica, "note-3").await,
+                1,
+                "the re-sealed creation fills the Immutable group"
+            );
+        }
         replica.check_invariants().await;
     }
 }

@@ -387,7 +387,7 @@ const LONG_CHAIN_ROWS: usize = 262_144;
 
 /// A row of a chain that alternates between the cycle tables. Row 0 is the root.
 fn chain_row(index: usize) -> RowRef {
-    let table = if index % 2 == 0 {
+    let table = if index.is_multiple_of(2) {
         CYCLE_A_TABLE
     } else {
         CYCLE_B_TABLE
@@ -450,7 +450,7 @@ fn cascade_roots_walks_each_row_once() {
             repair::repair_changes(&replica.engine, &mut replica.conn, &mut visibility, &dirty)
                 .await
                 .unwrap();
-        let tombstones: BTreeSet<(TableId, String, Option<(TableId, String)>)> = repairs
+        let tombstones: BTreeSet<(TableId, String, Option<RowRef>)> = repairs
             .iter()
             .map(|change| {
                 assert_eq!(change.action, ChangeAction::Tombstone);

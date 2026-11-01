@@ -7,14 +7,16 @@ use std::sync::{Mutex, OnceLock};
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
-    Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, RecoverySeed, Remove,
-    SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector,
-    WriterCertificate, WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
+    AdminKeyPair, Change, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole,
+    Digest32, Enroll, Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection,
+    RecoverySeed, Remove, SignedCertificate, SignedCharter, SignedProposal, SpaceId, TableId,
+    Value, VersionVector, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+    sign_charter, sign_proposal,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
+use super::authorization::{forge, view};
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
@@ -1358,6 +1360,12 @@ pub(super) fn pair(replicas: &mut [Replica], a: usize, b: usize) -> (&mut Replic
         let (low, high) = replicas.split_at_mut(a);
         (&mut high[0], &mut low[b])
     }
+}
+
+/// The next operation of `replica`'s writer carrying `change`, which the engine would not seal.
+pub(super) async fn forge_change(replica: &mut Replica, change: Change) -> Vec<u8> {
+    let revision = view(replica).await.revision;
+    forge(replica, Content::Changes(vec![change]), revision).await
 }
 
 /// A SQL string literal.

@@ -5,16 +5,18 @@
 //! views stay separate, a primary folder survives its archiving, and a deletion that missed a
 //! concurrent edit or insert is offered for recovery.
 
-use ganbaru_sync_contracts::{GroupMask, derived_key};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Field, GroupId, GroupMask, GroupValue, RowKey, Value, derived_key,
+};
 
 use super::block_on;
-use super::replica::{Replica, converge, device_id, pair, quoted, rank};
+use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, rank};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
-    DEPENDENCIES, DEPENDENCIES_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE, PROJECTS,
-    PROJECTS_TABLE, TASKS, VALUES, dependency_group, value_group,
+    DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE, PROJECTS,
+    PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
 };
-use crate::{ChangeNotice, ConflictRow};
+use crate::{ChangeNotice, ConflictRow, HoldReason, StoreOutcome};
 
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -24,6 +26,7 @@ const SECTION_A: &str = "section-a";
 const SECTION_B: &str = "section-b";
 const OPEN: &str = "status-open";
 const DONE: &str = "status-done";
+const EXTERNAL_FOLDER: &str = "folder-external";
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -897,6 +900,80 @@ fn projects_a_folder_made_primary_while_archived_converges_without_a_failure() {
                 [format!("folder-external:{EDITED}")]
             );
         }
+    });
+}
+
+/// A write of one timestamp group of the external folder alone.
+fn folder_timestamp_write(group: GroupId, timestamp: &str) -> Change {
+    Change {
+        table: FOLDERS_TABLE,
+        row: RowKey::new(EXTERNAL_FOLDER).unwrap(),
+        action: ChangeAction::Write,
+        groups: vec![GroupValue::new(
+            FOLDERS_TABLE,
+            group,
+            Value::new(vec![Field::Text(timestamp.to_string())]).unwrap(),
+        )],
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+#[test]
+fn folder_timestamps_must_be_rfc3339_utc() {
+    block_on(async {
+        let created = quoted(CREATED);
+        let sql = format!(
+            "INSERT INTO project_working_folders
+                 (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
+             VALUES ({folder}, {project}, 'Repository', 'external', NULL, {created}, {created});",
+            folder = quoted(EXTERNAL_FOLDER),
+            project = quoted(PROJECT),
+        );
+        let refused = [
+            (folder_group::ARCHIVED, "not a timestamp at all"),
+            (folder_group::ARCHIVED, "2027-01-02T00:00:00.000+01:00"),
+            (folder_group::UPDATED, "not a timestamp at all"),
+            (folder_group::UPDATED, "2027-01-02T00:00:00.000+01:00"),
+        ];
+        let mut replicas = shared(refused.len() + 2, &sql).await;
+        let stored_timestamps = "SELECT updated_at || '|' || coalesce(archived_at, '-')
+                                 FROM project_working_folders WHERE id = 'folder-external'";
+
+        for (index, (group, timestamp)) in refused.into_iter().enumerate() {
+            let forged =
+                forge_change(&mut replicas[0], folder_timestamp_write(group, timestamp)).await;
+            let receiver = &mut replicas[index + 1];
+            assert_eq!(
+                receiver.receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "{timestamp}"
+            );
+            receiver.apply_all().await.unwrap();
+            assert_eq!(
+                texts(receiver, stored_timestamps).await,
+                [format!("{CREATED}|-")],
+                "{timestamp}"
+            );
+        }
+
+        let valid = forge_change(
+            &mut replicas[0],
+            folder_timestamp_write(folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+        let receiver = replicas.last_mut().unwrap();
+        assert_eq!(
+            receiver.receive(&[valid]).await,
+            vec![StoreOutcome::Stored { held: None }]
+        );
+        receiver.apply_all().await.unwrap();
+        assert_eq!(
+            texts(receiver, stored_timestamps).await,
+            [format!("{CREATED}|{EDITED}")]
+        );
     });
 }
 

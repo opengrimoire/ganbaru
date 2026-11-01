@@ -890,6 +890,63 @@ mod tests {
     }
 
     #[test]
+    fn folder_timestamps_accept_only_rfc3339_utc() {
+        let adapter = ProjectsAdapter;
+        let created_group = |created_at: &str| {
+            value(vec![
+                text("project"),
+                text("external"),
+                Field::Null,
+                Field::Integer(10),
+                text(created_at),
+            ])
+        };
+        let register = |timestamp: &str| value(vec![text(timestamp)]);
+        for valid in [
+            "2027-01-02T00:00:00.000Z",
+            "2027-01-02T00:00:00Z",
+            "2027-01-02T00:00:00.000+00:00",
+        ] {
+            for (group, value) in [
+                (folder_group::CREATED, created_group(valid)),
+                (folder_group::ARCHIVED, register(valid)),
+                (folder_group::UPDATED, register(valid)),
+            ] {
+                assert!(adapter.validate(FOLDERS_TABLE, group, &value).is_ok());
+            }
+        }
+        for invalid in [
+            "not a timestamp at all",
+            "2027-01-02 00:00:00.000Z",
+            "2027-01-02T00:00:00.000",
+            "2027-01-02T00:00:00.000+01:00",
+            "2027-13-02T00:00:00.000Z",
+        ] {
+            for (group, value) in [
+                (folder_group::CREATED, created_group(invalid)),
+                (folder_group::ARCHIVED, register(invalid)),
+                (folder_group::UPDATED, register(invalid)),
+            ] {
+                assert!(
+                    adapter.validate(FOLDERS_TABLE, group, &value).is_err(),
+                    "{invalid}"
+                );
+            }
+        }
+        let unarchived = value(vec![Field::Null]);
+        assert!(
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::ARCHIVED, &unarchived)
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::UPDATED, &unarchived)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn custom_field_values_hold_at_most_one_scalar() {
         let adapter = ProjectsAdapter;
         let blob = Field::Blob(codec::encode(&OPTION_VALUES, &[]).unwrap());

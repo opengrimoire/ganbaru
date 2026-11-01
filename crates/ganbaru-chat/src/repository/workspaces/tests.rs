@@ -117,3 +117,25 @@ async fn external_folder_removal_ignores_the_folder_execution_environment() {
     assert!(!folder_exists(&pool).await);
     assert_eq!(environments().await, 0);
 }
+
+#[tokio::test]
+async fn list_workspaces_skips_a_row_that_does_not_parse() {
+    let pool = migrated_pool().await;
+    insert_project_with_external_folder(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, sort_order, archived_at)
+         VALUES ('working-folder:unreadable', 'project-removal', 'Unreadable', 'external', 20,
+                 'not a timestamp at all');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let folders = list_workspaces(&pool)
+        .await
+        .expect("an unreadable row must not fail the list");
+
+    let ids: Vec<&str> = folders.iter().map(|folder| folder.id.as_str()).collect();
+    assert_eq!(ids, ["working-folder:project-removal", EXTERNAL_FOLDER_ID]);
+}

@@ -76,6 +76,7 @@ pub(crate) fn value_at<'a>(view: &'a Value, path: &str) -> Option<&'a Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::configuration::behavior_from_view;
     use serde_json::json;
 
     fn row(key: &str, value: &str) -> PortableRow {
@@ -136,5 +137,19 @@ mod tests {
         let device = json!({ KEY: true });
         let view = compose(&rows, device.as_object().unwrap());
         assert_eq!(value_at(&view, KEY), Some(&json!(true)));
+    }
+
+    #[test]
+    fn synced_paste_confirmation_row_has_no_effect() {
+        const KEY: &str = "chat.behavior.confirmMultilineTerminalPaste";
+        let rows = [row(KEY, "false")];
+
+        let synced_only = compose(&rows, &Map::new());
+        assert_eq!(value_at(&synced_only, KEY), None);
+        assert!(behavior_from_view(&synced_only).confirm_multiline_terminal_paste);
+
+        let device = json!({ KEY: false });
+        let local_choice = compose(&[row(KEY, "true")], device.as_object().unwrap());
+        assert!(!behavior_from_view(&local_choice).confirm_multiline_terminal_paste);
     }
 }

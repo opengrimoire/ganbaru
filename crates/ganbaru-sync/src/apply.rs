@@ -64,6 +64,10 @@ const PREFETCH_ENVELOPE_BYTES: usize = 64 * 1024;
 /// rows that follow it. Their repairs seal as one group in as many operations as they need.
 pub(crate) const MAX_STALE_ROWS_PER_WRITE: usize = crate::MAX_CHANGES_PER_SEAL;
 
+/// Refused rows retried per finish beyond the rows dirty in that finish.
+#[cfg(test)]
+pub(crate) const MAX_REFUSED_RETRIES_PER_FINISH: usize = 16;
+
 /// A writer whose operations carry clocks far ahead of local time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockWarning {

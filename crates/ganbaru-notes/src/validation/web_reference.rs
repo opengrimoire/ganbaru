@@ -62,9 +62,9 @@ pub fn is_storable_web_content_url(url: &str) -> bool {
     WEB_SCHEMES.contains(&scheme.as_str()) || is_host_port_draft(url)
 }
 
-/// Whether exported documents may write `url` as a followable link for a `block_type` web reference.
+/// Whether exported documents may write `url` as a followable link for a `block_type` web reference or media block.
 ///
-/// Bookmarks export any explicit scheme other than the blocked ones. Embeds and link previews export only `http` and `https`. Scheme-less drafts never become links, so an exported file cannot point at paths relative to itself.
+/// Bookmarks export any explicit scheme other than the blocked ones. Every other block type exports only `http` and `https`. Scheme-less drafts never become links, so an exported file cannot point at paths relative to itself.
 pub fn is_exportable_web_reference_url(block_type: &str, url: &str) -> bool {
     if url.chars().any(char::is_control) {
         return false;

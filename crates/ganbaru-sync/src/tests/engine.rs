@@ -1490,7 +1490,7 @@ fn a_child_edited_while_its_parent_is_deleted_is_offered_under_the_parent() {
 
 /// Stores what `from` has and `to` lacks, then applies on `to` without a local writer, so no
 /// repair is sealed and rows hidden by cascade stay live.
-async fn pull_without_writer(to: &mut Replica, from: &mut Replica) {
+pub(super) async fn pull_without_writer(to: &mut Replica, from: &mut Replica) {
     let known = to.stored_vector().await;
     let ops = from.ops_since(&known).await;
     to.receive(&ops).await;

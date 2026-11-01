@@ -16,8 +16,12 @@
 //! its descendants; restoring or discarding then seals deletions that cover every retained
 //! version of the root and of each row in the group holding an unseen edit, which closes the
 //! offer on every replica.
+//!
+//! Coverage is one version vector, the join of every context a row's causes lead to, kept per row
+//! so a chain of causes is walked once.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use ganbaru_sync_contracts::{
     Change, ChangeAction, GroupId, Hlc, RowKey, TableId, Value, VersionVector, WriterId,
@@ -31,7 +35,9 @@ use crate::manifest::TableSpec;
 use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::repair;
 use crate::seal::{SealReport, SealSlot, existence_write};
-use crate::visibility::{DeriveScope, MAX_REDIRECT_DEPTH, RowRef, Visibility, removed};
+use crate::visibility::{
+    CascadeWalk, DeriveScope, MAX_REDIRECT_DEPTH, RowRef, Visibility, removed,
+};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, log, sql};
 
 /// A deleted row, with its deleted descendants, holding edits the deletion did not see.
@@ -138,7 +144,7 @@ async fn tombstones(
 }
 
 /// The context of an operation, advanced past the operation itself.
-async fn operation_context(
+pub(crate) async fn operation_context(
     conn: &mut SqliteConnection,
     batch: &mut Batch,
     writer: WriterId,
@@ -201,9 +207,90 @@ async fn deleted(
     })
 }
 
-/// The contexts that decide which retained versions of a deleted row its deletion saw. A
-/// tombstone whose cause is no longer deleted covers its own context.
+/// What a row covers itself, and the rows whose coverage it takes on: a tombstone with a deleted
+/// cause follows that cause, any other tombstone covers its own context, and a live row covers
+/// its winning removal and follows the cause of its cascade.
+async fn direct_coverage(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<(VersionVector, Vec<RowRef>)> {
+    let mut own = VersionVector::new();
+    let mut successors = Vec::new();
+    match merge::row_state(conn, *table, key).await? {
+        None => {}
+        Some(RowState::Tombstoned) => {
+            for tombstone in tombstones(conn, *table, key).await? {
+                match tombstone.cause {
+                    Some(cause) if deleted(engine, conn, visibility, &cause).await? => {
+                        successors.push(cause);
+                    }
+                    _ => own.merge(
+                        &operation_context(conn, batch, tombstone.writer, tombstone.seq).await?,
+                    ),
+                }
+            }
+        }
+        Some(RowState::Live) => {
+            let spec = table_spec(engine, *table)?;
+            if let Some(context) = removal_context(engine, conn, batch, spec, key).await? {
+                own.merge(&context);
+            }
+            let roots = visibility.cascade_roots(engine, conn, *table, key).await?;
+            if let Some(root) = roots.cause() {
+                successors.push((root.table, root.key.clone()));
+            }
+        }
+    }
+    Ok((own, successors))
+}
+
+/// The version vector that decides which retained versions of a deleted row its deletion saw: a
+/// version is seen when a context the row's causes lead to covers it, and the join of those
+/// contexts covers exactly what one of them does. A tombstone whose cause is no longer deleted
+/// covers its own context. Each row is read once per [`Visibility`], so rows that share a chain of
+/// causes share the walk.
 pub(crate) async fn coverage(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    visibility: &mut Visibility,
+    table: TableId,
+    key: &str,
+) -> SyncResult<Arc<VersionVector>> {
+    let start = (table, key.to_string());
+    if let Some(known) = visibility.known_coverage(&start) {
+        return Ok(known);
+    }
+    let mut walk = CascadeWalk::new(start.clone());
+    while let Some(row) = walk.next_row() {
+        if let Some(known) = visibility.known_coverage(&row) {
+            walk.supply(row, known.as_ref().clone(), Vec::new());
+        } else {
+            #[cfg(test)]
+            {
+                visibility.coverage_rows += 1;
+            }
+            let (own, successors) = direct_coverage(engine, conn, batch, visibility, &row).await?;
+            walk.supply(row, own, successors);
+        }
+    }
+    visibility.keep_coverage(walk.finish());
+    visibility
+        .known_coverage(&start)
+        .ok_or_else(|| corrupt("coverage walk left its start row"))
+}
+
+/// Whether a version is outside the coverage.
+pub(crate) fn uncovered(version: &Version, covering: &VersionVector) -> bool {
+    !covering.covers(&version.writer, version.seq)
+}
+
+/// Each context of the walk [`coverage`] joins, listed one by one, to compare a verdict against.
+#[cfg(test)]
+pub(crate) async fn coverage_contexts(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
@@ -250,18 +337,11 @@ pub(crate) async fn coverage(
     Ok(contexts)
 }
 
-/// Whether a version is covered by none of the contexts.
-fn uncovered(version: &Version, covering: &[VersionVector]) -> bool {
-    !covering
-        .iter()
-        .any(|context| context.covers(&version.writer, version.seq))
-}
-
 /// Retained versions of recoverable groups that the coverage does not cover.
 fn unseen<'v>(
     table: &TableSpec,
     versions: &'v [Version],
-    covering: &[VersionVector],
+    covering: &VersionVector,
 ) -> impl Iterator<Item = &'v Version> {
     versions.iter().filter(move |version| {
         table

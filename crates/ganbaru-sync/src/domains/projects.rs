@@ -9,6 +9,7 @@
 use std::fmt;
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_working_folders::UtcTimestamp;
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -430,11 +431,23 @@ fn is_contained_relative_path(path: &str) -> bool {
         && path.split('/').all(|segment| segment != "..")
 }
 
+/// A working folder timestamp every reader of the row can parse. Reads parse these columns as
+/// [`UtcTimestamp`], so admitting other text would make the stored row unreadable on every device.
+fn folder_timestamp(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    let Field::Text(text) = field else {
+        return Err(AdapterError(what));
+    };
+    UtcTimestamp::new(text.as_str())
+        .map(|_| ())
+        .map_err(|_| AdapterError(what))
+}
+
 fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group == folder_group::CREATED {
-        let [project, kind, path, _, _] = fields(value, "project folder")?;
+        let [project, kind, path, _, created_at] = fields(value, "project folder")?;
         required(project, "project folder project")?;
         one_of(kind, allowed::FOLDER_KINDS, "project folder kind")?;
+        folder_timestamp(created_at, "project folder creation time")?;
         match (kind, path) {
             (Field::Text(kind), Field::Text(path))
                 if kind == "managed" && is_contained_relative_path(path) =>
@@ -461,9 +474,11 @@ fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     } else if group == folder_group::ARCHIVED {
         match fields(value, "project folder archive")? {
             [Field::Null] => Ok(()),
-            [Field::Text(archived)] if archived.len() >= 20 => Ok(()),
-            _ => Err(AdapterError("project folder archive")),
+            [archived] => folder_timestamp(archived, "project folder archive"),
         }
+    } else if group == folder_group::UPDATED {
+        let [updated_at] = fields(value, "project folder update time")?;
+        folder_timestamp(updated_at, "project folder update time")
     } else {
         Ok(())
     }
@@ -887,6 +902,66 @@ mod tests {
         assert!(!is_contained_relative_path(".."));
         assert!(!is_contained_relative_path("projects\\abc"));
         assert!(!is_contained_relative_path(""));
+    }
+
+    #[test]
+    fn folder_timestamps_accept_only_rfc3339_utc() {
+        let adapter = ProjectsAdapter;
+        let created_group = |created_at: &str| {
+            value(vec![
+                text("project"),
+                text("external"),
+                Field::Null,
+                Field::Integer(10),
+                text(created_at),
+            ])
+        };
+        let register = |timestamp: &str| value(vec![text(timestamp)]);
+        for valid in [
+            "2027-01-02T00:00:00.000Z",
+            "2027-01-02T00:00:00Z",
+            "2027-01-02T00:00:00.000+00:00",
+        ] {
+            for (group, value) in [
+                (folder_group::CREATED, created_group(valid)),
+                (folder_group::ARCHIVED, register(valid)),
+                (folder_group::UPDATED, register(valid)),
+            ] {
+                assert!(adapter.validate(FOLDERS_TABLE, group, &value).is_ok());
+            }
+        }
+        for invalid in [
+            "not a timestamp at all",
+            "2027-01-02T00:00:00.000",
+            "2027-01-02T00:00:00.000+01:00",
+            "2027-13-02T00:00:00.000Z",
+            "2027-01-02 00:00:00.000Z",
+            "2027-01-02t00:00:00.000Z",
+            "2027-01-02T00:00:00.000z",
+            "2027-01-02T23:59:60.000Z",
+        ] {
+            for (group, value) in [
+                (folder_group::CREATED, created_group(invalid)),
+                (folder_group::ARCHIVED, register(invalid)),
+                (folder_group::UPDATED, register(invalid)),
+            ] {
+                assert!(
+                    adapter.validate(FOLDERS_TABLE, group, &value).is_err(),
+                    "{invalid}"
+                );
+            }
+        }
+        let unarchived = value(vec![Field::Null]);
+        assert!(
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::ARCHIVED, &unarchived)
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::UPDATED, &unarchived)
+                .is_err()
+        );
     }
 
     #[test]

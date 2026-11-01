@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import utcTimestamps from "../../../test-fixtures/utc-timestamps.json";
 import {
   defaultChatConfiguration,
   parseChatChannel,
@@ -755,6 +756,39 @@ describe("project working-folder contracts", () => {
       bindingStatus: "unbound",
       workingFolder: { ...fixture.workingFolder, updatedAt: "tomorrow" },
     })).toThrow("updatedAt must be an RFC 3339 UTC timestamp");
+  });
+
+  describe("agrees with the Rust timestamp rule on the shared fixture", () => {
+    const folderRead = (updatedAt: string) => ({
+      workingFolder: {
+        id: "workspace-1",
+        projectId: "project-1",
+        displayName: "Frontend",
+        kind: "external",
+        managedRelativePath: null,
+        sortOrder: 10,
+        repositoryKind: "none",
+        repositoryIdentity: null,
+        createdAt: timestamp,
+        updatedAt,
+        archivedAt: null,
+        revision: 1,
+      },
+      bindingStatus: "unbound",
+      canonicalPath: null,
+      lastVerifiedAt: null,
+      currentBranch: null,
+      trust: "untrusted",
+    });
+
+    it.each(utcTimestamps.accepted)("accepts %j", (timestamp) => {
+      expect(parseProjectWorkingFolderRead(folderRead(timestamp)).workingFolder.updatedAt).toBe(timestamp);
+    });
+
+    it.each(utcTimestamps.refused)("refuses %j", (timestamp) => {
+      expect(() => parseProjectWorkingFolderRead(folderRead(timestamp)))
+        .toThrow("updatedAt must be an RFC 3339 UTC timestamp");
+    });
   });
 });
 

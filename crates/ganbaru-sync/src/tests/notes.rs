@@ -12,13 +12,12 @@
 //! same on both sides, a template snapshot replicates whole, and deleting a database block
 //! removes its data source, rows, and values everywhere.
 
-use ganbaru_sync_contracts::{Change, ChangeAction, Content, Field, GroupValue, RowKey, Value};
+use ganbaru_sync_contracts::{Change, ChangeAction, Field, GroupValue, RowKey, Value};
 use sqlx::SqliteConnection;
 
-use super::authorization::{forge, view};
 use super::block_on;
 use super::refusal::take;
-use super::replica::{Replica, converge, quoted, rank};
+use super::replica::{Replica, converge, forge_change, quoted, rank};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::notes::{
@@ -963,12 +962,6 @@ fn option_property_write(option: &str, property: Field) -> Change {
         replaced_by: None,
         cause: None,
     }
-}
-
-/// The next operation of `replica`'s writer carrying `change`, which the engine would not seal.
-async fn forge_change(replica: &mut Replica, change: Change) -> Vec<u8> {
-    let revision = view(replica).await.revision;
-    forge(replica, Content::Changes(vec![change]), revision).await
 }
 
 async fn option_names(replica: &mut Replica) -> Vec<String> {

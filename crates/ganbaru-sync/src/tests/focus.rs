@@ -3,18 +3,21 @@
 //! replicate as Focus operations, runs closed against a concurrently split or deleted event
 //! converge, and each device's activity row replicates as one operation per transition.
 
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Content, Envelope, Field, GroupValue, RowKey, Value,
+};
 use sqlx::Connection;
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
-use super::replica::{Replica, converge, device_id, quoted};
+use super::replica::{Replica, converge, device_id, forge_change, quoted};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::calendar::EVENTS_TABLE;
 use crate::manifest::vault::focus::{
-    DEVICE_ACTIVITY_TABLE, RUN_EVENTS_TABLE, RUNS_TABLE, SEGMENTS_TABLE,
+    DEVICE_ACTIVITY_TABLE, RUN_EVENTS_TABLE, RUNS_TABLE, SEGMENTS_TABLE, segment_group,
 };
-use crate::{SyncError, SyncResult};
+use crate::{HoldReason, StoreOutcome, SyncError, SyncResult};
 
 const EVENT: &str = "event-a";
 const RUN: &str = "run-a";
@@ -26,6 +29,8 @@ const ARCHIVED: &str = "2027-01-06T00:00:00.000Z";
 /// Segments and run events of the run the scenarios close.
 const SEGMENTS: u32 = 3;
 const RUN_EVENTS: u32 = 8;
+/// Position of `status` in the fields of `segment_group::PHASE`.
+const SEGMENT_STATUS_FIELD: usize = 6;
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -675,5 +680,103 @@ fn focus_device_activity_with_a_running_state_and_no_run_stays_captured() {
         let report = replicas[0].seal().await.unwrap();
         assert_eq!(report.sealed_ops, 0);
         assert_eq!(report.invalid_rows.len(), 1);
+    });
+}
+
+/// The create `replica` sealed for the segment `key`.
+async fn sealed_segment(replica: &mut Replica, key: &str) -> Change {
+    replica
+        .own_ops()
+        .await
+        .iter()
+        .filter_map(|bytes| {
+            match Envelope::decode(bytes)
+                .unwrap()
+                .operation()
+                .unwrap()
+                .content
+            {
+                Content::Changes(changes) => Some(changes),
+                _ => None,
+            }
+        })
+        .flatten()
+        .find(|change| {
+            change.table == SEGMENTS_TABLE
+                && change.row.as_str() == key
+                && change.action == ChangeAction::Create
+        })
+        .expect("the segment is sealed")
+}
+
+/// The `PHASE` group of `create` with its status set to `status`.
+fn phase_with_status(create: &Change, status: &str) -> GroupValue {
+    let phase = create
+        .groups
+        .iter()
+        .find(|value| value.group == segment_group::PHASE)
+        .expect("a segment create carries its phase");
+    let mut fields = phase.value.fields().to_vec();
+    fields[SEGMENT_STATUS_FIELD] = Field::Text(status.to_owned());
+    GroupValue::new(
+        SEGMENTS_TABLE,
+        segment_group::PHASE,
+        Value::new(fields).unwrap(),
+    )
+}
+
+/// A writer whose build does not enforce the published statuses can sign an active segment
+/// through either action, and neither reaches a replica's rows.
+#[test]
+fn replicated_active_segment_is_held_invalid() {
+    block_on(async {
+        let mut replicas = closed(3).await;
+        let honest = sealed_segment(&mut replicas[0], &segment_id(RUN, 0)).await;
+        let active = phase_with_status(&honest, "active");
+
+        let create = Change {
+            row: RowKey::new("stray-segment").unwrap(),
+            groups: honest
+                .groups
+                .iter()
+                .map(|value| {
+                    if value.group == segment_group::PHASE {
+                        active.clone()
+                    } else {
+                        value.clone()
+                    }
+                })
+                .collect(),
+            ..honest.clone()
+        };
+        let write = Change {
+            action: ChangeAction::Write,
+            groups: vec![active],
+            ..honest.clone()
+        };
+
+        for (forger, change) in [(1, create), (2, write)] {
+            let forged = forge_change(&mut replicas[forger], change).await;
+            assert_eq!(
+                replicas[0].receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }]
+            );
+        }
+        replicas[0].apply_all().await.unwrap();
+
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM pomodoro_segments WHERE status = 'active'")
+                .await,
+            0
+        );
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM pomodoro_segments WHERE id = 'stray-segment'")
+                .await,
+            0
+        );
     });
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKind, DeviceRole, Digest32, Enroll, Entry,
-    Envelope, Handover, Header, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
+    Envelope, Handover, Header, Hlc, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
     SetRole, SignedProposal, WriterKeyPair, Yield,
 };
 
@@ -117,6 +117,20 @@ pub(super) fn seal_after(
     authorization_revision: u64,
     now_ms: u64,
 ) -> Vec<u8> {
+    let last = Envelope::decode(previous).unwrap().operation().unwrap();
+    let clock = HlcClock::new(last.header.clock).tick(now_ms);
+    seal_at(previous, key, content, authorization_revision, clock)
+}
+
+/// The operation `key` seals with `content` right after `previous` at `clock`, which the engine
+/// would only choose past the writer's last clock.
+pub(super) fn seal_at(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    content: Content,
+    authorization_revision: u64,
+    clock: Hlc,
+) -> Vec<u8> {
     let envelope = Envelope::decode(previous).unwrap();
     let previous = envelope.operation().unwrap();
     Operation {
@@ -125,7 +139,7 @@ pub(super) fn seal_after(
         seq: previous.seq + 1,
         previous_hash: envelope.hash(),
         header: Header {
-            clock: HlcClock::new(previous.header.clock).tick(now_ms),
+            clock,
             manifest_version: previous.header.manifest_version,
             authorization_revision,
             key_epoch: 0,

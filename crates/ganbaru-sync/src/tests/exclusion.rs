@@ -11,7 +11,7 @@ use super::replica::{Replica, converge, device_admin, quoted, rank};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
-use crate::manifest::vault::quick_notes::NOTES_TABLE;
+use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{HoldReason, LateChange, LateKind, StoreOutcome};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
@@ -74,6 +74,19 @@ pub(super) async fn title(replica: &mut Replica, id: &str) -> Option<String> {
         .scalar_text(&format!(
             "SELECT title FROM quick_notes WHERE id = {}",
             quoted(id)
+        ))
+        .await
+}
+
+/// How many versions of the Immutable creation group a note holds.
+pub(super) async fn created_versions(replica: &mut Replica, id: &str) -> i64 {
+    replica
+        .count(&format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {} AND row_key = {} AND group_id = {}",
+            NOTES_TABLE.0,
+            quoted(id),
+            note_group::CREATED.get()
         ))
         .await
 }
@@ -818,5 +831,74 @@ fn status_counts_own_changes_until_the_anchor_confirms_storing_them() {
             .await
             .unwrap();
         assert_eq!(status.unconfirmed, 0, "the anchor confirms its own changes");
+    });
+}
+
+#[test]
+fn republish_fills_an_immutable_group_left_without_a_version() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(214).await;
+        edit(&mut honest, &note("note-shared", "Draft", 0)).await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+
+        // The honest edit keeps the row in the merge state after the late create leaves it.
+        edit(&mut removed, &note("note-late", "Late", 1)).await;
+        let created_at = removed
+            .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-late'")
+            .await;
+        deliver(&mut honest, &mut removed).await;
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Honest' WHERE id = 'note-late'",
+        )
+        .await;
+        let device = removed.device_id.clone();
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(created_versions(replica, "note-late").await, 0);
+        }
+
+        let late = late_changes(&mut anchor).await.remove(0);
+        anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &late,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap();
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: NOTES_TABLE,
+                    row: RowKey::new("note-late".to_owned()).unwrap(),
+                    resolution: LateResolution::Restore,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        let mut observer = Replica::new(3, 214).await;
+        deliver(&mut observer, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest, &mut observer] {
+            assert_eq!(created_versions(replica, "note-late").await, 1);
+            assert_eq!(
+                replica
+                    .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-late'")
+                    .await,
+                created_at
+            );
+        }
     });
 }

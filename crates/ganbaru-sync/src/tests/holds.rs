@@ -940,7 +940,7 @@ async fn narrowed_rows() -> Vec<Replica> {
 }
 
 /// The create `replica` sealed for `key` of `table`.
-async fn sealed_create(replica: &mut Replica, table: TableId, key: &str) -> Change {
+pub(super) async fn sealed_create(replica: &mut Replica, table: TableId, key: &str) -> Change {
     replica
         .own_ops()
         .await

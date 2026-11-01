@@ -25,7 +25,7 @@ pub use identity::{
 };
 pub use request::{
     CARD_NONCE_BYTES, CLOCK_TOLERANCE_DAYS, REQUEST_SIGNATURE_DOMAIN, REQUEST_TTL_DAYS,
-    STATUS_SIGNATURE_DOMAIN, decode_nonce, encode_nonce, is_valid_request_window,
-    request_signature_payload, status_signature_payload,
+    STATUS_SIGNATURE_DOMAIN, STORED_TIME_FORMAT, decode_nonce, encode_nonce, is_stored_timestamp,
+    is_valid_request_window, request_signature_payload, status_signature_payload,
 };
 pub use trust::TrustKind;

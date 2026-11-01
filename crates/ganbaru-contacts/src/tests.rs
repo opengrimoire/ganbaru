@@ -1,8 +1,9 @@
 use crate::{
     CARD_TEXT_PREFIX, CardError, ContactCard, MAX_DISPLAY_NAME_BYTES, MAX_ENDPOINT_HINT_BYTES,
-    PersonKeyPair, PersonPublicKey, SignatureError, TrustKind, decode_card, decode_card_text,
-    decode_nonce, encode_nonce, is_valid_public_key_text, is_valid_request_window, nonces_match,
-    request_signature_payload, sign_card, status_signature_payload, verification_code, verify,
+    PersonKeyPair, PersonPublicKey, STORED_TIME_FORMAT, SignatureError, TrustKind, decode_card,
+    decode_card_text, decode_nonce, encode_nonce, is_stored_timestamp, is_valid_public_key_text,
+    is_valid_request_window, nonces_match, request_signature_payload, sign_card,
+    status_signature_payload, verification_code, verify,
 };
 use chrono::{TimeZone, Utc};
 
@@ -51,6 +52,37 @@ fn request_window_refuses_text_that_sorts_apart_from_its_time() {
     ] {
         assert!(!is_valid_request_window(created, far), "{created}");
     }
+}
+
+#[test]
+fn stored_timestamp_rule_matches_the_frontend_reader() {
+    for readable in [
+        "0000-01-01T00:00:00.000Z",
+        "2028-02-29T23:59:59.999Z",
+        "9999-12-31T23:59:59.999Z",
+        format_stored(Utc.with_ymd_and_hms(2026, 10, 22, 10, 51, 41).unwrap()).as_str(),
+    ] {
+        assert!(is_stored_timestamp(readable), "{readable}");
+    }
+    for unreadable in [
+        "",
+        "+10000-01-01T00:00:00.000Z",
+        "-0001-01-01T00:00:00.000Z",
+        "2026-10-22T10:51:60.000Z",
+        "2026-10-22T23:59:60.500Z",
+        "2026-02-30T00:00:00.000Z",
+        "2026-10-22T24:00:00.000Z",
+        "2026-10-22T10:51:41Z",
+        "2026-10-22T10:51:41.000000Z",
+        "2026-10-22T10:51:41.000+00:00",
+        "zzzzzzzzzzzzzzzzzzzzzzzz",
+    ] {
+        assert!(!is_stored_timestamp(unreadable), "{unreadable}");
+    }
+}
+
+fn format_stored(time: chrono::DateTime<Utc>) -> String {
+    time.format(STORED_TIME_FORMAT).to_string()
 }
 
 #[test]

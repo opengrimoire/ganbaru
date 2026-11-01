@@ -5,7 +5,7 @@
 //! concurrent accept on another. A request answer outranks a pending state, and acceptance
 //! outranks every other answer. A rotated card outranks every card with a lower revision.
 
-use ganbaru_contacts::{is_valid_public_key_text, is_valid_request_window};
+use ganbaru_contacts::{is_stored_timestamp, is_valid_public_key_text, is_valid_request_window};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -19,8 +19,6 @@ pub const PUBLIC_KEY_CHARS: usize = 43;
 pub const MAX_DISPLAY_NAME_CHARS: usize = 160;
 /// Largest palette slot of a contact color.
 pub const MAX_COLOR: i64 = 31;
-/// Fewest characters of a stored timestamp, as the tables check it.
-pub const MIN_TIMESTAMP_CHARS: usize = 20;
 /// Characters of a request id, local or the peer's.
 pub const MAX_REQUEST_ID_CHARS: usize = 160;
 /// Characters of a signed card in its text form.
@@ -89,10 +87,10 @@ fn one_of(field: &Field, allowed: &[&str], what: &'static str) -> Result<(), Ada
 }
 
 fn timestamp(field: &Field) -> Result<(), AdapterError> {
-    if text(field)?.chars().count() >= MIN_TIMESTAMP_CHARS {
+    if is_stored_timestamp(text(field)?) {
         Ok(())
     } else {
-        Err(AdapterError("contacts timestamp is too short"))
+        Err(AdapterError("contacts timestamp"))
     }
 }
 

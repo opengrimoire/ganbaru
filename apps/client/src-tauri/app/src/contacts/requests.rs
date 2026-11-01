@@ -812,13 +812,19 @@ pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-#[cfg(test)]
+/// Closes the pending requests this device may judge. Every device closes rows no reader can
+/// show. Rows judged against a clock are left to the device that receives requests, so one
+/// follower with a bad clock cannot close honest rows for the whole vault.
 pub(crate) async fn sweep_pending_requests(
     pool: &SqlitePool,
-    _follows: bool,
-    now: chrono::DateTime<chrono::Utc>,
+    follows: bool,
+    now: DateTime<Utc>,
 ) -> Result<(), String> {
-    store::expire_stale_requests(pool, now).await
+    if follows {
+        store::close_unreadable_requests(pool, now).await
+    } else {
+        store::expire_stale_requests(pool, now).await
+    }
 }
 
 async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
@@ -826,10 +832,11 @@ async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     let Ok(pool) = contacts_pool(app).await else {
         return Ok(());
     };
-    if let Err(error) = store::expire_stale_requests(&pool, store::now()).await {
+    let follows = follows_coordinator(app).unwrap_or(true);
+    if let Err(error) = sweep_pending_requests(&pool, follows, store::now()).await {
         eprintln!("contact request expiry failed: {error}");
     }
-    if follows_coordinator(app).unwrap_or(true) {
+    if follows {
         return Ok(());
     }
     let Ok(Some(identity)) = super::identity::load_identity(app, &pool).await else {

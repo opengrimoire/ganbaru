@@ -3,7 +3,9 @@
 //! theirs, anchor marks release retained versions, and the late changes they leave are derived
 //! the same way on every replica and decided once.
 
-use ganbaru_sync_contracts::{Entry, Field, LateResolution, LateRow, ResolveLate, RowKey, Value};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Entry, Field, LateResolution, LateRow, ResolveLate, RowKey, Value,
+};
 
 use super::authorization::admin_entry;
 use super::block_on;
@@ -12,6 +14,7 @@ use super::holds::sealed_create;
 use super::replica::{Replica, converge, device_admin, forge_change, quoted, rank};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
+use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{HoldReason, LateChange, LateKind, StoreOutcome};
@@ -352,6 +355,113 @@ fn an_honest_edit_of_a_late_row_keeps_its_effects_and_a_restore_brings_the_row_b
         deliver(&mut honest, &mut anchor).await;
         for replica in [&mut anchor, &mut honest] {
             assert_eq!(replica.domain_dump().await, settled);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// A removed device deletes a row no operation may delete, past its cutoff: the deletion lists no
+/// late change, a listing kept for it seals nothing, and the admin's writer keeps applying on its
+/// peers, which hold such a deletion as invalid.
+#[test]
+fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(215).await;
+        edit(
+            &mut removed,
+            "UPDATE distractions_settings SET desktop_enabled = 0",
+        )
+        .await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        let device = removed.device_id.clone();
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+
+        let forged = forge_change(
+            &mut removed,
+            Change {
+                table: SETTINGS_TABLE,
+                row: RowKey::new(SETTINGS_KEY).unwrap(),
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: None,
+                cause: None,
+            },
+        )
+        .await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                replica.receive(std::slice::from_ref(&forged)).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }]
+            );
+            assert_eq!(late_rows(replica).await, Vec::new());
+        }
+
+        // The seal boundary refuses a listing that reaches it anyway.
+        anchor
+            .exec(&format!(
+                "INSERT INTO sync_late_changes (removal_revision, table_id, row_key, change, mask)
+                 VALUES ({removal}, {table}, {key}, 'tombstone', 0)",
+                table = SETTINGS_TABLE.0,
+                key = quoted(SETTINGS_KEY),
+            ))
+            .await;
+        let listed = late_changes(&mut anchor).await;
+        assert_eq!(listed.len(), 1);
+        let report = anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &listed[0],
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.sealed_ops, 0);
+        assert_eq!(
+            anchor.count("SELECT count(*) FROM sync_tombstones").await,
+            0
+        );
+
+        // The decision still sequences and clears the listing.
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: SETTINGS_TABLE,
+                    row: RowKey::new(SETTINGS_KEY).unwrap(),
+                    resolution: LateResolution::Restore,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+
+        edit(&mut anchor, &note("note-after", "After", 0)).await;
+        deliver(&mut honest, &mut anchor).await;
+        assert_eq!(
+            honest.applied_vector().await.get(&anchor.writer()),
+            anchor.stored_vector().await.get(&anchor.writer()),
+            "operations after the decision apply on peers"
+        );
+        assert_eq!(
+            title(&mut honest, "note-after").await.as_deref(),
+            Some("After")
+        );
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM distractions_settings")
+                    .await,
+                1
+            );
+            assert!(late_changes(replica).await.is_empty());
             replica.check_invariants().await;
         }
     });

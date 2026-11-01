@@ -756,7 +756,8 @@ pub struct TableSpec {
 pub enum Deletion {
     /// Rows are deleted by tombstones, repairs, and cascades.
     Ordinary,
-    /// No replicated operation deletes a row: a tombstone is invalid and repair seals none.
+    /// No replicated operation deletes a row: a tombstone is invalid, repair seals none, and a
+    /// late one is neither listed nor restored.
     Never,
 }
 

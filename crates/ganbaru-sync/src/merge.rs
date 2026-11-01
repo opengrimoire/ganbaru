@@ -268,14 +268,13 @@ pub(crate) fn stored_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Stor
     })
 }
 
-/// A version of a group read across its whole table, whose winners are never elided, from the
-/// columns [`stored_from_row`] reads.
+/// A version of a group that is never elided, from the columns [`stored_from_row`] reads.
 pub(crate) fn version_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Version> {
     let stored = stored_from_row(row, offset)?;
     let value = stored
         .value
         .clone()
-        .ok_or_else(|| corrupt("a group read across its table has an elided value"))?;
+        .ok_or_else(|| corrupt("a group that is never elided has an elided value"))?;
     Ok(stored.into_version(value, false))
 }
 

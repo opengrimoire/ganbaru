@@ -884,7 +884,11 @@ impl Replica {
                 .await
                 .unwrap();
         let stored: BTreeSet<_> = stored.into_iter().collect();
-        assert_eq!(stored, contested, "replica {} contested classes", self.index);
+        assert_eq!(
+            stored, contested,
+            "replica {} contested classes",
+            self.index
+        );
     }
 
     /// Checks invariants that hold between engine calls.
@@ -897,6 +901,7 @@ impl Replica {
             .count("SELECT applying FROM sync_apply_state WHERE singleton = 1")
             .await;
         assert_eq!(applying, 0, "replica {} left applying set", self.index);
+        self.check_class_index().await;
         let stale_index = self
             .count(
                 "SELECT (SELECT count(*) FROM (

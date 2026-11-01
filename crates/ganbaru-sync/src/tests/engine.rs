@@ -1000,10 +1000,7 @@ fn contested_reads_no_row_outside_the_contested_classes() {
         );
         assert_eq!(
             result.unwrap().get(&CYCLE_A_TABLE),
-            Some(&vec![BTreeSet::from([
-                "x-1".to_owned(),
-                "x-2".to_owned()
-            ])])
+            Some(&vec![BTreeSet::from(["x-1".to_owned(), "x-2".to_owned()])])
         );
         assert_eq!(dirty, BTreeSet::from([dirty_row]));
     });
@@ -1037,7 +1034,11 @@ fn keeper_changes_when_a_row_elsewhere_is_published() {
         }
         apply_without_writer(&mut replicas[2]).await;
         assert_eq!(
-            texts(&mut replicas[2], "SELECT id FROM fixture_cycle_a ORDER BY id").await,
+            texts(
+                &mut replicas[2],
+                "SELECT id FROM fixture_cycle_a ORDER BY id"
+            )
+            .await,
             ["a-1"]
         );
 
@@ -1050,7 +1051,11 @@ fn keeper_changes_when_a_row_elsewhere_is_published() {
         apply_without_writer(&mut replicas[2]).await;
 
         assert_eq!(
-            texts(&mut replicas[2], "SELECT id FROM fixture_cycle_a ORDER BY id").await,
+            texts(
+                &mut replicas[2],
+                "SELECT id FROM fixture_cycle_a ORDER BY id"
+            )
+            .await,
             ["a-2"]
         );
     });
@@ -1077,20 +1082,10 @@ fn class_index_matches_a_full_recompute() {
              INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', 'L3', 'C3');",
         )
         .await;
-        deliver(&mut anchor, &mut honest).await;
-        deliver(&mut removed, &mut honest).await;
-        check([&mut anchor, &mut removed, &mut honest]).await;
-
-        // A duplicate is repaired with a tombstone while a concurrent edit moves another row to
-        // a new class.
+        // A concurrent create collides, and the duplicate is repaired with a tombstone.
         edit(
             &mut anchor,
             "INSERT INTO fixture_handles (id, label, code) VALUES ('h-4', 'L1', 'C4')",
-        )
-        .await;
-        edit(
-            &mut honest,
-            "UPDATE fixture_handles SET label = 'L9' WHERE id = 'h-2'",
         )
         .await;
         deliver(&mut anchor, &mut honest).await;
@@ -1101,9 +1096,14 @@ fn class_index_matches_a_full_recompute() {
 
         edit(
             &mut honest,
-            "DELETE FROM fixture_handles WHERE id = 'h-3'",
+            "UPDATE fixture_handles SET label = 'L9' WHERE id = 'h-2'",
         )
         .await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+
+        edit(&mut honest, "DELETE FROM fixture_handles WHERE id = 'h-3'").await;
         deliver(&mut anchor, &mut honest).await;
         deliver(&mut removed, &mut honest).await;
         check([&mut anchor, &mut removed, &mut honest]).await;

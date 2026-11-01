@@ -101,6 +101,7 @@ fn winning_fields(
 }
 
 /// Classes of the live rows of a table under one rule, by class key.
+#[cfg(test)]
 async fn classes(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -175,54 +176,229 @@ pub(crate) async fn recompute_classes(
 /// rule of the table.
 pub(crate) type Contested = BTreeMap<TableId, Vec<BTreeSet<String>>>;
 
-/// Colliding classes of every table with a duplicate rule, marking dirty the rows whose
-/// materialization a dirty row's old or new unique values may change.
+/// The classes of one row of a table, each as its rule position and class key.
+type RowClasses = BTreeSet<(i64, Vec<u8>)>;
+
+/// The classes the class index lists for a row.
+async fn indexed_classes(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<RowClasses> {
+    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT rule_index, class_key FROM sync_unique_classes
+         WHERE table_id = ? AND row_key = ?",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The classes a row falls in from its winning versions; none unless it is live. Only the groups
+/// of its unique columns are read.
+async fn winning_classes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<RowClasses> {
+    let mut found = RowClasses::new();
+    if merge::row_state(conn, table.id, key).await? != Some(RowState::Live) {
+        return Ok(found);
+    }
+    let rules = rules(table)
+        .map(|(columns, collation)| Ok((locate(table, columns)?, collation)))
+        .collect::<SyncResult<Vec<_>>>()?;
+    let groups: BTreeSet<GroupId> = rules
+        .iter()
+        .flat_map(|(locations, _)| locations.iter().map(|location| location.group))
+        .collect();
+    let placeholders = vec!["?"; groups.len()].join(", ");
+    let sql = format!(
+        "SELECT group_id, writer_id, seq, clock, value_hash, value FROM sync_register_versions
+         WHERE table_id = ? AND row_key = ? AND group_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(table_param(table.id))
+        .bind(key);
+    for group in &groups {
+        query = query.bind(i64::from(group.get()));
+    }
+    let versions = query
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .map(|row| merge::version_from_row(row, 0))
+        .collect::<SyncResult<Vec<_>>>()?;
+    for (rule, (locations, collation)) in (0_i64..).zip(&rules) {
+        let Some(fields) = winning_fields(engine, table, locations, &versions)? else {
+            continue;
+        };
+        if let Some(class) = class_key(&fields, *collation) {
+            found.insert((rule, class));
+        }
+    }
+    Ok(found)
+}
+
+/// Lists a class as contested exactly while it has two or more rows.
+async fn settle_contested(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    rule: i64,
+    class: &[u8],
+) -> SyncResult<()> {
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (
+            SELECT 1 FROM sync_unique_classes
+            WHERE table_id = ? AND rule_index = ? AND class_key = ? LIMIT 2
+         )",
+    )
+    .bind(table_param(table))
+    .bind(rule)
+    .bind(class)
+    .fetch_one(&mut *conn)
+    .await?;
+    let sql = if members > 1 {
+        "INSERT INTO sync_contested_classes (table_id, rule_index, class_key) VALUES (?, ?, ?)
+         ON CONFLICT (table_id, rule_index, class_key) DO NOTHING"
+    } else {
+        "DELETE FROM sync_contested_classes
+         WHERE table_id = ? AND rule_index = ? AND class_key = ?"
+    };
+    sqlx::query(sql)
+        .bind(table_param(table))
+        .bind(rule)
+        .bind(class)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Brings the class index up to date with a row's merge state.
+async fn refresh_classes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<()> {
+    let listed = indexed_classes(conn, table.id, key).await?;
+    let current = winning_classes(engine, conn, table, key).await?;
+    for (rule, class) in listed.difference(&current) {
+        sqlx::query(
+            "DELETE FROM sync_unique_classes
+             WHERE table_id = ? AND rule_index = ? AND class_key = ? AND row_key = ?",
+        )
+        .bind(table_param(table.id))
+        .bind(*rule)
+        .bind(class)
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    for (rule, class) in current.difference(&listed) {
+        sqlx::query(
+            "INSERT INTO sync_unique_classes (table_id, rule_index, class_key, row_key)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(table_param(table.id))
+        .bind(*rule)
+        .bind(class)
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    for (rule, class) in listed.symmetric_difference(&current) {
+        settle_contested(conn, table.id, *rule, class).await?;
+    }
+    Ok(())
+}
+
+/// The classes a row's materialized unique values fall in.
+async fn materialized_classes(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<RowClasses> {
+    let mut found = RowClasses::new();
+    for (rule, (columns, collation)) in (0_i64..).zip(rules(table)) {
+        let materialized =
+            sql::read_columns(conn, table.name, table.key_column, key, columns).await?;
+        let class = materialized
+            .and_then(|fields| fields.into_iter().collect::<Option<Vec<Field>>>())
+            .and_then(|fields| class_key(&fields, collation));
+        if let Some(class) = class {
+            found.insert((rule, class));
+        }
+    }
+    Ok(found)
+}
+
+/// Every contested class from the class index, taken per table in rule and class order.
+async fn contested_classes(conn: &mut SqliteConnection) -> SyncResult<Contested> {
+    let rows: Vec<(i64, i64, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT c.table_id, c.rule_index, c.class_key, u.row_key
+         FROM sync_contested_classes c JOIN sync_unique_classes u
+            ON u.table_id = c.table_id AND u.rule_index = c.rule_index
+                AND u.class_key = c.class_key",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut classes: BTreeMap<(i64, i64, Vec<u8>), BTreeSet<String>> = BTreeMap::new();
+    for (table, rule, class, key) in rows {
+        classes.entry((table, rule, class)).or_default().insert(key);
+    }
+    let mut contested = Contested::new();
+    for ((table, _, _), members) in classes {
+        let table = u16::try_from(table)
+            .map(TableId)
+            .map_err(|_| corrupt("contested class of a table id out of range"))?;
+        contested.entry(table).or_default().push(members);
+    }
+    Ok(contested)
+}
+
+/// Brings the class index up to date with the dirty rows, marks dirty the rows whose
+/// materialization a dirty row's old or new unique values may change, and returns the colliding
+/// classes. The cost follows the dirty and contested rows, not the rows of the tables.
 pub(crate) async fn contested(
     engine: &Engine,
     conn: &mut SqliteConnection,
     dirty: &mut BTreeSet<RowRef>,
 ) -> SyncResult<Contested> {
-    let mut contested = Contested::new();
     for table in engine.manifest().tables {
+        if rules(table).next().is_none() {
+            continue;
+        }
         let keys: Vec<String> = dirty
             .iter()
             .filter(|(table_id, _)| *table_id == table.id)
             .map(|(_, key)| key.clone())
             .collect();
-        let mut table_classes = Vec::new();
-        for (columns, collation) in rules(table) {
-            let locations = locate(table, columns)?;
-            let classes = classes(engine, conn, table, &locations, collation).await?;
-            let class_of: BTreeMap<&str, &Vec<u8>> = classes
-                .iter()
-                .flat_map(|(class, members)| members.iter().map(move |key| (key.as_str(), class)))
-                .collect();
-            let mut affected: BTreeSet<&Vec<u8>> = BTreeSet::new();
-            for key in &keys {
-                if let Some(class) = class_of.get(key.as_str()) {
-                    affected.insert(class);
-                }
-                let materialized =
-                    sql::read_columns(conn, table.name, table.key_column, key, columns).await?;
-                let previous = materialized
-                    .and_then(|fields| fields.into_iter().collect::<Option<Vec<Field>>>())
-                    .and_then(|fields| class_key(&fields, collation));
-                if let Some(class) = previous.and_then(|class| classes.get_key_value(&class)) {
-                    affected.insert(class.0);
-                }
-            }
-            for class in affected {
-                for key in &classes[class] {
-                    dirty.insert((table.id, key.clone()));
-                }
-            }
-            table_classes.extend(classes.into_values().filter(|members| members.len() > 1));
+        for key in &keys {
+            refresh_classes(engine, conn, table, key).await?;
         }
-        if !table_classes.is_empty() {
-            contested.insert(table.id, table_classes);
+        let mut affected = RowClasses::new();
+        for key in &keys {
+            affected.extend(indexed_classes(conn, table.id, key).await?);
+            affected.extend(materialized_classes(conn, table, key).await?);
+        }
+        for (rule, class) in affected {
+            let members: Vec<String> = sqlx::query_scalar(
+                "SELECT row_key FROM sync_unique_classes
+                 WHERE table_id = ? AND rule_index = ? AND class_key = ?",
+            )
+            .bind(table_param(table.id))
+            .bind(rule)
+            .bind(class)
+            .fetch_all(&mut *conn)
+            .await?;
+            dirty.extend(members.into_iter().map(|key| (table.id, key)));
         }
     }
-    Ok(contested)
+    contested_classes(conn).await
 }
 
 /// Hidden duplicates of the contested classes, each mapped to a shown row it collides with.

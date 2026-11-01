@@ -9,6 +9,7 @@ const MAX_RULE_NAMES: usize = 64;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopRule {
+    identity: String,
     name: String,
     #[serde(default = "enabled")]
     enabled: bool,
@@ -45,7 +46,7 @@ pub(super) fn phase_rules(
             continue;
         }
         let identity = DistractionsDesktopRuleIdentity::DesktopApp {
-            rule_id: rule.name.clone(),
+            rule_id: rule.identity,
         };
         if let Ok(authorization) =
             configured_close_authorization(root, phase, None, &identity, catalog)

@@ -116,6 +116,23 @@ fn trusted_match_names_keep_own_aliases_and_catalog_names_only() {
 }
 
 #[test]
+fn desktop_rule_matchers_keep_a_stored_identity_that_differs_from_the_name() {
+    let rule_identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
+        rule_id: "stored  Identity".to_string(),
+    };
+    let matchers = super::desktop_rule_matchers(vec![DistractionsDesktopAppRuleInput {
+        rule_identity: rule_identity.clone(),
+        name: "Steam".to_string(),
+        match_names: vec!["steam".to_string()],
+    }]);
+
+    assert_eq!(
+        matchers.get("steam").map(|matcher| &matcher.rule_identity),
+        Some(&rule_identity)
+    );
+}
+
+#[test]
 fn desktop_rule_matchers_skip_protected_process_names() {
     let matchers = super::desktop_rule_matchers(vec![
         DistractionsDesktopAppRuleInput {

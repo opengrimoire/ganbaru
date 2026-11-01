@@ -515,3 +515,71 @@ fn desktop_rule_with_divergent_identity_can_be_removed_and_toggled() {
         assert_eq!(desktop_rule_enabled(&pool, "a").await, None);
     });
 }
+
+#[test]
+fn added_desktop_rule_reports_the_derived_identity() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let config = apply(
+            &pool,
+            &RuleEdit::AddDesktopApp {
+                name: "Steam".to_string(),
+                match_names: Vec::new(),
+            },
+            NOW_MS,
+        )
+        .await
+        .expect("add rule");
+        assert_eq!(config.desktop.blocked_apps[0].identity, "steam");
+        assert_eq!(config.desktop.blocked_apps[0].name, "Steam");
+    });
+}
+
+#[test]
+fn protected_names_refuse_an_enable_but_never_a_disable() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        insert_desktop_rule(&pool, "bash", "Steam", "[]").await;
+        insert_desktop_rule(&pool, "steam-a", "tmux", "[]").await;
+        insert_desktop_rule(&pool, "steam-b", "Steam B", r#"["bash", "steam"]"#).await;
+
+        for identity in ["bash", "steam-a", "steam-b"] {
+            let toggle = |enabled| RuleEdit::SetEnabled {
+                target: RuleTarget::DesktopApp {
+                    identity: identity.to_string(),
+                },
+                enabled,
+            };
+            apply(&pool, &toggle(false), NOW_MS)
+                .await
+                .expect("disable rule");
+            assert_eq!(desktop_rule_enabled(&pool, identity).await, Some(0));
+
+            apply(&pool, &toggle(true), NOW_MS)
+                .await
+                .expect("refused enable changes nothing");
+            assert_eq!(desktop_rule_enabled(&pool, identity).await, Some(0));
+        }
+    });
+}
+
+#[test]
+fn desktop_rules_sharing_a_display_name_stay_separately_addressable() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        insert_desktop_rule(&pool, "first", "Steam", "[]").await;
+        insert_desktop_rule(&pool, "second", "Steam", "[]").await;
+
+        apply(
+            &pool,
+            &RuleEdit::Remove(RuleTarget::DesktopApp {
+                identity: "first".to_string(),
+            }),
+            NOW_MS,
+        )
+        .await
+        .expect("remove one rule");
+        assert_eq!(desktop_rule_enabled(&pool, "first").await, None);
+        assert_eq!(desktop_rule_enabled(&pool, "second").await, Some(1));
+    });
+}

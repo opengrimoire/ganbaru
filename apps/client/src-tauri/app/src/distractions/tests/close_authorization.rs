@@ -319,6 +319,7 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
                 "blockDuringFocus": true,
                 "pauseDuringFocusPause": true,
                 "blockedApps": [{
+                    "identity": "Steam",
                     "name": "Steam",
                     "enabled": true,
                     "matchNames": ["steam"]
@@ -358,6 +359,7 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
             "desktop": {
                 "enabled": true,
                 "blockedApps": [{
+                    "identity": "Steam",
                     "name": "Steam",
                     "enabled": false,
                     "matchNames": ["steam"]
@@ -508,10 +510,46 @@ fn focus_rule_config(name: &str, match_names: serde_json::Value) -> serde_json::
             "desktop": {
                 "enabled": true,
                 "blockDuringFocus": true,
-                "blockedApps": [{ "name": name, "enabled": true, "matchNames": match_names }]
+                "blockedApps": [{
+                    "identity": name,
+                    "name": name,
+                    "enabled": true,
+                    "matchNames": match_names
+                }]
             }
         }
     })
+}
+
+#[test]
+fn desktop_rule_authorization_addresses_the_stored_identity() {
+    let config = serde_json::json!({
+        "distractions": {
+            "desktop": {
+                "enabled": true,
+                "blockDuringFocus": true,
+                "blockedApps": [
+                    { "identity": "first", "name": "Steam", "enabled": false, "matchNames": [] },
+                    { "identity": "second", "name": "Steam", "enabled": true, "matchNames": [] }
+                ]
+            }
+        }
+    });
+    let authorize = |rule_id: &str| {
+        super::configured_close_authorization(
+            &config,
+            Some(&state("focus")),
+            None,
+            &super::DistractionsDesktopRuleIdentity::DesktopApp {
+                rule_id: rule_id.to_string(),
+            },
+            &super::DesktopCatalogIndex::default(),
+        )
+    };
+
+    assert_eq!(authorize("second").unwrap().match_names(), ["Steam"]);
+    assert!(authorize("first").is_err());
+    assert!(authorize("steam").is_err());
 }
 
 #[test]

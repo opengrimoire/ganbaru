@@ -202,7 +202,9 @@ impl HostList {
     }
 }
 
-/// The rule a toggle or removal names.
+/// The rule a toggle or removal names. A desktop rule is named by its stored identity, exactly as
+/// the assembled configuration reports it, because a synced row's identity can differ from its
+/// display name.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(
     tag = "kind",
@@ -214,10 +216,7 @@ pub enum RuleTarget {
     Category { id: String },
     CustomCategory { id: String },
     Host { list: HostList, host: String },
-    DesktopApp {
-        #[serde(alias = "name")]
-        identity: String,
-    },
+    DesktopApp { identity: String },
     MobileApp { package_name: String },
     UsageLimit { id: String },
 }
@@ -440,7 +439,9 @@ pub(super) async fn set_enabled(
             .map_err(storage("toggle distraction host"))?;
         }
         RuleTarget::DesktopApp { identity } => {
-            if is_protected_desktop_app_name(identity) {
+            // Turning a rule off only reduces enforcement, so a protected name can refuse an
+            // enable but never holds a rule on.
+            if enabled && desktop_rule_names_protected_app(&mut *conn, identity).await? {
                 return Ok(());
             }
             sqlx::query(
@@ -449,7 +450,7 @@ pub(super) async fn set_enabled(
             )
             .bind(flag)
             .bind(DESKTOP_PLATFORM)
-            .bind(app_name_key(identity))
+            .bind(identity)
             .execute(conn)
             .await
             .map_err(storage("toggle desktop distraction app"))?;
@@ -476,6 +477,35 @@ pub(super) async fn set_enabled(
         }
     }
     Ok(())
+}
+
+/// Whether a stored desktop rule names a protected app through its identity, display name, or any
+/// stored match name. Assembly drops protected match names, so this reads the raw column.
+async fn desktop_rule_names_protected_app(
+    conn: &mut SqliteConnection,
+    identity: &str,
+) -> Result<bool, RulesError> {
+    if is_protected_desktop_app_name(identity) {
+        return Ok(true);
+    }
+    let row = sqlx::query(
+        "SELECT display_name, match_names_json FROM distractions_app_rules
+         WHERE platform = ? AND identity = ?",
+    )
+    .bind(DESKTOP_PLATFORM)
+    .bind(identity)
+    .fetch_optional(conn)
+    .await
+    .map_err(storage("read desktop distraction app"))?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let match_names: Vec<String> =
+        serde_json::from_str(&text(&row, "match_names_json")?).unwrap_or_default();
+    Ok(is_protected_desktop_app_name(&text(&row, "display_name")?)
+        || match_names
+            .iter()
+            .any(|name| is_protected_desktop_app_name(name)))
 }
 
 async fn remove(conn: &mut SqliteConnection, target: &RuleTarget) -> Result<(), RulesError> {
@@ -509,7 +539,7 @@ async fn remove(conn: &mut SqliteConnection, target: &RuleTarget) -> Result<(), 
             execute(
                 conn,
                 "DELETE FROM distractions_app_rules WHERE platform = ? AND identity = ?",
-                &[DESKTOP_PLATFORM, &app_name_key(identity)],
+                &[DESKTOP_PLATFORM, identity],
                 "remove desktop distraction app",
             )
             .await?;
@@ -1226,7 +1256,7 @@ async fn load_apps(
                 let stored: Vec<String> =
                     serde_json::from_str(&text(row, "match_names_json")?).unwrap_or_default();
                 config.desktop.blocked_apps.push(DesktopAppRule {
-                    identity: app_name_key(&name),
+                    identity: text(row, "identity")?,
                     match_names: normalize_match_names(&name, &stored),
                     name,
                     enabled,

@@ -97,8 +97,6 @@ pub(super) fn configured_close_authorization(
         .ok_or_else(|| "persisted distraction configuration is unavailable".to_string())?;
     let names = match rule_identity {
         DistractionsDesktopRuleIdentity::DesktopApp { rule_id } => {
-            let rule_id = normalize_app_candidate_name(rule_id)
-                .ok_or_else(|| "desktop rule identity is invalid".to_string())?;
             let desktop = distractions.get("desktop").ok_or_else(|| {
                 "persisted desktop blocker configuration is unavailable".to_string()
             })?;
@@ -116,10 +114,7 @@ pub(super) fn configured_close_authorization(
                 .and_then(Value::as_array)
                 .and_then(|rules| {
                     rules.iter().find(|rule| {
-                        rule.get("name")
-                            .and_then(Value::as_str)
-                            .and_then(normalize_app_candidate_name)
-                            .is_some_and(|name| app_name_key(&name) == app_name_key(&rule_id))
+                        rule.get("identity").and_then(Value::as_str) == Some(rule_id.as_str())
                     })
                 })
                 .ok_or_else(|| "desktop blocker rule is no longer configured".to_string())?;

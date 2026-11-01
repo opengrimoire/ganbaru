@@ -24,6 +24,8 @@ Accounting, totals, and enforcement are native and independent of WebView schedu
 
 Every exhausted result is bound to the active database, local window, and exact persisted limit configuration. Editing a budget or its sources, changing vaults, crossing midnight, or a snapshot bootstrap invalidates older results. Missing, future-dated, or inconsistent results fail open. Vault handoff waits a bounded time for captured usage to reach device-local storage, or cancels.
 
+Reads cover only the sources a budget can count, so replicated totals for anything else cost nothing, and they cannot fail because of what another device wrote. Past the read bounds the window keeps this device's usage first, then the most recent days, in a deterministic order, and logs one diagnostic per local date, so totals can run low but never stop enforcing. When a read fails, enforcement continues on the last good totals of the same rules, vault, and date. Without those, desktop limits wait for the next good read and Android counts this device's usage alone. Browser limit snapshots keep their real read time and age out rather than being refreshed from cached totals.
+
 ## Counting integrity
 
 Usage is evidence, so it must never be double-counted or invented:

@@ -361,7 +361,8 @@ mod tests {
             &capture,
             &excluded,
         )
-        .unwrap();
+        .unwrap()
+        .sources;
         assert_eq!(sources[0].elapsed_seconds, 32);
         tx.commit().await.unwrap();
         sqlx::query("DROP TABLE distractions_usage_samples")

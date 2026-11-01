@@ -11,11 +11,30 @@ static READ_GATE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::syn
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageProjection {
     vault_id: String,
-    local_date: String,
+    pub(super) local_date: String,
     week_start_local_date: String,
     updated_at: String,
     pub(super) totals: Vec<BudgetTotal>,
     foreground_status: DistractionsForegroundDesktopAppStatus,
+    /// A read bound left some usage out, so totals may be low.
+    #[serde(skip)]
+    pub(super) truncated: bool,
+}
+
+#[cfg(test)]
+impl UsageProjection {
+    /// A projection of `totals` for the runtime's fallback tests.
+    pub(super) fn with_totals(local_date: &str, totals: Vec<BudgetTotal>) -> Self {
+        Self {
+            vault_id: "vault".into(),
+            local_date: local_date.into(),
+            week_start_local_date: local_date.into(),
+            updated_at: String::new(),
+            totals,
+            foreground_status: unavailable_foreground_desktop_app_status("test"),
+            truncated: false,
+        }
+    }
 }
 
 /// Read the owner's last accepted projection without scheduling observation or enforcement work.
@@ -60,8 +79,8 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
     let device_id = vault::ensure_device_id(&app)?;
     // Without budgets there is nothing to total. Spooled samples stay bounded and drain on the
     // first read after a budget exists, on exit, or before a vault snapshot.
-    let sources = if config.items.is_empty() {
-        Vec::new()
+    let window = if config.items.is_empty() {
+        UsageWindow::default()
     } else {
         let _write_permit = app
             .state::<vault::write_fence::VaultWriteFence>()
@@ -80,15 +99,17 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
             .begin()
             .await
             .map_err(|error| format!("begin native usage snapshot: {error}"))?;
-        let sources = read_source_days(&mut tx, &device_id, &week, &local_date).await?;
+        let scope = UsageBudgetScope::from_rules(&config);
+        let window = read_source_days(&mut tx, &device_id, &week, &local_date, &scope).await?;
         tx.commit()
             .await
             .map_err(|error| format!("finish native usage snapshot: {error}"))?;
-        sources
+        window
     };
     let publication_app = app.clone();
+    let truncated = window.truncated;
     tauri::async_runtime::spawn_blocking(move || {
-        let totals = totals(&config, &sources, &local_date)?;
+        let totals = totals(&config, &window.sources, &local_date)?;
         if vault::active_vault_id(&publication_app)? != vault_id
             || vault::active_database_path(&publication_app)? != database_path
             || !rule_store::is_current(rules_revision)
@@ -151,6 +172,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
                 updated_at,
                 totals,
                 foreground_status,
+                truncated,
             })
         })
     })

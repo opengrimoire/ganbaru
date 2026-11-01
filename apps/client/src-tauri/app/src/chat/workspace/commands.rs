@@ -230,7 +230,7 @@ pub async fn projects_list_working_folders(
     let workspaces = repository::list_workspaces(&pool).await?;
     let mut reconciled = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        bind_managed_folder_for_listing(&app, &workspace);
+        bind_managed_folders_for_listing(&app, [&workspace]);
         reconciled.push(reconcile_working_folder_binding(&app, &pool, workspace).await?);
     }
     let scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
@@ -252,7 +252,7 @@ pub async fn projects_list_working_folders_cached(
         if workspace.kind == WorkingFolderKind::Managed
             && !scope.bindings.contains_key(&workspace.id)
         {
-            bind_managed_folder_for_listing(&app, workspace);
+            bind_managed_folders_for_listing(&app, [workspace]);
             scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
         }
     }
@@ -262,14 +262,29 @@ pub async fn projects_list_working_folders_cached(
         .collect()
 }
 
-/// Binds a managed folder while listing. A folder that cannot be bound stays unbound and is
+/// Binds managed folders while listing. A folder that cannot be bound stays unbound and is
 /// listed with that state, so one unusable row never hides the others.
-fn bind_managed_folder_for_listing(app: &tauri::AppHandle, workspace: &ProjectWorkingFolder) {
-    if let Err(error) = ensure_managed_working_folder_binding(app, workspace) {
-        eprintln!(
-            "Managed working folder {} was left unbound: {}",
-            workspace.id, error.message
-        );
+pub(crate) fn bind_managed_folders_for_listing<'folder, R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
+) {
+    bind_active_folders(folders, |folder| {
+        ensure_managed_working_folder_binding(app, folder)
+    });
+}
+
+/// Applies `bind` to every folder, logging a failure and moving on to the next folder.
+pub(crate) fn bind_active_folders<'folder>(
+    folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
+    bind: impl Fn(&ProjectWorkingFolder) -> ChatResult<()>,
+) {
+    for folder in folders {
+        if let Err(error) = bind(folder) {
+            eprintln!(
+                "Managed working folder {} was left unbound: {}",
+                folder.id, error.message
+            );
+        }
     }
 }
 

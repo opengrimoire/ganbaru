@@ -105,6 +105,7 @@ commands.allow = [
   "chat_list_terminals",
   "chat_list_thread_window",
   "chat_mark_queued_followup_dispatched",
+  "chat_message_provenance",
   "chat_open_external_url",
   "chat_open_review",
   "chat_pick_images",

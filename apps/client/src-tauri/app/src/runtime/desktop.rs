@@ -359,6 +359,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::channels::chat_list_channels,
             chat::conflicts::chat_conflicts,
             chat::conflicts::chat_resolve_conflict,
+            chat::provenance::chat_message_provenance,
             chat::channels::chat_list_navigation_channels,
             chat::channels::chat_read_channel,
             chat::channels::chat_create_channel,

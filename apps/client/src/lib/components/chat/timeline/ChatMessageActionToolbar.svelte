@@ -4,12 +4,17 @@
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
   import { onDestroy } from "svelte";
+  import { loadChatMessageProvenance } from "$lib/api/chat/provenance";
+  import type { SyncDeviceRef } from "$lib/api/sync";
   import type IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import { syncDeviceName } from "$lib/sync/status";
+  import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
+  import { portal } from "$lib/utils/portal";
 
   let {
     target,
@@ -30,7 +35,11 @@
   let copiedResetTimer: ReturnType<typeof setTimeout> | null = null;
   let ReactionPicker = $state<typeof IconPicker | null>(null);
   let reactionPickerValue = $state("emoji:👍");
+  let moreButton = $state<HTMLButtonElement>();
+  let sentFromDevices = $state<readonly SyncDeviceRef[] | null>(null);
+  let provenanceRequest = 0;
   const localDisplayName = $derived(preferences.profileDisplayName.trim() || t("chat.timeline.you"));
+  const hasProvenance = $derived(target.kind === "organizational");
 
   function reportError(error: unknown): void {
     if (onError) {
@@ -68,10 +77,37 @@
     chat.toggleSessionMessageReaction(target.reactionKey, value, localDisplayName);
   }
 
+  function closeSentFrom(): void {
+    provenanceRequest += 1;
+    sentFromDevices = null;
+  }
+
+  /** Opens the devices that sealed the message; a message without a sync record opens nothing. */
+  async function toggleSentFrom(): Promise<void> {
+    if (sentFromDevices) {
+      closeSentFrom();
+      return;
+    }
+    provenanceRequest += 1;
+    const request = provenanceRequest;
+    try {
+      const { devices } = await loadChatMessageProvenance(target.sourceId);
+      if (request === provenanceRequest && devices.length > 0) sentFromDevices = devices;
+    } catch (error: unknown) {
+      reportError(error);
+    }
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && sentFromDevices) closeSentFrom();
+  }
+
   onDestroy(() => {
     if (copiedResetTimer) clearTimeout(copiedResetTimer);
   });
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div
   class="message-action-controls surface-floating"
@@ -123,12 +159,35 @@
     onclick={() => void copyMessage()}
   >{#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}</button>
   <button
+    bind:this={moreButton}
     type="button"
     class="message-action-button"
+    class:active={sentFromDevices !== null}
     aria-label={t("chat.moreActions")}
+    aria-haspopup={hasProvenance ? "dialog" : undefined}
+    aria-expanded={hasProvenance ? sentFromDevices !== null : undefined}
     data-app-tooltip={t("chat.moreActions")}
+    onclick={hasProvenance ? () => void toggleSentFrom() : undefined}
   ><EllipsisVertical size={14} /></button>
 </div>
+
+{#if sentFromDevices}
+  <div
+    use:portal
+    use:anchoredPopover={{ anchor: moreButton, onOutside: closeSentFrom, horizontalAlign: "end" }}
+    class="surface-floating surface-floating-body fixed z-90 w-floating-sm"
+    role="dialog"
+    aria-label={t("chat.organization.sentFrom")}
+    data-app-floating-surface
+  >
+    <p class="menu-label">{t("chat.organization.sentFrom")}</p>
+    <ul>
+      {#each sentFromDevices as device (device.deviceId)}
+        <li class="sent-from-device text-panel">{syncDeviceName(device, t("chat.conflict.thisDevice"), t("chat.conflict.otherDevice"))}</li>
+      {/each}
+    </ul>
+  </div>
+{/if}
 
 <style>
   .message-action-controls { pointer-events:none; position:absolute; top:var(--chat-message-action-anchor-bottom,1.25rem); right:0; z-index:2; display:flex; align-items:center; overflow:hidden; opacity:0; transform:translateY(-100%); }
@@ -137,4 +196,5 @@
   .message-action-button { display:inline-grid; width:1.75rem; height:1.75rem; flex:0 0 auto; place-items:center; border-radius:0; color:var(--muted-foreground); }
   .message-action-button:focus-visible,.message-action-button.active,.message-action-button.copied { background:var(--accent); color:var(--foreground); }
   @media (hover:hover) { .message-action-button:hover { background:var(--accent); color:var(--foreground); } }
+  .sent-from-device { padding:0.25rem 0.5rem; overflow-wrap:anywhere; }
 </style>

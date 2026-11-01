@@ -147,6 +147,10 @@ Whether a finished assignment is ready for review comes from the files recorded 
 
 Restore is a scoped Git or filesystem operation, not a database rollback. It cannot change organizational messages, memberships, approvals, or another project's files. Previewing and applying a restore are separate authority checks. Native work runs outside database transactions, and retryable cleanup records prevent a failed step from appearing successful. Every claimed cleanup job ends completed or failed; a job an interrupted run left running for more than 15 minutes is released for retry, and diagnostics count it as failed.
 
+## Message authorship
+
+A message's author participant and display label are claims by the writing device, not an authenticated identity, until separate human identities exist: a linked device can seal any participant or label. All people share one local owner participant, so a false author grants nothing beyond membership. Apply does not refuse a false author, because whether a row is valid would then depend on the order of an assignment and its message, and a refused row can stop apply. Sync does establish which devices created the row, from the signed operation log. The message's `Sent from` action shows those devices, named from the authorization log so a removed device stays named, and appears only when sync holds a record of the message.
+
 ## Revocation
 
 When membership, history, profile, target, runtime, scratch, or audience authority is reduced, new native actions fail immediately. A continuation that already materialized restricted context is interrupted and discarded or quarantined before reuse.

@@ -4,7 +4,7 @@ use super::block_on;
 use super::replica::{Replica, device_id};
 use crate::local;
 use crate::manifest::vault::quick_notes::NOTES_TABLE;
-use crate::provenance::row_creating_devices;
+use crate::provenance::{device_labels, row_creating_devices};
 
 async fn add_note(replica: &mut Replica, id: &str) {
     replica
@@ -39,5 +39,52 @@ fn row_creating_devices_returns_each_creator() {
             .await
             .unwrap();
         assert!(devices.is_empty());
+    });
+}
+
+#[test]
+fn a_row_names_the_sealing_device_whatever_its_columns_claim() {
+    block_on(async {
+        let mut sender = Replica::new(0, 1).await;
+        let mut reader = Replica::new(1, 1).await;
+        add_note(&mut sender, "note").await;
+        sender.seal().await.unwrap();
+        reader.pull(&mut sender).await;
+        assert_eq!(
+            row_creating_devices(&mut reader.conn, NOTES_TABLE, "note")
+                .await
+                .unwrap(),
+            vec![device_id(0)]
+        );
+
+        reader
+            .exec("UPDATE quick_notes SET title = 'edited' WHERE id = 'note'")
+            .await;
+        reader.seal().await.unwrap();
+        reader.apply_all().await.unwrap();
+        assert_eq!(
+            row_creating_devices(&mut reader.conn, NOTES_TABLE, "note")
+                .await
+                .unwrap(),
+            vec![device_id(0)]
+        );
+        assert!(
+            row_creating_devices(&mut reader.conn, NOTES_TABLE, "absent")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    });
+}
+
+#[test]
+fn device_labels_name_enrolled_devices() {
+    block_on(async {
+        let mut replica = Replica::new(0, 1).await;
+        let labels = device_labels(&mut replica.conn).await.unwrap();
+        assert_eq!(
+            labels.get(&device_id(1)).map(String::as_str),
+            Some("Device 1")
+        );
     });
 }

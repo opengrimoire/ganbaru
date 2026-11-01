@@ -3,3 +3,4 @@ export * from "./settings";
 export * from "./coordination";
 export * from "./session";
 export * from "./conflicts";
+export * from "./provenance";

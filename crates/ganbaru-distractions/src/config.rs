@@ -115,6 +115,8 @@ pub struct CustomCategory {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopAppRule {
+    /// The stored row identity that toggles, removals, and close authorization address.
+    pub identity: String,
     pub name: String,
     pub enabled: bool,
     pub match_names: Vec<String>,

@@ -269,6 +269,8 @@ export interface DistractionsHostRule {
 }
 
 export interface DistractionsAppRule {
+  /** Stored row identity that actions address; a synced row's identity can differ from its name. */
+  identity: string;
   name: string;
   enabled: boolean;
   matchNames: string[];
@@ -582,10 +584,12 @@ function normalizeAppRuleValue(value: unknown): DistractionsAppRule | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.name !== "string") return null;
+  if (typeof record.identity !== "string" || record.identity.trim() === "") return null;
   const name = normalizeDistractionsAppName(record.name);
   if (!name) return null;
   const matchNames = normalizeAppRuleMatchNames(name, record.matchNames);
   return {
+    identity: record.identity,
     name,
     enabled: record.enabled !== false,
     matchNames,
@@ -615,10 +619,9 @@ function normalizeAppRules(value: unknown, includeProtectedApps = false): Distra
   for (const item of value) {
     const rule = normalizeAppRuleValue(item);
     if (!rule) continue;
-    const key = appRuleKey(rule.name);
-    if (!includeProtectedApps && protectedDesktopAppKeys().has(key)) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (!includeProtectedApps && protectedDesktopAppKeys().has(appRuleKey(rule.name))) continue;
+    if (seen.has(rule.identity)) continue;
+    seen.add(rule.identity);
     rules.push(rule);
   }
   return rules;
@@ -992,7 +995,7 @@ export type DistractionsRuleTarget =
   | { kind: "category"; id: DistractionsCategoryId }
   | { kind: "customCategory"; id: string }
   | { kind: "host"; list: DistractionsHostList; host: string }
-  | { kind: "desktopApp"; name: string }
+  | { kind: "desktopApp"; identity: string }
   | { kind: "mobileApp"; packageName: string }
   | { kind: "usageLimit"; id: string };
 

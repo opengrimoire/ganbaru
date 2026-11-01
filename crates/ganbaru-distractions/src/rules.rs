@@ -429,15 +429,15 @@ pub fn desktop_rule_matchers(
             continue;
         }
         let rule_identity = match &app.rule_identity {
-            DistractionsDesktopRuleIdentity::DesktopApp { rule_id } => {
-                let Some(rule_id) = normalize_app_candidate_name(rule_id) else {
-                    continue;
-                };
-                if app_name_key(&rule_id) != app_name_key(&app_name) {
-                    continue;
+            // The stored identity stays exact because close authorization finds the rule by it.
+            DistractionsDesktopRuleIdentity::DesktopApp { rule_id }
+                if !rule_id.trim().is_empty() =>
+            {
+                DistractionsDesktopRuleIdentity::DesktopApp {
+                    rule_id: rule_id.clone(),
                 }
-                DistractionsDesktopRuleIdentity::DesktopApp { rule_id }
             }
+            DistractionsDesktopRuleIdentity::DesktopApp { .. } => continue,
             DistractionsDesktopRuleIdentity::UsageLimit { rule_id, entry_id }
                 if !rule_id.trim().is_empty() && !entry_id.trim().is_empty() =>
             {

@@ -278,6 +278,7 @@ function appRuleFromInput(
     matchNames.push(matchName);
   }
   return {
+    identity: appRuleKey(name),
     name,
     enabled: true,
     matchNames: matchNames.length > 0 ? matchNames : [name],
@@ -290,27 +291,23 @@ function mergeApps(
 ): DistractionsAppRule[] | null {
   const rule = appRuleFromInput(input);
   if (!rule) return null;
-  const key = appRuleKey(rule.name);
-  if (existingApps.some((rule) => appRuleKey(rule.name) === key)) return existingApps.slice();
+  if (existingApps.some((existing) => existing.identity === rule.identity)) return existingApps.slice();
   return [...existingApps, rule];
 }
 
 function removeApp(
   existingApps: readonly DistractionsAppRule[],
-  name: string,
+  identity: string,
 ): DistractionsAppRule[] {
-  const key = appRuleKey(name);
-  return existingApps.filter((rule) => appRuleKey(rule.name) !== key);
+  return existingApps.filter((rule) => rule.identity !== identity);
 }
 
 function setAppEnabled(
   existingApps: readonly DistractionsAppRule[],
-  name: string,
+  identity: string,
   enabled: boolean,
 ): DistractionsAppRule[] {
-  if (isProtectedDistractionsDesktopAppName(name)) return existingApps.slice();
-  const key = appRuleKey(name);
-  return existingApps.map((rule) => appRuleKey(rule.name) === key ? { ...rule, enabled } : rule);
+  return existingApps.map((rule) => rule.identity === identity ? { ...rule, enabled } : rule);
 }
 
 function setCategoryEnabled(
@@ -692,10 +689,11 @@ export function getDistractions() {
     removeAllowedHost(host: string): void {
       removeListedHost("allowed", host);
     },
-    removeBlockedApp(name: string): void {
+    /** Removes the desktop rule stored under `identity`, leaving rows that share its display name. */
+    removeBlockedApp(identity: string): void {
       updateDesktop(
-        { blockedApps: removeApp(config.desktop.blockedApps, name) },
-        removeTarget({ kind: "desktopApp", name }),
+        { blockedApps: removeApp(config.desktop.blockedApps, identity) },
+        removeTarget({ kind: "desktopApp", identity }),
       );
     },
     removeBlockedMobileApp(packageName: string): void {
@@ -714,11 +712,13 @@ export function getDistractions() {
     setAllowedHostEnabled(host: string, enabled: boolean): void {
       setListedHostEnabled("allowed", host, enabled);
     },
-    setBlockedAppEnabled(name: string, enabled: boolean): void {
-      if (isProtectedDistractionsDesktopAppName(name)) return;
+    /** Toggles the desktop rule stored under `identity`, leaving rows that share its display name. */
+    setBlockedAppEnabled(identity: string, enabled: boolean): void {
+      const rule = config.desktop.blockedApps.find((candidate) => candidate.identity === identity);
+      if (!rule || isProtectedDistractionsDesktopAppName(rule.name)) return;
       updateDesktop(
-        { blockedApps: setAppEnabled(config.desktop.blockedApps, name, enabled) },
-        setTarget({ kind: "desktopApp", name }, enabled),
+        { blockedApps: setAppEnabled(config.desktop.blockedApps, identity, enabled) },
+        setTarget({ kind: "desktopApp", identity }, enabled),
       );
     },
     setBlockedMobileAppEnabled(packageName: string, enabled: boolean): void {

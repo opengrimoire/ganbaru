@@ -741,14 +741,17 @@ pub async fn chat_read_reply_thread_page(
     cursor: Option<String>,
     limit: Option<u32>,
 ) -> ChatResult<ChatReplyThreadPageRead> {
-    let pool = chat_pool(app, db_url).await?;
-    read_reply_thread_page(
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let page = read_reply_thread_page(
         &pool,
         &reply_thread_id,
         parse_cursor(cursor.as_deref())?,
         limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE),
     )
-    .await
+    .await?;
+    #[cfg(desktop)]
+    let page = assignments::mark_local_acceptance(&app, &pool, page).await?;
+    Ok(page)
 }
 
 #[tauri::command]
@@ -879,6 +882,17 @@ pub async fn chat_retry_assignment(
     expected_revision: u64,
 ) -> ChatResult<ChatWorkAssignmentRead> {
     assignments::retry_assignment(app, db_url, assignment_id, expected_revision).await
+}
+
+/// Starts synced work that waits for a local action on this device and records the acceptance.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_accept_assignment_here(
+    app: tauri::AppHandle,
+    db_url: String,
+    assignment_id: ChatWorkAssignmentId,
+) -> ChatResult<ChatWorkAssignmentRead> {
+    assignments::accept_assignment_here(app, db_url, assignment_id).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

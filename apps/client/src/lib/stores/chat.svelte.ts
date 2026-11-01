@@ -849,6 +849,12 @@ export class ChatStore {
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
+  async acceptAssignmentHere(assignmentId: ChatWorkAssignmentId): Promise<void> {
+    await chatApi.acceptChatAssignmentHere(assignmentId);
+    this.publishChannelChange(this.selectedChannelId);
+    if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
   async archiveChannel(channel: ChatChannelRead): Promise<void> {
     return this.channelNavigationController.archive(channel);
   }

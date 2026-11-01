@@ -11,6 +11,7 @@ use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
 };
+use ganbaru_chat::coordination::acceptance::AcceptanceGrant;
 use ganbaru_chat::project_defaults::{
     current_folder_environment_id, ensure_working_folder_chat_defaults,
 };
@@ -471,6 +472,62 @@ impl AssignmentAccess {
             granted,
         )))
     }
+}
+
+/// The access a teammate would hold if an assignment ran now.
+pub(super) struct GrantedAccess {
+    pub(super) policy_revision_id: ChatTeammatePolicyRevisionId,
+    pub(super) grants: Vec<AcceptanceGrant>,
+    pub(super) scratch_runtime_approval: &'static str,
+}
+
+/// Reads the access `teammate_id` would hold running the message `triggering_message_item_id`
+/// in `conversation_id`, resolved as a frozen context package resolves it.
+pub(super) async fn read_granted_access(
+    transaction: &mut Transaction<'_, Sqlite>,
+    conversation_id: &ChatConversationId,
+    triggering_message_item_id: &ChatConversationItemId,
+    teammate_id: &ChatParticipantId,
+) -> ChatResult<GrantedAccess> {
+    let access = read_assignment_access(
+        transaction,
+        conversation_id,
+        triggering_message_item_id,
+        teammate_id,
+    )
+    .await?;
+    let folder_grants = read_folder_grants(
+        transaction,
+        conversation_id,
+        teammate_id,
+        &access.maximum_folder_capability,
+    )
+    .await?;
+    let channel_approval = access.channel_runtime_approval_policy.as_ref();
+    let grants = folder_grants
+        .into_iter()
+        .map(|grant| {
+            let runtime_approval = access.effective_runtime_approval(
+                grant.runtime_approval_policy.as_ref().or(channel_approval),
+            )?;
+            Ok(AcceptanceGrant {
+                working_folder_id: grant.working_folder_id,
+                capability: grant.capability,
+                runtime_approval: runtime_approval.to_owned(),
+            })
+        })
+        .collect::<ChatResult<Vec<_>>>()?;
+    let scratch_runtime_approval = access.effective_runtime_approval(
+        access
+            .scratch_runtime_approval_policy
+            .as_ref()
+            .or(channel_approval),
+    )?;
+    Ok(GrantedAccess {
+        policy_revision_id: access.policy_revision_id,
+        grants,
+        scratch_runtime_approval,
+    })
 }
 
 #[derive(Clone)]

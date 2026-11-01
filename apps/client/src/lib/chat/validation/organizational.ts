@@ -921,6 +921,7 @@ export function parseChatWorkAssignment(
     settledAt: readNullable(record.settledAt, `${label}.settledAt`, readUtcTimestamp),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),
     updatedAt: readUtcTimestamp(record.updatedAt, `${label}.updatedAt`),
+    localAcceptanceRequired: readBoolean(record.localAcceptanceRequired, `${label}.localAcceptanceRequired`),
   };
 }
 

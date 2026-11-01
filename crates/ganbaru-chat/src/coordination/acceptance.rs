@@ -1,5 +1,7 @@
 //! Digests of what a local acceptance of synced Chat work covers.
 
+use sha2::{Digest, Sha256};
+
 /// Domain of an assignment acceptance digest.
 pub const ACCEPTANCE_DOMAIN: &[u8] = b"ganbaru-assignment-acceptance-v1";
 /// Domain of a scheduled message consent digest, so neither kind satisfies the other.
@@ -28,13 +30,36 @@ pub struct AcceptanceSubject<'a> {
 }
 
 /// Hex digest of `subject`.
-pub fn acceptance_digest(_subject: &AcceptanceSubject<'_>) -> String {
-    String::new()
+pub fn acceptance_digest(subject: &AcceptanceSubject<'_>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(ACCEPTANCE_DOMAIN);
+    absorb(&mut hasher, subject.teammate_id);
+    absorb(&mut hasher, subject.policy_revision_id);
+    absorb(&mut hasher, subject.instructions);
+    absorb(&mut hasher, subject.provider_instance_id);
+    absorb(&mut hasher, subject.scratch_runtime_approval);
+    hasher.update((subject.grants.len() as u64).to_be_bytes());
+    for grant in subject.grants {
+        absorb(&mut hasher, &grant.working_folder_id);
+        absorb(&mut hasher, &grant.capability);
+        absorb(&mut hasher, &grant.runtime_approval);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 /// Hex digest of the stored request `request_data` of `scheduled_message_id`.
-pub fn scheduled_consent_digest(_scheduled_message_id: &str, _request_data: &str) -> String {
-    String::new()
+pub fn scheduled_consent_digest(scheduled_message_id: &str, request_data: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(SCHEDULED_CONSENT_DOMAIN);
+    absorb(&mut hasher, scheduled_message_id);
+    absorb(&mut hasher, request_data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Adds `value` with its length, so adjacent values cannot trade bytes.
+fn absorb(hasher: &mut Sha256, value: &str) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value.as_bytes());
 }
 
 #[cfg(test)]

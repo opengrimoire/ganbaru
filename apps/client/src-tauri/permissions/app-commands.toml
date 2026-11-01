@@ -25,6 +25,7 @@ commands.allow = [
   "calendar_remove_calendar",
   "calendar_resolve_conflict",
   "calendar_set_visibility",
+  "chat_accept_assignment_here",
   "chat_apply_review_action",
   "chat_archive_access_profile",
   "chat_archive_channel",

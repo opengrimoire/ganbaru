@@ -234,6 +234,10 @@
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
     return assignment?.state === "failed" ? assignment : null;
   });
+  const assignmentAwaitingStart = $derived.by(() => {
+    const assignment = threadComposer ? chat.replyThread?.assignment : null;
+    return assignment?.localAcceptanceRequired ? assignment : null;
+  });
   const inferredTarget = $derived.by(() => inferAssignmentTarget(
     executionTarget,
     editorReferences,
@@ -978,6 +982,22 @@
     }
   }
 
+  async function startAssignmentHere(): Promise<void> {
+    const assignment = assignmentAwaitingStart;
+    if (!assignment || retryingAssignment) return;
+    retryingAssignment = true;
+    error = null;
+    try {
+      await chat.acceptAssignmentHere(assignment.id);
+      onRequestScrollToBottom();
+    } catch (cause: unknown) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      throw cause;
+    } finally {
+      retryingAssignment = false;
+    }
+  }
+
   function performPrimaryAction(): void {
     if (activeAssignment) void stopAssignment();
     else void post();
@@ -1267,6 +1287,9 @@
   <span class="sr-only" aria-live="polite">{announcement}</span>
   {#if failedAssignment}
     <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
+  {/if}
+  {#if assignmentAwaitingStart}
+    <Notice class="assignment-notice" role="status" message={t("chat.organization.workAwaitsStart")} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />
   {/if}
   {#if nextScheduledMessage}
     <div class="scheduled-summary">

@@ -263,6 +263,8 @@ export const chat = {
     closeThread: "Cerrar hilo",
     retry: "Reintentar trabajo",
     workStopped: "El agente se detuvo debido a un error.",
+    workAwaitsStart: "Este trabajo viene de otro dispositivo y no se ejecutará aquí hasta que lo inicies.",
+    startHere: "Iniciar aquí",
     cancelWork: "Cancelar trabajo",
     stopWorkShortcut: (shortcut: string) => `Detener trabajo (${shortcut})`,
     replyInThread: "Responder en el hilo, o escribe '@' para mencionar y '#' para canales",

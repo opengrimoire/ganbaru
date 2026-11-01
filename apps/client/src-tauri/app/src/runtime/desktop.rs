@@ -400,6 +400,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_reply_thread_page,
             chat::organization::chat_search_messages,
             chat::organization::chat_cancel_assignment,
+            chat::organization::chat_accept_assignment_here,
             chat::organization::chat_retry_assignment,
             chat::organization::chat_start_mentioned_assignment,
             chat::organization::chat_recover_assignment_dispatch_jobs,

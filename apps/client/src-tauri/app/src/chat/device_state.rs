@@ -161,13 +161,14 @@ pub fn record_assignment_acceptance(
     digest: String,
     now: UtcTimestamp,
 ) {
-    scope.assignment_acceptances.insert(digest, now);
+    scope.assignment_acceptances.insert(digest.clone(), now);
     if scope.assignment_acceptances.len() <= MAX_ASSIGNMENT_ACCEPTANCES {
         return;
     }
     let oldest = scope
         .assignment_acceptances
         .iter()
+        .filter(|(kept, _)| **kept != digest)
         .min_by_key(|(_, accepted_at)| accepted_at.as_str())
         .map(|(digest, _)| digest.clone());
     if let Some(oldest) = oldest {
@@ -202,4 +203,50 @@ pub fn update_active_device_scope<R: Runtime, T>(
         }
         update(state.chat.scope_mut(&vault_id, &device_id))
     })
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+
+    fn at(second: usize) -> UtcTimestamp {
+        UtcTimestamp::new(format!(
+            "2026-08-04T{:02}:{:02}:{:02}.000Z",
+            second / 3600,
+            second / 60 % 60,
+            second % 60
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn acceptances_past_the_cap_drop_the_oldest_and_keep_the_newest() {
+        let mut scope = ChatDeviceScope::default();
+        for index in 0..=MAX_ASSIGNMENT_ACCEPTANCES {
+            record_assignment_acceptance(&mut scope, format!("digest:{index}"), at(index + 1));
+        }
+
+        assert_eq!(
+            scope.assignment_acceptances.len(),
+            MAX_ASSIGNMENT_ACCEPTANCES
+        );
+        assert!(!assignment_is_accepted(&scope, "digest:0"));
+        assert!(assignment_is_accepted(&scope, "digest:1"));
+        assert!(assignment_is_accepted(
+            &scope,
+            &format!("digest:{MAX_ASSIGNMENT_ACCEPTANCES}")
+        ));
+    }
+
+    #[test]
+    fn a_new_acceptance_survives_the_cap_when_its_clock_runs_behind() {
+        let mut scope = ChatDeviceScope::default();
+        for index in 0..MAX_ASSIGNMENT_ACCEPTANCES {
+            record_assignment_acceptance(&mut scope, format!("digest:{index}"), at(index + 2));
+        }
+
+        record_assignment_acceptance(&mut scope, "digest:new".to_owned(), at(1));
+
+        assert!(assignment_is_accepted(&scope, "digest:new"));
+    }
 }

@@ -158,25 +158,63 @@ fn enabled() -> bool {
 }
 
 /// Merge complete pending evidence once per immutable identity into bounded source/day groups.
+/// This device's pending rows come first, so a truncated window keeps them and then `sources` in
+/// their given order.
 pub(super) fn include_pending(
     sources: Vec<UsageSourceDay>,
     capture: &GuardianCapture,
     excluded: &HashSet<String>,
 ) -> Result<UsageWindow, String> {
-    limits::merge_source_groups(
-        sources.into_iter().chain(
-            capture
-                .pending
-                .iter()
-                .filter(|event| !excluded.contains(&event.id))
-                .map(|event| UsageSourceDay {
-                    source_type: "mobile-app".into(),
-                    source_key: event.package_name.clone(),
-                    local_date: event.local_date.clone(),
-                    elapsed_seconds: event.elapsed_seconds,
-                }),
-        ),
-    )
+    let pending = capture
+        .pending
+        .iter()
+        .filter(|event| !excluded.contains(&event.id))
+        .map(|event| UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: event.package_name.clone(),
+            local_date: event.local_date.clone(),
+            elapsed_seconds: event.elapsed_seconds,
+        });
+    limits::merge_source_groups(pending.chain(sources))
+}
+
+/// What the last accepted usage window was computed for, and its sources with pending rows merged.
+#[derive(Clone, Debug)]
+pub(super) struct LastGoodUsage {
+    pub generation: u64,
+    pub vault_id: String,
+    pub rules_revision: u64,
+    pub local_date: String,
+    pub sources: Vec<UsageSourceDay>,
+}
+
+/// Sources Guardian keeps enforcing with after a failed read: the last accepted window of the same
+/// generation, vault, rules, and date, or else this device's own captured usage alone. A reused
+/// window misses usage since it was read, which can only delay a limit.
+pub(super) fn fallback_sources(
+    last_good: Option<&LastGoodUsage>,
+    capture: &GuardianCapture,
+    generation: u64,
+    rules_revision: u64,
+) -> Vec<UsageSourceDay> {
+    match last_good.filter(|usage| {
+        usage.generation == generation
+            && usage.vault_id == capture.vault_id
+            && usage.rules_revision == rules_revision
+            && usage.local_date == capture.local_date
+    }) {
+        Some(usage) => usage.sources.clone(),
+        None => capture
+            .local_sources
+            .iter()
+            .map(|source| UsageSourceDay {
+                source_type: source.source_type.clone(),
+                source_key: source.source_key.clone(),
+                local_date: source.local_date.clone(),
+                elapsed_seconds: source.elapsed_seconds,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -575,6 +613,66 @@ mod tests {
                 .elapsed_seconds,
             MAX_SAFE_SECONDS
         );
+    }
+
+    #[test]
+    fn failed_read_reuses_only_a_matching_window_and_else_local_usage() {
+        let mut capture = capture();
+        capture.local_sources = vec![CapturedSource {
+            source_type: "mobile-app".into(),
+            source_key: "com.example.local".into(),
+            local_date: capture.local_date.clone(),
+            elapsed_seconds: 45,
+        }];
+        let usage = LastGoodUsage {
+            generation: 3,
+            vault_id: capture.vault_id.clone(),
+            rules_revision: 7,
+            local_date: capture.local_date.clone(),
+            sources: vec![UsageSourceDay {
+                source_type: "website".into(),
+                source_key: "example.com".into(),
+                local_date: capture.local_date.clone(),
+                elapsed_seconds: 600,
+            }],
+        };
+        let keys = |sources: Vec<UsageSourceDay>| {
+            sources
+                .into_iter()
+                .map(|source| source.source_key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(fallback_sources(Some(&usage), &capture, 3, 7)),
+            ["example.com"]
+        );
+        assert_eq!(
+            keys(fallback_sources(None, &capture, 3, 7)),
+            ["com.example.local"]
+        );
+        assert_eq!(
+            keys(fallback_sources(Some(&usage), &capture, 4, 7)),
+            ["com.example.local"]
+        );
+        assert_eq!(
+            keys(fallback_sources(Some(&usage), &capture, 3, 8)),
+            ["com.example.local"]
+        );
+        for mismatch in [
+            LastGoodUsage {
+                vault_id: "other".into(),
+                ..usage.clone()
+            },
+            LastGoodUsage {
+                local_date: "2026-01-01".into(),
+                ..usage.clone()
+            },
+        ] {
+            assert_eq!(
+                keys(fallback_sources(Some(&mismatch), &capture, 3, 7)),
+                ["com.example.local"]
+            );
+        }
     }
 
     #[test]

@@ -203,9 +203,9 @@ async fn budgets_count_other_devices_totals_with_own_samples_but_not_own_totals(
     assert_eq!(
         rows,
         vec![
-            source("website", "example.com", "2026-09-28", 300),
-            source("mobile-app", "com.example.video", "2026-10-02", 40),
             source("website", "video.example.com", "2026-10-02", 380),
+            source("mobile-app", "com.example.video", "2026-10-02", 40),
+            source("website", "example.com", "2026-09-28", 300),
         ]
     );
     let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap();
@@ -303,9 +303,175 @@ async fn usage_flood_inside_budget_truncates_keeping_local_samples() {
         source("website", "video.example.com", "2026-09-28", 30)
     );
     assert_eq!(read_window(&pool).await.unwrap(), window);
-    let result = totals(&parse_config(&root()).unwrap(), &window.sources, "2026-10-02").unwrap();
+    let result = totals(
+        &parse_config(&root()).unwrap(),
+        &window.sources,
+        "2026-10-02",
+    )
+    .unwrap();
     assert_eq!(result[1].used_seconds, 30 + 60 * 9_999);
     pool.close().await;
+}
+
+#[tokio::test]
+async fn usage_flood_past_the_sample_bound_keeps_local_samples() {
+    let pool = usage_pool().await;
+    flood_totals(&pool, "flood-%d.example.com", 50).await;
+    sqlx::raw_sql(
+        "INSERT INTO distractions_usage_samples VALUES
+            ('website', 'video.example.com', '2026-09-28', 30);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let scope = UsageBudgetScope::from_rules(&parse_config(&root()).unwrap());
+    let mut connection = pool.acquire().await.unwrap();
+    let window = crate::limits::store::read_bounded(
+        &mut connection,
+        "device-own",
+        "2026-09-28",
+        "2026-10-02",
+        &scope,
+        crate::limits::store::WindowBounds {
+            samples: 3,
+            groups: 100,
+        },
+    )
+    .await
+    .unwrap();
+    drop(connection);
+    assert!(window.truncated);
+    assert_eq!(window.sources.len(), 3);
+    assert_eq!(
+        window.sources[0],
+        source("website", "video.example.com", "2026-09-28", 30)
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn usage_window_matches_budgets_the_way_totals_do() {
+    let pool = usage_pool().await;
+    let long_key = format!("{}.example.com", "a".repeat(MAX_SOURCE_KEY_BYTES));
+    sqlx::query(
+        "INSERT INTO distractions_usage_totals VALUES
+            ('device-phone', 'website', 'VIDEO.example.com', '2026-10-02', 10),
+            ('device-phone', 'website', 'sub.video.example.com', '2026-10-02', 11),
+            ('device-phone', 'website', 'notexample.com', '2026-10-02', 12),
+            ('device-phone', 'website', 'a%b.example_com', '2026-10-02', 13),
+            ('device-phone', 'website', ?1, '2026-10-02', 14),
+            ('device-phone', 'desktop-app', 'GAME.EXE', '2026-10-02', 15),
+            ('device-phone', 'desktop-app', 'game', '2026-10-02', 16),
+            ('device-phone', 'mobile-app', 'COM.EXAMPLE.VIDEO', '2026-10-02', 17),
+            ('device-phone', 'mobile-app', 'Old label', '2026-10-02', 18),
+            ('device-phone', 'other', 'example.com', '2026-10-02', 19);",
+    )
+    .bind(long_key)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let window = read_window(&pool).await.unwrap();
+    assert!(!window.truncated);
+    let mut kept: Vec<i64> = window
+        .sources
+        .iter()
+        .map(|row| row.elapsed_seconds)
+        .collect();
+    kept.sort_unstable();
+    assert_eq!(kept, vec![10, 11, 15, 17]);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn usage_window_without_budget_sources_reads_nothing() {
+    let pool = usage_pool().await;
+    sqlx::raw_sql("DROP TABLE distractions_usage_totals;")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let config = parse_config(&serde_json::json!({"distractions": {"limits": {"items": []}}}));
+    let scope = UsageBudgetScope::from_rules(&config.unwrap());
+    assert!(scope.is_empty());
+    let mut connection = pool.acquire().await.unwrap();
+    let window = crate::limits::store::read_source_days(
+        &mut connection,
+        "device-own",
+        "2026-09-28",
+        "2026-10-02",
+        &scope,
+    )
+    .await
+    .unwrap();
+    drop(connection);
+    assert_eq!(window, UsageWindow::default());
+    pool.close().await;
+}
+
+#[test]
+fn budget_scope_includes_disabled_budgets_and_every_written_form() {
+    let config = parse_config(&serde_json::json!({"distractions": {"limits": {"items": [{
+        "id": "paused", "name": "Paused", "enabled": false, "minutesPerDay": 10,
+        "entries": [
+            {"id": "web", "websiteHost": "*.Example.com."},
+            {"id": "named", "desktopAppName": "Éditeur"},
+            {"id": "listed", "desktopAppName": "Label", "desktopAppMatchNames": [" Game.exe "]},
+            {"id": "phone", "mobileAppName": "Label", "mobileAppPackage": "Com.Example"}
+        ]
+    }]}}}))
+    .unwrap();
+    let scope = UsageBudgetScope::from_rules(&config);
+    assert_eq!(
+        scope.websites.iter().collect::<Vec<_>>(),
+        vec!["example.com"]
+    );
+    assert_eq!(
+        scope
+            .desktop_apps
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["Éditeur", "éditeur", " Game.exe ", "game.exe"])
+    );
+    assert_eq!(
+        scope
+            .mobile_apps
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["Com.Example", "com.example"])
+    );
+}
+
+#[test]
+fn usage_read_diagnostics_log_once_per_problem() {
+    let mut diagnostics = UsageReadDiagnostics::default();
+    assert!(diagnostics.record_failure("locked"));
+    assert!(!diagnostics.record_failure("locked"));
+    assert!(diagnostics.record_failure("busy"));
+    diagnostics.record_success();
+    assert!(diagnostics.record_failure("busy"));
+    assert!(diagnostics.record_truncation("2026-10-02"));
+    assert!(!diagnostics.record_truncation("2026-10-02"));
+    assert!(diagnostics.record_truncation("2026-10-03"));
+}
+
+#[test]
+fn usage_flood_merge_still_sums_groups_kept_at_the_cap() {
+    let rows = (0..MAX_SOURCE_GROUPS)
+        .map(|index| source("website", &format!("flood-{index}.test"), "2026-10-02", 60))
+        .chain([
+            source("website", "flood-0.test", "2026-10-02", 40),
+            source("website", "late.test", "2026-10-02", 60),
+        ]);
+    let window = merge_source_groups(rows).unwrap();
+    assert!(window.truncated);
+    assert_eq!(window.sources.len(), MAX_SOURCE_GROUPS);
+    let kept = window
+        .sources
+        .iter()
+        .find(|row| row.source_key == "flood-0.test")
+        .unwrap();
+    assert_eq!(kept.elapsed_seconds, 100);
 }
 
 #[test]

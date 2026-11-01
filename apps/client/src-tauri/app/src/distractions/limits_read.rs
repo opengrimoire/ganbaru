@@ -16,6 +16,9 @@ pub(crate) struct UsageProjection {
     updated_at: String,
     pub(super) totals: Vec<BudgetTotal>,
     foreground_status: DistractionsForegroundDesktopAppStatus,
+    /// A read bound left some usage out, so totals may be low.
+    #[serde(skip)]
+    pub(super) truncated: bool,
 }
 
 #[cfg(test)]
@@ -29,6 +32,7 @@ impl UsageProjection {
             updated_at: String::new(),
             totals,
             foreground_status: unavailable_foreground_desktop_app_status("test"),
+            truncated: false,
         }
     }
 }
@@ -103,6 +107,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         window
     };
     let publication_app = app.clone();
+    let truncated = window.truncated;
     tauri::async_runtime::spawn_blocking(move || {
         let totals = totals(&config, &window.sources, &local_date)?;
         if vault::active_vault_id(&publication_app)? != vault_id
@@ -167,6 +172,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
                 updated_at,
                 totals,
                 foreground_status,
+                truncated,
             })
         })
     })

@@ -14,6 +14,7 @@ const MAX_MATCH_NAMES: usize = 64;
 const MAX_MATCH_COMPARISONS: usize = 2_000_000;
 pub const MAX_SOURCE_GROUPS: usize = 10_000;
 pub const MAX_WINDOW_SAMPLES: i64 = 500_000;
+pub const MAX_SOURCE_KEY_BYTES: usize = 512;
 const MAX_SAFE_SECONDS: i64 = 9_007_199_254_740_991;
 
 fn enabled_default() -> bool {
@@ -85,8 +86,36 @@ pub struct UsageBudgetScope {
 
 impl UsageBudgetScope {
     /// Lists the sources of every budget, including disabled ones, which stay visible in Settings.
-    pub fn from_rules(_config: &LimitsConfig) -> Self {
-        Self::default()
+    /// Names keep both their written and lowered forms because `matches` folds Unicode case and
+    /// SQLite's `lower` folds only ASCII.
+    pub fn from_rules(config: &LimitsConfig) -> Self {
+        let mut scope = Self::default();
+        for entry in config.items.iter().flat_map(|limit| &limit.entries) {
+            scope
+                .websites
+                .extend(entry.website_host.as_deref().and_then(normalize_usage_host));
+            let mobile_app = entry
+                .mobile_app_package
+                .as_ref()
+                .or(entry.mobile_app_name.as_ref());
+            if let Some(name) = mobile_app {
+                scope.mobile_apps.insert(name.clone());
+                scope.mobile_apps.insert(name.to_lowercase());
+            }
+            let Some(desktop_app) = &entry.desktop_app_name else {
+                continue;
+            };
+            let desktop_names = if entry.desktop_app_match_names.is_empty() {
+                std::slice::from_ref(desktop_app)
+            } else {
+                entry.desktop_app_match_names.as_slice()
+            };
+            for name in desktop_names {
+                scope.desktop_apps.insert(name.clone());
+                scope.desktop_apps.insert(app_name_key(name));
+            }
+        }
+        scope
     }
 
     /// Whether no stored usage can count toward a budget.
@@ -95,21 +124,57 @@ impl UsageBudgetScope {
     }
 }
 
-/// Sums rows into source/day groups.
+/// Which usage read problems were already logged, so a repeating problem logs once.
+#[derive(Clone, Debug, Default)]
+pub struct UsageReadDiagnostics {
+    last_failure: Option<String>,
+    truncated_date: Option<String>,
+}
+
+impl UsageReadDiagnostics {
+    /// Records a failed read and whether its message is new.
+    pub fn record_failure(&mut self, error: &str) -> bool {
+        if self.last_failure.as_deref() == Some(error) {
+            return false;
+        }
+        self.last_failure = Some(error.to_owned());
+        true
+    }
+
+    /// Records a successful read, so the next failure logs again.
+    pub fn record_success(&mut self) {
+        self.last_failure = None;
+    }
+
+    /// Records a truncated window and whether it is the first for `local_date`.
+    pub fn record_truncation(&mut self, local_date: &str) -> bool {
+        if self.truncated_date.as_deref() == Some(local_date) {
+            return false;
+        }
+        self.truncated_date = Some(local_date.to_owned());
+        true
+    }
+}
+
+/// Sums rows into at most [`MAX_SOURCE_GROUPS`] source/day groups. Earlier rows keep their groups
+/// when the cap is reached, and the rows of any later group are left out and reported as
+/// truncation.
 pub fn merge_source_groups(
     rows: impl IntoIterator<Item = UsageSourceDay>,
 ) -> Result<UsageWindow, String> {
     let mut groups = BTreeMap::new();
+    let mut truncated = false;
     for row in rows {
         let key = (row.source_type, row.source_key, row.local_date);
+        if !groups.contains_key(&key) && groups.len() == MAX_SOURCE_GROUPS {
+            truncated = true;
+            continue;
+        }
         let total = groups.entry(key).or_insert(0_i64);
         *total = total
             .checked_add(row.elapsed_seconds)
             .filter(|value| (0..=MAX_SAFE_SECONDS).contains(value))
             .ok_or("usage source aggregate exceeds the integer limit")?;
-        if groups.len() > MAX_SOURCE_GROUPS {
-            return Err("usage sources exceed their limit".into());
-        }
     }
     Ok(UsageWindow {
         sources: groups
@@ -123,7 +188,7 @@ pub fn merge_source_groups(
                 },
             )
             .collect(),
-        truncated: false,
+        truncated,
     })
 }
 
@@ -314,7 +379,7 @@ pub fn totals(
     }
     for source in sources {
         if !is_valid_local_date(&source.local_date)
-            || source.source_key.len() > 512
+            || source.source_key.len() > MAX_SOURCE_KEY_BYTES
             || !matches!(
                 source.source_type.as_str(),
                 "website" | "desktop-app" | "mobile-app"

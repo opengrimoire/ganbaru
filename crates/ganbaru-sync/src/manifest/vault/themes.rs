@@ -247,7 +247,7 @@ pub const THEMES: TableSpec = TableSpec {
     key_parent: None,
     owner: None,
     holds_deletes: false,
-    key_rule: RowKeyRule::Excluding(&BUILT_IN_THEMES),
+    key_rule: RowKeyRule::ThemeSlug,
     deletion: Deletion::Ordinary,
 };
 

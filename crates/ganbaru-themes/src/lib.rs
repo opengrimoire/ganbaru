@@ -12,10 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ganbaru_db::impl_sqlite_from_row;
 use ganbaru_sync::OPEN_CONFLICT_MASK_SQL;
 use ganbaru_sync::domains::themes::{
-    PALETTE_SIZE, ThemeContent, ThemeToken, canonical_tokens, is_calendar_mode, is_display_name,
-    is_hex_color, is_icon_label, is_token_key,
+    MAX_THEME_ID_CHARS, PALETTE_SIZE, ThemeContent, ThemeToken, canonical_tokens, is_calendar_mode,
+    is_display_name, is_hex_color, is_icon_label, is_theme_id, is_token_key,
 };
-use ganbaru_sync::manifest::vault::themes::THEMES_TABLE;
+use ganbaru_sync::manifest::vault::themes::{BUILT_IN_THEMES, THEMES_TABLE};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteQueryResult;
 use sqlx::{Connection, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
@@ -28,9 +28,6 @@ pub use conflicts::{
     resolve_from_pool,
 };
 pub use recovery::restore_recovered;
-
-/// Characters of the longest theme id: a UUID or an older `theme-` slug fits well below it.
-const MAX_THEME_ID_CHARS: usize = 64;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,8 +169,8 @@ fn has_conflict_column() -> String {
     )
 }
 
-/// Load every user theme with its current and seed rows, rejecting stored rows that fail
-/// validation.
+/// Load every user theme with its current and seed rows. A theme with a stored row that fails
+/// validation is logged and skipped, so one bad theme never hides the others or stops startup.
 pub async fn load_all(pool: &SqlitePool) -> Result<Vec<UserThemeRead>, String> {
     let themes = sqlx::query_as::<_, ThemeRowRead>(sqlx::AssertSqlSafe(format!(
         "SELECT t.id, t.display_name, t.blend_canvas, t.seed_blend_canvas,
@@ -225,8 +222,6 @@ pub async fn load_all(pool: &SqlitePool) -> Result<Vec<UserThemeRead>, String> {
     .await
     .map_err(|e| format!("load seed theme palette: {e}"))?;
 
-    validate_theme_rows(&themes, &tokens, &palette, &seed_tokens, &seed_palette)?;
-
     let mut tokens_by_theme = group_by_theme(tokens);
     let mut palette_by_theme = group_by_theme(palette);
     let mut seed_tokens_by_theme = group_by_theme(seed_tokens);
@@ -234,14 +229,21 @@ pub async fn load_all(pool: &SqlitePool) -> Result<Vec<UserThemeRead>, String> {
 
     Ok(themes
         .into_iter()
-        .map(|theme| {
+        .filter_map(|theme| {
             let id = theme.id.clone();
-            UserThemeRead {
+            let read = UserThemeRead {
                 theme,
                 tokens: tokens_by_theme.remove(&id).unwrap_or_default(),
                 palette: palette_by_theme.remove(&id).unwrap_or_default(),
                 seed_tokens: seed_tokens_by_theme.remove(&id).unwrap_or_default(),
                 seed_palette: seed_palette_by_theme.remove(&id).unwrap_or_default(),
+            };
+            match validate_user_theme_read(&read) {
+                Ok(()) => Some(read),
+                Err(error) => {
+                    eprintln!("skipped the stored theme {id:?}: {error}");
+                    None
+                }
             }
         })
         .collect())
@@ -781,20 +783,12 @@ fn group_by_theme<T: ThemeScoped>(rows: Vec<T>) -> HashMap<String, Vec<T>> {
     grouped
 }
 
-fn validate_theme_rows(
-    themes: &[ThemeRowRead],
-    tokens: &[TokenRowRead],
-    palette: &[PaletteRowRead],
-    seed_tokens: &[TokenRowRead],
-    seed_palette: &[PaletteRowRead],
-) -> Result<(), String> {
-    for theme in themes {
-        validate_theme_read(theme)?;
-    }
-    validate_token_read_rows(tokens, "theme_tokens")?;
-    validate_palette_read_rows(palette, "theme_event_palette")?;
-    validate_token_read_rows(seed_tokens, "theme_seed_tokens")?;
-    validate_palette_read_rows(seed_palette, "theme_seed_event_palette")
+fn validate_user_theme_read(read: &UserThemeRead) -> Result<(), String> {
+    validate_theme_read(&read.theme)?;
+    validate_token_read_rows(&read.tokens, "theme_tokens")?;
+    validate_palette_read_rows(&read.palette, "theme_event_palette")?;
+    validate_token_read_rows(&read.seed_tokens, "theme_seed_tokens")?;
+    validate_palette_read_rows(&read.seed_palette, "theme_seed_event_palette")
 }
 
 fn validate_theme_read(theme: &ThemeRowRead) -> Result<(), String> {
@@ -887,27 +881,16 @@ fn validate_theme_id(id: &str) -> Result<(), String> {
             "theme id cannot exceed {MAX_THEME_ID_CHARS} characters"
         ));
     }
-    if !is_valid_theme_slug(id) {
+    if BUILT_IN_THEMES.contains(&id) {
+        return Err(format!("theme id '{id}' is reserved"));
+    }
+    if !is_theme_id(id) {
         return Err(
             "theme id must be a slug (lowercase letters, digits, and hyphens; must start with a letter or digit)"
                 .to_string(),
         );
     }
-    if matches!(id, "light" | "dark") {
-        return Err(format!("theme id '{id}' is reserved"));
-    }
     Ok(())
-}
-
-fn is_valid_theme_slug(id: &str) -> bool {
-    let mut chars = id.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn validate_token_identity(kind: &str, key: &str, field: &str) -> Result<(), String> {

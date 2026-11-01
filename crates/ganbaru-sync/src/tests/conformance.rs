@@ -17,8 +17,10 @@ use super::fixture::{
 use super::{block_on, migrated_pool};
 use crate::assets::{AssetClass, MAX_ASSET_BYTES};
 use crate::codec::{OwnedRow, decode_table, encode, encode_table};
+use crate::domains::themes::MAX_THEME_ID_CHARS;
 use crate::domains::vault_adapters;
 use crate::manifest::order::{Dependency, DependencyKind};
+use crate::manifest::vault::themes::BUILT_IN_THEMES;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::vault::{chat, quick_notes};
 use crate::manifest::{
@@ -1392,8 +1394,39 @@ fn key_rule_probes(rule: RowKeyRule) -> Vec<String> {
         RowKeyRule::Any => Vec::new(),
         RowKeyRule::Fixed(key) => vec![key.to_owned()],
         RowKeyRule::ExactChars(chars) | RowKeyRule::MaxChars(chars) => keys_around(chars),
-        RowKeyRule::Excluding(keys) => keys.iter().map(|key| (*key).to_owned()).collect(),
+        RowKeyRule::ThemeSlug => {
+            let mut keys = keys_around(MAX_THEME_ID_CHARS);
+            keys.extend(
+                BUILT_IN_THEMES
+                    .into_iter()
+                    .chain([
+                        "0f8fad5b-d9cb-469f-a165-70867728950e",
+                        "a-",
+                        "-a",
+                        "A",
+                        "a_b",
+                        "a b",
+                        "a\n",
+                        "é",
+                        "pending:theme",
+                    ])
+                    .map(str::to_owned),
+            );
+            keys
+        }
     }
+}
+
+/// Whether the insert guard clause of `rule` admits `value`, for a rule that has one.
+async fn insert_clause_admits(pool: &SqlitePool, rule: RowKeyRule, value: &str) -> Option<bool> {
+    let clause = rule.insert_sql("?1")?;
+    let admits: Option<i64> =
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT ({clause}) IS 1")))
+            .bind(value)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|error| panic!("{clause}: {error}"));
+    Some(admits == Some(1))
 }
 
 /// Whether the CHECK `terms` on the column `key` admit `value`. A null term passes, as it does
@@ -1416,7 +1449,9 @@ async fn check_terms_admit(pool: &SqlitePool, terms: &[String], key: &str, value
 
 /// A key the domain table refuses could never apply on any replica, so every table states what
 /// its key CHECK accepts. Each CHECK that reads only the key is recognized, then the rule and
-/// the schema must agree on every valid row key around their limits.
+/// the schema must agree on every valid row key around their limits. A rule with an insert guard
+/// clause declares itself stricter than the CHECK, so every key it admits must pass the CHECK, and
+/// the clause must agree with the rule both ways.
 #[test]
 fn row_key_rules_match_the_key_checks() {
     block_on(async {
@@ -1451,9 +1486,16 @@ fn row_key_rules_match_the_key_checks() {
                 probes.dedup();
                 for probe in probes {
                     let schema = check_terms_admit(&pool, &terms, key, &probe).await;
-                    if schema != table.key_rule.admits(&probe) {
+                    let rule = table.key_rule.admits(&probe);
+                    let clause = insert_clause_admits(&pool, table.key_rule, &probe).await;
+                    let agrees = match clause {
+                        Some(clause) => clause == rule && (schema || !rule),
+                        None => schema == rule,
+                    };
+                    if !agrees {
                         problems.push(format!(
-                            "{}: the schema admits {probe:?}: {schema}",
+                            "{}: {probe:?}: the rule admits {rule}, the CHECK {schema}, \
+                             the insert clause {clause:?}",
                             table.name
                         ));
                     }

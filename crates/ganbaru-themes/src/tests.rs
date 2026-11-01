@@ -382,20 +382,27 @@ fn dismissals_keep_the_highest_version_and_go_with_the_deleted_theme() {
 }
 
 #[test]
-fn load_all_rejects_stored_rows_that_fail_validation() {
+fn load_all_skips_one_invalid_theme() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert(&pool, &theme_write("custom")).await.unwrap();
-        sqlx::query("UPDATE theme_seed_tokens SET value = 'red' WHERE key = 'canvas'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        insert(&pool, &theme_write("second")).await.unwrap();
+        sqlx::query(
+            "UPDATE theme_seed_tokens SET value = 'red'
+             WHERE theme_id = 'custom' AND key = 'canvas'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        let error = load_all(&pool)
-            .await
-            .err()
-            .expect("stored rows that fail validation are rejected");
-        assert!(error.contains("theme_seed_tokens"), "{error}");
+        let loaded = load_all(&pool).await;
+        assert!(loaded.is_ok(), "one invalid theme failed the whole list");
+        let ids = loaded
+            .unwrap()
+            .into_iter()
+            .map(|read| read.theme.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["second"]);
     });
 }
 

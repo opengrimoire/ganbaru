@@ -4,11 +4,15 @@ use ganbaru_sync_contracts::bounds::{MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES};
 use ganbaru_sync_contracts::{Field, OrderKey, RowKey};
 use sqlx::{AssertSqlSafe, SqlitePool};
 
+use super::holds::{THEME_KEY, narrowed_rows, sealed_create};
+use super::replica::{forge_change, quoted};
 use super::{block_on, execute, migrated_pool, rejects, set_applying};
 use crate::manifest::vault::VAULT_MANIFEST;
+use crate::manifest::vault::themes::THEMES_TABLE;
 use crate::manifest::{ColumnType, MAX_TIMESTAMP_BYTES};
 use crate::triggers::{row_key_rule, value_rule};
 use crate::validate::column_value;
+use crate::{HoldReason, StoreOutcome};
 
 async fn rule_accepts(pool: &SqlitePool, rule: &str, value: &str) -> bool {
     let accepted: Option<i64> = sqlx::query_scalar(AssertSqlSafe(format!("SELECT ({rule}) IS 1")))
@@ -161,6 +165,78 @@ fn row_key_rule_agrees_with_the_contract_type() {
                 RowKey::new(&key).is_ok(),
                 "row key {key:?}"
             );
+        }
+    });
+}
+
+/// A theme row whose id the domain refuses to read would stop every linked device from listing
+/// themes, so a signed change naming such a key is held and writes nothing.
+#[test]
+fn theme_with_a_non_slug_key_is_held_invalid() {
+    block_on(async {
+        let mut replicas = narrowed_rows().await;
+        let honest = sealed_create(&mut replicas[1], THEMES_TABLE, THEME_KEY).await;
+        let overlong = "a".repeat(65);
+        for key in ["Evil", overlong.as_str()] {
+            let mut change = honest.clone();
+            change.row = RowKey::new(key).unwrap();
+            let forged = forge_change(&mut replicas[1], change).await;
+            let mut receiver = replicas[0].clone_device().await;
+            assert_eq!(
+                receiver.receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "theme key {key}"
+            );
+            receiver.apply_all().await.unwrap();
+            assert_eq!(
+                receiver
+                    .count(&format!(
+                        "SELECT count(*) FROM themes WHERE id = {}",
+                        quoted(key)
+                    ))
+                    .await,
+                0,
+                "theme key {key} applied"
+            );
+        }
+    });
+}
+
+/// The insert guard states the theme id rule whether or not the engine is applying, so no write
+/// path leaves a row the domain cannot read.
+#[test]
+fn theme_insert_guard_admits_only_theme_ids() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let insert = |key: &str| {
+            format!(
+                "INSERT INTO themes
+                     (id, display_name, blend_canvas, seed_blend_canvas,
+                      derivation_engine_version, created_at_ms, updated_at_ms, icon_label,
+                      seed_icon_label)
+                 VALUES ('{key}', 'Ocean', '#101010', '#101010', 1, 1, 1, 'dark', 'dark')"
+            )
+        };
+        let overlong = "a".repeat(65);
+        for key in ["Evil", "-theme", "theme_1", "thème", overlong.as_str()] {
+            for applying in [false, true] {
+                set_applying(&pool, applying).await;
+                assert!(
+                    rejects(&pool, &insert(key)).await,
+                    "theme key {key} while applying is {applying}"
+                );
+            }
+        }
+        set_applying(&pool, false).await;
+        let longest = "a".repeat(64);
+        for key in [
+            "0f8fad5b-d9cb-469f-a165-70867728950e",
+            THEME_KEY,
+            longest.as_str(),
+        ] {
+            execute(&pool, &insert(key)).await;
         }
     });
 }

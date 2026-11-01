@@ -13,10 +13,12 @@ use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::manifest::vault::themes::{
-    ADAPTER, PALETTE_OWNED, SEED_PALETTE_OWNED, SEED_TOKENS_OWNED, THEMES_TABLE, TOKENS_OWNED,
-    group,
+    ADAPTER, BUILT_IN_THEMES, PALETTE_OWNED, SEED_PALETTE_OWNED, SEED_TOKENS_OWNED, THEMES_TABLE,
+    TOKENS_OWNED, group,
 };
 
+/// Bytes of the longest theme id. A UUID fits well below it.
+pub const MAX_THEME_ID_CHARS: usize = 64;
 /// Event palette slots of a theme.
 pub const PALETTE_SIZE: usize = 32;
 /// Characters of a theme display name.
@@ -41,6 +43,17 @@ pub const MAX_ICON_LABEL_CHARS: usize = 5;
 pub const CALENDAR_MODES: [&str; 4] = ["light", "dark", "app-canvas", "custom"];
 /// Characters of the longest Calendar default mode.
 pub const MAX_CALENDAR_MODE_CHARS: usize = 10;
+
+/// Whether `id` names a user theme: at most [`MAX_THEME_ID_CHARS`] bytes of lowercase ASCII
+/// letters, digits, and hyphens, starting with a letter or digit, and none of
+/// [`BUILT_IN_THEMES`].
+pub fn is_theme_id(id: &str) -> bool {
+    let slug_byte = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    id.len() <= MAX_THEME_ID_CHARS
+        && id.bytes().next().is_some_and(slug_byte)
+        && id.bytes().all(|byte| slug_byte(byte) || byte == b'-')
+        && !BUILT_IN_THEMES.contains(&id)
+}
 
 /// Whether `value` is a `#` followed by 6 or 8 hex digits.
 pub fn is_hex_color(value: &str) -> bool {

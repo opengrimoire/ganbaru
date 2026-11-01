@@ -299,17 +299,28 @@ function initThemeSync(): void {
   }).catch((err) => console.warn("theme window sync listener failed", err));
 }
 
+/** Stored themes and dismissals, or none of either when the load fails. */
+async function loadStoredThemesOrNone(): Promise<[UserThemeRead[], DismissalRow[]]> {
+  try {
+    return await Promise.all([loadAllUserThemes(), loadDismissals()]);
+  } catch (err) {
+    console.warn("Could not load user themes:", err);
+    return [[], []];
+  }
+}
+
 /**
  * Boot-time hydration: load user themes from SQLite, resolve the active theme
  * from config, and paint the first frame.
  *
  * Idempotent. The platform bootstraps await this after `ensureConfigLoaded`
  * and before mounting the app so first paint matches what the user has on
- * disk (no FOUC).
+ * disk (no FOUC). A failed load falls back to the built-in themes, because the
+ * app must open without optional theme rows.
  */
 export async function hydrateUserThemes(): Promise<void> {
   if (hydrated) return;
-  const [reads, dismissalRows] = await Promise.all([loadAllUserThemes(), loadDismissals()]);
+  const [reads, dismissalRows] = await loadStoredThemesOrNone();
   applyStoredThemes(reads, dismissalRows);
   quickToggleLightId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_LIGHT_KEY, "light");
   quickToggleDarkId = loadQuickToggleIdFromConfig(QUICK_TOGGLE_DARK_KEY, "dark");

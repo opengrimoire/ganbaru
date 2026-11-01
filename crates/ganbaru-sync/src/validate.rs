@@ -116,6 +116,11 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
     if !table.key_rule.admits(change.row.as_str()) {
         return Err("row key rule");
     }
+    if let Some(adapter) = engine.adapter(table) {
+        adapter
+            .validate_key(table.id, change.row.as_str())
+            .map_err(|error| error.0)?;
+    }
     let mask = change.mask();
     let full = table.full_mask();
     match change.action {

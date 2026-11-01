@@ -117,6 +117,13 @@ pub trait DomainAdapter: Send + Sync {
     /// Checks rules the column types cannot express. Called for every group of the table.
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError>;
 
+    /// Checks rules of a row key that the manifest's key rule cannot express. Called for every
+    /// change of the table, whatever its action.
+    fn validate_key(&self, table: TableId, key: &str) -> Result<(), AdapterError> {
+        let _ = (table, key);
+        Ok(())
+    }
+
     /// Checks rules that span groups of one row. Called after [`DomainAdapter::validate`] for a
     /// change that writes every group, with the row's key and the groups in ascending order.
     fn validate_row(

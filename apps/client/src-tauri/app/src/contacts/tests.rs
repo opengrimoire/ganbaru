@@ -1096,3 +1096,286 @@ async fn accepting_rechecks_the_stored_card_before_granting_trust() {
         assert_eq!(unchanged.state, "pending");
     }
 }
+
+/// Stores a pending request as a synced row can hold it, whatever its key or creation time.
+async fn insert_stored_request(
+    pool: &SqlitePool,
+    id: &str,
+    public_key: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) {
+    store::insert_request(
+        pool,
+        store::NewRequest {
+            id,
+            direction: RequestDirection::Received,
+            public_key,
+            peer_request_id: None,
+            display_name: "Ada",
+            color: 7,
+            card: "card",
+            card_digest: &store::encode_hex(&[0u8; 32]),
+            endpoint_hint: "",
+            coordinator_fingerprint: "",
+            invite_trust: TrustKind::NotAllowed,
+            message_trust: TrustKind::NotAllowed,
+            expires_at: created_at + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+        },
+        created_at,
+    )
+    .await
+    .unwrap();
+}
+
+/// A person public key that is not base64url and fits the stored length.
+fn unparsable_key() -> String {
+    "!".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH)
+}
+
+#[tokio::test]
+async fn request_views_skips_a_malformed_stored_row() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_stored_request(&pool, "contact-malformed", &unparsable_key(), now).await;
+
+    let rows = store::list_pending_requests(&pool, now).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    let views = super::request_views(&rows);
+
+    let ids: Vec<_> = views.iter().map(|view| view.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+}
+
+#[tokio::test]
+async fn expiry_closes_pending_rows_no_reader_can_use() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let small_order = "A".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH);
+    insert_stored_request(&pool, "contact-unparsable", &unparsable_key(), now).await;
+    insert_stored_request(&pool, "contact-small-order", &small_order, now).await;
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    let slightly_ahead = now + chrono::Duration::hours(12);
+    insert_stored_request(&pool, "contact-skewed", &key("Skewed"), slightly_ahead).await;
+    insert_stored_request(&pool, "contact-honest", &key("Honest"), now).await;
+
+    store::expire_stale_requests(&pool, now).await.unwrap();
+
+    for (id, state) in [
+        ("contact-unparsable", "expired"),
+        ("contact-small-order", "expired"),
+        ("contact-far-ahead", "expired"),
+        ("contact-skewed", "pending"),
+        ("contact-honest", "pending"),
+    ] {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.state, state, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn pending_list_leaves_out_a_row_created_far_ahead() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    let slightly_ahead = now + chrono::Duration::hours(12);
+    insert_stored_request(&pool, "contact-skewed", &key("Skewed"), slightly_ahead).await;
+
+    let listed = store::list_pending_requests(&pool, now).await.unwrap();
+
+    let ids: Vec<_> = listed.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-skewed"]);
+}
+
+const FAR_EXPIRY: &str = "9999-12-31T23:59:59.000Z";
+const LEAP_SECOND: &str = "2026-10-22T10:51:60.000Z";
+const FIVE_DIGIT_YEAR: &str = "+10000-01-01T00:00:00.000Z";
+const JUNK_TIME: &str = "zzzzzzzzzzzzzzzzzzzzzzzz";
+
+/// Stores a pending request as a snapshot copy can hold it, with times no adapter has checked.
+async fn insert_request_times(
+    pool: &SqlitePool,
+    id: &str,
+    public_key: &str,
+    created_at: &str,
+    expires_at: &str,
+    updated_at: &str,
+) {
+    sqlx::query(
+        "INSERT INTO contact_requests
+         (id, direction, public_key, display_name, card, card_digest, expires_at, created_at,
+          updated_at)
+         VALUES (?, 'received', ?, 'Ada', 'card', ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(public_key)
+    .bind(store::encode_hex(&[0u8; 32]))
+    .bind(expires_at)
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Stores one pending request for each form of unreadable time, keyed after the form.
+async fn insert_unreadable_requests(pool: &SqlitePool, now: chrono::DateTime<chrono::Utc>) {
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let honest = store::format_time(now);
+    let deadline = store::format_time(now + chrono::Duration::days(requests::REQUEST_TTL_DAYS));
+    insert_request_times(
+        pool,
+        "contact-year",
+        &key("Year"),
+        FIVE_DIGIT_YEAR,
+        FAR_EXPIRY,
+        &honest,
+    )
+    .await;
+    insert_request_times(
+        pool,
+        "contact-leap",
+        &key("Leap"),
+        LEAP_SECOND,
+        FAR_EXPIRY,
+        &honest,
+    )
+    .await;
+    insert_request_times(
+        pool,
+        "contact-junk",
+        &key("Junk"),
+        &honest,
+        &deadline,
+        JUNK_TIME,
+    )
+    .await;
+}
+
+/// Stores an active contact as a snapshot copy can hold it, with times no adapter has checked.
+async fn insert_contact_times(
+    pool: &SqlitePool,
+    public_key: &str,
+    created_at: &str,
+    updated_at: &str,
+    accepted_at: Option<&str>,
+) {
+    sqlx::query(
+        "INSERT INTO contacts (id, public_key, display_name, accepted_at, created_at, updated_at)
+         VALUES ('contact-' || ?1, ?1, 'Ada', ?2, ?3, ?4)",
+    )
+    .bind(public_key)
+    .bind(accepted_at)
+    .bind(created_at)
+    .bind(updated_at)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn request_views_skips_rows_with_unreadable_times() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_unreadable_requests(&pool, now).await;
+
+    let rows = store::list_pending_requests(&pool, now).await.unwrap();
+    assert_eq!(rows.len(), 4);
+    let views = super::request_views(&rows);
+
+    let ids: Vec<_> = views.iter().map(|view| view.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+}
+
+#[tokio::test]
+async fn contact_views_skips_rows_with_unreadable_times() {
+    let pool = migrated_memory_pool().await;
+    let at = store::format_time(store::now());
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let honest = key("Honest");
+    insert_contact_times(&pool, &honest, &at, &at, Some(&at)).await;
+    insert_contact_times(&pool, &key("Year"), FIVE_DIGIT_YEAR, &at, None).await;
+    insert_contact_times(&pool, &key("Junk"), &at, JUNK_TIME, None).await;
+    insert_contact_times(&pool, &key("Leap"), &at, &at, Some(LEAP_SECOND)).await;
+
+    let rows = store::list_contacts(&pool).await.unwrap();
+    assert_eq!(rows.len(), 4);
+    let views = super::contact_views(rows);
+
+    let keys: Vec<_> = views.iter().map(|view| view.public_key.as_str()).collect();
+    assert_eq!(keys, [honest.as_str()]);
+}
+
+#[tokio::test]
+async fn expiry_closes_pending_rows_with_unreadable_times() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_unreadable_requests(&pool, now).await;
+
+    store::expire_stale_requests(&pool, now).await.unwrap();
+
+    for (id, state) in [
+        ("contact-year", "expired"),
+        ("contact-leap", "expired"),
+        ("contact-junk", "expired"),
+        ("contact-honest", "pending"),
+    ] {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.state, state, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn follower_leaves_clock_judged_rows_to_the_coordinator() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let lapsed = now - chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
+    insert_stored_request(&pool, "contact-lapsed", &key("Lapsed"), lapsed).await;
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    insert_stored_request(&pool, "contact-honest", &key("Honest"), now).await;
+    insert_stored_request(&pool, "contact-malformed", &unparsable_key(), now).await;
+    insert_unreadable_requests(&pool, now).await;
+    let state = async |id: &str| {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        row.state
+    };
+
+    requests::sweep_pending_requests(&pool, true, now)
+        .await
+        .unwrap();
+
+    for id in ["contact-lapsed", "contact-far-ahead", "contact-honest"] {
+        assert_eq!(state(id).await, "pending", "{id}");
+    }
+    for id in [
+        "contact-malformed",
+        "contact-year",
+        "contact-leap",
+        "contact-junk",
+    ] {
+        assert_eq!(state(id).await, "expired", "{id}");
+    }
+    let listed = store::list_pending_requests(&pool, now).await.unwrap();
+    let ids: Vec<_> = listed.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+
+    requests::sweep_pending_requests(&pool, false, now)
+        .await
+        .unwrap();
+
+    for id in ["contact-lapsed", "contact-far-ahead"] {
+        assert_eq!(state(id).await, "expired", "{id}");
+    }
+    assert_eq!(state("contact-honest").await, "pending");
+}

@@ -58,6 +58,11 @@ pub fn is_small_order_public_key(bytes: &[u8; PUBLIC_KEY_BYTES]) -> bool {
     SMALL_ORDER_Y_COORDINATES.contains(&y)
 }
 
+/// Whether text is a person public key that [`PersonPublicKey::from_text`] accepts.
+pub fn is_valid_public_key_text(text: &str) -> bool {
+    PersonPublicKey::from_text(text).is_ok()
+}
+
 /// Signature or key material that cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureError {

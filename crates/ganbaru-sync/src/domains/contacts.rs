@@ -5,6 +5,7 @@
 //! concurrent accept on another. A request answer outranks a pending state, and acceptance
 //! outranks every other answer. A rotated card outranks every card with a lower revision.
 
+use ganbaru_contacts::{is_stored_timestamp, is_valid_public_key_text, is_valid_request_window};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -18,8 +19,6 @@ pub const PUBLIC_KEY_CHARS: usize = 43;
 pub const MAX_DISPLAY_NAME_CHARS: usize = 160;
 /// Largest palette slot of a contact color.
 pub const MAX_COLOR: i64 = 31;
-/// Fewest characters of a stored timestamp, as the tables check it.
-pub const MIN_TIMESTAMP_CHARS: usize = 20;
 /// Characters of a request id, local or the peer's.
 pub const MAX_REQUEST_ID_CHARS: usize = 160;
 /// Characters of a signed card in its text form.
@@ -88,10 +87,10 @@ fn one_of(field: &Field, allowed: &[&str], what: &'static str) -> Result<(), Ada
 }
 
 fn timestamp(field: &Field) -> Result<(), AdapterError> {
-    if text(field)?.chars().count() >= MIN_TIMESTAMP_CHARS {
+    if is_stored_timestamp(text(field)?) {
         Ok(())
     } else {
-        Err(AdapterError("contacts timestamp is too short"))
+        Err(AdapterError("contacts timestamp"))
     }
 }
 
@@ -182,7 +181,9 @@ fn validate_request(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
             ],
         ) => {
             one_of(direction, &REQUEST_DIRECTIONS, "contact request direction")?;
-            exact_chars(public_key, PUBLIC_KEY_CHARS, "contact request public key")?;
+            if !is_valid_public_key_text(text(public_key)?) {
+                return Err(AdapterError("contact request public key"));
+            }
             if optional_text(peer_request_id)?
                 .is_some_and(|id| !(1..=MAX_REQUEST_ID_CHARS).contains(&id.chars().count()))
             {
@@ -201,7 +202,12 @@ fn validate_request(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
                 return Err(AdapterError("contact request fingerprint"));
             }
             timestamp(expires_at)?;
-            timestamp(created_at)
+            timestamp(created_at)?;
+            if is_valid_request_window(text(created_at)?, text(expires_at)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("contact request window"))
+            }
         }
         (request_group::STATE, [state, invite, message]) => {
             one_of(state, &REQUEST_STATES, "contact request state")?;
@@ -318,6 +324,16 @@ impl DomainAdapter for ContactsAdapter {
         }
     }
 
+    /// A contact row is keyed by the person public key, and the key's small-order form cannot
+    /// be expressed in the table check that the manifest's key rule mirrors.
+    fn validate_key(&self, table: TableId, key: &str) -> Result<(), AdapterError> {
+        if table == CONTACTS_TABLE && !is_valid_public_key_text(key) {
+            Err(AdapterError("contact public key"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Contact conflicts are never surfaced, so rows present nothing.
     fn presentation(&self, _table: TableId, _values: &[(GroupId, Value)]) -> Presentation {
         Presentation::default()
@@ -331,8 +347,23 @@ mod tests {
     use super::*;
     use crate::{Engine, validate};
 
-    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const KEY: &str = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const AT: &str = "2026-10-22T10:51:41.000Z";
+    /// Keys of the stored length that no reader can parse: outside base64url, small order, and
+    /// with nonzero trailing bits.
+    const MALFORMED_KEYS: [&str; 4] = [
+        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
+    ];
+    /// Times the table checks admit and the frontend reader refuses: a five digit year, a leap
+    /// second, and text of the stored length.
+    const UNREADABLE_TIMES: [&str; 3] = [
+        "+10000-01-01T00:00:00.000Z",
+        "2026-10-22T10:51:60.000Z",
+        "zzzzzzzzzzzzzzzzzzzzzzzz",
+    ];
 
     fn value(fields: Vec<Field>) -> Value {
         Value::new(fields).unwrap()
@@ -363,9 +394,19 @@ mod tests {
     }
 
     fn created_request(peer: Field, fingerprint: &str) -> Value {
+        request_row(KEY, peer, fingerprint, AT, AT)
+    }
+
+    fn request_row(
+        key: &str,
+        peer: Field,
+        fingerprint: &str,
+        expires_at: &str,
+        created_at: &str,
+    ) -> Value {
         value(vec![
             t("received"),
-            t(KEY),
+            t(key),
             peer,
             t(" Ada "),
             Field::Integer(7),
@@ -373,8 +414,8 @@ mod tests {
             t(&"0".repeat(DIGEST_CHARS)),
             t("127.0.0.1:43821"),
             t(fingerprint),
-            t(AT),
-            t(AT),
+            t(expires_at),
+            t(created_at),
         ])
     }
 
@@ -441,6 +482,115 @@ mod tests {
             ],
             replaced_by: None,
             cause: None,
+        }
+    }
+
+    /// A full change of the contact row keyed by `key`.
+    fn contact_change(key: &str, action: ChangeAction) -> Change {
+        Change {
+            table: CONTACTS_TABLE,
+            row: RowKey::new(key).unwrap(),
+            action,
+            groups: vec![
+                GroupValue::new(CONTACTS_TABLE, contact_group::CREATED, value(vec![t(AT)])),
+                GroupValue::new(
+                    CONTACTS_TABLE,
+                    contact_group::PROFILE,
+                    value(vec![t("Ada"), Field::Integer(7)]),
+                ),
+                GroupValue::new(CONTACTS_TABLE, contact_group::STANDING, standing("active")),
+                GroupValue::new(CONTACTS_TABLE, contact_group::UPDATED, value(vec![t(AT)])),
+                GroupValue::new(
+                    CONTACTS_TABLE,
+                    contact_group::EXISTS,
+                    value(vec![Field::Integer(1)]),
+                ),
+            ],
+            replaced_by: None,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn malformed_request_key_is_held_invalid() {
+        let adapter = ContactsAdapter;
+        let engine = Engine::vault();
+        let created = |key: &str, expires_at: &str, created_at: &str| {
+            adapter.validate(
+                REQUESTS_TABLE,
+                request_group::CREATED,
+                &request_row(key, Field::Null, "", expires_at, created_at),
+            )
+        };
+
+        assert_eq!(created(KEY, AT, AT), Ok(()));
+        assert_eq!(
+            validate::change(&engine, &contact_change(KEY, ChangeAction::Create)),
+            Ok(())
+        );
+        for key in MALFORMED_KEYS {
+            assert!(created(key, AT, AT).is_err(), "request key {key}");
+            for action in [
+                ChangeAction::Create,
+                ChangeAction::Write,
+                ChangeAction::Tombstone,
+            ] {
+                assert_eq!(
+                    validate::change(&engine, &contact_change(key, action)),
+                    Err("contact public key"),
+                    "{action:?} of contact key {key}"
+                );
+            }
+        }
+        assert!(
+            created(KEY, "9999-12-31T23:59:59.000Z", AT).is_err(),
+            "an expiry far past the request lifetime"
+        );
+    }
+
+    #[test]
+    fn unreadable_times_are_held_invalid_in_every_contacts_table() {
+        let adapter = ContactsAdapter;
+        let time = |at: &str| value(vec![t(at)]);
+        let far = "9999-12-31T23:59:59.000Z";
+        assert_eq!(
+            adapter.validate(REQUESTS_TABLE, request_group::UPDATED, &time(AT)),
+            Ok(())
+        );
+        for at in UNREADABLE_TIMES {
+            for (table, group) in [
+                (CONTACTS_TABLE, contact_group::CREATED),
+                (CONTACTS_TABLE, contact_group::UPDATED),
+                (REQUESTS_TABLE, request_group::UPDATED),
+                (CARD_TABLE, card_group::UPDATED),
+            ] {
+                assert!(
+                    adapter.validate(table, group, &time(at)).is_err(),
+                    "{at} in group {group:?} of table {table:?}"
+                );
+            }
+            for position in [1, 2, 4, 6] {
+                let mut fields = standing("active").fields().to_vec();
+                fields[position] = t(at);
+                assert!(
+                    adapter
+                        .validate(CONTACTS_TABLE, contact_group::STANDING, &value(fields))
+                        .is_err(),
+                    "{at} at standing position {position}"
+                );
+            }
+            for (expires_at, created_at) in [(AT, at), (at, AT), (far, at)] {
+                assert!(
+                    adapter
+                        .validate(
+                            REQUESTS_TABLE,
+                            request_group::CREATED,
+                            &request_row(KEY, Field::Null, "", expires_at, created_at),
+                        )
+                        .is_err(),
+                    "expires {expires_at}, created {created_at}"
+                );
+            }
         }
     }
 

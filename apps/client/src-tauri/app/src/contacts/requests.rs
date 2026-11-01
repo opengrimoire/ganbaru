@@ -25,8 +25,8 @@ use ganbaru_contacts::{SIGNATURE_BYTES, decode_nonce, nonces_match, verify};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, Runtime};
 
-/// How long a request stays pending on both sides.
-pub(crate) const REQUEST_TTL_DAYS: i64 = 7;
+pub(crate) use ganbaru_contacts::REQUEST_TTL_DAYS;
+
 /// Upper bound on pending received requests before the oldest are deleted.
 #[cfg(any(desktop, test))]
 pub(crate) const MAX_PENDING_RECEIVED: i64 = 64;
@@ -812,14 +812,33 @@ pub(crate) fn start_request_polling<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
+/// Closes the pending requests this device may judge. Every device closes rows no reader can
+/// show. Rows judged against a clock are left to the device that receives requests, so one
+/// follower with a bad clock cannot close honest rows for the whole vault.
+pub(crate) async fn sweep_pending_requests(
+    pool: &SqlitePool,
+    follows: bool,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    if follows {
+        store::close_unreadable_requests(pool, now).await
+    } else {
+        store::expire_stale_requests(pool, now).await
+    }
+}
+
 async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     super::identity::try_release(app).await;
-    if follows_coordinator(app).unwrap_or(true) {
-        return Ok(());
-    }
     let Ok(pool) = contacts_pool(app).await else {
         return Ok(());
     };
+    let follows = follows_coordinator(app).unwrap_or(true);
+    if let Err(error) = sweep_pending_requests(&pool, follows, store::now()).await {
+        eprintln!("contact request expiry failed: {error}");
+    }
+    if follows {
+        return Ok(());
+    }
     let Ok(Some(identity)) = super::identity::load_identity(app, &pool).await else {
         return Ok(());
     };

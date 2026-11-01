@@ -9,6 +9,7 @@
 //! Each domain declares its tables in one [`DomainManifest`]; a manifest flattens a list of
 //! domains in dependency order.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use ganbaru_sync_contracts::bounds::{
@@ -1418,6 +1419,39 @@ impl Manifest {
     /// Replicated table by id.
     pub fn table(&self, id: TableId) -> Option<&'static TableSpec> {
         self.tables.iter().find(|table| table.id == id)
+    }
+
+    /// The lowest table of the component of every table, in the graph of reference columns of
+    /// either delete action, owned references, and key parents, with direction ignored. Nothing
+    /// that follows a reference leaves a component.
+    pub(crate) fn reference_components(&self) -> BTreeMap<TableId, TableId> {
+        fn root(parents: &BTreeMap<TableId, TableId>, table: TableId) -> TableId {
+            let mut current = table;
+            while let Some(parent) = parents.get(&current).filter(|parent| **parent != current) {
+                current = *parent;
+            }
+            current
+        }
+        let mut parents: BTreeMap<TableId, TableId> = self
+            .tables
+            .iter()
+            .map(|table| (table.id, table.id))
+            .collect();
+        for table in self.tables {
+            let referenced = table
+                .references()
+                .map(|(_, _, reference)| reference.table)
+                .chain(table.owned_references().map(|(_, _, _, owned)| owned.table))
+                .chain(table.key_parent);
+            for target in referenced {
+                let (left, right) = (root(&parents, table.id), root(&parents, target));
+                parents.insert(left.max(right), left.min(right));
+            }
+        }
+        self.tables
+            .iter()
+            .map(|table| (table.id, root(&parents, table.id)))
+            .collect()
     }
 
     /// Whether a local delete of `table` can be held: the table holds deletes, or it

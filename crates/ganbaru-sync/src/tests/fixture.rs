@@ -549,6 +549,48 @@ pub(super) const NODES: TableSpec = TableSpec {
 /// `fixture_nodes`.
 pub(super) const NODES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 5);
 
+/// Notes on a tree node, which reach the tree through a cascading reference.
+pub(super) const NODE_NOTES: TableSpec = TableSpec {
+    id: NODE_NOTES_TABLE,
+    name: "fixture_node_notes",
+    groups: &[LABEL, reference("node", NODES_TABLE, OnDelete::Cascade)],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// `fixture_node_notes`.
+pub(super) const NODE_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 18);
+
+/// Notes on an edge, which a severed edge hides.
+pub(super) const EDGE_NOTES: TableSpec = TableSpec {
+    id: EDGE_NOTES_TABLE,
+    name: "fixture_edge_notes",
+    groups: &[LABEL, reference("edge", EDGES_TABLE, OnDelete::Cascade)],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// `fixture_edge_notes`.
+pub(super) const EDGE_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 19);
+
+/// Pointers to node notes, which reach the tree only through a reference that never cascades.
+pub(super) const NOTE_POINTERS: TableSpec = TableSpec {
+    id: NOTE_POINTERS_TABLE,
+    name: "fixture_note_pointers",
+    groups: &[
+        LABEL,
+        reference("note", NODE_NOTES_TABLE, OnDelete::SetNull),
+    ],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// `fixture_note_pointers`.
+pub(super) const NOTE_POINTERS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 20);
+
 /// Prefix of [`EDGES`] keys.
 const EDGE_KEY_PREFIX: &str = "fixture_edge";
 
@@ -1537,7 +1579,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
     table_ids: TableIdRange {
         first: FIXTURE_TABLE_IDS,
-        last: FIXTURE_TABLE_IDS + 17,
+        last: FIXTURE_TABLE_IDS + 20,
     },
     tables: &[
         ITEMS,
@@ -1547,7 +1589,10 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         LINKS,
         MEMBERSHIPS,
         NODES,
+        NODE_NOTES,
+        NOTE_POINTERS,
         EDGES,
+        EDGE_NOTES,
         DRAFTS,
         DRAFT_PARTS,
         DRAFT_NOTES,
@@ -1744,6 +1789,21 @@ fn fixture_schema() -> String {
              to_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
              sync_key TEXT NOT NULL UNIQUE,
              PRIMARY KEY (from_id, to_id)
+         );
+         CREATE TABLE fixture_node_notes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE
+         );
+         CREATE TABLE fixture_note_pointers (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_node_notes(id) ON DELETE SET NULL
+         );
+         CREATE TABLE fixture_edge_notes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_edges(sync_key) ON DELETE CASCADE
          );
          CREATE TABLE fixture_drafts (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),

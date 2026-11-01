@@ -2629,6 +2629,86 @@ async fn replicas_with_item() -> Vec<Replica> {
     replicas
 }
 
+/// The tree and acyclic tables `reader` derives while it applies what `writer` sealed.
+async fn derived_applying(writer: &mut Replica, reader: &mut Replica) -> Vec<TableId> {
+    writer.seal().await.unwrap();
+    crate::visibility::take_derived();
+    reader.pull(writer).await;
+    crate::visibility::take_derived()
+}
+
+/// Two replicas sharing a node, two items, and an edge between them.
+async fn replicas_with_tree_and_edge() -> Vec<Replica> {
+    let mut replicas = replicas(2).await;
+    let items: String = ["x", "y"]
+        .iter()
+        .map(|id| {
+            format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('{id}', '2027-01-01T00:00:00.000Z', '{id}', 0);"
+            )
+        })
+        .collect();
+    let node = format!(
+        "INSERT INTO fixture_nodes (id, parent_id, position, label)
+         VALUES ('node-1', NULL, '{}', 'Node');",
+        rank(1)
+    );
+    replicas[0]
+        .exec(&format!("{items}{node}{}", add_edge("x", "y")))
+        .await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+#[test]
+fn a_batch_outside_the_closure_derives_no_tree_or_edge_table() {
+    block_on(async {
+        let mut replicas = replicas_with_tree_and_edge().await;
+        let (writer, reader) = replicas.split_at_mut(1);
+        let (writer, reader) = (&mut writer[0], &mut reader[0]);
+        writer
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .await;
+        assert_eq!(
+            derived_applying(writer, reader).await,
+            Vec::<TableId>::new()
+        );
+        assert_eq!(reader.count("SELECT count(*) FROM fixture_memos").await, 1);
+
+        // A pointer reaches the tree through a reference that never cascades, and against the
+        // direction of the note's reference.
+        writer
+            .exec(
+                "INSERT INTO fixture_node_notes (id, label, peer_id)
+                 VALUES ('note-1', 'Note', 'node-1');
+                 INSERT INTO fixture_note_pointers (id, label, peer_id)
+                 VALUES ('pointer-1', 'Pointer', 'note-1');",
+            )
+            .await;
+        let derived = derived_applying(writer, reader).await;
+        assert!(derived.contains(&NODES_TABLE), "{derived:?}");
+        assert!(!derived.contains(&EDGES_TABLE), "{derived:?}");
+
+        writer
+            .exec("UPDATE fixture_note_pointers SET label = 'Moved' WHERE id = 'pointer-1'")
+            .await;
+        let derived = derived_applying(writer, reader).await;
+        assert!(derived.contains(&NODES_TABLE), "{derived:?}");
+
+        let key = edge_key("x", "y");
+        writer
+            .exec(&format!(
+                "INSERT INTO fixture_edge_notes (id, label, peer_id)
+                 VALUES ('edge-note-1', 'Note', '{key}')"
+            ))
+            .await;
+        let derived = derived_applying(writer, reader).await;
+        assert!(derived.contains(&EDGES_TABLE), "{derived:?}");
+        assert!(!derived.contains(&NODES_TABLE), "{derived:?}");
+    });
+}
+
 /// `change` with `fields` as the value of `group`.
 pub(super) fn with_group(mut change: Change, group: GroupId, fields: Vec<Field>) -> Change {
     let value = GroupValue::new(change.table, group, Value::new(fields).unwrap());

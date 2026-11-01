@@ -41,6 +41,51 @@ pub(crate) type RowRef = (TableId, String);
 /// Hidden duplicates per table, each with the key of the row it collides with and is kept.
 pub(crate) type Duplicates = BTreeMap<TableId, BTreeMap<String, String>>;
 
+/// Which tree and acyclic tables a [`Visibility`] derives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeriveScope {
+    /// Every table, for reads outside an apply.
+    All,
+    /// The components of the tables holding a dirty or contested row, and of `alongside`, the
+    /// tables of rows an apply writes without marking them dirty.
+    Dirty { alongside: BTreeSet<TableId> },
+}
+
+impl DeriveScope {
+    /// The tables derived, or `None` for every table.
+    fn tables(
+        self,
+        engine: &Engine,
+        dirty: &BTreeSet<RowRef>,
+        contested: &Contested,
+    ) -> Option<BTreeSet<TableId>> {
+        let Self::Dirty { mut alongside } = self else {
+            return None;
+        };
+        alongside.extend(dirty.iter().map(|(table, _)| *table));
+        alongside.extend(contested.keys().copied());
+        Some(engine.components_of(&alongside))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tree and acyclic tables derived on this thread since the last [`take_derived`].
+    static DERIVED: std::cell::RefCell<Vec<TableId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records a derivation of a tree or acyclic table.
+#[cfg(test)]
+pub(crate) fn record_derived(table: TableId) {
+    DERIVED.with_borrow_mut(|derived| derived.push(table));
+}
+
+/// The tree and acyclic tables derived on this thread since the last call.
+#[cfg(test)]
+pub(crate) fn take_derived() -> Vec<TableId> {
+    DERIVED.take()
+}
+
 /// Why a root hides the rows whose cascading references reach it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RootKind {
@@ -139,6 +184,8 @@ pub(crate) struct Visibility {
     pub(crate) detached: BTreeSet<RowRef>,
     /// Edges of acyclic edge sets that are hidden to break a cycle.
     pub(crate) severed: BTreeSet<RowRef>,
+    /// Tables whose tree and edge state was derived, or `None` for every table.
+    pub(crate) scope: Option<BTreeSet<TableId>>,
     /// Roots per row; a shown row maps to no roots.
     cascade: HashMap<RowRef, Roots>,
     /// No late change is recorded, so no row is hidden as one. Unknown unless loaded.
@@ -172,16 +219,23 @@ impl Visibility {
     /// the duplicates, so the choice repeats until the excluded rows settle. When they do not
     /// settle within [`MAX_DUPLICATE_ROUNDS`], keepers are chosen without exclusions, which still
     /// shows one row per class and is the same on every replica.
+    ///
+    /// A scoped load leaves the trees and edge sets of other components underived. A mismatch
+    /// there can only come from a row of that component, which puts it in scope at the finish
+    /// that touches it. Contested rows count toward the scope because keepers read their
+    /// hiding wherever they are.
     pub(crate) async fn load(
         engine: &Engine,
         conn: &mut SqliteConnection,
         dirty: &mut BTreeSet<RowRef>,
+        scope: DeriveScope,
     ) -> SyncResult<Self> {
         let contested = repair::contested(engine, conn, dirty).await?;
+        let scope = scope.tables(engine, dirty, &contested);
         let mut excluded = BTreeSet::new();
         for _ in 0..MAX_DUPLICATE_ROUNDS {
             let duplicates = repair::keepers(&contested, &excluded);
-            let mut visibility = Self::derive(engine, conn, duplicates, dirty).await?;
+            let mut visibility = Self::derive(engine, conn, duplicates, &scope, dirty).await?;
             let next = visibility
                 .otherwise_hidden(engine, conn, &contested)
                 .await?;
@@ -195,25 +249,73 @@ impl Visibility {
         }
         excluded.clear();
         let duplicates = repair::keepers(&contested, &excluded);
-        let visibility = Self::derive(engine, conn, duplicates, dirty).await?;
+        let visibility = Self::derive(engine, conn, duplicates, &scope, dirty).await?;
         visibility
             .mark_unsettled(engine, conn, &contested, &excluded, dirty)
             .await?;
         Ok(visibility)
     }
 
-    /// Visibility with the given duplicates and the tree and edge state that follows from them.
+    /// Visibility with the given duplicates and the tree and edge state that follows from them
+    /// for the tables of `scope`.
     async fn derive(
         engine: &Engine,
         conn: &mut SqliteConnection,
         duplicates: Duplicates,
+        scope: &Option<BTreeSet<TableId>>,
         dirty: &mut BTreeSet<RowRef>,
     ) -> SyncResult<Self> {
         let mut visibility = Self::with_duplicates(duplicates);
+        visibility.scope = scope.clone();
         visibility.no_late = !exclusion::any_late(conn).await?;
         visibility.detached = tree::detached(engine, conn, &mut visibility, dirty).await?;
         visibility.severed = edges::severed(engine, conn, &visibility, dirty).await?;
+        #[cfg(test)]
+        visibility
+            .assert_scope_matches_all(engine, conn, dirty)
+            .await?;
         Ok(visibility)
+    }
+
+    /// Asserts that a scoped derivation equals the full one restricted to its scope.
+    #[cfg(test)]
+    async fn assert_scope_matches_all(
+        &self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        dirty: &BTreeSet<RowRef>,
+    ) -> SyncResult<()> {
+        let Some(scope) = &self.scope else {
+            return Ok(());
+        };
+        let derived = take_derived();
+        let mut full = Self::with_duplicates(self.duplicates.clone());
+        full.no_late = self.no_late;
+        let mut unused = dirty.clone();
+        full.detached = tree::detached(engine, conn, &mut full, &mut unused).await?;
+        full.severed = edges::severed(engine, conn, &full, &mut unused).await?;
+        take_derived();
+        DERIVED.set(derived);
+        let within = |rows: &BTreeSet<RowRef>| -> BTreeSet<RowRef> {
+            rows.iter()
+                .filter(|(table, _)| scope.contains(table))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            self.detached,
+            within(&full.detached),
+            "scoped detached rows"
+        );
+        assert_eq!(self.severed, within(&full.severed), "scoped severed edges");
+        Ok(())
+    }
+
+    /// Whether the tree and edge state of a table was derived.
+    pub(crate) fn in_scope(&self, table: TableId) -> bool {
+        self.scope
+            .as_ref()
+            .is_none_or(|scope| scope.contains(&table))
     }
 
     /// Contested rows that are hidden whether or not they are duplicates: removed, severed,
@@ -319,11 +421,15 @@ impl Visibility {
 
     /// Whether a row is an edge severed to break a cycle.
     pub(crate) fn is_severed(&self, table: TableId, key: &str) -> bool {
+        #[cfg(test)]
+        assert!(self.in_scope(table), "severed edges read outside the scope");
         self.severed.contains(&(table, key.to_string()))
     }
 
     /// Whether a tree row's parent materializes as null.
     pub(crate) fn is_detached(&self, table: TableId, key: &str) -> bool {
+        #[cfg(test)]
+        assert!(self.in_scope(table), "detached rows read outside the scope");
         self.detached.contains(&(table, key.to_string()))
     }
 

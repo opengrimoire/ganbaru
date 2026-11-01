@@ -31,7 +31,7 @@ use crate::manifest::TableSpec;
 use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::repair;
 use crate::seal::{SealReport, SealSlot, existence_write};
-use crate::visibility::{MAX_REDIRECT_DEPTH, RowRef, Visibility, removed};
+use crate::visibility::{DeriveScope, MAX_REDIRECT_DEPTH, RowRef, Visibility, removed};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, log, sql};
 
 /// A deleted row, with its deleted descendants, holding edits the deletion did not see.
@@ -454,7 +454,7 @@ impl Engine {
 
 /// Visibility for reads outside an apply.
 async fn read_visibility(engine: &Engine, conn: &mut SqliteConnection) -> SyncResult<Visibility> {
-    Visibility::load(engine, conn, &mut BTreeSet::new()).await
+    Visibility::load(engine, conn, &mut BTreeSet::new(), DeriveScope::All).await
 }
 
 /// Every row carrying the recovery flag, by table and key.

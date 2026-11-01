@@ -470,7 +470,8 @@ impl PeerSim {
                 clock_ms: START_MS,
                 created: 0,
                 spares: 0,
-                overrides: super::Overrides::new(seed),
+                overrides: super::SideEdits::new(seed, super::OVERRIDE_SEED_MIX),
+                notes: super::SideEdits::new(seed, super::NOTE_SEED_MIX),
             },
             states,
             outbox: Vec::new(),
@@ -1524,6 +1525,10 @@ impl PeerSim {
             .await
             .unwrap();
         let authorization = view(replica).await;
+        parts.push((
+            "full derivation".to_owned(),
+            vec![replica.full_derivation().await],
+        ));
         parts.push((
             "conflicts".to_owned(),
             conflicts.iter().map(|item| format!("{item:?}")).collect(),

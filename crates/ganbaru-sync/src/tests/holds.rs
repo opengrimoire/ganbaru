@@ -1,12 +1,12 @@
 //! Deletion and insert holds for domain Undo and sealing split into batches.
 
-use ganbaru_sync_contracts::{Change, ChangeAction, Content, Envelope, RowKey, TableId};
+use ganbaru_sync_contracts::{Cause, Change, ChangeAction, Content, Envelope, RowKey, TableId};
 use sqlx::Connection;
 
 use super::block_on;
 use super::fixture::{
-    CYCLE_A_TABLE, CYCLE_B_TABLE, ITEMS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE, MEMOS_TABLE,
-    TEST_MANIFEST, edge_key, memo_tag_key,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE,
+    MEMOS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_key, memo_tag_key,
 };
 use super::replica::{Replica, connection_from, converge, forge_change, quoted, rank};
 use crate::domains::themes::PALETTE_SIZE;
@@ -1087,6 +1087,51 @@ fn tombstone_of_a_never_deleted_table_is_invalid() {
                     "tombstone of {key} replaced by {replaced_by:?}"
                 );
             }
+        }
+    });
+}
+
+/// A tombstone of `MEMO_LINES_TABLE` caused by a row of `table`.
+fn line_tombstone(table: TableId) -> Change {
+    Change {
+        table: MEMO_LINES_TABLE,
+        row: RowKey::new("line-1").unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: Some(Cause {
+            table,
+            row: RowKey::new("cause-1").unwrap(),
+        }),
+    }
+}
+
+/// A cause is read without following a reference, so one must stay among the tables a row's
+/// references connect it to.
+#[test]
+fn tombstone_cause_outside_the_component_is_invalid() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[1]
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .await;
+        converge(&mut replicas).await;
+        for table in [MEMOS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE] {
+            assert_eq!(
+                crate::validate::change(&replicas[1].engine, &line_tombstone(table)),
+                Ok(())
+            );
+        }
+        for table in [NODES_TABLE, EDGES_TABLE, ITEMS_TABLE] {
+            let forged = forge_change(&mut replicas[1], line_tombstone(table)).await;
+            let mut receiver = replicas[0].clone_device().await;
+            assert_eq!(
+                receiver.receive(&[forged]).await,
+                vec![StoreOutcome::Stored {
+                    held: Some(HoldReason::Invalid)
+                }],
+                "cause in table {table:?}"
+            );
         }
     });
 }

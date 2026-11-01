@@ -18,6 +18,7 @@ use crate::chat::sync::SyncedAssignmentWork;
 use ganbaru_chat::coordination::acceptance::{AcceptanceSubject, acceptance_digest};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use std::collections::BTreeSet;
 
 pub(super) async fn recover_assignment_dispatch_jobs(
     app: tauri::AppHandle,
@@ -1127,6 +1128,19 @@ pub(crate) fn start_synced_assignment_work(app: &tauri::AppHandle, work: SyncedA
             eprintln!("Synced Chat assignment work did not start: {error}");
         }
     });
+}
+
+/// Starts the assignment an unattended post created on this device. It takes the path of synced
+/// work, so it dispatches only when its teammate already holds a local acceptance.
+pub(super) fn start_unattended_assignment(
+    app: &tauri::AppHandle,
+    assignment_id: &ChatWorkAssignmentId,
+) {
+    let work = SyncedAssignmentWork {
+        queued: BTreeSet::from([assignment_id.as_str().to_owned()]),
+        ..SyncedAssignmentWork::default()
+    };
+    start_synced_assignment_work(app, work);
 }
 
 /// Reason recorded on this device's authorizations of an assignment whose concurrent starts

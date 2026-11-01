@@ -176,6 +176,12 @@ pub fn record_assignment_acceptance(
     }
 }
 
+/// Drops the local acceptance of `digest`, once what it covered is used up.
+#[cfg(desktop)]
+pub fn forget_assignment_acceptance(scope: &mut ChatDeviceScope, digest: &str) {
+    scope.assignment_acceptances.remove(digest);
+}
+
 #[cfg(desktop)]
 pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -248,5 +254,18 @@ mod tests {
         record_assignment_acceptance(&mut scope, "digest:new".to_owned(), at(1));
 
         assert!(assignment_is_accepted(&scope, "digest:new"));
+    }
+
+    #[test]
+    fn a_forgotten_acceptance_leaves_the_others_in_place() {
+        let mut scope = ChatDeviceScope::default();
+        record_assignment_acceptance(&mut scope, "digest:used".to_owned(), at(1));
+        record_assignment_acceptance(&mut scope, "digest:kept".to_owned(), at(2));
+
+        forget_assignment_acceptance(&mut scope, "digest:used");
+        forget_assignment_acceptance(&mut scope, "digest:unknown");
+
+        assert!(!assignment_is_accepted(&scope, "digest:used"));
+        assert!(assignment_is_accepted(&scope, "digest:kept"));
     }
 }

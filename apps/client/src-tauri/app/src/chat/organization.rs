@@ -265,6 +265,15 @@ pub async fn chat_post_message(
     post_message(app, db_url, &request, None).await
 }
 
+/// Whether the send of a scheduled message carries consent given on this device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScheduledConsent {
+    /// This device scheduled exactly this request, or the user pressed send now or retry.
+    Local,
+    /// A due message this device never consented to, as one scheduled or rewritten elsewhere.
+    Unattended,
+}
+
 /// A scheduled message being sent under the claim `claim_token`.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ScheduledSend<'a> {
@@ -272,6 +281,8 @@ pub(super) struct ScheduledSend<'a> {
     pub(super) scheduled_message_id: &'a ChatScheduledMessageId,
     /// Claim the sender holds on it.
     pub(super) claim_token: &'a str,
+    /// Consent behind this send, which decides whether its work starts by itself.
+    pub(super) consent: ScheduledConsent,
 }
 
 /// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the
@@ -321,6 +332,8 @@ pub(super) async fn post_message(
                 )
                 .await;
             });
+        } else if posted.assignment_write.awaits_acceptance {
+            assignments::start_unattended_assignment(&app, &assignment_id);
         } else {
             tauri::async_runtime::spawn(async move {
                 let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;
@@ -349,13 +362,20 @@ const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messa
 /// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
 /// ids derived from the scheduled message, copies its stored attachment values, and deletes the
 /// scheduled message in the same transaction, so it posts once even when the device stops
-/// between steps.
+/// between steps. An unattended send still posts, but queues no dispatch for the work it creates.
 async fn persist_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PersistedPost> {
+    let device = match scheduled {
+        Some(ScheduledSend {
+            consent: ScheduledConsent::Unattended,
+            ..
+        }) => device.unattended(),
+        _ => device,
+    };
     if let Some(result) = read_post_receipt(pool, &request.client_command_id).await? {
         if let Some(scheduled) = scheduled {
             sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)

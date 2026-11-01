@@ -2421,7 +2421,7 @@ async fn replicas_with_item() -> Vec<Replica> {
 }
 
 /// `change` with `fields` as the value of `group`.
-fn with_group(mut change: Change, group: GroupId, fields: Vec<Field>) -> Change {
+pub(super) fn with_group(mut change: Change, group: GroupId, fields: Vec<Field>) -> Change {
     let value = GroupValue::new(change.table, group, Value::new(fields).unwrap());
     *change
         .groups
@@ -2431,7 +2431,7 @@ fn with_group(mut change: Change, group: GroupId, fields: Vec<Field>) -> Change 
     change
 }
 
-fn text_field(text: &str) -> Field {
+pub(super) fn text_field(text: &str) -> Field {
     Field::Text(text.to_owned())
 }
 

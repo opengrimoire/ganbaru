@@ -416,3 +416,79 @@ fn close_run_records_boundary_phase_outcomes() {
         assert_eq!(next_focus_observed, 0);
     });
 }
+
+#[test]
+fn stray_active_segment_on_a_closed_run_allows_a_new_run() {
+    super::block_on(async {
+        let pool = migrated_pool_with_event().await;
+        sqlx::raw_sql(
+            "INSERT INTO pomodoro_runs
+                    (id, event_id, original_event_id, event_date, planned_start, planned_end,
+                     started_at, ended_at, end_reason, rhythm_kind, rhythm_source, preset_key,
+                     last_heartbeat, start_trigger)
+                 VALUES ('closed-run', 'event-1', 'event-1', '2026-05-28',
+                         '2026-05-28T10:00:00Z', '2026-05-28T11:00:00Z',
+                         '2026-05-28T10:00:00Z', '2026-05-28T11:00:00Z', 'completed',
+                         'count', 'preset', 'adaptive', '2026-05-28T11:00:00Z', 'manual');
+             INSERT INTO pomodoro_segments
+                    (id, event_id, event_date, run_id, rhythm_position, phase,
+                     planned_start, planned_end, actual_start, status)
+                 VALUES ('stray-segment', 'event-1', '2026-05-28', 'closed-run', 1, 'focus',
+                         '2026-05-28T10:00:00Z', '2026-05-28T10:40:00Z',
+                         '2026-05-28T10:00:00Z', 'active');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let run = run_write(PomodoroRunRhythm::Count {
+            focus_duration_minutes: 40,
+            short_break_minutes: 5,
+            long_break_minutes: 10,
+            long_break_after_focus_count: 4,
+        });
+        let focus = initial_segment();
+        let mut tx = pool.begin().await.unwrap();
+        insert_run_tx(&mut tx, &run, &focus).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let rest = PomodoroSegmentWrite {
+            id: "segment-2".to_string(),
+            phase: "short_break".to_string(),
+            planned_start: "2026-05-29T10:40:00Z".to_string(),
+            planned_end: "2026-05-29T10:45:00Z".to_string(),
+            actual_start: Some("2026-05-29T10:40:00Z".to_string()),
+            ..initial_segment()
+        };
+        let mut tx = pool.begin().await.unwrap();
+        insert_segment_tx(&mut tx, &rest).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let statuses: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, status FROM pomodoro_segments ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let status = |id: &str, status: &str| (id.to_string(), status.to_string());
+        assert_eq!(
+            statuses,
+            vec![
+                status("segment-1", "completed"),
+                status("segment-2", "active"),
+                status("stray-segment", "active"),
+            ]
+        );
+
+        let second_active = sqlx::query(
+            "INSERT INTO pomodoro_segments
+                    (id, event_id, event_date, run_id, rhythm_position, phase,
+                     planned_start, planned_end, actual_start, status)
+                 VALUES ('segment-3', 'event-1', '2026-05-29', 'run-1', 2, 'focus',
+                         '2026-05-29T10:45:00Z', '2026-05-29T11:00:00Z',
+                         '2026-05-29T10:45:00Z', 'active')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(second_active.is_err());
+    });
+}

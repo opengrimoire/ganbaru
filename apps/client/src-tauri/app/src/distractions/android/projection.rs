@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub(super) const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
 const MAX_MOBILE_RULES: usize = 256;
+const MAX_RULE_NAME_CHARS: usize = 120;
 const MAX_MOBILE_LIMITS: usize = 128;
 const MAX_SAFE_SECONDS: i64 = 9_007_199_254_740_991;
 
@@ -282,7 +283,7 @@ pub(super) fn build(
             .ok_or("Guardian application package is missing")?;
         if !is_valid_package_name(package)
             || rule.name.trim().is_empty()
-            || rule.name.chars().count() > 120
+            || rule.name.chars().count() > MAX_RULE_NAME_CHARS
         {
             return Err("persisted Guardian application identity is invalid".into());
         }
@@ -436,6 +437,48 @@ mod tests {
         );
         assert_eq!(rules["mobile"]["blockDuringShortBreaks"], false);
         assert_eq!(view["totals"][0]["entries"][1]["usedSeconds"], 0);
+    }
+
+    fn published_packages(rules: &Value) -> Vec<&str> {
+        rules["mobile"]["blockedApps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| rule["packageName"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn projection_skips_invalid_rule_and_keeps_valid_rules() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = json!([
+            {"name": "Video", "packageName": "com.example.video", "enabled": true},
+            {"name": "Hostile", "packageName": "not a package", "enabled": true},
+            {"name": "   ", "packageName": "com.example.blank", "enabled": true},
+            {"name": "n".repeat(MAX_RULE_NAME_CHARS + 1), "packageName": "com.example.long", "enabled": true},
+            {"name": "Unpicked", "enabled": true},
+            {"name": "Feed", "packageName": "Com.Example.Feed", "enabled": true},
+        ]);
+        let built = build(&config, &capture(), &[], &copy(), "native-skip");
+        assert!(built.is_ok(), "one row stopped publication: {built:?}");
+        assert_eq!(
+            published_packages(&built.unwrap().0),
+            ["com.example.video", "com.example.feed"]
+        );
+    }
+
+    #[test]
+    fn projection_keeps_publishing_past_the_rule_cap() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = (0..=MAX_MOBILE_RULES)
+            .map(|index| json!({"name": "App", "packageName": format!("com.flood.app{index}")}))
+            .collect();
+        let built = build(&config, &capture(), &[], &copy(), "native-cap");
+        assert!(built.is_ok(), "the flood stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        let packages = published_packages(&rules);
+        assert_eq!(packages.len(), MAX_MOBILE_RULES);
+        assert_eq!(packages[0], "com.flood.app0");
     }
 
     #[test]

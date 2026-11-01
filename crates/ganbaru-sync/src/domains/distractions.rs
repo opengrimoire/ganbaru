@@ -441,6 +441,25 @@ mod tests {
     }
 
     #[test]
+    fn invalid_mobile_identity_is_held_invalid() {
+        let adapter = DistractionsAdapter;
+        let rule = |platform: &str, identity: &str| {
+            adapter.validate(
+                APP_RULES_TABLE,
+                app_group::RULE,
+                &value(vec![text(platform), text(identity)]),
+            )
+        };
+        assert!(rule("mobile", "not a package").is_err());
+        assert!(rule("mobile", "android").is_err());
+        assert!(rule("mobile", "com.example-app").is_err());
+        assert_eq!(rule("mobile", "com.example.video"), Ok(()));
+        assert_eq!(rule("mobile", "Com.Example.Video"), Ok(()));
+        assert_eq!(rule("desktop", "not a package"), Ok(()));
+        assert!(rule("tablet", "com.example.video").is_err());
+    }
+
+    #[test]
     fn distractions_validation_refuses_values_rule_writers_never_produce() {
         let adapter = DistractionsAdapter;
         let host = |kind: &str, scope: &str, host: &str| {

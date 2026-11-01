@@ -1,6 +1,7 @@
 //! Pure budget matching over native, bounded daily source aggregates.
 
 use chrono::{Datelike, Duration, NaiveDate};
+use ganbaru_sync::domains::distractions::MAX_LIMIT_TEXT_BYTES;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -236,7 +237,10 @@ pub fn parse_config(root: &Value) -> Result<LimitsConfig, String> {
     let mut ids = HashSet::new();
     let mut entry_count = 0;
     for limit in &config.items {
-        if !is_valid_id(&limit.id) || !ids.insert(&limit.id) || limit.name.len() > 512 {
+        if !is_valid_id(&limit.id)
+            || !ids.insert(&limit.id)
+            || limit.name.len() > MAX_LIMIT_TEXT_BYTES
+        {
             return Err("usage limit identity or name is invalid".into());
         }
         if limit.minutes_per_day.is_none() && limit.minutes_per_week.is_none()
@@ -270,7 +274,7 @@ pub fn parse_config(root: &Value) -> Result<LimitsConfig, String> {
                 .chain(entry.desktop_app_match_names.iter());
             if texts
                 .into_iter()
-                .any(|text| text.trim().is_empty() || text.len() > 512)
+                .any(|text| text.trim().is_empty() || text.len() > MAX_LIMIT_TEXT_BYTES)
             {
                 return Err("usage limit source is invalid".into());
             }

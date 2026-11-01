@@ -10,9 +10,9 @@ use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::distractions::{
     ADAPTER, APP_RULES_TABLE, BLOCK_EVENTS_TABLE, BLOCK_RULE_SNAPSHOTS, CUSTOM_CATEGORIES_TABLE,
-    DOMAIN, HOST_RULES_TABLE, SETTINGS_TABLE, USAGE_LIMITS_TABLE, USAGE_TOTALS_TABLE, app_group,
-    block_event_group, custom_category_group, host_group, limit_group, settings_group,
-    usage_total_group,
+    DOMAIN, HOST_RULES_TABLE, LIMIT_ENTRIES, SETTINGS_TABLE, USAGE_LIMITS_TABLE,
+    USAGE_TOTALS_TABLE, app_group, block_event_group, custom_category_group, host_group,
+    limit_group, settings_group, usage_total_group,
 };
 
 /// Most characters of an enumerated value: a mode, list kind, or platform.
@@ -32,6 +32,10 @@ pub const MAX_APP_NAME_CHARS: usize = 80;
 
 /// Most characters of a usage limit or limit entry name.
 pub const MAX_LIMIT_NAME_CHARS: usize = 80;
+
+/// Most bytes of a usage limit name or source text. The limit parser refuses a whole configuration
+/// past this bound, so admission and load refuse the single name or source first.
+pub const MAX_LIMIT_TEXT_BYTES: usize = 512;
 
 /// Fewest characters of an Android package name: two one-letter segments and a dot.
 pub const MIN_PACKAGE_CHARS: usize = 3;
@@ -180,6 +184,57 @@ pub fn parse_match_names(json: &str) -> Option<Vec<String>> {
     valid.then_some(names)
 }
 
+/// The sources of one usage limit entry.
+#[derive(Debug, Clone, Copy)]
+pub struct LimitSources<'a> {
+    /// Website host.
+    pub website_host: Option<&'a str>,
+    /// Mobile app display name.
+    pub mobile_app_name: Option<&'a str>,
+    /// Android package name.
+    pub mobile_app_package: Option<&'a str>,
+    /// Desktop app name.
+    pub desktop_app_name: Option<&'a str>,
+    /// Desktop process match names.
+    pub desktop_app_match_names: &'a [String],
+}
+
+/// Whether `text` is one the limit parser reads: not blank and within [`MAX_LIMIT_TEXT_BYTES`].
+fn is_usable_limit_text(text: &str) -> bool {
+    !text.trim().is_empty() && text.len() <= MAX_LIMIT_TEXT_BYTES
+}
+
+/// Whether a usage limit name is one the limit parser reads.
+pub fn is_usable_limit_name(name: &str) -> bool {
+    name.len() <= MAX_LIMIT_TEXT_BYTES
+}
+
+/// Whether a limit entry's sources are ones the limit parser and usage accounting read: at least
+/// one source, no blank or oversized text, and a package in the Android grammar. Sync admission
+/// and load share this check, so one row cannot fail the configuration of every limit.
+pub fn is_usable_limit_source(sources: LimitSources<'_>) -> bool {
+    let LimitSources {
+        website_host,
+        mobile_app_name,
+        mobile_app_package,
+        desktop_app_name,
+        desktop_app_match_names,
+    } = sources;
+    let named = [
+        website_host,
+        mobile_app_name,
+        mobile_app_package,
+        desktop_app_name,
+    ];
+    named.iter().any(Option::is_some)
+        && named.into_iter().flatten().all(is_usable_limit_text)
+        && desktop_app_match_names.len() <= MAX_MATCH_NAMES
+        && desktop_app_match_names
+            .iter()
+            .all(|name| is_usable_limit_text(name))
+        && mobile_app_package.is_none_or(is_android_package_name)
+}
+
 fn one_of(field: Option<&Field>, allowed: &[&str], what: &'static str) -> Result<(), AdapterError> {
     match field {
         Some(Field::Text(text)) if allowed.contains(&text.as_str()) => Ok(()),
@@ -304,6 +359,53 @@ fn validate_block_snapshot(value: &Value) -> Result<(), AdapterError> {
     })
 }
 
+/// The text of a nullable column, or an error for any other field type.
+fn nullable_text(field: &Field) -> Result<Option<&str>, AdapterError> {
+    match field {
+        Field::Null => Ok(None),
+        Field::Text(text) => Ok(Some(text)),
+        _ => Err(AdapterError("distraction limit source")),
+    }
+}
+
+/// The sources of every entry of a usage limit.
+fn validate_limit_entries(value: &Value) -> Result<(), AdapterError> {
+    let [Field::Blob(bytes)] = value.fields() else {
+        return Err(AdapterError("distraction limit entries"));
+    };
+    let rows = codec::decode(&LIMIT_ENTRIES, bytes)
+        .map_err(|_| AdapterError("distraction limit entries"))?;
+    rows.iter().try_for_each(|row| {
+        let [
+            _,
+            _,
+            _,
+            website,
+            mobile_name,
+            package,
+            desktop,
+            Field::Text(json),
+        ] = row.fields.as_slice()
+        else {
+            return Err(AdapterError("distraction limit entries"));
+        };
+        let match_names =
+            parse_match_names(json).ok_or(AdapterError("distraction limit match names"))?;
+        let sources = LimitSources {
+            website_host: nullable_text(website)?,
+            mobile_app_name: nullable_text(mobile_name)?,
+            mobile_app_package: nullable_text(package)?,
+            desktop_app_name: nullable_text(desktop)?,
+            desktop_app_match_names: &match_names,
+        };
+        if is_usable_limit_source(sources) {
+            Ok(())
+        } else {
+            Err(AdapterError("distraction limit source"))
+        }
+    })
+}
+
 fn validate_usage_bucket(value: &Value) -> Result<(), AdapterError> {
     let [_, source_type, _, Field::Text(date)] = value.fields() else {
         return Err(AdapterError("distraction usage bucket"));
@@ -359,6 +461,13 @@ impl DomainAdapter for DistractionsAdapter {
             match fields {
                 [Field::Null, Field::Null] => Err(AdapterError("distraction limit budget")),
                 _ => Ok(()),
+            }
+        } else if table == USAGE_LIMITS_TABLE && group == limit_group::ENTRIES {
+            validate_limit_entries(value)
+        } else if table == USAGE_LIMITS_TABLE && group == limit_group::NAME {
+            match fields {
+                [Field::Text(name)] if is_usable_limit_name(name) => Ok(()),
+                _ => Err(AdapterError("distraction limit name")),
             }
         } else if table == USAGE_TOTALS_TABLE && group == usage_total_group::BUCKET {
             validate_usage_bucket(value)
@@ -468,10 +577,10 @@ pub fn with_hooks(hooks: Hooks) -> Hooks {
 mod tests {
     use super::*;
     use crate::codec::OwnedRow;
-    use crate::manifest::vault::distractions::{CATEGORY_RULES_TABLE, LIMIT_ENTRIES};
+    use crate::manifest::vault::distractions::CATEGORY_RULES_TABLE;
 
     /// One byte past the longest text the strict limit parser reads.
-    const PAST_PARSER_BOUND: usize = 513;
+    const PAST_PARSER_BOUND: usize = MAX_LIMIT_TEXT_BYTES + 1;
 
     fn text(value: &str) -> Field {
         Field::Text(value.to_string())

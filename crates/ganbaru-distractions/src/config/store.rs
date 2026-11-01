@@ -10,7 +10,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use ganbaru_sync::domains::distractions::MOBILE_PLATFORM;
+use ganbaru_sync::domains::distractions::{
+    LimitSources, MOBILE_PLATFORM, is_usable_limit_name, is_usable_limit_source,
+};
 use ganbaru_sync::manifest::vault::distractions::{
     APP_RULE_KEY_PREFIX, HOST_RULE_KEY_PREFIX, SETTINGS_KEY,
 };
@@ -1310,14 +1312,17 @@ async fn read_entries(
     Ok(entries)
 }
 
-/// Whether an assembled entry is one usage accounting can read: a valid distinct id and a source.
+/// Whether an assembled entry is one usage accounting can read: a valid distinct id and usable
+/// sources.
 fn is_usable_entry(entry: &LimitEntryRule, ids: &mut HashSet<String>) -> bool {
     is_rule_id(&entry.id)
-        && (entry.website_host.is_some()
-            || entry.mobile_app_name.is_some()
-            || entry.mobile_app_package.is_some()
-            || entry.desktop_app_name.is_some())
-        && entry.desktop_app_match_names.len() <= MAX_MATCH_NAMES
+        && is_usable_limit_source(LimitSources {
+            website_host: entry.website_host.as_deref(),
+            mobile_app_name: entry.mobile_app_name.as_deref(),
+            mobile_app_package: entry.mobile_app_package.as_deref(),
+            desktop_app_name: entry.desktop_app_name.as_deref(),
+            desktop_app_match_names: &entry.desktop_app_match_names,
+        })
         && ids.insert(entry.id.clone())
 }
 
@@ -1336,6 +1341,7 @@ async fn load_limits(
     let mut entry_total = 0usize;
     for row in &rows {
         let id = text(row, "id")?;
+        let name = text(row, "name")?;
         let minutes_per_day = optional_integer(row, "minutes_per_day")?;
         let minutes_per_week = optional_integer(row, "minutes_per_week")?;
         let mut ids = HashSet::new();
@@ -1346,6 +1352,7 @@ async fn load_limits(
             .filter(|entry| is_usable_entry(entry, &mut ids))
             .collect();
         let complete = is_rule_id(&id)
+            && is_usable_limit_name(&name)
             && !limit_entries.is_empty()
             && (minutes_per_day.is_some() || minutes_per_week.is_some());
         if !complete
@@ -1357,7 +1364,7 @@ async fn load_limits(
         entry_total += limit_entries.len();
         config.limits.items.push(LimitRule {
             id,
-            name: text(row, "name")?,
+            name,
             enabled: flag(row, "enabled")?,
             minutes_per_day,
             minutes_per_week,

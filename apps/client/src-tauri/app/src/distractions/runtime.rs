@@ -475,7 +475,7 @@ impl Owner {
             }
             let device_id = vault::ensure_device_id(&app)?;
             let config = rules.root;
-            let limits = limits::parse_config(&config)?;
+            let limits = limits_or_phase_only(&config);
             let phase = read_fresh_runtime_state(&state_path(&app)?, now_utc());
             let catalog = desktop_catalog_index();
             let phase_rules = policy::phase_rules(&config, phase.as_ref(), &catalog)?;

@@ -305,7 +305,7 @@ pub(super) fn build(
     revision: &str,
 ) -> Result<(Value, Value), String> {
     copy.validate()?;
-    let config = limits::parse_config(root)?;
+    let config = crate::distractions::limits_or_phase_only(root);
     let budgets = limits::totals(&config, sources, &capture.local_date)?;
     let mut mobile: MobileSchedule = serde_json::from_value(
         root.pointer("/distractions/mobile")

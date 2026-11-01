@@ -52,12 +52,34 @@ pub(crate) mod usage_totals;
 
 pub(crate) use ganbaru_distractions::limits;
 
-#[cfg(test)]
+/// The limit parse failure last logged, so reads repeating on a timer report it once.
+#[cfg(any(desktop, target_os = "android"))]
+static LIMIT_PARSE_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The persisted usage limits for an enforcement loop, or limits off when they do not parse, so
+/// a limit failure costs budgets alone and phase enforcement keeps running.
+#[cfg(any(desktop, target_os = "android"))]
 pub(crate) fn limits_or_phase_only(root: &serde_json::Value) -> limits::LimitsConfig {
-    limits::parse_config(root).unwrap_or(limits::LimitsConfig {
-        enabled: true,
-        items: Vec::new(),
-    })
+    let parsed = limits::parse_config(root);
+    let mut logged = LIMIT_PARSE_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match parsed {
+        Ok(config) => {
+            *logged = None;
+            config
+        }
+        Err(error) => {
+            if logged.as_deref() != Some(error.as_str()) {
+                eprintln!("Usage limits are off until they parse: {error}");
+                *logged = Some(error);
+            }
+            limits::LimitsConfig {
+                enabled: false,
+                items: Vec::new(),
+            }
+        }
+    }
 }
 
 #[cfg(desktop)]

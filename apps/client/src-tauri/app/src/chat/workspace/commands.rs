@@ -17,12 +17,13 @@ use crate::projects::working_folders::{
 };
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::git::hardened::{
-    GitFolderTrust, folder_configuration, provider_configuration_entries,
+    GitFolderTrust, ProviderConfigurationEntries, folder_configuration,
+    provider_configuration_entries,
 };
 use ganbaru_chat::repository::workspaces as repository;
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess, ProjectWorkingFolderId,
-    UtcTimestamp,
+    ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess,
+    ProjectConfigurationRestriction, ProjectWorkingFolderId, UtcTimestamp,
 };
 use ganbaru_working_folders::WorkingFolderTrustRecord;
 use sqlx::SqlitePool;
@@ -342,24 +343,34 @@ pub async fn settle_project_configuration<R: Runtime>(
         provider_configuration_entries(launch.canonical_path.clone()).await?
     };
     let scope = read_active_working_folder_scope(app).map_err(device_state_error)?;
-    match check_project_configuration(
+    launch.project_configuration = resolve_project_configuration(
         &scope,
         &launch.working_folder_id,
         &root_entries,
         &launch_entries,
-    ) {
-        ProjectConfigurationCheck::Decided(access) => {
-            launch.project_configuration = access;
-            Ok(launch)
-        }
+        undecided,
+        ProjectConfigurationRestriction::Enforced,
+    )?;
+    Ok(launch)
+}
+
+/// Decides the project configuration access of one provider start from this
+/// device's trust record.
+fn resolve_project_configuration(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+    undecided: UndecidedProjectConfiguration,
+    _restriction: ProjectConfigurationRestriction,
+) -> ChatResult<ProjectConfigurationAccess> {
+    match check_project_configuration(scope, working_folder_id, root, launch) {
+        ProjectConfigurationCheck::Decided(access) => Ok(access),
         ProjectConfigurationCheck::Required => match undecided {
             UndecidedProjectConfiguration::Ask => {
-                Err(trust_decision_required_error(&launch.working_folder_id))
+                Err(trust_decision_required_error(working_folder_id))
             }
-            UndecidedProjectConfiguration::Restrict => {
-                launch.project_configuration = ProjectConfigurationAccess::Restricted;
-                Ok(launch)
-            }
+            UndecidedProjectConfiguration::Restrict => Ok(ProjectConfigurationAccess::Restricted),
         },
     }
 }
@@ -1106,11 +1117,225 @@ fn device_state_error(_error: String) -> ChatError {
 mod tests {
     use super::{
         FolderSelectionReceipt, MAX_PENDING_FOLDER_SELECTIONS, MessageDialogResult,
-        ProjectWorkingFolderSelections, TrustAnswer, WorkingFolderTrustPrompt,
-        preferred_workspace_picker_directory, trust_answer, validate_trust_prompt,
+        ProjectWorkingFolderSelections, TrustAnswer, UndecidedProjectConfiguration,
+        WorkingFolderDeviceScope, WorkingFolderTrustPrompt, preferred_workspace_picker_directory,
+        resolve_project_configuration, trust_answer, validate_trust_prompt,
     };
-    use ganbaru_chat_contracts::models::ProjectWorkingFolderId;
-    use std::path::Path;
+    use ganbaru_chat::git::hardened::{
+        ProviderConfigurationEntries, provider_configuration_entries_blocking,
+    };
+    use ganbaru_chat_contracts::models::{
+        ChatError, ChatErrorCode, ProjectConfigurationAccess, ProjectConfigurationRestriction,
+        ProjectWorkingFolderId, UtcTimestamp,
+    };
+    use ganbaru_working_folders::WorkingFolderTrustRecord;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// A folder holding provider configuration files, removed when dropped.
+    struct ConfigurationFolder(PathBuf);
+
+    impl ConfigurationFolder {
+        fn with_files(files: &[&str]) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock should be valid")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "ganbaru-chat-project-configuration-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&root).expect("test folder should be created");
+            for relative in files {
+                let path = root.join(relative);
+                fs::create_dir_all(path.parent().expect("file should have a parent"))
+                    .expect("file folder should be created");
+                fs::write(path, "{}").expect("configuration should write");
+            }
+            Self(root)
+        }
+
+        fn entries(&self) -> ProviderConfigurationEntries {
+            provider_configuration_entries_blocking(&self.0).expect("entries should read")
+        }
+    }
+
+    impl Drop for ConfigurationFolder {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn trust_folder_id() -> ProjectWorkingFolderId {
+        ProjectWorkingFolderId::new("working-folder").unwrap()
+    }
+
+    /// A device scope holding a decision about `entries`.
+    fn scope_deciding(
+        entries: &ProviderConfigurationEntries,
+        trusted: bool,
+    ) -> WorkingFolderDeviceScope {
+        let mut scope = WorkingFolderDeviceScope::default();
+        scope.trust.insert(
+            trust_folder_id(),
+            WorkingFolderTrustRecord {
+                git_configuration_digest: String::new(),
+                provider_configuration_digest: entries.digest().to_hex(),
+                trusted,
+                decided_at: UtcTimestamp::new("2026-10-18T12:00:00.000Z").unwrap(),
+            },
+        );
+        scope
+    }
+
+    fn assert_refused_naming(error: ChatError, file: &str) {
+        assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+        assert!(
+            error.message.contains(file),
+            "{file} must be named in: {}",
+            error.message
+        );
+        let details = error.details.expect("the error must name the folder");
+        assert_eq!(details["workingFolderId"], trust_folder_id().as_str());
+    }
+
+    #[test]
+    fn restricted_run_refuses_unenforced_provider_with_configuration() {
+        for file in [".mcp.json", "opencode.json", ".cursor/mcp.json"] {
+            let folder = ConfigurationFolder::with_files(&[file]);
+            let entries = folder.entries();
+
+            let unattended = resolve_project_configuration(
+                &WorkingFolderDeviceScope::default(),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Unavailable,
+            );
+            assert_refused_naming(
+                unattended.expect_err("an unattended run must be refused"),
+                file,
+            );
+
+            let declined = resolve_project_configuration(
+                &scope_deciding(&entries, false),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Unavailable,
+            );
+            assert_refused_naming(declined.expect_err("a declined folder must be refused"), file);
+        }
+    }
+
+    #[test]
+    fn restricted_run_refuses_worktree_configuration_the_trusted_folder_lacks() {
+        let root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let worktree = ConfigurationFolder::with_files(&[".mcp.json", "opencode.json"]);
+        let result = resolve_project_configuration(
+            &scope_deciding(&root.entries(), true),
+            &trust_folder_id(),
+            &root.entries(),
+            &worktree.entries(),
+            UndecidedProjectConfiguration::Restrict,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_refused_naming(
+            result.expect_err("an uncovered worktree must be refused"),
+            "opencode.json",
+        );
+    }
+
+    #[test]
+    fn restricted_run_allows_unenforced_provider_without_configuration() {
+        let empty = ConfigurationFolder::with_files(&[]);
+        for undecided in [
+            UndecidedProjectConfiguration::Ask,
+            UndecidedProjectConfiguration::Restrict,
+        ] {
+            assert_eq!(
+                resolve_project_configuration(
+                    &WorkingFolderDeviceScope::default(),
+                    &trust_folder_id(),
+                    &empty.entries(),
+                    &empty.entries(),
+                    undecided,
+                    ProjectConfigurationRestriction::Unavailable,
+                )
+                .expect("a folder without configuration must run"),
+                ProjectConfigurationAccess::Trusted
+            );
+        }
+
+        let root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        assert_eq!(
+            resolve_project_configuration(
+                &WorkingFolderDeviceScope::default(),
+                &trust_folder_id(),
+                &root.entries(),
+                &empty.entries(),
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Unavailable,
+            )
+            .expect("a launch folder without configuration must run"),
+            ProjectConfigurationAccess::Restricted
+        );
+    }
+
+    #[test]
+    fn restricted_run_keeps_enforced_provider_with_configuration() {
+        let folder = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let entries = folder.entries();
+        assert_eq!(
+            resolve_project_configuration(
+                &WorkingFolderDeviceScope::default(),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Enforced,
+            )
+            .expect("an enforced provider must start restricted"),
+            ProjectConfigurationAccess::Restricted
+        );
+    }
+
+    #[test]
+    fn restricted_run_asks_before_refusing_an_undecided_folder() {
+        let folder = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let entries = folder.entries();
+        let error = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &entries,
+            &entries,
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        )
+        .expect_err("an interactive start must ask");
+        assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+        assert!(!error.message.contains(".mcp.json"));
+    }
+
+    #[test]
+    fn trusted_folder_runs_cursor_with_configuration() {
+        let folder = ConfigurationFolder::with_files(&[".cursor/mcp.json", "opencode.json"]);
+        let entries = folder.entries();
+        assert_eq!(
+            resolve_project_configuration(
+                &scope_deciding(&entries, true),
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Unavailable,
+            )
+            .expect("a trusted folder must run"),
+            ProjectConfigurationAccess::Trusted
+        );
+    }
 
     #[test]
     fn staged_folder_selections_are_bound_to_the_project_target_and_vault() {

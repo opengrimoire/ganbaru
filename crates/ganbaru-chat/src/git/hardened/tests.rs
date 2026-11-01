@@ -1031,6 +1031,33 @@ fn provider_digest_covers_project_mcp_skills_agents_commands_and_codex_but_not_i
     }
 }
 
+#[test]
+fn provider_digest_changes_with_opencode_and_cursor_configuration() {
+    let repository = TestRepository::new();
+    let root = repository.root.as_path();
+    let entries = || provider_configuration_entries_blocking(root).expect("entries should read");
+
+    let mut previous = entries();
+    for (relative, contents) in [
+        ("opencode.json", "{\"mcp\":{}}"),
+        ("opencode.jsonc", "{}"),
+        (".opencode/plugin/marker.ts", "export default {}\n"),
+        (".cursor/mcp.json", "{\"mcpServers\":{}}"),
+        (".cursor/rules/marker.mdc", "marker\n"),
+        (".cursorrules", "marker\n"),
+        (".grok/settings.json", "{}"),
+    ] {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("entry should have a parent"))
+            .expect("entry folder should exist");
+        fs::write(&path, contents).expect("entry should write");
+        let current = entries();
+        assert_ne!(current.digest(), previous.digest(), "{relative} must count");
+        assert!(!current.is_covered_by(&previous), "{relative} must count");
+        previous = current;
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn trust_for_an_older_configuration_runs_untrusted() {

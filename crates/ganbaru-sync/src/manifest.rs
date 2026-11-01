@@ -65,6 +65,8 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_row_creations",
     "sync_stale_rows",
     "sync_refused_rows",
+    "sync_unique_classes",
+    "sync_contested_classes",
     "sync_recovery_kit",
 ];
 

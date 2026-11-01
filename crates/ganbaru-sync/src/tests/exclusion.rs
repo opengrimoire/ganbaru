@@ -662,7 +662,7 @@ fn restoring_late_values_and_a_late_deletion_writes_them_as_the_admin() {
 }
 
 /// Restores every late change `anchor` lists for `removal` and sequences the decision.
-async fn restore_all(anchor: &mut Replica, removal: u64) {
+pub(super) async fn restore_all(anchor: &mut Replica, removal: u64) {
     let mut rows = Vec::new();
     for late in late_changes(anchor).await {
         anchor

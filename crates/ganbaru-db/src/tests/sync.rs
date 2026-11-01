@@ -444,6 +444,28 @@ fn stale_rows_and_restated_groups_keep_one_bounded_entry_each() {
                 .await;
             assert_eq!(result.is_ok(), accepted, "{reason}");
         }
+
+        let class = "INSERT INTO sync_unique_classes (table_id, rule_index, class_key, row_key)
+                     VALUES (1, 0, x'01', ?)";
+        for (row, accepted, reason) in [
+            ("row-a", true, "a class holds a row"),
+            ("row-b", true, "a class holds several rows"),
+            ("row-a", false, "a row is listed in a class once"),
+        ] {
+            let result = sqlx::query(class).bind(row).execute(&pool).await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
+
+        let contested = "INSERT INTO sync_contested_classes (table_id, rule_index, class_key)
+                         VALUES (1, ?, x'01')";
+        for (rule, accepted, reason) in [
+            (0, true, "a contested class is listed"),
+            (0, false, "a contested class is listed once"),
+            (-1, false, "a rule index is a position"),
+        ] {
+            let result = sqlx::query(contested).bind(rule).execute(&pool).await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
     });
 }
 

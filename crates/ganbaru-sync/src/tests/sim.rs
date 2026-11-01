@@ -242,6 +242,7 @@ async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
             })
             .await
             .unwrap_or_else(|error| panic!("replica {} failed to apply: {error:?}", replica.index));
+        replica.check_class_index().await;
         // Fork evidence reaches an installation without freezing its writer when the apply
         // seals nothing, so every round re-seals its own forks, as the app does.
         let resealed = replica.reseal_own_forks().await;

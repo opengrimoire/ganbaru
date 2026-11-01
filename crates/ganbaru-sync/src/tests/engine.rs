@@ -1,5 +1,7 @@
 //! Engine entry points across replicas of the vault and fixture domains.
 
+use std::collections::BTreeSet;
+
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
@@ -10,6 +12,7 @@ use ganbaru_sync_contracts::{
 
 use super::authorization::{seal_at, view};
 use super::block_on;
+use super::exclusion::{deliver, edit, restore_all};
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
     MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
@@ -23,6 +26,7 @@ use crate::error::failpoints;
 use crate::manifest::group_id;
 use crate::manifest::vault::chat::{CONVERSATIONS_TABLE, conversation_group};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
+use crate::repair;
 use crate::{ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
@@ -927,6 +931,211 @@ fn a_duplicate_hidden_by_cascade_does_not_hide_the_row_it_collides_with() {
                 Vec::<String>::new()
             );
         }
+    });
+}
+
+/// Stores what `from` has on `to` without applying it.
+async fn store_from(to: &mut Replica, from: &mut Replica) {
+    let known = to.stored_vector().await;
+    let ops = from.ops_since(&known).await;
+    to.receive(&ops).await;
+}
+
+/// Applies everything ready the way a replica without an active writer does, so collisions stay
+/// unrepaired.
+async fn apply_without_writer(replica: &mut Replica) {
+    loop {
+        let report = replica
+            .engine
+            .apply(&mut replica.conn, &replica.ctx, None, replica.now_ms)
+            .await
+            .unwrap();
+        if !report.more {
+            return;
+        }
+    }
+}
+
+/// Every version of every row but the dirty one is undecodable, so any read of those rows
+/// outside the contested classes fails.
+#[test]
+fn contested_reads_no_row_outside_the_contested_classes() {
+    const BYSTANDERS: usize = 32;
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let bystanders: String = (0..BYSTANDERS)
+            .map(|index| {
+                format!("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-{index}', 'L{index}');")
+            })
+            .collect();
+        replicas[0].exec(&bystanders).await;
+        replicas[0]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('x-1', 'Same')")
+            .await;
+        replicas[1]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('x-2', 'Same')")
+            .await;
+        for source in [0, 1] {
+            replicas[source].seal_rotating().await.unwrap();
+            let (to, from) = pair(&mut replicas, 2, source);
+            store_from(to, from).await;
+        }
+        let observer = &mut replicas[2];
+        apply_without_writer(observer).await;
+        observer
+            .exec(&format!(
+                "UPDATE sync_register_versions SET value = x'ff'
+                 WHERE table_id = {} AND row_key <> 'a-0'",
+                CYCLE_A_TABLE.0
+            ))
+            .await;
+
+        let dirty_row = (CYCLE_A_TABLE, "a-0".to_owned());
+        let mut dirty = BTreeSet::from([dirty_row.clone()]);
+        let result = repair::contested(&observer.engine, &mut observer.conn, &mut dirty).await;
+
+        assert!(
+            result.is_ok(),
+            "the scan reached a row outside the contested classes: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().get(&CYCLE_A_TABLE),
+            Some(&vec![BTreeSet::from(["x-1".to_owned(), "x-2".to_owned()])])
+        );
+        assert_eq!(dirty, BTreeSet::from([dirty_row]));
+    });
+}
+
+/// `a-1` keeps its class until a delete of the row it references reaches an observer, which then
+/// shows `a-2` although no write named `a-2` and the class only went dirty after it was read.
+#[test]
+fn keeper_changes_when_a_row_elsewhere_is_published() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_cycle_b (id, label) VALUES ('b-1', 'B');
+                 INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same');",
+            )
+            .await;
+        replicas[0].seal_rotating().await.unwrap();
+        let (to, from) = pair(&mut replicas, 1, 0);
+        to.pull(from).await;
+        replicas[1]
+            .exec("UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-1'")
+            .await;
+        replicas[3]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same')")
+            .await;
+        for source in [0, 1, 3] {
+            replicas[source].seal_rotating().await.unwrap();
+            let (to, from) = pair(&mut replicas, 2, source);
+            store_from(to, from).await;
+        }
+        apply_without_writer(&mut replicas[2]).await;
+        assert_eq!(
+            texts(
+                &mut replicas[2],
+                "SELECT id FROM fixture_cycle_a ORDER BY id"
+            )
+            .await,
+            ["a-1"]
+        );
+
+        replicas[0]
+            .exec("DELETE FROM fixture_cycle_b WHERE id = 'b-1'")
+            .await;
+        replicas[0].seal_rotating().await.unwrap();
+        let (to, from) = pair(&mut replicas, 2, 0);
+        store_from(to, from).await;
+        apply_without_writer(&mut replicas[2]).await;
+
+        assert_eq!(
+            texts(
+                &mut replicas[2],
+                "SELECT id FROM fixture_cycle_a ORDER BY id"
+            )
+            .await,
+            ["a-2"]
+        );
+    });
+}
+
+/// Writes, repair tombstones, deletes, an exclusion, and a restore each leave the class index
+/// equal to a full scan of the merge state on every replica.
+#[test]
+fn class_index_matches_a_full_recompute() {
+    async fn check(replicas: [&mut Replica; 3]) {
+        for replica in replicas {
+            replica.check_class_index().await;
+        }
+    }
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 215).await;
+        let mut removed = Replica::new(1, 215).await;
+        let mut honest = Replica::new(2, 215).await;
+
+        edit(
+            &mut honest,
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L1', 'C1');
+             INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', 'L2', 'C2');
+             INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', 'L3', 'C3');",
+        )
+        .await;
+        // A concurrent create collides, and the duplicate is repaired with a tombstone.
+        edit(
+            &mut anchor,
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-4', 'L1', 'C4')",
+        )
+        .await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut removed, &mut anchor).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        assert_eq!(redirects(&mut anchor, HANDLES_TABLE).await, ["h-4:h-1"]);
+
+        edit(
+            &mut honest,
+            "UPDATE fixture_handles SET label = 'L9' WHERE id = 'h-2'",
+        )
+        .await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+
+        edit(&mut honest, "DELETE FROM fixture_handles WHERE id = 'h-3'").await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+
+        // The removed device creates a row and edits another past its cutoff.
+        edit(
+            &mut removed,
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-5', 'L5', 'C5');
+             UPDATE fixture_handles SET label = 'L8' WHERE id = 'h-2';",
+        )
+        .await;
+        deliver(&mut honest, &mut removed).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        let device = removed.device_id.clone();
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        assert_eq!(
+            texts(&mut anchor, "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-2"]
+        );
+
+        restore_all(&mut anchor, removal).await;
+        deliver(&mut honest, &mut anchor).await;
+        check([&mut anchor, &mut removed, &mut honest]).await;
+        assert_eq!(
+            texts(&mut anchor, "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-2", "h-5"]
+        );
     });
 }
 

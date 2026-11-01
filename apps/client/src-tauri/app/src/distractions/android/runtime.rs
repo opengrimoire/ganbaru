@@ -390,7 +390,7 @@ async fn refresh<R: Runtime>(
         .clone()
         .or_else(|| capture.copy.clone())
         .ok_or("Guardian notification language is not ready")?;
-    let config = limits::parse_config(&root)?;
+    let config = crate::distractions::limits_or_phase_only(&root);
     // Other devices' replicated totals, this device's own journal, and Guardian events not yet
     // imported form one bounded source window; a read needs no write permit.
     let pool = crate::db::connect_vault(app).await?;

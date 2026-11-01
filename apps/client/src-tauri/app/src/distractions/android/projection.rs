@@ -305,7 +305,7 @@ pub(super) fn build(
     revision: &str,
 ) -> Result<(Value, Value), String> {
     copy.validate()?;
-    let config = limits::parse_config(root)?;
+    let config = crate::distractions::limits_or_phase_only(root);
     let budgets = limits::totals(&config, sources, &capture.local_date)?;
     let mut mobile: MobileSchedule = serde_json::from_value(
         root.pointer("/distractions/mobile")
@@ -487,6 +487,17 @@ mod tests {
             published_packages(&built.unwrap().0),
             ["com.example.video", "com.example.feed"]
         );
+    }
+
+    #[test]
+    fn limit_parse_failure_keeps_guardian_rules() {
+        let mut config = root();
+        config["distractions"]["limits"]["items"][0]["entries"][2]["websiteHost"] = json!(" ");
+        let built = build(&config, &capture(), &[], &copy(), "native-parse");
+        assert!(built.is_ok(), "one limit stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        assert_eq!(published_packages(&rules), ["com.example.video"]);
+        assert_eq!(rules["limits"], json!({"enabled": false, "items": []}));
     }
 
     #[test]

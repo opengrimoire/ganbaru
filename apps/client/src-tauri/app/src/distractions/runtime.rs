@@ -475,7 +475,7 @@ impl Owner {
             }
             let device_id = vault::ensure_device_id(&app)?;
             let config = rules.root;
-            let limits = limits::parse_config(&config)?;
+            let limits = limits_or_phase_only(&config);
             let phase = read_fresh_runtime_state(&state_path(&app)?, now_utc());
             let catalog = desktop_catalog_index();
             let phase_rules = policy::phase_rules(&config, phase.as_ref(), &catalog)?;
@@ -864,6 +864,22 @@ mod tests {
             exhausted: true,
             entries: Vec::new(),
         }
+    }
+
+    #[test]
+    fn limit_parse_failure_keeps_phase_enforcement() {
+        let limits = |website_host: &str| {
+            serde_json::json!({"distractions": {"limits": {"enabled": true, "items": [{
+                "id": "habit", "minutesPerDay": 10,
+                "entries": [{"id": "site", "websiteHost": website_host}]}]}}})
+        };
+        let config = crate::distractions::limits_or_phase_only(&limits(" "));
+        assert!(!config.enabled);
+        assert!(config.items.is_empty());
+
+        let config = crate::distractions::limits_or_phase_only(&limits("video.example.com"));
+        assert!(config.enabled);
+        assert_eq!(config.items.len(), 1);
     }
 
     #[test]

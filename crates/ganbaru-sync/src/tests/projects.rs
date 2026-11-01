@@ -930,12 +930,22 @@ fn folder_timestamps_must_be_rfc3339_utc() {
             folder = quoted(EXTERNAL_FOLDER),
             project = quoted(PROJECT),
         );
-        let refused = [
-            (folder_group::ARCHIVED, "not a timestamp at all"),
-            (folder_group::ARCHIVED, "2027-01-02T00:00:00.000+01:00"),
-            (folder_group::UPDATED, "not a timestamp at all"),
-            (folder_group::UPDATED, "2027-01-02T00:00:00.000+01:00"),
-        ];
+        let refused: Vec<_> = [
+            "not a timestamp at all",
+            "2027-01-02T00:00:00.000+01:00",
+            "2027-01-02 00:00:00.000Z",
+            "2027-01-02t00:00:00.000Z",
+            "2027-01-02T00:00:00.000z",
+            "2027-01-02T23:59:60.000Z",
+        ]
+        .into_iter()
+        .flat_map(|timestamp| {
+            [
+                (folder_group::ARCHIVED, timestamp),
+                (folder_group::UPDATED, timestamp),
+            ]
+        })
+        .collect();
         let mut replicas = shared(refused.len() + 2, &sql).await;
         let stored_timestamps = "SELECT updated_at || '|' || coalesce(archived_at, '-')
                                  FROM project_working_folders WHERE id = 'folder-external'";

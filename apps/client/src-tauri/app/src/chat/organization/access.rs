@@ -803,16 +803,10 @@ fn runtime_approval_is_reduction(
     current: ChatRuntimeApprovalPolicy,
     proposed: ChatRuntimeApprovalPolicy,
 ) -> bool {
-    if current == proposed {
-        return false;
-    }
-    match (
-        runtime_approval_rank(current),
-        runtime_approval_rank(proposed),
-    ) {
-        (Some(current), Some(proposed)) => proposed < current,
-        _ => true,
-    }
+    ganbaru_chat::coordination::reductions::approval_is_reduction(
+        wire_runtime_approval_policy(current),
+        wire_runtime_approval_policy(proposed),
+    )
 }
 
 /// Removes a teammate from one channel conversation: revokes its folder grants there and marks

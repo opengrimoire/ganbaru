@@ -6,7 +6,7 @@ use crate::chat::internal_mcp::{
 };
 use crate::chat::organization::{
     effective_runtime_approval, parse_approval_policy, parse_runtime_approval_policy,
-    runtime_approval_rank, teammate_runtime_approval,
+    teammate_runtime_approval, wire_runtime_approval_policy,
 };
 use ganbaru_chat_contracts::models::{ChatResult, ChatRuntimeApprovalPolicy};
 use sqlx::{Row, SqlitePool};
@@ -429,11 +429,10 @@ fn live_approval_covers_frozen(
     live: ChatRuntimeApprovalPolicy,
     frozen: ChatRuntimeApprovalPolicy,
 ) -> bool {
-    live == frozen
-        || matches!(
-            (runtime_approval_rank(live), runtime_approval_rank(frozen)),
-            (Some(live), Some(frozen)) if live >= frozen
-        )
+    ganbaru_chat::coordination::reductions::approval_covers(
+        wire_runtime_approval_policy(live),
+        wire_runtime_approval_policy(frozen),
+    )
 }
 
 #[cfg(test)]

@@ -66,6 +66,7 @@ fn chat_derives_sync_keys_with_the_manifest_prefixes() {
 #[test]
 fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     let derived = [
+        sync_effects::PARTICIPANTS_TABLE,
         sync_effects::TEAMMATES_TABLE,
         sync_effects::POLICY_REVISIONS_TABLE,
         sync_effects::CONVERSATIONS_TABLE,

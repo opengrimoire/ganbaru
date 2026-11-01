@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use ganbaru_sync::domains::distractions::is_android_package_name;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -31,9 +32,6 @@ pub const MAX_CATEGORY_NAME_CHARS: usize = 60;
 
 /// Most characters of an app name, usage limit name, or limit entry name.
 pub const MAX_NAME_CHARS: usize = 80;
-
-/// Most characters of an Android package name.
-pub const MAX_PACKAGE_CHARS: usize = 255;
 
 /// Most characters of a custom category, usage limit, or limit entry id.
 pub const MAX_ID_CHARS: usize = 80;
@@ -351,22 +349,10 @@ pub fn normalize_app_name(input: &str) -> Option<String> {
     normalize_app_candidate_name(input)
 }
 
-/// An Android package name: dotted segments that start with a letter.
+/// An Android package name without surrounding whitespace, or `None` outside the shared grammar.
 pub fn normalize_package(input: &str) -> Option<String> {
     let package = input.trim();
-    let valid = !package.is_empty()
-        && package.len() <= MAX_PACKAGE_CHARS
-        && package.split('.').count() >= 2
-        && package.split('.').all(|segment| {
-            segment
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphabetic)
-                && segment
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        });
-    valid.then(|| package.to_string())
+    is_android_package_name(package).then(|| package.to_string())
 }
 
 /// The display name followed by the distinct unprotected match names, by case-insensitive key;

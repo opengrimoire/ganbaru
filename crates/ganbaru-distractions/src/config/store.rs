@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use ganbaru_sync::domains::distractions::MOBILE_PLATFORM;
 use ganbaru_sync::manifest::vault::distractions::{
     APP_RULE_KEY_PREFIX, HOST_RULE_KEY_PREFIX, SETTINGS_KEY,
 };
@@ -31,7 +32,6 @@ use crate::rules::{app_name_key, is_protected_desktop_app_name};
 /// List kind and platform values stored in the rule tables.
 const CATEGORY_LIST_KIND: &str = "category";
 const DESKTOP_PLATFORM: &str = "desktop";
-const MOBILE_PLATFORM: &str = "mobile";
 
 /// Why an edit was refused. The serialized code is what Settings maps to a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

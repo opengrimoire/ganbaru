@@ -33,6 +33,9 @@ pub const MAX_APP_NAME_CHARS: usize = 80;
 /// Most characters of a usage limit or limit entry name.
 pub const MAX_LIMIT_NAME_CHARS: usize = 80;
 
+/// Fewest characters of an Android package name: two one-letter segments and a dot.
+pub const MIN_PACKAGE_CHARS: usize = 3;
+
 /// Most characters of an Android package name.
 pub const MAX_PACKAGE_CHARS: usize = 255;
 
@@ -128,7 +131,10 @@ pub const HOST_LIST_KINDS: &[&str] = &["blocked", "exception", "allowed", "categ
 pub const CATEGORY_LIST_KIND: &str = "category";
 
 /// Platforms of an app rule.
-pub const APP_PLATFORMS: &[&str] = &["desktop", "mobile"];
+pub const APP_PLATFORMS: &[&str] = &["desktop", MOBILE_PLATFORM];
+
+/// Platform of an app rule whose identity is an Android package name.
+pub const MOBILE_PLATFORM: &str = "mobile";
 
 /// Whether `host` is a normalized host rule: lowercase ASCII labels of letters, digits, and
 /// inner hyphens joined by dots, as rule normalization writes them.
@@ -143,6 +149,23 @@ pub fn is_rule_host(host: &str) -> bool {
                 && label
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+}
+
+/// Whether `value` is an Android package name: at least two dotted segments, each starting with
+/// an ASCII letter and using ASCII letters, digits, and underscores. Sync admission, rule writers,
+/// and Guardian share this one grammar, which the native plugin mirrors.
+pub fn is_android_package_name(value: &str) -> bool {
+    (MIN_PACKAGE_CHARS..=MAX_PACKAGE_CHARS).contains(&value.len())
+        && value.split('.').count() >= 2
+        && value.split('.').all(|segment| {
+            segment
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         })
 }
 
@@ -161,6 +184,21 @@ fn one_of(field: Option<&Field>, allowed: &[&str], what: &'static str) -> Result
     match field {
         Some(Field::Text(text)) if allowed.contains(&text.as_str()) => Ok(()),
         _ => Err(AdapterError(what)),
+    }
+}
+
+/// The platform of an app rule, and a mobile rule's identity, which is its package name. A desktop
+/// identity is a free lowercase name.
+fn validate_app_rule(value: &Value) -> Result<(), AdapterError> {
+    let fields = value.fields();
+    one_of(fields.first(), APP_PLATFORMS, "distraction app platform")?;
+    match fields {
+        [Field::Text(platform), Field::Text(identity)]
+            if platform == MOBILE_PLATFORM && !is_android_package_name(identity) =>
+        {
+            Err(AdapterError("distraction mobile app identity"))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -311,7 +349,7 @@ impl DomainAdapter for DistractionsAdapter {
         } else if table == HOST_RULES_TABLE && group == host_group::RULE {
             validate_host_rule(value)
         } else if table == APP_RULES_TABLE && group == app_group::RULE {
-            one_of(fields.first(), APP_PLATFORMS, "distraction app platform")
+            validate_app_rule(value)
         } else if table == APP_RULES_TABLE && group == app_group::LABEL {
             match fields.get(1) {
                 Some(Field::Text(json)) if parse_match_names(json).is_some() => Ok(()),
@@ -438,6 +476,25 @@ mod tests {
 
     fn value(fields: Vec<Field>) -> Value {
         Value::new(fields).unwrap()
+    }
+
+    #[test]
+    fn invalid_mobile_identity_is_held_invalid() {
+        let adapter = DistractionsAdapter;
+        let rule = |platform: &str, identity: &str| {
+            adapter.validate(
+                APP_RULES_TABLE,
+                app_group::RULE,
+                &value(vec![text(platform), text(identity)]),
+            )
+        };
+        assert!(rule("mobile", "not a package").is_err());
+        assert!(rule("mobile", "android").is_err());
+        assert!(rule("mobile", "com.example-app").is_err());
+        assert_eq!(rule("mobile", "com.example.video"), Ok(()));
+        assert_eq!(rule("mobile", "Com.Example.Video"), Ok(()));
+        assert_eq!(rule("desktop", "not a package"), Ok(()));
+        assert!(rule("tablet", "com.example.video").is_err());
     }
 
     #[test]

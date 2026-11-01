@@ -1,6 +1,7 @@
 use super::common::{
-    has_thread_eligible_mention, is_valid_teammate_effort, normalized_fts_query,
-    require_unused_teammate_name, validate_message_request, validate_teammate_role,
+    ACTIVE_FOLDER_GRANTS_SQL, has_thread_eligible_mention, is_valid_teammate_effort,
+    normalized_fts_query, require_unused_teammate_name, validate_message_request,
+    validate_teammate_role,
 };
 use super::scheduling::{
     SCHEDULED_REQUEST_MISMATCH_REASON, ScheduledRowBinding,
@@ -2680,6 +2681,105 @@ fn synced_assignment_stays_queued_until_accepted() {
                 .unwrap()
         );
         assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 1);
+    });
+}
+
+/// Applies grants of `conversation:review` that only a sync apply can store, beside the honest
+/// `folder:review` grant: one for a folder of another project under the channel's project, one
+/// that also claims that project, and one that claims it for a folder of the channel's project.
+/// The first is a default grant on the lowest folder id, so it would win a default tie.
+async fn seed_foreign_project_grants(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project:foreign', 'group:review', 'Foreign', 'a2');
+         INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path)
+         VALUES
+             ('folder:a-foreign', 'project:foreign', 'Foreign A', 'managed',
+              'projects/foreign-a'),
+             ('folder:b-foreign', 'project:foreign', 'Foreign B', 'managed',
+              'projects/foreign-b'),
+             ('folder:same-project', 'project:review', 'Same project', 'managed',
+              'projects/same-project');
+         INSERT INTO chat_teammate_working_folder_grants
+             (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+              capability, capability_inherits_profile, is_default, created_at)
+         VALUES
+             ('conversation:review', 'participant:review-agent', 'project:review',
+              'folder:a-foreign', 'grant:foreign-folder', 'execute', 1, 1,
+              '2026-08-04T17:00:00.000Z'),
+             ('conversation:review', 'participant:review-agent', 'project:foreign',
+              'folder:b-foreign', 'grant:foreign-claim', 'execute', 1, 0,
+              '2026-08-04T17:00:00.000Z'),
+             ('conversation:review', 'participant:review-agent', 'project:foreign',
+              'folder:same-project', 'grant:foreign-label', 'execute', 1, 0,
+              '2026-08-04T17:00:00.000Z');
+         UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn grant_for_foreign_project_folder_is_ignored() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_foreign_project_grants(&pool).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        let access = context::read_granted_access(
+            &mut transaction,
+            &ChatConversationId::new("conversation:review").unwrap(),
+            &ChatConversationItemId::new("item:review-root").unwrap(),
+            &ChatParticipantId::new("participant:review-agent").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let folders: Vec<&str> = access
+            .grants
+            .iter()
+            .map(|grant| grant.working_folder_id.as_str())
+            .collect();
+        assert_eq!(
+            folders,
+            ["folder:review"],
+            "only a grant inside the channel's project carries authority"
+        );
+    });
+}
+
+#[test]
+fn grant_for_foreign_project_folder_is_not_listed() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_foreign_project_grants(&pool).await;
+
+        let rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
+            .bind("conversation:review")
+            .bind("participant:review-agent")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+        let listed: Vec<(String, i64)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("working_folder_id"),
+                    row.get::<i64, _>("is_default"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [("folder:review".to_string(), 1)],
+            "an ignored grant is neither shown nor takes the default from the honest grant"
+        );
     });
 }
 

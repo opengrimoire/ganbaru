@@ -965,9 +965,10 @@ async fn holds_authorization_beyond_policy(
 /// An authorization is uncovered when the teammate is archived, when the teammate's conversation
 /// membership or AI channel membership of its destination has ended, when a channel it disclosed
 /// can no longer be read from the disclosed lower bound, when a folder it was granted has no
-/// active grant of at least the authorized capability, when the runtime approval override that
-/// governs its target (see [`RESOLVED_OVERRIDE`]) is now stricter than the authorized policy, or
-/// when the teammate's effective policy no longer covers an approval it froze.
+/// active grant of at least the authorized capability inside the destination conversation's
+/// project, when the runtime approval override that governs its target (see
+/// [`RESOLVED_OVERRIDE`]) is now stricter than the authorized policy, or when the teammate's
+/// effective policy no longer covers an approval it froze.
 async fn holds_uncovered_authorization(
     connection: &mut SqliteConnection,
     teammate_id: &str,
@@ -1047,11 +1048,17 @@ async fn holds_uncovered_authorization(
                                ON profile_rank.capability = profile_revision.maximum_folder_capability
                              JOIN capability_rank grant_rank
                                ON grant_rank.capability = folder_grant.capability
+                             JOIN chat_conversations conversation
+                               ON conversation.id = folder_grant.conversation_id
+                             JOIN project_working_folders folder
+                               ON folder.id = folder_grant.working_folder_id
                              WHERE folder_grant.conversation_id
                                    = authorization.destination_conversation_id
                                AND folder_grant.teammate_id = ?1
                                AND folder_grant.working_folder_id = source.working_folder_id
                                AND folder_grant.revoked_at IS NULL
+                               AND folder_grant.project_id = conversation.project_id
+                               AND folder.project_id = conversation.project_id
                                AND CASE
                                        WHEN folder_grant.capability_inherits_profile = 1
                                            THEN profile_rank.rank

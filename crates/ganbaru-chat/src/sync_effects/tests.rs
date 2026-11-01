@@ -1326,6 +1326,44 @@ async fn an_applied_grant_deletion_revokes_the_folder_authorization_it_covered()
     assert_eq!(queued_jobs(&pool).await.len(), jobs);
 }
 
+/// A grant covers an authorization only inside the destination conversation's project, whether
+/// the grant claims another project or its folder belongs to one.
+#[tokio::test]
+async fn an_applied_grant_for_a_foreign_project_revokes_the_folder_authorization() {
+    for mismatch in [
+        "UPDATE chat_teammate_working_folder_grants SET project_id = 'project-foreign'
+         WHERE sync_key = 'grant:sync-effects'",
+        "UPDATE project_working_folders SET project_id = 'project-foreign'
+         WHERE id = 'folder:sync-effects'",
+    ] {
+        let pool = migrated_pool().await;
+        seed_organization(&pool).await;
+        seed_folder_authorization(&pool, "ask", "ask").await;
+
+        set_applying(&pool, true).await;
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project-foreign', 'group-sync', 'Foreign', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(mismatch).execute(&pool).await.unwrap();
+        let effects = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+
+        assert_eq!(
+            effects.revoked_teammates,
+            BTreeSet::from([TEAMMATE_ID.to_string()]),
+            "{mismatch}"
+        );
+        assert_eq!(
+            authorization_state(&pool, "authorization:folder").await,
+            "revoked",
+            "{mismatch}"
+        );
+    }
+}
+
 /// A conversation delete reports the conversation and sweeps the authorizations that remain in
 /// other conversations, here one whose channel membership an earlier apply in the same batch
 /// deleted.

@@ -272,13 +272,7 @@ async fn pull_record_pages(from: &mut Replica, to: &mut Replica) -> bool {
     for _ in 0..RECORD_ROUNDS {
         let page = from
             .engine
-            .record_page(
-                &mut from.conn,
-                &from.ctx,
-                &cursor,
-                usize::MAX,
-                RECORD_PAGE,
-            )
+            .record_page(&mut from.conn, &from.ctx, &cursor, usize::MAX, RECORD_PAGE)
             .await
             .unwrap();
         let envelopes: Vec<Vec<u8>> = page

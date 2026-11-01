@@ -3915,7 +3915,10 @@ mod tests {
             "the same captures would block again"
         );
         assert!(mark.due(&vector(1), 0, 2), "sealed captures may unblock it");
-        assert!(mark.due(&vector(1), 0, 9), "new local edits may be sealable");
+        assert!(
+            mark.due(&vector(1), 0, 9),
+            "new local edits may be sealable"
+        );
         assert!(mark.due(&vector(2), 0, 5), "a grown log applies again");
     }
 }

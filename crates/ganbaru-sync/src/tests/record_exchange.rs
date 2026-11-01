@@ -379,7 +379,10 @@ fn record_pages_carry_a_take_past_a_held_row_change_and_no_data() {
         hub.pull(&mut second).await;
         let contested = view(&mut hub).await;
         assert_eq!(contested.frozen_at, Some(point));
-        assert!(held(&mut hub, 21).await, "the contest holds the second take");
+        assert!(
+            held(&mut hub, 21).await,
+            "the contest holds the second take"
+        );
 
         member.pull(&mut hub).await;
         assert_eq!(

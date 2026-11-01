@@ -1189,10 +1189,12 @@ struct ApplyMark {
 }
 
 impl ApplyMark {
-    /// Whether an apply is due: the log grew, or local captures changed since an apply
+    /// Whether an apply is due: the log grew, the record store changed, which can move the
+    /// selection and its holds with no new operation, or local captures changed since an apply
     /// stopped on them. A capture count that stays the same cannot unblock it.
-    fn due(&self, stored: &VersionVector, _records: u64, pending: u64) -> bool {
+    fn due(&self, stored: &VersionVector, records: u64, pending: u64) -> bool {
         self.stored.as_ref() != Some(stored)
+            || self.records != records
             || self.blocked_at.is_some_and(|blocked| blocked != pending)
     }
 }
@@ -2412,10 +2414,10 @@ impl ServiceState {
         }
     }
 
-    /// Applies stored operations once the log grew since the last apply, or local captures
-    /// changed since an apply stopped on them, then repairs the Notes structure that applies
-    /// left pending. Apply always commits, so applying on every pass would wake the service
-    /// again; the repair commits only when keys are pending.
+    /// Applies stored operations once the log grew or the record store changed since the last
+    /// apply, or local captures changed since an apply stopped on them, then repairs the Notes
+    /// structure that applies left pending. Apply always commits, so applying on every pass
+    /// would wake the service again; the repair commits only when keys are pending.
     async fn apply_new<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
         let applied = self.apply_if_due(session).await;
         session.repair_notes().await;

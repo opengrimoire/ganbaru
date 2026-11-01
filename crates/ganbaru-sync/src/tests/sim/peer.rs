@@ -1451,6 +1451,7 @@ impl PeerSim {
     /// Every node that must converge holds the anchor's rows, conflicts, recovery entries, late
     /// changes, and authorization state, with nothing waiting, held, or captured.
     async fn assert_converged(&mut self, anchor: usize) {
+        self.sim.clear_forged_rows().await;
         let expected = self.snapshot(anchor).await;
         for node in self.members(anchor).await {
             let actual = self.snapshot(node).await;

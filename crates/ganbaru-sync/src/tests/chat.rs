@@ -12,15 +12,17 @@
 
 use std::sync::{Arc, Mutex};
 
-use ganbaru_sync_contracts::derived_key;
+use ganbaru_sync_contracts::{ChangeAction, Content, Envelope, RowKey, derived_key};
 use sqlx::SqliteConnection;
 
+use super::authorization::{forge, view};
 use super::block_on;
 use super::fixture::{
     FixtureHook, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, test_adapters,
 };
 use super::replica::{Replica, converge, quoted};
 use super::sim::Rng;
+use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
 use crate::error::failpoints;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
@@ -31,7 +33,7 @@ use crate::manifest::vault::chat::{
     REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
-use crate::{Engine, MAX_UNSEEN_PRESENTATIONS, SyncError, SyncResult};
+use crate::{Engine, HoldReason, MAX_UNSEEN_PRESENTATIONS, StoreOutcome, SyncError, SyncResult};
 
 const SALT: u64 = 73;
 const TEAMMATE: &str = "participant:reviewer";
@@ -1848,6 +1850,58 @@ fn chat_attachment_references_arrive_by_value_and_name_their_files() {
         assert_eq!(
             assets,
             vec![("chat/attachments", IMAGE_DIGEST, "image/png", 4096)]
+        );
+    });
+}
+
+#[test]
+fn local_user_participant_under_another_key_is_invalid() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let mut create = replicas[0]
+            .own_ops()
+            .await
+            .iter()
+            .filter_map(|bytes| {
+                match Envelope::decode(bytes)
+                    .unwrap()
+                    .operation()
+                    .unwrap()
+                    .content
+                {
+                    Content::Changes(changes) => Some(changes),
+                    _ => None,
+                }
+            })
+            .flatten()
+            .find(|change| {
+                change.table == PARTICIPANTS_TABLE
+                    && change.row.as_str() == LOCAL_OWNER_PARTICIPANT_KEY
+            })
+            .expect("the seeded owner is sealed");
+        assert_eq!(create.action, ChangeAction::Create);
+        assert_eq!(
+            crate::validate::change(&replicas[0].engine, &create),
+            Ok(())
+        );
+
+        // A writer whose build does not enforce the seeded identity.
+        create.row = RowKey::new("participant:other").unwrap();
+        let revision = view(&mut replicas[1]).await.revision;
+        let forged = forge(&mut replicas[1], Content::Changes(vec![create]), revision).await;
+
+        assert_eq!(
+            replicas[0].receive(&[forged]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+        replicas[0].apply_all().await.unwrap();
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM chat_participants WHERE id = 'participant:other'")
+                .await,
+            0
         );
     });
 }

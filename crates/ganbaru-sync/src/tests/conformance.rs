@@ -1176,6 +1176,62 @@ fn owned_codecs_round_trip_through_the_schema() {
     });
 }
 
+/// The row key `columns` of `table` that are required where the schema allows null, or the
+/// other way around, each as `table.column`.
+async fn row_key_mismatches(pool: &SqlitePool, table: &str, columns: &[ColumnSpec]) -> Vec<String> {
+    let not_null: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
+            .bind(table)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    columns
+        .iter()
+        .filter(|column| column.ty.is_row_key())
+        .filter(|column| {
+            let required = not_null.iter().any(|name| name == column.name);
+            (column.ty == ColumnType::RowKey) != required
+        })
+        .map(|column| format!("{table}.{}", column.name))
+        .collect()
+}
+
+/// The owned tables under `owned`, itself included.
+fn owned_tree(owned: &'static OwnedTable) -> Vec<&'static OwnedTable> {
+    let mut tree = vec![owned];
+    let mut next = 0;
+    while let Some(table) = tree.get(next).copied() {
+        tree.extend(table.nested);
+        next += 1;
+    }
+    tree
+}
+
+/// A required reference column that holds null would stop the domain write, so the manifest
+/// states what the schema states.
+#[test]
+fn row_key_columns_match_their_not_null_constraint() {
+    block_on(async {
+        let (manifest, pool) = cases().await.into_iter().next().unwrap();
+        let mut mismatches = Vec::new();
+        for table in manifest.tables {
+            for group in table.groups {
+                mismatches.extend(row_key_mismatches(&pool, table.name, group.columns()).await);
+                for root in group.owned_tables() {
+                    for owned in owned_tree(root) {
+                        mismatches
+                            .extend(row_key_mismatches(&pool, owned.table, owned.columns).await);
+                    }
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "a row key column is required exactly when the schema says NOT NULL: {mismatches:#?}"
+        );
+    });
+}
+
 /// `(table, column)` of every `NOT NULL` column of an owned table and its nested tables.
 type RequiredColumns = BTreeSet<(&'static str, String)>;
 
@@ -1332,7 +1388,7 @@ fn generated_field(
                 .into_string(),
         ),
         ColumnType::OptionalRowKey if low && nullable => Field::Null,
-        ColumnType::OptionalRowKey => Field::Text(format!("key-{serial}")),
+        ColumnType::OptionalRowKey | ColumnType::RowKey => Field::Text(format!("key-{serial}")),
     }
 }
 
@@ -1889,7 +1945,7 @@ fn validation_refuses_malformed_references() {
     for problem in [
         "owner_id is an immutable reference that does not cascade",
         "missing_id is not a column of the group",
-        "note holds a reference but is not an optional row key",
+        "note holds a reference but is not a row key",
         "a reference group declares no reference columns",
     ] {
         assert!(malformed.contains(problem), "{problem}: {malformed}");
@@ -2041,7 +2097,8 @@ fn engine_construction_checks_adapters_both_ways() {
 
 /// Recorded manifests by version. Operations of every version up to the current one validate
 /// against the current manifest, so a recorded manifest never changes; a new version may only
-/// add tables and groups or loosen rules, and it records its own snapshot here.
+/// add tables and groups, loosen rules, or refuse values the schema could never store, and it
+/// records its own snapshot here.
 const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (1, include_str!("fixtures/vault_manifest_v1.txt")),
     (2, include_str!("fixtures/vault_manifest_v2.txt")),
@@ -2065,6 +2122,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (20, include_str!("fixtures/vault_manifest_v20.txt")),
     (21, include_str!("fixtures/vault_manifest_v21.txt")),
     (22, include_str!("fixtures/vault_manifest_v22.txt")),
+    (23, include_str!("fixtures/vault_manifest_v23.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

@@ -9,9 +9,14 @@
 //! waiting for a creation, or, through a
 //! composite-key identity reference, a hidden duplicate or a row that was never published.
 //! Cascading references other than identity references follow redirects and duplicate keepers
-//! first, and a reference to a row that was never published is ignored. The walk keeps a
+//! first. A required reference that reaches nothing hides its row until the target arrives, and
+//! a nullable reference to a row that was never published is ignored. The walk keeps a
 //! visited set, so a reference cycle hides nothing on its own. Every input is merge state, so
 //! replicas that cannot seal repairs still agree on which rows are shown.
+//!
+//! The one local input is a row a domain constraint refused, see [`crate::refused`]. It joins
+//! through [`Visibility::admit_refusals`] after repairs and row flags are done, and only decides
+//! what materializes on this replica.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -19,10 +24,10 @@ use ganbaru_sync_contracts::{Field, TableId};
 use sqlx::SqliteConnection;
 
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{MergeKind, OnDelete, TableSpec};
+use crate::manifest::{ColumnType, MergeKind, OnDelete, TableSpec};
 use crate::merge::{self, RowState, table_param};
 use crate::repair::Contested;
-use crate::{Engine, edges, exclusion, publication, repair, sql, tree};
+use crate::{Engine, edges, exclusion, publication, refused, repair, sql, tree};
 
 /// Longest chain of redirects and duplicate keepers a reference follows.
 pub(crate) const MAX_REDIRECT_DEPTH: usize = 64;
@@ -55,6 +60,8 @@ pub(crate) enum RootKind {
     Late,
     /// A live row whose merge state waits for an operation that creates it.
     Uncreated,
+    /// A live row a domain constraint refused on this replica.
+    Refused,
 }
 
 impl RootKind {
@@ -93,6 +100,9 @@ impl Roots {
 pub(crate) struct CascadeTarget {
     pub(crate) row: RowRef,
     pub(crate) identity: bool,
+    /// A required reference that reaches nothing: [`Visibility::follow`] cannot resolve the row
+    /// it names, so the referrer hides with [`RootKind::Missing`].
+    pub(crate) unresolved: bool,
 }
 
 /// The sync state of one row and whether it waits for a creation.
@@ -137,6 +147,12 @@ pub(crate) struct Visibility {
     facts: HashMap<RowRef, RowFacts>,
     /// Own hiding per live row read so far.
     own: HashMap<RowRef, OwnHiding>,
+    /// Refused rows count as hidden: they were admitted and at least one is listed.
+    refusals_on: bool,
+    /// Listed rows that are not hidden, since this materialization writes them again.
+    retrying: BTreeSet<RowRef>,
+    /// Whether a row is listed as hidden, per row read so far.
+    refused: HashMap<RowRef, bool>,
 }
 
 impl Visibility {
@@ -260,6 +276,37 @@ impl Visibility {
         Ok(())
     }
 
+    /// Lets rows a domain constraint refused hide, except `retrying`. Called only after repairs
+    /// and row flags, because the list is local and everything before them must be the same on
+    /// every replica.
+    pub(crate) async fn admit_refusals(
+        &mut self,
+        conn: &mut SqliteConnection,
+        retrying: BTreeSet<RowRef>,
+    ) -> SyncResult<()> {
+        self.refusals_on = refused::any(conn).await?;
+        self.retrying = retrying;
+        self.cascade.clear();
+        Ok(())
+    }
+
+    /// Whether a row is hidden because a domain constraint refused it.
+    pub(crate) async fn is_refused(
+        &mut self,
+        conn: &mut SqliteConnection,
+        row: &RowRef,
+    ) -> SyncResult<bool> {
+        if !self.refusals_on || self.retrying.contains(row) {
+            return Ok(false);
+        }
+        if let Some(refused) = self.refused.get(row) {
+            return Ok(*refused);
+        }
+        let hidden = refused::is_hidden(conn, row).await?;
+        self.refused.insert(row.clone(), hidden);
+        Ok(hidden)
+    }
+
     /// The kept row of a hidden duplicate.
     pub(crate) fn keeper(&self, table: TableId, key: &str) -> Option<&String> {
         self.duplicates.get(&table).and_then(|rows| rows.get(key))
@@ -322,7 +369,9 @@ impl Visibility {
             Some(RowState::Tombstoned) => Some(RootKind::Tombstoned),
             Some(RowState::Live) => {
                 let own = self.own_hiding(engine, conn, *table, key).await?;
-                if own.removed {
+                if self.is_refused(conn, row).await? {
+                    Some(RootKind::Refused)
+                } else if own.removed {
                     Some(RootKind::Removed)
                 } else if self.is_severed(*table, key) {
                     Some(RootKind::Severed)
@@ -343,8 +392,8 @@ impl Visibility {
 
     /// Rows the cascading references of a live row reach from its winning versions: identity
     /// references name their row as stored, and the others go through [`Self::follow`] and are
-    /// dropped when it reaches nothing. The parent of a detached tree row is not followed. A
-    /// key parent is named by the row's own key, as an identity.
+    /// dropped when it reaches nothing, unless the column is required. The parent of a detached
+    /// tree row is not followed. A key parent is named by the row's own key, as an identity.
     pub(crate) async fn cascade_targets(
         &mut self,
         engine: &Engine,
@@ -357,6 +406,7 @@ impl Visibility {
             .map(|parent| CascadeTarget {
                 row: (parent, key.to_string()),
                 identity: true,
+                unresolved: false,
             })
             .into_iter()
             .collect();
@@ -383,18 +433,26 @@ impl Visibility {
                 continue;
             };
             let identity = table.has_composite_key() && group.kind == MergeKind::Immutable;
-            let target = if identity {
-                target.clone()
+            let followed = if identity {
+                Some(target.clone())
             } else {
-                match self.follow(conn, reference.table, target).await? {
-                    Some(target) => target,
-                    None => continue,
-                }
+                self.follow(conn, reference.table, target).await?
             };
-            targets.push(CascadeTarget {
-                row: (reference.table, target),
-                identity,
-            });
+            match followed {
+                Some(followed) => targets.push(CascadeTarget {
+                    row: (reference.table, followed),
+                    identity,
+                    unresolved: false,
+                }),
+                None if group.columns()[field].ty == ColumnType::RowKey => {
+                    targets.push(CascadeTarget {
+                        row: (reference.table, target.clone()),
+                        identity,
+                        unresolved: true,
+                    });
+                }
+                None => {}
+            }
         }
         Ok(targets)
     }
@@ -421,7 +479,15 @@ impl Visibility {
                 .ok_or_else(|| corrupt("cascade through an unknown table"))?;
             for target in self.cascade_targets(engine, conn, spec, &key).await? {
                 let next = target.row;
-                if let Some(kind) = self.root_kind(engine, conn, &next, target.identity).await? {
+                if target.unresolved {
+                    roots.insert(Root {
+                        table: next.0,
+                        key: next.1,
+                        kind: RootKind::Missing,
+                    });
+                } else if let Some(kind) =
+                    self.root_kind(engine, conn, &next, target.identity).await?
+                {
                     roots.insert(Root {
                         table: next.0,
                         key: next.1,
@@ -566,6 +632,9 @@ impl Visibility {
     ) -> SyncResult<bool> {
         if self.state(conn, table, key).await?.is_none() {
             return Ok(false);
+        }
+        if self.is_refused(conn, &(table, key.to_string())).await? {
+            return Ok(true);
         }
         Ok(self.self_hidden(engine, conn, table, key).await?
             || self.cascade_roots(engine, conn, table, key).await?.hides())

@@ -1165,6 +1165,9 @@ pub(super) const UNATTENDED: &str = "unattended";
 /// A policy the adapter accepts and the override table's `CHECK` refuses, standing for a domain
 /// constraint the manifest does not describe.
 pub(super) const RESERVED: &str = "reserved";
+/// A label or code the manifest accepts and a `CHECK` of the cycle and handle tables refuses,
+/// standing for a domain constraint the manifest does not describe.
+pub(super) const REFUSED: &str = "refused";
 /// A policy the adapter accepts and derives nothing from, refusing it in
 /// [`FixtureAdapter::derived`].
 pub(super) const UNDERIVABLE: &str = "underivable";
@@ -1220,10 +1223,16 @@ pub(super) const OVERRIDES: TableSpec = TableSpec {
         },
     ],
     adapter: Some(FIXTURE_ADAPTER),
-    triggers: &[DomainTrigger {
-        name: "fixture_overrides_refuse_forbidden",
-        policy: TriggerPolicy::ApplierVisible,
-    }],
+    triggers: &[
+        DomainTrigger {
+            name: "fixture_overrides_refuse_forbidden",
+            policy: TriggerPolicy::ApplierVisible,
+        },
+        DomainTrigger {
+            name: "fixture_overrides_keep_forbidden",
+            policy: TriggerPolicy::ApplierVisible,
+        },
+    ],
     holds_deletes: false,
     ..MEMOS
 };
@@ -1658,7 +1667,7 @@ fn fixture_schema() -> String {
          );
          CREATE TABLE fixture_cycle_a (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-             label TEXT NOT NULL CHECK (length(label) <= 40),
+             label TEXT NOT NULL CHECK (length(label) <= 40 AND label IS NOT '{REFUSED}'),
              peer_id TEXT REFERENCES fixture_cycle_b(id) ON DELETE CASCADE,
              UNIQUE (label)
          );
@@ -1669,8 +1678,8 @@ fn fixture_schema() -> String {
          );
          CREATE TABLE fixture_handles (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-             label TEXT NOT NULL CHECK (length(label) <= 40),
-             code TEXT NOT NULL CHECK (length(code) <= 40),
+             label TEXT NOT NULL CHECK (length(label) <= 40 AND label IS NOT '{REFUSED}'),
+             code TEXT NOT NULL CHECK (length(code) <= 40 AND code IS NOT '{REFUSED}'),
              UNIQUE (label),
              UNIQUE (code)
          );
@@ -1812,6 +1821,11 @@ fn fixture_schema() -> String {
          WHEN NEW.policy IS '{FORBIDDEN}'
          BEGIN
              SELECT RAISE(ABORT, 'fixture overrides never forbid');
+         END;
+         CREATE TRIGGER fixture_overrides_keep_forbidden BEFORE DELETE ON fixture_overrides
+         WHEN OLD.policy IS '{FORBIDDEN}'
+         BEGIN
+             SELECT RAISE(ABORT, 'fixture overrides keep a forbidden policy');
          END;
          CREATE TRIGGER fixture_item_marks_refuse_negative BEFORE INSERT ON fixture_item_marks
          WHEN NEW.mark < 0

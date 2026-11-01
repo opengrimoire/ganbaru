@@ -11,10 +11,16 @@
 //! concurrent versions of the groups they name, then run with the keys of every row that
 //! changed. Values elided from a row are stored again before the row is updated or deleted,
 //! see [`crate::hydrate`].
+//!
+//! A constraint or aborting trigger of a domain table refuses one row, never the whole write, see
+//! [`crate::refused`]. A refused delete leaves its row as it is. A refused write undoes the
+//! writes of the plan, since a refused row is absent and the rows that reference it follow it,
+//! so the caller lists the row and plans again.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, WriterId};
+use sqlx::error::ErrorKind;
 use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::Engine;
@@ -22,8 +28,11 @@ use crate::codec::{self, OwnedRow};
 use crate::error::{SyncError, SyncResult, corrupt};
 use crate::hooks::{ChangeNotice, ConcurrentVersion, Notices};
 use crate::hydrate::{self, Elision};
-use crate::manifest::{ColumnSpec, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec};
-use crate::merge::{self, Batch, MergedRows, RowState};
+use crate::manifest::{
+    ColumnSpec, ColumnType, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec,
+};
+use crate::merge::{self, MergedRows, RowState};
+use crate::refused::{Refusal, RefusalKind};
 use crate::seal::{self, InvalidRow};
 use crate::sql::{self, ident};
 use crate::validate;
@@ -60,7 +69,50 @@ pub(crate) struct Materialized {
     pub(crate) settled: BTreeSet<RowRef>,
     /// Settled values that break their group's rules, which were not written.
     pub(crate) refused: Vec<InvalidRow>,
+    /// Rows whose delete a domain constraint refused, which stay as they are.
+    pub(crate) refusals: Vec<Refusal>,
 }
+
+/// How a materialization ended.
+#[derive(Debug)]
+pub(crate) enum Execution {
+    /// The plan is written.
+    Done(Materialized),
+    /// A domain constraint refused a write, so nothing of the plan is written. The refused rows
+    /// must be listed and the rows planned again without them.
+    Refused(Vec<Refusal>),
+}
+
+/// A domain constraint that refused a write.
+struct RefusedWrite {
+    reason: validate::Invalid,
+    /// A unique constraint, which may name the old value of a row refused in the same pass.
+    unique: bool,
+}
+
+/// A row of a table whose write a domain constraint refused.
+struct RefusedRow {
+    key: String,
+    refused: RefusedWrite,
+}
+
+impl RefusedRow {
+    fn of(key: &str, refused: RefusedWrite) -> Self {
+        Self {
+            key: key.to_string(),
+            refused,
+        }
+    }
+}
+
+/// What writing a plan changed and refused.
+struct Written {
+    changed: Vec<BTreeSet<String>>,
+    refusals: Vec<Refusal>,
+}
+
+const WRITE_REFUSED: validate::Invalid = "domain table refused the row";
+const DELETE_REFUSED: validate::Invalid = "domain table refused the deletion";
 
 /// What a domain row needs to match its desired values.
 enum Diff {
@@ -227,6 +279,16 @@ async fn desired(
                     resolve_reference(engine, conn, visibility, reference.table, referenced)
                         .await?;
                 fields[field] = resolved;
+            }
+            // Visibility hides a row whose required reference reaches no shown row, and a row
+            // the domain cannot hold must never stop apply.
+            if fields[field] == Field::Null && group.columns()[field].ty == ColumnType::RowKey {
+                debug_assert!(
+                    false,
+                    "required reference of {} reaches nothing",
+                    table.name
+                );
+                return Ok(Some(Desired::Absent));
             }
         }
         // The domain row holds the winning value exactly when resolution changed no column
@@ -443,11 +505,12 @@ fn swap_rules(
 }
 
 /// Moves the unique values of rows about to change aside, so merged rows can swap values.
+/// Returns the row a constraint refused, if any.
 async fn move_aside(
     conn: &mut SqliteConnection,
     table: &TableSpec,
     updates: &[(&String, Update)],
-) -> SyncResult<()> {
+) -> SyncResult<Option<RefusedRow>> {
     let rules = swap_rules(table)?;
     let mut next = 0u64;
     for (key, update) in updates {
@@ -484,14 +547,19 @@ async fn move_aside(
                 ident(spec.name),
                 ident(table.key_column)
             );
-            sqlx::query(AssertSqlSafe(sql.as_str()))
+            let moved = sqlx::query(AssertSqlSafe(sql.as_str()))
                 .bind(placeholder)
                 .bind(key.as_str())
                 .execute(&mut *conn)
-                .await?;
+                .await
+                .map(|_| ())
+                .map_err(SyncError::from);
+            if let Some(refused) = refusal_of(moved)? {
+                return Ok(Some(RefusedRow::of(key, refused)));
+            }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn execute_update(
@@ -650,19 +718,21 @@ fn updated_groups(table: &TableSpec, update: &Update) -> BTreeSet<GroupId> {
         .collect()
 }
 
-/// Plans every dirty row and the rows, in any table, whose references a deletion would clear
-/// or cascade, without writing anything.
-/// `merged` holds the merge state already read for dirty rows; other rows are read here.
+/// Plans every row of `rows` and the rows, in any table, whose references a deletion would clear
+/// or cascade, without writing anything. `orphaned` holds the rows whose merge state an
+/// exclusion dropped, and `merged` the merge state already read for rows; other rows are read
+/// here.
 pub(crate) async fn plan(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    batch: &Batch,
+    rows: &BTreeSet<RowRef>,
+    orphaned: &BTreeSet<RowRef>,
     visibility: &mut Visibility,
     mut merged: MergedRows,
 ) -> SyncResult<Plan> {
     let tables = engine.manifest().tables;
     let mut worklists: Vec<BTreeSet<String>> = vec![BTreeSet::new(); tables.len()];
-    for (table_id, key) in &batch.dirty {
+    for (table_id, key) in rows {
         let index = tables
             .iter()
             .position(|table| table.id == *table_id)
@@ -681,9 +751,9 @@ pub(crate) async fn plan(
             if plans[index].contains_key(&key) {
                 continue;
             }
-            let orphaned = batch.orphaned.contains(&(table.id, key.clone()));
+            let orphan = orphaned.contains(&(table.id, key.clone()));
             let desired =
-                desired(engine, conn, table, &key, orphaned, visibility, &mut merged).await?;
+                desired(engine, conn, table, &key, orphan, visibility, &mut merged).await?;
             if matches!(desired, Some(Desired::Absent)) && domain_exists(conn, table, &key).await? {
                 // Deleting the row clears or cascades references to it at once, so referrers
                 // must be materialized again even when their merge state did not change.
@@ -923,28 +993,103 @@ fn is_constraint(error: &dyn sqlx::error::DatabaseError) -> bool {
         .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT)
 }
 
-/// Writes a [`Plan`] into the domain tables, lets hooks settle concurrent versions when
-/// `settles` says the caller could seal the settled values, then runs the registered hooks,
-/// and returns what changed.
-pub(crate) async fn execute(
+/// The refusal a write's result stands for: `None` when it succeeded, and the error itself when
+/// it failed for any reason but a constraint.
+fn refusal_of(result: SyncResult<()>) -> SyncResult<Option<RefusedWrite>> {
+    match result {
+        Ok(()) => Ok(None),
+        Err(SyncError::Database(sqlx::Error::Database(error))) if is_constraint(error.as_ref()) => {
+            Ok(Some(RefusedWrite {
+                reason: WRITE_REFUSED,
+                unique: error.kind() == ErrorKind::UniqueViolation,
+            }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Deletes a row and its owned rows.
+async fn delete_row(conn: &mut SqliteConnection, table: &TableSpec, key: &str) -> SyncResult<()> {
+    // Nested tables follow their owned table, so the reverse deletes them first.
+    let children: Vec<_> = table.owned_children().collect();
+    for (_, owned) in children.into_iter().rev() {
+        let sql = format!(
+            "DELETE FROM {} WHERE {} = ?",
+            ident(owned.table),
+            ident(owned.parent_column)
+        );
+        sqlx::query(AssertSqlSafe(sql.as_str()))
+            .bind(key)
+            .execute(&mut *conn)
+            .await?;
+    }
+    let sql = format!(
+        "DELETE FROM {} WHERE {} = ?",
+        ident(table.name),
+        ident(table.key_column)
+    );
+    sqlx::query(AssertSqlSafe(sql.as_str()))
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Runs the writes of one table, returning the first row a constraint refuses.
+async fn table_writes(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    updates: &[(&String, Update)],
+    inserts: &[(&String, &Present)],
+) -> SyncResult<Option<RefusedRow>> {
+    if let Some(refused) = move_aside(conn, table, updates).await? {
+        return Ok(Some(refused));
+    }
+    for (key, update) in updates {
+        if let Some(refused) = refusal_of(execute_update(conn, table, key, update).await)? {
+            return Ok(Some(RefusedRow::of(key, refused)));
+        }
+    }
+    for (key, present) in inserts {
+        if let Some(refused) = refusal_of(execute_insert(conn, table, key, present).await)? {
+            return Ok(Some(RefusedRow::of(key, refused)));
+        }
+    }
+    Ok(None)
+}
+
+/// Writes one table in a savepoint, so a refused row leaves no placeholder [`move_aside`] parked
+/// on another row. Returns the row a constraint refused, and then nothing is written.
+async fn write_table(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    updates: &[(&String, Update)],
+    inserts: &[(&String, &Present)],
+) -> SyncResult<Option<RefusedRow>> {
+    let mut savepoint = sqlx::Connection::begin(&mut *conn).await?;
+    let refused = table_writes(&mut savepoint, table, updates, inserts).await?;
+    match refused {
+        Some(refused) => {
+            savepoint.rollback().await?;
+            Ok(Some(refused))
+        }
+        None => {
+            savepoint.commit().await?;
+            Ok(None)
+        }
+    }
+}
+
+/// Writes `plans` into the domain tables, deletions first, and stops at a unique constraint
+/// once a row is refused: it may name the old value of that row, which the next plan deletes,
+/// so refusing it too would hide a valid row.
+async fn write_plans(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    visibility: &mut Visibility,
-    plan: Plan,
-    settles: bool,
-    now_ms: u64,
-) -> SyncResult<Materialized> {
+    plans: &[BTreeMap<String, Desired>],
+    touched: Vec<BTreeSet<String>>,
+) -> SyncResult<Written> {
     let tables = engine.manifest().tables;
-    let plans: Vec<BTreeMap<String, Desired>> = plan
-        .plans
-        .into_iter()
-        .map(|plan| {
-            plan.into_iter()
-                .filter_map(|(key, desired)| desired.map(|desired| (key, desired)))
-                .collect()
-        })
-        .collect();
-
     // Values elided from rows that go absent, or that a deletion clears or cascades to, are
     // stored again while the domain rows still hold them.
     for (index, table) in tables.iter().enumerate() {
@@ -953,46 +1098,37 @@ pub(crate) async fn execute(
                 hydrate::persist(engine, conn, table, key, None).await?;
             }
         }
-        for key in &plan.touched[index] {
+        for key in &touched[index] {
             hydrate::persist(engine, conn, table, key, None).await?;
         }
     }
 
     let mut changed: Vec<BTreeSet<String>> = vec![BTreeSet::new(); tables.len()];
+    let mut refusals = Vec::new();
     let mut deleted = false;
     for (index, table) in tables.iter().enumerate().rev() {
         for (key, desired) in &plans[index] {
             if !matches!(desired, Desired::Absent) || !domain_exists(conn, table, key).await? {
                 continue;
             }
-            // Nested tables follow their owned table, so the reverse deletes them first.
-            let children: Vec<_> = table.owned_children().collect();
-            for (_, owned) in children.into_iter().rev() {
-                let sql = format!(
-                    "DELETE FROM {} WHERE {} = ?",
-                    ident(owned.table),
-                    ident(owned.parent_column)
-                );
-                sqlx::query(AssertSqlSafe(sql.as_str()))
-                    .bind(key)
-                    .execute(&mut *conn)
-                    .await?;
+            let mut savepoint = sqlx::Connection::begin(&mut *conn).await?;
+            let result = delete_row(&mut savepoint, table, key).await;
+            if refusal_of(result)?.is_some() {
+                savepoint.rollback().await?;
+                refusals.push(Refusal {
+                    row: (table.id, key.clone()),
+                    kind: RefusalKind::Kept,
+                    reason: DELETE_REFUSED,
+                });
+                continue;
             }
-            let sql = format!(
-                "DELETE FROM {} WHERE {} = ?",
-                ident(table.name),
-                ident(table.key_column)
-            );
-            sqlx::query(AssertSqlSafe(sql.as_str()))
-                .bind(key)
-                .execute(&mut *conn)
-                .await?;
+            savepoint.commit().await?;
             changed[index].insert(key.clone());
             deleted = true;
         }
     }
     if deleted {
-        for (keys, touched) in changed.iter_mut().zip(plan.touched) {
+        for (keys, touched) in changed.iter_mut().zip(touched) {
             keys.extend(touched);
         }
     }
@@ -1017,18 +1153,74 @@ pub(crate) async fn execute(
             let groups = updated_groups(table, update);
             hydrate::persist(engine, conn, table, key, Some(&groups)).await?;
         }
-        move_aside(conn, table, &updates).await?;
-        for (key, update) in &updates {
-            execute_update(conn, table, key, update).await?;
-            changed[index].insert((*key).clone());
+        // Each round takes a row out, so the loop ends.
+        while let Some(RefusedRow { key, refused }) =
+            write_table(conn, table, &updates, &inserts).await?
+        {
+            let hiding = refusals
+                .iter()
+                .any(|refusal: &Refusal| refusal.kind == RefusalKind::Hidden);
+            if refused.unique && hiding {
+                return Ok(Written { changed, refusals });
+            }
+            refusals.push(Refusal {
+                row: (table.id, key.clone()),
+                kind: RefusalKind::Hidden,
+                reason: refused.reason,
+            });
+            updates.retain(|(updated, _)| **updated != key);
+            inserts.retain(|(inserted, _)| **inserted != key);
         }
-        for (key, present) in inserts {
-            execute_insert(conn, table, key, present).await?;
-            changed[index].insert(key.clone());
-        }
+        changed[index].extend(updates.iter().map(|(key, _)| (*key).clone()));
+        changed[index].extend(inserts.iter().map(|(key, _)| (*key).clone()));
     }
+    Ok(Written { changed, refusals })
+}
 
-    let mut materialized = Materialized::default();
+/// Writes a [`Plan`] into the domain tables, leaving out the rows of `kept`, lets hooks settle
+/// concurrent versions when `settles` says the caller could seal the settled values, then runs
+/// the registered hooks, and returns what changed. Nothing of the plan stays when a constraint
+/// refuses a write, and neither settling nor hooks run: they must see the rows that follow a
+/// refused row gone.
+pub(crate) async fn execute(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    plan: Plan,
+    kept: &BTreeSet<RowRef>,
+    settles: bool,
+    now_ms: u64,
+) -> SyncResult<Execution> {
+    let tables = engine.manifest().tables;
+    let plans: Vec<BTreeMap<String, Desired>> = tables
+        .iter()
+        .zip(plan.plans)
+        .map(|(table, plan)| {
+            plan.into_iter()
+                .filter(|(key, _)| !kept.contains(&(table.id, key.clone())))
+                .filter_map(|(key, desired)| desired.map(|desired| (key, desired)))
+                .collect()
+        })
+        .collect();
+
+    let mut savepoint = sqlx::Connection::begin(&mut *conn).await?;
+    let Written {
+        mut changed,
+        refusals,
+    } = write_plans(engine, &mut savepoint, &plans, plan.touched).await?;
+    if refusals
+        .iter()
+        .any(|refusal| refusal.kind == RefusalKind::Hidden)
+    {
+        savepoint.rollback().await?;
+        return Ok(Execution::Refused(refusals));
+    }
+    savepoint.commit().await?;
+
+    let mut materialized = Materialized {
+        refusals,
+        ..Materialized::default()
+    };
     if settles {
         settle(
             engine,
@@ -1065,5 +1257,5 @@ pub(crate) async fn execute(
         .map(|(table, _)| table.name)
         .collect();
     materialized.notices = notices.0.into_iter().collect();
-    Ok(materialized)
+    Ok(Execution::Done(materialized))
 }

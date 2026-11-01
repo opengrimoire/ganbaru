@@ -195,5 +195,6 @@ fn column_type(ty: ColumnType) -> String {
         ColumnType::OptionalTimestamp => "optional_timestamp".to_string(),
         ColumnType::OrderKey => "order_key".to_string(),
         ColumnType::OptionalRowKey => "optional_row_key".to_string(),
+        ColumnType::RowKey => "row_key".to_string(),
     }
 }

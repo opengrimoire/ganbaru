@@ -571,6 +571,13 @@ const fn optional_timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -643,7 +650,7 @@ pub const FOLDERS: TableSpec = TableSpec {
         reference(
             folder_group::PARENT,
             "parent",
-            &[row_key("parent_folder_id")],
+            &[optional_row_key("parent_folder_id")],
             FOLDERS_TABLE,
             OnDelete::SetNull,
         ),
@@ -691,9 +698,9 @@ pub const PAGES: TableSpec = TableSpec {
             "placement",
             MergeKind::Register,
             &[
-                row_key("child_block_id"),
-                row_key("parent_data_source_id"),
-                row_key("folder_id"),
+                optional_row_key("child_block_id"),
+                optional_row_key("parent_data_source_id"),
+                optional_row_key("folder_id"),
             ],
             &[
                 reference_column("child_block_id", BLOCKS_TABLE, OnDelete::Cascade),
@@ -708,14 +715,14 @@ pub const PAGES: TableSpec = TableSpec {
         reference(
             page_group::PROJECT,
             "project",
-            &[row_key("project_id")],
+            &[optional_row_key("project_id")],
             PROJECTS_TABLE,
             OnDelete::SetNull,
         ),
         reference(
             page_group::ROW_PARENT,
             "row_parent",
-            &[row_key("parent_row_page_id")],
+            &[optional_row_key("parent_row_page_id")],
             PAGES_TABLE,
             OnDelete::SetNull,
         ),
@@ -822,7 +829,10 @@ pub const BLOCKS: TableSpec = TableSpec {
             block_group::PLACEMENT,
             "placement",
             MergeKind::Register,
-            &[row_key("parent_page_id"), row_key("parent_block_id")],
+            &[
+                optional_row_key("parent_page_id"),
+                optional_row_key("parent_block_id"),
+            ],
             &[
                 reference_column("parent_page_id", PAGES_TABLE, OnDelete::Cascade),
                 reference_column("parent_block_id", BLOCKS_TABLE, OnDelete::Cascade),
@@ -1020,7 +1030,7 @@ pub const DATA_SOURCES: TableSpec = TableSpec {
         reference(
             data_source_group::DEFAULT_TEMPLATE,
             "default_template",
-            &[row_key("default_template_id")],
+            &[optional_row_key("default_template_id")],
             DATA_SOURCE_TEMPLATES_TABLE,
             OnDelete::SetNull,
         ),
@@ -1085,7 +1095,7 @@ pub const DATA_SOURCE_TEMPLATES: TableSpec = TableSpec {
         reference(
             data_source_template_group::SOURCE,
             "source",
-            &[row_key("source_page_id")],
+            &[optional_row_key("source_page_id")],
             PAGES_TABLE,
             OnDelete::SetNull,
         ),
@@ -1122,7 +1132,7 @@ pub const PAGE_TEMPLATES: TableSpec = TableSpec {
         reference(
             page_template_group::SOURCE,
             "source",
-            &[row_key("source_page_id")],
+            &[optional_row_key("source_page_id")],
             PAGES_TABLE,
             OnDelete::SetNull,
         ),
@@ -1368,8 +1378,8 @@ pub const THREADS: TableSpec = TableSpec {
             "created",
             &[
                 text("parent_type", MAX_NAME_CHARS),
-                row_key("parent_page_id"),
-                row_key("parent_block_id"),
+                optional_row_key("parent_page_id"),
+                optional_row_key("parent_block_id"),
                 CREATED_TIME,
             ],
             &[
@@ -1550,9 +1560,9 @@ pub const SUGGESTIONS: TableSpec = TableSpec {
             &[
                 text("status", MAX_NAME_CHARS),
                 optional_timestamp("accepted_at"),
-                row_key("accepted_by"),
+                optional_row_key("accepted_by"),
                 optional_timestamp("rejected_at"),
-                row_key("rejected_by"),
+                optional_row_key("rejected_by"),
             ],
             &[
                 reference_column("accepted_by", LOCAL_USERS_TABLE, OnDelete::SetNull),

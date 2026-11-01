@@ -61,14 +61,17 @@ pub(crate) fn column_value(ty: ColumnType, field: &Field) -> bool {
         ColumnType::OrderKey => {
             is_text_without_nul(field).is_some_and(|text| OrderKey::parse(text).is_ok())
         }
-        ColumnType::OptionalRowKey => match field {
-            Field::Null => true,
-            Field::Text(text) => {
-                text.len() <= MAX_ROW_KEY_BYTES && RowKey::new(text.as_str()).is_ok()
-            }
-            _ => false,
-        },
+        ColumnType::OptionalRowKey => *field == Field::Null || is_row_key_text(field),
+        ColumnType::RowKey => is_row_key_text(field),
     }
+}
+
+/// Whether a field is text that can key a row.
+fn is_row_key_text(field: &Field) -> bool {
+    matches!(
+        field,
+        Field::Text(text) if text.len() <= MAX_ROW_KEY_BYTES && RowKey::new(text.as_str()).is_ok()
+    )
 }
 
 /// Checks a group value against its storage, column rules, and the table's adapter.
@@ -160,7 +163,7 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
     }
     if writes_every_group && let Some(adapter) = engine.adapter(table) {
         adapter
-            .validate_row(table.id, &change.groups)
+            .validate_row(table.id, &change.row, &change.groups)
             .map_err(|error| error.0)?;
     }
     Ok(())

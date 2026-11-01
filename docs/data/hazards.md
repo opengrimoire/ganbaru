@@ -116,3 +116,9 @@ A message in a restricted channel is referenced from a broader channel whose par
 A scheduled phone event or cached phase projection must not generate running state, focus history, or phase-dependent enforcement while a desktop is unavailable. Silence from a linked device will mean unavailable status, never inferred focus or idle.
 
 **Governed by:** [Focus authority](../algorithms/pomodoro/focus-authority.md) and invariant 16.
+
+## 18. A domain constraint meets a replicated row
+
+Every linked device can write, and a CHECK, trigger, or foreign key on a replicated table judges what apply writes. A constraint that stopped apply would let one signed row hold a vault's sync until the row is fixed. Every aborting trigger on a replicated table is classified in the trigger coverage test (`every_applier_visible_trigger_is_classified`): mirrored by a validation rule, guaranteed by hiding, or left to the refusal net. A trigger left to the net can refuse on one replica and not on another when it reads state; merge state still stays identical.
+
+**Governed by:** [Refused rows](../algorithms/sync/README.md#refused-rows).

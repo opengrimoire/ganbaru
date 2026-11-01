@@ -428,6 +428,22 @@ fn stale_rows_and_restated_groups_keep_one_bounded_entry_each() {
                 .await;
             assert_eq!(result.is_ok(), accepted, "{reason}");
         }
+
+        let refused = "INSERT INTO sync_refused_rows (table_id, row_key, kind, reason, attempt)
+                       VALUES (1, ?, ?, 'a CHECK refused the row', 1)";
+        for (row, kind, accepted, reason) in [
+            ("row-a", "hidden", true, "a hidden row records its refusal"),
+            ("row-b", "kept", true, "a kept row records its refusal"),
+            ("row-a", "kept", false, "a row is refused once"),
+            ("row-c", "stale", false, "a refusal is hidden or kept"),
+        ] {
+            let result = sqlx::query(refused)
+                .bind(row)
+                .bind(kind)
+                .execute(&pool)
+                .await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
     });
 }
 

@@ -23,7 +23,7 @@
 //! outranks the other active states.
 
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
-use ganbaru_sync_contracts::{Field, GroupId, OrderKey, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
@@ -61,6 +61,10 @@ pub const MIN_TIMESTAMP_CHARS: usize = 20;
 
 /// Participant kinds.
 pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
+/// Participant kind of the local user.
+const LOCAL_USER_KIND: &str = "local_user";
+/// The key the baseline seeds for the local user, the only one the kind may hold.
+pub const LOCAL_OWNER_PARTICIPANT_KEY: &str = "participant:local-owner";
 /// Teammate safety modes, least restrictive first. Custom defers to the
 /// provider's own configuration, which can grant anything, so it ranks lowest.
 pub const SAFETY_MODES: [&str; 4] = [
@@ -299,6 +303,19 @@ fn current_pair(
         (Some(_), copied) => one_of(copied, allowed, what),
         (None, _) => Err(AdapterError(what)),
     }
+}
+
+/// Refuses a local user under any key but the seeded one.
+fn validate_participant_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let local_user = groups
+        .iter()
+        .find(|value| value.group == participant_group::CREATED)
+        .and_then(|value| value.value.fields().first())
+        .is_some_and(|kind| matches!(kind, Field::Text(kind) if kind == LOCAL_USER_KIND));
+    if local_user && row.as_str() != LOCAL_OWNER_PARTICIPANT_KEY {
+        return Err(AdapterError("chat local user key"));
+    }
+    Ok(())
 }
 
 fn validate_participant(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
@@ -1268,6 +1285,19 @@ impl DomainAdapter for ChatAdapter {
             assignment_priority(value.fields())
         } else {
             0
+        }
+    }
+
+    fn validate_row(
+        &self,
+        table: TableId,
+        row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
+        if table == PARTICIPANTS_TABLE {
+            validate_participant_row(row, groups)
+        } else {
+            Ok(())
         }
     }
 

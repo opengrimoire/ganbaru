@@ -6,6 +6,9 @@ use crate::workspace::{
 };
 use sqlx::{Row, SqlitePool};
 
+/// Lists every readable working folder. Folder rows replicate between devices, so a row that does
+/// not parse is logged and left out rather than failing the list for all projects. Query errors
+/// stay fatal.
 pub async fn list_workspaces(pool: &SqlitePool) -> ChatResult<Vec<ProjectWorkingFolder>> {
     let rows = sqlx::query(
         "SELECT id, project_id, display_name, kind, managed_relative_path, sort_order,
@@ -16,7 +19,21 @@ pub async fn list_workspaces(pool: &SqlitePool) -> ChatResult<Vec<ProjectWorking
     .fetch_all(pool)
     .await
     .map_err(persistence_error)?;
-    rows.into_iter().map(row_to_workspace).collect()
+    let mut folders = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row.try_get::<String, _>("id");
+        match row_to_workspace(row) {
+            Ok(folder) => folders.push(folder),
+            Err(error) => {
+                eprintln!(
+                    "Skipped project working folder {:?}: {}",
+                    id.unwrap_or_default(),
+                    error.message
+                );
+            }
+        }
+    }
+    Ok(folders)
 }
 
 pub async fn read_workspace(

@@ -136,6 +136,20 @@ async fn list_workspaces_skips_a_row_that_does_not_parse() {
         .await
         .expect("an unreadable row must not fail the list");
 
-    let ids: Vec<&str> = folders.iter().map(|folder| folder.id.as_str()).collect();
+    let ids: Vec<&str> = folders
+        .iter()
+        .filter(|folder| folder.project_id == "project-removal")
+        .map(|folder| folder.id.as_str())
+        .collect();
     assert_eq!(ids, ["working-folder:project-removal", EXTERNAL_FOLDER_ID]);
+}
+
+#[tokio::test]
+async fn list_workspaces_keeps_query_errors_fatal() {
+    let pool = migrated_pool().await;
+    pool.close().await;
+
+    let error = list_workspaces(&pool).await.unwrap_err();
+
+    assert_eq!(error.code, ChatErrorCode::Persistence);
 }

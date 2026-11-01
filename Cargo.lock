@@ -2158,6 +2158,7 @@ dependencies = [
  "ganbaru-db",
  "ganbaru-notes",
  "ganbaru-sync-contracts",
+ "ganbaru-working-folders",
  "serde",
  "serde_json",
  "sqlx",

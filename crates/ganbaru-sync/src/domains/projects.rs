@@ -9,7 +9,7 @@
 use std::fmt;
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
-use ganbaru_working_folders::UtcTimestamp;
+use ganbaru_working_folders::{UtcTimestamp, managed_project_relative_path};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -425,13 +425,10 @@ fn validate_project(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     }
 }
 
-/// A managed relative path stays inside the project folder: relative, without a parent segment
-/// or a backslash.
-fn is_contained_relative_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains('\\')
-        && path.split('/').all(|segment| segment != "..")
+/// A managed folder stores the one path its project owns. Every device binds a managed folder only
+/// at that path, so admitting another would leave the row unusable on all of them.
+fn is_project_managed_path(project: &str, path: &str) -> bool {
+    managed_project_relative_path(project).is_ok_and(|expected| expected == path)
 }
 
 /// A working folder timestamp every reader of the row can parse. Reads parse these columns as
@@ -451,13 +448,13 @@ fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
         required(project, "project folder project")?;
         one_of(kind, allowed::FOLDER_KINDS, "project folder kind")?;
         folder_timestamp(created_at, "project folder creation time")?;
-        match (kind, path) {
-            (Field::Text(kind), Field::Text(path))
-                if kind == MANAGED_FOLDER_KIND && is_contained_relative_path(path) =>
+        match (project, kind, path) {
+            (Field::Text(project), Field::Text(kind), Field::Text(path))
+                if kind == MANAGED_FOLDER_KIND && is_project_managed_path(project, path) =>
             {
                 Ok(())
             }
-            (Field::Text(kind), Field::Null) if kind == "external" => Ok(()),
+            (_, Field::Text(kind), Field::Null) if kind == "external" => Ok(()),
             _ => Err(AdapterError("project folder path")),
         }
     } else if group == folder_group::REPOSITORY {
@@ -928,17 +925,6 @@ mod tests {
     }
 
     #[test]
-    fn managed_paths_stay_inside_the_project_folder() {
-        assert!(is_contained_relative_path("projects/abc"));
-        assert!(is_contained_relative_path("projects/a..b"));
-        assert!(!is_contained_relative_path("/projects/abc"));
-        assert!(!is_contained_relative_path("projects/../abc"));
-        assert!(!is_contained_relative_path(".."));
-        assert!(!is_contained_relative_path("projects\\abc"));
-        assert!(!is_contained_relative_path(""));
-    }
-
-    #[test]
     fn managed_folder_path_must_match_its_project() {
         let adapter = ProjectsAdapter;
         let admits = |project: &str, kind: &str, path: Field| {
@@ -955,19 +941,29 @@ mod tests {
         };
 
         assert!(admits("project", "managed", text("projects/project")));
+        assert!(admits("a..b", "managed", text("projects/a..b")));
         assert!(admits("project", "external", Field::Null));
         for unbound in [
+            "",
             "x",
+            "..",
             "project",
             "projects/other",
             "projects/project/nested",
             "projects/project/",
             "./projects/project",
+            "/projects/project",
+            "projects/../project",
+            "projects\\project",
         ] {
             assert!(!admits("project", "managed", text(unbound)), "{unbound}");
         }
         assert!(!admits("a/b", "managed", text("projects/a/b")));
-        assert!(!admits("project:one", "managed", text("projects/project:one")));
+        assert!(!admits(
+            "project:one",
+            "managed",
+            text("projects/project:one")
+        ));
     }
 
     #[test]

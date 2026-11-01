@@ -1,6 +1,8 @@
 //! Authorized Chat-facing integration for working-folder Markdown files.
 
-use crate::chat::workspace::commands::authorize_working_folder;
+use crate::chat::workspace::commands::{
+    authorize_working_folder, bind_managed_folders_for_listing,
+};
 use crate::chat::workspace::files::{
     ProjectWorkingFolderFilePreview, preview_workspace_file_within, save_workspace_file_within,
 };
@@ -75,12 +77,12 @@ pub async fn notes_list_working_markdown<R: Runtime>(
         .await
         .map_err(persistence_error)?;
     let folders = workspaces::list_workspaces(&pool).await?;
-    for folder in folders
-        .iter()
-        .filter(|folder| folder.project_id == project_id && folder.archived_at.is_none())
-    {
-        ensure_managed_working_folder_binding(&app, folder)?;
-    }
+    bind_managed_folders_for_listing(
+        &app,
+        folders
+            .iter()
+            .filter(|folder| folder.project_id == project_id && folder.archived_at.is_none()),
+    );
     let mut roots = Vec::new();
     let mut unavailable = Vec::new();
     for folder in folders

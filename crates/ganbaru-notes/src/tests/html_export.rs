@@ -1,6 +1,281 @@
 use super::helpers::*;
 
 const LOCAL_ASSET_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const UNSAFE_MEDIA_CODE: &str = "html_export_unsafe_media_skipped";
+const BLOCK_G: &str = "12121212-1212-4212-8212-121212121212";
+
+/// Creates one paragraph per id after `BLOCK_A`, to be overwritten as replicated rows.
+async fn append_placeholder_blocks(pool: &SqlitePool, ids: &[&str]) {
+    writes::append_block_children(
+        pool,
+        NoteAppendBlockChildren {
+            parent: page_parent(PAGE_A),
+            after: Some(BLOCK_A.to_string()),
+            children: ids
+                .iter()
+                .map(|id| block(id, "paragraph", paragraph_payload("placeholder")))
+                .collect(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// Stores a media row directly, as apply does, which skips the checks of the local write path.
+async fn store_replicated_media(
+    pool: &SqlitePool,
+    id: &str,
+    block_type: &str,
+    payload: serde_json::Value,
+) {
+    let payload = payload.to_string();
+    sqlx::query(
+        "UPDATE notes_blocks
+         SET type = ?, attrs = json_remove(?, '$.caption'), text = json_object('caption', json_extract(?, '$.caption'))
+         WHERE id = ?",
+    )
+    .bind(block_type)
+    .bind(&payload)
+    .bind(&payload)
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Exports the page and returns its `index.html` with the export diagnostics.
+async fn export_index(pool: &SqlitePool, include_assets: bool) -> (String, Vec<serde_json::Value>) {
+    let export = serde_json::to_value(
+        transfers::html_export::export_page(
+            pool,
+            NoteHtmlExportRequest {
+                page_id: PAGE_A.to_string(),
+                include_page_tree: Some(false),
+                include_comments: Some(false),
+                include_resolved_comments: Some(false),
+                include_assets: Some(include_assets),
+                include_database_views: Some(false),
+            },
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let index = export["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "index.html")
+        .and_then(|file| file["contents"].as_str())
+        .unwrap()
+        .to_string();
+    (index, export["diagnostics"].as_array().unwrap().clone())
+}
+
+fn has_diagnostic(diagnostics: &[serde_json::Value], code: &str, block_id: &str) -> bool {
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == code && diagnostic["block_id"] == block_id)
+}
+
+#[test]
+fn html_export_skips_javascript_media_url() {
+    crate::test_block_on(async {
+        let hostile = [
+            (BLOCK_B, "pdf", "javascript:alert(1)"),
+            (BLOCK_C, "file", " JavaScript:alert(2)"),
+            (BLOCK_D, "image", "data:text/html,alert(3)"),
+            (BLOCK_E, "video", "vbscript:alert(4)"),
+            (BLOCK_F, "audio", "file:///etc/passwd"),
+            (BLOCK_G, "file", "java\tscript:alert(5)"),
+        ];
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let ids = hostile.iter().map(|row| row.0).collect::<Vec<_>>();
+        append_placeholder_blocks(&pool, &ids).await;
+        for (id, block_type, url) in hostile {
+            let label = format!("Label {id}");
+            store_replicated_media(&pool, id, block_type, media_payload(url, &label, None)).await;
+        }
+
+        let (index, diagnostics) = export_index(&pool, false).await;
+
+        for (id, block_type, url) in hostile {
+            assert!(
+                !index.contains(url.trim()),
+                "{block_type} wrote {url} into the export"
+            );
+            assert!(
+                index.contains(&format!("<p>Label {id}</p>")),
+                "{block_type} keeps its label as plain text"
+            );
+            assert!(
+                has_diagnostic(&diagnostics, UNSAFE_MEDIA_CODE, id),
+                "{block_type} reports the skipped URL"
+            );
+        }
+    });
+}
+
+#[test]
+fn html_export_skips_a_file_upload_reference() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        append_placeholder_blocks(&pool, &[BLOCK_B]).await;
+        store_replicated_media(
+            &pool,
+            BLOCK_B,
+            "file",
+            json!({
+                "caption": [rich_text("Upload")],
+                "type": "file_upload",
+                "file_upload": { "id": "upload-1" }
+            }),
+        )
+        .await;
+
+        let (index, diagnostics) = export_index(&pool, false).await;
+
+        assert!(!index.contains("file-upload:"));
+        assert!(index.contains("<p>Upload</p>"));
+        assert!(has_diagnostic(&diagnostics, UNSAFE_MEDIA_CODE, BLOCK_B));
+    });
+}
+
+#[test]
+fn html_export_reports_an_empty_media_url_as_missing() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        append_placeholder_blocks(&pool, &[BLOCK_B]).await;
+        store_replicated_media(&pool, BLOCK_B, "image", media_payload(" ", "Pending", None)).await;
+
+        let (index, diagnostics) = export_index(&pool, false).await;
+
+        assert!(!index.contains("<img"));
+        assert!(index.contains("<p>Pending</p>"));
+        assert!(has_diagnostic(
+            &diagnostics,
+            "html_export_media_missing_reference",
+            BLOCK_B
+        ));
+        assert!(!has_diagnostic(&diagnostics, UNSAFE_MEDIA_CODE, BLOCK_B));
+    });
+}
+
+#[test]
+fn html_export_keeps_asset_and_web_media_links() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        append_placeholder_blocks(&pool, &[BLOCK_B, BLOCK_C, BLOCK_D, BLOCK_E, BLOCK_F]).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_A),
+                after: Some(BLOCK_F.to_string()),
+                children: vec![block(
+                    BLOCK_G,
+                    "pdf",
+                    local_media_payload(
+                        "notes/files/local.pdf",
+                        "application/pdf",
+                        12,
+                        LOCAL_ASSET_SHA,
+                        "Local PDF",
+                        Some("local.pdf"),
+                    ),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+        for (id, block_type, url) in [
+            (BLOCK_B, "image", "https://example.com/a.png"),
+            (BLOCK_C, "video", "https://example.com/a.mp4"),
+            (BLOCK_D, "audio", "http://example.com/a.mp3"),
+            (BLOCK_E, "pdf", "https://example.com/a.pdf"),
+            (BLOCK_F, "file", "HTTPS://example.com/a.txt"),
+        ] {
+            store_replicated_media(&pool, id, block_type, media_payload(url, "Web", None)).await;
+        }
+
+        let (index, diagnostics) = export_index(&pool, true).await;
+
+        assert!(index.contains("<img src=\"https://example.com/a.png\""));
+        assert!(index.contains("<video controls src=\"https://example.com/a.mp4\""));
+        assert!(index.contains("<audio controls src=\"http://example.com/a.mp3\""));
+        assert!(index.contains("<a href=\"https://example.com/a.pdf\""));
+        assert!(index.contains("<a href=\"HTTPS://example.com/a.txt\""));
+        assert!(index.contains("<a href=\"assets/notes/files/local.pdf\""));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["code"] != UNSAFE_MEDIA_CODE)
+        );
+    });
+}
+
+#[test]
+fn html_export_renders_an_excluded_asset_as_its_label() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_A),
+                after: Some(BLOCK_A.to_string()),
+                children: vec![block(
+                    BLOCK_B,
+                    "file",
+                    local_media_payload(
+                        "notes/files/local.txt",
+                        "text/plain",
+                        12,
+                        LOCAL_ASSET_SHA,
+                        "Local file",
+                        Some("local.txt"),
+                    ),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+
+        let (index, diagnostics) = export_index(&pool, false).await;
+
+        assert!(!index.contains("ganbaru-asset:"));
+        assert!(index.contains("<p>Local file</p>"));
+        assert!(has_diagnostic(
+            &diagnostics,
+            "html_export_local_asset_not_included",
+            BLOCK_B
+        ));
+        assert!(!has_diagnostic(&diagnostics, UNSAFE_MEDIA_CODE, BLOCK_B));
+    });
+}
+
+#[test]
+fn html_export_template_sets_script_policy() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+
+        let (index, _) = export_index(&pool, false).await;
+
+        let policy = index
+            .find(
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'none'; object-src 'none'; base-uri 'none'\">",
+            )
+            .expect("the page carries the script policy");
+        assert!(
+            policy < index.find("<title>").unwrap(),
+            "the policy precedes everything it governs"
+        );
+    });
+}
 
 #[test]
 fn html_export_writes_page_tree_assets_comments_and_database_metadata() {

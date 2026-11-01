@@ -273,6 +273,18 @@ fn bind_managed_folder_for_listing(app: &tauri::AppHandle, workspace: &ProjectWo
     }
 }
 
+#[cfg(test)]
+pub(crate) fn bind_active_folders<'folder>(
+    folders: impl IntoIterator<Item = &'folder ProjectWorkingFolder>,
+    bind: impl Fn(&ProjectWorkingFolder) -> ChatResult<()>,
+) {
+    for folder in folders {
+        if bind(folder).is_err() {
+            return;
+        }
+    }
+}
+
 pub(crate) async fn reconcile_working_folder_binding_for_id(
     app: &tauri::AppHandle,
     db_url: &str,

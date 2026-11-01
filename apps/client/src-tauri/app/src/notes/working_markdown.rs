@@ -333,3 +333,53 @@ fn persistence_error<T>(_error: T) -> ChatError {
         true,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::chat::workspace::commands::bind_active_folders;
+    use crate::chat::workspace::{ProjectWorkingFolder, WorkingFolderKind};
+    use ganbaru_chat_contracts::models::{ChatError, ProjectWorkingFolderId, UtcTimestamp};
+    use ganbaru_working_folders::RepositoryKind;
+    use std::cell::RefCell;
+
+    fn managed_folder(id: &str, path: &str) -> ProjectWorkingFolder {
+        let timestamp = UtcTimestamp::new("2027-01-02T00:00:00.000Z").unwrap();
+        ProjectWorkingFolder {
+            id: ProjectWorkingFolderId::new(id).unwrap(),
+            project_id: "project".to_string(),
+            display_name: id.to_string(),
+            kind: WorkingFolderKind::Managed,
+            managed_relative_path: Some(path.to_string()),
+            sort_order: 0,
+            repository_kind: RepositoryKind::None,
+            repository_identity: None,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+            archived_at: None,
+            revision: 1,
+        }
+    }
+
+    #[test]
+    fn working_markdown_binding_failure_leaves_other_folders() {
+        let folders = [
+            managed_folder("working-folder:unbound", "x"),
+            managed_folder("working-folder:project", "projects/project"),
+            managed_folder("working-folder:extra", "projects/project"),
+        ];
+        let bound = RefCell::new(Vec::new());
+
+        bind_active_folders(&folders, |folder| {
+            if folder.managed_relative_path.as_deref() == Some("x") {
+                return Err(ChatError::validation("workingFolderPath", "unbound path"));
+            }
+            bound.borrow_mut().push(folder.id.as_str().to_string());
+            Ok(())
+        });
+
+        assert_eq!(
+            bound.into_inner(),
+            ["working-folder:project", "working-folder:extra"]
+        );
+    }
+}

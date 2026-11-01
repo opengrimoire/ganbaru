@@ -939,6 +939,38 @@ mod tests {
     }
 
     #[test]
+    fn managed_folder_path_must_match_its_project() {
+        let adapter = ProjectsAdapter;
+        let admits = |project: &str, kind: &str, path: Field| {
+            let created = value(vec![
+                text(project),
+                text(kind),
+                path,
+                Field::Integer(0),
+                text("2027-01-02T00:00:00.000Z"),
+            ]);
+            adapter
+                .validate(FOLDERS_TABLE, folder_group::CREATED, &created)
+                .is_ok()
+        };
+
+        assert!(admits("project", "managed", text("projects/project")));
+        assert!(admits("project", "external", Field::Null));
+        for unbound in [
+            "x",
+            "project",
+            "projects/other",
+            "projects/project/nested",
+            "projects/project/",
+            "./projects/project",
+        ] {
+            assert!(!admits("project", "managed", text(unbound)), "{unbound}");
+        }
+        assert!(!admits("a/b", "managed", text("projects/a/b")));
+        assert!(!admits("project:one", "managed", text("projects/project:one")));
+    }
+
+    #[test]
     fn folder_timestamps_accept_only_rfc3339_utc() {
         let adapter = ProjectsAdapter;
         let created_group = |created_at: &str| {

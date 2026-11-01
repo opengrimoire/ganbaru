@@ -12,7 +12,7 @@ use ganbaru_contacts::{
 };
 use sqlx::SqlitePool;
 
-async fn migrated_memory_pool() -> SqlitePool {
+pub(super) async fn migrated_memory_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")

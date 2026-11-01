@@ -459,7 +459,7 @@ pub const RUNS: TableSpec = TableSpec {
 
 /// `pomodoro_segments`, published with their run. Segments stay rows because run events,
 /// block events, and adaptive rows reference them. Gated triggers keep at most one active
-/// segment and one open pause per segment.
+/// segment across open runs and one open pause per segment.
 pub const SEGMENTS: TableSpec = TableSpec {
     id: SEGMENTS_TABLE,
     name: "pomodoro_segments",

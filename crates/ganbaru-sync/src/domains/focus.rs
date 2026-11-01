@@ -57,8 +57,9 @@ pub mod allowed {
     pub const PHASES: &[&str] = &["focus", "short_break", "long_break"];
     /// `pomodoro_run_sequence_steps.break_phase`.
     pub const BREAK_PHASES: &[&str] = &["short_break", "long_break"];
-    /// `pomodoro_segments.status`.
-    pub const SEGMENT_STATUSES: &[&str] = &["active", "completed", "interrupted"];
+    /// `pomodoro_segments.status` of a published segment. A segment replicates only with its
+    /// closed run, and closing a run ends its active segment in the same transaction.
+    pub const PUBLISHED_SEGMENT_STATUSES: &[&str] = &["completed", "interrupted"];
     /// `pomodoro_segments.end_reason`.
     pub const SEGMENT_END_REASONS: &[&str] = &[
         "completed",
@@ -165,7 +166,11 @@ fn validate_segment(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group == segment_group::PHASE {
         let [_, phase, _, _, _, _, status, reason, _, _, _] = fields(value, "focus segment")?;
         one_of(phase, allowed::PHASES, "focus segment phase")?;
-        one_of(status, allowed::SEGMENT_STATUSES, "focus segment status")?;
+        one_of(
+            status,
+            allowed::PUBLISHED_SEGMENT_STATUSES,
+            "focus segment status",
+        )?;
         optional_one_of(
             reason,
             allowed::SEGMENT_END_REASONS,

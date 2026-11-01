@@ -124,16 +124,17 @@ pub(crate) async fn read_mcp_status(
         }
     }
 
+    let configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
+    let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     let root = workspace.canonical_path.clone();
     let workspace = crate::chat::workspace::commands::settle_project_configuration(
         &app,
         &root,
         workspace,
         crate::chat::workspace::commands::UndecidedProjectConfiguration::Restrict,
+        driver.project_configuration_restriction(),
     )
     .await?;
-    let configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
-    let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     driver
         .read_mcp_status(
             McpStatusRequest {

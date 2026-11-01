@@ -247,3 +247,25 @@ fn worktrees_load_project_configuration_only_when_the_folder_decision_covers_it(
         ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Restricted)
     );
 }
+
+#[test]
+fn a_project_configuration_refusal_keeps_folder_controlled_names_bounded() {
+    let long = format!(".cursor/{}", "x".repeat(10_000));
+    let mut names = vec![long.clone(), ".cursor/bad\nline".to_string()];
+    names.extend((0..100).map(|index| format!(".opencode/{index:03}")));
+    let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "{}")).collect();
+
+    let error = project_configuration_trust_required_error(&folder_id(), &provider_entries(&files));
+
+    assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+    assert!(error.message.len() < 2_000, "{}", error.message);
+    assert!(!error.message.contains(&long));
+    assert!(!error.message.contains('\n'));
+    assert!(
+        error.message.ends_with(", and 94 more"),
+        "{}",
+        error.message
+    );
+    let details = error.details.expect("the error must name the folder");
+    assert_eq!(details["workingFolderId"], folder_id().as_str());
+}

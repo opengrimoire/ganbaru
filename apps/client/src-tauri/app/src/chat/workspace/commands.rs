@@ -7,8 +7,9 @@ use super::{
     automatic_trust_record, check_project_configuration, check_trust_decision,
     ensure_managed_working_folder_binding, filesystem_identity, initialized_repository_identity,
     open_authorized_workspace, prepare_workspace_binding, probe_repository,
-    remove_active_device_binding, store_active_device_binding, trust_decision_required_error,
-    trust_record, validate_external_folder_outside_vault, workspace_read,
+    project_configuration_trust_required_error, remove_active_device_binding,
+    store_active_device_binding, trust_decision_required_error, trust_record,
+    validate_external_folder_outside_vault, workspace_read,
 };
 use crate::chat::revocation::ActiveRunSelector;
 use crate::db;
@@ -329,12 +330,15 @@ async fn require_trust_decision<R: Runtime>(
 /// worktree environment `launch` differs from it. When no decision covers the
 /// folder's current provider configuration, `undecided` chooses between
 /// failing with [`trust_decision_required_error`] so the user can decide and
-/// retry, and starting restricted for turns nobody is present to answer.
+/// retry, and starting restricted for turns nobody is present to answer. A
+/// provider whose `restriction` is unavailable never starts restricted in a
+/// launch folder that holds configuration.
 pub async fn settle_project_configuration<R: Runtime>(
     app: &tauri::AppHandle<R>,
     root: &Path,
     mut launch: AuthorizedWorkingFolder,
     undecided: UndecidedProjectConfiguration,
+    restriction: ProjectConfigurationRestriction,
 ) -> ChatResult<AuthorizedWorkingFolder> {
     let root_entries = provider_configuration_entries(root.to_path_buf()).await?;
     let launch_entries = if launch.canonical_path == root {
@@ -349,30 +353,41 @@ pub async fn settle_project_configuration<R: Runtime>(
         &root_entries,
         &launch_entries,
         undecided,
-        ProjectConfigurationRestriction::Enforced,
+        restriction,
     )?;
     Ok(launch)
 }
 
 /// Decides the project configuration access of one provider start from this
-/// device's trust record.
+/// device's trust record, refusing a restricted start the provider cannot
+/// enforce while `launch` holds configuration.
 fn resolve_project_configuration(
     scope: &WorkingFolderDeviceScope,
     working_folder_id: &ProjectWorkingFolderId,
     root: &ProviderConfigurationEntries,
     launch: &ProviderConfigurationEntries,
     undecided: UndecidedProjectConfiguration,
-    _restriction: ProjectConfigurationRestriction,
+    restriction: ProjectConfigurationRestriction,
 ) -> ChatResult<ProjectConfigurationAccess> {
-    match check_project_configuration(scope, working_folder_id, root, launch) {
-        ProjectConfigurationCheck::Decided(access) => Ok(access),
+    let access = match check_project_configuration(scope, working_folder_id, root, launch) {
+        ProjectConfigurationCheck::Decided(access) => access,
         ProjectConfigurationCheck::Required => match undecided {
             UndecidedProjectConfiguration::Ask => {
-                Err(trust_decision_required_error(working_folder_id))
+                return Err(trust_decision_required_error(working_folder_id));
             }
-            UndecidedProjectConfiguration::Restrict => Ok(ProjectConfigurationAccess::Restricted),
+            UndecidedProjectConfiguration::Restrict => ProjectConfigurationAccess::Restricted,
         },
+    };
+    if access == ProjectConfigurationAccess::Restricted
+        && restriction == ProjectConfigurationRestriction::Unavailable
+        && !launch.is_empty()
+    {
+        return Err(project_configuration_trust_required_error(
+            working_folder_id,
+            launch,
+        ));
     }
+    Ok(access)
 }
 
 /// What a provider start does when no decision covers the folder's project
@@ -1226,7 +1241,10 @@ mod tests {
                 UndecidedProjectConfiguration::Ask,
                 ProjectConfigurationRestriction::Unavailable,
             );
-            assert_refused_naming(declined.expect_err("a declined folder must be refused"), file);
+            assert_refused_naming(
+                declined.expect_err("a declined folder must be refused"),
+                file,
+            );
         }
     }
 

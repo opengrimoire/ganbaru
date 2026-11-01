@@ -366,6 +366,61 @@ pub fn trust_decision_required_error(working_folder_id: &ProjectWorkingFolderId)
     error
 }
 
+/// Reason a provider with no verified restriction cannot start in a folder
+/// whose project configuration this device has not trusted.
+pub const PROJECT_CONFIGURATION_TRUST_REQUIRED_REASON: &str = "This provider cannot skip project configuration, so it runs here only after this device trusts the folder in Project settings";
+/// Most file names [`project_configuration_trust_required_error`] lists.
+const MAX_REFUSED_PATHS_LISTED: usize = 8;
+/// Longest file name, in characters, that the refusal lists whole.
+const MAX_REFUSED_PATH_CHARACTERS: usize = 120;
+
+/// Error returned when a provider that cannot enforce a restricted launch
+/// would start in a folder holding configuration nobody trusted. It keeps the
+/// code and details of [`trust_decision_required_error`] so a user start can
+/// ask and retry, and the message becomes the reason of a failed assignment,
+/// which replicates, so the folder-controlled names in it stay bounded.
+pub fn project_configuration_trust_required_error(
+    working_folder_id: &ProjectWorkingFolderId,
+    launch: &ProviderConfigurationEntries,
+) -> ChatError {
+    let listed = launch
+        .paths()
+        .take(MAX_REFUSED_PATHS_LISTED)
+        .map(refused_path_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = launch
+        .paths()
+        .len()
+        .saturating_sub(MAX_REFUSED_PATHS_LISTED);
+    let suffix = if remaining > 0 {
+        format!(", and {remaining} more")
+    } else {
+        String::new()
+    };
+    let mut error = trust_decision_required_error(working_folder_id);
+    error.message = format!("{PROJECT_CONFIGURATION_TRUST_REQUIRED_REASON}: {listed}{suffix}");
+    error
+}
+
+fn refused_path_label(path: &str) -> String {
+    let mut label: String = path
+        .chars()
+        .take(MAX_REFUSED_PATH_CHARACTERS)
+        .map(|character| {
+            if character.is_control() {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                character
+            }
+        })
+        .collect();
+    if path.chars().count() > MAX_REFUSED_PATH_CHARACTERS {
+        label.push('…');
+    }
+    label
+}
+
 pub fn resolve_workspace_relative_path(
     authorized: &AuthorizedWorkingFolder,
     relative_path: &str,

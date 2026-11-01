@@ -11,9 +11,11 @@
 //!
 //! The provider digest covers project provider configuration that can run
 //! commands: Claude project settings, project MCP servers, and the skills,
-//! agents, and commands whose definitions can carry hooks or shell steps.
-//! Instructions such as `CLAUDE.md` are left out. Entries are digested per
-//! file so a worktree can be checked against the folder decision.
+//! agents, and commands whose definitions can carry hooks or shell steps,
+//! Codex project configuration, and the OpenCode, Cursor, and Grok project
+//! files and folders. Instructions such as `CLAUDE.md` are left out. Entries
+//! are digested per file so a worktree can be checked against the folder
+//! decision.
 
 use super::submodules::{Submodule, populated_submodules};
 use super::{
@@ -47,18 +49,25 @@ const PROVIDER_CONFIGURATION_FILES: &[&str] = &[
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".mcp.json",
+    "opencode.json",
+    "opencode.jsonc",
+    ".cursorrules",
 ];
 /// Provider directories, relative to the folder root, whose definitions can
-/// carry hooks, shell steps, or MCP servers. Codex keeps its project
-/// configuration, hooks, and rules under `.codex`.
+/// carry hooks, shell steps, plugins, or MCP servers. Codex keeps its project
+/// configuration, hooks, and rules under `.codex`, and the other providers
+/// under their own folders.
 const PROVIDER_CONFIGURATION_DIRECTORIES: &[&str] = &[
     ".claude/skills",
     ".claude/agents",
     ".claude/commands",
     ".codex",
+    ".opencode",
+    ".cursor",
+    ".grok",
 ];
 const GIT_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-git-v1";
-const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v3";
+const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v4";
 
 /// SHA-256 digest of folder configuration covered by a trust decision.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -207,6 +216,12 @@ impl ProviderConfigurationEntries {
     /// True when the folder has no project provider configuration.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Relative paths of the entries, in sorted order. The folder controls
+    /// these names, so they are untrusted text.
+    pub fn paths(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
 
     /// True when every entry here exists in `other` with the same content, so

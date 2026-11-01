@@ -3238,16 +3238,16 @@ fn the_higher_card_revision_wins_a_concurrent_regeneration() {
             )
             .bind(nonce)
         };
-        rotate("BBBBBBBBBBBBBBBBBBBBBB")
+        rotate("BBBBBBBBBBBBBBBBBBBBBA")
             .execute(&hub_replica.pool)
             .await
             .expect("hub rotate");
-        rotate("CCCCCCCCCCCCCCCCCCCCCC")
+        rotate("CCCCCCCCCCCCCCCCCCCCCA")
             .execute(&hub_replica.pool)
             .await
             .expect("hub rotate again");
         hub_replica.seal().await;
-        rotate("DDDDDDDDDDDDDDDDDDDDDD")
+        rotate("DDDDDDDDDDDDDDDDDDDDDA")
             .execute(&phone.pool)
             .await
             .expect("phone rotate");
@@ -3259,7 +3259,7 @@ fn the_higher_card_revision_wins_a_concurrent_regeneration() {
                     .fetch_one(&replica.pool)
                     .await
                     .expect("read card");
-            assert_eq!(card, ("CCCCCCCCCCCCCCCCCCCCCC".to_string(), 3));
+            assert_eq!(card, ("CCCCCCCCCCCCCCCCCCCCCA".to_string(), 3));
         }
         hub_replica.close().await;
         phone.close().await;

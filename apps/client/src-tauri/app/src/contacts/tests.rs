@@ -41,7 +41,7 @@ impl Person {
         random_bytes(&mut card_nonce).unwrap();
         let identity = LocalIdentity {
             public_key: key.public_key(),
-            card_nonce,
+            card_nonce: Some(card_nonce),
             card_revision: 1,
             key: None,
         };
@@ -52,13 +52,18 @@ impl Person {
         }
     }
 
+    /// The nonce of the card this person hands out.
+    fn nonce(&self) -> [u8; CARD_NONCE_BYTES] {
+        self.identity.card_nonce.unwrap()
+    }
+
     fn card(&self) -> SignedCard {
         sign_card(
             &ContactCard {
                 public_key: self.key.public_key(),
                 display_name: self.name.to_string(),
                 color: 7,
-                nonce: self.identity.card_nonce,
+                nonce: self.nonce(),
                 endpoint_hint: "127.0.0.1:43821".to_string(),
                 coordinator_fingerprint: Some([9u8; 32]),
                 issued_at_ms: 1_700_000_000_000,
@@ -93,10 +98,10 @@ async fn deliver(
         pool,
         &recipient.identity,
         store::now(),
-        &encode_nonce(&recipient.identity.card_nonce),
+        &encode_nonce(&recipient.nonce()),
         &requester.card().text(),
         request_id,
-        &requester.request_signature(&recipient.identity.card_nonce, request_id),
+        &requester.request_signature(&recipient.nonce(), request_id),
     )
     .await
     .unwrap()
@@ -175,6 +180,37 @@ async fn stale_nonce_is_rejected_as_revoked_without_a_row() {
 }
 
 #[tokio::test]
+async fn unreadable_own_nonce_is_rejected_as_revoked_without_a_row() {
+    let pool = migrated_memory_pool().await;
+    let mut recipient = Person::new("Recipient");
+    let requester = Person::new("Requester");
+    let handed_out = recipient.nonce();
+    recipient.identity.card_nonce = None;
+
+    let reply = requests::receive_request(
+        &pool,
+        &recipient.identity,
+        store::now(),
+        &encode_nonce(&handed_out),
+        &requester.card().text(),
+        "contact-old",
+        &requester.request_signature(&handed_out, "contact-old"),
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        reply,
+        PeerReply::Rejected {
+            code: CARD_REVOKED_CODE,
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(store::list_requests(&pool).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn request_signed_for_another_id_is_invalid() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");
@@ -184,10 +220,10 @@ async fn request_signed_for_another_id_is_invalid() {
         &pool,
         &recipient.identity,
         store::now(),
-        &encode_nonce(&recipient.identity.card_nonce),
+        &encode_nonce(&recipient.nonce()),
         &requester.card().text(),
         "contact-b",
-        &requester.request_signature(&recipient.identity.card_nonce, "contact-a"),
+        &requester.request_signature(&recipient.nonce(), "contact-a"),
     )
     .await
     .unwrap();
@@ -361,10 +397,10 @@ async fn handled_requests_are_deleted_after_the_retention_window() {
         &pool,
         &recipient.identity,
         later,
-        &encode_nonce(&recipient.identity.card_nonce),
+        &encode_nonce(&recipient.nonce()),
         &newer.card().text(),
         "contact-new",
-        &newer.request_signature(&recipient.identity.card_nonce, "contact-new"),
+        &newer.request_signature(&recipient.nonce(), "contact-new"),
     )
     .await
     .unwrap();

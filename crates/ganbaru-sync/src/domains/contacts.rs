@@ -5,7 +5,9 @@
 //! concurrent accept on another. A request answer outranks a pending state, and acceptance
 //! outranks every other answer. A rotated card outranks every card with a lower revision.
 
-use ganbaru_contacts::{is_stored_timestamp, is_valid_public_key_text, is_valid_request_window};
+use ganbaru_contacts::{
+    decode_nonce, is_stored_timestamp, is_valid_public_key_text, is_valid_request_window,
+};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -223,6 +225,9 @@ fn validate_card(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (card_group::CARD, [nonce, revision]) => {
             exact_chars(nonce, CARD_NONCE_CHARS, "contact card nonce")?;
+            if decode_nonce(text(nonce)?).is_none() {
+                return Err(AdapterError("contact card nonce encoding"));
+            }
             if (1..=MAX_CONTACT_CARD_REVISION).contains(&integer(revision)?) {
                 Ok(())
             } else {

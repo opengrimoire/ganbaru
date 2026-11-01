@@ -135,6 +135,7 @@ pub(crate) async fn sign_local_card<R: Runtime>(
     app: &AppHandle<R>,
     identity: &LocalIdentity,
 ) -> Result<SignedCard, ContactsError> {
+    let nonce = identity.readable_nonce()?;
     let profile = read_profile(app).await?;
     let key = identity.signing_key()?;
     let hint = resolve_delivery_hint(app);
@@ -142,7 +143,7 @@ pub(crate) async fn sign_local_card<R: Runtime>(
         public_key: identity.public_key,
         display_name: profile.display_name,
         color: profile.color,
-        nonce: identity.card_nonce,
+        nonce,
         endpoint_hint: hint.endpoint,
         coordinator_fingerprint: hint.coordinator_fingerprint,
         issued_at_ms: unix_time_ms(),
@@ -200,17 +201,21 @@ pub(crate) async fn rotate_card(
     .fetch_one(pool)
     .await
     .map_err(|error| format!("rotate contact card: {error}"))?;
-    identity.card_nonce = card_nonce;
+    identity.card_nonce = Some(card_nonce);
     identity.card_revision = revision;
     Ok(identity)
 }
 
-#[cfg(test)]
+/// Rotates the card when its stored nonce does not decode, so the fresh value replicates at a
+/// higher revision. A readable identity passes through unchanged.
 pub(crate) async fn heal_unreadable_nonce(
-    _pool: &SqlitePool,
+    pool: &SqlitePool,
     identity: LocalIdentity,
 ) -> Result<LocalIdentity, ContactsError> {
-    Ok(identity)
+    if identity.card_nonce.is_some() {
+        return Ok(identity);
+    }
+    rotate_card(pool, identity).await
 }
 
 /// Finds a contact card QR code in a grayscale frame and returns its text form.
@@ -258,7 +263,7 @@ mod tests {
         let (_, key) = PersonKeyPair::generate().unwrap();
         let identity = LocalIdentity {
             public_key: key.public_key(),
-            card_nonce,
+            card_nonce: Some(card_nonce),
             card_revision: revision,
             key: None,
         };
@@ -304,14 +309,30 @@ mod tests {
             "an unreadable nonce failed the identity: {:?}",
             identity.as_ref().err()
         );
-        let healed = heal_unreadable_nonce(&pool, identity.unwrap())
-            .await
-            .unwrap();
+        let identity = identity.unwrap();
+        assert_eq!(identity.card_nonce, None);
+        assert!(matches!(
+            identity.readable_nonce(),
+            Err(ContactsError::Failed(_))
+        ));
+        let healed = heal_unreadable_nonce(&pool, identity).await.unwrap();
 
         let (nonce, revision) = stored_card(&pool).await;
         assert!(decode_nonce(&nonce).is_some(), "{nonce}");
         assert_eq!(revision, 6);
         assert_eq!(healed.card_revision, revision);
+        assert_eq!(healed.card_nonce, decode_nonce(&nonce));
+    }
+
+    #[tokio::test]
+    async fn heal_leaves_a_readable_card_alone() {
+        let (pool, identity) = card_at_revision(5).await;
+        let stored = stored_card(&pool).await;
+
+        let healed = heal_unreadable_nonce(&pool, identity).await.unwrap();
+
+        assert_eq!(stored_card(&pool).await, stored);
+        assert_eq!(healed.card_revision, 5);
     }
 
     #[tokio::test]
@@ -325,7 +346,10 @@ mod tests {
         assert_eq!(rotated.card_revision, MAX_CONTACT_CARD_REVISION);
         assert_eq!(
             stored_card(&pool).await,
-            (encode_nonce(&rotated.card_nonce), MAX_CONTACT_CARD_REVISION)
+            (
+                encode_nonce(&rotated.card_nonce.unwrap()),
+                MAX_CONTACT_CARD_REVISION
+            )
         );
     }
 

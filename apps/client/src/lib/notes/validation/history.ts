@@ -1,5 +1,5 @@
 import type { NotesPageHistorySettings, NotesPageHistorySnapshot } from "../contracts/history";
-import { parseNullableNotesIcon, parseNullablePageCover } from "./assets";
+import { readTolerantNotesCover, readTolerantNotesIcon } from "./assets";
 import { parseNotesPartialUser } from "./collaboration";
 import { readDisplayString, readInteger, readRecord, readString } from "./readers";
 
@@ -15,8 +15,8 @@ export function parseNotesPageHistorySnapshot(value: unknown): NotesPageHistoryS
     id: readString(record.id, "page history snapshot.id"),
     page_id: readString(record.page_id, "page history snapshot.page_id"),
     title: readString(record.title, "page history snapshot.title"),
-    icon: parseNullableNotesIcon(record.icon, "page history snapshot.icon"),
-    cover: parseNullablePageCover(record.cover, "page history snapshot.cover"),
+    icon: readTolerantNotesIcon(record.icon, "page history snapshot.icon"),
+    cover: readTolerantNotesCover(record.cover, "page history snapshot.cover"),
     block_count: blockCount,
     reason: readDisplayString(record.reason, "page history snapshot.reason"),
     created_by: parseNotesPartialUser(

@@ -1,7 +1,7 @@
 import { parseNotesIndent } from "./blocks";
 import type { NotesChildPageBlockPayload, NotesFolder, NotesPage, NotesPageTemplate, NotesTemplateBlockPayload } from "../contracts/core";
 import type { NotesBlockFrontier, NotesBlockOutline, NotesLoadedPage, NotesPageOpenResponse, NotesSidebarPageList } from "../contracts/workspace";
-import { parseNullableNotesIcon, parseNullablePageCover } from "./assets";
+import { readTolerantNotesCover, readTolerantNotesIcon } from "./assets";
 import { isNotesBlockType, parseNotesBlock, parseNotesPaginatedBlockList, parseNotesParent } from "./blocks";
 import { parseNotesPageBreadcrumbItem } from "./knowledge";
 import { readBoolean, readDisplayString, readFiniteNumber, readInteger, readNullableString, readRecord, readString, readStringArray } from "./readers";
@@ -41,8 +41,8 @@ export function parseNotesPage(value: unknown): NotesPage {
         : readNullableString(record.project_id, "page.project_id"),
     in_trash: readBoolean(record.in_trash, "page.in_trash"),
     archived: typeof record.archived === "boolean" ? record.archived : undefined,
-    icon: parseNullableNotesIcon(record.icon, "page.icon"),
-    cover: parseNullablePageCover(record.cover, "page.cover"),
+    icon: readTolerantNotesIcon(record.icon, "page.icon"),
+    cover: readTolerantNotesCover(record.cover, "page.cover"),
     properties: readRecord(record.properties, "page.properties"),
     url: readNullableString(record.url, "page.url"),
     public_url: readNullableString(record.public_url, "page.public_url"),
@@ -160,8 +160,8 @@ export function parseNotesPageTemplate(value: unknown): NotesPageTemplate {
     name: readDisplayString(record.name, "page template.name"),
     source_page_id: readNullableString(record.source_page_id, "page template.source_page_id"),
     properties: readRecord(record.properties, "page template.properties"),
-    icon: parseNullableNotesIcon(record.icon, "page template.icon"),
-    cover: parseNullablePageCover(record.cover, "page template.cover"),
+    icon: readTolerantNotesIcon(record.icon, "page template.icon"),
+    cover: readTolerantNotesCover(record.cover, "page template.cover"),
     block_count: blockCount,
     created_time: readString(record.created_time, "page template.created_time"),
     last_edited_time: readString(record.last_edited_time, "page template.last_edited_time"),

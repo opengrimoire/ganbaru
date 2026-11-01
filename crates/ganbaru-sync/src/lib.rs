@@ -32,6 +32,7 @@ pub mod hold;
 pub mod hooks;
 pub mod local;
 pub mod manifest;
+pub mod provenance;
 pub mod relay;
 pub mod seed;
 pub mod stability;

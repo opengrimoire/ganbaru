@@ -28,6 +28,7 @@ mod notes_comments;
 mod owned;
 mod preferences;
 mod projects;
+mod provenance;
 mod publication;
 mod record_exchange;
 mod replica;

@@ -2022,6 +2022,26 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
 }
 
 #[test]
+fn validation_refuses_an_owner_column_that_can_change() {
+    const MUTABLE_OWNER: TableSpec = TableSpec {
+        owner: Some(crate::manifest::RowOwner::KeyTag {
+            prefix: "tag:",
+            device_column: "missing",
+        }),
+        ..quick_notes::TAGS
+    };
+    const BAD_OWNER: DomainManifest = DomainManifest {
+        tables: &[MUTABLE_OWNER],
+        ..quick_notes::DOMAIN
+    };
+    let problems = validation_error(&[&BAD_OWNER]);
+    assert!(
+        problems.contains("owner column missing is neither the key nor an immutable column"),
+        "{problems}"
+    );
+}
+
+#[test]
 fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() {
     const KEY_NAMED: TableSpec = TableSpec {
         key_derived_columns: &[KeyDerivedColumn {

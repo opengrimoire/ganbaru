@@ -10,7 +10,7 @@ use sqlx::Connection;
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
-use super::replica::{Replica, converge, device_id, forge_change, quoted};
+use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, sealed_change};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::calendar::EVENTS_TABLE;
@@ -777,6 +777,65 @@ fn replicated_active_segment_is_held_invalid() {
                 .count("SELECT count(*) FROM pomodoro_segments WHERE id = 'stray-segment'")
                 .await,
             0
+        );
+    });
+}
+
+/// A device signs another device's activity, as a create and as a write. A fourth replica holds
+/// both and keeps what the device itself sealed.
+#[test]
+fn device_activity_key_must_equal_writer_device() {
+    block_on(async {
+        let mut replicas = shared(4).await;
+        let owner = device_id(0);
+        let held = StoreOutcome::Stored {
+            held: Some(HoldReason::Invalid),
+        };
+        let state_sql = format!(
+            "SELECT state FROM pomodoro_device_activity WHERE device_id = {}",
+            quoted(&owner)
+        );
+
+        replicas[0]
+            .exec(&activity_sql(&owner, "focus", Some(RUN), 5000))
+            .await;
+        replicas[0].seal().await.unwrap();
+        let create = sealed_change(
+            &mut replicas[0],
+            DEVICE_ACTIVITY_TABLE,
+            &owner,
+            ChangeAction::Create,
+        )
+        .await;
+        let forged = forge_change(&mut replicas[1], create).await;
+        assert_eq!(replicas[3].receive(&[forged]).await, vec![held]);
+        replicas[3].apply_all().await.unwrap();
+        assert_eq!(replicas[3].scalar_text(&state_sql).await, None);
+
+        let (victim, source) = pair(&mut replicas, 3, 0);
+        victim.pull(source).await;
+        assert_eq!(
+            replicas[3].scalar_text(&state_sql).await.as_deref(),
+            Some("focus")
+        );
+
+        replicas[0]
+            .exec(&activity_sql(&owner, "paused", Some(RUN), 9000))
+            .await;
+        replicas[0].seal().await.unwrap();
+        let write = sealed_change(
+            &mut replicas[0],
+            DEVICE_ACTIVITY_TABLE,
+            &owner,
+            ChangeAction::Write,
+        )
+        .await;
+        let forged = forge_change(&mut replicas[2], write).await;
+        assert_eq!(replicas[3].receive(&[forged]).await, vec![held]);
+        replicas[3].apply_all().await.unwrap();
+        assert_eq!(
+            replicas[3].scalar_text(&state_sql).await.as_deref(),
+            Some("focus")
         );
     });
 }

@@ -326,3 +326,12 @@ pub fn derived_key(prefix: &str, parts: &[&str]) -> Result<RowKey, DerivedKeyErr
     let digits = hex(&digest[..DERIVED_KEY_DIGITS / 2]);
     RowKey::new(format!("{prefix}:{digits}")).map_err(|_| DerivedKeyError::Prefix)
 }
+
+/// Hexadecimal digits of [`device_owner_tag`].
+pub const DEVICE_OWNER_TAG_HEX_CHARS: usize = 16;
+
+/// First eight bytes of SHA-256 over the device id, in lowercase hex. A device-owned row key
+/// carries it so every replica can tell which device the row belongs to from the key alone.
+pub fn device_owner_tag(device_id: &str) -> String {
+    hex(&Sha256::digest(device_id.as_bytes())[..DEVICE_OWNER_TAG_HEX_CHARS / 2])
+}

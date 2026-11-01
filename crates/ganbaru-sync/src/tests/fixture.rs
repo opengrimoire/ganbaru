@@ -109,6 +109,7 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -180,6 +181,7 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -321,6 +323,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -443,6 +446,7 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -532,6 +536,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -630,6 +635,7 @@ pub(super) const EDGES: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -697,6 +703,7 @@ pub(super) const DRAFTS: TableSpec = TableSpec {
     publish_when: Some("published = 1"),
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };

@@ -1368,6 +1368,35 @@ pub(super) async fn forge_change(replica: &mut Replica, change: Change) -> Vec<u
     forge(replica, Content::Changes(vec![change]), revision).await
 }
 
+/// The latest change of `action` that `replica` sealed for the row `key` of `table`.
+pub(super) async fn sealed_change(
+    replica: &mut Replica,
+    table: TableId,
+    key: &str,
+    action: ChangeAction,
+) -> Change {
+    replica
+        .own_ops()
+        .await
+        .iter()
+        .filter_map(|bytes| {
+            match Envelope::decode(bytes)
+                .unwrap()
+                .operation()
+                .unwrap()
+                .content
+            {
+                Content::Changes(changes) => Some(changes),
+                _ => None,
+            }
+        })
+        .flatten()
+        .rfind(|change| {
+            change.table == table && change.row.as_str() == key && change.action == action
+        })
+        .expect("the change is sealed")
+}
+
 /// A SQL string literal.
 pub(super) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))

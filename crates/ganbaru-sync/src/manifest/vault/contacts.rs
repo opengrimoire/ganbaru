@@ -210,6 +210,7 @@ pub const CONTACTS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::ExactChars(PUBLIC_KEY_CHARS),
 };
@@ -295,6 +296,7 @@ pub const REQUESTS: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -351,6 +353,7 @@ pub const CARD: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Fixed(CARD_KEY),
 };

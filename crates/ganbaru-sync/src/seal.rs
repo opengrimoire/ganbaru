@@ -53,6 +53,8 @@ pub struct SealReport {
     pub last_seq: Option<Seq>,
     /// Captured rows that break the manifest and stay captured.
     pub invalid_rows: Vec<InvalidRow>,
+    /// Captures of rows another device owns, consumed without sealing.
+    pub foreign_owned_rows: usize,
     /// Domain tables the call changed while materializing merges and repairs.
     pub changed_tables: Vec<&'static str>,
     /// Changes the registered hooks reported while materializing.
@@ -77,6 +79,7 @@ impl SealReport {
         self.changes += other.changes;
         self.last_seq = other.last_seq.or(self.last_seq);
         self.invalid_rows.extend(other.invalid_rows);
+        self.foreign_owned_rows += other.foreign_owned_rows;
         for table in other.changed_tables {
             if !self.changed_tables.contains(&table) {
                 self.changed_tables.push(table);
@@ -771,7 +774,8 @@ impl Sealer {
     ) -> SyncResult<SealReport> {
         let mut report = SealReport::default();
         let captures = pending_captures(conn, now_ms).await?;
-        let planned = plan_captures(engine, conn, captures, &mut report).await?;
+        let device = writer.certificate.certificate.device_id.as_str();
+        let planned = plan_captures(engine, conn, captures, Some(device), &mut report).await?;
         self.seal_planned(
             engine,
             conn,
@@ -800,7 +804,8 @@ impl Sealer {
     ) -> SyncResult<SealReport> {
         let mut report = SealReport::default();
         let captures = pending_captures(conn, now_ms).await?;
-        let mut planned = plan_captures(engine, conn, captures, &mut report).await?;
+        let device = writer.certificate.certificate.device_id.as_str();
+        let mut planned = plan_captures(engine, conn, captures, Some(device), &mut report).await?;
         let (selected, rest) = select_batch(engine, std::mem::take(&mut planned.changes));
         if !rest.is_empty() {
             let left: BTreeSet<(i64, &str)> = rest
@@ -841,7 +846,8 @@ impl Sealer {
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<()> {
-        let planned = plan_rows(engine, conn, rows, report).await?;
+        let device = writer.certificate.certificate.device_id.as_str();
+        let planned = plan_rows(engine, conn, rows, Some(device), report).await?;
         self.seal_planned(engine, conn, ctx, batch, writer, planned, now_ms, report)
             .await
     }
@@ -909,7 +915,11 @@ impl<'a, 'k> SealSlot<'a, 'k> {
         let Some(budget) = self.budget.as_mut() else {
             return Ok(true);
         };
-        let planned = plan_rows(engine, conn, rows, &mut SealReport::default()).await?;
+        let device = self
+            .writer
+            .as_ref()
+            .map(|writer| writer.certificate.certificate.device_id.as_str());
+        let planned = plan_rows(engine, conn, rows, device, &mut SealReport::default()).await?;
         Ok(budget.charge(&planned.changes))
     }
 
@@ -1773,10 +1783,13 @@ fn without_unchanged(
     kept
 }
 
+/// Plans the changes of `captures`. A capture of a row `local_device` does not own is consumed
+/// without a change, since no replica would accept it.
 async fn plan_captures(
     engine: &Engine,
     conn: &mut SqliteConnection,
     captures: Vec<Capture>,
+    local_device: Option<&str>,
     report: &mut SealReport,
 ) -> SyncResult<PlannedCaptures> {
     let invalid_from = report.invalid_rows.len();
@@ -1807,6 +1820,13 @@ async fn plan_captures(
             report.invalid_rows.push(invalid("unknown table"));
             continue;
         };
+        if local_device
+            .is_some_and(|device| !validate::device_owns_row(table, &capture.key, device))
+        {
+            consumed.push((capture.table, capture.key.clone()));
+            report.foreign_owned_rows += 1;
+            continue;
+        }
         let Ok(key) = RowKey::new(capture.key.as_str()) else {
             report.invalid_rows.push(invalid("row key"));
             continue;
@@ -2007,6 +2027,7 @@ async fn plan_rows(
     engine: &Engine,
     conn: &mut SqliteConnection,
     rows: &BTreeSet<RowRef>,
+    local_device: Option<&str>,
     report: &mut SealReport,
 ) -> SyncResult<PlannedCaptures> {
     let mut rows = rows.clone();
@@ -2014,7 +2035,7 @@ async fn plan_rows(
     loop {
         let mut attempt = SealReport::default();
         let captures = row_captures(conn, &rows).await?;
-        let planned = plan_captures(engine, conn, captures, &mut attempt).await?;
+        let planned = plan_captures(engine, conn, captures, local_device, &mut attempt).await?;
         let mut missing = BTreeSet::new();
         for change in &planned.changes {
             for row in change_dependencies(engine, change) {
@@ -2026,6 +2047,7 @@ async fn plan_rows(
         let missing = captured(conn, missing).await?;
         if missing.is_empty() {
             report.invalid_rows.extend(attempt.invalid_rows);
+            report.foreign_owned_rows += attempt.foreign_owned_rows;
             return Ok(planned);
         }
         rows.extend(missing);

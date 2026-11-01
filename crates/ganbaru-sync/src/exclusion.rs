@@ -36,7 +36,7 @@ use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{self, Batch, RowState, group_id, mask_param, table_param};
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store};
+use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store, validate};
 
 /// Most operations past its removal cutoff a removed device's writer may still have stored.
 /// Later ones are refused as revoked.
@@ -425,8 +425,8 @@ async fn release(
     ctx: &SpaceContext,
     local: Option<&str>,
 ) -> SyncResult<bool> {
-    let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT o.writer_id, o.seq, o.envelope
+    let rows: Vec<(Vec<u8>, i64, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT o.writer_id, o.seq, o.envelope, w.device_id
          FROM sync_ops o JOIN sync_writers w
             ON w.space_id = o.space_id AND w.writer_id = o.writer_id
          WHERE o.space_id = ?1 AND o.excluded_revision IS NOT NULL
@@ -438,9 +438,9 @@ async fn release(
     .bind(local)
     .fetch_all(&mut *conn)
     .await?;
-    for (writer, seq, envelope) in &rows {
+    for (writer, seq, envelope, device) in &rows {
         let hold = match Envelope::decode(envelope) {
-            Ok(envelope) => store::classify(engine, &envelope).hold(),
+            Ok(envelope) => store::classify(engine, &envelope, device).hold(),
             Err(_) => Some(store::HoldReason::Invalid),
         };
         sqlx::query(
@@ -1654,15 +1654,20 @@ pub struct LateChange {
 
 /// The change restoring a late change seals: the late values no current version is newer than,
 /// as a create of every group when the removed device created the row or no published state
-/// knows it, or a deletion of a live row.
+/// knows it, or a deletion of a live row. A row another device owns seals nothing, since only
+/// its owner can write it: the restore decision is all that is recorded.
 async fn restoring_change(
     engine: &Engine,
     conn: &mut SqliteConnection,
     record: &LateRecord,
+    sealing_device: &str,
 ) -> SyncResult<Option<Change>> {
     let Some(spec) = engine.manifest().table(record.table) else {
         return Err(corrupt("late change of an unknown table"));
     };
+    if !validate::device_owns_row(spec, &record.key, sealing_device) {
+        return Ok(None);
+    }
     let row = RowKey::new(record.key.clone()).map_err(|_| corrupt("stored row key"))?;
     let state = merge::row_state(conn, record.table, &record.key).await?;
     if record.kind == LateKind::Tombstone {
@@ -1822,7 +1827,13 @@ impl Engine {
             &writer.certificate.certificate.device_id,
         )
         .await?;
-        let change = restoring_change(self, &mut tx, &record).await?;
+        let change = restoring_change(
+            self,
+            &mut tx,
+            &record,
+            &writer.certificate.certificate.device_id,
+        )
+        .await?;
         let mut slot = SealSlot::new(Some(writer));
         let (sealer, writer) = slot
             .open(self, &mut tx, ctx, &mut batch, now_ms)

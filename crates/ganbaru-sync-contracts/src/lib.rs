@@ -44,8 +44,8 @@ pub use crypto::{
 };
 pub use hlc::{Hlc, HlcClock};
 pub use ids::{
-    DerivedKeyError, GroupId, GroupMask, OpId, PENDING_KEY_PREFIX, RowKey, Seq, SpaceId, TableId,
-    WriterId, derived_key,
+    DEVICE_OWNER_TAG_HEX_CHARS, DerivedKeyError, GroupId, GroupMask, OpId, PENDING_KEY_PREFIX,
+    RowKey, Seq, SpaceId, TableId, WriterId, derived_key, device_owner_tag,
 };
 pub use keys::{
     AdminKeyPair, AdminPublicKey, DeviceKeyPair, DevicePublicKey, KeyError, RelayAccessKeyPair,

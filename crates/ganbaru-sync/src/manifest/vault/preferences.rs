@@ -98,6 +98,7 @@ pub const PREFERENCES: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };

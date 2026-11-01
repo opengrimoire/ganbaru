@@ -448,6 +448,16 @@ pub(crate) async fn restore_version(
     replace_version_refs(conn, table.id, key, stored.writer, &[(&group, spec)], false).await
 }
 
+/// Whether `change` leaves the group `spec` as it is when the row holds a version the change saw
+/// or one of its own writer's: a Create does not rewrite an Immutable group after that. A
+/// concurrent version it did not see still competes for the Immutable minimum, and a derived-key
+/// row is added again with every group.
+fn keeps_immutable(table: &TableSpec, spec: &GroupSpec, change: &Change) -> bool {
+    change.action == ChangeAction::Create
+        && spec.kind == MergeKind::Immutable
+        && table.derived_key.is_none()
+}
+
 /// Records one change of an applied operation in the merge state. With `retain`, the versions
 /// it supersedes are kept as displaced until the anchor confirms storing the operation.
 #[allow(clippy::too_many_arguments)]
@@ -537,9 +547,19 @@ pub(crate) async fn apply_change(
             .fetch_all(&mut *conn)
             .await?
         };
+        let versions = existing
+            .iter()
+            .map(|row| stored_from_row(row, 0))
+            .collect::<SyncResult<Vec<_>>>()?;
+        if keeps_immutable(table, spec, change)
+            && versions
+                .iter()
+                .any(|other| other.writer == writer || context.covers(&other.writer, other.seq))
+        {
+            continue;
+        }
         let mut superseded = false;
-        for row in existing {
-            let other = stored_from_row(&row, 0)?;
+        for other in versions {
             if context.covers(&other.writer, other.seq) {
                 if let Some(engine) = retain {
                     displace(engine, conn, table, key, other.clone(), writer, seq).await?;

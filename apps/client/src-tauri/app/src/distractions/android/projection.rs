@@ -1,7 +1,7 @@
 //! Typed Guardian capture and rule projection derived from persisted native policy.
 
 use super::{MAX_JOURNAL_EVENTS, PendingEvent, is_valid_package_name, normalize_event};
-use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay};
+use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay, UsageWindow};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -162,41 +162,21 @@ pub(super) fn include_pending(
     sources: Vec<UsageSourceDay>,
     capture: &GuardianCapture,
     excluded: &HashSet<String>,
-) -> Result<Vec<UsageSourceDay>, String> {
-    let mut groups = std::collections::BTreeMap::new();
-    for row in sources.into_iter().chain(
-        capture
-            .pending
-            .iter()
-            .filter(|event| !excluded.contains(&event.id))
-            .map(|event| UsageSourceDay {
-                source_type: "mobile-app".into(),
-                source_key: event.package_name.clone(),
-                local_date: event.local_date.clone(),
-                elapsed_seconds: event.elapsed_seconds,
-            }),
-    ) {
-        let key = (row.source_type, row.source_key, row.local_date);
-        let total = groups.entry(key).or_insert(0_i64);
-        *total = total
-            .checked_add(row.elapsed_seconds)
-            .filter(|value| (0..=MAX_SAFE_SECONDS).contains(value))
-            .ok_or("Guardian source aggregate exceeds the integer limit")?;
-        if groups.len() > limits::MAX_SOURCE_GROUPS {
-            return Err("Guardian accounting sources exceed their limit".into());
-        }
-    }
-    Ok(groups
-        .into_iter()
-        .map(
-            |((source_type, source_key, local_date), elapsed_seconds)| UsageSourceDay {
-                source_type,
-                source_key,
-                local_date,
-                elapsed_seconds,
-            },
-        )
-        .collect())
+) -> Result<UsageWindow, String> {
+    limits::merge_source_groups(
+        sources.into_iter().chain(
+            capture
+                .pending
+                .iter()
+                .filter(|event| !excluded.contains(&event.id))
+                .map(|event| UsageSourceDay {
+                    source_type: "mobile-app".into(),
+                    source_key: event.package_name.clone(),
+                    local_date: event.local_date.clone(),
+                    elapsed_seconds: event.elapsed_seconds,
+                }),
+        ),
+    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -474,7 +454,8 @@ mod tests {
             &capture,
             &excluded,
         )
-        .unwrap();
+        .unwrap()
+        .sources;
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].elapsed_seconds, 1_800);
         let (_, view) = build(&root(), &capture, &sources, &copy(), "native-full-window").unwrap();
@@ -588,8 +569,39 @@ mod tests {
         assert!(include_pending(vec![source.clone()], &capture, &HashSet::new()).is_err());
         let excluded = HashSet::from(["pending".into()]);
         assert_eq!(
-            include_pending(vec![source], &capture, &excluded).unwrap()[0].elapsed_seconds,
+            include_pending(vec![source], &capture, &excluded)
+                .unwrap()
+                .sources[0]
+                .elapsed_seconds,
             MAX_SAFE_SECONDS
         );
+    }
+
+    #[test]
+    fn include_pending_stops_at_cap_keeping_local() {
+        let mut capture = capture();
+        capture.pending = vec![serde_json::from_value(pending_value()).unwrap()];
+        let own = UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: "com.example.own".into(),
+            local_date: "2026-09-28".into(),
+            elapsed_seconds: 30,
+        };
+        let flood = (0..limits::MAX_SOURCE_GROUPS).map(|index| UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: format!("com.flood.app{index}"),
+            local_date: "2026-10-02".into(),
+            elapsed_seconds: 60,
+        });
+        let sources = std::iter::once(own.clone()).chain(flood).collect();
+        let window = include_pending(sources, &capture, &HashSet::new());
+        assert!(window.is_ok(), "the flood failed the merge: {window:?}");
+        let window = window.unwrap();
+        assert!(window.truncated);
+        assert_eq!(window.sources.len(), limits::MAX_SOURCE_GROUPS);
+        assert!(window.sources.contains(&own));
+        assert!(window.sources.iter().any(|row| {
+            row.source_key == "com.example.video" && row.local_date == "2026-10-02"
+        }));
     }
 }

@@ -5,7 +5,7 @@ use super::{
     projection::{GuardianCapture, NotificationCopy},
     synchronize_locked,
 };
-use crate::vault;
+use crate::{distractions::limits, vault};
 use ganbaru_mobile_distractions::MobileDistractionsExt;
 use serde_json::Value;
 use std::{
@@ -313,15 +313,18 @@ async fn refresh<R: Runtime>(
         .begin()
         .await
         .map_err(|error| format!("begin Guardian native accounting: {error}"))?;
-    let sources = crate::distractions::limits::store::read_source_days(
+    let scope = limits::UsageBudgetScope::from_rules(&limits::parse_config(&root)?);
+    let window = limits::store::read_source_days(
         &mut tx,
         &device_id,
         &capture.week_start_local_date,
         &capture.local_date,
+        &scope,
     )
     .await?;
     let already_imported = super::canonical_pending_ids(&mut tx, &capture).await?;
-    let sources = super::projection::include_pending(sources, &capture, &already_imported)?;
+    let sources =
+        super::projection::include_pending(window.sources, &capture, &already_imported)?.sources;
     tx.commit()
         .await
         .map_err(|error| format!("finish Guardian native accounting: {error}"))?;

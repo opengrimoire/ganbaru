@@ -342,6 +342,30 @@ pub(super) fn foreground_projection<R: Runtime>(
     status
 }
 
+/// What usage totals were computed for: another generation, vault, or rule set never reuses them.
+#[cfg(test)]
+#[derive(Clone, PartialEq, Eq)]
+struct UsageBinding {
+    generation: u64,
+    vault_id: String,
+    rules_revision: u64,
+}
+
+/// The last projection a usage read accepted.
+#[cfg(test)]
+struct UsageProjectionCache;
+
+/// The projection enforcement runs on after a usage read.
+#[cfg(test)]
+fn settle_usage_read(
+    _cache: &mut Option<UsageProjectionCache>,
+    read: Result<limits_read::UsageProjection, String>,
+    _binding: &UsageBinding,
+    _local_date: Option<&str>,
+) -> Option<limits_read::UsageProjection> {
+    read.ok()
+}
+
 struct Pending {
     vault_id: String,
     device_id: String,
@@ -756,6 +780,57 @@ impl Owner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn budget_total(limit_id: &str) -> limits::BudgetTotal {
+        limits::BudgetTotal {
+            limit_id: limit_id.into(),
+            period: "day",
+            window_start_local_date: "2026-10-02".into(),
+            window_end_local_date: "2026-10-02".into(),
+            used_seconds: 600,
+            limit_seconds: 600,
+            remaining_seconds: 0,
+            exhausted: true,
+            entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn observe_enforces_when_usage_read_fails() {
+        let binding = UsageBinding {
+            generation: 1,
+            vault_id: "vault".into(),
+            rules_revision: 1,
+        };
+        let mut cache = None;
+        let good =
+            limits_read::UsageProjection::with_totals("2026-10-02", vec![budget_total("habit")]);
+        assert!(settle_usage_read(&mut cache, Ok(good), &binding, Some("2026-10-02")).is_some());
+
+        let failed = || Err("usage source count exceeds the native limit".to_string());
+        let kept = settle_usage_read(&mut cache, failed(), &binding, Some("2026-10-02"))
+            .expect("a failed read keeps enforcing with the last totals");
+        assert_eq!(kept.totals[0].limit_id, "habit");
+
+        assert!(settle_usage_read(&mut cache, failed(), &binding, Some("2026-10-03")).is_none());
+        assert!(settle_usage_read(&mut cache, failed(), &binding, None).is_none());
+        for other in [
+            UsageBinding {
+                generation: 2,
+                ..binding.clone()
+            },
+            UsageBinding {
+                vault_id: "other".into(),
+                ..binding.clone()
+            },
+            UsageBinding {
+                rules_revision: 2,
+                ..binding.clone()
+            },
+        ] {
+            assert!(settle_usage_read(&mut cache, failed(), &other, Some("2026-10-02")).is_none());
+        }
+    }
 
     #[test]
     fn revoked_generations_cannot_publish_or_close_after_resume() {

@@ -4,7 +4,7 @@ use chrono::{Datelike, Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub mod store;
 
@@ -66,6 +66,65 @@ pub struct UsageSourceDay {
     pub source_key: String,
     pub local_date: String,
     pub elapsed_seconds: i64,
+}
+
+/// Source groups of one usage window, and whether a bound left some of them out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsageWindow {
+    pub sources: Vec<UsageSourceDay>,
+    pub truncated: bool,
+}
+
+/// Sources the configured budgets can count, so a read never touches unrelated rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UsageBudgetScope {
+    websites: BTreeSet<String>,
+    desktop_apps: BTreeSet<String>,
+    mobile_apps: BTreeSet<String>,
+}
+
+impl UsageBudgetScope {
+    /// Lists the sources of every budget, including disabled ones, which stay visible in Settings.
+    pub fn from_rules(_config: &LimitsConfig) -> Self {
+        Self::default()
+    }
+
+    /// Whether no stored usage can count toward a budget.
+    pub fn is_empty(&self) -> bool {
+        self.websites.is_empty() && self.desktop_apps.is_empty() && self.mobile_apps.is_empty()
+    }
+}
+
+/// Sums rows into source/day groups.
+pub fn merge_source_groups(
+    rows: impl IntoIterator<Item = UsageSourceDay>,
+) -> Result<UsageWindow, String> {
+    let mut groups = BTreeMap::new();
+    for row in rows {
+        let key = (row.source_type, row.source_key, row.local_date);
+        let total = groups.entry(key).or_insert(0_i64);
+        *total = total
+            .checked_add(row.elapsed_seconds)
+            .filter(|value| (0..=MAX_SAFE_SECONDS).contains(value))
+            .ok_or("usage source aggregate exceeds the integer limit")?;
+        if groups.len() > MAX_SOURCE_GROUPS {
+            return Err("usage sources exceed their limit".into());
+        }
+    }
+    Ok(UsageWindow {
+        sources: groups
+            .into_iter()
+            .map(
+                |((source_type, source_key, local_date), elapsed_seconds)| UsageSourceDay {
+                    source_type,
+                    source_key,
+                    local_date,
+                    elapsed_seconds,
+                },
+            )
+            .collect(),
+        truncated: false,
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]

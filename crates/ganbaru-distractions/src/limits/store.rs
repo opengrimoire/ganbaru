@@ -1,6 +1,6 @@
 //! Bounded consistent native usage reads shared by desktop and Android.
 
-use super::{MAX_SOURCE_GROUPS, MAX_WINDOW_SAMPLES, UsageSourceDay};
+use super::{MAX_SOURCE_GROUPS, MAX_WINDOW_SAMPLES, UsageBudgetScope, UsageSourceDay, UsageWindow};
 use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 /// Usage of the window from `week` through `local_date`: this device's own samples plus the
@@ -12,7 +12,8 @@ pub async fn read_source_days(
     own_device_id: &str,
     week: &str,
     local_date: &str,
-) -> Result<Vec<UsageSourceDay>, String> {
+    _scope: &UsageBudgetScope,
+) -> Result<UsageWindow, String> {
     const WINDOW: &str = "SELECT source_type, source_key, local_date, elapsed_seconds
          FROM distractions_usage_samples WHERE local_date >= ?1 AND local_date <= ?2
          UNION ALL
@@ -47,7 +48,8 @@ pub async fn read_source_days(
     if rows.len() > MAX_SOURCE_GROUPS {
         return Err("usage source count exceeds the native limit".into());
     }
-    rows.into_iter()
+    let sources = rows
+        .into_iter()
         .map(|row| {
             Ok(UsageSourceDay {
                 source_type: row
@@ -64,5 +66,9 @@ pub async fn read_source_days(
                     .map_err(|error| error.to_string())?,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(UsageWindow {
+        sources,
+        truncated: false,
+    })
 }

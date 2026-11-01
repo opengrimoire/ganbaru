@@ -168,12 +168,7 @@ async fn canonical_sqlite_read_groups_the_complete_window_and_retains_recorded_d
     sqlx::query("INSERT INTO distractions_usage_samples VALUES ('website', 'example.com', '2026-09-28', 50), ('website', 'example.com', '2026-09-27', 99)")
         .execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    let rows =
-        crate::limits::store::read_source_days(&mut tx, "device-own", "2026-09-28", "2026-10-02")
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
+    let rows = read_window(&pool).await.unwrap().sources;
     assert_eq!(rows.len(), 2);
     let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap();
     assert_eq!(result[0].used_seconds, 500);
@@ -204,12 +199,7 @@ async fn budgets_count_other_devices_totals_with_own_samples_but_not_own_totals(
     .execute(&pool)
     .await
     .unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    let rows =
-        crate::limits::store::read_source_days(&mut tx, "device-own", "2026-09-28", "2026-10-02")
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
+    let rows = read_window(&pool).await.unwrap().sources;
     assert_eq!(
         rows,
         vec![
@@ -222,4 +212,117 @@ async fn budgets_count_other_devices_totals_with_own_samples_but_not_own_totals(
     assert_eq!(result[0].used_seconds, 420);
     assert_eq!(result[1].used_seconds, 720);
     pool.close().await;
+}
+
+async fn usage_pool() -> sqlx::SqlitePool {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE distractions_usage_samples (source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER);
+         CREATE TABLE distractions_usage_totals (device_id TEXT, source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+/// Reads the test window under the budgets of `root`.
+async fn read_window(pool: &sqlx::SqlitePool) -> Result<UsageWindow, String> {
+    let scope = UsageBudgetScope::from_rules(&parse_config(&root()).unwrap());
+    let mut tx = pool.begin().await.unwrap();
+    let window = crate::limits::store::read_source_days(
+        &mut tx,
+        "device-own",
+        "2026-09-28",
+        "2026-10-02",
+        &scope,
+    )
+    .await;
+    tx.commit().await.unwrap();
+    window
+}
+
+/// Stores `count` totals dated today whose keys follow `pattern`, one distinct key per row.
+async fn flood_totals(pool: &sqlx::SqlitePool, pattern: &str, count: usize) {
+    sqlx::query(
+        "INSERT INTO distractions_usage_totals
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+         SELECT 'device-attacker', 'website', printf(?1, i), '2026-10-02', 60 FROM n",
+    )
+    .bind(pattern)
+    .bind(count as i64)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn usage_flood_outside_budgets_reads_no_rows() {
+    let pool = usage_pool().await;
+    flood_totals(&pool, "flood-%d.attacker.test", MAX_SOURCE_GROUPS + 1).await;
+    sqlx::raw_sql(
+        "INSERT INTO distractions_usage_totals VALUES
+            ('device-phone', 'website', 'video.example.com', '2026-10-02', 60);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let window = read_window(&pool).await;
+    assert!(window.is_ok(), "the flood failed the read: {window:?}");
+    let window = window.unwrap();
+    assert_eq!(
+        window.sources,
+        vec![source("website", "video.example.com", "2026-10-02", 60)]
+    );
+    assert!(!window.truncated);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn usage_flood_inside_budget_truncates_keeping_local_samples() {
+    let pool = usage_pool().await;
+    flood_totals(&pool, "flood-%d.example.com", MAX_SOURCE_GROUPS + 1).await;
+    sqlx::raw_sql(
+        "INSERT INTO distractions_usage_samples VALUES
+            ('website', 'video.example.com', '2026-09-28', 30);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let window = read_window(&pool).await;
+    assert!(window.is_ok(), "the flood failed the read: {window:?}");
+    let window = window.unwrap();
+    assert!(window.truncated);
+    assert_eq!(window.sources.len(), MAX_SOURCE_GROUPS);
+    assert_eq!(
+        window.sources[0],
+        source("website", "video.example.com", "2026-09-28", 30)
+    );
+    assert_eq!(read_window(&pool).await.unwrap(), window);
+    let result = totals(&parse_config(&root()).unwrap(), &window.sources, "2026-10-02").unwrap();
+    assert_eq!(result[1].used_seconds, 30 + 60 * 9_999);
+    pool.close().await;
+}
+
+#[test]
+fn usage_flood_stops_a_merge_at_the_cap_keeping_earlier_rows() {
+    let local = source("mobile-app", "com.example.video", "2026-09-28", 30);
+    let flood = (0..MAX_SOURCE_GROUPS).map(|index| {
+        source(
+            "mobile-app",
+            &format!("com.flood.app{index}"),
+            "2026-10-02",
+            60,
+        )
+    });
+    let window = merge_source_groups(std::iter::once(local.clone()).chain(flood));
+    assert!(window.is_ok(), "the flood failed the merge: {window:?}");
+    let window = window.unwrap();
+    assert!(window.truncated);
+    assert_eq!(window.sources.len(), MAX_SOURCE_GROUPS);
+    assert!(window.sources.contains(&local));
 }

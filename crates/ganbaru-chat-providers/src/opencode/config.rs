@@ -10,6 +10,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 pub const OPENCODE_PASSWORD_ENVIRONMENT: &str = "OPENCODE_SERVER_PASSWORD";
+pub const OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT: &str = "OPENCODE_DISABLE_PROJECT_CONFIG";
 const MAX_SERVER_URL_BYTES: usize = 2 * 1024;
 /// Random bytes in the password generated for each owned OpenCode server.
 pub const OWNED_SERVER_SECRET_BYTES: usize = 32;

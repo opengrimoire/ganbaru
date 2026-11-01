@@ -233,6 +233,20 @@ fn process_environment_uses_the_configured_opencode_directory() {
 }
 
 #[test]
+fn restricted_server_environment_disables_project_configuration() {
+    let provider = configuration(json!({ "mode": "local" }));
+    let restricted = server_environment(&provider, ProjectConfigurationAccess::Restricted).unwrap();
+    assert_eq!(
+        restricted
+            .get(OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT)
+            .map(String::as_str),
+        Some("1")
+    );
+    let trusted = server_environment(&provider, ProjectConfigurationAccess::Trusted).unwrap();
+    assert!(!trusted.contains_key(OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT));
+}
+
+#[test]
 fn typed_http_scopes_requests_and_redacts_authorization_failures() {
     crate::test_block_on(async {
         let fixture = HttpFixture::start(
@@ -608,9 +622,13 @@ fn owned_server_fixture_stops_its_process_tree() {
         configuration
             .environment
             .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
-        let mut server = OwnedOpenCodeServer::start(&configuration, directory.path())
-            .await
-            .unwrap();
+        let mut server = OwnedOpenCodeServer::start(
+            &configuration,
+            directory.path(),
+            ProjectConfigurationAccess::Trusted,
+        )
+        .await
+        .unwrap();
         assert_eq!(server.origin, fixture.origin);
         let process_group_id = libc::pid_t::try_from(server.process_id().unwrap())
             .ok()
@@ -666,9 +684,13 @@ fn owned_server_always_receives_generated_password() {
                 "FIXTURE_PASSWORD_FILE".to_string(),
                 recorded.to_string_lossy().into_owned(),
             );
-            let mut server = OwnedOpenCodeServer::start(&configuration, directory.path())
-                .await
-                .unwrap();
+            let mut server = OwnedOpenCodeServer::start(
+                &configuration,
+                directory.path(),
+                ProjectConfigurationAccess::Trusted,
+            )
+            .await
+            .unwrap();
             let received = std::fs::read_to_string(&recorded).unwrap();
             server.stop().await.unwrap();
 
@@ -709,7 +731,13 @@ fn owned_server_fails_closed_when_it_accepts_unauthenticated_requests() {
         configuration
             .environment
             .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
-        let error = match OwnedOpenCodeServer::start(&configuration, directory.path()).await {
+        let result = OwnedOpenCodeServer::start(
+            &configuration,
+            directory.path(),
+            ProjectConfigurationAccess::Trusted,
+        )
+        .await;
+        let error = match result {
             Ok(mut server) => {
                 server.stop().await.unwrap();
                 panic!("an unauthenticated server must not be used")
@@ -791,9 +819,13 @@ fn owned_server_reports_early_exit_timeout_and_oversized_output() {
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
             let mut configuration = configuration(json!({ "mode": "local" }));
             configuration.executable = executable.to_string_lossy().into_owned();
-            let result =
-                OwnedOpenCodeServer::start_with_timeout(&configuration, directory.path(), timeout)
-                    .await;
+            let result = OwnedOpenCodeServer::start_with_timeout(
+                &configuration,
+                directory.path(),
+                ProjectConfigurationAccess::Trusted,
+                timeout,
+            )
+            .await;
             let error = match result {
                 Ok(mut server) => {
                     server.stop().await.unwrap();

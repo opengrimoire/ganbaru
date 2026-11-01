@@ -58,6 +58,13 @@ pub trait ProviderDriver: Send {
         ProviderAuthoritySupport::default()
     }
 
+    /// How this provider honors a restricted project configuration. A driver
+    /// overrides the default only after verifying its switch with the pinned
+    /// provider version.
+    fn project_configuration_restriction(&self) -> ProjectConfigurationRestriction {
+        ProjectConfigurationRestriction::Unavailable
+    }
+
     fn cached_model_catalog(&self) -> Option<ProviderModelCatalog> {
         None
     }

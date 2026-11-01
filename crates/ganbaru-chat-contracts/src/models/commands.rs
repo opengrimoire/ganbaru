@@ -38,6 +38,15 @@ pub enum ProjectConfigurationAccess {
     Restricted,
 }
 
+/// How a provider honors a restricted project configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectConfigurationRestriction {
+    /// The launch arguments keep project configuration out of the run.
+    Enforced,
+    /// No verified switch exists, so restricted folders with configuration cannot run.
+    Unavailable,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptAttachmentReference {

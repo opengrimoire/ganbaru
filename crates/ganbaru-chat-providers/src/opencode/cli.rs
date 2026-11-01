@@ -1,8 +1,10 @@
 //! OpenCode executable probes and bounded catalog parsers.
 
+use super::config::OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT;
 use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ModelAvailability, ModelChoiceOption,
-    ModelOptionDefinition, ProviderCapability, ProviderInstanceConfig, ProviderModel,
+    ModelOptionDefinition, ProjectConfigurationAccess, ProviderCapability, ProviderInstanceConfig,
+    ProviderModel,
 };
 use crate::process::{BoundedCommand, BoundedCommandFailure, run_bounded_command};
 use serde_json::{Map, Value};
@@ -102,6 +104,23 @@ pub fn process_environment(
         environment.insert("OPENCODE_CONFIG_DIR".to_string(), home.to_string());
     }
     environment.insert("OPENCODE_CLIENT".to_string(), "ganbaru".to_string());
+    Ok(environment)
+}
+
+/// Environment of a local server. A restricted server asks OpenCode to skip
+/// project configuration as defense in depth; the switch is not verified with
+/// the pinned version, so the trust gate never relies on it.
+pub fn server_environment(
+    configuration: &ProviderInstanceConfig,
+    project_configuration: ProjectConfigurationAccess,
+) -> ChatResult<BTreeMap<String, String>> {
+    let mut environment = process_environment(configuration)?;
+    if project_configuration == ProjectConfigurationAccess::Restricted {
+        environment.insert(
+            OPENCODE_DISABLE_PROJECT_CONFIG_ENVIRONMENT.to_string(),
+            "1".to_string(),
+        );
+    }
     Ok(environment)
 }
 

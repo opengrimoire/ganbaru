@@ -174,6 +174,10 @@ impl ProviderDriver for CodexProviderDriver {
         Self::metadata_read()
     }
 
+    fn project_configuration_restriction(&self) -> ProjectConfigurationRestriction {
+        ProjectConfigurationRestriction::Enforced
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

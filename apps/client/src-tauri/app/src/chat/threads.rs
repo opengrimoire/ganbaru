@@ -167,11 +167,17 @@ pub async fn chat_fork_thread(
                 execution_environment_id.as_deref(),
             )
             .await?;
+            let provider =
+                super::settings_commands::read_provider(&app, &source.provider_instance_id)?;
+            let configuration =
+                crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
+            let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
             let authorized = super::workspace::commands::settle_project_configuration(
                 &app,
                 &root_path,
                 authorized,
                 super::workspace::commands::UndecidedProjectConfiguration::Ask,
+                driver.project_configuration_restriction(),
             )
             .await?;
             let verified = ganbaru_chat_contracts::models::VerifiedWorkspaceContext {
@@ -187,11 +193,6 @@ pub async fn chat_fork_thread(
                 repository_identity: authorized.repository_identity,
                 project_configuration: authorized.project_configuration,
             };
-            let provider =
-                super::settings_commands::read_provider(&app, &source.provider_instance_id)?;
-            let configuration =
-                crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
-            let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
             let context = DriverOperationContext {
                 operation_id: format!("provider-thread-fork:{}", request.new_thread_id.as_str()),
                 deadline: Instant::now() + PROVIDER_LIFECYCLE_TIMEOUT,

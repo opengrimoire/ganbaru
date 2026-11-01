@@ -1,9 +1,11 @@
 //! Owned loopback OpenCode server lifecycle.
 
-use super::cli::{process_environment, resolve_executable};
+use super::cli::{resolve_executable, server_environment};
 use super::config::{OPENCODE_PASSWORD_ENVIRONMENT, OpenCodeSecret};
 use super::http_client::OpenCodeHttpClient;
-use crate::models::{ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig};
+use crate::models::{
+    ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess, ProviderInstanceConfig,
+};
 use crate::process::{ProviderProcessConfig, ProviderProcessHandle, spawn_provider_process};
 use reqwest::Url;
 use std::path::Path;
@@ -33,17 +35,25 @@ impl OwnedOpenCodeServer {
     pub async fn start(
         configuration: &ProviderInstanceConfig,
         workspace: &Path,
+        project_configuration: ProjectConfigurationAccess,
     ) -> ChatResult<Self> {
-        Self::start_with_timeout(configuration, workspace, STARTUP_TIMEOUT).await
+        Self::start_with_timeout(
+            configuration,
+            workspace,
+            project_configuration,
+            STARTUP_TIMEOUT,
+        )
+        .await
     }
 
     pub(super) async fn start_with_timeout(
         configuration: &ProviderInstanceConfig,
         workspace: &Path,
+        project_configuration: ProjectConfigurationAccess,
         startup_timeout: Duration,
     ) -> ChatResult<Self> {
         let password = OpenCodeSecret::generate()?;
-        let mut environment = process_environment(configuration)?;
+        let mut environment = server_environment(configuration, project_configuration)?;
         environment.insert(
             OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
             password.expose().to_string(),

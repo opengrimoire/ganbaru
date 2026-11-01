@@ -1,4 +1,6 @@
-use ganbaru_chat_contracts::models::{ProviderImplementationStatus, ProviderInstanceConfig};
+use ganbaru_chat_contracts::models::{
+    ProjectConfigurationRestriction, ProviderImplementationStatus, ProviderInstanceConfig,
+};
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use serde_json::json;
 use std::fs;
@@ -200,6 +202,49 @@ fn claude_driver_is_available_with_a_version_floor() {
             .iter()
             .all(|entry| entry.supported)
     );
+}
+
+#[test]
+fn only_verified_providers_enforce_a_restricted_project_configuration() {
+    for (family_id, provider_config, expected) in [
+        (
+            "claude",
+            json!({}),
+            ProjectConfigurationRestriction::Enforced,
+        ),
+        (
+            "codex",
+            json!({}),
+            ProjectConfigurationRestriction::Enforced,
+        ),
+        (
+            "opencode",
+            json!({ "mode": "local" }),
+            ProjectConfigurationRestriction::Unavailable,
+        ),
+        (
+            "cursor",
+            json!({}),
+            ProjectConfigurationRestriction::Unavailable,
+        ),
+        (
+            "grok",
+            json!({}),
+            ProjectConfigurationRestriction::Unavailable,
+        ),
+    ] {
+        let mut configuration = configuration(family_id);
+        configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
+            schema_version: 1,
+            value: provider_config,
+        };
+        let driver = ProviderDriverRegistry.create_driver(configuration).unwrap();
+        assert_eq!(
+            driver.project_configuration_restriction(),
+            expected,
+            "{family_id}"
+        );
+    }
 }
 
 #[test]

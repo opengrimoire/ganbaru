@@ -62,14 +62,21 @@ pub(crate) async fn send_turn(
         }
         None => None,
     };
-    let (target, authorized) =
-        resolve_turn_target(&app, &pool, &request, &origin, existing.as_ref()).await?;
-    require_project_accepts_ai_work(&pool, &target.project_id).await?;
     let provider =
         crate::chat::settings_commands::read_provider(&app, &request.provider_instance_id)?;
     validate_provider_selection(&provider, &request)?;
     let mut configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
     let inspection_driver = ProviderDriverRegistry.create_driver(configuration.clone())?;
+    let (target, authorized) = resolve_turn_target(
+        &app,
+        &pool,
+        &request,
+        &origin,
+        existing.as_ref(),
+        inspection_driver.project_configuration_restriction(),
+    )
+    .await?;
+    require_project_accepts_ai_work(&pool, &target.project_id).await?;
     let authority_support = inspection_driver.authority_support();
     if let Some(binding) = origin.run() {
         validate_organizational_authority(
@@ -372,6 +379,7 @@ async fn resolve_turn_target(
     request: &SendChatTurnCommand,
     origin: &TurnOrigin,
     existing: Option<&super::persistence::ThreadRuntimeData>,
+    restriction: ganbaru_chat_contracts::models::ProjectConfigurationRestriction,
 ) -> ChatResult<(
     TurnPersistenceTarget,
     crate::chat::workspace::AuthorizedWorkingFolder,
@@ -428,6 +436,7 @@ async fn resolve_turn_target(
                 } else {
                     crate::chat::workspace::commands::UndecidedProjectConfiguration::Ask
                 },
+                restriction,
             )
             .await?;
             if matches!(

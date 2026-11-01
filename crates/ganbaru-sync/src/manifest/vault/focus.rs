@@ -13,9 +13,9 @@ use ganbaru_sync_contracts::{GroupId, TableId};
 use crate::domains::focus::{MAX_ENUM_CHARS, MAX_RHYTHM_STEPS, MAX_SEGMENT_PAUSES, MAX_TEXT_CHARS};
 use crate::manifest::vault::calendar::{ARCHIVES_TABLE, EVENTS_TABLE};
 use crate::manifest::{
-    ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    ColumnSpec, ColumnType, Deletion, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
+    GroupStorage, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    PublishedWith, ReferenceColumn, RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Focus.
@@ -354,6 +354,7 @@ const BASE: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `pomodoro_runs`, published once closed. The plan, outcome, and inheritance groups change only

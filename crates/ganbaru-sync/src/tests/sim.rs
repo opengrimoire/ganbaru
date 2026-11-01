@@ -24,7 +24,7 @@ mod relay;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Envelope, Field, RowKey, Value, VersionVector, WriterId,
+    Change, ChangeAction, Content, Envelope, Field, RowKey, TableId, Value, VersionVector, WriterId,
 };
 
 use super::authorization::{seal_after, view};
@@ -38,7 +38,9 @@ use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, ran
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::vault::contacts::CARD_TABLE;
+use crate::manifest::vault::chat::PROFILES_TABLE;
+use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE};
+use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::merge;
 use crate::stability::{CountedDevice, DeviceStanding};
@@ -139,6 +141,12 @@ const OVERRIDE_EDIT_PERCENT: u64 = 6;
 const HOSTILE_OVERRIDE_PERCENT: u64 = 25;
 /// A key the card table refuses.
 const HOSTILE_CARD_KEY: &str = "not-the-card";
+/// Rows of the singleton and seeded tables whose rows no operation deletes.
+const NEVER_DELETED: [(TableId, &str); 3] = [
+    (CARD_TABLE, CARD_KEY),
+    (SETTINGS_TABLE, SETTINGS_KEY),
+    (PROFILES_TABLE, "access-profile:read-only"),
+];
 /// Bytes of a page of stored operations, more than any one operation.
 const MAX_OP_PAGE_BYTES: usize = 64 * 1024;
 /// Id prefix of forged overrides.
@@ -1791,10 +1799,22 @@ impl Sim {
         }
     }
 
-    /// A replica's writer seals a change under a row key the schema refuses, the way a hostile
-    /// writer that skips its own rules would, and a copy of the hub holds it and applies nothing
-    /// of it. The run continues without the copies, since a held operation stops its writer.
+    /// A replica's writer seals a tombstone under a row key the schema refuses.
     async fn forge_refused_key(&mut self, index: usize) {
+        self.forge_held_tombstone(index, CARD_TABLE, HOSTILE_CARD_KEY)
+            .await;
+    }
+
+    /// A replica's writer seals a tombstone of a row that no operation may delete.
+    async fn forge_never_deleted_tombstone(&mut self, index: usize) {
+        let (table, key) = NEVER_DELETED[self.rng.below(NEVER_DELETED.len())];
+        self.forge_held_tombstone(index, table, key).await;
+    }
+
+    /// A replica's writer seals a tombstone the bytes alone refuse, the way a hostile writer that
+    /// skips its own rules would, and a copy of the hub holds it and applies nothing of it. The
+    /// run continues without the copies, since a held operation stops its writer.
+    async fn forge_held_tombstone(&mut self, index: usize, table: TableId, key: &str) {
         let mut writer = self.replicas[index].clone_device().await;
         let id = writer.writer();
         let mut before_last = writer.stored_vector().await;
@@ -1818,8 +1838,8 @@ impl Sim {
         let mut receiver = self.hub.clone_device().await;
         receiver.pull(&mut writer).await;
         let change = Change {
-            table: CARD_TABLE,
-            row: RowKey::new(HOSTILE_CARD_KEY).unwrap(),
+            table,
+            row: RowKey::new(key).unwrap(),
             action: ChangeAction::Tombstone,
             groups: Vec::new(),
             replaced_by: None,
@@ -1838,7 +1858,7 @@ impl Sim {
             vec![StoreOutcome::Stored {
                 held: Some(HoldReason::Invalid)
             }],
-            "the hub did not hold a refused key of replica {index}"
+            "the hub did not hold the tombstone of {key} from replica {index}"
         );
     }
 
@@ -1857,7 +1877,8 @@ impl Sim {
             75..=81 => self.resolve(index).await,
             82..=88 => self.recover(index).await,
             89..=94 => self.offline[index] = !self.offline[index],
-            95..=96 => self.forge_refused_key(index).await,
+            95 => self.forge_refused_key(index).await,
+            96 => self.forge_never_deleted_tombstone(index).await,
             97..=98 => self.remove_spare().await,
             _ => self.fork_spare(index).await,
         }

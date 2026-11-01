@@ -19,9 +19,9 @@ use crate::domains::projects::{
 };
 use crate::manifest::AcyclicSpec;
 use crate::manifest::{
-    ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
-    GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec,
-    OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
+    ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
+    GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, OnDelete, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
     SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 
@@ -674,6 +674,7 @@ const BASE: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `project_groups`.

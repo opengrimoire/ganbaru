@@ -26,11 +26,11 @@ use crate::manifest::vault::{
     preferences, projects, quick_notes, themes,
 };
 use crate::manifest::{
-    AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
-    DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
-    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, PublishedWith,
-    ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec,
-    TriggerPolicy, group_id,
+    AcyclicSpec, Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable,
+    DomainManifest, DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn,
+    Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable,
+    PublishedWith, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange,
+    TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 
@@ -111,6 +111,7 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `fixture_items`.
@@ -182,6 +183,7 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -323,6 +325,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
@@ -445,6 +448,7 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// Group ids of [`NODES`].
@@ -534,6 +538,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `fixture_nodes`.
@@ -632,6 +637,7 @@ pub(super) const EDGES: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `fixture_edges`.
@@ -699,6 +705,7 @@ pub(super) const DRAFTS: TableSpec = TableSpec {
     key_parent: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
+    deletion: Deletion::Ordinary,
 };
 
 /// `fixture_drafts`.

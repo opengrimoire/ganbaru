@@ -747,6 +747,17 @@ pub struct TableSpec {
     ///
     /// [`RowKey`]: ganbaru_sync_contracts::RowKey
     pub key_rule: RowKeyRule,
+    /// Whether rows of the table are ever deleted.
+    pub deletion: Deletion,
+}
+
+/// Whether a table's rows can be deleted through sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deletion {
+    /// Rows are deleted by tombstones, repairs, and cascades.
+    Ordinary,
+    /// No replicated operation deletes a row: a tombstone is invalid and repair seals none.
+    Never,
 }
 
 /// A rule on the row keys of a table, mirroring the key CHECK of its domain table. Every change

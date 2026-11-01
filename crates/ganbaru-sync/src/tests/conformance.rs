@@ -19,14 +19,14 @@ use crate::assets::{AssetClass, MAX_ASSET_BYTES};
 use crate::codec::{OwnedRow, decode_table, encode, encode_table};
 use crate::domains::vault_adapters;
 use crate::manifest::order::{Dependency, DependencyKind};
-use crate::manifest::vault::quick_notes;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
+use crate::manifest::vault::{chat, quick_notes};
 use crate::manifest::{
-    Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
-    GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
-    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution,
-    RowKeyRule, SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec,
-    group_id, is_sql_literal,
+    Classification, Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DomainManifest,
+    GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest,
+    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn,
+    Resolution, RowKeyRule, SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange,
+    TableSpec, TreeSpec, group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -2046,6 +2046,90 @@ fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() 
     for problem in [
         "quick_note_tags: a key-derived column needs its own name",
         "quick_notes.handle: a composite-key table has no key-derived columns",
+    ] {
+        assert!(problems.contains(problem), "{problems}");
+    }
+}
+
+/// The tables of the vault marked as never deleted.
+fn never_deleted() -> BTreeSet<&'static str> {
+    VAULT_MANIFEST
+        .tables
+        .iter()
+        .filter(|table| table.deletion == Deletion::Never)
+        .map(|table| table.name)
+        .collect()
+}
+
+/// A delete the schema refuses for every writer could only ever stop on a replica, so the table
+/// must be marked and no replicated operation may delete from it, directly or through a cascade
+/// from a table a tombstone can reach.
+#[test]
+fn never_deleted_tables_cover_every_ungated_delete_refusal() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let triggers: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT name, tbl_name, sql FROM sqlite_schema
+             WHERE type = 'trigger' AND sql LIKE '%BEFORE DELETE%' ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let marked = never_deleted();
+        let mut refusing = 0;
+        for (name, table, sql) in triggers {
+            let replicated = VAULT_MANIFEST.tables.iter().any(|spec| spec.name == table);
+            if !replicated || sql.contains("applying") || !sql.contains("RAISE(ABORT") {
+                continue;
+            }
+            refusing += 1;
+            assert!(
+                marked.contains(table.as_str()),
+                "{name} refuses every delete of {table}, which is not marked as never deleted"
+            );
+        }
+        assert!(refusing > 0, "the schema has an ungated delete refusal");
+        for table in &marked {
+            for (column, target, _, on_delete) in foreign_keys(&pool, table).await {
+                let deletable = VAULT_MANIFEST
+                    .tables
+                    .iter()
+                    .any(|spec| spec.name == target && spec.deletion == Deletion::Ordinary);
+                assert!(
+                    on_delete != "CASCADE" || !deletable,
+                    "{table}.{column} cascades from {target}, which can be deleted"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn manifest_refuses_a_never_table_under_a_deletable_cascade_parent() {
+    const PARENT: TableSpec = TableSpec {
+        deletion: Deletion::Ordinary,
+        ..chat::PARTICIPANTS
+    };
+    const KEY_CHILD: TableSpec = TableSpec {
+        deletion: Deletion::Never,
+        ..chat::TEAMMATES
+    };
+    const PROFILE: TableSpec = TableSpec {
+        deletion: Deletion::Ordinary,
+        ..chat::PROFILES
+    };
+    const REFERENCING: TableSpec = TableSpec {
+        deletion: Deletion::Never,
+        ..chat::PROFILE_REVISIONS
+    };
+    const REFUSED: DomainManifest = DomainManifest {
+        tables: &[PARENT, KEY_CHILD, PROFILE, REFERENCING],
+        ..chat::DOMAIN
+    };
+    let problems = validation_error(&[&REFUSED]);
+    for problem in [
+        "chat_teammates: the key parent of a never-deleted table is never deleted",
+        "chat_access_profile_revisions: access_profile_id cascades from a table that is not never deleted",
     ] {
         assert!(problems.contains(problem), "{problems}");
     }

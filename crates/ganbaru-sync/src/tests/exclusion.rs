@@ -409,6 +409,67 @@ fn late_operations_stored_after_their_removal_list_their_rows_until_the_next_eng
     });
 }
 
+/// SQL creating a teammate participant with no revisions.
+fn participant(id: &str) -> String {
+    format!(
+        "INSERT INTO chat_participants
+            (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ({}, 'ai_teammate', 'Late', '{CREATED_AT}', '{CREATED_AT}');",
+        quoted(id),
+    )
+}
+
+/// Exclusion removes what a removed device created in a table no operation deletes from, both a
+/// row nothing else wrote and one an honest member edited after seeing it.
+#[test]
+fn excluded_writer_row_of_a_never_deleted_table_stays_removable() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(208).await;
+        edit(&mut honest, &note("note-shared", "Draft", 0)).await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+
+        edit(
+            &mut removed,
+            &format!(
+                "{}{}",
+                participant("participant:dropped"),
+                participant("participant:edited")
+            ),
+        )
+        .await;
+        deliver(&mut honest, &mut removed).await;
+        edit(
+            &mut honest,
+            &format!(
+                "UPDATE chat_participants SET display_name = 'Honest', updated_at = '{EDITED_AT}'
+                 WHERE id = 'participant:edited'"
+            ),
+        )
+        .await;
+        let device = removed.device_id.clone();
+        anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                replica
+                    .count(
+                        "SELECT count(*) FROM chat_participants
+                         WHERE id IN ('participant:dropped', 'participant:edited')"
+                    )
+                    .await,
+                0,
+                "replica {} kept a row of the removed device",
+                replica.index
+            );
+        }
+    });
+}
+
 #[test]
 fn restoring_late_values_and_a_late_deletion_writes_them_as_the_admin() {
     block_on(async {

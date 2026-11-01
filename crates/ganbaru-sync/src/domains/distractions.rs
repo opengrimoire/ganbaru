@@ -468,7 +468,10 @@ pub fn with_hooks(hooks: Hooks) -> Hooks {
 mod tests {
     use super::*;
     use crate::codec::OwnedRow;
-    use crate::manifest::vault::distractions::CATEGORY_RULES_TABLE;
+    use crate::manifest::vault::distractions::{CATEGORY_RULES_TABLE, LIMIT_ENTRIES};
+
+    /// One byte past the longest text the strict limit parser reads.
+    const PAST_PARSER_BOUND: usize = 513;
 
     fn text(value: &str) -> Field {
         Field::Text(value.to_string())
@@ -476,6 +479,91 @@ mod tests {
 
     fn value(fields: Vec<Field>) -> Value {
         Value::new(fields).unwrap()
+    }
+
+    /// The entries group of a limit holding a valid entry and one with these sources.
+    fn limit_entries(
+        website: Field,
+        mobile_name: Field,
+        package: Field,
+        desktop: Field,
+        match_names: &str,
+    ) -> Result<(), AdapterError> {
+        let valid = OwnedRow::flat(vec![
+            text("valid"),
+            Field::Null,
+            Field::Null,
+            text("video.example.com"),
+            Field::Null,
+            Field::Null,
+            Field::Null,
+            text("[]"),
+        ]);
+        let tested = OwnedRow::flat(vec![
+            text("tested"),
+            Field::Null,
+            Field::Null,
+            website,
+            mobile_name,
+            package,
+            desktop,
+            text(match_names),
+        ]);
+        let blob = codec::encode(&LIMIT_ENTRIES, &[valid, tested]).unwrap();
+        DistractionsAdapter.validate(
+            USAGE_LIMITS_TABLE,
+            limit_group::ENTRIES,
+            &value(vec![Field::Blob(blob)]),
+        )
+    }
+
+    #[test]
+    fn blank_usage_limit_source_is_held_invalid() {
+        let website =
+            |host: &str| limit_entries(text(host), Field::Null, Field::Null, Field::Null, "[]");
+        let desktop = |names: &str| {
+            limit_entries(Field::Null, Field::Null, Field::Null, text("Steam"), names)
+        };
+        let mobile = |package: &str| {
+            limit_entries(Field::Null, text("Video"), text(package), Field::Null, "[]")
+        };
+        assert_eq!(website("clips.example.com"), Ok(()));
+        assert_eq!(desktop(r#"["Steam","steamwebhelper"]"#), Ok(()));
+        assert_eq!(desktop("[]"), Ok(()));
+        assert_eq!(mobile("com.example.video"), Ok(()));
+
+        assert!(website("").is_err());
+        assert!(website("   ").is_err());
+        assert!(website("\u{2003}").is_err());
+        assert!(desktop(r#"[""]"#).is_err());
+        assert!(desktop(r#"["Steam"," "]"#).is_err());
+        assert!(
+            desktop(&serde_json::to_string(&["n".repeat(PAST_PARSER_BOUND)]).unwrap()).is_err()
+        );
+        assert!(
+            desktop(&serde_json::to_string(&vec!["app"; MAX_MATCH_NAMES + 1]).unwrap()).is_err()
+        );
+        assert!(desktop("not json").is_err());
+        assert!(mobile("not a package").is_err());
+        assert!(
+            limit_entries(Field::Null, Field::Null, Field::Null, Field::Null, "[]").is_err(),
+            "an entry with no source"
+        );
+    }
+
+    #[test]
+    fn oversized_usage_limit_name_is_held_invalid() {
+        let name = |name: &str| {
+            DistractionsAdapter.validate(
+                USAGE_LIMITS_TABLE,
+                limit_group::NAME,
+                &value(vec![text(name)]),
+            )
+        };
+        assert_eq!(name("Video"), Ok(()));
+        assert_eq!(name(&"\u{1F600}".repeat(80)), Ok(()));
+        let padded = format!("{}Video", " ".repeat(PAST_PARSER_BOUND));
+        assert!(name(&padded).is_err());
     }
 
     #[test]

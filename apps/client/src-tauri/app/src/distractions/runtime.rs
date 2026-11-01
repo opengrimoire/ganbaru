@@ -867,6 +867,22 @@ mod tests {
     }
 
     #[test]
+    fn limit_parse_failure_keeps_phase_enforcement() {
+        let limits = |website_host: &str| {
+            serde_json::json!({"distractions": {"limits": {"enabled": true, "items": [{
+                "id": "habit", "minutesPerDay": 10,
+                "entries": [{"id": "site", "websiteHost": website_host}]}]}}})
+        };
+        let config = crate::distractions::limits_or_phase_only(&limits(" "));
+        assert!(!config.enabled);
+        assert!(config.items.is_empty());
+
+        let config = crate::distractions::limits_or_phase_only(&limits("video.example.com"));
+        assert!(config.enabled);
+        assert_eq!(config.items.len(), 1);
+    }
+
+    #[test]
     fn observe_enforces_when_usage_read_fails() {
         let binding = UsageBinding {
             generation: 1,

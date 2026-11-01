@@ -490,6 +490,17 @@ mod tests {
     }
 
     #[test]
+    fn limit_parse_failure_keeps_guardian_rules() {
+        let mut config = root();
+        config["distractions"]["limits"]["items"][0]["entries"][2]["websiteHost"] = json!(" ");
+        let built = build(&config, &capture(), &[], &copy(), "native-parse");
+        assert!(built.is_ok(), "one limit stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        assert_eq!(published_packages(&rules), ["com.example.video"]);
+        assert_eq!(rules["limits"], json!({"enabled": false, "items": []}));
+    }
+
+    #[test]
     fn projection_keeps_publishing_past_the_rule_cap() {
         let mut config = root();
         config["distractions"]["mobile"]["blockedApps"] = (0..=MAX_MOBILE_RULES)

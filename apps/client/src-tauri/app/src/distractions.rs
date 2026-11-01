@@ -51,6 +51,15 @@ pub(crate) mod state_files;
 pub(crate) mod usage_totals;
 
 pub(crate) use ganbaru_distractions::limits;
+
+#[cfg(test)]
+pub(crate) fn limits_or_phase_only(root: &serde_json::Value) -> limits::LimitsConfig {
+    limits::parse_config(root).unwrap_or(limits::LimitsConfig {
+        enabled: true,
+        items: Vec::new(),
+    })
+}
+
 #[cfg(desktop)]
 use ganbaru_distractions::{contracts, rules, usage};
 

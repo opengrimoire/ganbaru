@@ -465,6 +465,127 @@ async fn insert_desktop_rule(pool: &SqlitePool, identity: &str, name: &str, matc
     .expect("insert desktop rule");
 }
 
+/// Switches the database in or out of the state apply runs in, past the local value checks.
+async fn set_applying(pool: &SqlitePool, applying: bool) {
+    sqlx::query("UPDATE sync_apply_state SET applying = ? WHERE singleton = 1")
+        .bind(applying)
+        .execute(pool)
+        .await
+        .expect("set applying");
+}
+
+async fn insert_replicated_limit(pool: &SqlitePool, id: &str, name: &str, enabled: bool) {
+    sqlx::query(
+        "INSERT INTO distractions_usage_limits (id, created_at_ms, name, enabled, minutes_per_day)
+         VALUES (?, ?, ?, ?, 30)",
+    )
+    .bind(id)
+    .bind(NOW_MS)
+    .bind(name)
+    .bind(enabled)
+    .execute(pool)
+    .await
+    .expect("insert usage limit");
+}
+
+/// Sources of a replicated limit entry row.
+#[derive(Clone, Copy, Default)]
+struct ReplicatedSources<'a> {
+    website_host: Option<&'a str>,
+    mobile_app_name: Option<&'a str>,
+    mobile_app_package: Option<&'a str>,
+    desktop_app_name: Option<&'a str>,
+    match_names: Option<&'a str>,
+}
+
+async fn insert_replicated_entry(
+    pool: &SqlitePool,
+    limit_id: &str,
+    ordinal: i64,
+    id: &str,
+    sources: ReplicatedSources<'_>,
+) {
+    sqlx::query(
+        "INSERT INTO distractions_usage_limit_entries
+             (limit_id, ordinal, id, website_host, mobile_app_name, mobile_app_package,
+              desktop_app_name, desktop_app_match_names_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(limit_id)
+    .bind(ordinal)
+    .bind(id)
+    .bind(sources.website_host)
+    .bind(sources.mobile_app_name)
+    .bind(sources.mobile_app_package)
+    .bind(sources.desktop_app_name)
+    .bind(sources.match_names.unwrap_or("[]"))
+    .execute(pool)
+    .await
+    .expect("insert usage limit entry");
+}
+
+#[test]
+fn read_entries_always_pass_parse_config() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let valid = ReplicatedSources {
+            website_host: Some("video.example.com"),
+            ..ReplicatedSources::default()
+        };
+        let blank_host = ReplicatedSources {
+            website_host: Some(" "),
+            ..ReplicatedSources::default()
+        };
+        let blank_match_name = ReplicatedSources {
+            desktop_app_name: Some("Steam"),
+            match_names: Some(r#"[""]"#),
+            ..ReplicatedSources::default()
+        };
+        let invalid_package = ReplicatedSources {
+            mobile_app_name: Some("Video"),
+            mobile_app_package: Some("not a package"),
+            ..ReplicatedSources::default()
+        };
+        set_applying(&pool, true).await;
+        for (id, enabled) in [("disabled-limit", false), ("enabled-limit", true)] {
+            insert_replicated_limit(&pool, id, "Video", enabled).await;
+            insert_replicated_entry(&pool, id, 0, "blank-host", blank_host).await;
+            insert_replicated_entry(&pool, id, 1, "blank-match", blank_match_name).await;
+            insert_replicated_entry(&pool, id, 2, "bad-package", invalid_package).await;
+            insert_replicated_entry(&pool, id, 3, "valid", valid).await;
+        }
+        insert_replicated_limit(&pool, "only-blank", "Video", true).await;
+        insert_replicated_entry(&pool, "only-blank", 0, "blank-host", blank_host).await;
+        let long_name = format!("{}Video", " ".repeat(600));
+        insert_replicated_limit(&pool, "long-name", &long_name, true).await;
+        insert_replicated_entry(&pool, "long-name", 0, "valid", valid).await;
+        set_applying(&pool, false).await;
+
+        let config = read(&pool).await.expect("read rules");
+        let root = config.to_root_value().expect("encode rules");
+        let parsed = crate::limits::parse_config(&root);
+        assert!(
+            parsed.is_ok(),
+            "one row failed the whole configuration: {parsed:?}"
+        );
+        let limits = parsed.unwrap().items;
+        let kept: Vec<(&str, bool, Vec<&str>)> = limits
+            .iter()
+            .map(|limit| {
+                let entries = limit.entries.iter().map(|entry| entry.id.as_str());
+                (limit.id.as_str(), limit.enabled, entries.collect())
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("disabled-limit", false, vec!["valid"]),
+                ("enabled-limit", true, vec!["valid"]),
+            ]
+        );
+    });
+}
+
 async fn desktop_rule_enabled(pool: &SqlitePool, identity: &str) -> Option<i64> {
     sqlx::query_scalar(
         "SELECT enabled FROM distractions_app_rules

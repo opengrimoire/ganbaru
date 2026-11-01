@@ -717,7 +717,7 @@ async fn set_workspace_archived(
 ) -> ChatResult<ProjectWorkingFolderRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
     let existing = repository::read_workspace(&pool, &working_folder_id).await?;
-    if existing.kind == WorkingFolderKind::Managed {
+    if archived && existing.kind == WorkingFolderKind::Managed {
         return Err(ChatError::validation(
             "workingFolderId",
             "Managed project working folders cannot be archived",

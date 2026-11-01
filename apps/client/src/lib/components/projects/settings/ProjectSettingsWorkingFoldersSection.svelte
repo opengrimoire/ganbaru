@@ -345,7 +345,7 @@
             </button>
             <button type="button" class="menu-item" disabled={busy || !isExternal} onclick={() => rename(folder)}><Pencil size={14} /><span class="min-w-0 truncate">{t("projects.settings.workingFolders.rename")}</span></button>
             {#if folder.workingFolder.archivedAt}
-              <button type="button" class="menu-item" disabled={busy || !isExternal} onclick={() => draft.setArchived(folder, false)}><ArchiveRestore size={14} /><span class="min-w-0 truncate">{t("projects.settings.workingFolders.restore")}</span></button>
+              <button type="button" class="menu-item" disabled={busy} onclick={() => draft.setArchived(folder, false)}><ArchiveRestore size={14} /><span class="min-w-0 truncate">{t("projects.settings.workingFolders.restore")}</span></button>
             {:else}
               <button type="button" class="menu-item" disabled={busy || !isExternal} onclick={() => draft.setArchived(folder, true)}><Archive size={14} /><span class="min-w-0 truncate">{t("projects.settings.workingFolders.archive")}</span></button>
             {/if}

@@ -6,17 +6,18 @@
 //! concurrent edit or insert is offered for recovery.
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Field, GroupId, GroupMask, GroupValue, RowKey, Value, derived_key,
+    Change, ChangeAction, Field, GroupId, GroupMask, GroupValue, RowKey, Value, VersionVector,
+    derived_key,
 };
 
 use super::block_on;
 use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, rank};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
-    DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE, PROJECTS,
-    PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
+    DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS, FOLDERS_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE,
+    PROJECTS, PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
 };
-use crate::{ChangeNotice, ConflictRow, HoldReason, StoreOutcome};
+use crate::{ChangeNotice, ConflictRow, HoldReason, StoreOutcome, merge};
 
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -27,6 +28,7 @@ const SECTION_B: &str = "section-b";
 const OPEN: &str = "status-open";
 const DONE: &str = "status-done";
 const EXTERNAL_FOLDER: &str = "folder-external";
+const MANAGED_FOLDER: &str = "working-folder:project-shared";
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -903,11 +905,11 @@ fn projects_a_folder_made_primary_while_archived_converges_without_a_failure() {
     });
 }
 
-/// A write of one timestamp group of the external folder alone.
-fn folder_timestamp_write(group: GroupId, timestamp: &str) -> Change {
+/// A write of one timestamp group of `folder` alone.
+fn folder_timestamp_write(folder: &str, group: GroupId, timestamp: &str) -> Change {
     Change {
         table: FOLDERS_TABLE,
-        row: RowKey::new(EXTERNAL_FOLDER).unwrap(),
+        row: RowKey::new(folder).unwrap(),
         action: ChangeAction::Write,
         groups: vec![GroupValue::new(
             FOLDERS_TABLE,
@@ -951,8 +953,11 @@ fn folder_timestamps_must_be_rfc3339_utc() {
                                  FROM project_working_folders WHERE id = 'folder-external'";
 
         for (index, (group, timestamp)) in refused.into_iter().enumerate() {
-            let forged =
-                forge_change(&mut replicas[0], folder_timestamp_write(group, timestamp)).await;
+            let forged = forge_change(
+                &mut replicas[0],
+                folder_timestamp_write(EXTERNAL_FOLDER, group, timestamp),
+            )
+            .await;
             let receiver = &mut replicas[index + 1];
             assert_eq!(
                 receiver.receive(&[forged]).await,
@@ -971,7 +976,7 @@ fn folder_timestamps_must_be_rfc3339_utc() {
 
         let valid = forge_change(
             &mut replicas[0],
-            folder_timestamp_write(folder_group::ARCHIVED, EDITED),
+            folder_timestamp_write(EXTERNAL_FOLDER, folder_group::ARCHIVED, EDITED),
         )
         .await;
         let receiver = replicas.last_mut().unwrap();
@@ -984,6 +989,163 @@ fn folder_timestamps_must_be_rfc3339_utc() {
             texts(receiver, stored_timestamps).await,
             [format!("{CREATED}|{EDITED}")]
         );
+    });
+}
+
+/// The project's managed folder and an external folder.
+fn folders_sql() -> String {
+    let created = quoted(CREATED);
+    format!(
+        "INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
+         VALUES ({managed}, {project}, 'Launch', 'managed', 'projects/project-shared',
+                 {created}, {created}),
+                ({external}, {project}, 'Repository', 'external', NULL, {created}, {created});",
+        managed = quoted(MANAGED_FOLDER),
+        external = quoted(EXTERNAL_FOLDER),
+        project = quoted(PROJECT),
+    )
+}
+
+/// The stored `archived_at` of `folder`, with `-` for null.
+async fn stored_archive(replica: &mut Replica, folder: &str) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT coalesce(archived_at, '-') FROM project_working_folders WHERE id = {}",
+            quoted(folder)
+        ),
+    )
+    .await
+}
+
+/// The merge winner of the archive group of `folder`.
+async fn archive_winner(replica: &mut Replica, folder: &str) -> Field {
+    let versions = merge::versions(&replica.engine, &mut replica.conn, FOLDERS_TABLE, folder)
+        .await
+        .unwrap();
+    let winners = merge::winners(&replica.engine, &FOLDERS, &versions);
+    match winners[&folder_group::ARCHIVED].value.fields() {
+        [field] => field.clone(),
+        other => panic!("unexpected archive value {other:?}"),
+    }
+}
+
+/// Every operation `replica` stores.
+async fn stored_ops(replica: &mut Replica) -> usize {
+    replica.ops_since(&VersionVector::new()).await.len()
+}
+
+#[test]
+fn replicated_archive_of_a_managed_folder_materializes_unarchived() {
+    block_on(async {
+        let mut replicas = shared(3, &folders_sql()).await;
+        let before = stored_ops(&mut replicas[1]).await;
+        let forged = forge_change(
+            &mut replicas[0],
+            folder_timestamp_write(MANAGED_FOLDER, folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+
+        // The override needs no seal: a replica that only receives and applies holds it too.
+        for receiver in &mut replicas[1..] {
+            assert_eq!(
+                receiver.receive(std::slice::from_ref(&forged)).await,
+                vec![StoreOutcome::Stored { held: None }]
+            );
+            receiver.apply_all().await.unwrap();
+            assert_eq!(stored_archive(receiver, MANAGED_FOLDER).await, ["-"]);
+            assert_eq!(
+                archive_winner(receiver, MANAGED_FOLDER).await,
+                Field::Text(EDITED.to_string())
+            );
+            assert_eq!(receiver.seal().await.unwrap().sealed_ops, 0);
+        }
+
+        // An unrelated edit materializes the row again and restates nothing.
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders SET display_name = 'Renamed' WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_archive(replica, MANAGED_FOLDER).await, ["-"]);
+            assert_eq!(
+                archive_winner(replica, MANAGED_FOLDER).await,
+                Field::Text(EDITED.to_string())
+            );
+        }
+        assert_eq!(stored_ops(&mut replicas[1]).await, before + 2);
+    });
+}
+
+#[test]
+fn local_restore_of_an_archived_managed_folder_seals_a_null_archive() {
+    block_on(async {
+        let mut replicas = shared(2, &folders_sql()).await;
+        let forged = forge_change(
+            &mut replicas[1],
+            folder_timestamp_write(MANAGED_FOLDER, folder_group::ARCHIVED, EDITED),
+        )
+        .await;
+        replicas[0].receive(std::slice::from_ref(&forged)).await;
+        replicas[0].apply_all().await.unwrap();
+
+        // Applying materializes null, so the row only holds the timestamp if it is written past
+        // the gated triggers and capture.
+        replicas[0]
+            .exec(&format!(
+                "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+                 UPDATE project_working_folders SET archived_at = {} WHERE id = {};
+                 UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+                quoted(EDITED),
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        assert_eq!(
+            stored_archive(&mut replicas[0], MANAGED_FOLDER).await,
+            [EDITED]
+        );
+
+        replicas[0]
+            .exec(&format!(
+                "UPDATE project_working_folders SET archived_at = NULL WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        assert_eq!(replicas[0].seal().await.unwrap().sealed_ops, 1);
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_archive(replica, MANAGED_FOLDER).await, ["-"]);
+            assert_eq!(archive_winner(replica, MANAGED_FOLDER).await, Field::Null);
+        }
+    });
+}
+
+#[test]
+fn replicated_archive_of_an_external_folder_stays_archived() {
+    block_on(async {
+        let mut replicas = shared(2, &folders_sql()).await;
+        replicas[0]
+            .exec(&format!(
+                "UPDATE project_working_folders SET archived_at = {} WHERE id = {}",
+                quoted(EDITED),
+                quoted(EXTERNAL_FOLDER)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_archive(replica, EXTERNAL_FOLDER).await, [EDITED]);
+            assert_eq!(
+                archive_winner(replica, EXTERNAL_FOLDER).await,
+                Field::Text(EDITED.to_string())
+            );
+        }
     });
 }
 

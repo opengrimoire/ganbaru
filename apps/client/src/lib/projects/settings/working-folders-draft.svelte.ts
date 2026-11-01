@@ -133,7 +133,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
 
   /** Stage archive or restore without affecting active Chat execution. */
   function setArchived(folder: ProjectWorkingFolderRead, archived: boolean): void {
-    if (folder.workingFolder.kind !== "external") return;
+    if (folder.workingFolder.kind !== "external" && archived) return;
     rows = rows.map((entry) => entry.workingFolder.id === folder.workingFolder.id
       ? { ...entry, workingFolder: { ...entry.workingFolder, archivedAt: archived ? new Date().toISOString() : null } } : entry);
     ensurePrimary();

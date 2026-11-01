@@ -29,6 +29,15 @@ describe("Notes workspace parsing", () => {
     }
     expect(() => mapNavigationDatabase({ ...database, title: null })).toThrow("database.title must be a string");
   });
+  it("mapPageSummary tolerates an unusable synced icon", () => {
+    const hostile = pageSummary(JSON.stringify({ type: "external", external: { url: "http://example.com/icon.png" } }));
+    const honest = { ...pageSummary(JSON.stringify({ type: "emoji", emoji: "📌" })), id: "page-2" };
+    expect(() => [hostile, honest].map(mapPageSummary)).not.toThrow();
+    const pages = [hostile, honest].map(mapPageSummary);
+    expect(pages.map((page) => page.id)).toEqual(["page-1", "page-2"]);
+    expect(pages[0]?.icon).toBeNull();
+    expect(pages[1]?.icon).toEqual({ type: "emoji", emoji: "📌" });
+  });
   it("reports stored icon JSON failures with field context", () => {
     expect(() => mapPageSummary(pageSummary("{{"))).toThrow(
       'page.icon for page "page-1" must contain valid JSON',

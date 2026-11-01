@@ -3,12 +3,17 @@ use super::common::{
     require_unused_teammate_name, validate_message_request, validate_teammate_role,
 };
 use super::scheduling::{
-    SCHEDULED_REQUEST_MISMATCH_REASON, claim_scheduled_message_for_immediate_send,
-    refuse_mismatched_request, validate_scheduled_for,
+    SCHEDULED_REQUEST_MISMATCH_REASON, ScheduledRowBinding,
+    claim_scheduled_message_for_immediate_send, insert_scheduled_reference,
+    refuse_mismatched_request, scheduled_consent_in, scheduled_reference_target,
+    scheduled_request_mismatch, validate_scheduled_for,
 };
 use super::workflow::{has_authority_bearing_references, require_continuation_scope_is_unchanged};
 use super::*;
-use crate::chat::device_state::{ChatDeviceScope, record_assignment_acceptance};
+use crate::chat::device_state::{
+    ChatDeviceScope, forget_assignment_acceptance, record_assignment_acceptance,
+};
+use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
@@ -833,7 +838,10 @@ fn scheduled_request_mismatch_refuses_foreign_channel() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert!(failed_at.is_some(), "the refusal fails the message for good");
+        assert!(
+            failed_at.is_some(),
+            "the refusal fails the message for good"
+        );
         assert_eq!(
             last_error.as_deref(),
             Some(SCHEDULED_REQUEST_MISMATCH_REASON)
@@ -850,44 +858,239 @@ async fn dispatch_job_count(pool: &SqlitePool, assignment_id: &ChatWorkAssignmen
         .unwrap()
 }
 
+/// Stores and claims the scheduled message `scheduled:test` as `claim:a` on `device:desk`, a
+/// mention of the review agent, returning its request.
+async fn claim_scheduled_mention(
+    pool: &SqlitePool,
+    now: &UtcTimestamp,
+) -> (PostChatMessageCommand, ChatScheduledMessageId) {
+    let mut request = message("@Review agent check this");
+    request.client_command_id = ChatCommandId::new("command:test").unwrap();
+    request.channel_id = ChatChannelId::new("channel:review").unwrap();
+    request.references = vec![participant_reference(
+        "reference:scheduled",
+        ChatParticipantId::new("participant:review-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    sqlx::query(
+        "INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, executing_device_id, request_data,
+             scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:test', 'command:test', 'channel:review', 'device:desk', ?1, ?2, ?2,
+                 ?2)",
+    )
+    .bind(serde_json::to_string(&request).unwrap())
+    .bind(now.as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+    let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+    claim_scheduled_message_for_immediate_send(
+        pool,
+        &scheduled_message_id,
+        "device:desk",
+        now,
+        "claim:a",
+    )
+    .await
+    .unwrap();
+    (request, scheduled_message_id)
+}
+
+#[test]
+fn scheduled_request_mismatch_names_the_field_that_differs() {
+    let stored_thread = ChatReplyThreadId::new("thread:stored").unwrap();
+    let mut request = message("@Review agent check this");
+    request.reply_thread_id = Some(stored_thread.clone());
+    request.references = vec![participant_reference(
+        "reference:scheduled",
+        ChatParticipantId::new("participant:review-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    let references: Vec<_> = request
+        .references
+        .iter()
+        .map(scheduled_reference_target)
+        .collect();
+    let client_command_id = request.client_command_id.as_str().to_owned();
+    let channel_id = request.channel_id.as_str().to_owned();
+    let row = ScheduledRowBinding {
+        client_command_id: &client_command_id,
+        channel_id: &channel_id,
+        reply_thread_id: Some(stored_thread.as_str()),
+        references: &references,
+    };
+    assert_eq!(scheduled_request_mismatch(&row, &request), None);
+
+    let mut foreign = request.clone();
+    foreign.channel_id = ChatChannelId::new("channel:foreign").unwrap();
+    assert_eq!(
+        scheduled_request_mismatch(&row, &foreign),
+        Some("channelId")
+    );
+
+    let mut rethreaded = request.clone();
+    rethreaded.reply_thread_id = None;
+    assert_eq!(
+        scheduled_request_mismatch(&row, &rethreaded),
+        Some("replyThreadId")
+    );
+
+    let mut recommanded = request.clone();
+    recommanded.client_command_id = ChatCommandId::new("command:foreign").unwrap();
+    assert_eq!(
+        scheduled_request_mismatch(&row, &recommanded),
+        Some("clientCommandId")
+    );
+
+    let mut retargeted = request.clone();
+    retargeted.references = vec![participant_reference(
+        "reference:scheduled",
+        ChatParticipantId::new("participant:other-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    assert_eq!(
+        scheduled_request_mismatch(&row, &retargeted),
+        Some("references")
+    );
+
+    let mut unmentioned = request.clone();
+    unmentioned.references.clear();
+    assert_eq!(
+        scheduled_request_mismatch(&row, &unmentioned),
+        Some("references")
+    );
+
+    let mut extended = request.clone();
+    extended.references.push(extended.references[0].clone());
+    assert_eq!(
+        scheduled_request_mismatch(&row, &extended),
+        Some("references")
+    );
+}
+
+#[test]
+fn scheduled_request_mismatch_passes_a_row_with_its_stored_references() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let mut transaction = pool.begin().await.unwrap();
+        insert_scheduled_reference(
+            &mut transaction,
+            &scheduled_message_id,
+            &request.references[0],
+            0,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+
+        let refusal = refuse_mismatched_request(&pool, send, &request)
+            .await
+            .unwrap();
+
+        assert!(refusal.is_none(), "the honest request was refused");
+        let failed_at: Option<String> =
+            sqlx::query_scalar("SELECT failed_at FROM chat_scheduled_messages WHERE id = ?")
+                .bind(scheduled_message_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(failed_at, None);
+    });
+}
+
+#[test]
+fn scheduled_consent_covers_only_the_request_it_was_given_for() {
+    let id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+    let other = ChatScheduledMessageId::new("scheduled:other").unwrap();
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let mut scope = ChatDeviceScope::default();
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Unattended
+    );
+
+    record_assignment_acceptance(
+        &mut scope,
+        scheduled_consent_digest(id.as_str(), "request"),
+        now,
+    );
+
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Local
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "rewritten request"),
+        ScheduledConsent::Unattended,
+        "a request rewritten on a peer kept the consent"
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &other, "request"),
+        ScheduledConsent::Unattended,
+        "the consent reached another message"
+    );
+
+    forget_assignment_acceptance(
+        &mut scope,
+        &scheduled_consent_digest(id.as_str(), "request"),
+    );
+
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Unattended
+    );
+}
+
+#[test]
+fn consented_scheduled_post_queues_its_dispatch() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        assert!(!posted.assignment_write.awaits_acceptance);
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+    });
+}
+
 #[test]
 fn unattended_scheduled_post_leaves_assignment_queued() {
     tauri::async_runtime::block_on(async {
         let pool = review_thread_without_assignment().await;
         let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-        let mut request = message("@Review agent check this");
-        request.channel_id = ChatChannelId::new("channel:review").unwrap();
-        request.references = vec![participant_reference(
-            "reference:scheduled",
-            ChatParticipantId::new("participant:review-agent").unwrap(),
-            ChatParticipantKind::AiTeammate,
-            "Review agent",
-            "@Review agent",
-            0,
-            13,
-        )];
-        sqlx::query(
-            "INSERT INTO chat_scheduled_messages
-                (id, client_command_id, channel_id, executing_device_id, request_data,
-                 scheduled_for, created_at, updated_at)
-             VALUES ('scheduled:test', 'command:test', 'channel:review', 'device:desk', ?1, ?2, ?2,
-                     ?2)",
-        )
-        .bind(serde_json::to_string(&request).unwrap())
-        .bind(now.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
-        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
-        claim_scheduled_message_for_immediate_send(
-            &pool,
-            &scheduled_message_id,
-            "device:desk",
-            &now,
-            "claim:a",
-        )
-        .await
-        .unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
         let send = ScheduledSend {
             scheduled_message_id: &scheduled_message_id,
             claim_token: "claim:a",
@@ -900,6 +1103,7 @@ fn unattended_scheduled_post_leaves_assignment_queued() {
             .await
             .unwrap();
 
+        assert!(posted.assignment_write.awaits_acceptance);
         let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
         assert_eq!(
             dispatch_job_count(&pool, &assignment_id).await,
@@ -2199,11 +2403,13 @@ fn a_new_assignment_runs_on_the_home_device_else_the_posting_desktop_else_nowher
             id: "device:phone",
             can_execute: false,
             chat_writers: &writers,
+            unattended: false,
         };
         let desk = super::workflow::PostingDevice {
             id: "device:desk",
             can_execute: true,
             chat_writers: &writers,
+            unattended: false,
         };
 
         let pool = review_thread_without_assignment().await;
@@ -2279,6 +2485,7 @@ fn after_a_handoff_a_mention_runs_on_the_new_owner_instead_of_the_old_home_devic
             id: "device:phone",
             can_execute: false,
             chat_writers: &writers,
+            unattended: false,
         };
         let write = route_review_reply(&pool, phone).await;
         assert!(
@@ -2353,6 +2560,7 @@ fn the_new_owner_takes_over_unstarted_work_queued_on_the_old_owner() {
             id: "device:phone",
             can_execute: false,
             chat_writers: &writers,
+            unattended: false,
         };
         assert_eq!(
             assignments::take_over_stranded_assignments(&pool, phone, &scope, &now)
@@ -2895,6 +3103,7 @@ fn only_unadopted_work_for_this_device_awaits_local_acceptance() {
                     id: "device:phone",
                     can_execute: false,
                     chat_writers: &stranded,
+                    unattended: false,
                 },
                 false,
             ),

@@ -40,6 +40,9 @@ pub(super) struct AssignmentWrite {
     /// desktop executes assignments.
     #[cfg_attr(mobile, allow(dead_code))]
     pub(super) executes_here: bool,
+    /// Whether the post created work on this device that starts only through local acceptance.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub(super) awaits_acceptance: bool,
 }
 
 impl AssignmentWrite {
@@ -48,6 +51,7 @@ impl AssignmentWrite {
         assignment_id: None,
         input_queued: false,
         executes_here: false,
+        awaits_acceptance: false,
     };
 }
 
@@ -182,6 +186,9 @@ pub(super) struct PostingDevice<'a> {
     pub(super) can_execute: bool,
     /// Devices that can write Chat, the only ones an assignment may run on.
     pub(super) chat_writers: &'a ChatWriters,
+    /// Whether no one on this device consented to the post, so new work it creates here waits
+    /// for local acceptance instead of queueing its dispatch.
+    pub(super) unattended: bool,
 }
 
 impl<'a> PostingDevice<'a> {
@@ -191,6 +198,15 @@ impl<'a> PostingDevice<'a> {
             id,
             can_execute: cfg!(desktop),
             chat_writers,
+            unattended: false,
+        }
+    }
+
+    /// This device writing a post no one on it consented to.
+    pub(super) fn unattended(self) -> Self {
+        Self {
+            unattended: true,
+            ..self
         }
     }
 
@@ -294,6 +310,7 @@ pub(super) async fn persist_assignment_routing(
             assignment_id: Some(active.id.clone()),
             input_queued: true,
             executes_here: device.executes(executing_device_id.as_deref()),
+            awaits_acceptance: false,
         });
     }
     let Some(executing_device_id) =
@@ -315,10 +332,12 @@ pub(super) async fn persist_assignment_routing(
         now,
     )
     .await?;
+    let executes_here = device.executes(Some(&executing_device_id));
     Ok(AssignmentWrite {
         assignment_id: Some(assignment_id),
         input_queued: false,
-        executes_here: device.executes(Some(&executing_device_id)),
+        executes_here,
+        awaits_acceptance: executes_here && device.unattended,
     })
 }
 
@@ -336,9 +355,9 @@ pub(super) struct NewAssignment<'a> {
 
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
 /// predecessor. A trigger message that is already an input moves to the new assignment, since
-/// its input id derives from the message. When this device executes it, the same transaction
-/// freezes its context and queues its dispatch; another executing device does both when the
-/// assignment arrives.
+/// its input id derives from the message. When this device executes it and someone here consented
+/// to the post, the same transaction freezes its context and queues its dispatch; otherwise the
+/// executing device does both when the assignment passes its acceptance check.
 pub(super) async fn create_assignment(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment: NewAssignment<'_>,
@@ -412,7 +431,7 @@ pub(super) async fn create_assignment(
     .await
     .map_err(persistence_error)?;
     #[cfg(desktop)]
-    if device.executes(Some(assignment.executing_device_id)) {
+    if device.executes(Some(assignment.executing_device_id)) && !device.unattended {
         queue_assignment_dispatch(
             transaction,
             &assignment_id,

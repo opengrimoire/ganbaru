@@ -233,7 +233,7 @@ Valid concurrent operations converge regardless of delivery order; rejecting whi
 - Database property type changes keep incompatible values for resolution.
 - History restore writes a safety version and new operations against current state; it never rewinds causal history.
 - Cross-feature actions such as task scheduling form one operation group.
-- Scheduled messages and other executable jobs have one execution device and stable execution receipts. Receiving their records never executes them. Work assignments received from a peer also wait for a local acceptance on the device that would run them. The acceptance lives in device state, covers the teammate, its instructions, provider, policy revision, folder grants, and runtime approvals, and lapses when any of those change. Replicated rows cannot grant it.
+- Scheduled messages and other executable jobs have one execution device and stable execution receipts. Receiving their records never executes them. Work assignments received from a peer also wait for a local acceptance on the device that would run them. The acceptance lives in device state, covers the teammate, its instructions, provider, policy revision, folder grants, and runtime approvals, and lapses when any of those change. Replicated rows cannot grant it. A scheduled message's stored request must repeat its row's channel, thread, and mentions, or it fails with nothing posted. Consent to a scheduled message is a device-local digest of its exact request, so a message scheduled or rewritten on another device still posts, but the work it starts waits for that same acceptance.
 
 ### Notes editing
 

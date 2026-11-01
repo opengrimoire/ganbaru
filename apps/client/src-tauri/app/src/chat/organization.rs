@@ -332,6 +332,8 @@ pub(super) async fn post_message(
                 )
                 .await;
             });
+        } else if posted.assignment_write.awaits_acceptance {
+            assignments::start_unattended_assignment(&app, &assignment_id);
         } else {
             tauri::async_runtime::spawn(async move {
                 let _ = dispatch_assignment_job(dispatch_app, dispatch_db_url, assignment_id).await;
@@ -360,13 +362,20 @@ const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messa
 /// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
 /// ids derived from the scheduled message, copies its stored attachment values, and deletes the
 /// scheduled message in the same transaction, so it posts once even when the device stops
-/// between steps.
+/// between steps. An unattended send still posts, but queues no dispatch for the work it creates.
 async fn persist_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
     device: PostingDevice<'_>,
 ) -> ChatResult<PersistedPost> {
+    let device = match scheduled {
+        Some(ScheduledSend {
+            consent: ScheduledConsent::Unattended,
+            ..
+        }) => device.unattended(),
+        _ => device,
+    };
     if let Some(result) = read_post_receipt(pool, &request.client_command_id).await? {
         if let Some(scheduled) = scheduled {
             sqlx::query(DELETE_CLAIMED_SCHEDULED_MESSAGE)

@@ -215,7 +215,86 @@ pub(crate) fn decode_card_qr(
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::migrated_memory_pool;
     use super::*;
+    use ganbaru_contacts::PersonKeyPair;
+    use ganbaru_sync::domains::contacts::MAX_CONTACT_CARD_REVISION;
+
+    const AT: &str = "2026-10-22T10:51:41.000Z";
+
+    /// A vault whose shared card row holds `revision`, and an identity reading it. The value
+    /// trigger is dropped so a test can hold a row no current write admits.
+    async fn card_at_revision(revision: i64) -> (SqlitePool, LocalIdentity) {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql("DROP TRIGGER sync_values_contact_card_insert")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut card_nonce = [0u8; CARD_NONCE_BYTES];
+        random_bytes(&mut card_nonce).unwrap();
+        sqlx::query(
+            "INSERT INTO contact_card (key, card_nonce, card_revision, updated_at)
+             VALUES ('card', ?, ?, ?)",
+        )
+        .bind(encode_nonce(&card_nonce))
+        .bind(revision)
+        .bind(AT)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (_, key) = PersonKeyPair::generate().unwrap();
+        let identity = LocalIdentity {
+            public_key: key.public_key(),
+            card_nonce,
+            card_revision: revision,
+            key: None,
+        };
+        (pool, identity)
+    }
+
+    async fn stored_card(pool: &SqlitePool) -> (String, i64) {
+        sqlx::query_as("SELECT card_nonce, card_revision FROM contact_card WHERE key = 'card'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rotate_card_saturates_at_revision_bound() {
+        let (pool, identity) = card_at_revision(MAX_CONTACT_CARD_REVISION).await;
+        let issued = identity.card_nonce;
+
+        let rotated = rotate_card(&pool, identity).await.unwrap();
+
+        assert_ne!(rotated.card_nonce, issued);
+        assert_eq!(rotated.card_revision, MAX_CONTACT_CARD_REVISION);
+        assert_eq!(
+            stored_card(&pool).await,
+            (encode_nonce(&rotated.card_nonce), MAX_CONTACT_CARD_REVISION)
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_card_replaces_a_nonce_held_at_the_largest_integer() {
+        let (pool, identity) = card_at_revision(i64::MAX).await;
+        let issued = identity.card_nonce;
+
+        let rotated = rotate_card(&pool, identity).await;
+
+        assert!(rotated.is_ok(), "rotation failed: {:?}", rotated.as_ref().err());
+        let rotated = rotated.unwrap();
+        assert_ne!(rotated.card_nonce, issued);
+        assert_eq!(rotated.card_revision, MAX_CONTACT_CARD_REVISION);
+    }
+
+    #[tokio::test]
+    async fn rotate_card_advances_the_revision_below_the_bound() {
+        let (pool, identity) = card_at_revision(MAX_CONTACT_CARD_REVISION - 1).await;
+
+        let rotated = rotate_card(&pool, identity).await.unwrap();
+
+        assert_eq!(rotated.card_revision, MAX_CONTACT_CARD_REVISION);
+    }
 
     #[test]
     fn profile_names_drop_characters_card_decoders_refuse_and_keep_joiners() {

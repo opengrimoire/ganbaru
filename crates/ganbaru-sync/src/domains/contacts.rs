@@ -30,6 +30,9 @@ pub const DIGEST_CHARS: usize = 64;
 pub const MAX_ENDPOINT_HINT_CHARS: usize = 64;
 /// Characters of an encoded card nonce.
 pub const CARD_NONCE_CHARS: usize = 22;
+/// Largest contact card revision: far past any honest rotation count and far from `i64::MAX`, so
+/// revision arithmetic stays in integers.
+pub const MAX_CONTACT_CARD_REVISION: i64 = 1_000_000_000;
 
 /// Contact standings, lowest priority first. A removed contact keeps its row, so a removal
 /// merges against concurrent edits as a standing rather than as a deletion.
@@ -323,7 +326,10 @@ impl DomainAdapter for ContactsAdapter {
 
 #[cfg(test)]
 mod tests {
+    use ganbaru_sync_contracts::{Change, ChangeAction, GroupValue, RowKey};
+
     use super::*;
+    use crate::{Engine, validate};
 
     const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const AT: &str = "2026-10-22T10:51:41.000Z";
@@ -421,6 +427,42 @@ mod tests {
             adapter.priority(CARD_TABLE, card_group::UPDATED, &value(vec![t(AT)])),
             0
         );
+    }
+
+    /// A create of the shared card row carrying `revision`.
+    fn card_create(revision: i64) -> Change {
+        Change {
+            table: CARD_TABLE,
+            row: RowKey::new("card").unwrap(),
+            action: ChangeAction::Create,
+            groups: vec![
+                GroupValue::new(CARD_TABLE, card_group::CARD, card(revision)),
+                GroupValue::new(CARD_TABLE, card_group::UPDATED, value(vec![t(AT)])),
+            ],
+            replaced_by: None,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn card_revision_above_bound_is_held_invalid() {
+        let adapter = ContactsAdapter;
+        let engine = Engine::vault();
+        let validate_card =
+            |revision| adapter.validate(CARD_TABLE, card_group::CARD, &card(revision));
+
+        assert_eq!(validate_card(MAX_CONTACT_CARD_REVISION), Ok(()));
+        assert_eq!(
+            validate::change(&engine, &card_create(MAX_CONTACT_CARD_REVISION)),
+            Ok(())
+        );
+        for revision in [MAX_CONTACT_CARD_REVISION + 1, i64::MAX] {
+            assert!(validate_card(revision).is_err(), "{revision}");
+            assert!(
+                validate::change(&engine, &card_create(revision)).is_err(),
+                "{revision}"
+            );
+        }
     }
 
     #[test]

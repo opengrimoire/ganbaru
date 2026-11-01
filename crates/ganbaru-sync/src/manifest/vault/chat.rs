@@ -753,8 +753,9 @@ pub const POLICY_REVISIONS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_access_profiles`, archive-only. Built-in profiles are seeded with fixed ids, so the
-/// built-in key never collides across devices; concurrent edits of a custom profile keep the
+/// `chat_access_profiles`, archive-only. Built-in profiles are seeded with fixed ids, and the
+/// adapter admits a built-in key only on the row seeded with it, so a collision reaches the
+/// duplicate repair only as defense in depth. Concurrent edits of a custom profile keep the
 /// revision with the lower folder capability.
 pub const PROFILES: TableSpec = TableSpec {
     id: PROFILES_TABLE,

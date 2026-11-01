@@ -1661,6 +1661,18 @@ pub(super) fn test_engine_hooking(table: TableId, hook: Box<dyn MaterializeHook>
     .expect("the test manifest, adapters, and hooks should agree")
 }
 
+/// The engine of [`test_engine`] with `adapter` in place of the one of the same name.
+pub(super) fn test_engine_adapting(adapter: Box<dyn DomainAdapter>) -> Engine {
+    Engine::with(
+        &TEST_MANIFEST,
+        test_adapters().with(adapter),
+        super::notes::with_notes_hooks(vault_hooks())
+            .with(LISTS_TABLE, Box::new(FixtureHook))
+            .with(OVERRIDES_TABLE, Box::new(OverrideHook::default())),
+    )
+    .expect("the test manifest, adapters, and hooks should agree")
+}
+
 /// [`test_engine_with`] the default [`OverrideHook`].
 pub(super) fn test_engine() -> Engine {
     test_engine_with(OverrideHook::default())

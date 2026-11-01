@@ -6,16 +6,22 @@
 
 use std::collections::BTreeMap;
 
-use ganbaru_sync_contracts::derived_key;
+use ganbaru_sync_contracts::{
+    ChangeAction, Entry, Field, GroupValue, LateResolution, LateRow, ResolveLate, RowKey, Value,
+    derived_key, device_owner_tag,
+};
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
+use super::exclusion::{deliver, late_changes};
 use super::focus::{close_run_sql, open_run_sql};
-use super::replica::{Replica, converge, pair, quoted};
+use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, sealed_change};
 use super::sim::Rng;
-use crate::ChangeNotice;
 use crate::domains::distractions::RULES_TOPIC;
-use crate::manifest::vault::distractions::USAGE_TOTAL_KEY_PREFIX;
+use crate::manifest::vault::distractions::{
+    USAGE_TOTAL_KEY_PREFIX, USAGE_TOTALS_TABLE, usage_total_group,
+};
+use crate::{ChangeNotice, HoldReason, StoreOutcome};
 
 const HOST: &str = "video.example.com";
 
@@ -272,12 +278,19 @@ fn distractions_removed_limit_takes_its_entries_and_custom_category_its_hosts() 
 
 /// The key of a usage total, as the flushing device derives it.
 fn usage_key(device_id: &str, source_key: &str) -> String {
-    derived_key(
+    let derived = derived_key(
         USAGE_TOTAL_KEY_PREFIX,
         &[device_id, "website", source_key, USAGE_DATE],
     )
     .expect("usage parts are valid")
-    .to_string()
+    .to_string();
+    let digest = derived
+        .strip_prefix(&format!("{USAGE_TOTAL_KEY_PREFIX}:"))
+        .expect("a derived key starts with its prefix");
+    format!(
+        "{USAGE_TOTAL_KEY_PREFIX}:{tag}:{digest}",
+        tag = device_owner_tag(device_id)
+    )
 }
 
 /// SQL flushing a usage total the way a device recomputes its own bucket: the total only grows
@@ -470,6 +483,225 @@ fn distractions_block_events_publish_at_once_or_with_their_focus_run_and_leave_w
                 "deleting a run deletes its block events on replica {}",
                 replica.index
             );
+        }
+    });
+}
+
+/// The stored total of `key`, when the row exists.
+async fn stored_elapsed(replica: &mut Replica, key: &str) -> Option<i64> {
+    let total = format!(
+        "SELECT elapsed_seconds FROM distractions_usage_totals WHERE id = {}",
+        quoted(key)
+    );
+    let rows = format!(
+        "SELECT count(*) FROM distractions_usage_totals WHERE id = {}",
+        quoted(key)
+    );
+    if replica.count(&rows).await == 0 {
+        return None;
+    }
+    Some(replica.count(&total).await)
+}
+
+const HELD_INVALID: StoreOutcome = StoreOutcome::Stored {
+    held: Some(HoldReason::Invalid),
+};
+
+/// A device signs a total for another device, as a create and as a write of the total alone. A
+/// fourth replica holds both, keeps the honest row, and still takes the owner's own flushes.
+#[test]
+fn usage_total_from_another_device_is_held_invalid() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        let owner = device_id(0);
+        let key = usage_key(&owner, HOST);
+
+        replicas[0].exec(&flush_sql(&owner, HOST, 60)).await;
+        replicas[0].seal().await.unwrap();
+        let create = sealed_change(
+            &mut replicas[0],
+            USAGE_TOTALS_TABLE,
+            &key,
+            ChangeAction::Create,
+        )
+        .await;
+        let forged = forge_change(&mut replicas[1], create).await;
+        assert_eq!(replicas[3].receive(&[forged]).await, vec![HELD_INVALID]);
+        replicas[3].apply_all().await.unwrap();
+        assert_eq!(stored_elapsed(&mut replicas[3], &key).await, None);
+
+        let (victim, source) = pair(&mut replicas, 3, 0);
+        victim.pull(source).await;
+        assert_eq!(stored_elapsed(&mut replicas[3], &key).await, Some(60));
+
+        replicas[0].exec(&flush_sql(&owner, HOST, 9_000)).await;
+        replicas[0].seal().await.unwrap();
+        let write = sealed_change(
+            &mut replicas[0],
+            USAGE_TOTALS_TABLE,
+            &key,
+            ChangeAction::Write,
+        )
+        .await;
+        let forged = forge_change(&mut replicas[2], write).await;
+        assert_eq!(replicas[3].receive(&[forged]).await, vec![HELD_INVALID]);
+        replicas[3].apply_all().await.unwrap();
+        assert_eq!(stored_elapsed(&mut replicas[3], &key).await, Some(60));
+
+        let (victim, source) = pair(&mut replicas, 3, 0);
+        victim.pull(source).await;
+        assert_eq!(stored_elapsed(&mut replicas[3], &key).await, Some(9_000));
+    });
+}
+
+/// A device signing under its own tag cannot name another device in the row.
+#[test]
+fn create_with_mismatched_device_column_is_held() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let owner = device_id(0);
+        let key = usage_key(&owner, HOST);
+        replicas[0].exec(&flush_sql(&owner, HOST, 60)).await;
+        replicas[0].seal().await.unwrap();
+        let mut create = sealed_change(
+            &mut replicas[0],
+            USAGE_TOTALS_TABLE,
+            &key,
+            ChangeAction::Create,
+        )
+        .await;
+        let (receiver, source) = pair(&mut replicas, 1, 0);
+        receiver.pull(source).await;
+
+        let forged_key = usage_key(&owner, "other.example.com");
+        create.row = RowKey::new(forged_key.clone()).unwrap();
+        let bucket = create
+            .groups
+            .iter_mut()
+            .find(|value| value.group == usage_total_group::BUCKET)
+            .expect("a create carries its bucket");
+        let mut fields = bucket.value.fields().to_vec();
+        fields[0] = Field::Text(device_id(1));
+        *bucket = GroupValue::new(
+            USAGE_TOTALS_TABLE,
+            usage_total_group::BUCKET,
+            Value::new(fields).unwrap(),
+        );
+
+        let forged = forge_change(&mut replicas[0], create).await;
+        assert_eq!(replicas[1].receive(&[forged]).await, vec![HELD_INVALID]);
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(stored_elapsed(&mut replicas[1], &forged_key).await, None);
+    });
+}
+
+/// Restating a table publishes the local device's rows and consumes the captures of rows that
+/// belong to other devices.
+#[test]
+fn restate_does_not_seal_foreign_owned_rows() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let (own, foreign) = (device_id(1), device_id(0));
+        let replica = &mut replicas[1];
+        replica
+            .exec(&format!(
+                "{}{}",
+                flush_sql(&own, HOST, 30),
+                flush_sql(&foreign, HOST, 40)
+            ))
+            .await;
+        replica
+            .exec(&format!(
+                "DELETE FROM sync_seeded_tables WHERE table_id = {}",
+                USAGE_TOTALS_TABLE.0
+            ))
+            .await;
+        let now = replica.now_ms;
+        replica
+            .engine
+            .seed_captures(&mut replica.conn, now)
+            .await
+            .unwrap();
+
+        let report = replica.seal().await.unwrap();
+
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        assert_eq!(report.changes, 1);
+        assert_eq!(
+            replica
+                .count(&format!(
+                    "SELECT count(*) FROM sync_capture WHERE table_id = {}",
+                    USAGE_TOTALS_TABLE.0
+                ))
+                .await,
+            0
+        );
+        let (own_key, foreign_key) = (usage_key(&own, HOST), usage_key(&foreign, HOST));
+        sealed_change(replica, USAGE_TOTALS_TABLE, &own_key, ChangeAction::Create).await;
+        assert_eq!(
+            stored_elapsed(replica, &foreign_key).await,
+            Some(40),
+            "the local copy of a foreign row stays"
+        );
+    });
+}
+
+/// Another device cannot republish a removed device's total, so restoring the late change
+/// records the decision and seals nothing.
+#[test]
+fn restoring_a_removed_devices_usage_total_seals_nothing() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 71).await;
+        let mut removed = Replica::new(1, 71).await;
+        let mut honest = Replica::new(2, 71).await;
+        let device = removed.device_id.clone();
+        removed.exec(&flush_sql(&device, HOST, 60)).await;
+        removed.seal().await.unwrap();
+        deliver(&mut honest, &mut removed).await;
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut honest).await;
+
+        let key = usage_key(&device, HOST);
+        let listed = late_changes(&mut anchor).await;
+        let late = listed
+            .iter()
+            .find(|late| late.row_key == key)
+            .expect("the total is a late change")
+            .clone();
+        let before = anchor.stored_vector().await;
+        let report = anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &late,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.sealed_ops, 0);
+        assert_eq!(anchor.stored_vector().await, before);
+        assert_eq!(late_changes(&mut anchor).await.len(), listed.len());
+
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: USAGE_TOTALS_TABLE,
+                    row: RowKey::new(key.clone()).unwrap(),
+                    resolution: LateResolution::Restore,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert!(late_changes(replica).await.is_empty());
+            assert_eq!(stored_elapsed(replica, &key).await, None);
         }
     });
 }

@@ -228,6 +228,14 @@ async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
     let _ = app;
 }
 
+#[cfg(test)]
+fn request_views(rows: &[store::RequestRow]) -> Vec<ContactRequestView> {
+    rows.iter()
+        .map(store::RequestRow::view)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default()
+}
+
 async fn snapshot<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,

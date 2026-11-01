@@ -1096,3 +1096,98 @@ async fn accepting_rechecks_the_stored_card_before_granting_trust() {
         assert_eq!(unchanged.state, "pending");
     }
 }
+
+/// Stores a pending request as a synced row can hold it, whatever its key or creation time.
+async fn insert_stored_request(
+    pool: &SqlitePool,
+    id: &str,
+    public_key: &str,
+    created_at: chrono::DateTime<chrono::Utc>,
+) {
+    store::insert_request(
+        pool,
+        store::NewRequest {
+            id,
+            direction: RequestDirection::Received,
+            public_key,
+            peer_request_id: None,
+            display_name: "Ada",
+            color: 7,
+            card: "card",
+            card_digest: &store::encode_hex(&[0u8; 32]),
+            endpoint_hint: "",
+            coordinator_fingerprint: "",
+            invite_trust: TrustKind::NotAllowed,
+            message_trust: TrustKind::NotAllowed,
+            expires_at: created_at + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+        },
+        created_at,
+    )
+    .await
+    .unwrap();
+}
+
+/// A person public key that is not base64url and fits the stored length.
+fn unparsable_key() -> String {
+    "!".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH)
+}
+
+#[tokio::test]
+async fn request_views_skips_a_malformed_stored_row() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let honest = Person::new("Honest").key.public_key().to_text();
+    insert_stored_request(&pool, "contact-honest", &honest, now).await;
+    insert_stored_request(&pool, "contact-malformed", &unparsable_key(), now).await;
+
+    let rows = store::list_pending_requests(&pool, now).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    let views = super::request_views(&rows);
+
+    let ids: Vec<_> = views.iter().map(|view| view.id.as_str()).collect();
+    assert_eq!(ids, ["contact-honest"]);
+}
+
+#[tokio::test]
+async fn expiry_closes_pending_rows_no_reader_can_use() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let small_order = "A".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH);
+    insert_stored_request(&pool, "contact-unparsable", &unparsable_key(), now).await;
+    insert_stored_request(&pool, "contact-small-order", &small_order, now).await;
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    let slightly_ahead = now + chrono::Duration::hours(12);
+    insert_stored_request(&pool, "contact-skewed", &key("Skewed"), slightly_ahead).await;
+    insert_stored_request(&pool, "contact-honest", &key("Honest"), now).await;
+
+    store::expire_stale_requests(&pool, now).await.unwrap();
+
+    for (id, state) in [
+        ("contact-unparsable", "expired"),
+        ("contact-small-order", "expired"),
+        ("contact-far-ahead", "expired"),
+        ("contact-skewed", "pending"),
+        ("contact-honest", "pending"),
+    ] {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.state, state, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn pending_list_leaves_out_a_row_created_far_ahead() {
+    let pool = migrated_memory_pool().await;
+    let now = store::now();
+    let key = |name| Person::new(name).key.public_key().to_text();
+    let far_ahead = now + chrono::Duration::days(30);
+    insert_stored_request(&pool, "contact-far-ahead", &key("Far"), far_ahead).await;
+    let slightly_ahead = now + chrono::Duration::hours(12);
+    insert_stored_request(&pool, "contact-skewed", &key("Skewed"), slightly_ahead).await;
+
+    let listed = store::list_pending_requests(&pool, now).await.unwrap();
+
+    let ids: Vec<_> = listed.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-skewed"]);
+}

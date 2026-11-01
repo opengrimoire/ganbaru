@@ -331,8 +331,16 @@ mod tests {
     use super::*;
     use crate::{Engine, validate};
 
-    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const KEY: &str = "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const AT: &str = "2026-10-22T10:51:41.000Z";
+    /// Keys of the stored length that no reader can parse: outside base64url, small order, and
+    /// with nonzero trailing bits.
+    const MALFORMED_KEYS: [&str; 4] = [
+        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
+    ];
 
     fn value(fields: Vec<Field>) -> Value {
         Value::new(fields).unwrap()
@@ -363,9 +371,19 @@ mod tests {
     }
 
     fn created_request(peer: Field, fingerprint: &str) -> Value {
+        request_row(KEY, peer, fingerprint, AT, AT)
+    }
+
+    fn request_row(
+        key: &str,
+        peer: Field,
+        fingerprint: &str,
+        expires_at: &str,
+        created_at: &str,
+    ) -> Value {
         value(vec![
             t("received"),
-            t(KEY),
+            t(key),
             peer,
             t(" Ada "),
             Field::Integer(7),
@@ -373,8 +391,8 @@ mod tests {
             t(&"0".repeat(DIGEST_CHARS)),
             t("127.0.0.1:43821"),
             t(fingerprint),
-            t(AT),
-            t(AT),
+            t(expires_at),
+            t(created_at),
         ])
     }
 
@@ -442,6 +460,69 @@ mod tests {
             replaced_by: None,
             cause: None,
         }
+    }
+
+    /// A full change of the contact row keyed by `key`.
+    fn contact_change(key: &str, action: ChangeAction) -> Change {
+        Change {
+            table: CONTACTS_TABLE,
+            row: RowKey::new(key).unwrap(),
+            action,
+            groups: vec![
+                GroupValue::new(CONTACTS_TABLE, contact_group::CREATED, value(vec![t(AT)])),
+                GroupValue::new(
+                    CONTACTS_TABLE,
+                    contact_group::PROFILE,
+                    value(vec![t("Ada"), Field::Integer(7)]),
+                ),
+                GroupValue::new(CONTACTS_TABLE, contact_group::STANDING, standing("active")),
+                GroupValue::new(CONTACTS_TABLE, contact_group::UPDATED, value(vec![t(AT)])),
+                GroupValue::new(
+                    CONTACTS_TABLE,
+                    contact_group::EXISTS,
+                    value(vec![Field::Integer(1)]),
+                ),
+            ],
+            replaced_by: None,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn malformed_request_key_is_held_invalid() {
+        let adapter = ContactsAdapter;
+        let engine = Engine::vault();
+        let created = |key: &str, expires_at: &str, created_at: &str| {
+            adapter.validate(
+                REQUESTS_TABLE,
+                request_group::CREATED,
+                &request_row(key, Field::Null, "", expires_at, created_at),
+            )
+        };
+
+        assert_eq!(created(KEY, AT, AT), Ok(()));
+        assert_eq!(
+            validate::change(&engine, &contact_change(KEY, ChangeAction::Create)),
+            Ok(())
+        );
+        for key in MALFORMED_KEYS {
+            assert!(created(key, AT, AT).is_err(), "request key {key}");
+            for action in [
+                ChangeAction::Create,
+                ChangeAction::Write,
+                ChangeAction::Tombstone,
+            ] {
+                assert_eq!(
+                    validate::change(&engine, &contact_change(key, action)),
+                    Err("contact public key"),
+                    "{action:?} of contact key {key}"
+                );
+            }
+        }
+        assert!(
+            created(KEY, "9999-12-31T23:59:59.000Z", AT).is_err(),
+            "an expiry far past the request lifetime"
+        );
     }
 
     #[test]

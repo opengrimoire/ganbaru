@@ -22,6 +22,8 @@ use sqlx::SqliteConnection;
 use std::collections::BTreeSet;
 use std::time::SystemTime;
 
+/// Replicated table of Chat participants, keyed by id.
+pub const PARTICIPANTS_TABLE: &str = "chat_participants";
 /// Replicated table of AI teammates, keyed by participant id.
 pub const TEAMMATES_TABLE: &str = "chat_teammates";
 /// Replicated table of teammate policy revisions, keyed by id.
@@ -58,6 +60,11 @@ pub const ACCESS_REDUCTION_REASON: &str = "Teammate access was reduced";
 /// disagrees with the revision it names.
 pub const MISMATCHED_POINTER_REASON: &str =
     "Synced teammate policy or access profile disagrees with its revision";
+/// Reason recorded on authorizations revoked because the teammate's applied effective policy no
+/// longer covers the approval they froze.
+pub const TEAMMATE_POLICY_REDUCED_REASON: &str = "Teammate approval behavior was reduced";
+/// Reason recorded on authorizations revoked because the teammate was archived on another device.
+pub const TEAMMATE_ARCHIVED_REASON: &str = "The teammate was archived";
 
 /// Device-local state [`after_materialize`] changed, so the caller can wake the services and
 /// views that read it.

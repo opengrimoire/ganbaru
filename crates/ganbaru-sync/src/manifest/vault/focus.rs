@@ -242,6 +242,13 @@ const fn optional_timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -432,11 +439,11 @@ pub const RUNS: TableSpec = TableSpec {
                 "calendar_link",
                 MergeKind::Coupled,
                 &[
-                    row_key("event_id"),
+                    optional_row_key("event_id"),
                     optional_text("current_occurrence_id"),
                     optional_text("current_event_date"),
                     optional_text("current_event_title"),
-                    row_key("calendar_archive_id"),
+                    optional_row_key("calendar_archive_id"),
                 ],
             )
         },
@@ -478,7 +485,7 @@ pub const SEGMENTS: TableSpec = TableSpec {
         clearing_reference(
             segment_group::EVENT,
             "event",
-            &[row_key("event_id")],
+            &[optional_row_key("event_id")],
             EVENTS_TABLE,
         ),
         owned(
@@ -511,7 +518,7 @@ pub const RUN_EVENTS: TableSpec = TableSpec {
         clearing_reference(
             run_event_group::SEGMENT,
             "segment",
-            &[row_key("segment_id")],
+            &[optional_row_key("segment_id")],
             SEGMENTS_TABLE,
         ),
         group(

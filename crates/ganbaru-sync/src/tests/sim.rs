@@ -4,10 +4,13 @@
 //! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices while
 //! they edit and excludes what they write past the cutoff, cloned spare installations fork their
 //! writer and re-seal once fork evidence reaches them, and conflicts and recovery offers are
-//! resolved along the way. Exchanges sometimes end with the hub and the exchanging replica compacting what is stable, except one replica that never
-//! compacts; compaction never changes domain rows. After every step the databases keep their
-//! invariants; at quiescence every installation holds the same replicated state, and every
-//! override policy the fixture hook settles shows its strictest concurrent version.
+//! resolved along the way. Writers sometimes forge rows the schema refuses, which every other
+//! replica leaves out without stopping apply. Exchanges sometimes end with the hub and the
+//! exchanging replica compacting what is stable, except one replica that never compacts;
+//! compaction never changes domain rows. After every step the databases keep their invariants;
+//! at quiescence every installation holds the same replicated state once forging writers drop
+//! their own forged rows, and every override policy the fixture hook settles shows its strictest
+//! concurrent version.
 //!
 //! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
@@ -24,7 +27,7 @@ use ganbaru_sync_contracts::{Envelope, Field, Value, VersionVector, WriterId};
 use super::block_on;
 use super::fixture::{
     ASK, BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES,
-    MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, UNATTENDED, edge_key, membership_key,
+    MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, RESERVED, UNATTENDED, edge_key, membership_key,
     memo_tag_key, override_group, policy_rank,
 };
 use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, rank};
@@ -127,6 +130,10 @@ impl Overrides {
 const OVERRIDE_SEED_MIX: u64 = 0x6f76_6572_7269_6465;
 /// Chance in percent that a local edit is followed by an override edit.
 const OVERRIDE_EDIT_PERCENT: u64 = 6;
+/// Chance in percent that an override edit is a forged row the schema refuses.
+const HOSTILE_OVERRIDE_PERCENT: u64 = 25;
+/// Id prefix of forged overrides.
+const HOSTILE_OVERRIDE: &str = "hostile-override-";
 
 /// Runs `call`, first crashing it at a random failpoint now and then. A crashed call must leave
 /// the database exactly as it was; the call then runs again without a failpoint.
@@ -1128,6 +1135,9 @@ impl Sim {
             _ => quoted(UNATTENDED),
         };
         let fallback = quoted(if rng.chance(50) { ASK } else { UNATTENDED });
+        if rng.chance(HOSTILE_OVERRIDE_PERCENT) {
+            return self.forge_refused_override(index, &now, &fallback).await;
+        }
         let sql = match (rng.below(8), rng.pick(&overrides)) {
             (0..=3, Some(id)) => format!(
                 "UPDATE fixture_overrides SET policy = {policy} WHERE id = {}",
@@ -1148,6 +1158,23 @@ impl Sim {
             }
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// Stores an override whose policy passes validation and that the schema refuses, the way a
+    /// hostile writer that skips its own constraints would.
+    async fn forge_refused_override(&mut self, index: usize, now: &str, fallback: &str) {
+        self.overrides.created += 1;
+        let key = format!("{HOSTILE_OVERRIDE}{index}-{}", self.overrides.created);
+        self.replicas[index]
+            .exec(&format!(
+                "PRAGMA ignore_check_constraints = ON;
+                 INSERT INTO fixture_overrides (id, created_at, fallback, policy)
+                 VALUES ({}, {now}, {fallback}, {});
+                 PRAGMA ignore_check_constraints = OFF;",
+                quoted(&key),
+                quoted(RESERVED)
+            ))
+            .await;
     }
 
     /// One local edit of fixture links and their ends: create an end whose label may collide,
@@ -2002,7 +2029,32 @@ impl Sim {
         }
     }
 
+    /// Asserts that replicas refused only forged rows, then drops those rows from their writers,
+    /// the one place they exist, without capturing the delete.
+    async fn clear_forged_rows(&mut self) {
+        let forged = format!(
+            "UPDATE sync_apply_state SET applying = 1;
+             DELETE FROM fixture_overrides WHERE policy = {};
+             UPDATE sync_apply_state SET applying = 0;",
+            quoted(RESERVED)
+        );
+        for replica in self
+            .replicas
+            .iter_mut()
+            .chain(std::iter::once(&mut self.hub))
+        {
+            for key in ids(replica, "SELECT row_key FROM sync_refused_rows").await {
+                assert!(
+                    key.starts_with(HOSTILE_OVERRIDE),
+                    "honest row {key} was refused"
+                );
+            }
+            replica.exec(&forged).await;
+        }
+    }
+
     async fn assert_converged(&mut self) {
+        self.clear_forged_rows().await;
         self.assert_overrides_settled().await;
         let expected = self.hub.dump().await;
         for replica in &mut self.replicas {

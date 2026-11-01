@@ -370,5 +370,6 @@ fn boundary_values(ty: ColumnType) -> Vec<String> {
             quote("A000000000000000000000000001"),
         ],
         ColumnType::OptionalRowKey => vec!["NULL".to_string(), quote("tag-1")],
+        ColumnType::RowKey => vec![quote("tag-1")],
     }
 }

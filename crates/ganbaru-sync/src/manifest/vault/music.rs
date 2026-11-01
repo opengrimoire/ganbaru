@@ -456,6 +456,13 @@ const fn order_key(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -801,7 +808,7 @@ pub const COLLECTIONS: TableSpec = TableSpec {
             &[
                 text("kind", MAX_ENUM_CHARS),
                 trimmed("identity_key", MAX_IDENTITY_KEY_CHARS),
-                row_key("local_root_id"),
+                optional_row_key("local_root_id"),
                 optional_text("youtube_playlist_id", MAX_ID_CHARS),
             ],
             &[cascade("local_root_id", ROOTS_TABLE)],
@@ -1061,7 +1068,7 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
         recoverable(reference(
             membership_group::BREAK_ITEM,
             "break item",
-            &[row_key("break_item_id")],
+            &[optional_row_key("break_item_id")],
             ITEMS_TABLE,
             OnDelete::SetNull,
         )),
@@ -1126,7 +1133,7 @@ pub const SNOOZES: TableSpec = TableSpec {
             &[
                 row_key("item_id"),
                 text("scope", MAX_ENUM_CHARS),
-                row_key("playlist_id"),
+                optional_row_key("playlist_id"),
             ],
             &[
                 cascade("item_id", ITEMS_TABLE),

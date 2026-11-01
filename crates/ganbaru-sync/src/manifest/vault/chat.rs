@@ -568,6 +568,13 @@ const fn optional_timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -692,7 +699,7 @@ pub const TEAMMATES: TableSpec = TableSpec {
             teammate_group::POLICY,
             "policy",
             &[
-                row_key("current_policy_revision_id"),
+                optional_row_key("current_policy_revision_id"),
                 optional_text("current_policy_safety_mode", MAX_ENUM_CHARS),
             ],
         ),
@@ -764,7 +771,7 @@ pub const PROFILES: TableSpec = TableSpec {
             profile_group::CURRENT,
             "current",
             &[
-                row_key("current_revision_id"),
+                optional_row_key("current_revision_id"),
                 optional_text("current_maximum_folder_capability", MAX_ENUM_CHARS),
             ],
         )),
@@ -1120,7 +1127,7 @@ pub const ITEMS: TableSpec = TableSpec {
         item_group::CREATED,
         &[
             row_key("conversation_id"),
-            row_key("reply_thread_id"),
+            optional_row_key("reply_thread_id"),
             text("item_kind", MAX_ENUM_CHARS),
             order_key("order_key"),
             timestamp("created_at"),
@@ -1157,7 +1164,7 @@ pub const MESSAGES: TableSpec = TableSpec {
             register(
                 message_group::AUTHOR,
                 "author",
-                &[row_key("author_participant_id")],
+                &[optional_row_key("author_participant_id")],
             ),
             &[set_null("author_participant_id", PARTICIPANTS_TABLE)],
         ),
@@ -1165,7 +1172,7 @@ pub const MESSAGES: TableSpec = TableSpec {
             message_group::CONTENT,
             "content",
             &[
-                row_key("current_revision_id"),
+                optional_row_key("current_revision_id"),
                 optional_timestamp("edited_at"),
             ],
         )),
@@ -1302,8 +1309,8 @@ pub const CHANNEL_TARGETS: TableSpec = TableSpec {
             optional_text("source_lower_order_key", MAX_ORDER_KEY_BYTES),
             optional_text("source_lower_item_id", MAX_ID_CHARS),
             optional_text("source_high_order_key", MAX_ORDER_KEY_BYTES),
-            row_key("source_high_item_id"),
-            row_key("source_revision_cutoff_id"),
+            optional_row_key("source_high_item_id"),
+            optional_row_key("source_revision_cutoff_id"),
         ],
         &[],
     )],
@@ -1462,10 +1469,10 @@ pub const SCHEDULED_REFERENCES: OwnedTable = OwnedTable {
         text("plain_text_projection", MAX_LABEL_CHARS),
         integer("start_offset", 0),
         integer("end_offset", 1),
-        row_key("participant_id"),
+        optional_row_key("participant_id"),
         optional_text("participant_kind", MAX_ENUM_CHARS),
-        row_key("channel_id"),
-        row_key("working_folder_id"),
+        optional_row_key("channel_id"),
+        optional_row_key("working_folder_id"),
         optional_text("path_kind", MAX_ENUM_CHARS),
         optional_text("relative_path", MAX_RELATIVE_PATH_CHARS),
         optional_text("execution_environment_id", MAX_ENVIRONMENT_ID_CHARS),
@@ -1504,7 +1511,7 @@ pub const SCHEDULED: TableSpec = TableSpec {
             &[
                 text("client_command_id", MAX_ID_CHARS),
                 row_key("channel_id"),
-                row_key("reply_thread_id"),
+                optional_row_key("reply_thread_id"),
                 optional_text("executing_device_id", MAX_DEVICE_ID_BYTES),
                 timestamp("created_at"),
             ],
@@ -1571,7 +1578,7 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
             register(
                 assignment_group::PREVIOUS,
                 "previous",
-                &[row_key("previous_assignment_id")],
+                &[optional_row_key("previous_assignment_id")],
             ),
             &[set_null("previous_assignment_id", ASSIGNMENTS_TABLE)],
         ),

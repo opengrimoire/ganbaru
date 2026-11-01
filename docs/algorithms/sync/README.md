@@ -71,6 +71,16 @@ Append-only timelines, such as Chat conversation items, take a key after the las
 - A child table may publish with a predicate table through an immutable cascading reference. Its rows follow the parent: they are drafts while the parent is, they are captured with every group when the parent publishes, and they are hidden while the parent is. A child may declare that a null reference publishes at once, as a row with no parent; its column is then nullable, and `NOT NULL` otherwise. The reference still cascades, never `ON DELETE SET NULL`: clearing it would publish a deleted parent's pending children through a foreign key action, and a receiver's merged reference could disagree with the local one. Replicated references to a predicate table from any other table are refused, since they could name a draft.
 - Capture seeding treats existing rows the same way: only rows that satisfy the predicate, or whose parent does, are seeded.
 
+## Refused rows
+
+Apply never stops for one row. Three layers decide what a row that the domain cannot hold does, and each decides as early as it can.
+
+- Bytes. Validation holds an operation whose values break a column rule, and a required reference column is never null.
+- Merge state. A row whose winners cannot stand is hidden as a pure function of merge state, the same on every replica. A required reference that reaches no shown row hides its row, without a tombstone, until the target arrives, and the rows that cascade from it follow.
+- Refusal. A constraint or aborting trigger that fails anyway, such as a rule that reads other rows or one a newer build added, refuses the row alone. A refused write hides the row and the rows that cascade from it. A refused delete keeps the row as it is and hides nothing. Either way the operation stays applied, so a row that is refused on one replica never stops another.
+
+Refusal changes no replicated state. It is listed in the device-local `sync_refused_rows`, which duplicate keepers, tree detachment, severed edges, and repairs never read, and it seals nothing. So merge state stays identical across replicas, while a domain row can differ between them only after a hostile operation and only until a valid write reaches the row. Any write that touches a refused row retries it, and each apply also retries the 16 refused rows it tried least recently. A row a retry writes brings its referrers back.
+
 ## Deletion holds
 
 - A table may hold deletes for domain Undo. Domain code holds a local delete in the transaction that deletes the row, for at most 10 seconds; sealing leaves the delete local until the lease ends.
@@ -90,7 +100,7 @@ Append-only timelines, such as Chat conversation items, take a key after the las
 
 - An owned table holds child rows whose ordered list is the value of one immutable, register, or coupled group of the owner. A domain may keep its own codec for the list; otherwise the generic codec encodes each row's declared typed columns in order. Real numbers never travel in replicated columns.
 - Owned rows are keyed by owner and ordinal, and materialize writes ordinals from zero without gaps, rewriting a stored list whose ordinals have gaps. A nested owned table keys its rows by owner, parent row ordinal, and its own ordinal, and its rows travel inside their parent row's value, so they follow the parent row when the list reorders.
-- An id column of an owned row is a unique data column, reinserted unchanged. Uniqueness is validated within one owner's value only, so domain code must mint fresh ids: two owners holding the same id cannot both materialize.
+- An id column of an owned row is a unique data column, reinserted unchanged. Uniqueness is validated within one owner's value only, so domain code must mint fresh ids: when two owners hold the same id, the second is a [refused row](#refused-rows).
 - An owned row may name rows of other tables. While a target is missing, deleted, or hidden, materialize skips the row with its nested rows and numbers the rest from zero; the row stays in the group value and returns with its target. Domain code that deletes such a target locally numbers the remaining owned rows from zero again, as materialize writes them.
 - Foreign keys into an owned table come only from its owner, its own rows, or its nested tables.
 

@@ -539,7 +539,7 @@ impl ServiceTask {
 /// Runtime internals that headless pass tests of a host drive.
 #[cfg(feature = "test-support")]
 pub mod test_support {
-    use super::{RuntimeState, ServiceTask, SyncRuntime};
+    use super::{RuntimeState, ServiceState, ServiceTask, SyncHost, SyncRuntime, SyncStatusView};
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Weak};
     use tokio::sync::Notify;
@@ -575,6 +575,19 @@ pub mod test_support {
     /// How many passes `runtime` started.
     pub fn passes_started(runtime: &SyncRuntime) -> u64 {
         runtime.passes_started.load(Ordering::SeqCst)
+    }
+
+    /// Runs one pass of `host` with the requests queued on `runtime`, and returns the status the
+    /// pass left.
+    pub async fn run_pass<H: SyncHost>(
+        host: &H,
+        runtime: &SyncRuntime,
+    ) -> Result<SyncStatusView, String> {
+        let gate = tokio::sync::Mutex::new(());
+        ServiceState::for_runtime(runtime)
+            .pass(host, runtime, &gate)
+            .await;
+        runtime.status()
     }
 }
 
@@ -1564,7 +1577,9 @@ impl ServiceState {
                 next = Next::Continue;
             }
         }
-        self.apply_new(&session).await?;
+        // A failed apply fails the pass only once the steps that do not depend on it have run,
+        // so operations that stay unapplied never block an authority action.
+        let apply_failure = self.apply_new(&session).await.err();
         let anchor_link = self.anchor_link.take();
         if is_hub && !session.anchored_by_server().await? {
             view.anchor_unreachable_since_ms = None;
@@ -1876,7 +1891,7 @@ impl ServiceState {
             let names = devices::read_with(host.device_id()?, &manager);
             view.set_clock_ahead(&status, &clock_warnings, &names);
         }
-        Ok(next)
+        apply_failure.map_or(Ok(next), Err)
     }
 
     /// Reset sync state on the coordinator: unlinks every device linked for the vault, because

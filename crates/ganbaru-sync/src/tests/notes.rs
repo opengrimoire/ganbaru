@@ -12,16 +12,20 @@
 //! same on both sides, a template snapshot replicates whole, and deleting a database block
 //! removes its data source, rows, and values everywhere.
 
+use ganbaru_sync_contracts::{Change, ChangeAction, Content, Field, GroupValue, RowKey, Value};
 use sqlx::SqliteConnection;
 
+use super::authorization::{forge, view};
 use super::block_on;
+use super::refusal::take;
 use super::replica::{Replica, converge, quoted, rank};
-use crate::Hooks;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::notes::{
-    DOMAIN, OPTION_KEY_PREFIX, PROPERTY_KEY_PREFIX, RELATION_EDGE_KEY_PREFIX, VALUE_KEY_PREFIX,
+    DOMAIN, OPTION_KEY_PREFIX, OPTIONS_TABLE, PROPERTY_KEY_PREFIX, RELATION_EDGE_KEY_PREFIX,
+    VALUE_KEY_PREFIX, option_group,
 };
+use crate::{HoldReason, Hooks, StoreOutcome};
 
 pub(super) const CREATED: &str = "2027-01-01T00:00:00.000Z";
 pub(super) const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -931,6 +935,177 @@ fn concurrent_option_adds_and_property_edits_all_survive() {
             );
         }
         assert_converged(&mut replicas).await;
+    });
+}
+
+/// The data source of the option tests with property `stage` and its options `todo` and `done`.
+fn staged_options_sql() -> String {
+    format!(
+        "{}{}{}{}",
+        database_sql("db", "source", 0, &[]),
+        property_sql("source", "stage", "Stage", "select", "{\"select\":{}}", 1),
+        option_sql("source", "stage", "todo", "To do", 1),
+        option_sql("source", "stage", "done", "Done", 2),
+    )
+}
+
+/// A write of the property reference of `option` of `stage` alone.
+fn option_property_write(option: &str, property: Field) -> Change {
+    Change {
+        table: OPTIONS_TABLE,
+        row: RowKey::new(derived(OPTION_KEY_PREFIX, &["source", "stage", option])).unwrap(),
+        action: ChangeAction::Write,
+        groups: vec![GroupValue::new(
+            OPTIONS_TABLE,
+            option_group::PROPERTY,
+            Value::new(vec![property]).unwrap(),
+        )],
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+/// The next operation of `replica`'s writer carrying `change`, which the engine would not seal.
+async fn forge_change(replica: &mut Replica, change: Change) -> Vec<u8> {
+    let revision = view(replica).await.revision;
+    forge(replica, Content::Changes(vec![change]), revision).await
+}
+
+async fn option_names(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT name FROM notes_data_source_property_options ORDER BY position",
+    )
+    .await
+}
+
+#[test]
+fn required_reference_null_is_held_when_stored() {
+    block_on(async {
+        let mut replicas = shared(2, &staged_options_sql()).await;
+        let change = option_property_write("todo", Field::Null);
+        let null_reference = forge_change(&mut replicas[0], change).await;
+
+        assert_eq!(
+            replicas[1].receive(&[null_reference]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(option_names(&mut replicas[1]).await, ["To do", "Done"]);
+    });
+}
+
+#[test]
+fn option_with_an_unpublished_property_hides_until_it_arrives() {
+    block_on(async {
+        let mut replicas = shared(3, &staged_options_sql()).await;
+        let tombstones = "SELECT count(*) FROM sync_tombstones";
+        let before = replicas[1].count(tombstones).await;
+
+        // A Create naming a property its writer never published.
+        replicas[0].exec("PRAGMA foreign_keys = OFF").await;
+        replicas[0]
+            .exec(&option_sql("source", "unpublished", "ghost", "Ghost", 3))
+            .await;
+        replicas[0].exec("PRAGMA foreign_keys = ON").await;
+        replicas[0].seal().await.unwrap();
+        take(&mut replicas, 1, 0).await.unwrap();
+        assert_eq!(option_names(&mut replicas[1]).await, ["To do", "Done"]);
+        assert_eq!(replicas[1].seal().await.unwrap().sealed_ops, 0);
+        assert_eq!(replicas[1].count(tombstones).await, before);
+
+        replicas[0]
+            .exec(&property_sql(
+                "source",
+                "unpublished",
+                "Late",
+                "select",
+                "{\"select\":{}}",
+                2,
+            ))
+            .await;
+        replicas[0].seal().await.unwrap();
+        take(&mut replicas, 1, 0).await.unwrap();
+        assert_eq!(
+            option_names(&mut replicas[1]).await,
+            ["To do", "Done", "Ghost"]
+        );
+
+        // A partial write moving an option to a property nobody has published yet.
+        let missing = derived(PROPERTY_KEY_PREFIX, &["source", "missing"]);
+        let change = option_property_write("done", Field::Text(missing.clone()));
+        let moved = forge_change(&mut replicas[0], change).await;
+        assert_eq!(
+            replicas[1].receive(&[moved]).await,
+            vec![StoreOutcome::Stored { held: None }]
+        );
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(option_names(&mut replicas[1]).await, ["To do", "Ghost"]);
+        assert_eq!(replicas[1].seal().await.unwrap().sealed_ops, 0);
+        assert_eq!(replicas[1].count(tombstones).await, before);
+
+        replicas[2]
+            .exec(&property_sql(
+                "source",
+                "missing",
+                "Found",
+                "select",
+                "{\"select\":{}}",
+                3,
+            ))
+            .await;
+        replicas[2].seal().await.unwrap();
+        take(&mut replicas, 1, 2).await.unwrap();
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT property_key FROM notes_data_source_property_options
+                 WHERE option_id = 'done'"
+            )
+            .await,
+            [missing]
+        );
+    });
+}
+
+#[test]
+fn option_edits_keep_working_as_single_group_writes() {
+    block_on(async {
+        let mut replicas = shared(2, &staged_options_sql()).await;
+        for edit in [
+            "name = 'Open'".to_string(),
+            "color = 'blue'".to_string(),
+            "status_group = 'todo'".to_string(),
+            format!("position = {}", quoted(&rank(3))),
+        ] {
+            replicas[0]
+                .exec(&format!(
+                    "UPDATE notes_data_source_property_options SET {edit}
+                     WHERE option_id = 'todo'"
+                ))
+                .await;
+            assert_eq!(replicas[0].seal().await.unwrap().sealed_ops, 1, "{edit}");
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+        }
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT name || ':' || color || ':' || status_group
+                 FROM notes_data_source_property_options WHERE option_id = 'todo'"
+            )
+            .await,
+            ["Open:blue:todo"]
+        );
+        assert_eq!(option_names(&mut replicas[1]).await, ["Done", "Open"]);
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM sync_refused_rows")
+                .await,
+            0
+        );
     });
 }
 

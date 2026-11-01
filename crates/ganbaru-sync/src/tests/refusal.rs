@@ -3,12 +3,15 @@
 //! stands for another build by not enforcing the receiver's constraint, so its operations are
 //! validly sealed and its merge state is the one the receiver must reach.
 
-use crate::apply::MAX_REFUSED_RETRIES_PER_FINISH;
+use crate::refused::MAX_REFUSED_RETRIES_PER_FINISH;
 use crate::{ApplyReport, SyncResult};
 
 use super::block_on;
+use super::calendar::{calendar_sql, event_sql};
+use super::distractions::block_sql;
 use super::fixture::{ASK, FORBIDDEN, REFUSED, RESERVED, UNATTENDED};
-use super::replica::{Replica, converge, pair, quoted};
+use super::focus::{close_run_sql, open_run_sql, segment_id};
+use super::replica::{Replica, converge, pair, quoted, rank};
 
 const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
 
@@ -20,7 +23,11 @@ async fn unchecked(index: usize, salt: u64) -> Replica {
 }
 
 /// Stores what `from` has and `to` lacks and returns the apply result.
-async fn take(replicas: &mut [Replica], to: usize, from: usize) -> SyncResult<Vec<ApplyReport>> {
+pub(super) async fn take(
+    replicas: &mut [Replica],
+    to: usize,
+    from: usize,
+) -> SyncResult<Vec<ApplyReport>> {
     let (to, from) = pair(replicas, to, from);
     let known = to.stored_vector().await;
     let ops = from.ops_since(&known).await;
@@ -182,7 +189,7 @@ fn a_valid_write_brings_back_a_refused_row_past_the_retry_limit() {
 
         assert_eq!(
             keys(&mut replicas[0], "fixture_overrides").await,
-            [last.clone()]
+            std::slice::from_ref(last)
         );
         assert_eq!(
             refused(&mut replicas[0], "hidden").await,
@@ -220,13 +227,9 @@ fn refused_update_hides_the_row_on_replicas_of_different_histories() {
         take(&mut replicas, 0, 2).await.unwrap();
         take(&mut replicas, 1, 2).await.unwrap();
 
-        for index in 0..2 {
-            assert!(
-                keys(&mut replicas[index], "fixture_overrides")
-                    .await
-                    .is_empty()
-            );
-            assert_eq!(refused(&mut replicas[index], "hidden").await, ["o-1"]);
+        for replica in replicas.iter_mut().take(2) {
+            assert!(keys(replica, "fixture_overrides").await.is_empty());
+            assert_eq!(refused(replica, "hidden").await, ["o-1"]);
         }
         let other = replicas[1].domain_dump().await;
         assert_eq!(replicas[0].domain_dump().await, other);
@@ -355,5 +358,89 @@ fn refused_rows_do_not_keep_apply_rounds_running() {
         let idle = replicas[0].apply_once().await.unwrap();
         assert!(!idle.more);
         assert_eq!(refused(&mut replicas[0], "hidden").await, ["o-1"]);
+    });
+}
+
+#[test]
+fn null_run_block_events_and_tree_null_writes_stay_valid() {
+    block_on(async {
+        let mut replicas = vec![Replica::new(0, 70).await, Replica::new(1, 70).await];
+        // An event outside a run names neither a run nor a phase, as the spool records it.
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}{}",
+                calendar_sql(),
+                event_sql("event-a", "uid-a", "Deep work"),
+                open_run_sql("run-a", "event-a", 2, 2),
+                block_sql("block-free", None),
+                close_run_sql("run-a", 2),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .count(
+                    "SELECT count(*) FROM distractions_block_events
+                     WHERE id = 'block-free' AND run_id IS NULL AND phase IS NULL"
+                )
+                .await,
+            1
+        );
+
+        // Deleting a segment clears the optional reference of its run events.
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM pomodoro_segments WHERE id = {}",
+                quoted(&segment_id("run-a", 0))
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .count(
+                    "SELECT count(*) FROM pomodoro_run_events
+                     WHERE id = 'run-a-event-0' AND segment_id IS NULL"
+                )
+                .await,
+            1
+        );
+
+        // Concurrent moves close a cycle, and the repair moves a node to the root.
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO fixture_nodes (id, parent_id, position, label)
+                 VALUES ('n-1', NULL, {first}, 'one'), ('n-2', NULL, {second}, 'two');",
+                first = quoted(&rank(1)),
+                second = quoted(&rank(2)),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("UPDATE fixture_nodes SET parent_id = 'n-2' WHERE id = 'n-1'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_nodes SET parent_id = 'n-1' WHERE id = 'n-2'")
+            .await;
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM fixture_nodes WHERE parent_id IS NULL")
+                    .await,
+                1,
+                "the repair writes a null parent on replica {}",
+                replica.index
+            );
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_refused_rows")
+                    .await,
+                0,
+                "nothing is refused on replica {}",
+                replica.index
+            );
+        }
+        let other = merge_state(&mut replicas[1]).await;
+        assert_eq!(merge_state(&mut replicas[0]).await, other);
     });
 }

@@ -372,6 +372,175 @@ fn domain_triggers_keep_their_declared_policies() {
     });
 }
 
+/// How apply stays clear of an aborting trigger on a replicated table.
+#[derive(Debug, Clone, Copy)]
+enum TriggerClass {
+    /// A validation rule refuses the same value when an operation is stored.
+    Stateless(&'static str),
+    /// Merge state hides the row before apply writes what the trigger refuses.
+    MergeState(&'static str),
+    /// Apply reaches the trigger, and the refusal net in materialization catches it.
+    Net(&'static str),
+}
+
+impl TriggerClass {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Stateless(reason) | Self::MergeState(reason) | Self::Net(reason) => reason,
+        }
+    }
+}
+
+const ORDER_KEY: TriggerClass = TriggerClass::Stateless("the order key grammar refuses empty text");
+const SYNC_KEY: TriggerClass = TriggerClass::Stateless("the row key grammar refuses empty text");
+const ICON_SIZE: TriggerClass =
+    TriggerClass::Stateless("an icon group naming a managed file requires its size");
+const EMOJI_SIZE: TriggerClass =
+    TriggerClass::Stateless("the custom emoji asset group requires its size");
+const FOLDER_PATH: TriggerClass =
+    TriggerClass::Stateless("a managed folder path must stay contained");
+const DESCRIPTION: TriggerClass =
+    TriggerClass::Stateless("the column bound is the description limit");
+const IMMUTABLE_ROW: TriggerClass =
+    TriggerClass::Net("a forged change can rewrite or delete an immutable revision");
+const CROSS_ROW: TriggerClass =
+    TriggerClass::Net("the rule compares rows that a single change does not carry");
+
+/// Aborting triggers of replicated tables and owned children in the vault manifest that stay
+/// armed while apply runs. Triggers gated on the apply state are left out, and so are triggers
+/// on device local tables, because apply never writes those tables.
+const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
+    (
+        "calendar_event_archive_import_objects_sync_key_insert",
+        SYNC_KEY,
+    ),
+    (
+        "calendar_event_archive_import_objects_sync_key_update",
+        SYNC_KEY,
+    ),
+    (
+        "chat_access_profile_builtin_protected",
+        TriggerClass::Net("a forged change can edit a built-in profile"),
+    ),
+    ("chat_access_profile_builtin_revision_protected", CROSS_ROW),
+    (
+        "chat_access_profile_revision_immutable_delete",
+        IMMUTABLE_ROW,
+    ),
+    (
+        "chat_access_profile_revision_immutable_update",
+        IMMUTABLE_ROW,
+    ),
+    ("chat_channels_conversation_kind_insert", CROSS_ROW),
+    (
+        "chat_communication_message_revision_immutable_update",
+        IMMUTABLE_ROW,
+    ),
+    ("chat_conversation_items_reply_thread_insert", CROSS_ROW),
+    (
+        "chat_participants_local_user_identity",
+        TriggerClass::Stateless("the participant row rule binds the local user to its key"),
+    ),
+    (
+        "chat_teammate_channel_membership_identity_insert",
+        TriggerClass::MergeState("the membership cascades from its teammate"),
+    ),
+    ("chat_teammate_policy_identity_insert", CROSS_ROW),
+    ("chat_teammate_policy_immutable_delete", IMMUTABLE_ROW),
+    ("chat_teammate_policy_immutable_update", IMMUTABLE_ROW),
+    (
+        "contact_card_prevent_delete",
+        TriggerClass::Net("a forged change can delete the card"),
+    ),
+    ("music_library_items_description_limits_insert", DESCRIPTION),
+    ("music_library_items_description_limits_update", DESCRIPTION),
+    ("music_playlist_memberships_order_key_insert", ORDER_KEY),
+    ("music_playlist_memberships_order_key_update", ORDER_KEY),
+    ("music_playlists_order_key_insert", ORDER_KEY),
+    ("music_playlists_order_key_update", ORDER_KEY),
+    ("project_checklist_items_order_key_insert", ORDER_KEY),
+    ("project_checklist_items_order_key_update", ORDER_KEY),
+    ("project_custom_emojis_asset_size_insert", EMOJI_SIZE),
+    ("project_custom_emojis_asset_size_update", EMOJI_SIZE),
+    ("project_custom_emojis_order_key_insert", ORDER_KEY),
+    ("project_custom_emojis_order_key_update", ORDER_KEY),
+    ("project_custom_field_options_order_key_insert", ORDER_KEY),
+    ("project_custom_field_options_order_key_update", ORDER_KEY),
+    ("project_custom_fields_order_key_insert", ORDER_KEY),
+    ("project_custom_fields_order_key_update", ORDER_KEY),
+    ("project_groups_icon_size_insert", ICON_SIZE),
+    ("project_groups_icon_size_update", ICON_SIZE),
+    ("project_groups_order_key_insert", ORDER_KEY),
+    ("project_groups_order_key_update", ORDER_KEY),
+    ("project_priorities_order_key_insert", ORDER_KEY),
+    ("project_priorities_order_key_update", ORDER_KEY),
+    ("project_sections_order_key_insert", ORDER_KEY),
+    ("project_sections_order_key_update", ORDER_KEY),
+    ("project_statuses_order_key_insert", ORDER_KEY),
+    ("project_statuses_order_key_update", ORDER_KEY),
+    ("project_tags_order_key_insert", ORDER_KEY),
+    ("project_tags_order_key_update", ORDER_KEY),
+    ("project_task_event_links_sync_key_insert", SYNC_KEY),
+    ("project_task_event_links_sync_key_update", SYNC_KEY),
+    ("project_task_tag_links_sync_key_insert", SYNC_KEY),
+    ("project_task_tag_links_sync_key_update", SYNC_KEY),
+    ("project_tasks_order_key_insert", ORDER_KEY),
+    ("project_tasks_order_key_update", ORDER_KEY),
+    ("project_view_preferences_sync_key_insert", SYNC_KEY),
+    ("project_view_preferences_sync_key_update", SYNC_KEY),
+    ("project_views_order_key_insert", ORDER_KEY),
+    ("project_views_order_key_update", ORDER_KEY),
+    (
+        "project_working_folders_managed_relative_path_shape_insert",
+        FOLDER_PATH,
+    ),
+    (
+        "project_working_folders_managed_relative_path_shape_update",
+        FOLDER_PATH,
+    ),
+    ("projects_icon_size_insert", ICON_SIZE),
+    ("projects_icon_size_update", ICON_SIZE),
+    ("projects_order_key_insert", ORDER_KEY),
+    ("projects_order_key_update", ORDER_KEY),
+];
+
+fn aborts(sql: &str) -> bool {
+    tokenize(sql)
+        .iter()
+        .any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("raise")))
+}
+
+#[test]
+fn every_applier_visible_trigger_is_classified() {
+    block_on(async {
+        let (_, pool) = cases().await.into_iter().next().unwrap();
+        let mut aborting = BTreeSet::new();
+        for (name, table, sql) in installed_triggers(&pool).await {
+            let replicated = matches!(
+                VAULT_MANIFEST.classify(&table),
+                Classification::Replicated | Classification::OwnedChildren
+            );
+            let gated = shape(&sql).is_some_and(|shape| is_gated(&shape.when));
+            if replicated && !gated && aborts(&sql) {
+                aborting.insert(name);
+            }
+        }
+        let classified: BTreeSet<String> = CLASSIFIED_TRIGGERS
+            .iter()
+            .map(|(name, class)| {
+                assert!(!class.reason().is_empty(), "{name} states no reason");
+                (*name).to_string()
+            })
+            .collect();
+        let unclassified: Vec<_> = aborting.difference(&classified).collect();
+        let stale: Vec<_> = classified.difference(&aborting).collect();
+        assert!(
+            unclassified.is_empty() && stale.is_empty(),
+            "unclassified triggers: {unclassified:#?}\nstale entries: {stale:#?}"
+        );
+    });
+}
+
 /// The replicated table that owns rows of `name`: the table itself, or the owner of an owned
 /// child table.
 fn row_owner(manifest: &Manifest, name: &str) -> Option<TableId> {

@@ -1,7 +1,7 @@
 //! Distraction rules and usage adapter: value checks the column types cannot express, recovery
 //! titles, and the hook that reports rule changes so the app republishes what its blockers read.
 
-use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -335,7 +335,12 @@ impl DomainAdapter for DistractionsAdapter {
 
     /// A block event names a segment only together with its run: a segment of no published run
     /// would never arrive, so the reference would stay dangling.
-    fn validate_row(&self, table: TableId, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    fn validate_row(
+        &self,
+        table: TableId,
+        _row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
         if table != BLOCK_EVENTS_TABLE {
             return Ok(());
         }
@@ -574,6 +579,7 @@ mod tests {
         let row = |run: Field, segment: Field| {
             adapter.validate_row(
                 BLOCK_EVENTS_TABLE,
+                &RowKey::new("event-1").unwrap(),
                 &[
                     GroupValue::new(BLOCK_EVENTS_TABLE, block_event_group::RUN, value(vec![run])),
                     GroupValue::new(

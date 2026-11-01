@@ -49,7 +49,7 @@ async fn shared(count: usize) -> Vec<Replica> {
     replicas
 }
 
-fn segment_id(run: &str, index: u32) -> String {
+pub(super) fn segment_id(run: &str, index: u32) -> String {
     format!("{run}-segment-{index}")
 }
 

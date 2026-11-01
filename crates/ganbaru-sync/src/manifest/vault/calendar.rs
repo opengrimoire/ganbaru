@@ -428,6 +428,13 @@ const fn timestamp(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -684,7 +691,7 @@ pub const COMPONENTS: TableSpec = TableSpec {
         immutable(
             component_group::PARENT,
             "parent",
-            &[row_key("parent_component_id")],
+            &[optional_row_key("parent_component_id")],
             &[cascade("parent_component_id", COMPONENTS_TABLE)],
         ),
         group(
@@ -937,7 +944,7 @@ pub const EVENTS: TableSpec = TableSpec {
         reference(
             event_group::COMPONENT,
             "component",
-            &[row_key("icalendar_component_id")],
+            &[optional_row_key("icalendar_component_id")],
             COMPONENTS_TABLE,
             OnDelete::SetNull,
         ),
@@ -977,7 +984,7 @@ pub const EVENTS: TableSpec = TableSpec {
         reference(
             event_group::PROJECT,
             "project",
-            &[row_key("project_id")],
+            &[optional_row_key("project_id")],
             PROJECTS_TABLE,
             OnDelete::SetNull,
         ),

@@ -89,7 +89,11 @@ pub(super) async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
 
 /// The next operation of the replica's own writer with `content`, sealed outside the engine so
 /// a test can carry what the engine would never seal. The replica's own log does not hold it.
-async fn forge(replica: &mut Replica, content: Content, authorization_revision: u64) -> Vec<u8> {
+pub(super) async fn forge(
+    replica: &mut Replica,
+    content: Content,
+    authorization_revision: u64,
+) -> Vec<u8> {
     let last = replica
         .own_ops()
         .await

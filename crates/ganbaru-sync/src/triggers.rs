@@ -227,7 +227,10 @@ pub(crate) fn value_rule(expr: &str, ty: ColumnType) -> String {
             format!("{expr} IS NULL OR ({})", timestamp_rule(expr))
         }
         ColumnType::OrderKey => order_key_rule(expr),
-        ColumnType::OptionalRowKey => format!("{expr} IS NULL OR ({})", row_key_rule(expr)),
+        // The NOT NULL constraint of a required key refuses null before this rule matters.
+        ColumnType::OptionalRowKey | ColumnType::RowKey => {
+            format!("{expr} IS NULL OR ({})", row_key_rule(expr))
+        }
     }
 }
 

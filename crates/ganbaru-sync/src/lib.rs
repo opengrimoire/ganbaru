@@ -51,6 +51,7 @@ mod merge;
 mod publication;
 mod records;
 mod recovery;
+mod refused;
 mod repair;
 mod reseal;
 mod seal;

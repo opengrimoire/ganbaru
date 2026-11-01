@@ -19,8 +19,9 @@ use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::exclusion::{Excluding, Retention};
 use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, seq_i64, stored_u64};
-use crate::materialize::Materialized;
+use crate::materialize::{Execution, Materialized};
 use crate::merge::{self, Batch};
+use crate::refused::Refusals;
 use crate::seal::{self, SealReport, SealSlot};
 use crate::store::HoldReason;
 use crate::visibility::{RowRef, Visibility};
@@ -63,10 +64,6 @@ const PREFETCH_ENVELOPE_BYTES: usize = 64 * 1024;
 /// referrers are not bounded here: deferring some of them would materialize a row without the
 /// rows that follow it. Their repairs seal as one group in as many operations as they need.
 pub(crate) const MAX_STALE_ROWS_PER_WRITE: usize = crate::MAX_CHANGES_PER_SEAL;
-
-/// Refused rows retried per finish beyond the rows dirty in that finish.
-#[cfg(test)]
-pub(crate) const MAX_REFUSED_RETRIES_PER_FINISH: usize = 16;
 
 /// A writer whose operations carry clocks far ahead of local time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1109,6 +1106,11 @@ async fn repairs_wait(
 /// chain is open, each finish takes back at most [`MAX_STALE_ROWS_PER_WRITE`] stale rows,
 /// plans them with the rows that reference them, seals their repairs, and says whether more
 /// remain, see [`MAX_OPERATIONS_PER_CHAIN`].
+/// Rows a domain constraint refused retry with the dirty rows, see [`crate::refused`]. A write
+/// refused here is listed and everything is planned again without the row, so its referrers go
+/// through the same sealing as any other planned row. A row that a retry writes brings back its
+/// referrers as stale rows. Each new refusal grows the rows refused in this finish, so this
+/// ends. A refused row never lists a stale row, so it keeps no later apply round running.
 /// Without a writer that can seal them, or when they exceed what a bounded slot may still
 /// seal, it returns `None` and writes nothing, so the caller rolls back.
 #[allow(clippy::too_many_arguments)]
@@ -1124,7 +1126,7 @@ pub(crate) async fn finish(
 ) -> SyncResult<Option<Materialized>> {
     fork::capture_released(engine, conn, batch, now_ms).await?;
     let resuming = repairs_wait(conn, ctx, slot).await?;
-    let stale_left = !resuming
+    let mut stale_left = !resuming
         && exclusion::take_stale(conn, &mut batch.dirty, MAX_STALE_ROWS_PER_WRITE).await?;
     if batch.dirty.is_empty() {
         fork::republish(engine, conn, batch, now_ms).await?;
@@ -1133,6 +1135,7 @@ pub(crate) async fn finish(
             ..Materialized::default()
         }));
     }
+    let mut refusals = Refusals::load(conn).await?;
     // Captured rows already sealed once. A capture that stays is an invalid row, which the
     // merge overwrites as it would without the capture. Captures only shrink inside the
     // transaction, so the loop ends.
@@ -1177,7 +1180,22 @@ pub(crate) async fn finish(
                 .await?;
         };
         let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
-        let plan = materialize::plan(engine, conn, batch, &mut visibility, merged).await?;
+        // Refusals are local, so they join after everything that replicates or derives from
+        // merge state.
+        let retrying = refusals.retrying(conn, &batch.dirty).await?;
+        let mut rows = batch.dirty.clone();
+        rows.extend(retrying.iter().cloned());
+        rows.extend(refusals.refused().iter().cloned());
+        visibility.admit_refusals(conn, retrying).await?;
+        let plan = materialize::plan(
+            engine,
+            conn,
+            &rows,
+            &batch.orphaned,
+            &mut visibility,
+            merged,
+        )
+        .await?;
         let pending = seal::captured(conn, plan.rows(engine)).await?;
         let mut captured = pending.clone();
         if constrained != Constrained::Skip {
@@ -1191,12 +1209,44 @@ pub(crate) async fn finish(
             // A settle is a local edit, so it needs a slot that could seal it, and it waits
             // with the repairs for the state the whole chain leaves.
             let settles = !resuming && slot.may_seal(conn, ctx).await?;
-            let mut changed =
-                materialize::execute(engine, conn, &mut visibility, plan, settles, now_ms).await?;
+            let planned: Vec<RowRef> = plan.rows(engine).collect();
+            let execution = materialize::execute(
+                engine,
+                conn,
+                &mut visibility,
+                plan,
+                refusals.kept(),
+                settles,
+                now_ms,
+            )
+            .await?;
+            let mut changed = match execution {
+                Execution::Done(changed) => changed,
+                Execution::Refused(refused) => {
+                    refusals.record(conn, refused, report).await?;
+                    continue;
+                }
+            };
+            refusals
+                .record(conn, std::mem::take(&mut changed.refusals), report)
+                .await?;
+            let cleared = refusals.clear(conn, &mut visibility, planned).await?;
+            let mut returning = BTreeSet::new();
+            for (table, key) in &cleared {
+                returning.extend(repair::referrers(engine, conn, *table, key).await?);
+            }
+            if !returning.is_empty() {
+                exclusion::defer_stale(conn, &returning).await?;
+                stale_left = true;
+            }
             changed.stale_left = stale_left;
             report.invalid_rows.append(&mut changed.refused);
-            // A settled row holds its captured value instead of the winner.
-            elisions.retain(|(table, key, _, _)| !changed.settled.contains(&(*table, key.clone())));
+            // A settled row holds its captured value instead of the winner, and a row whose
+            // delete was refused holds what it held.
+            elisions.retain(|(table, key, _, _)| {
+                let row = (*table, key.clone());
+                !changed.settled.contains(&row) && !refusals.kept().contains(&row)
+            });
             hydrate::elide(conn, &elisions).await?;
             failpoint!("elide.before_commit");
             batch.dirty.clear();

@@ -23,7 +23,10 @@ use ganbaru_sync_replica::authority::Enrollment;
 use ganbaru_sync_replica::authority::{self, AnchorKeys, Founding, ensure_charter};
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::service::headless_pass_with;
-use ganbaru_sync_replica::service::test_support::{live_runtime, passes_started, registered};
+use ganbaru_sync_replica::service::test_support::{
+    live_runtime, passes_started, registered, run_pass,
+};
+use ganbaru_sync_replica::service::{AuthorityAction, AuthorityAnswer};
 use ganbaru_sync_replica::writer::{
     ActiveWriter, FileKeyStore, SuccessorPlan, SyncFiles, create_writer,
 };
@@ -461,6 +464,106 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
         .close_all()
         .await
         .expect("close phone reader");
+    drop(hub_pool);
+    hub_registry.close_all().await.expect("close hub pools");
+}
+
+#[tokio::test]
+async fn a_failed_apply_still_runs_proposal_actions() {
+    let (person_pkcs8, person) = PersonKeyPair::generate().expect("person key");
+    let hub_directory = TestDirectory::new("failed-apply-hub");
+    let hub_registry = DatabasePoolRegistry::default();
+    let (hub_pool, mut hub_space) = hub_vault(hub_directory.path(), &hub_registry, &person).await;
+    let pair = LocalPair::start_with_hub_charter(
+        Some(serving_hub(
+            hub_pool.clone(),
+            hub_directory.path().join("assets"),
+            COORDINATOR_DEVICE,
+        )),
+        PinnedCharter {
+            charter: ganbaru_handoff::protocol::encode_sync_charter(&hub_space.charter),
+            person_key: person.public_key().to_text(),
+        },
+    )
+    .await;
+    pair.enroll().await;
+    let config_dir = pair.phone_config_dir().to_path_buf();
+    let phone_database = phone_vault(&config_dir, &person, &person_pkcs8, &hub_space.charter).await;
+    let open_host = || {
+        HeadlessHost::open_with(&config_dir, &ProcessManagers::default())
+            .expect("open headless host")
+    };
+    let host = open_host();
+    let phone_key = ganbaru_sync_replica::service::ensure_device_key(&host, VAULT_ID)
+        .await
+        .expect("phone device key");
+    hub_space.enroll_phone(&hub_pool, phone_key).await;
+    let live = Mutex::new(Weak::new());
+    let gate = tokio::sync::Mutex::new(());
+    tokio::time::timeout(
+        PASS_WAIT,
+        headless_pass_with(async { Ok(host) }, &live, &gate, PASS_WAIT),
+    )
+    .await
+    .expect("the priming pass finishes")
+    .expect("priming headless pass");
+
+    insert_note(&hub_pool, "note-late").await;
+    let mut hub_conn = hub_pool.acquire().await.expect("hub connection");
+    let seq = Engine::vault()
+        .seal(
+            &mut hub_conn,
+            &hub_space.ctx,
+            &mut hub_space.writer.local(),
+            now_ms().expect("clock"),
+        )
+        .await
+        .expect("seal the late note")
+        .last_seq
+        .expect("sealed the late note");
+    hub_space.writer.committed(seq).expect("record hub commit");
+    drop(hub_conn);
+
+    // The state update runs outside the refusal net, so this stops apply itself.
+    let phone_registry = DatabasePoolRegistry::default();
+    let phone_pool = phone_registry
+        .connect_path(&phone_database)
+        .await
+        .expect("open phone vault");
+    sqlx::query(
+        "CREATE TRIGGER forced_apply_failure BEFORE UPDATE OF state ON sync_ops
+         WHEN NEW.state = 'applied'
+         BEGIN SELECT RAISE(ABORT, 'forced apply failure'); END",
+    )
+    .execute(&phone_pool)
+    .await
+    .expect("force apply to fail");
+    drop(phone_pool);
+    phone_registry
+        .close_all()
+        .await
+        .expect("close phone writer");
+
+    let runtime = SyncRuntime::default();
+    let answer = runtime
+        .request_authority(AuthorityAction::ProposeRemoval(
+            COORDINATOR_DEVICE.to_string(),
+        ))
+        .expect("queue the removal proposal");
+    let host = open_host();
+    let status = tokio::time::timeout(PASS_WAIT, run_pass(&host, &runtime))
+        .await
+        .expect("the pass finishes")
+        .expect("read the pass status");
+
+    let answer = answer.await.expect("the pass answers the proposal");
+    assert!(
+        matches!(answer, Ok(AuthorityAnswer::Proposed)),
+        "{answer:?}"
+    );
+    assert_eq!(status.state, SyncState::Error, "{status:?}");
+    let error = status.last_error.expect("the pass reports the failure");
+    assert!(error.contains("apply sync operations"), "{error}");
     drop(hub_pool);
     hub_registry.close_all().await.expect("close hub pools");
 }

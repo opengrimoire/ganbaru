@@ -64,6 +64,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_fork_evidence",
     "sync_row_creations",
     "sync_stale_rows",
+    "sync_refused_rows",
     "sync_recovery_kit",
 ];
 
@@ -256,9 +257,17 @@ pub enum ColumnType {
     OrderKey,
     /// Null or the row key of a referenced row.
     OptionalRowKey,
+    /// A row key that is never null. Used for every reference and key column that is NOT NULL
+    /// in its domain table.
+    RowKey,
 }
 
 impl ColumnType {
+    /// Whether the column holds a row key, required or nullable.
+    pub const fn is_row_key(self) -> bool {
+        matches!(self, Self::RowKey | Self::OptionalRowKey)
+    }
+
     /// Whether the column holds text, so comparisons must ignore declared collations.
     pub const fn is_text(self) -> bool {
         !matches!(
@@ -306,7 +315,7 @@ impl ColumnType {
             }
             Self::Timestamp | Self::OptionalTimestamp => MAX_TIMESTAMP_BYTES,
             Self::OrderKey => MAX_ORDER_KEY_BYTES,
-            Self::OptionalRowKey => MAX_ROW_KEY_BYTES,
+            Self::RowKey | Self::OptionalRowKey => MAX_ROW_KEY_BYTES,
         };
         TAG + LENGTH + text_bytes
     }
@@ -1394,8 +1403,8 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
     let columns = group.columns();
     match group.kind {
         MergeKind::Reference { .. } => {
-            if !matches!(columns, [column] if column.ty == ColumnType::OptionalRowKey) {
-                problems.push("a reference group holds one optional row key column".to_string());
+            if !matches!(columns, [column] if column.ty.is_row_key()) {
+                problems.push("a reference group holds one row key column".to_string());
             }
             if !group.references.is_empty() {
                 problems.push("a reference group declares no reference columns".to_string());
@@ -1417,10 +1426,18 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
             .find(|column| column.name == reference.column)
         {
             None => problems.push(format!("{} is not a column of the group", reference.column)),
-            Some(column) if column.ty != ColumnType::OptionalRowKey => problems.push(format!(
-                "{} holds a reference but is not an optional row key",
+            Some(column) if !column.ty.is_row_key() => problems.push(format!(
+                "{} holds a reference but is not a row key",
                 reference.column
             )),
+            Some(column)
+                if column.ty == ColumnType::RowKey && reference.on_delete != OnDelete::Cascade =>
+            {
+                problems.push(format!(
+                    "{} is required, so its reference must cascade",
+                    reference.column
+                ));
+            }
             Some(_) => {}
         }
         if group.references[..index]
@@ -1511,11 +1528,8 @@ pub(crate) fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<Stri
             .iter()
             .find(|column| column.name == reference.column)
         {
-            Some(column) if column.ty == ColumnType::OptionalRowKey => {}
-            _ => problems.push(format!(
-                "{} is not an optional row key data column",
-                reference.column
-            )),
+            Some(column) if column.ty.is_row_key() => {}
+            _ => problems.push(format!("{} is not a row key data column", reference.column)),
         }
         if owned.references[..index]
             .iter()

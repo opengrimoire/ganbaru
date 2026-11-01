@@ -592,6 +592,13 @@ const fn order_key(name: &'static str) -> ColumnSpec {
 const fn row_key(name: &'static str) -> ColumnSpec {
     ColumnSpec {
         name,
+        ty: ColumnType::RowKey,
+    }
+}
+
+const fn optional_row_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
         ty: ColumnType::OptionalRowKey,
     }
 }
@@ -1086,7 +1093,7 @@ pub const TASKS: TableSpec = TableSpec {
         bumps(reference(
             task_group::PARENT,
             "parent",
-            &[row_key("parent_task_id")],
+            &[optional_row_key("parent_task_id")],
             TASKS_TABLE,
             OnDelete::Cascade,
         )),

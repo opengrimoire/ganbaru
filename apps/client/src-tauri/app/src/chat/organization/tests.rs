@@ -2406,33 +2406,215 @@ fn follow_up_recovery_skips_unaccepted_work() {
 }
 
 #[test]
-fn follow_up_recovery_replays_replies_of_work_started_here() {
+fn follow_up_recovery_replays_replies_while_the_recorded_acceptance_matches() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
-        sqlx::raw_sql(
-            "INSERT INTO chat_assignment_dispatch_jobs
-                 (id, assignment_id, state, available_at, created_at, updated_at)
-             VALUES ('dispatch:review', 'assignment:review', 'completed',
-                     '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z',
-                     '2026-08-04T17:00:00.000Z')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        seed_settled_dispatch_job(&pool).await;
         let writers = chat_writers_of(&["device:desk"]);
+        let scope = scope_accepting(&pool, "assignment:review").await;
 
         let recovered = assignments::recover_stranded_follow_up_assignments(
             &pool,
             PostingDevice::this_device("device:desk", &writers),
-            &ChatDeviceScope::default(),
+            &scope,
             &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
         )
         .await
         .unwrap();
 
-        assert_eq!(recovered, 1, "work this device started needs no acceptance");
+        assert_eq!(
+            recovered, 1,
+            "the gesture that queued this work accepted it"
+        );
+        assert_eq!(review_follow_ups(&pool).await, 1);
     });
+}
+
+#[test]
+fn follow_up_recovery_stops_when_access_widens_after_the_work_ran_here() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_settled_dispatch_job(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        let accepted_before = scope_accepting(&pool, "assignment:review").await;
+        insert_wider_review_policy(&pool).await;
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            device,
+            &accepted_before,
+            &now,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 0);
+        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(assignments, 1, "no successor starts under the wider access");
+        let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_assignment_dispatch_jobs")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(jobs, 1, "only the settled job remains");
+        assert_eq!(pending_review_inputs(&pool).await, 2, "the replies stay");
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &accepted_before,
+            )
+            .await
+            .unwrap(),
+            "the thread offers a local action"
+        );
+
+        let accepted_now = scope_accepting(&pool, "assignment:review").await;
+        assert!(
+            !assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &accepted_now,
+            )
+            .await
+            .unwrap(),
+            "accepting the wider access clears the wait"
+        );
+        let recovered =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted_now, &now)
+                .await
+                .unwrap();
+        assert_eq!(recovered, 1, "the replies recover after the user accepts");
+        assert_eq!(review_follow_ups(&pool).await, 1);
+    });
+}
+
+#[test]
+fn unaccepted_follow_ups_do_not_block_accepted_ones() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        insert_unaccepted_review_assignments(&pool, 40).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 1);
+    });
+}
+
+/// Records the settled dispatch job of `assignment:review`, as work this device ran leaves.
+async fn seed_settled_dispatch_job(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_assignment_dispatch_jobs
+             (id, assignment_id, state, available_at, created_at, updated_at)
+         VALUES ('dispatch:review', 'assignment:review', 'completed',
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z',
+                 '2026-08-04T17:00:00.000Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Number of pending inputs still on `assignment:review`.
+async fn pending_review_inputs(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignment_inputs
+         WHERE assignment_id = 'assignment:review' AND delivery_state = 'pending'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Number of follow-up assignments of `assignment:review`.
+async fn review_follow_ups(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM chat_work_assignments
+         WHERE previous_assignment_id = 'assignment:review'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Signs a newer full access policy revision for the review teammate, as a synced edit does.
+async fn insert_wider_review_policy(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_teammate_policy_revisions
+             (id, teammate_id, provider_instance_id, safety_mode,
+              model_selection_data, created_at)
+         VALUES (
+             'policy:review-wide', 'participant:review-agent', 'provider:review', 'full_access',
+             '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+             '2026-08-04T18:00:00.000Z'
+         )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Inserts `count` review assignments with a pending reply, sorted before `assignment:review`,
+/// whose trigger sits outside their thread, so no acceptance covers them.
+async fn insert_unaccepted_review_assignments(pool: &SqlitePool, count: u32) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:foreign', 'conversation:review', 'message', 'a9',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:foreign', 'participant:local-owner', 'You', '2026-08-04T17:00:30.000Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    for index in 0..count {
+        let assignment_id = format!("assignment:a-{index:02}");
+        sqlx::query(
+            "INSERT INTO chat_work_assignments
+                 (id, reply_thread_id, teammate_id, triggering_message_item_id,
+                  executing_device_id, state, created_at, updated_at)
+             VALUES (?1, 'reply-thread:review', 'participant:review-agent', 'item:foreign',
+                     'device:desk', 'ready_for_review',
+                     '2026-08-04T17:00:00.000Z', '2026-08-04T17:02:00.000Z')",
+        )
+        .bind(&assignment_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_work_assignment_inputs
+                 (id, assignment_id, message_item_id, ordinal, routing_kind,
+                  delivery_state, created_at, delivered_at)
+             VALUES (?1, ?2, 'item:foreign', 1, 'queued_continuation', 'pending',
+                     '2026-08-04T17:01:00.000Z', NULL)",
+        )
+        .bind(format!("input:a-{index:02}"))
+        .bind(&assignment_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
 }
 
 #[test]
@@ -2543,9 +2725,14 @@ fn only_unadopted_work_for_this_device_awaits_local_acceptance() {
             ),
         ] {
             assert_eq!(
-                assignments::assignment_awaits_local_acceptance(&pool, &assignment_id, device)
-                    .await
-                    .unwrap(),
+                assignments::assignment_awaits_local_acceptance(
+                    &pool,
+                    &assignment_id,
+                    device,
+                    &ChatDeviceScope::default(),
+                )
+                .await
+                .unwrap(),
                 expected,
                 "{} with its writers",
                 device.id
@@ -2561,6 +2748,7 @@ fn only_unadopted_work_for_this_device_awaits_local_acceptance() {
                 &pool,
                 &assignment_id,
                 super::workflow::PostingDevice::this_device("device:old", &named_here),
+                &scope,
             )
             .await
             .unwrap(),

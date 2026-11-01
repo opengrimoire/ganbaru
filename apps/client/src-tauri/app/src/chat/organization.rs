@@ -287,6 +287,8 @@ pub(super) async fn post_message(
     let dispatch_app = app.clone();
     #[cfg(desktop)]
     let dispatch_db_url = db_url.clone();
+    #[cfg(desktop)]
+    let posted_by_user = scheduled.is_none();
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     let writers = chat_writers(&app, &pool).await?;
@@ -304,6 +306,10 @@ pub(super) async fn post_message(
         .clone()
         .filter(|_| posted.assignment_write.executes_here)
     {
+        // A scheduled send carries a stored request a peer can edit, so it is not a local gesture.
+        if posted_by_user {
+            assignments::record_gesture_acceptance(&app, &pool, &assignment_id).await;
+        }
         if posted.assignment_write.input_queued {
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {

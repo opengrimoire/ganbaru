@@ -260,7 +260,7 @@ export const chat = {
     closeThread: "Close thread",
     retry: "Retry work",
     workStopped: "The agent stopped because of an error.",
-    workAwaitsStart: "This work came from another device and will not run here until you start it.",
+    workAwaitsStart: "This work came from another device or its access changed, so it will not run here until you start it.",
     startHere: "Start here",
     cancelWork: "Cancel work",
     stopWorkShortcut: (shortcut: string) => `Stop work (${shortcut})`,

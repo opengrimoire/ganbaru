@@ -1182,15 +1182,19 @@ impl ServiceState {
 struct ApplyMark {
     /// The stored vector at the last apply.
     stored: Option<VersionVector>,
+    /// Envelopes in the authorization record store at the last apply.
+    records: u64,
     /// Local captures left when the last apply stopped on captures that sealing did not drain.
     blocked_at: Option<u64>,
 }
 
 impl ApplyMark {
-    /// Whether an apply is due: the log grew, or local captures changed since an apply
+    /// Whether an apply is due: the log grew, the record store changed, which can move the
+    /// selection and its holds with no new operation, or local captures changed since an apply
     /// stopped on them. A capture count that stays the same cannot unblock it.
-    fn due(&self, stored: &VersionVector, pending: u64) -> bool {
+    fn due(&self, stored: &VersionVector, records: u64, pending: u64) -> bool {
         self.stored.as_ref() != Some(stored)
+            || self.records != records
             || self.blocked_at.is_some_and(|blocked| blocked != pending)
     }
 }
@@ -2410,10 +2414,10 @@ impl ServiceState {
         }
     }
 
-    /// Applies stored operations once the log grew since the last apply, or local captures
-    /// changed since an apply stopped on them, then repairs the Notes structure that applies
-    /// left pending. Apply always commits, so applying on every pass would wake the service
-    /// again; the repair commits only when keys are pending.
+    /// Applies stored operations once the log grew or the record store changed since the last
+    /// apply, or local captures changed since an apply stopped on them, then repairs the Notes
+    /// structure that applies left pending. Apply always commits, so applying on every pass
+    /// would wake the service again; the repair commits only when keys are pending.
     async fn apply_new<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
         let applied = self.apply_if_due(session).await;
         session.repair_notes().await;
@@ -2421,22 +2425,30 @@ impl ServiceState {
     }
 
     async fn apply_if_due<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
-        let stored = {
+        let (stored, records) = {
             let mut conn = acquire(&session.pool).await?;
-            session
+            let stored = session
                 .engine
                 .stored_vector(&mut conn, &session.ctx)
                 .await
-                .map_err(|error| format!("read sync log: {error}"))?
+                .map_err(|error| format!("read sync log: {error}"))?;
+            let records = session
+                .engine
+                .authorization_storage(&mut conn, &session.ctx)
+                .await
+                .map_err(|error| format!("read authorization storage: {error}"))?
+                .envelopes;
+            (stored, records)
         };
         let pending = session.pending_captures().await?;
-        if !self.applied.due(&stored, pending) {
+        if !self.applied.due(&stored, records, pending) {
             return Ok(());
         }
         let applied = session.apply_ready(&mut self.writer).await?;
         session.report(applied.tables, &applied.notices).await;
         self.applied = ApplyMark {
             stored: Some(stored),
+            records,
             blocked_at: applied.blocked_at,
         };
         Ok(())
@@ -3867,28 +3879,46 @@ mod tests {
     #[test]
     fn apply_runs_once_per_log_growth() {
         let mut mark = ApplyMark::default();
-        assert!(mark.due(&vector(1), 0), "the first pass applies");
+        assert!(mark.due(&vector(1), 0, 0), "the first pass applies");
         mark.stored = Some(vector(1));
-        assert!(!mark.due(&vector(1), 0));
+        assert!(!mark.due(&vector(1), 0, 0));
         assert!(
-            !mark.due(&vector(1), 7),
+            !mark.due(&vector(1), 0, 7),
             "captures alone do not rerun an apply that finished"
         );
-        assert!(mark.due(&vector(2), 0), "a grown log applies again");
+        assert!(mark.due(&vector(2), 0, 0), "a grown log applies again");
+    }
+
+    #[test]
+    fn a_record_admitted_with_no_new_operation_applies_once() {
+        let mark = ApplyMark {
+            stored: Some(vector(1)),
+            records: 3,
+            blocked_at: None,
+        };
+        assert!(!mark.due(&vector(1), 3, 0));
+        assert!(
+            mark.due(&vector(1), 4, 0),
+            "a selection or hold read from the new record is not current until it applies"
+        );
     }
 
     #[test]
     fn a_blocked_apply_reruns_when_captures_change_and_waits_while_they_stay() {
         let mark = ApplyMark {
             stored: Some(vector(1)),
+            records: 0,
             blocked_at: Some(5),
         };
         assert!(
-            !mark.due(&vector(1), 5),
+            !mark.due(&vector(1), 0, 5),
             "the same captures would block again"
         );
-        assert!(mark.due(&vector(1), 2), "sealed captures may unblock it");
-        assert!(mark.due(&vector(1), 9), "new local edits may be sealable");
-        assert!(mark.due(&vector(2), 5), "a grown log applies again");
+        assert!(mark.due(&vector(1), 0, 2), "sealed captures may unblock it");
+        assert!(
+            mark.due(&vector(1), 0, 9),
+            "new local edits may be sealable"
+        );
+        assert!(mark.due(&vector(2), 0, 5), "a grown log applies again");
     }
 }

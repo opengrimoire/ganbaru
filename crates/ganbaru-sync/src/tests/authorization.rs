@@ -1124,7 +1124,7 @@ fn two_admins_removing_each_other_freeze_until_one_yields_whatever_order_their_c
     });
 }
 
-async fn held(replica: &mut Replica, index: usize) -> bool {
+pub(super) async fn held(replica: &mut Replica, index: usize) -> bool {
     replica
         .engine
         .device_held(&mut replica.conn, &replica.ctx, &device_id(index))

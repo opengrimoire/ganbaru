@@ -1,7 +1,10 @@
 //! Seeded simulation of a peer topology: the anchor, two admin desktops, and members exchange
 //! with random peers rather than only the anchor, through the same store, apply, and forwarding
 //! paths as the replica crate. Pages carry the authorization chain first, forward operations of
-//! third writers, stop at the first refusal, and leave dependents waiting causally.
+//! third writers, stop at the first refusal, and leave dependents waiting causally. A session
+//! over a reliable network also runs the whole record exchange ahead of the operation lanes, as
+//! every replica session does; a lossy one fetches only wanted records, so records that depend on
+//! the lanes to spread stay covered.
 //!
 //! Peers exchange under partitions, crashes at failpoints, and anchor outages, while admins
 //! remove members that keep editing, remove each other, race handovers, hand the anchor over as
@@ -38,7 +41,7 @@ use super::{
     Sim, acknowledge, apply_all, crashing, ids, iso_time, number, seal, seeds, store, unreliable,
 };
 use crate::hold::MAX_HOLD_MS;
-use crate::{EvidenceOutcome, SyncError};
+use crate::{EvidenceOutcome, RecordCursor, SyncError};
 
 /// Node id of the installation the space is chartered with; other node ids index
 /// [`Sim::replicas`].
@@ -55,6 +58,8 @@ const RECORD_PAGE: usize = 256;
 const RECORD_ROUNDS: usize = 64;
 /// Actions kept for the reproduction a failing run prints.
 const TRACE: usize = 24;
+/// Seed whose run contests a handover sealed after a row change of the device the contest holds.
+const HELD_LANE_SEED: u64 = 37;
 
 /// What one installation does besides its database.
 #[derive(Default)]
@@ -255,6 +260,38 @@ async fn forward(
     }
     acknowledge(rng, to).await;
     stored || learned
+}
+
+/// Pulls every record `from` stores into `to`, the way the record pages of a replica session do
+/// ahead of the operation lanes: past a held lane, past a fork, and whatever the operation
+/// vectors cover. Draws nothing from the simulation's random source. Returns whether `to` stored
+/// anything new.
+async fn pull_record_pages(from: &mut Replica, to: &mut Replica) -> bool {
+    let mut cursor = RecordCursor::default();
+    let mut stored = false;
+    for _ in 0..RECORD_ROUNDS {
+        let page = from
+            .engine
+            .record_page(&mut from.conn, &from.ctx, &cursor, usize::MAX, RECORD_PAGE)
+            .await
+            .unwrap();
+        let envelopes: Vec<Vec<u8>> = page
+            .envelopes
+            .into_iter()
+            .map(|envelope| envelope.bytes)
+            .collect();
+        let admission = to
+            .engine
+            .admit_records(&mut to.conn, &to.ctx, &envelopes, to.now_ms)
+            .await
+            .unwrap();
+        stored |= admission.admitted > 0;
+        cursor = page.cursor;
+        if !page.more {
+            return stored;
+        }
+    }
+    panic!("record pages did not end");
 }
 
 /// Closes the record ancestry `to` lacks from what `from` stores, the way the replica's record
@@ -556,9 +593,10 @@ impl PeerSim {
         self.connects(a, b).await && self.exchange(a, b, reliable).await
     }
 
-    /// One exchange `a` opens with `b`: each side forwards what the other lacks, a side that
-    /// exchanged with the anchor of its chain records anchor marks, the anchor sequences the
-    /// waiting proposals of both, and a side that learned of its own removal stops.
+    /// One exchange `a` opens with `b`: over a reliable network each side first pulls the
+    /// other's record pages, each side forwards what the other lacks, a side that exchanged with
+    /// the anchor of its chain records anchor marks, the anchor sequences the waiting proposals
+    /// of both, and a side that learned of its own removal stops.
     async fn exchange(&mut self, a: usize, b: usize, reliable: bool) -> bool {
         let skipped: BTreeSet<String> = self.states[&a]
             .quarantined
@@ -570,7 +608,18 @@ impl PeerSim {
         } = &mut self.sim;
         let (x, y) = two(replicas, hub, a, b);
         let probed = probe_forks(x, y).await;
-        let mut changed = forward(rng, x, y, &skipped, reliable).await;
+        let mut changed = false;
+        if reliable {
+            if pull_record_pages(x, y).await {
+                apply_all(rng, y).await;
+                changed = true;
+            }
+            if pull_record_pages(y, x).await {
+                apply_all(rng, x).await;
+                changed = true;
+            }
+        }
+        changed |= forward(rng, x, y, &skipped, reliable).await;
         changed |= forward(rng, y, x, &skipped, reliable).await;
         if fetch_wanted_records(x, y).await {
             apply_all(rng, y).await;
@@ -1604,6 +1653,15 @@ fn run_shard(shard: u64) {
                 );
             }
         }
+    });
+}
+
+/// A contest whose second handover follows a row change of the device it holds: operation lanes
+/// stop at that row change, so only record pages tell the other members of the contest.
+#[test]
+fn a_handover_past_a_held_row_change_reaches_every_member() {
+    block_on(async {
+        run(HELD_LANE_SEED).await;
     });
 }
 

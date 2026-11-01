@@ -8,7 +8,9 @@ use ganbaru_sync_contracts::{
 };
 
 use super::arrival_orders;
-use super::authorization::{admin_entry, genesis_of, head, remove_entry, seal_after, view};
+use super::authorization::{
+    admin_entry, genesis_of, head, held, remove_entry, seal_after, tag, view,
+};
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, anchor_device_key, device_admin, device_id,
@@ -334,6 +336,75 @@ fn two_takes_resolve_by_a_yield_that_travels_by_record_pages_alone() {
             assert_eq!(view(replica).await, resolved);
         }
         assert_eq!(stored(&mut member).await, stored(&mut hub).await);
+    });
+}
+
+/// The second take of a contest follows a row change of its author, whom the contest holds. The
+/// holder's lane stops at that row change, so the member selects the first take alone, and the
+/// record pages then bring it the contest without the row change.
+#[test]
+fn record_pages_carry_a_take_past_a_held_row_change_and_no_data() {
+    block_on(async {
+        let mut hub = anchor_with_admins(86).await;
+        hub.sequence(enroll_entry(&person(), 30, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut first = Replica::new(20, 86).await;
+        let mut second = Replica::new(21, 86).await;
+        let mut member = Replica::new(30, 86).await;
+        for replica in [&mut first, &mut second, &mut member] {
+            replica.pull(&mut hub).await;
+        }
+        let point = view(&mut hub).await.revision;
+
+        take(&mut first, 20).await;
+        let removal = proposal(
+            first.ctx.space,
+            &device_admin(20),
+            first.now_ms,
+            remove_entry(&device_id(21)),
+        );
+        first.sequence_signed(&removal).await.unwrap().unwrap();
+        tag(&mut second, "held-row").await;
+        take(&mut second, 21).await;
+        let removal = proposal(
+            second.ctx.space,
+            &device_admin(21),
+            second.now_ms,
+            remove_entry(&device_id(20)),
+        );
+        second.sequence_signed(&removal).await.unwrap().unwrap();
+        hub.pull(&mut first).await;
+        hub.pull(&mut second).await;
+        let contested = view(&mut hub).await;
+        assert_eq!(contested.frozen_at, Some(point));
+        assert!(
+            held(&mut hub, 21).await,
+            "the contest holds the second take"
+        );
+
+        member.pull(&mut hub).await;
+        assert_eq!(
+            view(&mut member).await.anchor_device_id,
+            device_id(20),
+            "the lane stops before the second take"
+        );
+        let lanes = member.stored_vector().await;
+
+        exchange(&mut member, &mut hub).await;
+        assert_eq!(view(&mut member).await, contested);
+        assert!(held(&mut member, 21).await, "the next apply holds it too");
+        assert_eq!(
+            member.stored_vector().await,
+            lanes,
+            "pages bring no operation"
+        );
+        let rows: Vec<String> = sqlx::query_scalar("SELECT id FROM quick_note_tags")
+            .fetch_all(&mut member.conn)
+            .await
+            .unwrap();
+        assert!(!rows.contains(&"held-row".to_owned()));
     });
 }
 

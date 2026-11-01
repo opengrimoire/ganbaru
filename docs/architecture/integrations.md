@@ -40,7 +40,7 @@ Device-local schedules, journals, and selected-document references reconcile int
 
 ## Network defaults
 
-Normal productivity features work without network access. Network use is feature-specific and visible, such as an explicitly requested remote Notes import, YouTube playback, update checks, or a configured provider.
+Normal productivity features work without network access. Network use is feature-specific and visible, such as an explicitly requested remote Notes import, YouTube playback, update checks, or a configured provider. Automatic update notifications are a device preference, so a linked device cannot turn them off for another.
 
 Loopback servers use random bearer tokens, bounded requests, narrow registries, and process-lifetime scope. A loopback address is not sufficient authentication by itself.
 

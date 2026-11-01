@@ -302,7 +302,7 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
     portable("theme.quickToggleLightId", LABEL),
     portable("theme.quickToggleDarkId", LABEL),
     device("theme.activeId", LABEL),
-    portable("updates.autoNotifications", BOOL),
+    device("updates.autoNotifications", BOOL),
     device("updates.lastAutoCheckAt", ValueRule::Text { max_bytes: 64 }),
     portable("projects.starredProjectIds", IDS),
     portable("projects.starredViewIds", IDS),
@@ -484,6 +484,7 @@ mod tests {
             "projects.iconPicker.recent",
             "notes.selectedPageId",
             "chatSidebar.showArchivedInPickers",
+            "updates.autoNotifications",
         ];
         for key in portable {
             assert!(portable_row(key).is_some(), "{key}");
@@ -491,8 +492,8 @@ mod tests {
         for key in device {
             assert!(device_spec(key).is_some(), "{key}");
         }
-        assert_eq!(specs(Scope::Portable).count(), 56);
-        assert_eq!(specs(Scope::Device).count(), 21);
+        assert_eq!(specs(Scope::Portable).count(), 55);
+        assert_eq!(specs(Scope::Device).count(), 22);
     }
 
     #[test]

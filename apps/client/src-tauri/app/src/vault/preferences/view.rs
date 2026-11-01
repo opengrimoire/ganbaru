@@ -124,4 +124,17 @@ mod tests {
         });
         assert_eq!(compose(&rows, device.as_object().unwrap()), json!({}));
     }
+
+    #[test]
+    fn synced_auto_notifications_row_has_no_effect() {
+        const KEY: &str = "updates.autoNotifications";
+        let rows = [row(KEY, "false")];
+
+        let synced_only = compose(&rows, &Map::new());
+        assert_eq!(value_at(&synced_only, KEY), None);
+
+        let device = json!({ KEY: true });
+        let view = compose(&rows, device.as_object().unwrap());
+        assert_eq!(value_at(&view, KEY), Some(&json!(true)));
+    }
 }

@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use ganbaru_sync_contracts::{ChangeAction, TableId};
+use ganbaru_sync_contracts::{Cause, Change, ChangeAction, RowKey, TableId, VersionVector};
 use sqlx::Connection;
 
 use super::block_on;
@@ -12,10 +12,13 @@ use super::fixture::{
     FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
 };
 use super::replica::{Replica, converge};
+use crate::apply::{Constrained, finish_sealed};
+use crate::merge::Batch;
+use crate::seal::{SealReport, SealSlot};
 use crate::visibility::{
     CascadeWalk, DeriveScope, Root, RootKind, Roots, RowRef, Visibility, WalkValue,
 };
-use crate::{SyncError, repair, seed};
+use crate::{SyncError, log, recovery, repair, seed, sql};
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -600,4 +603,204 @@ fn cascade_walk_handles_a_cycle_and_a_long_chain() {
             .map(|root| root.key.clone());
         assert_eq!(cause, Some(format!("root-{index:06}")));
     }
+}
+
+/// Rows of the tombstone cause chain, each naming the row before it as its cause.
+const CAUSE_ROWS: usize = 256;
+
+fn cause_row(index: usize) -> String {
+    format!("cause-{index:03}")
+}
+
+/// Inserts `keys` into `fixture_cycle_a` and seals them.
+async fn seal_cycle_rows(replica: &mut Replica, keys: &[String]) {
+    let values = keys
+        .iter()
+        .map(|key| format!("('{key}', '{key}')"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    replica
+        .exec(&format!(
+            "INSERT INTO fixture_cycle_a (id, label) VALUES {values}"
+        ))
+        .await;
+    replica.seal().await.unwrap();
+}
+
+/// Seals a tombstone of a `fixture_cycle_a` row in an operation of its own.
+async fn seal_tombstone(replica: &mut Replica, key: &str, cause: Option<&str>) {
+    let now_ms = replica.now_ms;
+    let Replica {
+        engine,
+        conn,
+        ctx,
+        identity,
+        ..
+    } = replica;
+    let mut local = identity.local();
+    let mut tx = conn.begin().await.unwrap();
+    log::ensure_space(&mut tx, ctx.space).await.unwrap();
+    sql::begin_engine_write(&mut tx).await.unwrap();
+    let mut batch = Batch::load(&mut tx, ctx.space).await.unwrap();
+    let mut slot = SealSlot::new(Some(&mut local));
+    let mut report = SealReport::default();
+    let (sealer, writer) = slot
+        .open(engine, &mut tx, ctx, &mut batch, now_ms)
+        .await
+        .unwrap()
+        .expect("the slot has a writer");
+    let change = Change {
+        table: CYCLE_A_TABLE,
+        row: RowKey::new(key).unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: cause.map(|row| Cause {
+            table: CYCLE_A_TABLE,
+            row: RowKey::new(row).unwrap(),
+        }),
+    };
+    sealer
+        .seal_changes(
+            engine,
+            &mut tx,
+            ctx,
+            &mut batch,
+            writer,
+            vec![change],
+            None,
+            now_ms,
+            &mut report,
+        )
+        .await
+        .unwrap();
+    finish_sealed(
+        engine,
+        &mut tx,
+        ctx,
+        &mut batch,
+        &mut slot,
+        Constrained::Seal,
+        now_ms,
+        &mut report,
+    )
+    .await
+    .unwrap();
+    sql::set_applying(&mut tx, false).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// The context of the newest tombstone of a `fixture_cycle_a` row.
+async fn tombstone_context(replica: &mut Replica, key: &str) -> VersionVector {
+    let (writer, seq): (Vec<u8>, i64) = sqlx::query_as(
+        "SELECT writer_id, seq FROM sync_tombstones
+         WHERE table_id = ? AND row_key = ? ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(i64::from(CYCLE_A_TABLE.0))
+    .bind(key)
+    .fetch_one(&mut replica.conn)
+    .await
+    .unwrap();
+    let writer = log::writer_id(&writer).unwrap();
+    let mut batch = Batch::load(&mut replica.conn, replica.ctx.space)
+        .await
+        .unwrap();
+    recovery::operation_context(
+        &mut replica.conn,
+        &mut batch,
+        writer,
+        u64::try_from(seq).unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn loaded_visibility(replica: &mut Replica) -> Visibility {
+    Visibility::load(
+        &replica.engine,
+        &mut replica.conn,
+        &mut BTreeSet::new(),
+        DeriveScope::All,
+    )
+    .await
+    .unwrap()
+}
+
+/// The coverage of each of `keys`, read in order on one visibility, with the rows that read.
+async fn coverages(replica: &mut Replica, keys: &[String]) -> (Vec<VersionVector>, usize) {
+    let mut visibility = loaded_visibility(replica).await;
+    let mut batch = Batch::load(&mut replica.conn, replica.ctx.space)
+        .await
+        .unwrap();
+    let mut covering = Vec::with_capacity(keys.len());
+    for key in keys {
+        let contexts = recovery::coverage(
+            &replica.engine,
+            &mut replica.conn,
+            &mut batch,
+            &mut visibility,
+            CYCLE_A_TABLE,
+            key,
+        )
+        .await
+        .unwrap();
+        let mut joined = VersionVector::new();
+        for context in &contexts {
+            joined.merge(context);
+        }
+        covering.push(joined);
+    }
+    (covering, visibility.coverage_rows)
+}
+
+/// Every row of a cause chain covers what the chain's root covers, and each row is read once no
+/// matter how many rows above it reach it. A row with a tombstone of its own adds that tombstone
+/// to itself and the rows above it, and a cycle of causes shares one result.
+#[test]
+fn tombstone_cause_chain_reads_each_row_once() {
+    block_on(async {
+        let mut replica = Replica::new(0, 3).await;
+        let rows: Vec<String> = (0..CAUSE_ROWS).map(cause_row).collect();
+        seal_cycle_rows(&mut replica, &rows).await;
+        for index in 0..CAUSE_ROWS {
+            let cause = index.checked_sub(1).map(cause_row);
+            seal_tombstone(&mut replica, &rows[index], cause.as_deref()).await;
+        }
+        let root = tombstone_context(&mut replica, &rows[0]).await;
+
+        let mut descending = rows.clone();
+        descending.reverse();
+        for order in [&rows, &descending] {
+            let (covering, read) = coverages(&mut replica, order).await;
+            assert_eq!(read, CAUSE_ROWS, "rows read for {} first", order[0]);
+            assert!(covering.iter().all(|coverage| *coverage == root));
+        }
+
+        let middle = CAUSE_ROWS / 2;
+        seal_tombstone(&mut replica, &rows[middle], None).await;
+        let own = tombstone_context(&mut replica, &rows[middle]).await;
+        let (covering, _) = coverages(&mut replica, &rows).await;
+        let mut both = root.clone();
+        both.merge(&own);
+        for (index, coverage) in covering.iter().enumerate() {
+            let expected = if index < middle { &root } else { &both };
+            assert_eq!(coverage, expected, "coverage of row {index}");
+        }
+        assert!(!root.dominates(&own), "the own tombstone adds to the chain");
+
+        let cycle = ["loop-x", "loop-y", "loop-above"].map(String::from);
+        seal_cycle_rows(&mut replica, &cycle).await;
+        seal_tombstone(&mut replica, "loop-x", Some("loop-y")).await;
+        seal_tombstone(&mut replica, "loop-y", Some("loop-x")).await;
+        seal_tombstone(&mut replica, "loop-above", Some("loop-x")).await;
+        let (covering, read) = coverages(&mut replica, &cycle).await;
+        assert_eq!(read, cycle.len());
+        assert_eq!(covering, vec![VersionVector::new(); cycle.len()]);
+
+        seal_tombstone(&mut replica, "loop-y", None).await;
+        let own = tombstone_context(&mut replica, "loop-y").await;
+        let (covering, read) = coverages(&mut replica, &cycle).await;
+        assert_eq!(read, cycle.len());
+        assert_eq!(covering, vec![own; cycle.len()]);
+    });
 }

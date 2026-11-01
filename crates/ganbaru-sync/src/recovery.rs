@@ -138,7 +138,7 @@ async fn tombstones(
 }
 
 /// The context of an operation, advanced past the operation itself.
-async fn operation_context(
+pub(crate) async fn operation_context(
     conn: &mut SqliteConnection,
     batch: &mut Batch,
     writer: WriterId,
@@ -216,6 +216,10 @@ pub(crate) async fn coverage(
     let mut pending = vec![start];
     let mut contexts = Vec::new();
     while let Some((table, key)) = pending.pop() {
+        #[cfg(test)]
+        {
+            visibility.coverage_rows += 1;
+        }
         match merge::row_state(conn, table, &key).await? {
             None => {}
             Some(RowState::Tombstoned) => {

@@ -393,6 +393,9 @@ pub(crate) struct Visibility {
     /// Rows whose cascading references were read.
     #[cfg(test)]
     pub(crate) cascade_walks: usize,
+    /// Rows whose coverage was read.
+    #[cfg(test)]
+    pub(crate) coverage_rows: usize,
 }
 
 impl Visibility {

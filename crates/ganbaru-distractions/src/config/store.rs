@@ -214,7 +214,10 @@ pub enum RuleTarget {
     Category { id: String },
     CustomCategory { id: String },
     Host { list: HostList, host: String },
-    DesktopApp { name: String },
+    DesktopApp {
+        #[serde(alias = "name")]
+        identity: String,
+    },
     MobileApp { package_name: String },
     UsageLimit { id: String },
 }
@@ -436,8 +439,8 @@ pub(super) async fn set_enabled(
             .await
             .map_err(storage("toggle distraction host"))?;
         }
-        RuleTarget::DesktopApp { name } => {
-            if is_protected_desktop_app_name(name) {
+        RuleTarget::DesktopApp { identity } => {
+            if is_protected_desktop_app_name(identity) {
                 return Ok(());
             }
             sqlx::query(
@@ -446,7 +449,7 @@ pub(super) async fn set_enabled(
             )
             .bind(flag)
             .bind(DESKTOP_PLATFORM)
-            .bind(app_name_key(name))
+            .bind(app_name_key(identity))
             .execute(conn)
             .await
             .map_err(storage("toggle desktop distraction app"))?;
@@ -502,11 +505,11 @@ async fn remove(conn: &mut SqliteConnection, target: &RuleTarget) -> Result<(), 
             )
             .await?;
         }
-        RuleTarget::DesktopApp { name } => {
+        RuleTarget::DesktopApp { identity } => {
             execute(
                 conn,
                 "DELETE FROM distractions_app_rules WHERE platform = ? AND identity = ?",
-                &[DESKTOP_PLATFORM, &app_name_key(name)],
+                &[DESKTOP_PLATFORM, &app_name_key(identity)],
                 "remove desktop distraction app",
             )
             .await?;
@@ -1223,6 +1226,7 @@ async fn load_apps(
                 let stored: Vec<String> =
                     serde_json::from_str(&text(row, "match_names_json")?).unwrap_or_default();
                 config.desktop.blocked_apps.push(DesktopAppRule {
+                    identity: app_name_key(&name),
                     match_names: normalize_match_names(&name, &stored),
                     name,
                     enabled,

@@ -448,3 +448,70 @@ fn recovery_restores_a_category_under_a_free_name_and_a_limit_with_its_entries()
         assert_eq!(entry.color, Some(3));
     });
 }
+
+async fn insert_desktop_rule(pool: &SqlitePool, identity: &str, name: &str, match_names: &str) {
+    sqlx::query(
+        "INSERT INTO distractions_app_rules
+             (id, platform, identity, display_name, match_names_json, enabled, created_at_ms)
+         VALUES (?, 'desktop', ?, ?, ?, 1, ?)",
+    )
+    .bind(format!("rule-{identity}"))
+    .bind(identity)
+    .bind(name)
+    .bind(match_names)
+    .bind(NOW_MS)
+    .execute(pool)
+    .await
+    .expect("insert desktop rule");
+}
+
+async fn desktop_rule_enabled(pool: &SqlitePool, identity: &str) -> Option<i64> {
+    sqlx::query_scalar(
+        "SELECT enabled FROM distractions_app_rules
+         WHERE platform = 'desktop' AND identity = ?",
+    )
+    .bind(identity)
+    .fetch_optional(pool)
+    .await
+    .expect("read desktop rule")
+}
+
+/// The identity the assembled configuration reports for a rule, as Settings sends it back.
+async fn desktop_target(pool: &SqlitePool, name: &str) -> RuleTarget {
+    let config = read(pool).await.expect("read rules");
+    let rule = config
+        .desktop
+        .blocked_apps
+        .iter()
+        .find(|rule| rule.name == name)
+        .expect("assembled desktop rule");
+    RuleTarget::DesktopApp {
+        identity: rule.identity.clone(),
+    }
+}
+
+#[test]
+fn desktop_rule_with_divergent_identity_can_be_removed_and_toggled() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        insert_desktop_rule(&pool, "a", "b", "[]").await;
+        let target = desktop_target(&pool, "b").await;
+
+        apply(
+            &pool,
+            &RuleEdit::SetEnabled {
+                target: target.clone(),
+                enabled: false,
+            },
+            NOW_MS,
+        )
+        .await
+        .expect("toggle rule");
+        assert_eq!(desktop_rule_enabled(&pool, "a").await, Some(0));
+
+        apply(&pool, &RuleEdit::Remove(target), NOW_MS)
+            .await
+            .expect("remove rule");
+        assert_eq!(desktop_rule_enabled(&pool, "a").await, None);
+    });
+}

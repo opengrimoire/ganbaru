@@ -115,6 +115,7 @@ pub struct CustomCategory {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopAppRule {
+    pub identity: String,
     pub name: String,
     pub enabled: bool,
     pub match_names: Vec<String>,

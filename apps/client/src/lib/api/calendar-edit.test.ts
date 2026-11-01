@@ -34,7 +34,7 @@ function response() {
       scope: { effectiveScope: "this", selectedStarted: false, selectedHasHistory: false, selectedActive: false },
       previewedIds: ["edited"], editingId: "edited",
       window: {
-        events: [event], overrides: [], attendees: [], diagnostics: [], total_event_count: null,
+        events: [event], overrides: [], attendees: [], diagnostics: [], total_event_count: null, omitted_template_count: 0,
         occurrences: [{ template_id: "edited", id: "edited", recurring_parent_id: null, recurrence_date: "2024-03-11",
           start_time: "2024-03-11T13:00:00.000Z", end_time: "2024-03-11T14:00:00.000Z", override_id: null }],
       },

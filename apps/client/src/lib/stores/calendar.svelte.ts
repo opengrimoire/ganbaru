@@ -56,6 +56,7 @@ interface CalendarWindowSnapshot {
   sourceEvents: CalendarEvent[];
   windowEvents: CalendarEvent[];
   diagnostics: CalendarExpansionDiagnostic[];
+  omittedTemplateCount: number;
   totalEventCount: number;
 }
 
@@ -167,6 +168,8 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
   let sourceEvents = $state<CalendarEvent[]>([]);
   let windowEvents = $state<CalendarEvent[]>([]);
   let expansionDiagnostics = $state<CalendarExpansionDiagnostic[]>([]);
+  let omittedTemplateCount = $state(0);
+  let windowLoadFailed = $state(false);
   let loaded = $state(false);
   let currentWindowKey: string | null = null;
   let currentWindowRenderZone: string | null = null;
@@ -191,6 +194,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
       if (!currentWindowStart || !currentWindowEnd) {
         windowEvents = [];
         expansionDiagnostics = [];
+        omittedTemplateCount = 0;
         return;
       }
       await loadWindowIntoState(currentWindowStart, currentWindowEnd, false, true);
@@ -255,6 +259,8 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     sourceEvents = snapshot.sourceEvents;
     windowEvents = snapshot.windowEvents;
     expansionDiagnostics = snapshot.diagnostics;
+    omittedTemplateCount = snapshot.omittedTemplateCount;
+    windowLoadFailed = false;
     totalEventCount = snapshot.totalEventCount;
     currentWindowKey = snapshot.key;
     currentWindowRenderZone = snapshot.renderZone;
@@ -353,6 +359,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
       sourceEvents: mapped.sourceEvents,
       windowEvents: mapped.windowEvents,
       diagnostics: mapped.diagnostics,
+      omittedTemplateCount: mapped.omittedTemplateCount,
       totalEventCount: mapped.totalEventCount ?? totalEventCount,
     };
     rememberWindowSnapshot(snapshot);
@@ -558,6 +565,16 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
       return expansionDiagnostics;
     },
 
+    /** Events this window selected but left out to stay inside its bounds. */
+    get omittedTemplateCount(): number {
+      return omittedTemplateCount;
+    },
+
+    /** Whether the last boot of this store failed before a window could be shown. */
+    get windowLoadFailed(): boolean {
+      return windowLoadFailed;
+    },
+
     get eventCount(): number {
       return totalEventCount;
     },
@@ -643,6 +660,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
         }
         await loadWindowIntoState(initialWindow.start, initialWindow.end, true);
       } catch (e) {
+        windowLoadFailed = true;
         console.error("[calendar] load() failed:", e);
         throw e;
       }

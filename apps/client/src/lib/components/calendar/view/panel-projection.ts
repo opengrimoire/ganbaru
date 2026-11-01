@@ -1,8 +1,19 @@
+import { mayBeShortenedWindowText } from "$lib/calendar/db-rows";
 import type { CalendarEvent } from "$lib/calendar/types";
 import type { EditSessionState, PanelAnchor } from "$lib/components/calendar/edit-session.svelte";
 import type { ParkedPanelSnapshot } from "./panel-lifecycle.svelte";
 
-/** Resolve an editor baseline from persisted occurrences, preserving native geometry. */
+/** Whether `full` holds the rest of a window value; a differing occurrence override does not. */
+function extendsWindowText(windowValue: string, full: string): boolean {
+  return mayBeShortenedWindowText(windowValue) && full.startsWith(windowValue);
+}
+
+/**
+ * Resolve an editor baseline from persisted occurrences, preserving native geometry.
+ *
+ * A hydrated baseline counts as fully loaded, so it carries the full title and location instead
+ * of the shortened window text, which a later save would otherwise write back.
+ */
 export function resolvePersistedCalendarPanelEvent(
   displayedId: string,
   canonicalEvents: readonly CalendarEvent[],
@@ -12,7 +23,13 @@ export function resolvePersistedCalendarPanelEvent(
   if (!canonical) return undefined;
   if (!fullEvent) return canonical;
   if (fullEvent.id !== (canonical.recurringParentId ?? canonical.id)) return undefined;
-  return { ...fullEvent, ...canonical };
+  const hydrated = { ...fullEvent, ...canonical };
+  if (extendsWindowText(canonical.title, fullEvent.title)) hydrated.title = fullEvent.title;
+  if (canonical.location && fullEvent.location
+    && extendsWindowText(canonical.location, fullEvent.location)) {
+    hydrated.location = fullEvent.location;
+  }
+  return hydrated;
 }
 
 export type PanelRenderState =

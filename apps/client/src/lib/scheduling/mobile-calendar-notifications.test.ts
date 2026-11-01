@@ -29,7 +29,7 @@ function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
 describe("mobile Calendar notification delivery", () => {
   it("uses the native reminder projection as its only occurrence source", async () => {
     const nativeEvent = event({ id: "series::2024-03-11", recurringParentId: "series", recurrenceDate: "2024-03-11" });
-    vi.mocked(loadNativeCalendarWindow).mockResolvedValueOnce({ sourceEvents: [], windowEvents: [nativeEvent], totalEventCount: null, diagnostics: [] });
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValueOnce({ sourceEvents: [], windowEvents: [nativeEvent], totalEventCount: null, diagnostics: [], omittedTemplateCount: 0 });
     expect(await loadNotificationSchedulerEvents()).toEqual([nativeEvent]);
     expect(loadNativeCalendarWindow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ includeTotalEventCount: false }), "notifications");
   });

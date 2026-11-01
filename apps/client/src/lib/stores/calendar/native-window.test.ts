@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import type { DbCalendarEvent } from "$lib/calendar/db-rows";
+import { WINDOW_TEXT_CHARS, type DbCalendarEvent } from "$lib/calendar/db-rows";
 import { loadNativeCalendarWindow, mapNativeCalendarWindow, parseNativeCalendarWindow } from "./native-window";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -26,6 +26,7 @@ function snapshot() {
       start_time: "2024-03-11T13:00:00.000Z", end_time: "2024-03-11T14:00:00.000Z", override_id: null,
     }],
     diagnostics: [],
+    omitted_template_count: 0,
   };
 }
 
@@ -104,5 +105,24 @@ describe("native Calendar window boundary", () => {
     expect(mapped.windowEvents).toEqual([]);
     expect(mapped.sourceEvents).toHaveLength(1);
     expect(mapped.diagnostics).toEqual(input.diagnostics);
+  });
+
+  it.each([-1, 1.5, "3", null, undefined])("rejects an omitted template count of %s", (count) => {
+    expect(() => parseNativeCalendarWindow(JSON.stringify({ ...snapshot(), omitted_template_count: count })))
+      .toThrow();
+  });
+
+  it("parses a window at the native text budget with its omitted template count", () => {
+    const events = Array.from({ length: 10_000 }, (_, index) => ({
+      ...event(), id: `event-${index}`, rrule: null, title: "T".repeat(WINDOW_TEXT_CHARS), location: "L".repeat(653),
+    }));
+    const occurrences = events.map((row) => ({
+      template_id: row.id, id: row.id, recurring_parent_id: null, recurrence_date: "2024-03-09",
+      start_time: "2024-03-09T14:00:00.000Z", end_time: "2024-03-09T15:00:00.000Z", override_id: null,
+    }));
+    const input = { ...snapshot(), events, occurrences, total_event_count: 10_003, omitted_template_count: 3 };
+    const mapped = mapNativeCalendarWindow(input, "UTC");
+    expect(mapped.windowEvents).toHaveLength(10_000);
+    expect(mapped.omittedTemplateCount).toBe(3);
   });
 });

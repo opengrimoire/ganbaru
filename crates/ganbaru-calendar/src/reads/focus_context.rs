@@ -322,7 +322,10 @@ fn select(
         }
         let start_ms = milliseconds(&occurrence.start_time)?;
         let end_ms = milliseconds(&occurrence.end_time)?;
-        let configuration = configuration(event)?;
+        // One unusable replicated configuration cannot take Focus away from the others.
+        let Ok(configuration) = configuration(event) else {
+            continue;
+        };
         for boundary in [start_ms, end_ms] {
             if boundary > now_ms {
                 next_boundary_ms =
@@ -413,14 +416,31 @@ fn select(
         .map(|value| value.event_date.as_str())
         .unwrap_or(&local_date);
     planned_blocks.retain(|block| block.event_date == plan_date);
-    if planned_blocks.len() > MAX_PLANNED_BLOCKS {
-        return Err("Focus day plan exceeds 512 canonical blocks".into());
-    }
+    keep_earliest_blocks(&mut planned_blocks, commitment.as_ref());
     Ok(FocusCalendarContext {
         commitment,
         next_boundary_ms,
         planned_blocks,
     })
+}
+
+/// Bounds a day plan, already in start order, to its earliest blocks. The selected commitment's
+/// block stays in the plan even when it starts after them.
+fn keep_earliest_blocks(blocks: &mut Vec<FocusPlannedBlock>, commitment: Option<&FocusCommitment>) {
+    if blocks.len() <= MAX_PLANNED_BLOCKS {
+        return;
+    }
+    let late_commitment = commitment
+        .and_then(|value| {
+            blocks
+                .iter()
+                .position(|block| block.event_id == value.occurrence_id)
+        })
+        .filter(|index| *index >= MAX_PLANNED_BLOCKS);
+    if let Some(index) = late_commitment {
+        blocks.swap(MAX_PLANNED_BLOCKS - 1, index);
+    }
+    blocks.truncate(MAX_PLANNED_BLOCKS);
 }
 
 struct RevisionWriter(Sha256);

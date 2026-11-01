@@ -449,6 +449,7 @@ table 226 pomodoro_run_events replicated key id rule any
   group 1 reference 225 set_null segment_id:optional_row_key
   group 2 immutable event_type:text(..=32) occurred_at:timestamp phase:optional_text(..=32) reason:optional_text(..=262144) duration_seconds:optional_integer(-9223372036854775808..=9223372036854775807) created_at:timestamp
 table 227 pomodoro_device_activity replicated key device_id rule any
+  owner key is device device_id
   group 0 coupled state:text(..=32) run_id:optional_text(..=128) occurrence_id:optional_text(..=262144) event_title:optional_text(..=262144) phase_started_at_ms:optional_integer(0..=9223372036854775807) phase_ends_at_ms:optional_integer(0..=9223372036854775807) expires_at_ms:integer(0..=9223372036854775807) updated_at_ms:integer(0..=9223372036854775807)
 table 272 distractions_settings replicated key id rule fixed(vault)
   group 0 register recoverable mode:text(..=16)
@@ -487,6 +488,7 @@ table 277 distractions_usage_limits replicated key id rule any
   group 4 register recoverable
     owned distractions_usage_limit_entries parent limit_id ordinal ordinal rows 2000 codec generic id:trimmed_text(1..=80) name:optional_text(..=80) color:optional_integer(0..=31) website_host:optional_text(..=253) mobile_app_name:optional_text(..=80) mobile_app_package:optional_text(..=255) desktop_app_name:optional_text(..=80) desktop_app_match_names_json:text(..=10434) bound domain
 table 278 distractions_usage_totals replicated key id rule any
+  owner key tag usage: device_id
   group 0 immutable device_id:trimmed_text(1..=160) source_type:text(..=16) source_key:trimmed_text(1..=255) local_date:text(..=10)
   group 1 max elapsed_seconds:integer(1..=90000)
   group 2 register display_name:optional_text(..=120)

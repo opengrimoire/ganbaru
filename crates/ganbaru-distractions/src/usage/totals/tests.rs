@@ -53,6 +53,18 @@ fn bucket(source_key: &str) -> UsageBucket {
     }
 }
 
+#[test]
+fn usage_total_key_stays_within_row_key_bound() {
+    let device = "d".repeat(MAX_DEVICE_ID_BYTES);
+    let source = "s".repeat(MAX_USAGE_SOURCE_KEY_CHARS);
+    let key = usage_total_key(&device, &bucket(&source)).unwrap();
+
+    assert!(key.len() <= ganbaru_sync_contracts::bounds::MAX_ROW_KEY_BYTES);
+    ganbaru_sync_contracts::RowKey::new(key.clone()).unwrap();
+    let tagged = format!("{USAGE_TOTAL_OWNER_PREFIX}{}:", device_owner_tag(&device));
+    assert!(key.starts_with(&tagged), "{key}");
+}
+
 fn stale(source_key: &str, elapsed_seconds: i64) -> StaleTotal {
     StaleTotal {
         bucket: bucket(source_key),

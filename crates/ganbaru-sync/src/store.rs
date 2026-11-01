@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
+    Change, Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
     SignedCertificate, VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
@@ -178,8 +178,13 @@ fn storable_clock(clock: Hlc) -> bool {
     i64::try_from(clock.as_u64()).is_ok()
 }
 
-/// Classifies an authenticated envelope against this version's format and manifest.
-pub(crate) fn classify(engine: &Engine, envelope: &Envelope<'_>) -> Classified {
+/// Classifies an authenticated envelope of a writer on `writer_device` against this version's
+/// format and manifest.
+pub(crate) fn classify(
+    engine: &Engine,
+    envelope: &Envelope<'_>,
+    writer_device: &str,
+) -> Classified {
     let operation = match envelope.operation() {
         Ok(operation) => operation,
         Err(PayloadError::NewerFormat | PayloadError::UnknownKind) => {
@@ -196,10 +201,21 @@ pub(crate) fn classify(engine: &Engine, envelope: &Envelope<'_>) -> Classified {
         }
         Err(PayloadError::Body(_)) => return Classified::Malformed,
     };
-    classify_operation(engine, operation)
+    classify_operation(engine, operation, writer_device)
 }
 
-fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
+/// Whether every change of an operation passes the manifest and comes from the row's owner.
+fn changes_admitted(engine: &Engine, changes: &[Change], writer_device: &str) -> bool {
+    changes.iter().all(|change| {
+        validate::change(engine, change).is_ok()
+            && engine
+                .manifest()
+                .table(change.table)
+                .is_some_and(|table| validate::writer_change(table, change, writer_device).is_ok())
+    })
+}
+
+fn classify_operation(engine: &Engine, operation: Operation, writer_device: &str) -> Classified {
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Classified::Held {
@@ -214,10 +230,7 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
                 Some(HoldReason::Invalid)
             } else if version > u32::from(engine.manifest().version) {
                 Some(HoldReason::NewerManifest)
-            } else if changes
-                .iter()
-                .any(|change| validate::change(engine, change).is_err())
-            {
+            } else if !changes_admitted(engine, changes, writer_device) {
                 Some(HoldReason::Invalid)
             } else {
                 None
@@ -553,7 +566,7 @@ async fn store_next(
             seq: writer.stored,
         }));
     }
-    let classified = classify(engine, envelope);
+    let classified = classify(engine, envelope, &writer.device_id);
     if matches!(classified, Classified::Malformed) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }

@@ -536,7 +536,10 @@ async fn resolve_context(
     let Ok(envelope) = Envelope::decode(&bytes) else {
         return Ok(None);
     };
-    let classified = store::classify(engine, &envelope);
+    let row = log::writer(conn, ctx.space, writer)
+        .await?
+        .ok_or_else(|| corrupt("stored operation of an unknown writer"))?;
+    let classified = store::classify(engine, &envelope, &row.device_id);
     let Some((_, dependencies)) = classified.header() else {
         return Ok(None);
     };

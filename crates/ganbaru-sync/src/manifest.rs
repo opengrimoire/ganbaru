@@ -738,6 +738,9 @@ pub struct TableSpec {
     /// with `ON DELETE CASCADE`. The key is not a group column, so no reference declares it: the
     /// row is hidden while that parent row is, and it is recovered with it.
     pub key_parent: Option<TableId>,
+    /// The device a row belongs to, when only that device may write it. Every replica refuses a
+    /// change from another device, and a device never seals another device's row.
+    pub owner: Option<RowOwner>,
     /// Whether domain code may hold local deletes of the table for Undo with
     /// [`crate::hold::hold_deletes`]. Rows that the held delete removes through
     /// `ON DELETE CASCADE` inherit the hold, see [`Manifest::may_hold_deletes`]. Device
@@ -747,6 +750,36 @@ pub struct TableSpec {
     ///
     /// [`RowKey`]: ganbaru_sync_contracts::RowKey
     pub key_rule: RowKeyRule,
+}
+
+/// How a row key names the device that owns the row, in a form a change carries whatever its
+/// action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowOwner {
+    /// The row key is the owning device id.
+    KeyIsDevice {
+        /// Column holding the device id.
+        device_column: &'static str,
+    },
+    /// The row key starts with `prefix`, the owner tag, and `:`. See
+    /// [`device_owner_tag`](ganbaru_sync_contracts::device_owner_tag).
+    KeyTag {
+        /// What the row key starts with, separator included.
+        prefix: &'static str,
+        /// Column holding the device id.
+        device_column: &'static str,
+    },
+}
+
+impl RowOwner {
+    /// Column holding the device id, the key column or an immutable group column.
+    pub const fn device_column(self) -> &'static str {
+        match self {
+            Self::KeyIsDevice { device_column } | Self::KeyTag { device_column, .. } => {
+                device_column
+            }
+        }
+    }
 }
 
 /// A rule on the row keys of a table, mirroring the key CHECK of its domain table. Every change
@@ -1239,6 +1272,19 @@ impl Manifest {
                 problems.push(format!(
                     "{} is not an immutable cascading reference into the publishing parent",
                     with.column
+                ));
+            }
+        }
+        if let Some(owner) = table.owner {
+            let column = owner.device_column();
+            let bound = column == table.key_column
+                || table.groups.iter().any(|group| {
+                    group.kind == MergeKind::Immutable
+                        && group.columns().iter().any(|spec| spec.name == column)
+                });
+            if !bound {
+                problems.push(format!(
+                    "owner column {column} is neither the key nor an immutable column"
                 ));
             }
         }

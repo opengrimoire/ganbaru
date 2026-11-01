@@ -300,11 +300,13 @@ impl Engine {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
         let rows = sqlx::query(
-            "SELECT writer_id, seq, hold_reason, envelope FROM sync_ops
-             WHERE space_id = ? AND state <> 'applied' AND state = 'held'
-                AND hold_reason IN ('newer_format', 'newer_manifest')
-                AND excluded_revision IS NULL
-             ORDER BY writer_id, seq",
+            "SELECT o.writer_id, o.seq, o.hold_reason, o.envelope, w.device_id
+             FROM sync_ops o JOIN sync_writers w
+                ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+             WHERE o.space_id = ? AND o.state <> 'applied' AND o.state = 'held'
+                AND o.hold_reason IN ('newer_format', 'newer_manifest')
+                AND o.excluded_revision IS NULL
+             ORDER BY o.writer_id, o.seq",
         )
         .bind(ctx.space.as_bytes().as_slice())
         .fetch_all(&mut *tx)
@@ -316,8 +318,9 @@ impl Engine {
             let seq = stored_u64(row.try_get(1)?, "sequence")?;
             let previous: Option<String> = row.try_get(2)?;
             let envelope: Vec<u8> = row.try_get(3)?;
+            let device: String = row.try_get(4)?;
             let classified = match Envelope::decode(&envelope) {
-                Ok(envelope) => store::classify(self, &envelope),
+                Ok(envelope) => store::classify(self, &envelope, &device),
                 Err(_) => Classified::Malformed,
             };
             let reason = match &classified {

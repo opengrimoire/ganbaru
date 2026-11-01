@@ -15,7 +15,7 @@ use crate::manifest::vault::calendar::{ARCHIVES_TABLE, EVENTS_TABLE};
 use crate::manifest::{
     ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
     MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
-    ReferenceColumn, RowKeyRule, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    ReferenceColumn, RowKeyRule, RowOwner, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Focus.
@@ -352,6 +352,7 @@ const BASE: TableSpec = TableSpec {
     publish_when: None,
     published_with: None,
     key_parent: None,
+    owner: None,
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
 };
@@ -544,14 +545,17 @@ pub const RUN_EVENTS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `pomodoro_device_activity`, keyed by the stable device id. Only the device a row names writes
-/// it, at each run transition and never on heartbeat; a row past `expires_at_ms` means the
-/// device was last seen then. `run_id` is plain text because the run it names is still open and
-/// unpublished.
+/// `pomodoro_device_activity`, keyed by the stable device id. Only the device a row names may
+/// write it, which every replica enforces, at each run transition and never on heartbeat; a row
+/// past `expires_at_ms` means the device was last seen then. `run_id` is plain text because the
+/// run it names is still open and unpublished.
 pub const DEVICE_ACTIVITY: TableSpec = TableSpec {
     id: DEVICE_ACTIVITY_TABLE,
     name: "pomodoro_device_activity",
     key_column: "device_id",
+    owner: Some(RowOwner::KeyIsDevice {
+        device_column: "device_id",
+    }),
     groups: &[group(
         activity_group::ACTIVITY,
         "activity",

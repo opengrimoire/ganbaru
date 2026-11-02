@@ -592,9 +592,10 @@ impl PeerSim {
         self.connects(a, b).await && self.exchange(a, b, reliable).await
     }
 
-    /// One exchange `a` opens with `b`: each side first pulls the other's record pages, each side forwards what the other lacks, a side that exchanged with
-    /// the anchor of its chain records anchor marks, the anchor sequences the waiting proposals
-    /// of both, and a side that learned of its own removal stops.
+    /// One exchange `a` opens with `b`: each side first pulls the other's record pages, each side
+    /// forwards what the other lacks, a side that exchanged with the anchor of its chain records
+    /// anchor marks, the anchor sequences the waiting proposals of both, and a side that learned
+    /// of its own removal stops.
     async fn exchange(&mut self, a: usize, b: usize, reliable: bool) -> bool {
         let skipped: BTreeSet<String> = self.states[&a]
             .quarantined

@@ -3,12 +3,13 @@
 //! theirs, anchor marks release retained versions, and the late changes they leave are derived
 //! the same way on every replica and decided once.
 
+use ganbaru_sync_contracts::hlc::MAX_ADOPTION_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Entry, Envelope, Field, GroupValue, LateResolution, LateRow, ResolveLate,
-    RowKey, Value, derived_key,
+    Change, ChangeAction, Entry, Envelope, Field, GroupValue, Hlc, LateResolution, LateRow,
+    ResolveLate, RowKey, Value, derived_key,
 };
 
-use super::authorization::admin_entry;
+use super::authorization::{admin_entry, remove_entry, superseded};
 use super::block_on;
 use super::engine::{text_field, with_group};
 use super::holds::sealed_create;
@@ -1914,5 +1915,96 @@ fn status_counts_displaced_versions_without_held_creates() {
             .await
             .unwrap();
         assert_eq!(i64::try_from(status.displaced).unwrap(), waiting);
+    });
+}
+
+/// How far ahead of the others the clock of the fast device runs, more than a remote clock is
+/// ever adopted ahead.
+const FAST_CLOCK_MS: u64 = 2 * MAX_ADOPTION_AHEAD_MS;
+
+/// The creation time `replica` shows for [`HELD_NOTE`].
+async fn note_created_at(replica: &mut Replica) -> Option<String> {
+    replica
+        .scalar_text("SELECT created_at FROM quick_notes WHERE id = 'note-held'")
+        .await
+}
+
+/// The clock `bytes` was sealed at.
+fn sealed_clock(bytes: &[u8]) -> Hlc {
+    Envelope::decode(bytes)
+        .unwrap()
+        .operation()
+        .unwrap()
+        .header
+        .clock
+}
+
+/// A Create and a title edit that saw a Create of a device with a fast clock carry the lower
+/// clock, and still settle over it the same way on a replica that applied them in causal order
+/// and on one that applied them first and the fast Create again once a reselected chain lifted
+/// its exclusion: the earlier Create stays the version and the later edit the title.
+#[test]
+fn a_lifted_exclusion_settles_versions_that_saw_a_fast_clock_like_causal_order() {
+    block_on(async {
+        let mut space = superseded(230).await;
+        let fast = &mut space.member;
+        fast.now_ms += FAST_CLOCK_MS;
+        edit(fast, &note(HELD_NOTE, "Fast", 1)).await;
+        let created_at = note_created_at(fast).await.unwrap();
+        let fast_create = fast.own_ops().await.pop().unwrap();
+
+        let mut honest = Replica::new(2, 230).await;
+        honest.pull(&mut space.hub).await;
+        honest.pull(&mut space.member).await;
+        edit(&mut honest, &note("note-shared", "Draft", 0)).await;
+        let covering = create_again(&mut space.member, &mut honest, EDITED_AT).await;
+        take(&mut honest, std::slice::from_ref(&covering)).await;
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Seen' WHERE id = 'note-held'",
+        )
+        .await;
+        let seen = honest.own_ops().await;
+        assert!(
+            seen.iter()
+                .all(|bytes| sealed_clock(bytes) < sealed_clock(&fast_create))
+        );
+
+        space
+            .hub
+            .sequence(remove_entry(&space.member.device_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let fast_ops = space.member.own_ops().await;
+        let chain = space.contender.own_ops().await;
+
+        let mut causal = Replica::new(3, 230).await;
+        causal.pull(&mut space.hub).await;
+        take(&mut causal, &chain).await;
+        take(&mut causal, &fast_ops).await;
+        take(&mut causal, &seen).await;
+
+        let mut lifted = Replica::new(3, 230).await;
+        lifted.pull(&mut space.hub).await;
+        take(&mut lifted, &fast_ops).await;
+        take(&mut lifted, &seen).await;
+        assert_eq!(created_versions(&mut lifted, HELD_NOTE).await, 1);
+        take(&mut lifted, &chain).await;
+
+        for (order, replica) in [("causal", &mut causal), ("lifted", &mut lifted)] {
+            assert_eq!(created_versions(replica, HELD_NOTE).await, 1, "{order}");
+            assert_eq!(
+                note_created_at(replica).await,
+                Some(created_at.clone()),
+                "{order}"
+            );
+            assert_eq!(
+                title(replica, HELD_NOTE).await.as_deref(),
+                Some("Seen"),
+                "{order}"
+            );
+        }
+        assert_eq!(causal.dump().await, lifted.dump().await);
     });
 }

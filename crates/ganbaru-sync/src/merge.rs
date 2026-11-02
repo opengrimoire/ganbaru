@@ -558,9 +558,10 @@ async fn keep_create(
         hold(engine, conn, table, key, create).await?;
         return Ok(false);
     }
+    // Clocks are not checked against what an operation saw, so every version is asked; the
+    // group keeps at most one per writer.
     for other in kept {
-        // An operation that saw the Create carries a later clock.
-        if other.held || other.stored.clock <= create.clock {
+        if other.held {
             continue;
         }
         let saw = batch
@@ -832,15 +833,15 @@ pub(crate) async fn apply_change(
                 .execute(&mut *conn)
                 .await?;
             } else if (other.writer == writer && other.seq > seq)
-                || (other.clock > clock
-                    && batch
-                        .contexts
-                        .get(conn, batch.space, other.writer, other.seq)
-                        .await?
-                        .covers(&writer, seq))
+                || batch
+                    .contexts
+                    .get(conn, batch.space, other.writer, other.seq)
+                    .await?
+                    .covers(&writer, seq)
             {
                 // An operation applied again after an exclusion was lifted never replaces a
-                // version that saw it or a later version of its own writer.
+                // version that saw it or a later version of its own writer. A version that saw
+                // it can carry the lower clock, since a clock far ahead is adopted only in part.
                 superseded = true;
             }
         }

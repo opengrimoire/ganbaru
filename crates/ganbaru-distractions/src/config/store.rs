@@ -23,11 +23,11 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use super::{
     CategoryRule, CustomCategory, DesktopAppRule, DistractionsConfig, DistractionsMode, HostRule,
-    LimitEntryRule, LimitRule, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_LIMIT_ENTRIES,
-    MAX_MATCH_NAMES, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK, MAX_MOBILE_APP_RULES,
-    MAX_NAME_CHARS, MAX_USAGE_LIMITS, MobileAppRule, built_in_categories, is_built_in_category,
-    is_rule_host, is_rule_id, normalize_app_name, normalize_host, normalize_hosts,
-    normalize_match_names, normalize_name, normalize_package,
+    LimitEntryRule, LimitRule, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_GUARDIAN_USAGE_LIMITS,
+    MAX_LIMIT_ENTRIES, MAX_MATCH_NAMES, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK,
+    MAX_MOBILE_APP_RULES, MAX_NAME_CHARS, MAX_USAGE_LIMITS, MobileAppRule, built_in_categories,
+    is_built_in_category, is_rule_host, is_rule_id, normalize_app_name, normalize_host,
+    normalize_hosts, normalize_match_names, normalize_name, normalize_package,
 };
 use crate::rules::{app_name_key, is_protected_desktop_app_name};
 
@@ -988,7 +988,21 @@ fn normalize_limit(draft: &LimitDraft) -> Result<NormalizedLimit, RuleRefusal> {
     })
 }
 
-/// Creates or replaces a usage limit and returns its id.
+/// The distinct lowercase Android packages of these limit entries, as Guardian publishes them.
+fn guardian_packages<'a>(entries: impl IntoIterator<Item = &'a LimitEntryRule>) -> HashSet<String> {
+    entries
+        .into_iter()
+        .filter_map(|entry| entry.mobile_app_package.as_deref())
+        .filter_map(normalize_package)
+        .map(|package| package.to_ascii_lowercase())
+        .collect()
+}
+
+/// Creates or replaces a usage limit and returns its id. A limit with Android packages is
+/// refused when Guardian would not publish all of them: a new package past
+/// [`MAX_MOBILE_APP_RULES`] in the limit, or a limit that gains packages while
+/// [`MAX_GUARDIAN_USAGE_LIMITS`] other limits already have some. A limit already over a cap
+/// stays editable as long as it gains no package.
 pub(super) async fn save_usage_limit(
     conn: &mut SqliteConnection,
     id: Option<&str>,
@@ -1006,6 +1020,26 @@ pub(super) async fn save_usage_limit(
     let other_entries: usize = others.iter().map(|other| other.entries.len()).sum();
     if other_limits >= MAX_USAGE_LIMITS
         || other_entries.saturating_add(limit.entries.len()) > MAX_LIMIT_ENTRIES
+    {
+        return Err(RuleRefusal::TooLarge.into());
+    }
+    let current = match id {
+        Some(id) => {
+            let stored = read_entries(conn, Some(id)).await?;
+            guardian_packages(stored.get(id).into_iter().flatten())
+        }
+        None => HashSet::new(),
+    };
+    let packages = guardian_packages(limit.entries.iter().map(|entry| &entry.rule));
+    let other_package_limits = others
+        .iter()
+        .filter(|other| !guardian_packages(&other.entries).is_empty())
+        .count();
+    let adds_package = packages.iter().any(|package| !current.contains(package));
+    if (packages.len() > MAX_MOBILE_APP_RULES && adds_package)
+        || (!packages.is_empty()
+            && current.is_empty()
+            && other_package_limits >= MAX_GUARDIAN_USAGE_LIMITS)
     {
         return Err(RuleRefusal::TooLarge.into());
     }

@@ -12,7 +12,7 @@ pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
 const MAX_MOBILE_RULES: usize = ganbaru_distractions::config::MAX_MOBILE_APP_RULES;
 const MAX_RULE_NAME_CHARS: usize = 120;
 const MAX_LIMIT_NAME_CHARS: usize = 80;
-const MAX_MOBILE_LIMITS: usize = 128;
+const MAX_MOBILE_LIMITS: usize = ganbaru_distractions::config::MAX_GUARDIAN_USAGE_LIMITS;
 const MAX_SAFE_SECONDS: i64 = 9_007_199_254_740_991;
 
 /// Localized notification text is the only frontend input to native policy publication.

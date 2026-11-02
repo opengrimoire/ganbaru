@@ -732,6 +732,35 @@ async fn pointer_before_revision_keeps_covered_work() {
     );
 }
 
+/// A pointer whose revision never arrives cannot hold back revocation: its copied safety mode
+/// decides, so a copy narrower than the frozen approval revokes on every hook and sweep.
+#[tokio::test]
+async fn a_pointer_whose_revision_never_arrives_decides_by_its_copied_mode() {
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:never-sent',
+             current_policy_safety_mode = 'ask_for_approval'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let pointed = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
+
+    assert_eq!(
+        pointed.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        revocation_reason(&pool).await,
+        TEAMMATE_POLICY_REDUCED_REASON
+    );
+}
+
 /// The deferred decision settles when the pointed revision arrives narrower than the frozen
 /// approval, and an access row applied while it is missing leaves the decision to that arrival.
 #[tokio::test]

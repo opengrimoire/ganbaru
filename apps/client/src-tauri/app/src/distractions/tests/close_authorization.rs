@@ -504,6 +504,100 @@ fn persisted_usage_rule_requires_exact_entry_and_exhausted_limit() {
     );
 }
 
+/// Closes keep authorizing on totals a failing read can no longer refresh, while the snapshot
+/// keeps the read time the browser host ages it by.
+#[test]
+fn limit_close_uses_last_good_totals() {
+    let config = serde_json::json!({
+        "distractions": {
+            "limits": {
+                "enabled": true,
+                "items": [{
+                    "id": "games",
+                    "enabled": true,
+                    "minutesPerDay": 10,
+                    "entries": [{
+                        "id": "steam-entry",
+                        "desktopAppName": "Steam",
+                        "desktopAppMatchNames": ["steam"]
+                    }]
+                }]
+            }
+        }
+    });
+    let identity = super::DistractionsDesktopRuleIdentity::UsageLimit {
+        rule_id: "games".to_string(),
+        entry_id: "steam-entry".to_string(),
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "ganbaru-distractions-last-good-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("distractions-limit-state.json");
+    let database_path = dir.join("ganbaru.sqlite");
+    let read_at = "2026-07-10T12:00:00.000Z";
+    let state = DistractionsLimitState {
+        local_date: "2026-07-10".to_string(),
+        week_start_local_date: "2026-07-06".to_string(),
+        updated_at: read_at.to_string(),
+        database_path: Some(database_path.to_str().unwrap().to_string()),
+        configuration_digest: Some(limits::configuration_digest(&config).unwrap()),
+        limits: vec![DistractionsLimitStateItem {
+            id: "games".to_string(),
+            period: "day".to_string(),
+            window_start_local_date: "2026-07-10".to_string(),
+            window_end_local_date: "2026-07-10".to_string(),
+            used_seconds: 600,
+            limit_seconds: 600,
+            remaining_seconds: 0,
+            exhausted: true,
+        }],
+    };
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let at = |time: &str| {
+        DateTime::parse_from_rfc3339(time)
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+
+    let failing_for_a_minute = at("2026-07-10T12:01:00.000Z");
+    assert!(read_fresh_limit_state(&path, failing_for_a_minute, &database_path).is_none());
+
+    crate::distractions::state_files::republish_limit_state(
+        &path,
+        &state,
+        at("2026-07-10T12:00:58.000Z"),
+    )
+    .unwrap();
+    let cached = read_fresh_limit_state(&path, failing_for_a_minute, &database_path)
+        .expect("closes keep the last good totals while reads fail");
+    let close = |config: &serde_json::Value| {
+        super::configured_close_authorization(
+            config,
+            None,
+            Some(&cached),
+            &identity,
+            &super::DesktopCatalogIndex::default(),
+        )
+    };
+    assert_eq!(close(&config).unwrap().match_names(), ["Steam"]);
+
+    let mut edited = config.clone();
+    edited["distractions"]["limits"]["items"][0]["minutesPerDay"] = serde_json::json!(20);
+    assert!(close(&edited).is_err());
+
+    let published: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(published["updatedAt"], read_at);
+
+    assert!(
+        read_fresh_limit_state(&path, at("2026-07-10T12:01:30.000Z"), &database_path).is_none(),
+        "a republication stops authorizing once it stops being renewed"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn focus_rule_config(name: &str, match_names: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "distractions": {

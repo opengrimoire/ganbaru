@@ -308,6 +308,16 @@ pub(super) fn read_fresh_limit_state(
         .then_some(state)
 }
 
+/// Test scaffold that leaves the published file untouched.
+#[cfg(test)]
+pub(super) fn republish_limit_state(
+    _path: &Path,
+    _state: &DistractionsLimitState,
+    _confirmed_at: DateTime<Utc>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 pub(super) fn disconnected_extension_status(
     checked_at: DateTime<Utc>,
     reason: impl Into<String>,

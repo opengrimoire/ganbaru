@@ -27,8 +27,9 @@
 | `sync_fork_evidence` | Two signed operations of one writer at one sequence with different hashes, which drive the exclusion of both branches of the data lane. |
 | `sync_row_creations` | The applied operations that created each published row, so excluding a forked branch can tell whether another operation still creates a row. `sync_rows.creation_pending` marks a row that holds honest changes but no creation and stays hidden until an operation creates it. |
 | `sync_stale_rows` | Rows whose domain state storing an excluded operation may have made stale, and rows an applied chain group left for repair. Engine writes take them back a bounded number at a time once no chain is between groups. |
-| `sync_unique_classes` | Each live row's class under each duplicate rule of its table, derived from merge state and refreshed for dirty rows before duplicate repair reads it. |
+| `sync_unique_classes` | Each live row's class under each duplicate rule of its table, as a fixed-size digest of the folded unique values, derived from merge state and refreshed for dirty rows before duplicate repair reads it. |
 | `sync_contested_classes` | The classes of `sync_unique_classes` with two or more rows, so duplicate repair reads only them. |
+| `sync_unique_class_rules` | A fingerprint of the duplicate rules and collation folds the class index was built under. When the engine's rules differ, or no fingerprint is stored, the index is rebuilt from merge state. |
 | `sync_refused_rows` | Rows a domain constraint refused while applying, `hidden` for a refused write and `kept` for a refused delete or a refused write of a never-deleted row, with the reason and the retry order. Device-local; never replicates, and nothing that derives from merge state reads it. |
 | `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
 | `sync_released_marks` | Per writer of another device, the highest sequence this replica applied while it was the anchor, so it seals the groups those operations wrote again if they are excluded later. Device-local; never replicates. |

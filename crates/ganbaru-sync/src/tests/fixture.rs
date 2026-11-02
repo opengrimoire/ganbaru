@@ -1730,6 +1730,67 @@ pub(super) fn test_engine() -> Engine {
     test_engine_with(OverrideHook::default())
 }
 
+/// The duplicate rules of [`HANDLES`] in the opposite order.
+const REORDERED_HANDLE_RULES: &[Resolution] = &[
+    Resolution::DuplicateRepair {
+        columns: &["code"],
+        collation: Collation::Binary,
+    },
+    Resolution::DuplicateRepair {
+        columns: &["label"],
+        collation: Collation::Binary,
+    },
+];
+
+/// [`TEST_MANIFEST`] with the duplicate rules of [`HANDLES`] in the opposite order, as a manifest
+/// update could list them.
+pub(super) static REORDERED_RULES_MANIFEST: LazyLock<Manifest> = LazyLock::new(|| {
+    let tables: Vec<TableSpec> = FIXTURE_DOMAIN
+        .tables
+        .iter()
+        .map(|table| {
+            if table.id == HANDLES_TABLE {
+                TableSpec {
+                    resolutions: REORDERED_HANDLE_RULES,
+                    ..*table
+                }
+            } else {
+                *table
+            }
+        })
+        .collect();
+    let fixture: &'static DomainManifest = Box::leak(Box::new(DomainManifest {
+        tables: Box::leak(tables.into_boxed_slice()),
+        ..FIXTURE_DOMAIN
+    }));
+    let domains: Vec<&'static DomainManifest> = TEST_DOMAINS
+        .iter()
+        .map(|domain| {
+            if domain.name == FIXTURE_DOMAIN.name {
+                fixture
+            } else {
+                *domain
+            }
+        })
+        .collect();
+    Manifest::from_domains(
+        VAULT_MANIFEST_VERSION,
+        Box::leak(domains.into_boxed_slice()),
+    )
+});
+
+/// The engine of [`test_engine`] for another manifest of the same tables.
+pub(super) fn test_engine_of(manifest: &'static Manifest) -> Engine {
+    Engine::with(
+        manifest,
+        test_adapters(),
+        super::notes::with_notes_hooks(vault_hooks())
+            .with(LISTS_TABLE, Box::new(FixtureHook))
+            .with(OVERRIDES_TABLE, Box::new(OverrideHook::default())),
+    )
+    .expect("the manifest, adapters, and hooks should agree")
+}
+
 /// Schema of the fixture domain. `label_edits` has no default, so every insert must name it and
 /// a remote create only succeeds through its materialization value.
 fn fixture_schema() -> String {

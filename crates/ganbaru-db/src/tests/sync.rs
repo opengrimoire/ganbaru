@@ -446,24 +446,50 @@ fn stale_rows_and_restated_groups_keep_one_bounded_entry_each() {
         }
 
         let class = "INSERT INTO sync_unique_classes (table_id, rule_index, class_key, row_key)
-                     VALUES (1, 0, x'01', ?)";
-        for (row, accepted, reason) in [
-            ("row-a", true, "a class holds a row"),
-            ("row-b", true, "a class holds several rows"),
-            ("row-a", false, "a row is listed in a class once"),
+                     VALUES (1, 0, zeroblob(?), ?)";
+        for (length, row, accepted, reason) in [
+            (32, "row-a", true, "a class holds a row"),
+            (32, "row-b", true, "a class holds several rows"),
+            (32, "row-a", false, "a row is listed in a class once"),
+            (33, "row-c", false, "a class key is a digest"),
         ] {
-            let result = sqlx::query(class).bind(row).execute(&pool).await;
+            let result = sqlx::query(class)
+                .bind(length)
+                .bind(row)
+                .execute(&pool)
+                .await;
             assert_eq!(result.is_ok(), accepted, "{reason}");
         }
 
         let contested = "INSERT INTO sync_contested_classes (table_id, rule_index, class_key)
-                         VALUES (1, ?, x'01')";
-        for (rule, accepted, reason) in [
-            (0, true, "a contested class is listed"),
-            (0, false, "a contested class is listed once"),
-            (-1, false, "a rule index is a position"),
+                         VALUES (1, ?, zeroblob(?))";
+        for (rule, length, accepted, reason) in [
+            (0, 32, true, "a contested class is listed"),
+            (0, 32, false, "a contested class is listed once"),
+            (-1, 32, false, "a rule index is a position"),
+            (1, 1, false, "a contested class key is a digest"),
         ] {
-            let result = sqlx::query(contested).bind(rule).execute(&pool).await;
+            let result = sqlx::query(contested)
+                .bind(rule)
+                .bind(length)
+                .execute(&pool)
+                .await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
+
+        let rules = "INSERT INTO sync_unique_class_rules (singleton, fingerprint)
+                     VALUES (?, zeroblob(?))";
+        for (singleton, length, accepted, reason) in [
+            (1, 16, false, "a rule fingerprint is a digest"),
+            (2, 32, false, "one fingerprint covers the index"),
+            (1, 32, true, "the index records its rule fingerprint"),
+            (1, 32, false, "the fingerprint is stored once"),
+        ] {
+            let result = sqlx::query(rules)
+                .bind(singleton)
+                .bind(length)
+                .execute(&pool)
+                .await;
             assert_eq!(result.is_ok(), accepted, "{reason}");
         }
     });

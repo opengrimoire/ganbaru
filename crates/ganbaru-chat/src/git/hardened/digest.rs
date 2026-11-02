@@ -227,9 +227,17 @@ impl ProviderConfigurationEntries {
     /// True when every entry here exists in `other` with the same content, so
     /// a decision about `other` already covers it.
     pub fn is_covered_by(&self, other: &Self) -> bool {
+        self.uncovered_paths(other).next().is_none()
+    }
+
+    /// Relative paths of the entries `other` lacks or holds with different
+    /// content, in sorted order. The folder controls these names, so they are
+    /// untrusted text.
+    pub fn uncovered_paths<'a>(&'a self, other: &'a Self) -> impl Iterator<Item = &'a str> {
         self.0
             .iter()
-            .all(|(path, digest)| other.0.get(path) == Some(digest))
+            .filter(|(path, digest)| other.0.get(*path) != Some(*digest))
+            .map(|(path, _)| path.as_str())
     }
 
     /// The digest a folder trust record stores for these entries.

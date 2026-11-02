@@ -54,7 +54,7 @@ export const configuration = {
       trustTitle: "¿Confiar en la configuración del repositorio de esta carpeta?",
       trustMessage: "Esta carpeta define hooks de Git, programas o ajustes de proveedores de IA que pueden ejecutar código en este dispositivo. Confía en ella solo si confías en su origen. Sin confianza, Git omite los hooks y programas de la carpeta, y Claude omite sus ajustes de proyecto, hooks, skills, comandos, agentes, servidores MCP y CLAUDE.md. OpenCode, Cursor y Grok no pueden omitir sus ajustes de proyecto, así que no se ejecutarán en esta carpeta sin confianza. Puedes cambiarlo después en los ajustes del proyecto.",
       trustAccept: "Confiar",
-      trustDecline: "Ejecutar sin ellos",
+      trustDecline: "No confiar",
       trustCancel: "Cancelar",
       trustStateTrusted: "De confianza en este dispositivo",
       trustStateUntrusted: "Los hooks y programas del repositorio están desactivados en este dispositivo",

@@ -369,7 +369,10 @@ pub fn trust_decision_required_error(working_folder_id: &ProjectWorkingFolderId)
 /// Reason a provider with no verified restriction cannot start in a folder
 /// whose project configuration this device has not trusted.
 pub const PROJECT_CONFIGURATION_TRUST_REQUIRED_REASON: &str = "This provider cannot skip project configuration, so it runs here only after this device trusts the folder in Project settings";
-/// Most file names [`project_configuration_trust_required_error`] lists.
+/// Reason a provider with no verified restriction cannot start in a worktree
+/// whose project configuration no decision about the bound folder can cover.
+const WORKTREE_PROJECT_CONFIGURATION_REFUSED_REASON: &str = "This provider cannot skip project configuration, and a decision about the folder does not cover what changed in this worktree. Remove or restore these files, copy them to the folder and trust it, or use a new worktree";
+/// Most file names a project configuration refusal lists.
 const MAX_REFUSED_PATHS_LISTED: usize = 8;
 /// Longest file name, in characters, that the refusal lists whole.
 const MAX_REFUSED_PATH_CHARACTERS: usize = 120;
@@ -383,24 +386,43 @@ pub fn project_configuration_trust_required_error(
     working_folder_id: &ProjectWorkingFolderId,
     launch: &ProviderConfigurationEntries,
 ) -> ChatError {
-    let listed = launch
-        .paths()
+    let listed = refused_paths_text(&launch.paths().collect::<Vec<_>>());
+    let mut error = trust_decision_required_error(working_folder_id);
+    error.message = format!("{PROJECT_CONFIGURATION_TRUST_REQUIRED_REASON}: {listed}");
+    error
+}
+
+/// Error returned when a provider that cannot enforce a restricted launch
+/// would start in a worktree whose configuration `root` does not cover. A
+/// decision about the folder cannot settle this, so the details name no folder
+/// to ask about, and the message gives the recovery. It becomes the reason of
+/// a failed assignment, like [`project_configuration_trust_required_error`].
+pub fn worktree_project_configuration_refused_error(
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+) -> ChatError {
+    let listed = refused_paths_text(&launch.uncovered_paths(root).collect::<Vec<_>>());
+    ChatError::new(
+        ChatErrorCode::TrustDecisionRequired,
+        format!("{WORKTREE_PROJECT_CONFIGURATION_REFUSED_REASON}: {listed}"),
+        true,
+    )
+}
+
+/// Lists folder-controlled file names within the refusal bounds.
+fn refused_paths_text(paths: &[&str]) -> String {
+    let listed = paths
+        .iter()
         .take(MAX_REFUSED_PATHS_LISTED)
-        .map(refused_path_label)
+        .map(|path| refused_path_label(path))
         .collect::<Vec<_>>()
         .join(", ");
-    let remaining = launch
-        .paths()
-        .len()
-        .saturating_sub(MAX_REFUSED_PATHS_LISTED);
-    let suffix = if remaining > 0 {
-        format!(", and {remaining} more")
+    let remaining = paths.len().saturating_sub(MAX_REFUSED_PATHS_LISTED);
+    if remaining > 0 {
+        format!("{listed}, and {remaining} more")
     } else {
-        String::new()
-    };
-    let mut error = trust_decision_required_error(working_folder_id);
-    error.message = format!("{PROJECT_CONFIGURATION_TRUST_REQUIRED_REASON}: {listed}{suffix}");
-    error
+        listed
+    }
 }
 
 fn refused_path_label(path: &str) -> String {

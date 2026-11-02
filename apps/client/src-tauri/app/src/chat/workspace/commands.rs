@@ -10,6 +10,7 @@ use super::{
     project_configuration_trust_required_error, remove_active_device_binding,
     store_active_device_binding, trust_decision_required_error, trust_record,
     validate_external_folder_outside_vault, workspace_read,
+    worktree_project_configuration_refused_error,
 };
 use crate::chat::revocation::ActiveRunSelector;
 use crate::db;
@@ -375,7 +376,9 @@ pub async fn settle_project_configuration<R: Runtime>(
 
 /// Decides the project configuration access of one provider start from this
 /// device's trust record, refusing a restricted start the provider cannot
-/// enforce while `launch` holds configuration.
+/// enforce while `launch` holds configuration. A worktree holding entries
+/// `root` does not cover is refused before any question, because no decision
+/// about the bound folder can admit them.
 fn resolve_project_configuration(
     scope: &WorkingFolderDeviceScope,
     working_folder_id: &ProjectWorkingFolderId,
@@ -384,6 +387,9 @@ fn resolve_project_configuration(
     undecided: UndecidedProjectConfiguration,
     restriction: ProjectConfigurationRestriction,
 ) -> ChatResult<ProjectConfigurationAccess> {
+    if restriction == ProjectConfigurationRestriction::Unavailable && !launch.is_covered_by(root) {
+        return Err(worktree_project_configuration_refused_error(root, launch));
+    }
     let access = match check_project_configuration(scope, working_folder_id, root, launch) {
         ProjectConfigurationCheck::Decided(access) => access,
         ProjectConfigurationCheck::Required => match undecided {
@@ -1275,10 +1281,45 @@ mod tests {
             UndecidedProjectConfiguration::Restrict,
             ProjectConfigurationRestriction::Unavailable,
         );
-        assert_refused_naming(
+        assert_worktree_refusal(
             result.expect_err("an uncovered worktree must be refused"),
             "opencode.json",
+            Some(".mcp.json"),
         );
+    }
+
+    #[test]
+    fn restricted_run_keeps_folder_guidance_for_a_covered_worktree() {
+        let root = ConfigurationFolder::with_files(&[".cursor/mcp.json"]);
+        let worktree = ConfigurationFolder::with_files(&[".cursor/mcp.json"]);
+        let result = resolve_project_configuration(
+            &scope_deciding(&root.entries(), false),
+            &trust_folder_id(),
+            &root.entries(),
+            &worktree.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_refused_naming(
+            result.expect_err("a declined folder must be refused"),
+            ".cursor/mcp.json",
+        );
+    }
+
+    #[test]
+    fn restricted_run_still_asks_for_an_enforced_provider_in_an_uncovered_worktree() {
+        let root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let worktree = ConfigurationFolder::with_files(&[".mcp.json", ".claude/settings.json"]);
+        let error = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &root.entries(),
+            &worktree.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Enforced,
+        )
+        .expect_err("an interactive start must ask");
+        assert!(error.details.is_some(), "the folder must stay decidable");
     }
 
     /// A refusal only worktree changes can settle: it names the worktree and

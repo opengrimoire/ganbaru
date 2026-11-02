@@ -292,13 +292,14 @@ async fn read_usage_window(
     tx.commit()
         .await
         .map_err(|error| format!("finish Guardian native accounting: {error}"))?;
-    let window = limits::UsageWindow {
+    let mut window = limits::UsageWindow {
         truncated: read.truncated || merged.truncated,
         sources: merged.sources,
     };
     let local_date = capture.local_date.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        limits::totals(&config, &window.sources, &local_date).map(|_| window)
+        window.truncated |= limits::totals(&config, &window.sources, &local_date)?.truncated;
+        Ok(window)
     })
     .await
     .map_err(|error| format!("Guardian accounting worker: {error}"))?

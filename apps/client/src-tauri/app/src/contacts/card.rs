@@ -6,8 +6,8 @@ use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::handoff::protocol::{decode_qr_bytes_luma, qr_matrix_for_bytes, unix_time_ms};
 use ganbaru_contacts::{
     CARD_MAGIC, CARD_NONCE_BYTES, ContactCard, MAX_DISPLAY_NAME_BYTES, MAX_ENDPOINT_HINT_BYTES,
-    SignedCard, decode_card, encode_nonce, is_disallowed_display_character, random_bytes,
-    sign_card,
+    SignedCard, decode_card, decode_nonce, encode_nonce, is_disallowed_display_character,
+    random_bytes, sign_card,
 };
 use ganbaru_sync::domains::contacts::MAX_CONTACT_CARD_REVISION;
 use sqlx::SqlitePool;
@@ -185,38 +185,66 @@ pub(crate) async fn rotate_card(
     pool: &SqlitePool,
     mut identity: LocalIdentity,
 ) -> Result<LocalIdentity, ContactsError> {
+    let (card_nonce, card_revision) = replace_nonce(pool, None).await?.ok_or_else(|| {
+        ContactsError::Failed("rotate contact card: the card row is missing".to_string())
+    })?;
+    identity.card_nonce = Some(card_nonce);
+    identity.card_revision = card_revision;
+    Ok(identity)
+}
+
+/// Rotates the card when its stored nonce does not decode, so the fresh value replicates at a
+/// higher revision. A readable identity passes through unchanged. The rotation applies only while
+/// the row still holds `stored_nonce`, the text the identity was read from, so a nonce another
+/// device stored since is kept; the identity then carries that stored card instead.
+pub(crate) async fn heal_unreadable_nonce(
+    pool: &SqlitePool,
+    mut identity: LocalIdentity,
+    stored_nonce: &str,
+) -> Result<LocalIdentity, ContactsError> {
+    if identity.card_nonce.is_some() {
+        return Ok(identity);
+    }
+    if let Some((card_nonce, card_revision)) = replace_nonce(pool, Some(stored_nonce)).await? {
+        identity.card_nonce = Some(card_nonce);
+        identity.card_revision = card_revision;
+        return Ok(identity);
+    }
+    let (card_nonce, card_revision): (String, i64) =
+        sqlx::query_as("SELECT card_nonce, card_revision FROM contact_card WHERE key = 'card'")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| format!("read contact card: {error}"))?;
+    identity.card_nonce = decode_nonce(&card_nonce);
+    identity.card_revision = card_revision;
+    Ok(identity)
+}
+
+/// Stores a fresh card nonce and returns it with the stored revision. With `expected`, the row is
+/// replaced only while it still holds that text, and `None` means it did not.
+async fn replace_nonce(
+    pool: &SqlitePool,
+    expected: Option<&str>,
+) -> Result<Option<([u8; CARD_NONCE_BYTES], i64)>, ContactsError> {
     let mut card_nonce = [0u8; CARD_NONCE_BYTES];
     random_bytes(&mut card_nonce)
         .map_err(|error| ContactsError::Failed(format!("generate card nonce: {error}")))?;
     let now = super::store::format_time(super::store::now());
-    let revision: i64 = sqlx::query_scalar(
+    let revision: Option<i64> = sqlx::query_scalar(
         "UPDATE contact_card
          SET card_nonce = ?, card_revision = MIN(card_revision, ? - 1) + 1, updated_at = ?
-         WHERE key = 'card'
+         WHERE key = 'card' AND (? IS NULL OR card_nonce = ?)
          RETURNING card_revision",
     )
     .bind(encode_nonce(&card_nonce))
     .bind(MAX_CONTACT_CARD_REVISION)
     .bind(now)
-    .fetch_one(pool)
+    .bind(expected)
+    .bind(expected)
+    .fetch_optional(pool)
     .await
     .map_err(|error| format!("rotate contact card: {error}"))?;
-    identity.card_nonce = Some(card_nonce);
-    identity.card_revision = revision;
-    Ok(identity)
-}
-
-/// Rotates the card when its stored nonce does not decode, so the fresh value replicates at a
-/// higher revision. A readable identity passes through unchanged.
-pub(crate) async fn heal_unreadable_nonce(
-    pool: &SqlitePool,
-    identity: LocalIdentity,
-    _stored_nonce: &str,
-) -> Result<LocalIdentity, ContactsError> {
-    if identity.card_nonce.is_some() {
-        return Ok(identity);
-    }
-    rotate_card(pool, identity).await
+    Ok(revision.map(|revision| (card_nonce, revision)))
 }
 
 /// Finds a contact card QR code in a grayscale frame and returns its text form.
@@ -239,7 +267,7 @@ mod tests {
     };
     use super::super::tests::migrated_memory_pool;
     use super::*;
-    use ganbaru_contacts::{PersonKeyPair, decode_nonce};
+    use ganbaru_contacts::PersonKeyPair;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const AT: &str = "2026-10-22T10:51:41.000Z";

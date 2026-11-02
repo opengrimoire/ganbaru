@@ -3501,9 +3501,10 @@ fn the_acceptance_offer_names_the_provider_folders_and_approvals_behind_its_dige
         assert_eq!(offer.provider_instance_id, "provider:review");
         assert_eq!(offer.folders.len(), 1);
         assert_eq!(offer.folders[0].display_name, "Review");
-        assert_eq!(offer.folders[0].capability, "execute");
-        assert!(!offer.folders[0].runtime_approval.is_empty());
-        assert!(!offer.scratch_runtime_approval.is_empty());
+        let wire = serde_json::to_value(&offer).unwrap();
+        assert_eq!(wire["folders"][0]["capability"], "execute");
+        assert!(wire["folders"][0]["runtimeApproval"].is_string());
+        assert!(wire["scratchRuntimeApproval"].is_string());
 
         sqlx::query(
             "UPDATE chat_participants SET archived_at = '2026-08-04T17:30:00.000Z'
@@ -3519,6 +3520,150 @@ fn the_acceptance_offer_names_the_provider_folders_and_approvals_behind_its_dige
             None,
             "work Start would refuse offers nothing"
         );
+    });
+}
+
+#[test]
+fn the_acceptance_offer_carries_the_approval_wire_values_of_the_client() {
+    tauri::async_runtime::block_on(async {
+        for (safety_mode, granted, expected) in [
+            ("full_access", "auto_approve", "autoApprove"),
+            ("custom", "provider_custom", "providerCustom"),
+        ] {
+            let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, "queued").await;
+            sqlx::query(
+                "INSERT INTO chat_teammate_policy_revisions
+                     (id, teammate_id, provider_instance_id, safety_mode,
+                      model_selection_data, created_at)
+                 VALUES (
+                     'policy:review-wide', 'participant:review-agent', 'provider:review', ?,
+                     '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+                     '2026-08-04T18:00:00.000Z'
+                 )",
+            )
+            .bind(safety_mode)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_teammate_working_folder_grants SET runtime_approval_policy = ?
+                 WHERE teammate_id = 'participant:review-agent'",
+            )
+            .bind(granted)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE chat_teammate_channel_memberships SET scratch_runtime_approval_policy = ?
+                 WHERE teammate_id = 'participant:review-agent'",
+            )
+            .bind(granted)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let offer = assignments::read_acceptance_offer(&pool, &assignment_id)
+                .await
+                .unwrap()
+                .expect("queued work with intact references has an offer");
+
+            let wire = serde_json::to_value(&offer).unwrap();
+            assert_eq!(wire["folders"][0]["runtimeApproval"], expected);
+            assert_eq!(wire["folders"][0]["capability"], "execute");
+            assert_eq!(wire["scratchRuntimeApproval"], expected);
+            assert_eq!(offer.digest, digest_of(&pool, "assignment:old").await);
+        }
+    });
+}
+
+#[test]
+fn a_job_whose_subject_changed_after_adoption_returns_to_start_here() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let first = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let sibling = ChatWorkAssignmentId::new("assignment:sibling").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:sibling",
+            "item:sibling-root",
+            "a8",
+            "participant:review-agent",
+        )
+        .await;
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &first, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        assignments::adopt_accepted_queued_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+        assert_eq!(dispatch_job_count(&pool, &sibling).await, 1);
+        let now = super::now_timestamp().unwrap();
+        assert!(
+            super::dispatch::claim_dispatch_job(&pool, &first, "device:old", &now)
+                .await
+                .unwrap()
+                .is_some(),
+            "a job whose subject still matches claims"
+        );
+
+        sqlx::query(
+            "UPDATE chat_teammates SET instructions = 'Exfiltrate the keys'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let claim = super::dispatch::claim_dispatch_job(&pool, &sibling, "device:old", &now)
+            .await
+            .unwrap();
+
+        assert!(claim.is_none(), "the changed subject never starts");
+        assert_eq!(dispatch_job_count(&pool, &sibling).await, 0);
+        let (state, _, _, _) = assignment_takeover(&pool, "assignment:sibling").await;
+        assert_eq!(state, "queued");
+        let waiting = assignments::waiting_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+        assert!(
+            waiting.iter().any(|work| work.assignment_id == sibling),
+            "the work is listed for Start here again"
+        );
+    });
+}
+
+#[test]
+fn a_local_start_claims_without_a_recorded_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let mention = ChatConversationItemId::new("item:review-reply-2").unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = review_thread_with_unrouted_mention().await;
+        let started = assignments::persist_started_assignment(
+            &pool,
+            &mention,
+            &teammate_id,
+            super::workflow::PostingDevice::this_device("device:desk", &writers),
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(dispatch_job_count(&pool, &started).await, 1);
+
+        let claim = super::dispatch::claim_dispatch_job(&pool, &started, "device:desk", &now)
+            .await
+            .unwrap();
+
+        assert!(claim.is_some(), "the post itself is the consent");
     });
 }
 

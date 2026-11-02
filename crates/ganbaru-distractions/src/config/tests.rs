@@ -14,7 +14,8 @@ use super::store::{
     read,
 };
 use super::{
-    DistractionsConfig, MAX_HOST_CHARS, MAX_LIMIT_ENTRIES, MAX_MOBILE_APP_RULES, MAX_USAGE_LIMITS,
+    DistractionsConfig, MAX_GUARDIAN_USAGE_LIMITS, MAX_HOST_CHARS, MAX_LIMIT_ENTRIES,
+    MAX_MOBILE_APP_RULES, MAX_USAGE_LIMITS,
 };
 use crate::test_support::block_on;
 
@@ -676,6 +677,153 @@ fn mobile_app_rules_refuse_past_the_guardian_cap() {
                 .iter()
                 .all(|rule| rule.package_name != "com.cap.surplus")
         );
+    });
+}
+
+fn mobile_entry(id: &str, package: &str) -> LimitEntryDraft {
+    LimitEntryDraft {
+        mobile_app_name: "App".to_string(),
+        mobile_app_package: package.to_string(),
+        ..entry(id, "", "")
+    }
+}
+
+fn save_limit(id: &str, entries: Vec<LimitEntryDraft>) -> RuleEdit {
+    let RuleEdit::SaveUsageLimit { draft, .. } = limit("Apps", entries) else {
+        unreachable!("limit builds a save edit");
+    };
+    RuleEdit::SaveUsageLimit {
+        id: Some(id.to_string()),
+        draft,
+    }
+}
+
+async fn insert_package_limit(pool: &SqlitePool, id: &str, packages: usize) {
+    insert_replicated_limit(pool, id, "Apps", true).await;
+    for index in 0..packages {
+        let package = format!("com.{id}.app{index}");
+        let sources = ReplicatedSources {
+            mobile_app_name: Some("App"),
+            mobile_app_package: Some(&package),
+            ..ReplicatedSources::default()
+        };
+        let ordinal = i64::try_from(index).expect("ordinal fits");
+        insert_replicated_entry(pool, id, ordinal, &format!("{id}-{index}"), sources).await;
+    }
+}
+
+#[test]
+fn usage_limits_refuse_android_packages_past_the_guardian_limit_cap() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        set_applying(&pool, true).await;
+        for index in 0..MAX_GUARDIAN_USAGE_LIMITS {
+            insert_package_limit(&pool, &format!("packaged{index}"), 1).await;
+        }
+        set_applying(&pool, false).await;
+
+        let surplus = limit("Surplus", vec![mobile_entry("surplus", "com.cap.surplus")]);
+        assert_eq!(
+            refusal(apply(&pool, &surplus, NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        let website = limit("Video", vec![entry("video", "video.example.com", "")]);
+        let config = apply(&pool, &website, NOW_MS)
+            .await
+            .expect("a limit without Android packages is not published to Guardian");
+        let video = config
+            .limits
+            .items
+            .iter()
+            .find(|limit| limit.name == "Video")
+            .expect("saved website limit")
+            .id
+            .clone();
+        let widened = save_limit(
+            &video,
+            vec![
+                entry("video", "video.example.com", ""),
+                mobile_entry("video-app", "com.cap.video"),
+            ],
+        );
+        assert_eq!(
+            refusal(apply(&pool, &widened, NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        let edited = save_limit(
+            "packaged0",
+            vec![
+                mobile_entry("packaged0-0", "com.packaged0.app0"),
+                mobile_entry("packaged0-1", "com.packaged0.extra"),
+            ],
+        );
+        apply(&pool, &edited, NOW_MS)
+            .await
+            .expect("a published limit stays editable at the cap");
+    });
+}
+
+#[test]
+fn usage_limits_refuse_android_packages_past_the_guardian_package_cap() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let packages = |count: usize| -> Vec<LimitEntryDraft> {
+            (0..count)
+                .map(|index| mobile_entry(&format!("entry{index}"), &format!("com.cap.app{index}")))
+                .collect()
+        };
+        let oversized = limit("Apps", packages(MAX_MOBILE_APP_RULES + 1));
+        assert_eq!(
+            refusal(apply(&pool, &oversized, NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        apply(
+            &pool,
+            &limit("Apps", packages(MAX_MOBILE_APP_RULES)),
+            NOW_MS,
+        )
+        .await
+        .expect("a limit at the package cap saves");
+
+        set_applying(&pool, true).await;
+        insert_package_limit(&pool, "synced", MAX_MOBILE_APP_RULES + 1).await;
+        set_applying(&pool, false).await;
+        let stored = |count: usize| -> Vec<LimitEntryDraft> {
+            (0..count)
+                .map(|index| {
+                    mobile_entry(
+                        &format!("synced-{index}"),
+                        &format!("com.synced.app{index}"),
+                    )
+                })
+                .collect()
+        };
+        apply(
+            &pool,
+            &save_limit("synced", stored(MAX_MOBILE_APP_RULES + 1)),
+            NOW_MS,
+        )
+        .await
+        .expect("a synced limit over the package cap stays editable");
+        let mut grown = stored(MAX_MOBILE_APP_RULES + 1);
+        grown.push(mobile_entry("synced-new", "com.synced.new"));
+        assert_eq!(
+            refusal(apply(&pool, &save_limit("synced", grown), NOW_MS).await),
+            RuleRefusal::TooLarge
+        );
+        apply(
+            &pool,
+            &save_limit("synced", stored(MAX_MOBILE_APP_RULES)),
+            NOW_MS,
+        )
+        .await
+        .expect("removing packages from a synced limit over the cap saves");
+        let removed = RuleEdit::Remove(RuleTarget::UsageLimit {
+            id: "synced".to_string(),
+        });
+        apply(&pool, &removed, NOW_MS)
+            .await
+            .expect("a synced limit over the package cap stays removable");
     });
 }
 

@@ -574,6 +574,49 @@ async fn scoped_read_does_not_compare_each_row_with_each_website_rule() {
 }
 
 #[tokio::test]
+async fn scoped_read_work_stays_bounded_across_suffix_lengths() {
+    /// A suffix probe here costs about fourteen steps, so this admits a little over two million
+    /// probes in units of the hundred steps `counted_read` reports.
+    const STEP_CEILING: u64 = 300_000;
+    let entries: Vec<Value> = (0..500)
+        .map(|index| {
+            let host = format!("{index:0>width$}.test", width = index + 5);
+            serde_json::json!({"id": format!("rule-{index}"), "websiteHost": host})
+        })
+        .collect();
+    let root = serde_json::json!({"distractions": {"limits": {"items": [
+        {"id": "sites", "minutesPerDay": 10, "entries": entries}
+    ]}}});
+    let scope = UsageBudgetScope::from_rules(&parse_config(&root).unwrap());
+    let bounds = crate::limits::store::WindowBounds {
+        samples: MAX_WINDOW_SAMPLES,
+        groups: 100,
+    };
+    let pool = migrated_usage_pool().await;
+    sqlx::raw_sql(
+        "INSERT INTO distractions_usage_samples
+            (id, source_type, source_key, started_at_ms, elapsed_seconds, local_date,
+             created_at_ms)
+         VALUES ('own', 'website', '00000.test', 1, 30, '2026-09-28', 1);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    flood_migrated_totals(&pool, "flood-%d.attacker.test", 0, 20_000).await;
+    let (window, steps) = counted_read(&pool, &scope, bounds).await;
+    assert!(
+        steps <= STEP_CEILING,
+        "the read took {steps} hundred steps, over {STEP_CEILING}"
+    );
+    assert!(window.truncated);
+    assert_eq!(
+        window.sources[0],
+        source("website", "00000.test", "2026-09-28", 30)
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn usage_window_matches_budgets_the_way_totals_do() {
     let pool = usage_pool().await;
     let long_key = format!("{}.example.com", "a".repeat(MAX_SOURCE_KEY_BYTES));

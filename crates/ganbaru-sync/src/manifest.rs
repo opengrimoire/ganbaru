@@ -2,9 +2,12 @@
 //!
 //! A manifest version fixes table ids, group ids, column membership, and value rules, and ids are
 //! never reused. Operations of every version up to the current one validate against the current
-//! manifest, so a new version may only add tables and groups or loosen rules; tightening a rule
-//! needs per-version validation first. A conformance test records each version's canonical
-//! [`Manifest::summary`], so a change to the summary without a version bump fails.
+//! manifest. A version no release carries yet changes in place, tightening included, because no
+//! device outside development holds its operations. Once a release carries a version, it never
+//! changes, and a later version may only add tables and groups or loosen rules; tightening a rule
+//! then needs per-version validation first. A conformance test records each version's canonical
+//! [`Manifest::summary`], so a change to the summary fails until the recorded snapshot is updated
+//! (in place for an unreleased version, under a version bump otherwise).
 //!
 //! Each domain declares its tables in one [`DomainManifest`]; a manifest flattens a list of
 //! domains in dependency order.

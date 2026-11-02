@@ -2783,9 +2783,10 @@ fn engine_construction_checks_adapters_both_ways() {
 }
 
 /// Recorded manifests by version. Operations of every version up to the current one validate
-/// against the current manifest, so a recorded manifest never changes; a new version may only
-/// add tables and groups, loosen rules, or refuse values the schema could never store, and it
-/// records its own snapshot here.
+/// against the current manifest. The snapshot of a version no release carries yet is rerecorded
+/// in place when that version changes, tightening included. A released version's snapshot never
+/// changes; a new version may only add tables and groups, loosen rules, or refuse values the
+/// schema could never store, and it records its own snapshot here.
 const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (1, include_str!("fixtures/vault_manifest_v1.txt")),
     (2, include_str!("fixtures/vault_manifest_v2.txt")),
@@ -2824,7 +2825,8 @@ fn vault_manifest_changes_only_with_a_version_bump() {
     assert_eq!(
         VAULT_MANIFEST.summary(),
         recorded.replace("\r\n", "\n"),
-        "the vault manifest changed without a version bump"
+        "the vault manifest changed: rerecord the snapshot in place for an unreleased version, or \
+         bump the version otherwise"
     );
 }
 

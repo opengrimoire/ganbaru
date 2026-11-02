@@ -387,6 +387,8 @@ enum TriggerClass {
     Stateless(&'static str),
     /// Merge state hides the row before apply writes what the trigger refuses.
     MergeState(&'static str),
+    /// Apply never writes what the trigger refuses.
+    Unreachable(&'static str),
     /// Apply reaches the trigger, and the refusal net in materialization catches it.
     Net(&'static str),
 }
@@ -394,7 +396,10 @@ enum TriggerClass {
 impl TriggerClass {
     const fn reason(self) -> &'static str {
         match self {
-            Self::Stateless(reason) | Self::MergeState(reason) | Self::Net(reason) => reason,
+            Self::Stateless(reason)
+            | Self::MergeState(reason)
+            | Self::Unreachable(reason)
+            | Self::Net(reason) => reason,
         }
     }
 }
@@ -414,9 +419,25 @@ const IMMUTABLE_ROW: TriggerClass =
 const CROSS_ROW: TriggerClass =
     TriggerClass::Net("the rule compares rows that a single change does not carry");
 
+/// Name prefixes of the aborting triggers the engine renders per table that stay armed while
+/// apply runs. One prefix is one guard kind with one reason across every table.
+const CLASSIFIED_ENGINE_TRIGGERS: &[(&str, TriggerClass)] = &[
+    (
+        "sync_values_",
+        TriggerClass::Stateless("validation applies the same column rules to every stored value"),
+    ),
+    (
+        "sync_immutable_",
+        TriggerClass::Unreachable(
+            "apply addresses a row by its key, and the immutable columns are guarded outside apply",
+        ),
+    ),
+];
+
 /// Aborting triggers of replicated tables and owned children in the vault manifest that stay
-/// armed while apply runs. Triggers gated on the apply state are left out, and so are triggers
-/// on device local tables, because apply never writes those tables.
+/// armed while apply runs, apart from the engine's own in [`CLASSIFIED_ENGINE_TRIGGERS`].
+/// Triggers gated on the apply state are left out, and so are triggers on device local tables,
+/// because apply never writes those tables.
 const CLASSIFIED_TRIGGERS: &[(&str, TriggerClass)] = &[
     (
         "calendar_event_archive_import_objects_sync_key_insert",
@@ -533,15 +554,29 @@ fn every_applier_visible_trigger_is_classified() {
                 aborting.insert(name);
             }
         }
-        let classified: BTreeSet<String> = CLASSIFIED_TRIGGERS
+        let mut classified: BTreeSet<String> = CLASSIFIED_TRIGGERS
             .iter()
             .map(|(name, class)| {
                 assert!(!class.reason().is_empty(), "{name} states no reason");
                 (*name).to_string()
             })
             .collect();
+        let mut stale_kinds = Vec::new();
+        for (prefix, class) in CLASSIFIED_ENGINE_TRIGGERS {
+            assert!(!class.reason().is_empty(), "{prefix} states no reason");
+            let matching: Vec<String> = aborting
+                .iter()
+                .filter(|name| name.starts_with(prefix))
+                .cloned()
+                .collect();
+            if matching.is_empty() {
+                stale_kinds.push((*prefix).to_string());
+            }
+            classified.extend(matching);
+        }
         let unclassified: Vec<_> = aborting.difference(&classified).collect();
-        let stale: Vec<_> = classified.difference(&aborting).collect();
+        let mut stale: Vec<_> = classified.difference(&aborting).collect();
+        stale.extend(&stale_kinds);
         assert!(
             unclassified.is_empty() && stale.is_empty(),
             "unclassified triggers: {unclassified:#?}\nstale entries: {stale:#?}"

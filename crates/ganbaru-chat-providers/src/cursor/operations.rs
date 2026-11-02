@@ -33,16 +33,6 @@ impl ProviderDriver for CursorProviderDriver {
         }
     }
 
-    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
-        match self.flavor {
-            AcpProviderFlavor::Cursor => &[
-                ProviderConfigurationPath::CursorRules,
-                ProviderConfigurationPath::Cursor,
-            ],
-            AcpProviderFlavor::Grok => &[ProviderConfigurationPath::Grok],
-        }
-    }
-
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

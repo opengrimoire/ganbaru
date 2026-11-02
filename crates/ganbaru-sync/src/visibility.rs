@@ -599,7 +599,8 @@ impl Visibility {
     /// Marks dirty every contested row whose domain row is present while it should be hidden as
     /// a duplicate or for another reason, or absent while it should be shown. A keeper can
     /// change because a row elsewhere was deleted or published, without any member of its class
-    /// changing. A hidden row that [`Self::keeps_hidden`] keeps present is settled.
+    /// changing. A hidden row that [`Self::keeps_hidden`] keeps present is settled, and so is a
+    /// row whose listed refusal explains the difference, which its retry revisits.
     async fn mark_unsettled(
         &mut self,
         engine: &Engine,
@@ -622,6 +623,7 @@ impl Visibility {
                     .is_some();
                 if shown == present
                     || (!shown && self.keeps_hidden(engine, conn, spec, key).await?)
+                    || refused::explains(conn, &row, shown).await?
                 {
                     continue;
                 }

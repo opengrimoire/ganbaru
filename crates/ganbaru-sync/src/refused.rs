@@ -72,6 +72,22 @@ pub(crate) async fn is_hidden(conn: &mut SqliteConnection, row: &RowRef) -> Sync
     Ok(listed_kind(conn, row).await?.as_deref() == Some(RefusalKind::Hidden.stored()))
 }
 
+/// Whether a row's refusal explains how its domain table differs from what should show: listed
+/// as hidden while it should show, or as kept while it should be absent. Such a row waits for
+/// its retry instead of being planned again.
+pub(crate) async fn explains(
+    conn: &mut SqliteConnection,
+    row: &RowRef,
+    shown: bool,
+) -> SyncResult<bool> {
+    let kind = if shown {
+        RefusalKind::Hidden
+    } else {
+        RefusalKind::Kept
+    };
+    Ok(listed_kind(conn, row).await?.as_deref() == Some(kind.stored()))
+}
+
 /// Whether any row is listed.
 pub(crate) async fn any(conn: &mut SqliteConnection) -> SyncResult<bool> {
     Ok(

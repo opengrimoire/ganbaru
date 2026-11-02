@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(super) const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
-const MAX_MOBILE_RULES: usize = 256;
+const MAX_MOBILE_RULES: usize = ganbaru_distractions::config::MAX_MOBILE_APP_RULES;
 const MAX_RULE_NAME_CHARS: usize = 120;
 const MAX_LIMIT_NAME_CHARS: usize = 80;
 const MAX_MOBILE_LIMITS: usize = 128;
@@ -315,10 +315,12 @@ fn guardian_label(name: &str, fallback: &str, max_chars: usize) -> String {
 }
 
 /// The rules Guardian enforces: rows with a package, one per lowercase package, up to
-/// [`MAX_MOBILE_RULES`], each under a name Guardian accepts. A row with an invalid package or a
-/// surplus row is dropped with a diagnostic, because failing publication would revoke every rule
-/// Guardian holds.
-fn publishable_rules(rules: Vec<MobileRule>) -> Vec<MobileRule> {
+/// [`MAX_MOBILE_RULES`], each under a name Guardian accepts. Enabled rows rank before disabled
+/// ones, keeping their order otherwise, so the cap never displaces an enforced rule with a disabled
+/// one. A row with an invalid package or a surplus row is dropped with a diagnostic, because
+/// failing publication would revoke every rule Guardian holds.
+fn publishable_rules(mut rules: Vec<MobileRule>) -> Vec<MobileRule> {
+    rules.sort_by_key(|rule| !rule.enabled);
     let mut skipped = 0_usize;
     let mut packages_seen = HashSet::new();
     let mut publishable = Vec::new();
@@ -370,23 +372,7 @@ pub(super) fn build(
     .map_err(|error| format!("invalid persisted Guardian schedule: {error}"))?;
     mobile.blocked_apps = publishable_rules(mobile.blocked_apps);
     let mut items = Vec::new();
-    for limit in &config.items {
-        let packages: HashSet<String> = limit
-            .entries
-            .iter()
-            .filter_map(|entry| entry.mobile_app_package.as_ref())
-            .map(|package| package.to_ascii_lowercase())
-            .collect();
-        if packages.is_empty() {
-            continue;
-        }
-        if packages.len() > MAX_MOBILE_RULES
-            || packages
-                .iter()
-                .any(|package| !is_android_package_name(package))
-        {
-            return Err("persisted Guardian limit packages are invalid".into());
-        }
+    for PackageLimit { limit, packages } in publishable_limits(&config.items) {
         let accepted = |period: &str| -> Result<Value, String> {
             let Some(budget) = budgets
                 .iter()
@@ -408,21 +394,103 @@ pub(super) fn build(
             "minutesPerWeek": limit.minutes_per_week, "packages": sorted,
             "acceptedUsage": {"day": accepted("day")?, "week": accepted("week")?}}));
     }
-    if items.len() > MAX_MOBILE_LIMITS {
-        return Err("too many Guardian package limits".into());
-    }
-    let rules = json!({"schemaVersion": 1, "vaultId": capture.vault_id, "revision": revision,
+    let mut rules = json!({"schemaVersion": 1, "vaultId": capture.vault_id, "revision": revision,
         "generatedAtEpochMs": capture.observed_at_epoch_ms, "mobile": mobile,
-        "limits": {"enabled": config.enabled, "items": items}, "copy": copy});
-    if serde_json::to_vec(&rules)
-        .map_err(|error| error.to_string())?
-        .len()
-        > MAX_CAPTURE_BYTES
-    {
+        "limits": {"enabled": config.enabled, "items": []}, "copy": copy});
+    rules["limits"]["items"] = Value::Array(fit_limit_items(encoded_len(&rules)?, items)?);
+    if encoded_len(&rules)? > MAX_CAPTURE_BYTES {
         return Err("native Guardian rules exceed their byte limit".into());
     }
     let view = usage_view(capture, &budgets);
     Ok((rules, view))
+}
+
+fn encoded_len(value: &Value) -> Result<usize, String> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|error| error.to_string())
+}
+
+/// One usage limit as Guardian enforces it, with its distinct lowercase packages.
+struct PackageLimit<'a> {
+    limit: &'a limits::UsageLimit,
+    packages: HashSet<String>,
+}
+
+/// The usage limits Guardian enforces: limits with at least one valid package, each with its
+/// first [`MAX_MOBILE_RULES`] distinct packages in entry order, enabled limits ranked before
+/// disabled ones and then in their given order, up to [`MAX_MOBILE_LIMITS`]. An invalid package
+/// or a surplus package or limit is dropped with a diagnostic, because failing publication would
+/// revoke every rule Guardian holds.
+fn publishable_limits(items: &[limits::UsageLimit]) -> Vec<PackageLimit<'_>> {
+    let mut skipped = 0_usize;
+    let mut capped = 0_usize;
+    let mut publishable = Vec::new();
+    for limit in items {
+        let mut packages = HashSet::new();
+        for package in limit
+            .entries
+            .iter()
+            .filter_map(|entry| entry.mobile_app_package.as_deref())
+        {
+            if !is_android_package_name(package) {
+                skipped += 1;
+                continue;
+            }
+            let package = package.to_ascii_lowercase();
+            if packages.len() < MAX_MOBILE_RULES {
+                packages.insert(package);
+            } else if !packages.contains(&package) {
+                capped += 1;
+            }
+        }
+        if !packages.is_empty() {
+            publishable.push(PackageLimit { limit, packages });
+        }
+    }
+    if skipped > 0 {
+        eprintln!("Guardian skipped {skipped} invalid usage limit packages");
+    }
+    if capped > 0 {
+        eprintln!(
+            "Guardian dropped {capped} usage limit packages past {MAX_MOBILE_RULES} per limit"
+        );
+    }
+    publishable.sort_by_key(|item| !item.limit.enabled);
+    if publishable.len() > MAX_MOBILE_LIMITS {
+        eprintln!(
+            "Guardian publishes {MAX_MOBILE_LIMITS} of {} package limits",
+            publishable.len()
+        );
+        publishable.truncate(MAX_MOBILE_LIMITS);
+    }
+    publishable
+}
+
+/// The limit items that fit beside the rest of the rules, whose encoding without items takes
+/// `base_len` bytes: in rank order, each item that fits within [`MAX_CAPTURE_BYTES`] is kept and
+/// one that does not is dropped with a diagnostic, so one oversized limit never displaces the
+/// smaller limits after it.
+fn fit_limit_items(base_len: usize, items: Vec<Value>) -> Result<Vec<Value>, String> {
+    let mut used = base_len;
+    let mut dropped = 0_usize;
+    let mut kept = Vec::with_capacity(items.len());
+    for item in items {
+        let separator = usize::from(!kept.is_empty());
+        let next = used
+            .saturating_add(encoded_len(&item)?)
+            .saturating_add(separator);
+        if next <= MAX_CAPTURE_BYTES {
+            used = next;
+            kept.push(item);
+        } else {
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!("Guardian dropped {dropped} usage limits past its byte limit");
+    }
+    Ok(kept)
 }
 
 fn usage_view(capture: &GuardianCapture, budgets: &[BudgetTotal]) -> Value {
@@ -751,11 +819,7 @@ mod tests {
     #[test]
     fn limit_publication_keeps_enabled_limits_past_the_count_cap() {
         let mut config = root();
-        let mut items = vec![package_limit(
-            "off",
-            false,
-            ["com.example.off".to_owned()],
-        )];
+        let mut items = vec![package_limit("off", false, ["com.example.off".to_owned()])];
         items.extend((0..MAX_MOBILE_LIMITS).map(|index| {
             package_limit(
                 &format!("on{index}"),
@@ -765,7 +829,10 @@ mod tests {
         }));
         config["distractions"]["limits"]["items"] = json!(items);
         let built = build(&config, &capture(), &[], &copy(), "native-limit-count");
-        assert!(built.is_ok(), "the limit count stopped publication: {built:?}");
+        assert!(
+            built.is_ok(),
+            "the limit count stopped publication: {built:?}"
+        );
         let (rules, _) = built.unwrap();
         let ids = published_limit_ids(&rules);
         assert_eq!(ids.len(), MAX_MOBILE_LIMITS);
@@ -779,7 +846,10 @@ mod tests {
         let packages = (0..=MAX_MOBILE_RULES).map(|index| format!("com.wide.app{index:03}"));
         config["distractions"]["limits"]["items"] = json!([package_limit("wide", true, packages)]);
         let built = build(&config, &capture(), &[], &copy(), "native-limit-wide");
-        assert!(built.is_ok(), "one wide limit stopped publication: {built:?}");
+        assert!(
+            built.is_ok(),
+            "one wide limit stopped publication: {built:?}"
+        );
         let (rules, _) = built.unwrap();
         let published = rules["limits"]["items"][0]["packages"].as_array().unwrap();
         assert_eq!(published.len(), MAX_MOBILE_RULES);
@@ -801,7 +871,8 @@ mod tests {
                 package_limit(
                     &format!("flood{limit}"),
                     true,
-                    (0..250).map(move |index| format!("com.l{limit}p{index:03}.{}", "b".repeat(243))),
+                    (0..250)
+                        .map(move |index| format!("com.l{limit}p{index:03}.{}", "b".repeat(243))),
                 )
             })
             .collect();
@@ -812,7 +883,10 @@ mod tests {
         ));
         config["distractions"]["limits"]["items"] = json!(items);
         let built = build(&config, &capture(), &[], &copy(), "native-limit-bytes");
-        assert!(built.is_ok(), "the byte flood stopped publication: {built:?}");
+        assert!(
+            built.is_ok(),
+            "the byte flood stopped publication: {built:?}"
+        );
         let (rules, _) = built.unwrap();
         assert!(serde_json::to_vec(&rules).unwrap().len() <= MAX_CAPTURE_BYTES);
         let ids = published_limit_ids(&rules);

@@ -974,6 +974,148 @@ fn a_row_refusing_only_updates_converges_on_the_immutable_winner() {
     });
 }
 
+/// SQL creating list `id` with the owned entry `entry`.
+fn list_sql(id: &str, entry: &str) -> String {
+    format!(
+        "INSERT INTO fixture_lists (id, created_at, title) VALUES ({id}, {CREATED}, 'List');
+         INSERT INTO fixture_list_entries (list_id, ordinal, entry_id, body)
+         VALUES ({id}, 0, {entry}, 'body');",
+        id = quoted(id),
+        entry = quoted(entry),
+    )
+}
+
+/// A row a refused delete keeps still holds its unique value, which merge state no longer
+/// counts. A later row claiming that value is refused wherever the kept row stayed, whichever of
+/// the delete and the claim arrived first, and shows on a replica that never held the kept row.
+/// Merge state agrees throughout, a retry does not cure the refusal, and a write that moves the
+/// claim off the value does.
+#[test]
+fn kept_row_unique_value_refuses_only_where_the_row_stayed() {
+    const KEPT: &str = "list-kept";
+    const CLAIM: &str = "list-claim";
+    const SHARED_ENTRY: &str = "entry-shared";
+    const MOVED_ENTRY: &str = "entry-moved";
+    const KEEP_LISTS: &str = "CREATE TRIGGER fixture_lists_keep BEFORE DELETE ON fixture_lists
+         BEGIN SELECT RAISE(ABORT, 'kept'); END";
+    const DELETE_THEN_CLAIM: usize = 0;
+    const CLAIM_THEN_DELETE: usize = 1;
+    const NEVER_HELD: usize = 2;
+    const CLAIM_BEFORE_ROW: usize = 3;
+    const RECEIVERS: usize = 4;
+    const DELETER: usize = RECEIVERS;
+    const CLAIMER: usize = RECEIVERS + 1;
+    const HOLDERS: [usize; 2] = [DELETE_THEN_CLAIM, CLAIM_THEN_DELETE];
+    const OTHERS: [usize; 2] = [NEVER_HELD, CLAIM_BEFORE_ROW];
+
+    block_on(async {
+        let mut replicas = Vec::with_capacity(CLAIMER + 1);
+        for index in 0..=CLAIMER {
+            replicas.push(Replica::new(index, 75).await);
+        }
+        for replica in &mut replicas[..RECEIVERS] {
+            replica.exec(KEEP_LISTS).await;
+        }
+
+        exec_and_seal(&mut replicas[DELETER], &list_sql(KEPT, SHARED_ENTRY)).await;
+        exec_and_seal(&mut replicas[CLAIMER], &list_sql(CLAIM, SHARED_ENTRY)).await;
+        take(&mut replicas, DELETE_THEN_CLAIM, DELETER)
+            .await
+            .unwrap();
+        take(&mut replicas, CLAIM_THEN_DELETE, DELETER)
+            .await
+            .unwrap();
+        take(&mut replicas, CLAIM_THEN_DELETE, CLAIMER)
+            .await
+            .unwrap();
+        take(&mut replicas, CLAIM_BEFORE_ROW, CLAIMER)
+            .await
+            .unwrap();
+        take(&mut replicas, CLAIM_BEFORE_ROW, DELETER)
+            .await
+            .unwrap();
+
+        exec_and_seal(
+            &mut replicas[DELETER],
+            &format!("DELETE FROM fixture_lists WHERE id = {}", quoted(KEPT)),
+        )
+        .await;
+        for (to, from) in [
+            (DELETE_THEN_CLAIM, DELETER),
+            (DELETE_THEN_CLAIM, CLAIMER),
+            (CLAIM_THEN_DELETE, DELETER),
+            (NEVER_HELD, DELETER),
+            (NEVER_HELD, CLAIMER),
+            (CLAIM_BEFORE_ROW, DELETER),
+        ] {
+            take(&mut replicas, to, from).await.unwrap();
+        }
+
+        for index in HOLDERS {
+            let replica = &mut replicas[index];
+            assert_eq!(keys(replica, "fixture_lists").await, [KEPT], "{index}");
+            assert_eq!(refused(replica, "kept").await, [KEPT], "{index}");
+            assert_eq!(refused(replica, "hidden").await, [CLAIM], "{index}");
+        }
+        for index in OTHERS {
+            let replica = &mut replicas[index];
+            assert_eq!(keys(replica, "fixture_lists").await, [CLAIM], "{index}");
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_refused_rows")
+                    .await,
+                0,
+                "{index}"
+            );
+        }
+
+        exec_and_seal(
+            &mut replicas[CLAIMER],
+            &format!(
+                "UPDATE fixture_lists SET title = 'Renamed' WHERE id = {}",
+                quoted(CLAIM)
+            ),
+        )
+        .await;
+        for index in 0..RECEIVERS {
+            take(&mut replicas, index, CLAIMER).await.unwrap();
+        }
+        for index in HOLDERS {
+            assert_eq!(
+                refused(&mut replicas[index], "hidden").await,
+                [CLAIM],
+                "a write that keeps the value leaves replica {index} refusing"
+            );
+        }
+
+        exec_and_seal(
+            &mut replicas[CLAIMER],
+            &format!(
+                "UPDATE fixture_list_entries SET entry_id = {} WHERE list_id = {}",
+                quoted(MOVED_ENTRY),
+                quoted(CLAIM)
+            ),
+        )
+        .await;
+        for index in 0..RECEIVERS {
+            take(&mut replicas, index, CLAIMER).await.unwrap();
+        }
+        for index in HOLDERS {
+            let replica = &mut replicas[index];
+            assert_eq!(keys(replica, "fixture_lists").await, [CLAIM, KEPT]);
+            assert_eq!(refused(replica, "kept").await, [KEPT], "{index}");
+            assert!(refused(replica, "hidden").await.is_empty(), "{index}");
+        }
+        for index in OTHERS {
+            assert_eq!(keys(&mut replicas[index], "fixture_lists").await, [CLAIM]);
+        }
+        let reference = merge_state(&mut replicas[0]).await;
+        for replica in &mut replicas[1..RECEIVERS] {
+            assert_eq!(merge_state(replica).await, reference);
+        }
+    });
+}
+
 #[test]
 fn refused_rows_do_not_keep_apply_rounds_running() {
     block_on(async {

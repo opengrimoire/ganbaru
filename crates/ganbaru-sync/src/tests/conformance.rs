@@ -1330,27 +1330,239 @@ fn sql_words(sql: &str) -> BTreeSet<&str> {
         .collect()
 }
 
-/// The terms of the CHECK constraints of a `CREATE TABLE` that read `key` and no other column.
-fn key_check_terms(create: &str, key: &str, columns: &[String]) -> Vec<String> {
+/// `sql` with every identifier `from` outside its strings written as `to`.
+fn renamed_identifier(sql: &str, from: &str, to: &str) -> String {
+    let rename = |code: &str| {
+        let mut renamed = String::new();
+        let mut word = String::new();
+        for character in code.chars().map(Some).chain([None]) {
+            match character {
+                Some(character) if character.is_alphanumeric() || character == '_' => {
+                    word.push(character);
+                }
+                _ => {
+                    renamed.push_str(if word == from { to } else { &word });
+                    word.clear();
+                    renamed.extend(character);
+                }
+            }
+        }
+        renamed
+    };
+    sql.split('\'')
+        .enumerate()
+        .map(|(index, part)| {
+            if index % 2 == 0 {
+                rename(part)
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("'")
+}
+
+/// The name and expression of a generated column `definition`.
+fn generated_column(definition: &str) -> Option<(&str, &str)> {
+    let (head, after) = definition.split_once(" AS (")?;
+    let name = head.split_whitespace().next()?.trim_matches('"');
+    (!name.eq_ignore_ascii_case("CHECK") && !name.eq_ignore_ascii_case("CONSTRAINT"))
+        .then(|| (name, inside_parentheses(after)))
+}
+
+/// What the manifest of one table says about the CHECK terms that read its row key with another
+/// column. These are the only cross-column key terms the schema may hold, because the engine
+/// never writes a row they refuse.
+#[derive(Debug, Clone, Copy, Default)]
+struct KnownKeyTerms {
+    /// Columns that hold a prefix followed by the row key. Materialize writes them from the key,
+    /// so their pinning term `column = 'prefix' || key` never refuses. A column with no prefix
+    /// equals the key, so its other terms read as terms on the key; any other term on a prefixed
+    /// column is unknown.
+    key_derived: &'static [KeyDerivedColumn],
+    /// The parent column of a tree table. Tree repair detaches a row that names itself as its
+    /// parent, so `parent IS NULL OR parent <> key` never refuses.
+    tree_parent: Option<&'static str>,
+}
+
+impl KnownKeyTerms {
+    /// The known cross-column key terms of `table`.
+    fn of(table: &TableSpec) -> Self {
+        let tree_parent = table
+            .tree
+            .and_then(|tree| table.group(tree.parent_group))
+            .and_then(|group| match group.columns() {
+                [column] => Some(column.name),
+                _ => None,
+            });
+        Self {
+            key_derived: table.key_derived_columns,
+            tree_parent,
+        }
+    }
+
+    /// Whether `term` is a cross-column term on `key` the manifest makes safe.
+    fn admits(&self, term: &str, key: &str) -> bool {
+        let pins = self.key_derived.iter().any(|column| {
+            let name = column.name;
+            let pin = if column.prefix.is_empty() {
+                format!("{name} = {key}")
+            } else {
+                format!("{name} = '{}' || {key}", column.prefix.replace('\'', "''"))
+            };
+            term == pin
+        });
+        let no_self_parent = self
+            .tree_parent
+            .is_some_and(|parent| term == format!("{parent} IS NULL OR {parent} <> {key}"));
+        pins || no_self_parent
+    }
+
+    /// Columns equal to the key.
+    fn aliases(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.key_derived
+            .iter()
+            .filter(|column| column.prefix.is_empty())
+            .map(|column| column.name)
+    }
+}
+
+/// What the CHECK constraints of a table say about its row key.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KeyChecks {
+    /// Terms that read only the key, written over the key column.
+    terms: Vec<String>,
+    /// Terms or columns that read the key in a way no known shape or entry covers.
+    unknown: Vec<String>,
+}
+
+/// The CHECK terms of a `CREATE TABLE` that reach its row key `key`. A term reaches the key when
+/// it reads the key, a key-derived column, or a column generated from any of them. A term that
+/// reads the key or a column equal to it and no other column is known in a shape
+/// [`check_term_probes`] states; a term reading other columns is known only when `known` admits
+/// it. Every other term reaching the key is unknown.
+fn key_checks(create: &str, key: &str, columns: &[String], known: KnownKeyTerms) -> KeyChecks {
     let create = normalized_sql(create);
     let (_, after) = create.split_once('(').unwrap();
-    let mut terms = Vec::new();
-    for definition in split_top_level(inside_parentheses(after), ",") {
+    let definitions = split_top_level(inside_parentheses(after), ",");
+    let reads_key = |words: &BTreeSet<&str>| {
+        words.contains(key)
+            || known
+                .key_derived
+                .iter()
+                .any(|column| words.contains(column.name))
+    };
+    let generated = definitions
+        .iter()
+        .filter_map(|definition| generated_column(definition))
+        .filter(|(_, expression)| reads_key(&sql_words(expression)))
+        .map(|(name, _)| name)
+        .collect::<BTreeSet<_>>();
+    let mut checks = KeyChecks::default();
+    for definition in definitions {
         for body in check_bodies(definition) {
             for term in split_top_level(body, " AND ") {
                 let term = without_outer_parentheses(term);
                 let words = sql_words(term);
-                let reads_only_key = words.contains(key)
-                    && !columns
-                        .iter()
-                        .any(|column| column != key && words.contains(column.as_str()));
-                if reads_only_key {
-                    terms.push(term.to_owned());
+                let reaches_key =
+                    reads_key(&words) || generated.iter().any(|name| words.contains(name));
+                if !reaches_key || known.admits(term, key) {
+                    continue;
+                }
+                let reads_other = columns.iter().any(|column| {
+                    column != key
+                        && !known.aliases().any(|alias| alias == column)
+                        && words.contains(column.as_str())
+                });
+                let on_key = known.aliases().fold(term.to_owned(), |term, alias| {
+                    renamed_identifier(&term, alias, key)
+                });
+                if reads_other || check_term_probes(&on_key, key).is_none() {
+                    checks.unknown.push(term.to_owned());
+                } else {
+                    checks.terms.push(on_key);
                 }
             }
         }
     }
-    terms
+    checks
+}
+
+/// A CHECK that reads the row key with another column, or reads a column derived from the key,
+/// can refuse keys that no row key rule states, so it fails conformance unless the manifest
+/// makes it safe.
+#[test]
+fn key_checks_refuse_unreviewed_terms_that_reach_the_key() {
+    let columns = ["id", "other", "sync_key", "slug"].map(str::to_owned);
+    let mixed = "CREATE TABLE t (id TEXT PRIMARY KEY CHECK (id = 'x-' || other), other TEXT)";
+    assert_eq!(
+        key_checks(mixed, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["id = 'x-' || other"],
+        "a term mixing the key with another column is unknown"
+    );
+
+    let pinned = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                  other TEXT NOT NULL CHECK (other = 'x-' || id AND length(other) <= 8))";
+    let prefixed = KnownKeyTerms {
+        key_derived: &[KeyDerivedColumn {
+            name: "other",
+            prefix: "x-",
+        }],
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(pinned, "id", &columns, prefixed).unknown,
+        ["length(other) <= 8"],
+        "a key-derived column's pin passes, and another term on it is unknown"
+    );
+
+    let tree = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                other TEXT CHECK (other IS NULL OR other <> id))";
+    assert_eq!(
+        key_checks(tree, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["other IS NULL OR other <> id"],
+        "a self-parent term on a column that is not the tree parent is unknown"
+    );
+    let parent = KnownKeyTerms {
+        tree_parent: Some("other"),
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(tree, "id", &columns, parent),
+        KeyChecks::default(),
+        "tree repair keeps a row from naming itself as its parent"
+    );
+
+    let aliased = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                   sync_key TEXT NOT NULL CHECK (sync_key = id AND length(sync_key) <= 64))";
+    assert_eq!(
+        key_checks(aliased, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["sync_key = id"],
+        "an undeclared alias of the key is unknown"
+    );
+    let alias = KnownKeyTerms {
+        key_derived: &[KeyDerivedColumn {
+            name: "sync_key",
+            prefix: "",
+        }],
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(aliased, "id", &columns, alias),
+        KeyChecks {
+            terms: vec!["length(id) <= 64".to_owned()],
+            unknown: Vec::new(),
+        },
+        "a term on an alias of the key reads as a term on the key"
+    );
+
+    let generated = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                     slug TEXT GENERATED ALWAYS AS (lower(id)) STORED CHECK (length(slug) <= 8))";
+    assert_eq!(
+        key_checks(generated, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["length(slug) <= 8"],
+        "a CHECK on a column generated from the key is unknown"
+    );
 }
 
 /// Keys on both sides of a limit of `chars` characters, in one-byte and two-byte characters.
@@ -1449,10 +1661,11 @@ async fn check_terms_admit(pool: &SqlitePool, terms: &[String], key: &str, value
 }
 
 /// A key the domain table refuses could never apply on any replica, so every table states what
-/// its key CHECK accepts. Each CHECK that reads only the key is recognized, then the rule and
-/// the schema must agree on every valid row key around their limits. A rule with an insert guard
-/// clause declares itself stricter than the CHECK, so every key it admits must pass the CHECK, and
-/// the clause must agree with the rule both ways.
+/// its key CHECK accepts. Every CHECK term that reaches the key must be recognized (see
+/// [`key_checks`]), then the rule and the schema must agree on every valid row key around their
+/// limits. A rule with an insert guard clause declares itself stricter than the CHECK, so every
+/// key it admits must pass the CHECK, and the clause must agree with the rule both ways. Aborting
+/// triggers that read the key are covered by `every_applier_visible_trigger_is_classified`.
 #[test]
 fn row_key_rules_match_the_key_checks() {
     block_on(async {
@@ -1473,14 +1686,15 @@ fn row_key_rules_match_the_key_checks() {
                         .await
                         .unwrap();
                 let key = table.key_column;
-                let terms = key_check_terms(&create, key, &columns);
+                let KeyChecks { terms, unknown } =
+                    key_checks(&create, key, &columns, KnownKeyTerms::of(table));
+                for term in unknown {
+                    problems.push(format!("{}: unknown key CHECK {term}", table.name));
+                }
                 let mut probes = key_rule_probes(table.key_rule);
                 probes.extend(["x", "other"].map(str::to_owned));
                 for term in &terms {
-                    match check_term_probes(term, key) {
-                        Some(found) => probes.extend(found),
-                        None => problems.push(format!("{}: unknown key CHECK {term}", table.name)),
-                    }
+                    probes.extend(check_term_probes(term, key).unwrap_or_default());
                 }
                 probes.retain(|probe| RowKey::new(probe.as_str()).is_ok());
                 probes.sort();

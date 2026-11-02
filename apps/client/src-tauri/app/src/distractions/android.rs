@@ -261,7 +261,7 @@ async fn acknowledge_guardian<R: Runtime>(
 mod tests {
     use super::*;
     use ganbaru_distractions::config::normalize_package;
-    use ganbaru_sync::domains::distractions::MAX_PACKAGE_CHARS;
+    use ganbaru_sync::domains::distractions::{MAX_PACKAGE_CHARS, MIN_PACKAGE_CHARS};
 
     fn event(id: &str) -> PendingEvent {
         PendingEvent {
@@ -305,6 +305,8 @@ mod tests {
             ("", false),
             ("android", false),
             ("1com.example", false),
+            ("com.1example", false),
+            ("com.Example_app.x", true),
             ("com.example-app", false),
             ("com..example", false),
             ("com.example.", false),
@@ -319,6 +321,49 @@ mod tests {
             journal_event.package_name = package.into();
             assert_eq!(normalize_event(journal_event).is_ok(), valid, "{package}");
         }
+    }
+
+    /// Guardian source that validates published package names. Kotlin tests do not run in the
+    /// Rust gates, so this test reads the source to keep both grammars in step.
+    const GUARDIAN_MODELS_SOURCE: &str = include_str!(
+        "../../../../../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/DistractionsModels.kt"
+    );
+
+    /// The regular expression that states [`is_android_package_name`]: dotted segments, at least
+    /// two, each an ASCII letter followed by ASCII letters, digits, and underscores.
+    const RUST_PACKAGE_PATTERN: &str = r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$";
+
+    /// The text between `start` and the next `end` after it in `source`.
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let (_, rest) = source
+            .split_once(start)
+            .unwrap_or_else(|| panic!("Guardian source lacks {start:?}"));
+        rest.split_once(end)
+            .unwrap_or_else(|| panic!("Guardian source lacks {end:?} after {start:?}"))
+            .0
+    }
+
+    #[test]
+    fn guardian_package_grammar_matches_the_rust_grammar() {
+        let check = between(
+            GUARDIAN_MODELS_SOURCE,
+            "private fun packageName(value: String): String",
+            "PACKAGE_PATTERN.matches(it)",
+        );
+        let bounds = between(check, "it.length in ", " &&");
+        let (minimum, maximum) = bounds
+            .split_once("..")
+            .unwrap_or_else(|| panic!("Guardian package bounds are not a closed range: {bounds}"));
+        assert_eq!(minimum.parse::<usize>().unwrap(), MIN_PACKAGE_CHARS);
+        assert_eq!(maximum.parse::<usize>().unwrap(), MAX_PACKAGE_CHARS);
+
+        let kotlin_pattern = between(
+            GUARDIAN_MODELS_SOURCE,
+            "private val PACKAGE_PATTERN = Regex(\"",
+            "\")",
+        )
+        .replace("\\\\", "\\");
+        assert_eq!(kotlin_pattern, RUST_PACKAGE_PATTERN);
     }
 
     #[tokio::test]

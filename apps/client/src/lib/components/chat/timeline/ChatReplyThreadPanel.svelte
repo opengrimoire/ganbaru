@@ -52,6 +52,8 @@
   );
   let scroller = $state<HTMLDivElement | null>(null);
   let actionError = $state<string | null>(null);
+  /** A failed message action; unlike `actionError`, it never decides whether the thread can render. */
+  let messageActionError = $state<string | null>(null);
   let executionSelectionRequest = 0;
   let executionThreadScope = $state<string | null>(null);
   let exactExecutionScope = "";
@@ -151,7 +153,7 @@
   }
 
   function reportMessageActionError(error: unknown): void {
-    actionError = chatErrorMessage(error);
+    messageActionError = chatErrorMessage(error);
   }
 
   async function openScratchManager(): Promise<void> {
@@ -218,6 +220,7 @@
     executionThreadScope = replyThreadId;
     executionSelectionRequest += 1;
     actionError = null;
+    messageActionError = null;
   });
 
   $effect(() => {
@@ -332,7 +335,8 @@
     {/if}
   </header>
 
-  {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} onDismiss={actionError ? () => { actionError = null; } : undefined} />{/if}
+  {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} />{/if}
+  {#if messageActionError}<Notice class="thread-error" message={messageActionError} onDismiss={() => { messageActionError = null; }} />{/if}
 
   <div
     bind:this={scroller}

@@ -109,6 +109,7 @@
   }
 
   onDestroy(() => {
+    provenanceRequest += 1;
     if (copiedResetTimer) clearTimeout(copiedResetTimer);
   });
 </script>

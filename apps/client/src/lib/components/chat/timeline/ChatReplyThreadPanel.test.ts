@@ -302,7 +302,7 @@ describe("ChatReplyThreadPanel", () => {
     const activePage: ChatReplyThreadPageRead = {
       ...page,
       replies: [],
-      agentRuns: [{ ...run, state: "running" }],
+      agentRuns: [{ ...run, state: "working" }],
     };
     chat.openReplyThreadId = activePage.thread.id;
     chat.replyThread = activePage;

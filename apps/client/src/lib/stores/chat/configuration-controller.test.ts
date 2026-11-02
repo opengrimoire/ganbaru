@@ -109,4 +109,42 @@ describe("ChatConfigurationController behavior changes", () => {
     expect(order).toEqual(["save", "announce chat.behavior", "read"]);
     expect(controller.settings).toEqual(settings("saved"));
   });
+
+  it("announces and rereads a behavior save that failed after some fields were stored, and keeps the error", async () => {
+    const controller = new ChatConfigurationController({ onSettingsChanged: () => undefined });
+    controller.setSettings(settings("before"));
+    const failure = new Error("Chat settings could not be persisted");
+    const order: string[] = [];
+    mocks.updateChatBehavior.mockImplementation(async () => {
+      order.push("save");
+      throw failure;
+    });
+    mocks.announceConfigSaved.mockImplementation(async (keys) => {
+      order.push(`announce ${keys.join(",")}`);
+    });
+    mocks.readChatSettings.mockImplementation(async () => {
+      order.push("read");
+      return settings("partially saved");
+    });
+
+    await expect(controller.updateBehavior(behavior)).rejects.toBe(failure);
+
+    expect(order).toEqual(["save", "announce chat.behavior", "read"]);
+    expect(controller.settings).toEqual(settings("partially saved"));
+  });
+
+  it("keeps the save error when the refresh after a failed save also fails", async () => {
+    const controller = new ChatConfigurationController({ onSettingsChanged: () => undefined });
+    const failure = new Error("Chat settings could not be persisted");
+    mocks.updateChatBehavior.mockRejectedValue(failure);
+    mocks.announceConfigSaved.mockRejectedValue(new Error("announce failed"));
+    mocks.readChatSettings.mockRejectedValue(new Error("read failed"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await expect(controller.updateBehavior(behavior)).rejects.toBe(failure);
+      expect(mocks.readChatSettings).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });

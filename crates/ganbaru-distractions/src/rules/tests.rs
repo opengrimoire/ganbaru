@@ -98,6 +98,23 @@ fn is_protected_observed_process_name_covers_session_managers() {
 }
 
 #[test]
+fn is_protected_observed_process_name_covers_x11_window_managers() {
+    for name in [
+        "dwm",
+        "herbstluftwm",
+        "qtile",
+        "fluxbox",
+        "icewm",
+        "icewm-session",
+        "xmonad",
+        "fvwm",
+        "fvwm3",
+    ] {
+        assert!(super::is_protected_observed_process_name(name), "{name}");
+    }
+}
+
+#[test]
 fn protects_truncated_comm_names_of_protected_processes() {
     assert!(super::is_protected_observed_process_name("gnome-terminal-"));
     assert!(super::is_protected_observed_process_name("gnome-session-b"));

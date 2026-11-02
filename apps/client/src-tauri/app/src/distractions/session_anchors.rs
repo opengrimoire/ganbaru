@@ -163,6 +163,7 @@ impl SessionAnchors {
             &session_socket_paths(&SessionVariables::from_environment()),
             current_real_uid()?,
             std::process::id(),
+            None,
             is_cancelled,
         )
     }
@@ -174,6 +175,7 @@ impl SessionAnchors {
         socket_paths: &[String],
         real_uid: u32,
         own_process_id: u32,
+        _window_manager_process_id: Option<u32>,
         is_cancelled: impl Fn() -> bool,
     ) -> Option<Self> {
         let table = std::fs::read_to_string(proc_root.join("net/unix")).ok()?;
@@ -324,6 +326,7 @@ mod tests {
                 &[WAYLAND_SOCKET.to_string()],
                 USER,
                 own_process_id,
+                None,
                 || false,
             )
         }
@@ -406,7 +409,8 @@ mod tests {
     #[test]
     fn missing_display_sockets_fall_back_to_name_list() {
         let fixture = session_fixture("fallback");
-        let no_socket = SessionAnchors::collect_from(&fixture.root, &[], USER, 400, || false);
+        let no_socket =
+            SessionAnchors::collect_from(&fixture.root, &[], USER, 400, None, || false);
         assert!(no_socket.is_none());
 
         fixture.unix_sockets(&[(LISTENING, 9003, "/run/user/1000/other")]);
@@ -434,9 +438,50 @@ mod tests {
             &[WAYLAND_SOCKET.to_string()],
             USER,
             400,
+            None,
             || true,
         );
         assert!(anchors.is_none());
+    }
+
+    /// An X11 session started by `xinit`: the server runs as root, and a window manager whose
+    /// name no list holds is a sibling of the server, not a socket listener, and Ganbaru was
+    /// started outside the window manager's process tree.
+    #[test]
+    fn x11_window_manager_is_an_anchor() {
+        const X11_SOCKET: &str = "/tmp/.X11-unix/X0";
+        const ROOT: u32 = 0;
+        let fixture = ProcFixture::new("x11-window-manager");
+        fixture.unix_sockets(&[(LISTENING, 9201, X11_SOCKET)]);
+        fixture.process(100, 1, USER, USER_SLICE, &[]);
+        fixture.process(120, 100, USER, USER_SLICE, &[]);
+        fixture.process(150, 120, ROOT, USER_SLICE, &[9201]);
+        fixture.process(210, 120, USER, USER_SLICE, &[]);
+        fixture.process(400, 1, USER, USER_SLICE, &[]);
+        fixture.process(500, 1, USER, USER_SLICE, &[]);
+        fixture.process(510, 1, OTHER_USER, USER_SLICE, &[]);
+        let collect = |window_manager| {
+            SessionAnchors::collect_from(
+                &fixture.root,
+                &[X11_SOCKET.to_string()],
+                USER,
+                400,
+                window_manager,
+                || false,
+            )
+        };
+
+        let anchors = collect(Some(210));
+        let protects = |process_id| anchors.as_ref().is_some_and(|set| set.protects(process_id));
+        assert!(protects(210), "the window manager");
+        assert!(protects(120), "xinit, the window manager's parent");
+        assert!(!protects(500), "an unrelated setsid application");
+
+        let foreign = collect(Some(510));
+        assert!(
+            !foreign.is_some_and(|set| set.protects(510)),
+            "a window manager process owned by another user"
+        );
     }
 
     #[test]

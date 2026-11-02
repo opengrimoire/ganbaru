@@ -174,15 +174,18 @@ pub(super) fn usage_projection<R: Runtime>(
         .projection
         .lock()
         .map_err(|_| "native usage projection is unavailable")?;
-    let (published_generation, published_at, projection) = cached
+    let (published_generation, observed_at, projection) = cached
         .as_ref()
         .ok_or("native usage observation is not ready")?;
-    if *published_generation != generation
-        || published_at.elapsed() > OBSERVATION_INTERVAL + MAX_ACTION_AGE
-    {
+    if *published_generation != generation || usage_is_stale(*observed_at, Instant::now()) {
         return Err("native usage projection is stale".into());
     }
     Ok(projection.clone())
+}
+
+/// Whether totals observed at `observed_at` are too old to show at `now`.
+fn usage_is_stale(observed_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(observed_at) > OBSERVATION_INTERVAL + MAX_ACTION_AGE
 }
 
 /// Capture the publication generation before any asynchronous snapshot work begins.
@@ -356,25 +359,37 @@ struct UsageBinding {
 /// The last projection a usage read accepted.
 struct UsageProjectionCache {
     binding: UsageBinding,
+    observed_at: Instant,
+    projection: limits_read::UsageProjection,
+}
+
+/// A usage projection and the instant its totals were read.
+struct SettledUsage {
+    observed_at: Instant,
     projection: limits_read::UsageProjection,
 }
 
 /// The projection enforcement runs on after a usage read. A failed read reuses the cached totals
-/// of the same binding and local date; with none, limits have no totals until a read succeeds
-/// while phase enforcement continues.
+/// of the same binding and local date and keeps their read instant, so Settings sees them age out;
+/// with none, limits have no totals until a read succeeds while phase enforcement continues.
 fn settle_usage_read(
     cache: &mut Option<UsageProjectionCache>,
     read: Result<limits_read::UsageProjection, String>,
     binding: &UsageBinding,
     local_date: Option<&str>,
-) -> Option<limits_read::UsageProjection> {
+    read_at: Instant,
+) -> Option<SettledUsage> {
     match read {
         Ok(projection) => {
             *cache = Some(UsageProjectionCache {
                 binding: binding.clone(),
+                observed_at: read_at,
                 projection: projection.clone(),
             });
-            Some(projection)
+            Some(SettledUsage {
+                observed_at: read_at,
+                projection,
+            })
         }
         Err(_) => cache
             .as_ref()
@@ -382,7 +397,10 @@ fn settle_usage_read(
                 cached.binding == *binding
                     && Some(cached.projection.local_date.as_str()) == local_date
             })
-            .map(|cached| cached.projection.clone()),
+            .map(|cached| SettledUsage {
+                observed_at: cached.observed_at,
+                projection: cached.projection.clone(),
+            }),
     }
 }
 
@@ -579,6 +597,7 @@ impl Owner {
             *foreground = (context.observation.monotonic, context.foreground.clone());
         }
         let read = limits_read::derive_usage_projection(self.app.clone()).await;
+        let read_at = Instant::now();
         self.log_usage_read(&read);
         let read_failed = read.is_err();
         let usage_binding = UsageBinding {
@@ -587,15 +606,20 @@ impl Owner {
             rules_revision: context.rules_revision,
         };
         let local_date = observation_local_date(&context.observation).ok();
-        let projection = settle_usage_read(
+        let settled = settle_usage_read(
             &mut self.usage_cache,
             read,
             &usage_binding,
             local_date.as_deref(),
+            read_at,
         );
         // A slow SQLite read must not discard accepted totals; close actions recheck their age.
         context.validate_configuration(&self.app)?;
-        let Some(projection) = projection else {
+        let Some(SettledUsage {
+            observed_at,
+            projection,
+        }) = settled
+        else {
             return self.enforce(context, Vec::new()).await;
         };
         publish(&self.app, Some(generation), || {
@@ -604,7 +628,7 @@ impl Owner {
                 .projection
                 .lock()
                 .map_err(|_| "native usage projection is unavailable")?;
-            *cached = Some((generation, Instant::now(), projection.clone()));
+            *cached = Some((generation, observed_at, projection.clone()));
             Ok(())
         })?;
         if read_failed {
@@ -914,15 +938,20 @@ mod tests {
         let mut cache = None;
         let good =
             limits_read::UsageProjection::with_totals("2026-10-02", vec![budget_total("habit")]);
-        assert!(settle_usage_read(&mut cache, Ok(good), &binding, Some("2026-10-02")).is_some());
+        let at = Instant::now();
+        assert!(
+            settle_usage_read(&mut cache, Ok(good), &binding, Some("2026-10-02"), at).is_some()
+        );
 
         let failed = || Err("usage source count exceeds the native limit".to_string());
-        let kept = settle_usage_read(&mut cache, failed(), &binding, Some("2026-10-02"))
+        let kept = settle_usage_read(&mut cache, failed(), &binding, Some("2026-10-02"), at)
             .expect("a failed read keeps enforcing with the last totals");
-        assert_eq!(kept.totals[0].limit_id, "habit");
+        assert_eq!(kept.projection.totals[0].limit_id, "habit");
 
-        assert!(settle_usage_read(&mut cache, failed(), &binding, Some("2026-10-03")).is_none());
-        assert!(settle_usage_read(&mut cache, failed(), &binding, None).is_none());
+        assert!(
+            settle_usage_read(&mut cache, failed(), &binding, Some("2026-10-03"), at).is_none()
+        );
+        assert!(settle_usage_read(&mut cache, failed(), &binding, None, at).is_none());
         for other in [
             UsageBinding {
                 generation: 2,
@@ -937,8 +966,41 @@ mod tests {
                 ..binding.clone()
             },
         ] {
-            assert!(settle_usage_read(&mut cache, failed(), &other, Some("2026-10-02")).is_none());
+            assert!(
+                settle_usage_read(&mut cache, failed(), &other, Some("2026-10-02"), at).is_none()
+            );
         }
+    }
+
+    #[test]
+    fn fallback_marks_totals_stale() {
+        let binding = UsageBinding {
+            generation: 1,
+            vault_id: "vault".into(),
+            rules_revision: 1,
+        };
+        let date = Some("2026-10-02");
+        let projection =
+            || limits_read::UsageProjection::with_totals("2026-10-02", vec![budget_total("habit")]);
+        let mut cache = None;
+        let read_at = Instant::now();
+        settle_usage_read(&mut cache, Ok(projection()), &binding, date, read_at)
+            .expect("a good read publishes its totals");
+
+        let later = read_at + OBSERVATION_INTERVAL + MAX_ACTION_AGE + Duration::from_secs(1);
+        let failed = Err("usage read failed".to_string());
+        let kept = settle_usage_read(&mut cache, failed, &binding, date, later)
+            .expect("a failed read keeps enforcing with the last totals");
+        assert!(
+            usage_is_stale(kept.observed_at, later),
+            "a failed read presented old totals as fresh"
+        );
+        assert_eq!(kept.observed_at, read_at);
+        assert_eq!(kept.projection.totals[0].limit_id, "habit");
+
+        let recovered = settle_usage_read(&mut cache, Ok(projection()), &binding, date, later)
+            .expect("a good read publishes its totals");
+        assert!(!usage_is_stale(recovered.observed_at, later));
     }
 
     #[test]

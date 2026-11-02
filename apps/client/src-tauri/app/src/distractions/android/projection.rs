@@ -5,7 +5,7 @@ use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay, U
 use ganbaru_sync::domains::distractions::is_android_package_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
@@ -138,6 +138,19 @@ impl GuardianCapture {
         Ok(())
     }
 
+    /// This device's counters at capture, in the source window's row form.
+    pub(super) fn local_usage(&self) -> Vec<UsageSourceDay> {
+        self.local_sources
+            .iter()
+            .map(|source| UsageSourceDay {
+                source_type: source.source_type.clone(),
+                source_key: source.source_key.clone(),
+                local_date: source.local_date.clone(),
+                elapsed_seconds: source.elapsed_seconds,
+            })
+            .collect()
+    }
+
     fn local_baseline(&self, packages: &HashSet<String>, start: &str) -> Result<i64, String> {
         self.local_sources
             .iter()
@@ -188,11 +201,44 @@ pub(super) struct LastGoodUsage {
     pub rules_revision: u64,
     pub local_date: String,
     pub sources: Vec<UsageSourceDay>,
+    /// This device's counters when the window was read, already counted in `sources`.
+    pub local_usage: Vec<UsageSourceDay>,
+}
+
+impl LastGoodUsage {
+    /// The accepted window plus what this device's counters gained since it was read, so usage
+    /// counts once. Growth rows come first, so a window at its bound keeps them.
+    fn with_local_growth(&self, capture: &GuardianCapture) -> Vec<UsageSourceDay> {
+        let accepted: HashMap<(&str, &str), i64> = self
+            .local_usage
+            .iter()
+            .map(|row| {
+                (
+                    (row.source_key.as_str(), row.local_date.as_str()),
+                    row.elapsed_seconds,
+                )
+            })
+            .collect();
+        let growth = capture.local_usage().into_iter().filter_map(|mut row| {
+            let key = (row.source_key.as_str(), row.local_date.as_str());
+            let counted = accepted.get(&key).copied().unwrap_or(0);
+            row.elapsed_seconds = row.elapsed_seconds.saturating_sub(counted);
+            (row.elapsed_seconds > 0).then_some(row)
+        });
+        match limits::merge_source_groups(growth.chain(self.sources.iter().cloned())) {
+            Ok(window) => window.sources,
+            Err(error) => {
+                eprintln!("Guardian kept the last usage window without local growth: {error}");
+                self.sources.clone()
+            }
+        }
+    }
 }
 
 /// Sources Guardian keeps enforcing with after a failed read: the last accepted window of the same
-/// generation, vault, rules, and date, or else this device's own captured usage alone. A reused
-/// window misses usage since it was read, which can only delay a limit.
+/// generation, vault, rules, and date with this device's later usage added, or else this device's
+/// own captured usage alone. Other devices' usage since that read stays out, which can only delay
+/// a limit.
 pub(super) fn fallback_sources(
     last_good: Option<&LastGoodUsage>,
     capture: &GuardianCapture,
@@ -205,17 +251,8 @@ pub(super) fn fallback_sources(
             && usage.rules_revision == rules_revision
             && usage.local_date == capture.local_date
     }) {
-        Some(usage) => usage.sources.clone(),
-        None => capture
-            .local_sources
-            .iter()
-            .map(|source| UsageSourceDay {
-                source_type: source.source_type.clone(),
-                source_key: source.source_key.clone(),
-                local_date: source.local_date.clone(),
-                elapsed_seconds: source.elapsed_seconds,
-            })
-            .collect(),
+        Some(usage) => usage.with_local_growth(capture),
+        None => capture.local_usage(),
     }
 }
 
@@ -711,6 +748,7 @@ mod tests {
                 local_date: capture.local_date.clone(),
                 elapsed_seconds: 600,
             }],
+            local_usage: capture.local_usage(),
         };
         let keys = |sources: Vec<UsageSourceDay>| {
             sources
@@ -749,6 +787,88 @@ mod tests {
                 ["com.example.local"]
             );
         }
+    }
+
+    fn local_row(package: &str, local_date: &str, elapsed_seconds: i64) -> UsageSourceDay {
+        UsageSourceDay {
+            source_type: "mobile-app".into(),
+            source_key: package.into(),
+            local_date: local_date.into(),
+            elapsed_seconds,
+        }
+    }
+
+    fn captured_row(package: &str, local_date: &str, elapsed_seconds: i64) -> CapturedSource {
+        CapturedSource {
+            source_type: "mobile-app".into(),
+            source_key: package.into(),
+            local_date: local_date.into(),
+            elapsed_seconds,
+        }
+    }
+
+    #[test]
+    fn failed_read_counts_local_usage_since_the_last_good_read_once() {
+        const VIDEO: &str = "com.example.video";
+        const TODAY: &str = "2026-10-02";
+        const YESTERDAY: &str = "2026-10-01";
+        let website = UsageSourceDay {
+            source_type: "website".into(),
+            source_key: "video.example".into(),
+            local_date: TODAY.into(),
+            elapsed_seconds: 880,
+        };
+        let mut capture = capture();
+        capture.local_sources = vec![
+            captured_row("com.example.earlier", YESTERDAY, 10),
+            captured_row(VIDEO, TODAY, 70),
+            captured_row("com.example.new", TODAY, 5),
+        ];
+        let usage = LastGoodUsage {
+            generation: 3,
+            vault_id: capture.vault_id.clone(),
+            rules_revision: 7,
+            local_date: capture.local_date.clone(),
+            // Own counters plus 100 seconds another device reported for the same package.
+            sources: vec![
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row(VIDEO, TODAY, 120),
+                website.clone(),
+            ],
+            local_usage: vec![
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row(VIDEO, TODAY, 20),
+            ],
+        };
+
+        let sources = fallback_sources(Some(&usage), &capture, 3, 7);
+        let mut sorted = sources.clone();
+        sorted.sort_by(|left, right| left.source_key.cmp(&right.source_key));
+        assert_eq!(
+            sorted,
+            [
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row("com.example.new", TODAY, 5),
+                local_row(VIDEO, TODAY, 170),
+                website.clone(),
+            ]
+        );
+        let (rules, _) = build(&root(), &capture, &sources, &copy(), "native-growth").unwrap();
+        let day = &rules["limits"]["items"][0]["acceptedUsage"]["day"];
+        assert_eq!(day["usedSeconds"], 1_050);
+        assert_eq!(day["localUsedSecondsAtCapture"], 70);
+
+        capture.local_sources = vec![captured_row(VIDEO, TODAY, 15)];
+        let mut unchanged = fallback_sources(Some(&usage), &capture, 3, 7);
+        unchanged.sort_by(|left, right| left.source_key.cmp(&right.source_key));
+        assert_eq!(
+            unchanged,
+            [
+                local_row("com.example.earlier", YESTERDAY, 10),
+                local_row(VIDEO, TODAY, 120),
+                website,
+            ]
+        );
     }
 
     #[test]

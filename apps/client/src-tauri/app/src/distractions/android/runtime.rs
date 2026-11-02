@@ -329,6 +329,7 @@ fn settle_usage_read(
                 rules_revision,
                 local_date: capture.local_date.clone(),
                 sources: window.sources.clone(),
+                local_usage: capture.local_usage(),
             });
             Ok(window.sources)
         }

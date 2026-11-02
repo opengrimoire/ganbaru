@@ -1148,6 +1148,101 @@ fn unattended_scheduled_post_leaves_assignment_queued() {
     });
 }
 
+/// The subject digest the dispatch job of `assignment_id` consented to run.
+async fn consented_dispatch_digest(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> String {
+    sqlx::query_scalar(
+        "SELECT consented_digest FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn consented_scheduled_send_accepts_the_work_it_dispatches() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+
+        let digest = post_acceptance_digest(&pool, &posted.assignment_write, Some(send))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            digest,
+            Some(consented_dispatch_digest(&pool, &assignment_id).await),
+            "a consented scheduled send did not accept the work it dispatched"
+        );
+    });
+}
+
+#[test]
+fn unattended_scheduled_send_accepts_nothing() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        let digest = post_acceptance_digest(&pool, &posted.assignment_write, Some(send))
+            .await
+            .unwrap();
+
+        assert_eq!(digest, None, "an unattended send accepted its work");
+    });
+}
+
+#[test]
+fn a_user_post_accepts_the_work_it_dispatches() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:new-work"),
+            None,
+            PostingDevice::this_device("device:desk", &writers),
+        )
+        .await
+        .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+
+        let digest = post_acceptance_digest(&pool, &posted.assignment_write, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            digest,
+            Some(consented_dispatch_digest(&pool, &assignment_id).await)
+        );
+    });
+}
+
 async fn seed_test_channel(pool: &SqlitePool, now: &UtcTimestamp) {
     sqlx::query(
         "INSERT INTO project_groups (id, name, order_key) VALUES ('group:test', 'Test', 'a1')",

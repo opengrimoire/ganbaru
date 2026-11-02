@@ -298,8 +298,6 @@ pub(super) async fn post_message(
     let dispatch_app = app.clone();
     #[cfg(desktop)]
     let dispatch_db_url = db_url.clone();
-    #[cfg(desktop)]
-    let posted_by_user = scheduled.is_none();
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     let writers = chat_writers(&app, &pool).await?;
@@ -317,9 +315,13 @@ pub(super) async fn post_message(
         .clone()
         .filter(|_| posted.assignment_write.executes_here)
     {
-        // A scheduled send carries a stored request a peer can edit, so it is not a local gesture.
-        if posted_by_user && posted.assignment_write.dispatches_here() {
-            assignments::record_gesture_acceptance(&app, &pool, &assignment_id).await;
+        match post_acceptance_digest(&pool, &posted.assignment_write, scheduled).await {
+            Ok(Some(digest)) => assignments::record_post_acceptance(&app, &assignment_id, digest),
+            Ok(None) => {}
+            Err(error) => eprintln!(
+                "Chat assignment {} was not recorded as accepted: {error}",
+                assignment_id.as_str()
+            ),
         }
         if posted.assignment_write.input_queued {
             let input_message_id = posted.item_id.clone();
@@ -341,6 +343,33 @@ pub(super) async fn post_message(
         }
     }
     Ok(posted.result)
+}
+
+/// The acceptance digest the post that wrote `write` gives on this device, or `None` when it
+/// gives none. A user post, or a scheduled send with local consent, that dispatches new work
+/// accepts exactly the subject its dispatch job consented to run. An unattended scheduled send
+/// accepts nothing, since a peer may have written or rewritten its request.
+#[cfg(desktop)]
+async fn post_acceptance_digest(
+    pool: &SqlitePool,
+    write: &AssignmentWrite,
+    scheduled: Option<ScheduledSend<'_>>,
+) -> ChatResult<Option<String>> {
+    let Some(assignment_id) = write.assignment_id.as_ref() else {
+        return Ok(None);
+    };
+    let consented = scheduled.is_none_or(|send| send.consent == ScheduledConsent::Local);
+    if !consented || !write.dispatches_here() {
+        return Ok(None);
+    }
+    let digest = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT consented_digest FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(digest.flatten())
 }
 
 /// A post written to the vault. Only desktop dispatches the work it routed.

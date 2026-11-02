@@ -166,6 +166,9 @@ pub(crate) trait WalkValue: Clone + Default {
     /// Adds what `other` holds. Joining is commutative and idempotent, so the order of a walk
     /// and a row reached twice change nothing.
     fn join(&mut self, other: &Self);
+
+    /// Whether joining `other` would leave this value as it is.
+    fn holds(&self, other: &Self) -> bool;
 }
 
 impl WalkValue for Roots {
@@ -177,11 +180,23 @@ impl WalkValue for Roots {
             self.cause = Some(cause.clone());
         }
     }
+
+    fn holds(&self, other: &Self) -> bool {
+        (self.hides || !other.hides)
+            && other
+                .cause
+                .as_ref()
+                .is_none_or(|cause| self.cause.as_ref().is_some_and(|lowest| lowest <= cause))
+    }
 }
 
 impl WalkValue for VersionVector {
     fn join(&mut self, other: &Self) {
         self.merge(other);
+    }
+
+    fn holds(&self, other: &Self) -> bool {
+        self.dominates(other)
     }
 }
 
@@ -205,12 +220,14 @@ struct WalkNode<V> {
 ///
 /// The driver reads rows, which may be asynchronous, and the walk only keeps count: `next_row`
 /// names the row it needs and `supply` answers with the row's own value and successors, until
-/// `next_row` returns `None`. A row the driver has a finished result for is supplied with that
-/// result and no successors, which ends the walk there.
+/// `next_row` returns `None`. A row the driver has a finished result for is answered through
+/// `supply_finished`, which ends the walk there.
 ///
 /// Components close successors first. A component's result joins the own values of its members
 /// and the results of the components they reach, and every member shares it, so a row in a cycle
-/// never holds a partial result.
+/// never holds a partial result. A component that adds nothing to a result it reaches shares that
+/// allocation, so the distinct results of a chain follow the rows that add something, not its
+/// length.
 pub(crate) struct CascadeWalk<V> {
     nodes: Vec<WalkNode<V>>,
     ids: HashMap<RowRef, usize>,
@@ -258,6 +275,18 @@ impl<V: WalkValue> CascadeWalk<V> {
         debug_assert_eq!(node.row, row, "supplied a row the walk did not name");
         node.own = Some(own);
         node.remaining = successors.into_iter();
+    }
+
+    /// Answers the row [`Self::next_row`] named with the result an earlier walk finished for it.
+    pub(crate) fn supply_finished(&mut self, row: RowRef, result: Arc<V>) {
+        let Some(id) = self.path.pop() else {
+            debug_assert!(false, "supplied a row to a finished walk");
+            return;
+        };
+        let node = &mut self.nodes[id];
+        debug_assert_eq!(node.row, row, "supplied a row the walk did not name");
+        node.result = Some(result);
+        self.open.pop();
     }
 
     /// Every row the walk finished with its complete result, once [`Self::next_row`] has
@@ -321,21 +350,27 @@ impl<V: WalkValue> CascadeWalk<V> {
             .rposition(|id| *id == first)
             .unwrap_or_default();
         let members = self.open.split_off(start);
-        let mut value = V::default();
+        let mut value = Arc::new(V::default());
         for &member in &members {
             let node = &mut self.nodes[member];
             let own = node.own.take();
             let reached = std::mem::take(&mut node.reached);
-            if let Some(own) = own {
-                value.join(&own);
+            if let Some(own) = own
+                && !value.holds(&own)
+            {
+                Arc::make_mut(&mut value).join(&own);
             }
             for target in reached {
-                if let Some(result) = &self.nodes[target].result {
-                    value.join(result);
+                let Some(result) = &self.nodes[target].result else {
+                    continue;
+                };
+                if result.holds(&value) {
+                    value = Arc::clone(result);
+                } else if !value.holds(result) {
+                    Arc::make_mut(&mut value).join(result);
                 }
             }
         }
-        let value = Arc::new(value);
         for member in members {
             self.nodes[member].result = Some(Arc::clone(&value));
         }
@@ -810,8 +845,7 @@ impl Visibility {
         let mut walk = CascadeWalk::new(start.clone());
         while let Some(row) = walk.next_row() {
             if let Some(known) = self.cascade.get(&row) {
-                let known = known.as_ref().clone();
-                walk.supply(row, known, Vec::new());
+                walk.supply_finished(row, Arc::clone(known));
             } else {
                 let (own, successors) = self.direct_roots(engine, conn, &row).await?;
                 walk.supply(row, own, successors);

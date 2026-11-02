@@ -267,7 +267,7 @@ pub(crate) async fn coverage(
     let mut walk = CascadeWalk::new(start.clone());
     while let Some(row) = walk.next_row() {
         if let Some(known) = visibility.known_coverage(&row) {
-            walk.supply(row, known.as_ref().clone(), Vec::new());
+            walk.supply_finished(row, known);
         } else {
             #[cfg(test)]
             {

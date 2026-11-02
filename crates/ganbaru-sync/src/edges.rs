@@ -15,13 +15,16 @@
 //! reaches, so an acyclic set of `m` edges costs `O(m^1.5)` however its edges are ordered.
 //!
 //! A severed edge does not pay for the search that found its cycle, and the same long path can
-//! be closed by edge after edge. So a set has a budget of edges walked, [`WALK_BUDGET`] times
-//! `m` times the square root of `m`, about twice what an acyclic set can spend. Once it is spent,
-//! an edge is taken only when its levels already prove it closes no cycle, and severed otherwise,
-//! which keeps the set acyclic and may sever an edge that closes none. Such an edge surfaces as
-//! a conflict like any other, and hiding it takes nothing an edge of lower rank could not
-//! already take. The budget, the walk order, and what counts as walked are part of the merge
-//! rule: every replica severs the same edges only while they agree on them.
+//! be closed by edge after edge. So each weakly connected component of the counted edges, severed
+//! ones included, has its own budget of edges walked, [`WALK_BUDGET`] times its `m` edges times
+//! the square root of `m`, about twice what an acyclic component can spend. Once it is spent, an
+//! edge of that component is taken only when its levels already prove it closes no cycle, and
+//! severed otherwise, which keeps the set acyclic and may sever an edge that closes none, however
+//! late its rank. Such an edge surfaces as a conflict like any other. A component that takes a
+//! hostile edge shares its budget until that edge is removed, and rows outside it are unaffected,
+//! because a cycle never leaves a component. The budget, the walk order, and what counts as walked
+//! are part of the merge rule: every replica severs the same edges only while they agree on them.
+//! The manifest summary carries the budget, so changing it takes a manifest version.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -141,8 +144,9 @@ async fn edges(
     Ok(edges)
 }
 
-/// Edges one set may walk, as a multiple of its edge count times the search limit. It is checked
-/// between edges, so a set walks at most one more edge search past it.
+/// Edges one component may walk, as a multiple of its edge count times the search limit. It is
+/// checked between edges, so a component walks at most one more edge search past it. The manifest
+/// summary renders it.
 pub(crate) const WALK_BUDGET: u64 = 6;
 
 /// How a backward search from the start of an edge ended.
@@ -274,26 +278,75 @@ fn ceil_sqrt(value: u64) -> u64 {
     if root * root < value { root + 1 } else { root }
 }
 
-/// Keys of the edges severed to keep the set acyclic, and the edges walked to find them.
-fn sever_counted(mut edges: Vec<Edge>) -> (BTreeSet<String>, u64) {
-    edges.sort();
-    let mut rows: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut ends = Vec::with_capacity(edges.len());
-    for edge in &edges {
-        let next = rows.len();
-        let from = *rows.entry(edge.from.as_str()).or_insert(next);
-        let next = rows.len();
-        let to = *rows.entry(edge.to.as_str()).or_insert(next);
-        ends.push((from, to));
+/// The dense index of `row`, numbering rows as they first appear.
+fn dense_index<'a>(rows: &mut BTreeMap<&'a str, usize>, row: &'a str) -> usize {
+    let next = rows.len();
+    *rows.entry(row).or_insert(next)
+}
+
+/// The representative of the disjoint set holding `row`, halving the path it walks.
+fn representative(parents: &mut [usize], mut row: usize) -> usize {
+    while parents[row] != row {
+        parents[row] = parents[parents[row]];
+        row = parents[row];
     }
+    row
+}
+
+/// The weakly connected components of the edges, each keeping the order of `edges`.
+fn components(edges: &[Edge]) -> Vec<Vec<&Edge>> {
+    let mut rows = BTreeMap::new();
+    let ends: Vec<(usize, usize)> = edges
+        .iter()
+        .map(|edge| {
+            let from = dense_index(&mut rows, &edge.from);
+            (from, dense_index(&mut rows, &edge.to))
+        })
+        .collect();
+    let mut parents: Vec<usize> = (0..rows.len()).collect();
+    for &(from, to) in &ends {
+        let from = representative(&mut parents, from);
+        parents[from] = representative(&mut parents, to);
+    }
+    let mut components: BTreeMap<usize, Vec<&Edge>> = BTreeMap::new();
+    for (edge, &(from, _)) in edges.iter().zip(&ends) {
+        components
+            .entry(representative(&mut parents, from))
+            .or_default()
+            .push(edge);
+    }
+    components.into_values().collect()
+}
+
+/// Adds the edges of one component that close a cycle to `severed`, and returns the edges walked
+/// to find them.
+fn sever_component(edges: &[&Edge], severed: &mut BTreeSet<String>) -> u64 {
+    let mut rows = BTreeMap::new();
+    let ends: Vec<(usize, usize)> = edges
+        .iter()
+        .map(|edge| {
+            let from = dense_index(&mut rows, &edge.from);
+            (from, dense_index(&mut rows, &edge.to))
+        })
+        .collect();
     let mut levels = Levels::new(rows.len(), edges.len() as u64);
-    let mut severed = BTreeSet::new();
     for (edge, (from, to)) in edges.iter().zip(ends) {
         if !levels.insert(from, to) {
             severed.insert(edge.key.clone());
         }
     }
-    (severed, levels.visits)
+    levels.visits
+}
+
+/// Keys of the edges severed to keep the set acyclic, and the edges walked to find them.
+fn sever_counted(mut edges: Vec<Edge>) -> (BTreeSet<String>, u64) {
+    edges.sort();
+    let mut severed = BTreeSet::new();
+    let visits = components(&edges)
+        .iter()
+        .map(|component| sever_component(component, &mut severed))
+        .sum();
+    (severed, visits)
 }
 
 /// Keys of the edges severed to keep the set acyclic.
@@ -521,10 +574,66 @@ mod tests {
         let length = 400;
         let chain = (0..length).map(|at| (at, at + 1));
         let closing = (0..length).map(|_| (length, 0));
-        let fresh = [(2 * length, 2 * length + 1), (2 * length + 1, 2 * length + 2)];
+        let fresh = [
+            (2 * length, 2 * length + 1),
+            (2 * length + 1, 2 * length + 2),
+        ];
         let edges = numbered(chain.chain(closing).chain(fresh));
         let severed = assert_within_bound("spent chain", edges.clone());
         assert_eq!(severed, reference(edges), "edges of fresh rows stay taken");
+    }
+
+    #[test]
+    fn an_edge_joining_a_spent_component_shares_its_budget() {
+        let length = 400;
+        let chain = (0..length).map(|at| (at, at + 1));
+        let closing = (0..length).map(|_| (length, 0));
+        let joining = (0, 2 * length);
+        let edges = numbered(chain.chain(closing).chain([joining]));
+        let joined = format!("e{:08}", edges.len() - 1);
+        let severed = assert_within_bound("joined chain", edges);
+        assert!(severed.contains(&joined), "the budget is shared");
+    }
+
+    #[test]
+    fn many_small_components_are_each_severed_exactly() {
+        let cycles = HOSTILE_EDGES / 3;
+        let edges = numbered((0..cycles).flat_map(|at| {
+            let first = 3 * at;
+            [
+                (first, first + 1),
+                (first + 1, first + 2),
+                (first + 2, first),
+            ]
+        }));
+        let severed = assert_within_bound("small cycles", edges);
+        assert_eq!(severed.len() as u64, cycles);
+    }
+
+    /// Replicas agree on severed edges only while the walk stays the same, so a changed count
+    /// here needs a manifest version.
+    #[test]
+    fn the_walk_past_a_budget_stays_as_recorded() {
+        let length = 1_024;
+        let mut rng = Lcg(3);
+        let mut random = |count: u64| -> Vec<(u64, u64)> {
+            (0..count)
+                .map(|_| (rng.below(length), rng.below(length)))
+                .collect()
+        };
+        // Forward edges add branches to every walk of the chain and close nothing.
+        let forward = random(256).into_iter().map(|(a, b)| (a.min(b), a.max(b)));
+        let after = random(256);
+        let chain = (0..length).map(|at| (at, at + 1));
+        let closing = (0..length).map(|_| (length, 0));
+        let edges = numbered(forward.chain(chain).chain(closing).chain(after));
+        let m = edges.len() as u64;
+        let (severed, visits) = sever_counted(edges);
+        assert!(
+            visits >= WALK_BUDGET * m * ceil_sqrt(m),
+            "the budget is spent"
+        );
+        assert_eq!((severed.len(), visits), (1_280, 783_572));
     }
 
     #[test]

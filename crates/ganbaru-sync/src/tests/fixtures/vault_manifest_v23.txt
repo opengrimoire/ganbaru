@@ -269,7 +269,7 @@ table 105 project_checklist_items replicated key id rule any
   group 4 max updated_at:timestamp
 table 106 project_task_dependencies replicated key id rule any
   derived key exists 3 inputs blocking_task_id,blocked_task_id prefix dependency
-  acyclic blocking_task_id->blocked_task_id
+  acyclic blocking_task_id->blocked_task_id walk budget 6
   group 0 immutable blocking_task_id:row_key->104:cascade blocked_task_id:row_key->104:cascade
   group 1 register dependency_type:text(..=32)
   group 2 register created_at:timestamp

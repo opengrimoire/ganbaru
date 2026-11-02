@@ -324,12 +324,26 @@ describe("normalizeDistractionsConfig", () => {
           { identity: "first", name: "Steam" },
           { identity: "Second  Row", name: "steam", enabled: false },
           { name: "Discord" },
-          { identity: "   ", name: "Spotify" },
+          { identity: "", name: "Spotify" },
         ],
       },
     });
 
     expect(desktop.blockedApps.map((rule) => rule.identity)).toEqual(["first", "Second  Row"]);
+  });
+
+  it("keeps a row whose identity is not empty even when JavaScript trims it away", () => {
+    const byteOrderMark = String.fromCodePoint(0xfeff);
+    const { desktop } = normalizeDistractionsConfig({
+      desktop: {
+        blockedApps: [
+          { identity: byteOrderMark, name: "Steam" },
+          { identity: "", name: "Discord" },
+        ],
+      },
+    });
+
+    expect(desktop.blockedApps.map((rule) => [rule.identity, rule.name])).toEqual([[byteOrderMark, "Steam"]]);
   });
 
   it("normalizes mobile app rules by stable package identity", () => {

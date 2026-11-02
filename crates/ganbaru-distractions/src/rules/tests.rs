@@ -174,6 +174,57 @@ fn desktop_rule_matchers_keep_a_stored_identity_that_differs_from_the_name() {
 }
 
 #[test]
+fn desktop_rule_matchers_enforce_a_whitespace_identity_and_skip_only_an_empty_one() {
+    let desktop_identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
+        rule_id: "\t".to_string(),
+    };
+    let limit_identity = super::DistractionsDesktopRuleIdentity::UsageLimit {
+        rule_id: "\u{00A0}".to_string(),
+        entry_id: "\t".to_string(),
+    };
+    let matchers = super::desktop_rule_matchers(vec![
+        DistractionsDesktopAppRuleInput {
+            rule_identity: desktop_identity.clone(),
+            name: "Steam".to_string(),
+            match_names: vec!["steam".to_string()],
+        },
+        DistractionsDesktopAppRuleInput {
+            rule_identity: limit_identity.clone(),
+            name: "Discord".to_string(),
+            match_names: vec!["discord".to_string()],
+        },
+        DistractionsDesktopAppRuleInput {
+            rule_identity: super::DistractionsDesktopRuleIdentity::DesktopApp {
+                rule_id: String::new(),
+            },
+            name: "Spotify".to_string(),
+            match_names: vec!["spotify".to_string()],
+        },
+        DistractionsDesktopAppRuleInput {
+            rule_identity: super::DistractionsDesktopRuleIdentity::UsageLimit {
+                rule_id: "limit".to_string(),
+                entry_id: String::new(),
+            },
+            name: "Slack".to_string(),
+            match_names: vec!["slack".to_string()],
+        },
+    ]);
+
+    assert_eq!(
+        matchers.get("steam").map(|matcher| &matcher.rule_identity),
+        Some(&desktop_identity)
+    );
+    assert_eq!(
+        matchers
+            .get("discord")
+            .map(|matcher| &matcher.rule_identity),
+        Some(&limit_identity)
+    );
+    assert!(!matchers.contains_key("spotify"));
+    assert!(!matchers.contains_key("slack"));
+}
+
+#[test]
 fn desktop_rule_matchers_skip_protected_process_names() {
     let matchers = super::desktop_rule_matchers(vec![
         DistractionsDesktopAppRuleInput {

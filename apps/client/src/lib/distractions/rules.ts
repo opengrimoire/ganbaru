@@ -606,7 +606,9 @@ function normalizeAppRuleValue(value: unknown): DistractionsAppRule | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.name !== "string") return null;
-  if (typeof record.identity !== "string" || record.identity.trim() === "") return null;
+  // Only an empty identity is dropped, matching native enforcement, which skips only empty
+  // identities. Every enforced row therefore stays visible and removable in Settings.
+  if (typeof record.identity !== "string" || record.identity === "") return null;
   const name = normalizeDistractionsAppName(record.name);
   if (!name) return null;
   const matchNames = normalizeAppRuleMatchNames(name, record.matchNames);

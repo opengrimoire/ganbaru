@@ -526,6 +526,92 @@ mod tests {
         );
     }
 
+    /// Kotlin `Char.isWhitespace` on Android: `Character.isWhitespace` or `Character.isSpaceChar`,
+    /// which covers the ASCII controls 9 to 13 and 28 to 31 and the space, line, and paragraph
+    /// separators.
+    fn is_kotlin_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\t'..='\r'
+                | '\u{1C}'..='\u{1F}'
+                | ' '
+                | '\u{A0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+        )
+    }
+
+    /// Kotlin `DistractionsRuleCodec.bounded`: trims, then requires a code point count in range.
+    fn kotlin_accepts(value: &str, minimum: usize, maximum: usize) -> bool {
+        let count = value
+            .trim_matches(is_kotlin_whitespace)
+            .chars()
+            .count();
+        (minimum..=maximum).contains(&count)
+    }
+
+    fn published_names(rules: &Value, pointer: &str) -> Vec<(String, String)> {
+        rules
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let key = item
+                    .get("packageName")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned();
+                (key, item["name"].as_str().unwrap().to_owned())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn names_kotlin_refuses_are_normalized_before_publication() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = json!([
+            {"name": "Video", "packageName": "com.example.video", "enabled": true},
+            {"name": "\u{1F}", "packageName": "com.example.control", "enabled": true},
+            {"name": "\u{1C}\u{2007}Feed\u{3000}", "packageName": "com.example.feed", "enabled": true},
+        ]);
+        config["distractions"]["limits"]["items"] = json!([
+            {"id": "control", "name": "\u{1F}", "minutesPerDay": 10,
+                "entries": [{"id": "one", "mobileAppPackage": "com.example.video"}]},
+            {"id": "padded", "name": format!("{}x", " ".repeat(80)), "minutesPerDay": 10,
+                "entries": [{"id": "one", "mobileAppPackage": "com.example.feed"}]},
+        ]);
+        let (rules, _) = build(&config, &capture(), &[], &copy(), "native-names").unwrap();
+        let apps = published_names(&rules, "/mobile/blockedApps");
+        let limits = published_names(&rules, "/limits/items");
+        for (key, name) in apps.iter() {
+            assert!(
+                kotlin_accepts(name, 1, MAX_RULE_NAME_CHARS),
+                "Kotlin refuses rule {key} named {name:?}"
+            );
+        }
+        for (key, name) in limits.iter() {
+            assert!(
+                kotlin_accepts(name, 1, 80),
+                "Kotlin refuses limit {key} named {name:?}"
+            );
+        }
+        let keys = |names: &[(String, String)]| -> Vec<String> {
+            names.iter().map(|(key, _)| key.clone()).collect()
+        };
+        assert_eq!(
+            keys(&apps),
+            ["com.example.video", "com.example.control", "com.example.feed"]
+        );
+        assert_eq!(keys(&limits), ["control", "padded"]);
+    }
+
     #[test]
     fn limit_parse_failure_keeps_guardian_rules() {
         let mut config = root();

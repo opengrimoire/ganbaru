@@ -306,7 +306,7 @@ pub(super) fn build(
 ) -> Result<(Value, Value), String> {
     copy.validate()?;
     let config = crate::distractions::limits_or_phase_only(root);
-    let budgets = limits::totals(&config, sources, &capture.local_date)?;
+    let budgets = limits::totals(&config, sources, &capture.local_date)?.budgets;
     let mut mobile: MobileSchedule = serde_json::from_value(
         root.pointer("/distractions/mobile")
             .cloned()
@@ -773,7 +773,7 @@ mod tests {
         let window = window.unwrap();
         assert!(window.truncated);
         assert_eq!(window.sources.len(), limits::MAX_SOURCE_GROUPS);
-        assert!(window.sources.contains(&own));
+        assert_eq!(window.sources[1], own);
         assert!(window.sources.iter().any(|row| {
             row.source_key == "com.example.video" && row.local_date == "2026-10-02"
         }));

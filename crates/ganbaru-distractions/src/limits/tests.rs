@@ -34,7 +34,7 @@ fn daily_and_monday_weekly_budgets_allocate_overlapping_hosts_once() {
         source("website", "otherexample.com", "2026-10-02", 900),
         source("mobile-app", "Old label", "2026-10-02", 900),
     ];
-    let totals = totals(&config, &samples, "2026-10-02").unwrap();
+    let totals = totals(&config, &samples, "2026-10-02").unwrap().budgets;
     assert_eq!(totals.len(), 2);
     assert_eq!(totals[0].used_seconds, 600);
     assert_eq!(totals[0].remaining_seconds, 0);
@@ -54,17 +54,24 @@ fn disabled_limits_remain_visible_and_deleted_limits_leave_history_reusable() {
     value["distractions"]["limits"]["items"][0]["enabled"] = Value::Bool(false);
     let rows = [source("website", "example.com", "2026-10-02", 120)];
     assert_eq!(
-        totals(&parse_config(&value).unwrap(), &rows, "2026-10-02").unwrap()[0].used_seconds,
+        totals(&parse_config(&value).unwrap(), &rows, "2026-10-02")
+            .unwrap()
+            .budgets[0]
+            .used_seconds,
         120
     );
     value["distractions"]["limits"]["items"] = serde_json::json!([]);
     assert!(
         totals(&parse_config(&value).unwrap(), &rows, "2026-10-02")
             .unwrap()
+            .budgets
             .is_empty()
     );
     assert_eq!(
-        totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap()[0].used_seconds,
+        totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02")
+            .unwrap()
+            .budgets[0]
+            .used_seconds,
         120
     );
 }
@@ -80,7 +87,10 @@ fn manually_entered_app_names_match_when_no_package_or_process_aliases_are_selec
         source("mobile-app", "VIDEO", "2026-10-02", 20),
         source("desktop-app", "GAME", "2026-10-02", 25),
     ];
-    let total = totals(&config, &rows, "2026-10-02").unwrap().remove(0);
+    let total = totals(&config, &rows, "2026-10-02")
+        .unwrap()
+        .budgets
+        .remove(0);
     assert_eq!(total.used_seconds, 45);
     assert_eq!(total.remaining_seconds, 15);
     assert!(!total.exhausted);
@@ -170,7 +180,9 @@ async fn canonical_sqlite_read_groups_the_complete_window_and_retains_recorded_d
     tx.commit().await.unwrap();
     let rows = read_window(&pool).await.unwrap().sources;
     assert_eq!(rows.len(), 2);
-    let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap();
+    let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02")
+        .unwrap()
+        .budgets;
     assert_eq!(result[0].used_seconds, 500);
     assert_eq!(result[1].used_seconds, 550);
     pool.close().await;
@@ -208,7 +220,9 @@ async fn budgets_count_other_devices_totals_with_own_samples_but_not_own_totals(
             source("website", "example.com", "2026-09-28", 300),
         ]
     );
-    let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap();
+    let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02")
+        .unwrap()
+        .budgets;
     assert_eq!(result[0].used_seconds, 420);
     assert_eq!(result[1].used_seconds, 720);
     pool.close().await;
@@ -382,7 +396,8 @@ async fn usage_flood_inside_budget_truncates_keeping_local_samples() {
         "2026-10-02",
     )
     .unwrap();
-    assert_eq!(result[1].used_seconds, 30 + 60 * 9_999);
+    assert!(!result.truncated);
+    assert_eq!(result.budgets[1].used_seconds, 30 + 60 * 9_999);
     pool.close().await;
 }
 
@@ -526,6 +541,65 @@ fn usage_read_diagnostics_log_once_per_problem() {
     assert!(diagnostics.record_truncation("2026-10-02"));
     assert!(!diagnostics.record_truncation("2026-10-02"));
     assert!(diagnostics.record_truncation("2026-10-03"));
+}
+
+/// A flooded budget whose first entries every flood source must walk past, then a small budget
+/// the flood cannot reach.
+fn comparison_flood_root() -> Value {
+    let filler = (0..MAX_MATCH_COMPARISONS / MAX_SOURCE_GROUPS).map(|index| {
+        serde_json::json!({"id": format!("filler-{index}"), "websiteHost": format!("filler-{index}.test")})
+    });
+    let entries: Vec<Value> = filler
+        .chain([serde_json::json!({"id": "host", "websiteHost": "example.com"})])
+        .collect();
+    serde_json::json!({"distractions": {"limits": {"items": [
+        {"id": "flooded", "minutesPerDay": 1_440, "entries": entries},
+        {"id": "games", "minutesPerDay": 1, "entries": [{"id": "game", "desktopAppName": "Game"}]}
+    ]}}})
+}
+
+#[test]
+fn comparison_cap_truncates() {
+    let config = parse_config(&comparison_flood_root()).unwrap();
+    let own = source("desktop-app", "game", "2026-10-02", 60);
+    let rows: Vec<_> = std::iter::once(own)
+        .chain((1..MAX_SOURCE_GROUPS).map(|index| {
+            source(
+                "website",
+                &format!("flood-{index}.example.com"),
+                "2026-10-02",
+                1,
+            )
+        }))
+        .collect();
+    let result = totals(&config, &rows, "2026-10-02");
+    assert!(result.is_ok(), "the flood failed the totals: {result:?}");
+    let result = result.unwrap();
+    assert!(result.truncated);
+    let flooded = &result.budgets[0];
+    assert!(flooded.used_seconds > 0);
+    assert!(flooded.used_seconds < (MAX_SOURCE_GROUPS - 1) as i64);
+    let games = &result.budgets[1];
+    assert_eq!(games.limit_id, "games");
+    assert_eq!(games.used_seconds, 60);
+    assert!(games.exhausted);
+}
+
+#[test]
+fn merge_keeps_the_given_order_so_later_bounds_keep_own_usage() {
+    let window = merge_source_groups([
+        source("website", "z-own.test", "2026-10-02", 30),
+        source("website", "a-flood.test", "2026-10-02", 60),
+        source("website", "z-own.test", "2026-10-02", 10),
+    ])
+    .unwrap();
+    assert_eq!(
+        window.sources,
+        [
+            source("website", "z-own.test", "2026-10-02", 40),
+            source("website", "a-flood.test", "2026-10-02", 60),
+        ]
+    );
 }
 
 #[test]

@@ -107,9 +107,12 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
         window
     };
     let publication_app = app.clone();
-    let truncated = window.truncated;
     tauri::async_runtime::spawn_blocking(move || {
-        let totals = totals(&config, &window.sources, &local_date)?;
+        let UsageTotals {
+            budgets: totals,
+            truncated: matching_truncated,
+        } = totals(&config, &window.sources, &local_date)?;
+        let truncated = window.truncated || matching_truncated;
         if vault::active_vault_id(&publication_app)? != vault_id
             || vault::active_database_path(&publication_app)? != database_path
             || !rule_store::is_current(rules_revision)

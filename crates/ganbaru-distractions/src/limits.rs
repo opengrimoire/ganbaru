@@ -157,40 +157,45 @@ impl UsageReadDiagnostics {
     }
 }
 
-/// Sums rows into at most [`MAX_SOURCE_GROUPS`] source/day groups. Earlier rows keep their groups
+/// Sums rows into at most [`MAX_SOURCE_GROUPS`] source/day groups, in the order each group first
+/// appears, so the priority of the rows carries into [`totals`]. Earlier rows keep their groups
 /// when the cap is reached, and the rows of any later group are left out and reported as
 /// truncation.
 pub fn merge_source_groups(
     rows: impl IntoIterator<Item = UsageSourceDay>,
 ) -> Result<UsageWindow, String> {
-    let mut groups = BTreeMap::new();
+    let mut positions = BTreeMap::new();
+    let mut sources: Vec<UsageSourceDay> = Vec::new();
     let mut truncated = false;
     for row in rows {
-        let key = (row.source_type, row.source_key, row.local_date);
-        if !groups.contains_key(&key) && groups.len() == MAX_SOURCE_GROUPS {
-            truncated = true;
-            continue;
-        }
-        let total = groups.entry(key).or_insert(0_i64);
+        let key = (
+            row.source_type.clone(),
+            row.source_key.clone(),
+            row.local_date.clone(),
+        );
+        let elapsed_seconds = row.elapsed_seconds;
+        let position = match positions.get(&key) {
+            Some(&position) => position,
+            None if sources.len() == MAX_SOURCE_GROUPS => {
+                truncated = true;
+                continue;
+            }
+            None => {
+                positions.insert(key, sources.len());
+                sources.push(UsageSourceDay {
+                    elapsed_seconds: 0,
+                    ..row
+                });
+                sources.len() - 1
+            }
+        };
+        let total = &mut sources[position].elapsed_seconds;
         *total = total
-            .checked_add(row.elapsed_seconds)
+            .checked_add(elapsed_seconds)
             .filter(|value| (0..=MAX_SAFE_SECONDS).contains(value))
             .ok_or("usage source aggregate exceeds the integer limit")?;
     }
-    Ok(UsageWindow {
-        sources: groups
-            .into_iter()
-            .map(
-                |((source_type, source_key, local_date), elapsed_seconds)| UsageSourceDay {
-                    source_type,
-                    source_key,
-                    local_date,
-                    elapsed_seconds,
-                },
-            )
-            .collect(),
-        truncated,
-    })
+    Ok(UsageWindow { sources, truncated })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -212,6 +217,13 @@ pub struct BudgetTotal {
     pub remaining_seconds: i64,
     pub exhausted: bool,
     pub entries: Vec<EntryTotal>,
+}
+
+/// Budget totals of one usage window, and whether the matching bound left some sources uncounted.
+#[derive(Clone, Debug)]
+pub struct UsageTotals {
+    pub budgets: Vec<BudgetTotal>,
+    pub truncated: bool,
 }
 
 fn is_valid_id(id: &str) -> bool {
@@ -363,12 +375,64 @@ pub fn normalize_usage_host(input: &str) -> Option<String> {
     Some(host.to_owned())
 }
 
-/// Allocate a source to its first matching entry once per limit, preserving overlap semantics.
+/// Seconds each entry of one limit used today and this week.
+struct EntryAllocation {
+    daily: Vec<i64>,
+    weekly: Vec<i64>,
+}
+
+/// Allocates each source of the window to its first matching entry once per limit, preserving
+/// overlap semantics. Sources are taken in the given order and each one reaches every limit before
+/// the next, so a source ahead of a flood counts in full. Past [`MAX_MATCH_COMPARISONS`] the rest
+/// stay uncounted, which the returned flag reports.
+fn allocate_sources(
+    config: &LimitsConfig,
+    sources: &[UsageSourceDay],
+    week: &str,
+    local_date: &str,
+) -> Result<(Vec<EntryAllocation>, bool), String> {
+    let mut allocations: Vec<_> = config
+        .items
+        .iter()
+        .map(|limit| EntryAllocation {
+            daily: vec![0; limit.entries.len()],
+            weekly: vec![0; limit.entries.len()],
+        })
+        .collect();
+    let mut comparisons = 0;
+    for source in sources {
+        if source.local_date.as_str() < week || source.local_date.as_str() > local_date {
+            continue;
+        }
+        for (limit, allocation) in config.items.iter().zip(&mut allocations) {
+            for (index, entry) in limit.entries.iter().enumerate() {
+                comparisons += entry.desktop_app_match_names.len().max(1);
+                if comparisons > MAX_MATCH_COMPARISONS {
+                    return Ok((allocations, true));
+                }
+                if matches(entry, source) {
+                    let weekly = &mut allocation.weekly[index];
+                    *weekly = add_seconds(*weekly, source.elapsed_seconds)?;
+                    if source.local_date == local_date {
+                        let daily = &mut allocation.daily[index];
+                        *daily = add_seconds(*daily, source.elapsed_seconds)?;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok((allocations, false))
+}
+
+/// Totals every budget over `sources`, which must list the usage to keep first: this device's own
+/// usage, then the rest. Replicated rows can make matching reach its work bound, and that truncates
+/// the totals rather than failing them, so enforcement keeps running on what was counted.
 pub fn totals(
     config: &LimitsConfig,
     sources: &[UsageSourceDay],
     local_date: &str,
-) -> Result<Vec<BudgetTotal>, String> {
+) -> Result<UsageTotals, String> {
     let week = week_start(local_date)?;
     if sources.len() > MAX_SOURCE_GROUPS {
         return Err("usage source count exceeds the native limit".into());
@@ -386,30 +450,9 @@ pub fn totals(
             return Err("stored usage aggregate is invalid".into());
         }
     }
+    let (allocations, truncated) = allocate_sources(config, sources, &week, local_date)?;
     let mut result = Vec::new();
-    let mut comparisons = 0;
-    for limit in &config.items {
-        let mut daily = vec![0; limit.entries.len()];
-        let mut weekly = daily.clone();
-        for source in sources {
-            if source.local_date.as_str() < week.as_str() || source.local_date.as_str() > local_date
-            {
-                continue;
-            }
-            for (index, entry) in limit.entries.iter().enumerate() {
-                comparisons += entry.desktop_app_match_names.len().max(1);
-                if comparisons > MAX_MATCH_COMPARISONS {
-                    return Err("usage matching exceeds the native work limit".into());
-                }
-                if matches(entry, source) {
-                    weekly[index] = add_seconds(weekly[index], source.elapsed_seconds)?;
-                    if source.local_date == local_date {
-                        daily[index] = add_seconds(daily[index], source.elapsed_seconds)?;
-                    }
-                    break;
-                }
-            }
-        }
+    for (limit, EntryAllocation { daily, weekly }) in config.items.iter().zip(allocations) {
         for (period, minutes, start, allocation) in [
             ("day", limit.minutes_per_day, local_date, daily),
             ("week", limit.minutes_per_week, week.as_str(), weekly),
@@ -440,7 +483,10 @@ pub fn totals(
             });
         }
     }
-    Ok(result)
+    Ok(UsageTotals {
+        budgets: result,
+        truncated,
+    })
 }
 
 #[cfg(test)]

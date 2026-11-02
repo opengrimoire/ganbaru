@@ -98,6 +98,39 @@ fn backup_layout_recognizes_database_sidecars_and_bundle_entries() {
     }
 }
 
+/// Providers and Git search the ancestors of a project folder that is not a repository root, so
+/// a bundle must not place a hidden folder beside the project folders inside `projects`.
+#[test]
+fn bundle_layout_refuses_configuration_above_project_folders() {
+    for (entry, directory) in [
+        ("projects/.opencode", true),
+        ("projects/.opencode/plugins/marker.ts", false),
+        ("projects/.opencode/opencode.json", false),
+        ("projects/.grok/config.toml", false),
+        ("projects/.cursor/hooks.json", false),
+        ("projects/.claude/settings.json", false),
+        ("projects/.agents/skills/marker/SKILL.md", false),
+        ("projects/.git", true),
+        ("projects/.git/config", false),
+    ] {
+        assert!(
+            !is_bundle_layout_entry(Path::new(entry), directory),
+            "{entry} sits above every project folder"
+        );
+    }
+    for (entry, directory) in [
+        ("projects/9b2f6c1e-4d3a-4f6b-8c2d-1a2b3c4d5e6f", true),
+        ("projects/project-a/.opencode/plugins/marker.ts", false),
+        ("projects/project-a/.git/config", false),
+        ("projects/project-a/sub/.cursor/hooks.json", false),
+    ] {
+        assert!(
+            is_bundle_layout_entry(Path::new(entry), directory),
+            "{entry} belongs to a project folder"
+        );
+    }
+}
+
 #[test]
 fn backup_vacuum_writes_a_readable_consistent_snapshot() {
     block_on(async {

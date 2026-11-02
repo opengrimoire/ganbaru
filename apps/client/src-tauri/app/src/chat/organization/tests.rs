@@ -3175,6 +3175,82 @@ fn unaccepted_follow_ups_do_not_block_accepted_ones() {
     });
 }
 
+#[test]
+fn recovery_skips_a_row_it_cannot_freeze() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        insert_review_assignment_with_outside_reply(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .expect("a row that cannot freeze its context does not stop recovery");
+
+        assert_eq!(recovered, 1, "the rows after it still recover");
+        assert_eq!(review_follow_ups(&pool).await, 1);
+        let (state, pending): (String, i64) = sqlx::query_as(
+            "SELECT assignment.state,
+                    (SELECT count(*) FROM chat_work_assignment_inputs input
+                     WHERE input.assignment_id = assignment.id
+                       AND input.delivery_state = 'pending')
+             FROM chat_work_assignments assignment WHERE assignment.id = 'assignment:a-outside'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "ready_for_review", "the refused row stays as it was");
+        assert_eq!(pending, 1, "its reply stays pending");
+    });
+}
+
+/// Inserts a review assignment sorted before `assignment:review`, accepted under the same
+/// subject, whose pending reply was written by a participant outside the conversation, so its
+/// follow-up cannot freeze a context.
+async fn insert_review_assignment_with_outside_reply(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_participants
+             (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ('participant:outside', 'human', 'Outside', '2026-08-04T17:00:00.000Z',
+                 '2026-08-04T17:00:00.000Z');
+         INSERT INTO chat_conversation_items
+             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+         VALUES ('item:outside-reply', 'conversation:review', 'reply-thread:review', 'message',
+                 'a0', '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:outside-reply', 'participant:outside', 'Outside',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:outside-reply', 'item:outside-reply', 'Run this',
+                 '2026-08-04T17:00:30.000Z');
+         UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:outside-reply'
+         WHERE item_id = 'item:outside-reply';
+         INSERT INTO chat_work_assignments
+             (id, reply_thread_id, teammate_id, triggering_message_item_id,
+              executing_device_id, state, created_at, updated_at)
+         VALUES ('assignment:a-outside', 'reply-thread:review', 'participant:review-agent',
+                 'item:review-root', 'device:desk', 'ready_for_review',
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:02:00.000Z');
+         INSERT INTO chat_work_assignment_inputs
+             (id, assignment_id, message_item_id, ordinal, routing_kind,
+              delivery_state, created_at, delivered_at)
+         VALUES ('input:outside-reply', 'assignment:a-outside', 'item:outside-reply', 2,
+                 'queued_continuation', 'pending', '2026-08-04T17:00:30.000Z', NULL);",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Records the settled dispatch job of `assignment:review`, as work this device ran leaves.
 async fn seed_settled_dispatch_job(pool: &SqlitePool) {
     sqlx::raw_sql(

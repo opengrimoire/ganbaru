@@ -31,11 +31,11 @@ pub(super) async fn recover_assignment_dispatch_jobs(
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let writers = chat_writers(&app, &pool).await?;
     let device = PostingDevice::this_device(&device_id, &writers);
-    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
     let now = now_timestamp()?;
-    take_over_stranded_assignments(&pool, device, &scope, &now).await?;
-    recover_stranded_follow_up_assignments(&pool, device, &scope, &now).await?;
-    adopt_accepted_queued_assignments(&pool, device, &scope).await?;
+    match read_active_device_scope(&app).map_err(device_state_error) {
+        Ok(scope) => recover_accepted_work(&pool, device, &scope, &now).await,
+        Err(error) => eprintln!("Chat work recovery could not read this device's scope: {error}"),
+    }
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = 'queued', claimed_at = NULL, claim_token = NULL, updated_at = ?
@@ -95,6 +95,32 @@ pub(super) async fn recover_assignment_dispatch_jobs(
     Ok(count)
 }
 
+/// Runs the recovery passes gated on what `scope` accepted: stranded takeover, follow-up
+/// recovery, and adoption of queued synced work. A failing pass is logged, so the local dispatch
+/// requeue that follows still runs.
+async fn recover_accepted_work(
+    pool: &SqlitePool,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+    now: &UtcTimestamp,
+) {
+    if let Err(error) = take_over_stranded_assignments(pool, device, scope, now).await {
+        eprintln!("Chat stranded work takeover stopped: {error}");
+    }
+    if let Err(error) = recover_stranded_follow_up_assignments(pool, device, scope, now).await {
+        eprintln!("Chat follow-up recovery stopped: {error}");
+    }
+    if let Err(error) = adopt_accepted_queued_assignments(pool, device, scope).await {
+        eprintln!("Chat queued work adoption stopped: {error}");
+    }
+}
+
+/// Logs the recovery row `assignment_id` that `pass` could not handle and skips it, so one row
+/// that cannot freeze a context or parse does not stop the pass or wedge its id paging.
+fn skip_recovery_row(pass: &str, assignment_id: &str, error: &ChatError) {
+    eprintln!("{pass} skipped work assignment {assignment_id}: {error}");
+}
+
 /// Reason an assignment records when its executing device can no longer write Chat and this
 /// device moves its unstarted work onto a successor it runs.
 pub(super) const REROUTED_REASON: &str = "Moved to a device that can run it";
@@ -148,17 +174,28 @@ pub(super) async fn take_over_stranded_assignments(
         .map_err(persistence_error)?;
         let batch_len = stranded.len();
         for row in stranded {
-            let assignment_id = ChatWorkAssignmentId::new(
-                row.try_get::<String, _>("id").map_err(persistence_error)?,
-            )
-            .map_err(identifier_error)?;
+            let raw_id = row.try_get::<String, _>("id").map_err(persistence_error)?;
             let unstarted: bool = row.try_get("unstarted").map_err(persistence_error)?;
-            if take_over_stranded_assignment(pool, &assignment_id, unstarted, device, scope, now)
-                .await?
-            {
-                taken_over = taken_over.saturating_add(1);
+            let outcome = match ChatWorkAssignmentId::new(raw_id.as_str()) {
+                Ok(assignment_id) => {
+                    take_over_stranded_assignment(
+                        pool,
+                        &assignment_id,
+                        unstarted,
+                        device,
+                        scope,
+                        now,
+                    )
+                    .await
+                }
+                Err(error) => Err(identifier_error(error)),
+            };
+            match outcome {
+                Ok(true) => taken_over = taken_over.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => skip_recovery_row("Chat stranded work takeover", &raw_id, &error),
             }
-            after_id = assignment_id.as_str().to_owned();
+            after_id = raw_id;
         }
         if batch_len < usize::from(TAKEOVER_BATCH_SIZE) {
             return Ok(taken_over);
@@ -388,16 +425,19 @@ pub(super) async fn recover_stranded_follow_up_assignments(
         let assignment_ids =
             stranded_follow_up_ids(pool, device, None, &after_id, TAKEOVER_BATCH_SIZE).await?;
         let batch_len = assignment_ids.len();
-        for assignment_id in assignment_ids {
-            let assignment_id =
-                ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
-            if recover_follow_up(pool, &assignment_id, device, scope, now)
-                .await?
-                .is_some()
-            {
-                recovered = recovered.saturating_add(1);
+        for raw_id in assignment_ids {
+            let outcome = match ChatWorkAssignmentId::new(raw_id.as_str()) {
+                Ok(assignment_id) => {
+                    recover_follow_up(pool, &assignment_id, device, scope, now).await
+                }
+                Err(error) => Err(identifier_error(error)),
+            };
+            match outcome {
+                Ok(Some(_)) => recovered = recovered.saturating_add(1),
+                Ok(None) => {}
+                Err(error) => skip_recovery_row("Chat follow-up recovery", &raw_id, &error),
             }
-            after_id = assignment_id.as_str().to_owned();
+            after_id = raw_id;
         }
         // Unaccepted rows stay in place, so the bound counts recoveries and not rows read.
         if batch_len < usize::from(TAKEOVER_BATCH_SIZE)
@@ -946,22 +986,43 @@ pub(super) async fn adopt_accepted_queued_assignments(
         let assignment_ids =
             unstarted_work_ids(pool, device, None, &after_id, TAKEOVER_BATCH_SIZE).await?;
         let batch_len = assignment_ids.len();
-        for assignment_id in assignment_ids {
-            let assignment_id =
-                ChatWorkAssignmentId::new(assignment_id).map_err(identifier_error)?;
-            let mut transaction = pool.begin().await.map_err(persistence_error)?;
-            let accepted =
-                assignment_subject_is_accepted(&mut transaction, &assignment_id, scope).await?;
-            transaction.rollback().await.map_err(persistence_error)?;
-            if accepted && adopt_synced_assignment(pool, &assignment_id, device.id, scope).await? {
-                adopted.push(assignment_id.clone());
+        for raw_id in assignment_ids {
+            let outcome = match ChatWorkAssignmentId::new(raw_id.as_str()) {
+                Ok(assignment_id) => {
+                    adopt_accepted_queued_assignment(pool, &assignment_id, device, scope)
+                        .await
+                        .map(|adopted| adopted.then_some(assignment_id))
+                }
+                Err(error) => Err(identifier_error(error)),
+            };
+            match outcome {
+                Ok(Some(assignment_id)) => adopted.push(assignment_id),
+                Ok(None) => {}
+                Err(error) => skip_recovery_row("Chat queued work adoption", &raw_id, &error),
             }
-            after_id = assignment_id.as_str().to_owned();
+            after_id = raw_id;
         }
         if batch_len < usize::from(TAKEOVER_BATCH_SIZE) {
             return Ok(adopted);
         }
     }
+}
+
+/// Adopts the queued synced assignment `assignment_id` when `scope` accepted its subject,
+/// reporting whether it queued a local dispatch.
+async fn adopt_accepted_queued_assignment(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    device: PostingDevice<'_>,
+    scope: &ChatDeviceScope,
+) -> ChatResult<bool> {
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let accepted = assignment_subject_is_accepted(&mut transaction, assignment_id, scope).await?;
+    transaction.rollback().await.map_err(persistence_error)?;
+    if !accepted {
+        return Ok(false);
+    }
+    adopt_synced_assignment(pool, assignment_id, device.id, scope).await
 }
 
 /// The folders, provider, and approvals behind the acceptance digest of `assignment_id`.

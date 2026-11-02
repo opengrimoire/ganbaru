@@ -2825,7 +2825,8 @@ fn vault_manifest_changes_only_with_a_version_bump() {
     assert_eq!(
         VAULT_MANIFEST.summary(),
         recorded.replace("\r\n", "\n"),
-        "the vault manifest changed without a version bump"
+        "the vault manifest changed: rerecord the snapshot in place for an unreleased version, or \
+         bump the version otherwise"
     );
 }
 

@@ -34,7 +34,7 @@ use crate::apply::{Constrained, finish_sealed};
 use crate::authorization::{self, Selection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
-use crate::manifest::Deletion;
+use crate::manifest::MergeKind;
 use crate::merge::{self, Batch, RowState, group_id, mask_param, table_param};
 use crate::seal::{SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store, validate};
@@ -1211,21 +1211,22 @@ pub(crate) fn decode_groups(mut bytes: &[u8]) -> SyncResult<LateGroups> {
 
 /// What one change of an excluded operation leaves: a create of a row with its own key
 /// creates it, and a create of a derived-key row only writes values, since any replica may
-/// create that row on its own. A deletion of a row no operation may delete leaves nothing: an
-/// exclusion stores it unvalidated, and every peer would hold it as invalid once restored.
+/// create that row on its own.
 fn late_kind(engine: &Engine, change: &Change) -> Option<LateKind> {
     let spec = engine.manifest().table(change.table)?;
     Some(match change.action {
         ChangeAction::Create if spec.derived_key.is_none() => LateKind::Created,
         ChangeAction::Create | ChangeAction::Write => LateKind::Values,
-        ChangeAction::Tombstone if spec.deletion == Deletion::Never => return None,
         ChangeAction::Tombstone => LateKind::Tombstone,
     })
 }
 
 /// Folds the changes of the excluded operation `(writer, seq)` into the late changes of
 /// `removal`. A row keeps the strongest kind (created, then tombstone, then values), the union
-/// of the groups written, and the latest value per group; a decision on the row stays.
+/// of the groups written, and the latest value per group; a decision on the row stays. Callers
+/// skip an operation classified as invalid, which leaves no late change on any replica. An
+/// operation of a newer manifest stays, since this version cannot judge it and nothing folds it
+/// again after an update.
 pub(crate) async fn fold(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1399,6 +1400,9 @@ async fn late_state(conn: &mut SqliteConnection) -> SyncResult<LateState> {
     Ok(state)
 }
 
+/// An excluded operation's writer, sequence, removal revision, envelope, and writer device.
+type ExcludedOp = (Vec<u8>, i64, i64, Vec<u8>, String);
+
 /// Derives every late change again from the excluded operations and the decisions of the
 /// selected chain, and marks dirty each row whose late state changed. Removals the chain no
 /// longer selects lose their late changes with their exclusions.
@@ -1412,18 +1416,24 @@ pub(crate) async fn rebuild_late(
     sqlx::query("DELETE FROM sync_late_changes")
         .execute(&mut *conn)
         .await?;
-    let rows: Vec<(Vec<u8>, i64, i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT writer_id, seq, excluded_revision, envelope FROM sync_ops
-         WHERE space_id = ? AND excluded_revision IS NOT NULL ORDER BY writer_id, seq",
+    let rows: Vec<ExcludedOp> = sqlx::query_as(
+        "SELECT o.writer_id, o.seq, o.excluded_revision, o.envelope, w.device_id
+         FROM sync_ops o JOIN sync_writers w
+            ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+         WHERE o.space_id = ? AND o.excluded_revision IS NOT NULL
+         ORDER BY o.writer_id, o.seq",
     )
     .bind(batch.space.as_bytes().as_slice())
     .fetch_all(&mut *conn)
     .await?;
-    for (writer, seq, removal, envelope) in rows {
-        let Some(operation) = Envelope::decode(&envelope)
-            .ok()
-            .and_then(|envelope| envelope.operation().ok())
-        else {
+    for (writer, seq, removal, envelope, device) in rows {
+        let Ok(envelope) = Envelope::decode(&envelope) else {
+            continue;
+        };
+        if store::classify(engine, &envelope, &device).hold() == Some(store::HoldReason::Invalid) {
+            continue;
+        }
+        let Ok(operation) = envelope.operation() else {
             continue;
         };
         fold(
@@ -1657,10 +1667,11 @@ pub struct LateChange {
 
 /// The change restoring a late change seals: the late values no current version is newer than,
 /// as a create of every group when the removed device created the row or no published state
-/// knows it, or a deletion of a live row. A row another device owns seals nothing, since only
-/// its owner can write it: the restore decision is all that is recorded. A row no operation may
-/// delete takes no deletion: sealing these changes validates nothing, and peers would hold the
-/// operation as invalid and stall this writer.
+/// knows it, or a deletion of a live row. A write of only some groups leaves out Immutable
+/// groups, which a derived-key re-add repeats and the row already holds. A row another device
+/// owns seals nothing, since only its owner can write it: the restore decision is all that is
+/// recorded. [`admit_restoring_change`] judges the result, since values that were valid in
+/// separate operations can compose into a change that is not.
 async fn restoring_change(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1676,17 +1687,14 @@ async fn restoring_change(
     let row = RowKey::new(record.key.clone()).map_err(|_| corrupt("stored row key"))?;
     let state = merge::row_state(conn, record.table, &record.key).await?;
     if record.kind == LateKind::Tombstone {
-        let deletable = spec.deletion != Deletion::Never;
-        return Ok(
-            (deletable && state == Some(RowState::Live)).then(|| Change {
-                table: record.table,
-                row,
-                action: ChangeAction::Tombstone,
-                groups: Vec::new(),
-                replaced_by: None,
-                cause: None,
-            }),
-        );
+        return Ok((state == Some(RowState::Live)).then(|| Change {
+            table: record.table,
+            row,
+            action: ChangeAction::Tombstone,
+            groups: Vec::new(),
+            replaced_by: None,
+            cause: None,
+        }));
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
     let restated = crate::fork::restated(conn, record.table, &record.key).await?;
@@ -1723,19 +1731,25 @@ async fn restoring_change(
             cause: None,
         }));
     }
-    let groups = record
+    let mut groups = record
         .groups
         .iter()
         .filter(|(group, late)| !newer(**group, late))
         .map(|(group, late)| GroupValue::new(spec.id, *group, late.value.clone()))
         .collect::<Vec<_>>();
-    if groups.is_empty() {
-        return Ok(None);
-    }
     let action = match state {
         None => ChangeAction::Create,
         Some(_) => ChangeAction::Write,
     };
+    if action == ChangeAction::Write && groups.len() < spec.groups.len() {
+        groups.retain(|value| {
+            spec.group(value.group)
+                .is_some_and(|group| group.kind != MergeKind::Immutable)
+        });
+    }
+    if groups.is_empty() {
+        return Ok(None);
+    }
     Ok(Some(Change {
         table: record.table,
         row,
@@ -1744,6 +1758,22 @@ async fn restoring_change(
         replaced_by: None,
         cause: None,
     }))
+}
+
+/// Refuses a restoring change the manifest or its row owner would refuse. Sealing validates
+/// nothing, so peers would hold such an operation as invalid and stall the sealing writer. The
+/// listing stays, and an admin can discard it.
+fn admit_restoring_change(
+    engine: &Engine,
+    change: &Change,
+    sealing_device: &str,
+) -> SyncResult<()> {
+    let Some(spec) = engine.manifest().table(change.table) else {
+        return Err(corrupt("late change of an unknown table"));
+    };
+    validate::change(engine, change)
+        .and_then(|()| validate::writer_change(spec, change, sealing_device))
+        .map_err(SyncError::InvalidRequest)
 }
 
 impl Engine {
@@ -1804,8 +1834,12 @@ impl Engine {
     /// Applies a late change [`Engine::late_changes`] listed as an ordinary write of the local
     /// writer, before an admin sequences `resolve_late` restoring it: the late values no
     /// current version is newer than, or the deletion of a live row. A change already decided,
-    /// a deletion of a row no operation may delete, or one with nothing left to write seals no
-    /// change.
+    /// or one with nothing left to write, seals no change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::InvalidRequest`] with nothing sealed when the change to seal would
+    /// not pass validation on a peer, which leaves the late change listed for a discard.
     pub async fn restore_late_change(
         &self,
         conn: &mut SqliteConnection,
@@ -1843,6 +1877,9 @@ impl Engine {
             &writer.certificate.certificate.device_id,
         )
         .await?;
+        if let Some(change) = &change {
+            admit_restoring_change(self, change, &writer.certificate.certificate.device_id)?;
+        }
         let mut slot = SealSlot::new(Some(writer));
         let (sealer, writer) = slot
             .open(self, &mut tx, ctx, &mut batch, now_ms)

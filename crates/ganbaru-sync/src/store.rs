@@ -590,17 +590,19 @@ async fn store_next(
         {
             let removal = exclusion::removal_revision(conn, ctx.space, &writer.device_id).await?;
             if let Ok(operation) = envelope.operation() {
-                exclusion::fold(
-                    engine,
-                    conn,
-                    removal,
-                    writer.id,
-                    envelope.seq,
-                    clock,
-                    &operation.content,
-                )
-                .await?;
-                exclusion::mark_stale(engine, conn, &operation.content).await?;
+                if held != Some(HoldReason::Invalid) {
+                    exclusion::fold(
+                        engine,
+                        conn,
+                        removal,
+                        writer.id,
+                        envelope.seq,
+                        clock,
+                        &operation.content,
+                    )
+                    .await?;
+                    exclusion::mark_stale(engine, conn, &operation.content).await?;
+                }
                 // An earlier anchor may have stored the operation, which released what it
                 // displaced, so the anchor seals the groups it writes again.
                 if fork::reseals_excluded(conn, ctx.space).await? {

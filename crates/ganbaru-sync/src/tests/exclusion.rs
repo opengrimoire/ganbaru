@@ -4,20 +4,25 @@
 //! the same way on every replica and decided once.
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Entry, Field, LateResolution, LateRow, ResolveLate, RowKey, Value,
+    Change, ChangeAction, Entry, Envelope, Field, GroupValue, LateResolution, LateRow, ResolveLate,
+    RowKey, Value, derived_key,
 };
 
 use super::authorization::admin_entry;
 use super::block_on;
 use super::engine::{text_field, with_group};
 use super::holds::sealed_create;
-use super::replica::{Replica, converge, device_admin, forge_change, quoted, rank};
+use super::replica::{Replica, converge, device_admin, forge_change, quoted, rank, sealed_change};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
-use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE};
+use crate::manifest::vault::chat::PROFILES_TABLE;
+use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
+use crate::manifest::vault::distractions::{
+    HOST_RULE_KEY_PREFIX, HOST_RULES_TABLE, SETTINGS_KEY, SETTINGS_TABLE, host_group,
+};
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
-use crate::{HoldReason, LateChange, LateKind, StoreOutcome};
+use crate::{HoldReason, LateChange, LateKind, StoreOutcome, SyncError};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
 const EDITED_AT: &str = "2027-01-02T00:00:00.000Z";
@@ -361,8 +366,8 @@ fn an_honest_edit_of_a_late_row_keeps_its_effects_and_a_restore_brings_the_row_b
 }
 
 /// A removed device deletes a row no operation may delete, past its cutoff: the deletion lists no
-/// late change, a listing kept for it seals nothing, and the admin's writer keeps applying on its
-/// peers, which hold such a deletion as invalid.
+/// late change, a restore of a listing kept for it is refused, and the admin's writer keeps
+/// applying on its peers, which hold such a deletion as invalid.
 #[test]
 fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
     block_on(async {
@@ -411,7 +416,7 @@ fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
             .await;
         let listed = late_changes(&mut anchor).await;
         assert_eq!(listed.len(), 1);
-        let report = anchor
+        let restored = anchor
             .engine
             .restore_late_change(
                 &mut anchor.conn,
@@ -420,9 +425,11 @@ fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
                 &mut anchor.identity.local(),
                 anchor.now_ms,
             )
-            .await
-            .unwrap();
-        assert_eq!(report.sealed_ops, 0);
+            .await;
+        assert!(
+            matches!(restored, Err(SyncError::InvalidRequest(_))),
+            "{restored:?}"
+        );
         assert_eq!(
             anchor.count("SELECT count(*) FROM sync_tombstones").await,
             0
@@ -516,6 +523,361 @@ fn late_operations_stored_after_their_removal_list_their_rows_until_the_next_eng
             ]
         );
         honest.check_invariants().await;
+    });
+}
+
+/// The anchor, a removed device, and an honest member sharing a note, a contact, and the seeded
+/// rows the device wrote, with the removal `salt` selects, known to all but the removed device.
+async fn after_removal(salt: u64) -> (Replica, Replica, Replica, u64) {
+    let (mut anchor, mut removed, mut honest) = trio(salt).await;
+    let now = removed.now_ms;
+    removed
+        .engine
+        .seed_captures(&mut removed.conn, now)
+        .await
+        .unwrap();
+    edit(
+        &mut removed,
+        &format!(
+            "{note}
+             INSERT INTO contact_card (key, card_nonce, updated_at)
+             VALUES ('{CARD_KEY}', 'AAAAAAAAAAAAAAAAAAAAAA', '{CREATED_AT}');
+             INSERT INTO contacts (id, public_key, display_name, state, created_at, updated_at)
+             VALUES ('contact-{PEER_KEY}', '{PEER_KEY}', 'Ana', 'active', '{CREATED_AT}',
+                     '{CREATED_AT}');",
+            note = note("note-kept", "Draft", 0),
+        ),
+    )
+    .await;
+    deliver(&mut anchor, &mut removed).await;
+    deliver(&mut honest, &mut anchor).await;
+    let device = removed.device_id.clone();
+    let removal = anchor.remove(&device).await.unwrap();
+    deliver(&mut honest, &mut anchor).await;
+    (anchor, removed, honest, removal)
+}
+
+/// A write of the note's Immutable creation group, which only a re-add of a derived-key row may
+/// carry.
+async fn immutable_write(removed: &mut Replica, row: &str) -> Change {
+    let mut change = sealed_create(removed, NOTES_TABLE, "note-kept").await;
+    change.row = RowKey::new(row).unwrap();
+    change.action = ChangeAction::Write;
+    change
+        .groups
+        .retain(|value| value.group == note_group::CREATED);
+    change
+}
+
+/// A write of a note's title holding `field`.
+fn title_write(row: &str, field: Field) -> Change {
+    Change {
+        table: NOTES_TABLE,
+        row: RowKey::new(row).unwrap(),
+        action: ChangeAction::Write,
+        groups: vec![GroupValue::new(
+            NOTES_TABLE,
+            note_group::TITLE,
+            Value::new(vec![field]).unwrap(),
+        )],
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+/// Changes every replica holds as invalid, named for the rule each breaks.
+async fn refused_changes(removed: &mut Replica) -> Vec<(&'static str, Change)> {
+    let mut refused_key = sealed_create(removed, CARD_TABLE, CARD_KEY).await;
+    refused_key.row = RowKey::new("x").unwrap();
+    let mut builtin_claim =
+        sealed_create(removed, PROFILES_TABLE, "access-profile:read-only").await;
+    builtin_claim.row = RowKey::new("access-profile:aaa").unwrap();
+    vec![
+        ("row key", refused_key),
+        ("column value", title_write("note-kept", Field::Integer(1))),
+        (
+            "derived-key tombstone",
+            Change {
+                table: CONTACTS_TABLE,
+                row: RowKey::new(PEER_KEY).unwrap(),
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: None,
+                cause: None,
+            },
+        ),
+        (
+            "immutable group write",
+            immutable_write(removed, "note-kept").await,
+        ),
+        ("built-in profile identity", builtin_claim),
+    ]
+}
+
+/// A removed device signs operations every replica holds as invalid, past its cutoff: none lists
+/// a late change, and whatever a replica did list is restored without stalling the admin's writer
+/// on its peers.
+#[test]
+fn operations_every_replica_refuses_neither_list_nor_stall_a_restore() {
+    block_on(async {
+        const SALT: u64 = 220;
+        let (_, mut sample, _, _) = after_removal(SALT).await;
+        let mut listed = Vec::new();
+        let mut stalled = Vec::new();
+        for (name, change) in refused_changes(&mut sample).await {
+            let (mut anchor, mut removed, mut honest, removal) = after_removal(SALT).await;
+            let forged = forge_change(&mut removed, change).await;
+            for replica in [&mut anchor, &mut honest] {
+                assert_eq!(
+                    replica.receive(std::slice::from_ref(&forged)).await,
+                    vec![StoreOutcome::Stored {
+                        held: Some(HoldReason::Invalid)
+                    }],
+                    "{name}"
+                );
+                replica.apply_all().await.unwrap();
+            }
+            if !late_rows(&mut anchor).await.is_empty() {
+                listed.push(name);
+                restore_all(&mut anchor, removal).await;
+            }
+
+            edit(&mut anchor, &note("note-after", "After", 1)).await;
+            deliver(&mut honest, &mut anchor).await;
+            if honest.applied_vector().await.get(&anchor.writer())
+                != anchor.stored_vector().await.get(&anchor.writer())
+            {
+                stalled.push(name);
+            }
+        }
+        let nothing = Vec::<&str>::new();
+        assert_eq!(
+            (listed, stalled),
+            (nothing.clone(), nothing),
+            "refused operations that listed, and that stalled the admin's writer"
+        );
+    });
+}
+
+/// A member stores an operation it refuses before it learns of the removal that excludes it:
+/// deriving the late changes again lists the valid late edit and not the refused operation.
+#[test]
+fn a_refused_operation_stored_before_the_removal_stays_unlisted_after_it() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(221).await;
+        edit(
+            &mut removed,
+            &format!(
+                "{}{}",
+                note("note-kept", "Draft", 0),
+                note("note-other", "Other", 1)
+            ),
+        )
+        .await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+
+        edit(
+            &mut removed,
+            "UPDATE quick_notes SET title = 'Late' WHERE id = 'note-kept'",
+        )
+        .await;
+        let known = honest.stored_vector().await;
+        let late = removed.ops_since(&known).await;
+        assert!(!late.is_empty());
+        honest.receive(&late).await;
+        let change = immutable_write(&mut removed, "note-other").await;
+        let forged = forge_change(&mut removed, change).await;
+        assert_eq!(
+            honest.receive(&[forged]).await,
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+
+        let device = removed.device_id.clone();
+        anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+
+        assert_eq!(
+            late_rows(&mut honest).await,
+            vec![("note-kept".to_owned(), LateKind::Values)]
+        );
+        honest.check_invariants().await;
+    });
+}
+
+/// Each late write of a row nothing created is valid alone, but restoring it would seal a create
+/// of a part of the row: the restore is refused with nothing sealed, and a discard still clears
+/// the listing.
+#[test]
+fn restoring_a_late_write_of_a_row_nothing_created_is_refused_and_can_be_discarded() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest, removal) = after_removal(222).await;
+        let forged =
+            forge_change(&mut removed, title_write("note-ghost", text_field("Ghost"))).await;
+        for replica in [&mut anchor, &mut honest] {
+            replica.receive(std::slice::from_ref(&forged)).await;
+            replica.apply_all().await.unwrap();
+        }
+        let listed = late_changes(&mut anchor).await;
+        assert_eq!(listed.len(), 1);
+        let before = anchor.stored_vector().await.get(&anchor.writer());
+
+        let restored = anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &listed[0],
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await;
+        assert!(
+            matches!(restored, Err(SyncError::InvalidRequest(_))),
+            "{restored:?}"
+        );
+        assert_eq!(anchor.stored_vector().await.get(&anchor.writer()), before);
+
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: NOTES_TABLE,
+                    row: RowKey::new("note-ghost").unwrap(),
+                    resolution: LateResolution::Discard,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+        edit(&mut anchor, &note("note-after", "After", 1)).await;
+        deliver(&mut honest, &mut anchor).await;
+        assert_eq!(
+            honest.applied_vector().await.get(&anchor.writer()),
+            anchor.stored_vector().await.get(&anchor.writer()),
+            "operations after the discard apply on peers"
+        );
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(title(replica, "note-ghost").await, None);
+            assert!(late_changes(replica).await.is_empty());
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// The key of the host rule the re-add tests share.
+fn host_rule_key() -> String {
+    derived_key(HOST_RULE_KEY_PREFIX, &["blocked", "", "example.com"])
+        .unwrap()
+        .as_str()
+        .to_owned()
+}
+
+/// A late re-add of a derived-key row writes every group, its Immutable key group among them. An
+/// honest edit newer than one of those groups leaves a partial write, which carries no Immutable
+/// group, so the restore applies on peers and keeps the honest value.
+#[test]
+fn restoring_a_late_readd_past_a_newer_honest_edit_leaves_the_immutable_groups() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(223).await;
+        edit(
+            &mut honest,
+            &format!(
+                "INSERT INTO distractions_host_rules (id, list_kind, scope, host, created_at_ms)
+                 VALUES ({key}, 'blocked', '', 'example.com', {AT_MS})",
+                key = quoted(&host_rule_key()),
+            ),
+        )
+        .await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+
+        edit(&mut removed, "DELETE FROM distractions_host_rules").await;
+        edit(
+            &mut removed,
+            &format!(
+                "INSERT INTO distractions_host_rules (id, list_kind, scope, host, created_at_ms)
+                 VALUES ({key}, 'blocked', '', 'example.com', {at})",
+                key = quoted(&host_rule_key()),
+                at = AT_MS + 1,
+            ),
+        )
+        .await;
+        let readd = sealed_change(
+            &mut removed,
+            HOST_RULES_TABLE,
+            &host_rule_key(),
+            ChangeAction::Write,
+        )
+        .await;
+        assert!(
+            readd
+                .groups
+                .iter()
+                .any(|value| value.group == host_group::RULE)
+        );
+
+        let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut removed).await;
+        honest.now_ms += ACKNOWLEDGEMENT_INTERVAL_MS;
+        edit(
+            &mut honest,
+            "UPDATE distractions_host_rules SET enabled = 0",
+        )
+        .await;
+        deliver(&mut anchor, &mut honest).await;
+
+        assert_eq!(late_rows(&mut anchor).await.len(), 1);
+        restore_all(&mut anchor, removal).await;
+        deliver(&mut honest, &mut anchor).await;
+        assert_eq!(
+            honest.applied_vector().await.get(&anchor.writer()),
+            anchor.stored_vector().await.get(&anchor.writer()),
+            "the restored write applies on peers"
+        );
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM distractions_host_rules WHERE enabled = 0")
+                    .await,
+                1,
+                "the honest edit stands"
+            );
+            assert!(late_changes(replica).await.is_empty());
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// An operation of a newer manifest may be valid there, and nothing derives the late changes again
+/// when this version updates, so it stays listed and restores what passes this manifest.
+#[test]
+fn a_late_operation_of_a_newer_manifest_stays_listed_and_restores() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest, removal) = after_removal(224).await;
+        let forged = forge_change(&mut removed, title_write("note-kept", text_field("Late"))).await;
+        let mut newer = Envelope::decode(&forged).unwrap().operation().unwrap();
+        newer.header.manifest_version += 1;
+        let newer = newer.seal(&removed.identity.key).unwrap().into_bytes();
+        for replica in [&mut anchor, &mut honest] {
+            replica.receive(std::slice::from_ref(&newer)).await;
+            replica.apply_all().await.unwrap();
+            assert_eq!(
+                late_rows(replica).await,
+                vec![("note-kept".to_owned(), LateKind::Values)]
+            );
+        }
+
+        restore_all(&mut anchor, removal).await;
+        deliver(&mut honest, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Late"));
+            assert!(late_changes(replica).await.is_empty());
+        }
     });
 }
 

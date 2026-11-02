@@ -1281,6 +1281,91 @@ mod tests {
         );
     }
 
+    /// A refusal only worktree changes can settle: it names the worktree and
+    /// the uncovered file, and leaves no folder for the caller to ask about.
+    fn assert_worktree_refusal(error: ChatError, uncovered: &str, covered: Option<&str>) {
+        assert_eq!(error.code, ChatErrorCode::TrustDecisionRequired);
+        assert!(
+            error.message.contains("worktree"),
+            "the worktree must be named in: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains(uncovered),
+            "{uncovered} must be named in: {}",
+            error.message
+        );
+        if let Some(covered) = covered {
+            assert!(
+                !error.message.contains(covered),
+                "{covered} must not be named in: {}",
+                error.message
+            );
+        }
+        assert!(
+            !error.message.contains("Project settings"),
+            "a trust action cannot help: {}",
+            error.message
+        );
+        assert!(
+            error.details.is_none(),
+            "a folder decision cannot settle this refusal"
+        );
+    }
+
+    #[test]
+    fn worktree_refusal_names_the_worktree() {
+        let trusted_root = ConfigurationFolder::with_files(&[".mcp.json"]);
+        let added = ConfigurationFolder::with_files(&[".mcp.json", ".cursor/mcp.json"]);
+        for undecided in [
+            UndecidedProjectConfiguration::Ask,
+            UndecidedProjectConfiguration::Restrict,
+        ] {
+            let refused = resolve_project_configuration(
+                &scope_deciding(&trusted_root.entries(), true),
+                &trust_folder_id(),
+                &trusted_root.entries(),
+                &added.entries(),
+                undecided,
+                ProjectConfigurationRestriction::Unavailable,
+            );
+            assert_worktree_refusal(
+                refused.expect_err("an uncovered worktree must be refused"),
+                ".cursor/mcp.json",
+                Some(".mcp.json"),
+            );
+        }
+
+        let empty_root = ConfigurationFolder::with_files(&[]);
+        let refused = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &empty_root.entries(),
+            &added.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_worktree_refusal(
+            refused.expect_err("a root without configuration covers nothing"),
+            ".cursor/mcp.json",
+            None,
+        );
+
+        let undecided = resolve_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &trust_folder_id(),
+            &trusted_root.entries(),
+            &added.entries(),
+            UndecidedProjectConfiguration::Ask,
+            ProjectConfigurationRestriction::Unavailable,
+        );
+        assert_worktree_refusal(
+            undecided.expect_err("no folder decision can cover this worktree"),
+            ".cursor/mcp.json",
+            None,
+        );
+    }
+
     #[test]
     fn restricted_run_allows_unenforced_provider_without_configuration() {
         let empty = ConfigurationFolder::with_files(&[]);

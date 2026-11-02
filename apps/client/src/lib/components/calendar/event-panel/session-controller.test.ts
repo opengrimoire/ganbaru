@@ -146,7 +146,7 @@ describe("EventPanelSessionController", () => {
 
   it("reports a failed full load that leaves a shortened title blocked and recovers on retry", () => {
     const shortened = "T".repeat(WINDOW_TEXT_CHARS);
-    const opened = event("instance", { title: shortened, recurringParentId: "parent" });
+    const opened = event("instance", { title: shortened, recurringParentId: "parent", windowTitleShortened: true });
     const { session } = controller();
     session.initializeEdit(opened);
     const attempt = session.heavyLoadAttempt;

@@ -125,6 +125,22 @@ async fn effective_primary_working_folder_falls_back_to_the_managed_folder() {
 }
 
 #[tokio::test]
+async fn effective_primary_working_folder_skips_an_unreadable_stored_folder() {
+    let pool = migrated_pool().await;
+    store_primary(&pool, EXTERNAL_FOLDER_ID).await;
+    sqlx::query("UPDATE project_working_folders SET updated_at = 'not a timestamp' WHERE id = ?")
+        .bind(EXTERNAL_FOLDER_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let read = effective(&pool).await;
+
+    assert_eq!(primary_id(&read), Some(MANAGED_FOLDER_ID));
+    assert_eq!(read.revision, 1);
+}
+
+#[tokio::test]
 async fn primary_working_folder_without_a_stored_row_reads_the_managed_folder_at_revision_zero() {
     let pool = migrated_pool().await;
 

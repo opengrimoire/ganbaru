@@ -1,12 +1,13 @@
 //! Effective primary working folder of a project.
 //!
 //! The stored primary folder row and the folder rows replicate independently, so the stored folder
-//! can be missing, belong to another project, or be archived. Reads then resolve the project's
-//! managed folder, and report no folder when that row has not reached this replica either, so
-//! settings can still choose one. Commands keep the rule that a newly chosen primary belongs to
+//! can be missing, belong to another project, be archived, or not parse. Reads then resolve the
+//! project's managed folder, and report no folder when that row has not reached this replica
+//! either or does not parse, so settings can still choose one. Commands keep the rule that a newly chosen primary belongs to
 //! the project and is active.
 
-use super::super::channels::{i64_value, identifier_error, persistence_error, u64_value};
+use super::super::channels::{i64_value, persistence_error, u64_value};
+use ganbaru_chat::repository::workspaces::resolve_primary_workspace;
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, SqlitePool};
 
@@ -20,19 +21,10 @@ pub(super) async fn read_effective_primary_working_folder(
     project_id: &str,
 ) -> ChatResult<ChatProjectPrimaryWorkingFolderRead> {
     let row = sqlx::query(
-        "SELECT project.id AS project_id,
-                coalesce(stored_folder.id, managed_folder.id) AS working_folder_id,
-                coalesce(primary_folder.revision, 0) AS revision
+        "SELECT project.id AS project_id, coalesce(primary_folder.revision, 0) AS revision
          FROM projects project
          LEFT JOIN project_primary_working_folders primary_folder
            ON primary_folder.project_id = project.id
-         LEFT JOIN project_working_folders stored_folder
-           ON stored_folder.id = primary_folder.working_folder_id
-          AND stored_folder.project_id = project.id
-          AND stored_folder.archived_at IS NULL
-         LEFT JOIN project_working_folders managed_folder
-           ON managed_folder.project_id = project.id
-          AND managed_folder.kind = 'managed'
          WHERE project.id = ?",
     )
     .bind(project_id)
@@ -40,15 +32,10 @@ pub(super) async fn read_effective_primary_working_folder(
     .await
     .map_err(persistence_error)?
     .ok_or_else(not_found_error)?;
-    let working_folder_id: Option<String> = row
-        .try_get("working_folder_id")
-        .map_err(persistence_error)?;
+    let folder = resolve_primary_workspace(pool, project_id).await?;
     Ok(ChatProjectPrimaryWorkingFolderRead {
         project_id: row.try_get("project_id").map_err(persistence_error)?,
-        working_folder_id: working_folder_id
-            .map(ProjectWorkingFolderId::new)
-            .transpose()
-            .map_err(identifier_error)?,
+        working_folder_id: folder.map(|folder| folder.id),
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
     })
 }

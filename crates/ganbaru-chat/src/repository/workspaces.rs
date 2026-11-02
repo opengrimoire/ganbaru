@@ -54,37 +54,48 @@ pub async fn read_workspace(
     .ok_or_else(not_found_error)
 }
 
-/// Resolves the effective primary working folder of `project_id`.
+/// Resolves the effective primary working folder of `project_id`: the stored primary folder when
+/// it belongs to the project and is not archived, and the project's managed folder otherwise.
+///
+/// Folder rows replicate between devices, so a candidate that does not parse is logged and
+/// skipped like a missing one, as [`list_workspaces`] leaves it out, and the next candidate is
+/// tried. `None` means no candidate is readable on this replica. Query errors stay fatal.
 pub async fn resolve_primary_workspace(
     pool: &SqlitePool,
     project_id: &str,
 ) -> ChatResult<Option<ProjectWorkingFolder>> {
-    let id: Option<String> = sqlx::query_scalar(
-        "SELECT coalesce(stored_folder.id, managed_folder.id)
-         FROM projects project
+    let rows = sqlx::query(
+        "SELECT folder.id, folder.project_id, folder.display_name, folder.kind,
+                folder.managed_relative_path, folder.sort_order, folder.repository_kind,
+                folder.repository_identity, folder.created_at, folder.updated_at,
+                folder.archived_at, folder.revision
+         FROM project_working_folders folder
          LEFT JOIN project_primary_working_folders primary_folder
-           ON primary_folder.project_id = project.id
-         LEFT JOIN project_working_folders stored_folder
-           ON stored_folder.id = primary_folder.working_folder_id
-          AND stored_folder.project_id = project.id
-          AND stored_folder.archived_at IS NULL
-         LEFT JOIN project_working_folders managed_folder
-           ON managed_folder.project_id = project.id
-          AND managed_folder.kind = 'managed'
-         WHERE project.id = ?",
+           ON primary_folder.project_id = folder.project_id
+          AND primary_folder.working_folder_id = folder.id
+          AND folder.archived_at IS NULL
+         WHERE folder.project_id = ?
+           AND (primary_folder.project_id IS NOT NULL OR folder.kind = 'managed')
+         ORDER BY primary_folder.project_id IS NULL, folder.sort_order, folder.id",
     )
     .bind(project_id)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
-    .map_err(persistence_error)?
-    .flatten();
-    match id {
-        Some(id) => {
-            let id = ProjectWorkingFolderId::new(id).map_err(|_| corrupt_data_error())?;
-            read_workspace(pool, &id).await.map(Some)
+    .map_err(persistence_error)?;
+    for row in rows {
+        let id = row.try_get::<String, _>("id");
+        match row_to_workspace(row) {
+            Ok(folder) => return Ok(Some(folder)),
+            Err(error) => {
+                eprintln!(
+                    "Skipped project working folder {:?} as primary: {}",
+                    id.unwrap_or_default(),
+                    error.message
+                );
+            }
         }
-        None => Ok(None),
     }
+    Ok(None)
 }
 
 pub async fn create_workspace(

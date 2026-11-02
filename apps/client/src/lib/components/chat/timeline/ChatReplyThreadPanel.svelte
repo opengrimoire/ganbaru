@@ -5,6 +5,7 @@
   import { tick } from "svelte";
   import * as chatApi from "$lib/api/chat";
   import type { ChatAgentRunRead, ChatThreadShellRead, ChatTimelinePageRead } from "$lib/chat/contracts";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
     exactRunPresentationsReady,
     latestRenderableAgentRun,
@@ -147,6 +148,10 @@
       .then((component) => { ChatScratchManager = component; })
       .finally(() => { scratchManagerLoad = null; });
     return scratchManagerLoad;
+  }
+
+  function reportMessageActionError(error: unknown): void {
+    actionError = chatErrorMessage(error);
   }
 
   async function openScratchManager(): Promise<void> {
@@ -327,7 +332,7 @@
     {/if}
   </header>
 
-  {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} />{/if}
+  {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} onDismiss={actionError ? () => { actionError = null; } : undefined} />{/if}
 
   <div
     bind:this={scroller}
@@ -342,7 +347,7 @@
     {#if page && executionPresentationReady}
       {#if page.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderReplyThreadMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
-      <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings />
+      <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
       {#each renderEntries as entry, index (entry.key)}
         {@const previousEntry = renderEntries[index - 1]}
         {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}
@@ -355,6 +360,7 @@
             showReplyStrip={false}
             currentResponseSettings
             grouped={previousEntry?.kind === "message" && shouldGroupReplyMessages(previousEntry.message, entry.message)}
+            onActionError={reportMessageActionError}
           />
         {:else}
           {@const exactExecution = exactExecutions[entry.run.id]}

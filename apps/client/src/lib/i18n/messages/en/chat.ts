@@ -246,6 +246,7 @@ export const chat = {
     addReaction: "Add reaction",
     sentFrom: "Sent from",
     lastEditedFrom: "Last edited from",
+    sentFromFailed: "Could not read which devices sent this message",
     reactedBy: (names: string, _count: number) => `${names} reacted`,
     queued: "Queued",
     completed: "Completed",

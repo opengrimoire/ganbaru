@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { unreadMessageStartIndex } from "$lib/chat/timeline/organizational-message-model";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
@@ -17,6 +18,7 @@
   let feed = $state<HTMLDivElement | null>(null);
   let followingEnd = true;
   let restoredDestination: string | null = null;
+  let actionError = $state<string | null>(null);
   const channel = $derived(chat.selectedChannel);
   const destination = $derived(channel ? `channel:${channel.id}` : "channel:none");
   const unreadStart = $derived(unreadMessageStartIndex(
@@ -71,6 +73,15 @@
     });
   }
 
+  function reportActionError(error: unknown): void {
+    actionError = chatErrorMessage(error);
+  }
+
+  $effect(() => {
+    destination;
+    actionError = null;
+  });
+
   $effect(() => {
     const element = feed;
     const key = destination;
@@ -124,6 +135,7 @@
 </script>
 
 <section class="channel-surface" aria-label={channel ? `#${channel.name}` : t("chat.title")}>
+  {#if actionError}<Notice class="feed-action-error" message={actionError} onDismiss={() => { actionError = null; }} />{/if}
   <div
     bind:this={feed}
     class="channel-feed"
@@ -146,7 +158,7 @@
         {#if index === 0 || !isSameDay(chat.channelMessages[index - 1].createdAt, message.createdAt)}
           <div class="divider" class:first-date={index === 0}><span>{formatDateTime(localization.locale, Date.parse(message.createdAt), { dateStyle: "full" })}</span></div>
         {/if}
-        <ChatOrganizationalMessage {message} grouped={shouldGroupWithPrevious(index)} onOpenThread={(trigger) => { if (message.replyThread) void openThread(message.replyThread.id, trigger); }} />
+        <ChatOrganizationalMessage {message} grouped={shouldGroupWithPrevious(index)} onOpenThread={(trigger) => { if (message.replyThread) void openThread(message.replyThread.id, trigger); }} onActionError={reportActionError} />
       {/each}
       {#if chat.channelMessagesLoading && chat.channelMessages.length === 0}<Loading layout="fill" />{/if}
     </div>
@@ -172,6 +184,7 @@
   .divider::before,.divider::after { height:1px; flex:1; background:var(--border); content:""; }.divider.unread { color:var(--primary); }.divider.unread::before,.divider.unread::after { background:color-mix(in srgb,var(--primary) 55%,var(--border)); }
   .load-older { display:block; margin:0.6rem auto; border-radius:0.4rem; padding:0.3rem 0.55rem; color:var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
   .channel-composer-dock { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem var(--chat-conversation-gutter,1rem) 0.75rem; background:linear-gradient(to bottom,transparent,var(--cal-bg) 18%); }
+  .channel-surface > :global(.feed-action-error) { flex:0 0 auto; padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }
   .feed-canvas > :global(.feed-error) { width:fit-content; max-width:100%; margin-inline:auto; padding:1rem; font-size: calc(0.78rem * var(--type-scale)); }
   @container chat-shell (max-width:440px) { .channel-surface { --chat-conversation-gutter:0.5rem; } }
 </style>

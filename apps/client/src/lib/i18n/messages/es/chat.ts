@@ -249,6 +249,7 @@ export const chat = {
     addReaction: "Agregar reacción",
     sentFrom: "Enviado desde",
     lastEditedFrom: "Última edición desde",
+    sentFromFailed: "No se pudo leer desde qué dispositivos se envió este mensaje",
     reactedBy: (names: string, count: number) => count === 1 ? `${names} reaccionó` : `${names} reaccionaron`,
     queued: "En cola",
     completed: "Completado",

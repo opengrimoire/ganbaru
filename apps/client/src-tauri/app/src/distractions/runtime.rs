@@ -141,6 +141,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             published_rules: None,
             usage_cache: None,
             usage_diagnostics: limits::UsageReadDiagnostics::default(),
+            limit_state_diagnostics: limits::UsageReadDiagnostics::default(),
         };
         loop {
             tokio::select! {
@@ -414,6 +415,7 @@ struct Owner {
     published_rules: Option<(PathBuf, Value)>,
     usage_cache: Option<UsageProjectionCache>,
     usage_diagnostics: limits::UsageReadDiagnostics,
+    limit_state_diagnostics: limits::UsageReadDiagnostics,
 }
 
 impl Owner {
@@ -578,6 +580,7 @@ impl Owner {
         }
         let read = limits_read::derive_usage_projection(self.app.clone()).await;
         self.log_usage_read(&read);
+        let read_failed = read.is_err();
         let usage_binding = UsageBinding {
             generation,
             vault_id: context.vault_id.clone(),
@@ -604,7 +607,26 @@ impl Owner {
             *cached = Some((generation, Instant::now(), projection.clone()));
             Ok(())
         })?;
+        if read_failed {
+            self.republish_limit_state(generation, projection.limit_state.clone())
+                .await;
+        }
         self.enforce(context, projection.totals).await
+    }
+
+    /// Keeps closes authorized on the last good totals after a failed read. A failed write is
+    /// logged once per message and only refuses limit closes, so phase enforcement still runs.
+    async fn republish_limit_state(&mut self, generation: u64, state: DistractionsLimitState) {
+        let result =
+            limits_read::republish_last_good_limit_state(self.app.clone(), generation, state).await;
+        match result {
+            Ok(()) => self.limit_state_diagnostics.record_success(),
+            Err(error) => {
+                if self.limit_state_diagnostics.record_failure(&error) {
+                    eprintln!("native Distractions limit state republication failed: {error}");
+                }
+            }
+        }
     }
 
     /// Logs a usage read failure once per message and a truncated window once per local date.

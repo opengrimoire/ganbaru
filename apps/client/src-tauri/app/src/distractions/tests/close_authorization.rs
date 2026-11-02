@@ -406,6 +406,7 @@ fn persisted_usage_rule_requires_exact_entry_and_exhausted_limit() {
         local_date: "2026-07-10".to_string(),
         week_start_local_date: "2026-07-06".to_string(),
         updated_at: "2026-07-10T12:00:00.000Z".to_string(),
+        confirmed_at: None,
         database_path: Some("/tmp/vault/ganbaru.sqlite".to_string()),
         configuration_digest: Some(limits::configuration_digest(&config).unwrap()),
         limits: vec![DistractionsLimitStateItem {
@@ -541,6 +542,7 @@ fn limit_close_uses_last_good_totals() {
         local_date: "2026-07-10".to_string(),
         week_start_local_date: "2026-07-06".to_string(),
         updated_at: read_at.to_string(),
+        confirmed_at: None,
         database_path: Some(database_path.to_str().unwrap().to_string()),
         configuration_digest: Some(limits::configuration_digest(&config).unwrap()),
         limits: vec![DistractionsLimitStateItem {

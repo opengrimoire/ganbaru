@@ -19,6 +19,9 @@ pub(crate) struct UsageProjection {
     /// A read bound left some usage out, so totals may be low.
     #[serde(skip)]
     pub(super) truncated: bool,
+    /// The enforcement snapshot these totals published, kept to republish after a failed read.
+    #[serde(skip)]
+    pub(super) limit_state: DistractionsLimitState,
 }
 
 #[cfg(test)]
@@ -33,8 +36,34 @@ impl UsageProjection {
             totals,
             foreground_status: unavailable_foreground_desktop_app_status("test"),
             truncated: false,
+            limit_state: DistractionsLimitState {
+                local_date: local_date.into(),
+                week_start_local_date: local_date.into(),
+                updated_at: String::new(),
+                confirmed_at: None,
+                database_path: None,
+                configuration_digest: None,
+                limits: Vec::new(),
+            },
         }
     }
+}
+
+/// Republishes the last good totals under the revocation fence, so an invalidated observation
+/// cannot restore a snapshot that was cleared.
+pub(super) async fn republish_last_good_limit_state<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    generation: u64,
+    state: DistractionsLimitState,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = limit_state_path(&app)?;
+        runtime::publish(&app, Some(generation), || {
+            state_files::republish_limit_state(&path, &state, now_utc())
+        })
+    })
+    .await
+    .map_err(|error| format!("native usage republication worker: {error}"))?
 }
 
 /// Read the owner's last accepted projection without scheduling observation or enforcement work.
@@ -134,6 +163,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
             local_date: local_date.clone(),
             week_start_local_date: week.clone(),
             updated_at: updated_at.clone(),
+            confirmed_at: None,
             database_path: Some(
                 database_path
                     .to_str()
@@ -176,6 +206,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
                 totals,
                 foreground_status,
                 truncated,
+                limit_state: state,
             })
         })
     })

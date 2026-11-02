@@ -240,6 +240,10 @@ pub(super) fn validate_limit_state(state: &DistractionsLimitState) -> Result<(),
     }
     DateTime::parse_from_rfc3339(&state.updated_at)
         .map_err(|e| format!("parse updated_at: {e}"))?;
+    if let Some(confirmed_at) = &state.confirmed_at {
+        DateTime::parse_from_rfc3339(confirmed_at)
+            .map_err(|e| format!("parse confirmed_at: {e}"))?;
+    }
     if let Some(database_path) = &state.database_path {
         let path = Path::new(database_path);
         if !path.is_absolute() {
@@ -303,19 +307,34 @@ pub(super) fn read_fresh_limit_state(
     let updated_at = DateTime::parse_from_rfc3339(&state.updated_at)
         .ok()?
         .with_timezone(&Utc);
-    let age = checked_at - updated_at;
-    (age >= chrono::Duration::zero() && age <= chrono::Duration::seconds(LIMIT_STATE_STALE_SECONDS))
-        .then_some(state)
+    let confirmed_at = match &state.confirmed_at {
+        Some(confirmed_at) => DateTime::parse_from_rfc3339(confirmed_at)
+            .ok()?
+            .with_timezone(&Utc),
+        None => updated_at,
+    };
+    let age = checked_at - confirmed_at;
+    (updated_at <= checked_at
+        && age >= chrono::Duration::zero()
+        && age <= chrono::Duration::seconds(LIMIT_STATE_STALE_SECONDS))
+    .then_some(state)
 }
 
-/// Test scaffold that leaves the published file untouched.
-#[cfg(test)]
+/// Writes last good totals to `path` as confirmed at `confirmed_at`, so closes keep authorizing
+/// while reads fail. `updated_at` keeps the real read time, so the browser host still ages the
+/// snapshot out.
 pub(super) fn republish_limit_state(
-    _path: &Path,
-    _state: &DistractionsLimitState,
-    _confirmed_at: DateTime<Utc>,
+    path: &Path,
+    state: &DistractionsLimitState,
+    confirmed_at: DateTime<Utc>,
 ) -> Result<(), String> {
-    Ok(())
+    let state = DistractionsLimitState {
+        confirmed_at: Some(confirmed_at.to_rfc3339_opts(SecondsFormat::Millis, true)),
+        ..state.clone()
+    };
+    validate_limit_state(&state)?;
+    let json = serde_json::to_string(&state).map_err(|error| error.to_string())?;
+    write_text_file_atomically(path, &json)
 }
 
 pub(super) fn disconnected_extension_status(

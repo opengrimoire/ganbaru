@@ -38,7 +38,7 @@ pub(crate) async fn on_blocking_pool<T: Send + 'static>(
         .map_err(|error| config_io_error(format!("Chat settings worker stopped: {error}")))?
 }
 
-/// The device Chat settings with the portable behavior preferences of the active vault.
+/// The device Chat settings with the behavior preferences of the active vault.
 pub(crate) async fn read_chat_configuration<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> ChatResult<ChatConfiguration> {
@@ -48,7 +48,7 @@ pub(crate) async fn read_chat_configuration<R: tauri::Runtime>(
 }
 
 /// Applies `mutate` to the device Chat settings on the blocking pool, see
-/// [`update_chat_device_config`], and returns them with the portable behavior preferences.
+/// [`update_chat_device_config`], and returns them with the behavior preferences.
 /// Desktop commands go through the settings mutation lock instead.
 #[cfg(mobile)]
 pub(crate) async fn update_chat_configuration<R: tauri::Runtime>(
@@ -60,7 +60,8 @@ pub(crate) async fn update_chat_configuration<R: tauri::Runtime>(
     with_behavior(app, device).await
 }
 
-/// `device` with the portable behavior preferences of the active vault.
+/// `device` with the behavior preferences of the active vault, read from the composed view so
+/// each field comes from the store its registry scope names.
 pub(crate) async fn with_behavior<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     device: ChatDeviceConfig,

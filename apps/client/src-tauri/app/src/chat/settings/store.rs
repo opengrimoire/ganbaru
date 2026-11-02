@@ -49,7 +49,7 @@ pub(crate) fn mutate_chat_config<R: tauri::Runtime>(
 
 /// Applies `mutate` like [`mutate_chat_config`] on the blocking pool, so an async command never
 /// holds the async runtime during the lock and file I/O, and returns the device settings with
-/// the portable behavior preferences.
+/// the behavior preferences.
 pub(crate) async fn mutate_chat_configuration(
     app: &tauri::AppHandle,
     mutate: impl FnOnce(&mut ChatDeviceConfig) -> ChatResult<()> + Send + 'static,

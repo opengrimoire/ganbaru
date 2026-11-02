@@ -1,5 +1,7 @@
 //! Assignment routing, frozen context, and durable organizational messages.
 
+#[cfg(desktop)]
+use super::assignments::read_assignment_subject;
 use super::common::{
     AttachmentSource, ScheduledPostIds, assignment_input_id, conversation_item_id,
     has_thread_eligible_mention, insert_revision_attachments, json_object, message_revision_id,
@@ -448,7 +450,8 @@ pub(super) async fn create_assignment(
     Ok(assignment_id)
 }
 
-/// Freezes the context of assignment `assignment_id` and queues its dispatch on this device.
+/// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,
+/// with the job consenting to the subject the post or Start agreed to run.
 #[cfg(desktop)]
 pub(super) async fn queue_assignment_dispatch(
     transaction: &mut Transaction<'_, Sqlite>,
@@ -469,13 +472,17 @@ pub(super) async fn queue_assignment_dispatch(
         now,
     )
     .await?;
+    let consented_digest = read_assignment_subject(transaction, assignment_id)
+        .await?
+        .digest();
     sqlx::query(
         "INSERT INTO chat_assignment_dispatch_jobs
-            (id, assignment_id, state, available_at, created_at, updated_at)
-         VALUES (?, ?, 'queued', ?, ?, ?)",
+            (id, assignment_id, state, consented_digest, available_at, created_at, updated_at)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?)",
     )
     .bind(new_id("dispatch")?)
     .bind(assignment_id.as_str())
+    .bind(&consented_digest)
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(now.as_str())

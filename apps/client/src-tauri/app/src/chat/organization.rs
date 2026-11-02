@@ -917,8 +917,19 @@ pub async fn chat_accept_assignment_here(
     app: tauri::AppHandle,
     db_url: String,
     assignment_id: ChatWorkAssignmentId,
-) -> ChatResult<ChatWorkAssignmentRead> {
-    assignments::accept_assignment_here(app, db_url, assignment_id).await
+    seen_digest: String,
+) -> ChatResult<Option<ChatWorkAssignmentRead>> {
+    assignments::accept_assignment_here(app, db_url, assignment_id, seen_digest).await
+}
+
+/// Lists the work that waits for a local action on this device, across every reply thread.
+#[tauri::command]
+#[cfg(desktop)]
+pub async fn chat_list_waiting_assignments(
+    app: tauri::AppHandle,
+    db_url: String,
+) -> ChatResult<Vec<ChatWaitingAssignmentRead>> {
+    assignments::list_waiting_assignments(app, db_url).await
 }
 
 /// Starts the work of a mention whose post recorded no assignment, running it on this device.

@@ -21,6 +21,7 @@
     ChatChannelRead,
     ChatChannelRosterRead,
     ChatExecutionTarget,
+    ChatFolderCapability,
     ChatMessageReference,
     ChatParticipantRead,
     ChatScheduledMessageRead,
@@ -49,6 +50,7 @@
     type ChatReferenceTrigger,
   } from "$lib/chat/composer/message-references";
   import { parseChatMessageReference } from "$lib/chat/validation";
+  import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
@@ -236,7 +238,24 @@
   });
   const assignmentAwaitingStart = $derived.by(() => {
     const assignment = threadComposer ? chat.replyThread?.assignment : null;
-    return assignment?.localAcceptanceRequired ? assignment : null;
+    return assignment?.localAcceptance ? assignment : null;
+  });
+  const workAwaitsStartMessage = $derived.by(() => {
+    const offer = assignmentAwaitingStart?.localAcceptance;
+    if (!offer) return "";
+    const provider = chat.settings?.providerInstances.find(
+      (entry) => entry.configuration.instanceId === offer.providerInstanceId,
+    )?.configuration.label ?? offer.providerInstanceId;
+    const access = formatList(localization.locale, [
+      ...offer.folders.map((folder) => t(
+        "chat.organization.workAccessFolder",
+        folderCapabilityLabel(folder.capability),
+        folder.displayName,
+        runtimeApprovalLabel(folder.runtimeApproval),
+      )),
+      t("chat.organization.workAccessScratch", runtimeApprovalLabel(offer.scratchRuntimeApproval)),
+    ], { style: "long", type: "conjunction" });
+    return `${t("chat.organization.workAwaitsStart")} ${t("chat.organization.workAwaitsStartAccess", provider, access)}`;
   });
   const inferredTarget = $derived.by(() => inferAssignmentTarget(
     executionTarget,
@@ -984,12 +1003,13 @@
 
   async function startAssignmentHere(): Promise<void> {
     const assignment = assignmentAwaitingStart;
-    if (!assignment || retryingAssignment) return;
+    if (!assignment?.localAcceptance || retryingAssignment) return;
     retryingAssignment = true;
     error = null;
     try {
-      await chat.acceptAssignmentHere(assignment.id);
-      onRequestScrollToBottom();
+      const started = await chat.acceptAssignmentHere(assignment.id, assignment.localAcceptance.digest);
+      if (started) onRequestScrollToBottom();
+      else error = t("chat.organization.workAccessChanged");
     } catch (cause: unknown) {
       error = cause instanceof Error ? cause.message : String(cause);
       throw cause;
@@ -1273,6 +1293,16 @@
     return value.startsWith("reply-thread:") ? value.slice("reply-thread:".length) : null;
   }
 
+  function folderCapabilityLabel(capability: ChatFolderCapability): string {
+    switch (capability) {
+      case "none": return t("settings.chat.teammates.folderCapabilities.none");
+      case "read": return t("settings.chat.teammates.folderCapabilities.read");
+      case "edit": return t("settings.chat.teammates.folderCapabilities.edit");
+      case "execute": return t("settings.chat.teammates.folderCapabilities.execute");
+      case "publish": return t("settings.chat.teammates.folderCapabilities.publish");
+    }
+  }
+
   function runtimeApprovalLabel(policy: ChatAssignmentTargetRead["effectiveRuntimeApproval"]): string {
     switch (policy) {
       case "ask": return t("settings.chat.teammates.runtime.ask");
@@ -1289,7 +1319,7 @@
     <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
   {/if}
   {#if assignmentAwaitingStart}
-    <Notice class="assignment-notice" role="status" message={t("chat.organization.workAwaitsStart")} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />
+    <Notice class="assignment-notice" role="status" message={workAwaitsStartMessage} retryLabel={t("chat.organization.startHere")} onRetry={startAssignmentHere} copy={false} />
   {/if}
   {#if nextScheduledMessage}
     <div class="scheduled-summary">

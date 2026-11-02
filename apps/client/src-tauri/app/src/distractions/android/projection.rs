@@ -714,6 +714,115 @@ mod tests {
     }
 
     #[test]
+    fn rule_cap_keeps_enabled_rules_before_disabled_ones() {
+        let mut config = root();
+        let mut apps: Vec<Value> = (0..MAX_MOBILE_RULES)
+            .map(|index| {
+                json!({"name": "Off", "packageName": format!("com.off.app{index}"), "enabled": false})
+            })
+            .collect();
+        apps.push(json!({"name": "On", "packageName": "com.on.app", "enabled": true}));
+        config["distractions"]["mobile"]["blockedApps"] = json!(apps);
+        let (rules, _) = build(&config, &capture(), &[], &copy(), "native-rank").unwrap();
+        let packages = published_packages(&rules);
+        assert_eq!(packages.len(), MAX_MOBILE_RULES);
+        assert_eq!(packages[0], "com.on.app");
+        assert_eq!(packages[1], "com.off.app0");
+    }
+
+    fn package_limit(id: &str, enabled: bool, packages: impl IntoIterator<Item = String>) -> Value {
+        let entries: Vec<Value> = packages
+            .into_iter()
+            .enumerate()
+            .map(|(index, package)| json!({"id": format!("e{index}"), "mobileAppPackage": package}))
+            .collect();
+        json!({"id": id, "name": id, "enabled": enabled, "minutesPerDay": 10, "entries": entries})
+    }
+
+    fn published_limit_ids(rules: &Value) -> Vec<&str> {
+        rules["limits"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn limit_publication_keeps_enabled_limits_past_the_count_cap() {
+        let mut config = root();
+        let mut items = vec![package_limit(
+            "off",
+            false,
+            ["com.example.off".to_owned()],
+        )];
+        items.extend((0..MAX_MOBILE_LIMITS).map(|index| {
+            package_limit(
+                &format!("on{index}"),
+                true,
+                [format!("com.example.on{index}")],
+            )
+        }));
+        config["distractions"]["limits"]["items"] = json!(items);
+        let built = build(&config, &capture(), &[], &copy(), "native-limit-count");
+        assert!(built.is_ok(), "the limit count stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        let ids = published_limit_ids(&rules);
+        assert_eq!(ids.len(), MAX_MOBILE_LIMITS);
+        assert_eq!(ids[0], "on0");
+        assert!(!ids.contains(&"off"));
+    }
+
+    #[test]
+    fn limit_publication_caps_the_packages_of_one_limit() {
+        let mut config = root();
+        let packages = (0..=MAX_MOBILE_RULES).map(|index| format!("com.wide.app{index:03}"));
+        config["distractions"]["limits"]["items"] = json!([package_limit("wide", true, packages)]);
+        let built = build(&config, &capture(), &[], &copy(), "native-limit-wide");
+        assert!(built.is_ok(), "one wide limit stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        let published = rules["limits"]["items"][0]["packages"].as_array().unwrap();
+        assert_eq!(published.len(), MAX_MOBILE_RULES);
+        assert!(published.contains(&json!("com.wide.app000")));
+        assert!(!published.contains(&json!(format!("com.wide.app{MAX_MOBILE_RULES:03}"))));
+    }
+
+    #[test]
+    fn limit_publication_fits_the_byte_budget_and_keeps_small_limits() {
+        let mut config = root();
+        let wide_name = "\u{10348}".repeat(MAX_RULE_NAME_CHARS);
+        config["distractions"]["mobile"]["blockedApps"] = (0..MAX_MOBILE_RULES)
+            .map(|index| {
+                json!({"name": wide_name, "packageName": format!("com.r{index:03}.{}", "a".repeat(246))})
+            })
+            .collect();
+        let mut items: Vec<Value> = (0..7)
+            .map(|limit| {
+                package_limit(
+                    &format!("flood{limit}"),
+                    true,
+                    (0..250).map(move |index| format!("com.l{limit}p{index:03}.{}", "b".repeat(243))),
+                )
+            })
+            .collect();
+        items.push(package_limit(
+            "honest",
+            true,
+            ["com.example.video".to_owned()],
+        ));
+        config["distractions"]["limits"]["items"] = json!(items);
+        let built = build(&config, &capture(), &[], &copy(), "native-limit-bytes");
+        assert!(built.is_ok(), "the byte flood stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
+        assert!(serde_json::to_vec(&rules).unwrap().len() <= MAX_CAPTURE_BYTES);
+        let ids = published_limit_ids(&rules);
+        assert!(ids.contains(&"honest"));
+        assert!(ids.contains(&"flood0"));
+        assert!(ids.len() < 8);
+        assert_eq!(published_packages(&rules).len(), MAX_MOBILE_RULES);
+    }
+
+    #[test]
     fn capture_rejects_future_stale_mixed_vault_and_inconsistent_week_evidence() {
         let original = serde_json::to_value(json!({"vaultId": "vault", "journalVaultId": "vault",
             "observedAtEpochMs": now(), "utcOffsetSeconds": 0, "localDate": "2026-10-02", "weekStartLocalDate": "2026-09-28", "localSources": [], "pending": []})).unwrap();

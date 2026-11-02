@@ -13,7 +13,9 @@ use super::store::{
     HostList, LimitDraft, LimitEntryDraft, RuleEdit, RuleRefusal, RuleTarget, RulesError, apply,
     read,
 };
-use super::{DistractionsConfig, MAX_HOST_CHARS, MAX_LIMIT_ENTRIES, MAX_USAGE_LIMITS};
+use super::{
+    DistractionsConfig, MAX_HOST_CHARS, MAX_LIMIT_ENTRIES, MAX_MOBILE_APP_RULES, MAX_USAGE_LIMITS,
+};
 use crate::test_support::block_on;
 
 const NOW_MS: i64 = 1_700_000_000_000;
@@ -622,6 +624,58 @@ fn hidden_limit_rows_leave_the_limit_cap_free() {
             .map(|limit| limit.name.as_str())
             .collect();
         assert_eq!(saved, ["Video"]);
+    });
+}
+
+async fn insert_mobile_rule(pool: &SqlitePool, package: &str, enabled: bool) {
+    sqlx::query(
+        "INSERT INTO distractions_app_rules
+             (id, platform, identity, display_name, enabled, created_at_ms)
+         VALUES (?, 'mobile', ?, 'App', ?, ?)",
+    )
+    .bind(format!("rule-{package}"))
+    .bind(package)
+    .bind(enabled)
+    .bind(NOW_MS)
+    .execute(pool)
+    .await
+    .expect("insert mobile rule");
+}
+
+fn add_mobile_app(package: &str) -> RuleEdit {
+    RuleEdit::AddMobileApp {
+        name: "App".into(),
+        package_name: package.into(),
+    }
+}
+
+#[test]
+fn mobile_app_rules_refuse_past_the_guardian_cap() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        set_applying(&pool, true).await;
+        for index in 0..MAX_MOBILE_APP_RULES - 1 {
+            insert_mobile_rule(&pool, &format!("com.cap.app{index}"), index % 2 == 0).await;
+        }
+        insert_mobile_rule(&pool, "not a package", true).await;
+        set_applying(&pool, false).await;
+
+        apply(&pool, &add_mobile_app("com.cap.last"), NOW_MS)
+            .await
+            .expect("an invalid synced row leaves its slot free");
+        let full = apply(&pool, &add_mobile_app("com.cap.surplus"), NOW_MS).await;
+        assert_eq!(refusal(full), RuleRefusal::TooLarge);
+        apply(&pool, &add_mobile_app("COM.CAP.APP0"), NOW_MS)
+            .await
+            .expect("a package already blocked stays a no-op at the cap");
+        let config = read(&pool).await.expect("read rules");
+        assert!(
+            config
+                .mobile
+                .blocked_apps
+                .iter()
+                .all(|rule| rule.package_name != "com.cap.surplus")
+        );
     });
 }
 

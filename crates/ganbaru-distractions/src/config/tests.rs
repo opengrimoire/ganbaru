@@ -605,7 +605,8 @@ fn hidden_limit_rows_leave_the_limit_cap_free() {
             insert_replicated_entry(&pool, "misnamed-entries", ordinal, &id, website).await;
         }
         set_applying(&pool, false).await;
-        assert!(read(&pool).await.expect("read rules").limits.items.is_empty());
+        let hidden = read(&pool).await.expect("read rules");
+        assert!(hidden.limits.items.is_empty());
 
         let config = apply(
             &pool,

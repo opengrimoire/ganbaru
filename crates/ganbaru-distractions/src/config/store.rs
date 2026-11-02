@@ -976,17 +976,14 @@ pub(super) async fn save_usage_limit(
     now_ms: i64,
 ) -> Result<String, RulesError> {
     let limit = normalize_limit(draft)?;
-    let (limit_count, entry_count): (i64, i64) = sqlx::query_as(
-        "SELECT
-             (SELECT count(*) FROM distractions_usage_limits WHERE id IS NOT ?1),
-             (SELECT count(*) FROM distractions_usage_limit_entries WHERE limit_id IS NOT ?1)",
-    )
-    .bind(id)
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(storage("count usage limits"))?;
-    let other_limits = usize::try_from(limit_count).unwrap_or(usize::MAX);
-    let other_entries = usize::try_from(entry_count).unwrap_or(usize::MAX);
+    // The caps count the limits load assembles, so rows load skips cannot use them up.
+    let others: Vec<LimitRule> = read_usable_limits(conn)
+        .await?
+        .into_iter()
+        .filter(|other| Some(other.id.as_str()) != id)
+        .collect();
+    let other_limits = others.len();
+    let other_entries: usize = others.iter().map(|other| other.entries.len()).sum();
     if other_limits >= MAX_USAGE_LIMITS
         || other_entries.saturating_add(limit.entries.len()) > MAX_LIMIT_ENTRIES
     {
@@ -1330,6 +1327,13 @@ async fn load_limits(
     conn: &mut SqliteConnection,
     config: &mut DistractionsConfig,
 ) -> Result<(), RulesError> {
+    config.limits.items = read_usable_limits(conn).await?;
+    Ok(())
+}
+
+/// The usage limits load assembles, in order: rows another device left incomplete or unreadable,
+/// and limits past the caps, are skipped.
+async fn read_usable_limits(conn: &mut SqliteConnection) -> Result<Vec<LimitRule>, RulesError> {
     let mut entries = read_entries(conn, None).await?;
     let rows = sqlx::query(
         "SELECT id, name, enabled, minutes_per_day, minutes_per_week
@@ -1339,6 +1343,7 @@ async fn load_limits(
     .await
     .map_err(storage("read usage limits"))?;
     let mut entry_total = 0usize;
+    let mut limits = Vec::new();
     for row in &rows {
         let id = text(row, "id")?;
         let name = text(row, "name")?;
@@ -1356,13 +1361,13 @@ async fn load_limits(
             && !limit_entries.is_empty()
             && (minutes_per_day.is_some() || minutes_per_week.is_some());
         if !complete
-            || config.limits.items.len() >= MAX_USAGE_LIMITS
+            || limits.len() >= MAX_USAGE_LIMITS
             || entry_total + limit_entries.len() > MAX_LIMIT_ENTRIES
         {
             continue;
         }
         entry_total += limit_entries.len();
-        config.limits.items.push(LimitRule {
+        limits.push(LimitRule {
             id,
             name,
             enabled: flag(row, "enabled")?,
@@ -1371,5 +1376,5 @@ async fn load_limits(
             entries: limit_entries,
         });
     }
-    Ok(())
+    Ok(limits)
 }

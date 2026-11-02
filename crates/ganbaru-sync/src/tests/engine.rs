@@ -2732,7 +2732,7 @@ async fn forged_item_create(creator: &mut Replica) -> Change {
 }
 
 /// Stores `forged` on `replica`, as a valid operation, and applies it.
-async fn take_forged(replica: &mut Replica, forged: &[u8]) {
+pub(super) async fn take_forged(replica: &mut Replica, forged: &[u8]) {
     assert_eq!(replica.receive(&[forged.to_vec()]).await, vec![STORED]);
     replica.apply_all().await.unwrap();
 }

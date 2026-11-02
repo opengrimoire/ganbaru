@@ -78,6 +78,16 @@ pub struct NativeCalendarWindow {
     pub diagnostics: Vec<ExpansionDiagnostic>,
     /// Selected templates left out to keep the window inside its bounds.
     pub omitted_template_count: usize,
+    /// Templates whose title or location the window carries shortened.
+    pub shortened_text: Vec<ShortenedWindowText>,
+}
+
+/// Which window text of one template is shortened, so its full value loads with the event.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ShortenedWindowText {
+    pub event_id: String,
+    pub title: bool,
+    pub location: bool,
 }
 
 impl NativeCalendarWindow {
@@ -659,6 +669,7 @@ impl WindowSource {
             occurrences,
             diagnostics,
             omitted_template_count: self.omitted_template_count,
+            shortened_text: Vec::new(),
         };
         snapshot.remove_templates(&over_occurrence_limit);
         snapshot.remove_repeated_occurrences();

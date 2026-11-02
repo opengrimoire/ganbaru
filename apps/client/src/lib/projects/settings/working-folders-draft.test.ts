@@ -65,6 +65,7 @@ describe("Project settings working-folder drafts", () => {
     draft.setPreference("external", "new-provider");
     await draft.choose();
     const added = draft.folders.at(-1)!;
+    expect(added.workingFolder.id).toMatch(/^working-folder:external:[^:]+$/);
     draft.makePrimary(added);
     draft.setArchived(draft.folders[2], true);
     await draft.save();

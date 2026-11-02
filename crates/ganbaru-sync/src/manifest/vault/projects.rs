@@ -853,7 +853,9 @@ pub const PROJECTS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `project_working_folders`. A managed folder is keyed by its project, created with it, and
+/// `project_working_folders`. A managed folder is keyed by its project's managed folder id, which
+/// no external folder or other project takes, and the adapter holds a create that breaks that
+/// binding. It is created with its project and
 /// never archived or removed while the project exists, so a tombstone of one is retained until
 /// its project goes and its key is never removed and added again. Received folders never touch
 /// the filesystem.

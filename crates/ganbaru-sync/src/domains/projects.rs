@@ -8,8 +8,10 @@
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
-use ganbaru_working_folders::{UtcTimestamp, managed_project_relative_path};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
+use ganbaru_working_folders::{
+    UtcTimestamp, managed_folder_project, managed_project_relative_path,
+};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -484,6 +486,33 @@ fn validate_folder(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     }
 }
 
+/// A working folder key names its kind and project: a managed folder lives only under its
+/// project's [`ganbaru_working_folders::managed_folder_id`], and no external folder takes a key of that shape. Every device
+/// derives a managed folder's key from its project, so a forged create under that key with an
+/// earlier clock would otherwise win the immutable merge and carry the honest folder to another
+/// project or kind.
+fn validate_folder_row(row: &RowKey, groups: &[GroupValue]) -> Result<(), AdapterError> {
+    let Some(created) = groups
+        .iter()
+        .find(|value| value.group == folder_group::CREATED)
+    else {
+        return Ok(());
+    };
+    let [project, kind, _, _, _] = fields(&created.value, "project folder")?;
+    let owner = managed_folder_project(row.as_str());
+    match (kind, project) {
+        (Field::Text(kind), Field::Text(project)) if kind == MANAGED_FOLDER_KIND => {
+            if owner.as_deref() == Some(project.as_str()) {
+                Ok(())
+            } else {
+                Err(AdapterError("project folder key"))
+            }
+        }
+        _ if owner.is_some() => Err(AdapterError("project folder key")),
+        _ => Ok(()),
+    }
+}
+
 /// The forced groups of a working folder: a managed folder always materializes unarchived, since
 /// the project's primary folder falls back to it and an archived one refuses every folder use.
 fn forced_folder_groups(
@@ -616,6 +645,18 @@ impl DomainAdapter for ProjectsAdapter {
 
     fn priority(&self, _table: TableId, _group: GroupId, _value: &Value) -> u8 {
         0
+    }
+
+    fn validate_row(
+        &self,
+        table: TableId,
+        row: &RowKey,
+        groups: &[GroupValue],
+    ) -> Result<(), AdapterError> {
+        match table {
+            FOLDERS_TABLE => validate_folder_row(row, groups),
+            _ => Ok(()),
+        }
     }
 
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
@@ -969,6 +1010,58 @@ mod tests {
             "project:one",
             "managed",
             text("projects/project:one")
+        ));
+    }
+
+    #[test]
+    fn folder_key_must_match_its_kind_and_project() {
+        let adapter = ProjectsAdapter;
+        let admits = |key: &str, project: &str, kind: &str| {
+            let path = if kind == MANAGED_FOLDER_KIND {
+                text(&format!("projects/{project}"))
+            } else {
+                Field::Null
+            };
+            let created = GroupValue::new(
+                FOLDERS_TABLE,
+                folder_group::CREATED,
+                value(vec![
+                    text(project),
+                    text(kind),
+                    path,
+                    Field::Integer(0),
+                    text("2027-01-02T00:00:00.000Z"),
+                ]),
+            );
+            adapter
+                .validate_row(FOLDERS_TABLE, &RowKey::new(key).unwrap(), &[created])
+                .is_ok()
+        };
+
+        assert!(admits("working-folder:project", "project", "managed"));
+        assert!(admits(
+            "working-folder-routine-learning",
+            "project-routine-learning",
+            "managed"
+        ));
+        let external = "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63";
+        assert!(admits(external, "project", "external"));
+        assert!(admits("folder-external", "project", "external"));
+
+        assert!(!admits("working-folder:project", "other", "managed"));
+        assert!(!admits("working-folder:extra", "project", "managed"));
+        assert!(!admits(external, "project", "managed"));
+        assert!(!admits("working-folder:project", "project", "external"));
+        assert!(!admits("working-folder:project", "other", "external"));
+        assert!(!admits(
+            "working-folder-routine-learning",
+            "project",
+            "external"
+        ));
+        assert!(!admits(
+            "working-folder:project-routine-learning",
+            "project-routine-learning",
+            "managed"
         ));
     }
 

@@ -1602,6 +1602,9 @@ async fn assert_forged_managed_key_create_is_held(created: Vec<Field>) {
         replica.check_invariants().await;
     }
 
+    // The forger's own writer would hold its forged operation and stop sealing, so only the
+    // honest replicas converge.
+    replicas.remove(1);
     converge(&mut replicas).await;
     assert_converged(&mut replicas).await;
     for replica in &mut replicas {
@@ -1643,4 +1646,51 @@ fn a_forged_managed_create_of_another_project_on_a_managed_key_is_held() {
         Field::Integer(0),
         Field::Text(CREATED.to_owned()),
     ]));
+}
+
+#[test]
+fn seeded_managed_folders_are_keyed_by_their_project() {
+    block_on(async {
+        let mut replica = Replica::new(0, 96).await;
+        let rows = texts(
+            &mut replica,
+            "SELECT id || '|' || project_id FROM project_working_folders WHERE kind = 'managed'",
+        )
+        .await;
+        assert!(!rows.is_empty());
+        for row in rows {
+            let (folder, project) = row.split_once('|').unwrap();
+            assert_eq!(
+                ganbaru_working_folders::managed_folder_project(folder).as_deref(),
+                Some(project),
+                "{folder}"
+            );
+        }
+    });
+}
+
+#[test]
+fn an_external_folder_with_a_client_key_replicates() {
+    const CLIENT_FOLDER: &str = "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63";
+    block_on(async {
+        let created = quoted(CREATED);
+        let mut replicas = shared(
+            2,
+            &format!(
+                "INSERT INTO project_working_folders
+                     (id, project_id, display_name, kind, managed_relative_path, created_at,
+                      updated_at)
+                 VALUES ({folder}, {project}, 'Repository', 'external', NULL, {created},
+                         {created});",
+                folder = quoted(CLIENT_FOLDER),
+                project = quoted(PROJECT),
+            ),
+        )
+        .await;
+        assert_eq!(
+            folder_owner(&mut replicas[1], CLIENT_FOLDER).await,
+            [format!("{PROJECT}|external")]
+        );
+        assert_converged(&mut replicas).await;
+    });
 }

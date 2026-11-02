@@ -145,6 +145,35 @@ async fn list_workspaces_skips_a_row_that_does_not_parse() {
 }
 
 #[tokio::test]
+async fn create_workspace_refuses_a_managed_folder_id() {
+    let pool = migrated_pool().await;
+    insert_project_with_external_folder(&pool).await;
+    for reserved in [
+        "working-folder:project-other",
+        "working-folder-routine-other",
+    ] {
+        let request = CreateProjectWorkingFolderRequest {
+            id: ProjectWorkingFolderId::new(reserved.to_string()).unwrap(),
+            project_id: "project-removal".to_string(),
+            display_name: "Repository".to_string(),
+        };
+        let error = create_workspace(&pool, &request, &now()).await.unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation, "{reserved}");
+    }
+
+    let request = CreateProjectWorkingFolderRequest {
+        id: ProjectWorkingFolderId::new(
+            "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63".to_string(),
+        )
+        .unwrap(),
+        project_id: "project-removal".to_string(),
+        display_name: "Repository".to_string(),
+    };
+    let created = create_workspace(&pool, &request, &now()).await.unwrap();
+    assert_eq!(created.id, request.id);
+}
+
+#[tokio::test]
 async fn list_workspaces_keeps_query_errors_fatal() {
     let pool = migrated_pool().await;
     pool.close().await;

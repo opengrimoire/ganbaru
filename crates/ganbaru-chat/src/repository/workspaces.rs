@@ -60,6 +60,7 @@ pub async fn create_workspace(
     now: &UtcTimestamp,
 ) -> ChatResult<ProjectWorkingFolder> {
     validate_name(&request.display_name)?;
+    validate_external_id(&request.id)?;
     sqlx::query(
         "INSERT INTO project_working_folders
             (id, project_id, display_name, kind, sort_order, repository_kind, created_at, updated_at)
@@ -333,6 +334,18 @@ fn validate_name(value: &str) -> ChatResult<()> {
         Err(ChatError::validation(
             "displayName",
             "Project working-folder name is invalid",
+        ))
+    } else {
+        Ok(())
+    }
+}
+/// Refuses an external folder id that is some project's managed folder id, which sync reserves
+/// for that project's managed folder on every device.
+fn validate_external_id(id: &ProjectWorkingFolderId) -> ChatResult<()> {
+    if ganbaru_working_folders::managed_folder_project(id.as_str()).is_some() {
+        Err(ChatError::validation(
+            "id",
+            "Project working-folder id is reserved for a managed folder",
         ))
     } else {
         Ok(())

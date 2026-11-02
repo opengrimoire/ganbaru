@@ -26,8 +26,10 @@ pub(super) async fn dispatch_assignment_job(
         dispatch_claimed_assignment(app.clone(), db_url.clone(), &pool, &assignment_id, &claim)
             .await;
     if let Err(error) = result {
-        fail_assignment_dispatch(&pool, &assignment_id, &claim.token, &error).await?;
-        return Err(error);
+        return match settle_dispatch_error(&pool, &assignment_id, &claim.token, &error).await? {
+            DispatchSettlement::Failed => Err(error),
+            DispatchSettlement::Waiting => Ok(()),
+        };
     }
     mark_initial_assignment_input_delivered(&pool, &assignment_id).await?;
     deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
@@ -620,6 +622,26 @@ async fn require_live_folder_target(
             false,
         ))
     }
+}
+
+/// How a claimed dispatch that could not start was settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DispatchSettlement {
+    /// The assignment and its job were failed with the dispatch error.
+    Failed,
+    /// The job was dropped and the assignment stays queued.
+    Waiting,
+}
+
+/// Settles the claim `claim_token` of `assignment_id` after its dispatch returned `error`.
+pub(super) async fn settle_dispatch_error(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    claim_token: &str,
+    error: &ChatError,
+) -> ChatResult<DispatchSettlement> {
+    fail_assignment_dispatch(pool, assignment_id, claim_token, error).await?;
+    Ok(DispatchSettlement::Failed)
 }
 
 async fn fail_assignment_dispatch(

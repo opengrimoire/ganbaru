@@ -2847,6 +2847,192 @@ fn unaccepted_work_does_not_block_archiving_a_teammate() {
     });
 }
 
+#[test]
+fn accepted_work_of_a_teammate_archived_elsewhere_waits_at_claim() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+        sqlx::query(
+            "UPDATE chat_participants SET archived_at = '2026-08-04T17:02:00.000Z',
+                 revision = revision + 1
+             WHERE id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let now = super::now_timestamp().unwrap();
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+            .await
+            .unwrap();
+
+        assert!(
+            claim.is_none(),
+            "an archived teammate's accepted work does not start"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        let (state, reason, executor, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the accepted work waits for a restore");
+        assert_eq!(reason, None);
+        assert_eq!(executor.as_deref(), Some("device:old"));
+
+        let archived_revision: i64 =
+            sqlx::query_scalar("SELECT revision FROM chat_participants WHERE id = ?")
+                .bind(teammate_id.as_str())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        super::teammate_lifecycle::set_teammate_archived(
+            &pool,
+            &teammate_id,
+            u64::try_from(archived_revision).unwrap(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap(),
+            "the restored teammate's work starts once accepted again"
+        );
+    });
+}
+
+#[test]
+fn accepted_work_of_a_teammate_archived_after_its_claim_waits_for_a_restore() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        let now = super::now_timestamp().unwrap();
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+            .await
+            .unwrap()
+            .expect("the accepted work claims while the teammate is active");
+        sqlx::query(
+            "UPDATE chat_participants SET archived_at = '2026-08-04T17:02:00.000Z',
+                 revision = revision + 1
+             WHERE id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = ChatError::new(
+            ChatErrorCode::Permission,
+            "The teammate is no longer available for organizational work",
+            true,
+        );
+
+        let settlement =
+            super::dispatch::settle_dispatch_error(&pool, &assignment_id, &claim.token, &error)
+                .await
+                .unwrap();
+
+        assert_eq!(settlement, super::dispatch::DispatchSettlement::Waiting);
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        let (state, reason, ..) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the accepted work waits for a restore");
+        assert_eq!(reason, None);
+    });
+}
+
+#[test]
+fn a_dispatch_error_of_an_active_teammate_still_fails_the_work() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap()
+        );
+        let now = super::now_timestamp().unwrap();
+        let claim = super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+            .await
+            .unwrap()
+            .unwrap();
+        let error = ChatError::new(
+            ChatErrorCode::Permission,
+            "The execution folder is no longer authorized for this assignment",
+            false,
+        );
+
+        let settlement =
+            super::dispatch::settle_dispatch_error(&pool, &assignment_id, &claim.token, &error)
+                .await
+                .unwrap();
+
+        assert_eq!(settlement, super::dispatch::DispatchSettlement::Failed);
+        let (state, reason, ..) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "failed");
+        assert_eq!(reason.as_deref(), Some(error.message.as_str()));
+    });
+}
+
+#[test]
+fn only_live_dispatch_jobs_block_archiving_a_teammate() {
+    tauri::async_runtime::block_on(async {
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        for (job_state, blocks) in [
+            ("queued", true),
+            ("claimed", true),
+            ("cancelled", false),
+            ("completed", false),
+            ("failed", false),
+        ] {
+            let pool = review_thread_without_assignment().await;
+            seed_assignment_on_old_owner(&pool, "queued").await;
+            sqlx::query(
+                "INSERT INTO chat_assignment_dispatch_jobs
+                    (id, assignment_id, state, available_at, created_at, updated_at)
+                 VALUES ('dispatch:old', 'assignment:old', ?1, ?2, ?2, ?2)",
+            )
+            .bind(job_state)
+            .bind("2026-08-04T17:02:00.000Z")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let result =
+                super::teammate_lifecycle::set_teammate_archived(&pool, &teammate_id, 1, true)
+                    .await;
+
+            if blocks {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    ChatErrorCode::Conflict,
+                    "a {job_state} job blocks archiving"
+                );
+            } else {
+                let archived = result.unwrap_or_else(|error| {
+                    panic!("a {job_state} job must not block archiving: {error:?}")
+                });
+                assert_eq!(archived.active_assignment_count, 0);
+                let (state, ..) = assignment_takeover(&pool, "assignment:old").await;
+                assert_eq!(state, "queued");
+            }
+        }
+    });
+}
+
 /// A local reply in `reply-thread:review` that mentions the review agent.
 fn review_reply_mention(client_command_id: &str) -> PostChatMessageCommand {
     let mut request = message("@Review agent continue");

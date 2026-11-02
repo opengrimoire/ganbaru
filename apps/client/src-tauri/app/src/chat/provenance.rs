@@ -17,6 +17,7 @@ use crate::chat::channels::chat_pool;
 pub struct ChatMessageProvenance {
     /// Empty when sync holds no record of the message.
     devices: Vec<DeviceRef>,
+    last_edited_by: Vec<DeviceRef>,
 }
 
 fn sync_error(error: ganbaru_sync::SyncError) -> ChatError {
@@ -55,6 +56,7 @@ async fn provenance_from_pool(
             .iter()
             .map(|device_id| names.describe(device_id))
             .collect(),
+        last_edited_by: Vec::new(),
     })
 }
 
@@ -76,6 +78,10 @@ pub async fn chat_message_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync::manifest::vault::chat::REVISIONS_TABLE;
+    use ganbaru_sync_contracts::TableId;
+
+    const SPACE: [u8; 16] = [7; 16];
 
     async fn migrated_pool() -> SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -87,6 +93,101 @@ mod tests {
             .await
             .unwrap();
         pool
+    }
+
+    /// A pool for rows seeded alone, without the conversation and space rows they refer to.
+    async fn seeded_pool() -> SqlitePool {
+        let pool = migrated_pool().await;
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Enrolls `device_id` under `label` with one writer, identified by `writer`.
+    async fn seed_device(pool: &SqlitePool, writer: u8, device_id: &str, label: &str) {
+        sqlx::query(
+            "INSERT INTO sync_devices
+                (space_id, device_id, device_key, tls_fingerprint, label, kind, role,
+                 enrolled_revision)
+             VALUES (?, ?, ?, ?, ?, 'desktop', 'member', 0)",
+        )
+        .bind(SPACE.as_slice())
+        .bind(device_id)
+        .bind([writer; 32].as_slice())
+        .bind([writer; 32].as_slice())
+        .bind(label)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sync_writers
+                (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
+                 applied_seq, head_hash, head_clock, created_at_ms)
+             VALUES (?, ?, ?, ?, x'00', 'active', 1, 1, ?, 0, 0)",
+        )
+        .bind(SPACE.as_slice())
+        .bind([writer; 16].as_slice())
+        .bind([writer; 32].as_slice())
+        .bind(device_id)
+        .bind([writer; 32].as_slice())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Records that `writer` created `row_key`.
+    async fn seed_creation(pool: &SqlitePool, table: TableId, row_key: &str, writer: u8) {
+        sqlx::query(
+            "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq)
+             VALUES (?, ?, ?, 1)",
+        )
+        .bind(i64::from(table.0))
+        .bind(row_key)
+        .bind([writer; 16].as_slice())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Stores message `item_id` whose current revision is `revision_id`.
+    async fn seed_message(pool: &SqlitePool, item_id: &str, revision_id: &str) {
+        sqlx::query(
+            "INSERT INTO chat_communication_messages (item_id, current_revision_id, created_at)
+             VALUES (?, ?, '2026-11-01T10:00:00.000Z')",
+        )
+        .bind(item_id)
+        .bind(revision_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_later_edit_names_its_device() {
+        let pool = seeded_pool().await;
+        seed_device(&pool, 1, "honest", "Desk").await;
+        seed_device(&pool, 2, "editor", "Phone").await;
+        seed_message(&pool, "item-1", "revision-2").await;
+        seed_creation(&pool, MESSAGES_TABLE, "item-1", 1).await;
+        seed_creation(&pool, REVISIONS_TABLE, "revision-1", 1).await;
+        seed_creation(&pool, REVISIONS_TABLE, "revision-2", 2).await;
+
+        let provenance = provenance_from_pool(&pool, "own", "item-1").await.unwrap();
+
+        let creators: Vec<&str> = provenance
+            .devices
+            .iter()
+            .map(|device| device.device_id.as_str())
+            .collect();
+        assert_eq!(creators, ["honest"]);
+        let editors: Vec<(&str, Option<&str>)> = provenance
+            .last_edited_by
+            .iter()
+            .map(|device| (device.device_id.as_str(), device.device_label.as_deref()))
+            .collect();
+        assert_eq!(editors, [("editor", Some("Phone"))]);
     }
 
     #[tokio::test]

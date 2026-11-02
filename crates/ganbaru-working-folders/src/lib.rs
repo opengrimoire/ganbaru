@@ -5,12 +5,13 @@ use std::{collections::BTreeMap, fmt};
 mod managed_folder;
 
 pub use managed_folder::{
-    MANAGED_PROJECTS_DIRECTORY, managed_project_relative_path, resolve_managed_project_folder,
-    validate_managed_folder_name,
+    MANAGED_PROJECTS_DIRECTORY, managed_folder_id, managed_folder_project,
+    managed_project_relative_path, resolve_managed_project_folder, validate_managed_folder_name,
 };
 
-/// Folder ids become sync row keys, so they stay short. Managed folder ids are
-/// `working-folder:{project id}` and client folder ids are `working-folder:{uuid}`.
+/// Folder ids become sync row keys, so they stay short. Managed folder ids come from
+/// [`managed_folder_id`] and client folder ids are `working-folder:external:{uuid}`, which no
+/// project's managed folder id can equal.
 const MAX_IDENTIFIER_BYTES: usize = 64;
 
 /// Stable identifier for a project working folder.

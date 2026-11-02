@@ -31,11 +31,9 @@ pub(crate) async fn insert_managed_working_folder(
     project_id: &str,
     display_name: &str,
 ) -> Result<(), String> {
-    let managed_folder_id = ganbaru_working_folders::ProjectWorkingFolderId::new(format!(
-        "working-folder:{project_id}"
-    ))
-    .map_err(|e| format!("create managed project working folder: {e}"))?
-    .into_inner();
+    let managed_folder_id = ganbaru_working_folders::managed_folder_id(project_id)
+        .map_err(|e| format!("create managed project working folder: {e}"))?
+        .into_inner();
     let managed_relative_path = ganbaru_working_folders::managed_project_relative_path(project_id)?;
     sqlx::query(
         "INSERT INTO project_working_folders

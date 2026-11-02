@@ -6,14 +6,16 @@
 //! concurrent edit or insert is offered for recovery.
 
 use ganbaru_sync_contracts::{
-    Cause, Change, ChangeAction, Field, GroupId, GroupMask, GroupValue, RowKey, TableId, Value,
-    VersionVector, derived_key,
+    Cause, Change, ChangeAction, Content, Field, GroupId, GroupMask, GroupValue, Hlc, RowKey,
+    TableId, Value, VersionVector, derived_key,
 };
 
+use super::authorization::{seal_at, view};
 use super::block_on;
 use super::chat::{CHANNEL, folder_grant_sql};
+use super::engine::with_group;
 use super::replica::{
-    Replica, converge, device_id, forge_change, forge_changes, pair, quoted, rank,
+    Replica, converge, device_id, forge_change, forge_changes, pair, quoted, rank, sealed_change,
 };
 use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::CHANNELS_TABLE;
@@ -1487,5 +1489,208 @@ fn a_deleted_project_offers_what_its_forged_folder_tombstone_caused_under_the_pr
                 replica.index
             );
         }
+    });
+}
+
+const OTHER_PROJECT: &str = "project-other";
+
+/// SQL adding a second project to the shared group.
+fn other_project_sql() -> String {
+    format!(
+        "INSERT INTO projects (id, group_id, name, created_at, updated_at, order_key)
+         VALUES ({}, {}, 'Other', {created}, {created}, {});",
+        quoted(OTHER_PROJECT),
+        quoted(GROUP),
+        quoted(&rank(2)),
+        created = quoted(CREATED),
+    )
+}
+
+/// The stored project and kind of `folder` as `project|kind`.
+async fn folder_owner(replica: &mut Replica, folder: &str) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT project_id || '|' || kind FROM project_working_folders WHERE id = {}",
+            quoted(folder)
+        ),
+    )
+    .await
+}
+
+/// The operation `replica`'s writer seals with `change` at `clock`, below any clock an honest
+/// writer would choose, so a Create wins an immutable minimum it did not see.
+async fn forge_at(replica: &mut Replica, change: Change, clock: Hlc) -> Vec<u8> {
+    let revision = view(replica).await.revision;
+    let last = replica
+        .own_ops()
+        .await
+        .pop()
+        .expect("the replica has sealed");
+    seal_at(
+        &last,
+        &replica.identity.key,
+        Content::Changes(vec![change]),
+        revision,
+        clock,
+    )
+}
+
+/// Seals an unrelated project rename on `replica`, so it has a writer chain to forge on.
+async fn seal_unrelated_edit(replica: &mut Replica, name: &str) {
+    replica
+        .exec(&format!(
+            "UPDATE projects SET name = {} WHERE id = {}",
+            quoted(name),
+            quoted(PROJECT)
+        ))
+        .await;
+    replica.seal().await.unwrap();
+}
+
+/// A forged full Create of the managed folder's key with `created` as its creation group, at a
+/// clock that wins the immutable minimum, followed by a forged tombstone of that key from
+/// another writer. Neither forger saw the honest Create. Every replica keeps the managed row of
+/// the shared project, whether the honest Create or the forgery arrives first.
+async fn assert_forged_managed_key_create_is_held(created: Vec<Field>) {
+    const HONEST_FIRST: usize = 3;
+    const FORGED_FIRST: usize = 4;
+    let mut replicas = shared(5, &other_project_sql()).await;
+    replicas[0].exec(&managed_folder_sql()).await;
+    replicas[0].seal().await.unwrap();
+    let honest = sealed_change(
+        &mut replicas[0],
+        FOLDERS_TABLE,
+        MANAGED_FOLDER,
+        ChangeAction::Create,
+    )
+    .await;
+    seal_unrelated_edit(&mut replicas[1], "Create forger").await;
+    seal_unrelated_edit(&mut replicas[2], "Tombstone forger").await;
+    let forged_create = forge_at(
+        &mut replicas[1],
+        with_group(honest, folder_group::CREATED, created),
+        Hlc::new(1, 0),
+    )
+    .await;
+    let create_delivery = delivery_with(&mut replicas[1], forged_create).await;
+    let forged_tombstone = forge_change(&mut replicas[2], folder_tombstone(MANAGED_FOLDER)).await;
+    let tombstone_delivery = delivery_with(&mut replicas[2], forged_tombstone).await;
+
+    pull_all(&mut replicas, HONEST_FIRST, 0).await;
+    for receiver in [HONEST_FIRST, FORGED_FIRST] {
+        let outcomes = replicas[receiver].receive(&create_delivery).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }),
+            "replica {receiver} admitted the forged Create"
+        );
+        replicas[receiver].apply_all().await.unwrap();
+        deliver(&mut replicas[receiver], &tombstone_delivery).await;
+    }
+    pull_all(&mut replicas, FORGED_FIRST, 0).await;
+    for replica in &mut replicas[HONEST_FIRST..] {
+        assert_eq!(
+            folder_owner(replica, MANAGED_FOLDER).await,
+            [format!("{PROJECT}|managed")],
+            "replica {}",
+            replica.index
+        );
+        assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+        replica.check_invariants().await;
+    }
+
+    // The forger's own writer would hold its forged operation and stop sealing, so only the
+    // honest replicas converge.
+    replicas.remove(1);
+    converge(&mut replicas).await;
+    assert_converged(&mut replicas).await;
+    for replica in &mut replicas {
+        assert_eq!(
+            folder_owner(replica, MANAGED_FOLDER).await,
+            [format!("{PROJECT}|managed")]
+        );
+    }
+}
+
+#[test]
+fn a_forged_external_create_on_a_managed_key_is_held() {
+    block_on(assert_forged_managed_key_create_is_held(vec![
+        Field::Text(PROJECT.to_owned()),
+        Field::Text("external".to_owned()),
+        Field::Null,
+        Field::Integer(0),
+        Field::Text(CREATED.to_owned()),
+    ]));
+}
+
+#[test]
+fn a_forged_external_create_under_another_project_on_a_managed_key_is_held() {
+    block_on(assert_forged_managed_key_create_is_held(vec![
+        Field::Text(OTHER_PROJECT.to_owned()),
+        Field::Text("external".to_owned()),
+        Field::Null,
+        Field::Integer(0),
+        Field::Text(CREATED.to_owned()),
+    ]));
+}
+
+#[test]
+fn a_forged_managed_create_of_another_project_on_a_managed_key_is_held() {
+    block_on(assert_forged_managed_key_create_is_held(vec![
+        Field::Text(OTHER_PROJECT.to_owned()),
+        Field::Text("managed".to_owned()),
+        Field::Text(format!("projects/{OTHER_PROJECT}")),
+        Field::Integer(0),
+        Field::Text(CREATED.to_owned()),
+    ]));
+}
+
+#[test]
+fn seeded_managed_folders_are_keyed_by_their_project() {
+    block_on(async {
+        let mut replica = Replica::new(0, 96).await;
+        let rows = texts(
+            &mut replica,
+            "SELECT id || '|' || project_id FROM project_working_folders WHERE kind = 'managed'",
+        )
+        .await;
+        assert!(!rows.is_empty());
+        for row in rows {
+            let (folder, project) = row.split_once('|').unwrap();
+            assert_eq!(
+                ganbaru_working_folders::managed_folder_project(folder).as_deref(),
+                Some(project),
+                "{folder}"
+            );
+        }
+    });
+}
+
+#[test]
+fn an_external_folder_with_a_client_key_replicates() {
+    const CLIENT_FOLDER: &str = "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63";
+    block_on(async {
+        let created = quoted(CREATED);
+        let mut replicas = shared(
+            2,
+            &format!(
+                "INSERT INTO project_working_folders
+                     (id, project_id, display_name, kind, managed_relative_path, created_at,
+                      updated_at)
+                 VALUES ({folder}, {project}, 'Repository', 'external', NULL, {created},
+                         {created});",
+                folder = quoted(CLIENT_FOLDER),
+                project = quoted(PROJECT),
+            ),
+        )
+        .await;
+        assert_eq!(
+            folder_owner(&mut replicas[1], CLIENT_FOLDER).await,
+            [format!("{PROJECT}|external")]
+        );
+        assert_converged(&mut replicas).await;
     });
 }

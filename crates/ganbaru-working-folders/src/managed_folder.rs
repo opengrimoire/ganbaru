@@ -5,6 +5,8 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use crate::ProjectWorkingFolderId;
+
 /// Vault directory that holds one managed working folder per project.
 pub const MANAGED_PROJECTS_DIRECTORY: &str = "projects";
 
@@ -47,6 +49,45 @@ pub fn validate_managed_folder_name(value: &str) -> Result<(), String> {
 pub fn managed_project_relative_path(project_id: &str) -> Result<String, String> {
     validate_managed_folder_name(project_id)?;
     Ok(format!("{MANAGED_PROJECTS_DIRECTORY}/{project_id}"))
+}
+
+/// Id prefix of the managed folder created with a project.
+const MANAGED_FOLDER_ID_PREFIX: &str = "working-folder:";
+
+/// Id prefix of the routine projects the baseline schema seeds.
+const SEEDED_PROJECT_ID_PREFIX: &str = "project-routine-";
+
+/// Id prefix the baseline schema gives the managed folders of its seeded routine projects.
+const SEEDED_FOLDER_ID_PREFIX: &str = "working-folder-routine-";
+
+/// Returns the one id a project's managed folder has: `working-folder:{project id}`, or the
+/// seeded key for a routine project the baseline schema seeds.
+///
+/// Every device keys a project's managed folder by this id, so sync admits a managed folder only
+/// under it and an external folder never under an id it returns.
+///
+/// # Errors
+///
+/// Returns a message when the project identifier cannot name a managed folder, or when the id
+/// would be too long for a working-folder id.
+pub fn managed_folder_id(project_id: &str) -> Result<ProjectWorkingFolderId, String> {
+    validate_managed_folder_name(project_id)?;
+    ProjectWorkingFolderId::new(match project_id.strip_prefix(SEEDED_PROJECT_ID_PREFIX) {
+        Some(routine) => format!("{SEEDED_FOLDER_ID_PREFIX}{routine}"),
+        None => format!("{MANAGED_FOLDER_ID_PREFIX}{project_id}"),
+    })
+}
+
+/// Returns the project whose managed folder id is `folder_id`, or `None` when `folder_id` is
+/// not the [`managed_folder_id`] of any project.
+pub fn managed_folder_project(folder_id: &str) -> Option<String> {
+    let project = match folder_id.strip_prefix(SEEDED_FOLDER_ID_PREFIX) {
+        Some(routine) => format!("{SEEDED_PROJECT_ID_PREFIX}{routine}"),
+        None => folder_id.strip_prefix(MANAGED_FOLDER_ID_PREFIX)?.to_owned(),
+    };
+    managed_folder_id(&project)
+        .is_ok_and(|id| id.as_str() == folder_id)
+        .then_some(project)
 }
 
 /// Creates a project's managed folder when missing and returns its canonical path, which is
@@ -191,6 +232,36 @@ mod tests {
             0
         );
         fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn managed_folder_ids_name_exactly_one_project() {
+        for (project, folder) in [
+            ("project-1", "working-folder:project-1"),
+            (
+                "0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63",
+                "working-folder:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63",
+            ),
+            (
+                "project-routine-learning",
+                "working-folder-routine-learning",
+            ),
+        ] {
+            assert_eq!(managed_folder_id(project).unwrap().as_str(), folder);
+            assert_eq!(managed_folder_project(folder).as_deref(), Some(project));
+        }
+        for other in [
+            "working-folder:project-routine-learning",
+            "working-folder:external:0f8e2c4a-6b1d-4e3f-9a7c-5d2b8e1f0a63",
+            "working-folder:.git",
+            "working-folder:",
+            "working-folder-1",
+            "folder-external",
+        ] {
+            assert_eq!(managed_folder_project(other), None, "{other}");
+        }
+        assert!(managed_folder_id("a/b").is_err());
+        assert!(managed_folder_id(&"a".repeat(60)).is_err());
     }
 
     #[cfg(unix)]

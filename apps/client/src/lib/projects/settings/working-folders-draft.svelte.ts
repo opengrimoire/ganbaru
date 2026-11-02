@@ -7,6 +7,12 @@ import type {
 
 export type WorkingFolderSelection = ProjectWorkingFolderSelectionRead;
 
+/**
+ * Id prefix of a folder the user adds. Sync reserves `working-folder:{project id}` for a
+ * project's managed folder, and a project id never contains a colon, so these ids never take it.
+ */
+const EXTERNAL_FOLDER_ID_PREFIX = "working-folder:external:";
+
 export interface ProjectSettingsWorkingFoldersPorts {
   pick: (workingFolderId?: string) => Promise<WorkingFolderSelection | null>;
   add: (request: CreateProjectWorkingFolderRequest, selection: WorkingFolderSelection) => Promise<ProjectWorkingFolderRead>;
@@ -103,7 +109,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
       return;
     }
     const now = new Date().toISOString();
-    const id = `working-folder:${crypto.randomUUID()}`;
+    const id = `${EXTERNAL_FOLDER_ID_PREFIX}${crypto.randomUUID()}`;
     rows = [...rows, {
       workingFolder: {
         id, projectId, displayName: selection.displayName, kind: "external", managedRelativePath: null,

@@ -437,6 +437,142 @@ async fn usage_flood_past_the_sample_bound_keeps_local_samples() {
     pool.close().await;
 }
 
+/// A pool on the real schema, so a read walks the real indexes, with apply marked as running so
+/// inserts capture no operations.
+async fn migrated_usage_pool() -> sqlx::SqlitePool {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool
+}
+
+/// Stores `count` totals dated today under ids starting at `first`, with keys from `pattern`.
+async fn flood_migrated_totals(pool: &sqlx::SqlitePool, pattern: &str, first: i64, count: i64) {
+    sqlx::query(
+        "INSERT INTO distractions_usage_totals
+            (id, device_id, source_type, source_key, local_date, elapsed_seconds)
+         WITH RECURSIVE n(i) AS (SELECT ?2 UNION ALL SELECT i + 1 FROM n WHERE i < ?2 + ?3 - 1)
+         SELECT 'flood-' || i, 'device-attacker', 'website', printf(?1, i), '2026-10-02', 60
+         FROM n",
+    )
+    .bind(pattern)
+    .bind(first)
+    .bind(count)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Reads the window under `bounds` and `scope`, returning it with the virtual machine steps it
+/// took, counted in hundreds.
+async fn counted_read(
+    pool: &sqlx::SqlitePool,
+    scope: &UsageBudgetScope,
+    bounds: crate::limits::store::WindowBounds,
+) -> (UsageWindow, u64) {
+    let steps = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counter = steps.clone();
+    let mut connection = pool.acquire().await.unwrap();
+    connection
+        .lock_handle()
+        .await
+        .unwrap()
+        .set_progress_handler(100, move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            true
+        });
+    let window = crate::limits::store::read_bounded(
+        &mut connection,
+        "device-own",
+        "2026-09-28",
+        "2026-10-02",
+        scope,
+        bounds,
+    )
+    .await
+    .unwrap();
+    connection
+        .lock_handle()
+        .await
+        .unwrap()
+        .remove_progress_handler();
+    (window, steps.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+#[tokio::test]
+async fn scoped_read_stops_at_its_bound() {
+    const BOUND: i64 = 1_000;
+    let bounds = crate::limits::store::WindowBounds {
+        samples: BOUND,
+        groups: 100,
+    };
+    let scope = UsageBudgetScope::from_rules(&parse_config(&root()).unwrap());
+    for pattern in ["flood-%d.attacker.test", "flood-%d.example.com"] {
+        let pool = migrated_usage_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO distractions_usage_samples
+                (id, source_type, source_key, started_at_ms, elapsed_seconds, local_date,
+                 created_at_ms)
+             VALUES ('own', 'website', 'video.example.com', 1, 30, '2026-09-28', 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        flood_migrated_totals(&pool, pattern, 0, BOUND * 2).await;
+        let (_, near_the_bound) = counted_read(&pool, &scope, bounds).await;
+        flood_migrated_totals(&pool, pattern, BOUND * 2, BOUND * 18).await;
+        let (window, past_the_bound) = counted_read(&pool, &scope, bounds).await;
+        assert!(
+            past_the_bound <= near_the_bound * 3 / 2,
+            "{pattern}: ten times the rows took {past_the_bound} hundred steps, up from \
+             {near_the_bound}"
+        );
+        assert!(window.truncated, "{pattern}");
+        assert_eq!(
+            window.sources[0],
+            source("website", "video.example.com", "2026-09-28", 30)
+        );
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
+async fn scoped_read_does_not_compare_each_row_with_each_website_rule() {
+    let config_of = |rules: usize| {
+        let entries: Vec<Value> = (0..rules)
+            .map(|index| {
+                serde_json::json!({"id": format!("rule-{index}"), "websiteHost": format!("rule-{index:05}.test")})
+            })
+            .collect();
+        let root = serde_json::json!({"distractions": {"limits": {"items": [
+            {"id": "sites", "minutesPerDay": 10, "entries": entries}
+        ]}}});
+        UsageBudgetScope::from_rules(&parse_config(&root).unwrap())
+    };
+    let bounds = crate::limits::store::WindowBounds {
+        samples: 2_000,
+        groups: 100,
+    };
+    let pool = migrated_usage_pool().await;
+    flood_migrated_totals(&pool, "flood-%d.attacker.test", 0, 2_000).await;
+    let (_, few_rules) = counted_read(&pool, &config_of(20), bounds).await;
+    let (_, many_rules) = counted_read(&pool, &config_of(2_000), bounds).await;
+    assert!(
+        many_rules <= few_rules * 3 / 2,
+        "a hundred times the rules took {many_rules} hundred steps, up from {few_rules}"
+    );
+    pool.close().await;
+}
+
 #[tokio::test]
 async fn usage_window_matches_budgets_the_way_totals_do() {
     let pool = usage_pool().await;

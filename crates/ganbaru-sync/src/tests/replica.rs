@@ -1417,8 +1417,14 @@ pub(super) fn pair(replicas: &mut [Replica], a: usize, b: usize) -> (&mut Replic
 
 /// The next operation of `replica`'s writer carrying `change`, which the engine would not seal.
 pub(super) async fn forge_change(replica: &mut Replica, change: Change) -> Vec<u8> {
+    forge_changes(replica, vec![change]).await
+}
+
+/// The next operation of `replica`'s writer carrying all of `changes`. The writer's chain does
+/// not advance, so a second forged operation would fork it.
+pub(super) async fn forge_changes(replica: &mut Replica, changes: Vec<Change>) -> Vec<u8> {
     let revision = view(replica).await.revision;
-    forge(replica, Content::Changes(vec![change]), revision).await
+    forge(replica, Content::Changes(changes), revision).await
 }
 
 /// The latest change of `action` that `replica` sealed for the row `key` of `table`.

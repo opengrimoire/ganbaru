@@ -10,12 +10,14 @@ use sqlx::Connection;
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
-use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, sealed_change};
+use super::replica::{
+    Replica, converge, device_id, forge_change, forge_changes, pair, quoted, sealed_change,
+};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::calendar::EVENTS_TABLE;
 use crate::manifest::vault::focus::{
-    DEVICE_ACTIVITY_TABLE, RUN_EVENTS_TABLE, RUNS_TABLE, SEGMENTS_TABLE, segment_group,
+    DEVICE_ACTIVITY_TABLE, RUN_EVENTS_TABLE, RUNS_TABLE, SEGMENTS_TABLE, run_group, segment_group,
 };
 use crate::{HoldReason, StoreOutcome, SyncError, SyncResult};
 
@@ -31,6 +33,9 @@ const SEGMENTS: u32 = 3;
 const RUN_EVENTS: u32 = 8;
 /// Position of `status` in the fields of `segment_group::PHASE`.
 const SEGMENT_STATUS_FIELD: usize = 6;
+/// Positions of `ended_at` and `end_reason` in the fields of `run_group::OUTCOME`.
+const OUTCOME_ENDED_FIELD: usize = 1;
+const OUTCOME_END_REASON_FIELD: usize = 2;
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -837,5 +842,222 @@ fn device_activity_key_must_equal_writer_device() {
             replicas[3].scalar_text(&state_sql).await.as_deref(),
             Some("focus")
         );
+    });
+}
+
+/// The run an open-run scenario leaves unpublished on `DEVICE`.
+const OPEN_RUN: &str = "run-b";
+/// The replica holding `OPEN_RUN`.
+const DEVICE: usize = 1;
+/// The linked replica signing the forged operations.
+const FORGER: usize = 2;
+
+/// Replicas sharing the closed `RUN`, which forgers copy, with `OPEN_RUN` open on `DEVICE`.
+async fn with_open_run() -> Vec<Replica> {
+    let mut replicas = closed(3).await;
+    replicas[DEVICE]
+        .exec(&open_run_sql(OPEN_RUN, EVENT, SEGMENTS, RUN_EVENTS))
+        .await;
+    replicas
+}
+
+/// The Create of `RUN` rekeyed to `OPEN_RUN`, with `ended_at` set to `ended` and an end reason
+/// that matches.
+async fn forged_run(replica: &mut Replica, ended: Option<&str>) -> Change {
+    let honest = sealed_change(replica, RUNS_TABLE, RUN, ChangeAction::Create).await;
+    let groups = honest
+        .groups
+        .iter()
+        .map(|value| {
+            if value.group != run_group::OUTCOME {
+                return value.clone();
+            }
+            let mut fields = value.value.fields().to_vec();
+            fields[OUTCOME_ENDED_FIELD] =
+                ended.map_or(Field::Null, |ended| Field::Text(ended.to_owned()));
+            if ended.is_none() {
+                fields[OUTCOME_END_REASON_FIELD] = Field::Null;
+            }
+            GroupValue::new(
+                RUNS_TABLE,
+                run_group::OUTCOME,
+                Value::new(fields).unwrap(),
+            )
+        })
+        .collect();
+    Change {
+        row: RowKey::new(OPEN_RUN).unwrap(),
+        groups,
+        ..honest
+    }
+}
+
+/// The Create of a completed segment of `RUN` rekeyed to `key` and moved into `OPEN_RUN`.
+async fn forged_segment(replica: &mut Replica, key: &str) -> Change {
+    let honest = sealed_segment(replica, &segment_id(RUN, 0)).await;
+    let groups = honest
+        .groups
+        .iter()
+        .map(|value| {
+            if value.group != segment_group::RUN {
+                return value.clone();
+            }
+            GroupValue::new(
+                SEGMENTS_TABLE,
+                segment_group::RUN,
+                Value::new(vec![Field::Text(OPEN_RUN.to_owned())]).unwrap(),
+            )
+        })
+        .collect();
+    Change {
+        row: RowKey::new(key).unwrap(),
+        groups,
+        ..honest
+    }
+}
+
+/// Every row of `OPEN_RUN` on `replica` that a forged operation could reach.
+async fn open_run_rows(replica: &mut Replica) -> Vec<String> {
+    let mut rows = texts(
+        replica,
+        "SELECT id || ' ' || coalesce(ended_at, 'open') || ' ' || planned_end
+         FROM pomodoro_runs WHERE id = 'run-b'",
+    )
+    .await;
+    rows.extend(
+        texts(
+            replica,
+            "SELECT id || ' ' || status || ' ' || coalesce(actual_end, 'open')
+             FROM pomodoro_segments WHERE run_id = 'run-b' ORDER BY id",
+        )
+        .await,
+    );
+    rows.extend(
+        texts(
+            replica,
+            "SELECT p.segment_id || ' ' || coalesce(p.ended_at, 'open') FROM pomodoro_pauses p
+             JOIN pomodoro_segments s ON s.id = p.segment_id WHERE s.run_id = 'run-b'",
+        )
+        .await,
+    );
+    rows.extend(
+        texts(
+            replica,
+            "SELECT id FROM pomodoro_run_events WHERE run_id = 'run-b' ORDER BY id",
+        )
+        .await,
+    );
+    rows
+}
+
+/// Stores and applies `changes` on `DEVICE` as one forged operation.
+async fn deliver_forged(replicas: &mut [Replica], changes: Vec<Change>) {
+    let forged = forge_changes(&mut replicas[FORGER], changes).await;
+    assert_eq!(
+        replicas[DEVICE].receive(&[forged]).await,
+        vec![StoreOutcome::Stored { held: None }]
+    );
+    replicas[DEVICE].apply_all().await.unwrap();
+}
+
+/// A signed Create carrying a device's open run id, which its activity row publishes, reaches
+/// the unpublished run on that device.
+fn assert_forged_create_leaves_the_open_run(ended: Option<&'static str>) {
+    block_on(async {
+        let mut replicas = with_open_run().await;
+        let before = open_run_rows(&mut replicas[DEVICE]).await;
+        assert_eq!(before.len(), 1 + SEGMENTS as usize + 1 + RUN_EVENTS as usize);
+
+        let forged = forged_run(&mut replicas[0], ended).await;
+        deliver_forged(&mut replicas, vec![forged]).await;
+
+        assert_eq!(open_run_rows(&mut replicas[DEVICE]).await, before);
+        replicas[DEVICE].check_invariants().await;
+    });
+}
+
+#[test]
+fn focus_a_forged_open_create_leaves_a_local_open_run_and_its_active_segment_unchanged() {
+    assert_forged_create_leaves_the_open_run(None);
+}
+
+#[test]
+fn focus_a_forged_closed_create_leaves_a_local_open_run_and_its_active_segment_unchanged() {
+    assert_forged_create_leaves_the_open_run(Some(HEARTBEAT));
+}
+
+/// The same Create keyed to the active segment, alone and after a Create that shows its run.
+#[test]
+fn focus_a_forged_create_of_a_local_segment_leaves_it_unchanged() {
+    block_on(async {
+        for with_run in [false, true] {
+            let mut replicas = with_open_run().await;
+            let before = open_run_rows(&mut replicas[DEVICE]).await;
+
+            let mut forged = Vec::new();
+            if with_run {
+                forged.push(forged_run(&mut replicas[0], Some(HEARTBEAT)).await);
+            }
+            let active = segment_id(OPEN_RUN, SEGMENTS - 1);
+            forged.push(forged_segment(&mut replicas[0], &active).await);
+            deliver_forged(&mut replicas, forged).await;
+
+            assert_eq!(
+                open_run_rows(&mut replicas[DEVICE]).await,
+                before,
+                "a forged segment Create changed the local open run, with_run {with_run}"
+            );
+        }
+    });
+}
+
+/// A row published with a local open run stays out of it: the run is not published here, and a
+/// completed segment under it would stand beside the run's own segments.
+#[test]
+fn focus_a_forged_child_stays_out_of_a_local_open_run() {
+    block_on(async {
+        let mut replicas = with_open_run().await;
+        let before = open_run_rows(&mut replicas[DEVICE]).await;
+
+        let forged = vec![
+            forged_run(&mut replicas[0], Some(HEARTBEAT)).await,
+            forged_segment(&mut replicas[0], "stray-segment").await,
+        ];
+        deliver_forged(&mut replicas, forged).await;
+
+        assert_eq!(open_run_rows(&mut replicas[DEVICE]).await, before);
+    });
+}
+
+/// The device closing its run after a forged Create publishes what the run really did, and a
+/// replica that showed the forged run takes it.
+#[test]
+fn focus_closing_a_run_publishes_the_local_outcome_over_a_forged_create() {
+    block_on(async {
+        for ended in [None, Some(HEARTBEAT)] {
+            let mut replicas = with_open_run().await;
+            let change = forged_run(&mut replicas[0], ended).await;
+            let forged = forge_change(&mut replicas[FORGER], change).await;
+            replicas[0].receive(std::slice::from_ref(&forged)).await;
+            replicas[0].apply_all().await.unwrap();
+            replicas[DEVICE].receive(&[forged]).await;
+            replicas[DEVICE].apply_all().await.unwrap();
+
+            replicas[DEVICE]
+                .exec(&close_run_sql(OPEN_RUN, SEGMENTS))
+                .await;
+            converge(&mut replicas[..=DEVICE]).await;
+
+            let outcome = "SELECT ended_at FROM pomodoro_runs WHERE id = 'run-b'";
+            for replica in &mut replicas[..=DEVICE] {
+                assert_eq!(
+                    replica.scalar_text(outcome).await.as_deref(),
+                    Some(ENDED),
+                    "replica {}, forged ended_at {ended:?}",
+                    replica.index
+                );
+            }
+            assert_converged(&mut replicas[..=DEVICE]).await;
+        }
     });
 }

@@ -3,23 +3,26 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use ganbaru_sync_contracts::{Cause, Change, ChangeAction, RowKey, TableId, VersionVector};
+use ganbaru_sync_contracts::{
+    Cause, Change, ChangeAction, Field, GroupValue, RowKey, TableId, Value, VersionVector,
+};
 use sqlx::Connection;
 
 use super::block_on;
 use super::engine::pull_without_writer;
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, DRAFT_NOTES_TABLE, DRAFT_PARTS_TABLE, DRAFTS_TABLE,
-    FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMBERSHIPS_TABLE, MEMOS_TABLE, membership_key,
+    FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMBERSHIPS_TABLE, MEMOS_TABLE, draft_group, membership_key,
 };
-use super::replica::{Replica, converge, pair};
+use super::replica::{Replica, converge, forge_changes, pair, sealed_change};
 use crate::apply::{Constrained, finish_sealed};
+use crate::manifest::group_id;
 use crate::merge::{self, Batch};
 use crate::seal::{SealReport, SealSlot};
 use crate::visibility::{
     CascadeWalk, DeriveScope, Root, RootKind, Roots, RowRef, Visibility, WalkValue,
 };
-use crate::{SyncError, log, recovery, repair, seed, sql};
+use crate::{StoreOutcome, SyncError, log, recovery, repair, seed, sql};
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -919,5 +922,176 @@ fn coverage_join_keeps_the_same_flagged_rows() {
             .map(|(_, key)| key.clone())
             .collect();
         assert_eq!(unseen, edited);
+    });
+}
+
+/// The local rows of the unpublished `draft-open` on `replica`.
+async fn local_draft_rows(replica: &mut Replica) -> Vec<String> {
+    let mut rows = ids(
+        replica,
+        "SELECT id || ' ' || title || ' ' || published FROM fixture_drafts
+         WHERE id = 'draft-open'",
+    )
+    .await;
+    for table in ["fixture_draft_parts", "fixture_draft_notes"] {
+        let sql = format!(
+            "SELECT id || ' ' || body FROM {table} WHERE draft_id = 'draft-open' ORDER BY id"
+        );
+        rows.extend(ids(replica, &sql).await);
+    }
+    rows
+}
+
+/// Three replicas sharing the published `draft-1`, which forgers copy, with `draft-open`, a
+/// part, and a note unpublished on replica 1.
+async fn with_local_draft() -> Vec<Replica> {
+    let mut replicas = replicas(3).await;
+    replicas[0]
+        .exec(
+            "INSERT INTO fixture_drafts (id, title, published) VALUES ('draft-1', 'One', 1);
+             INSERT INTO fixture_draft_parts (id, draft_id, body)
+                 VALUES ('part-1', 'draft-1', 'body');
+             INSERT INTO fixture_draft_notes (id, draft_id, body)
+                 VALUES ('note-1', 'draft-1', 'body');",
+        )
+        .await;
+    converge(&mut replicas).await;
+    replicas[1]
+        .exec(
+            "INSERT INTO fixture_drafts (id, title, published) VALUES ('draft-open', 'Open', 0);
+             INSERT INTO fixture_draft_parts (id, draft_id, body)
+                 VALUES ('part-open', 'draft-open', 'local');
+             INSERT INTO fixture_draft_notes (id, draft_id, body)
+                 VALUES ('note-open', 'draft-open', 'local');",
+        )
+        .await;
+    replicas
+}
+
+/// The Create of `from` in `table` rekeyed to `key`, with its draft reference on `draft-open`
+/// when `table` has one.
+async fn forged_copy(replica: &mut Replica, table: TableId, from: &str, key: &str) -> Change {
+    let honest = sealed_change(replica, table, from, ChangeAction::Create).await;
+    let groups = honest
+        .groups
+        .iter()
+        .map(|value| {
+            if table == DRAFTS_TABLE || value.group != group_id(0) {
+                return value.clone();
+            }
+            GroupValue::new(
+                table,
+                value.group,
+                Value::new(vec![Field::Text("draft-open".to_owned())]).unwrap(),
+            )
+        })
+        .collect();
+    Change {
+        row: RowKey::new(key).unwrap(),
+        groups,
+        ..honest
+    }
+}
+
+/// `change` with the publication flag of a draft set to `published`.
+fn with_published(change: Change, published: bool) -> Change {
+    let groups = change
+        .groups
+        .iter()
+        .map(|value| {
+            if value.group != draft_group::PUBLISHED {
+                return value.clone();
+            }
+            let flag = Field::Integer(i64::from(published));
+            GroupValue::new(
+                DRAFTS_TABLE,
+                draft_group::PUBLISHED,
+                Value::new(vec![flag]).unwrap(),
+            )
+        })
+        .collect();
+    Change { groups, ..change }
+}
+
+/// Stores and applies `changes` on replica 1 as one operation of replica 2.
+async fn deliver_forged(replicas: &mut [Replica], changes: Vec<Change>) {
+    let forged = forge_changes(&mut replicas[2], changes).await;
+    assert_eq!(
+        replicas[1].receive(&[forged]).await,
+        vec![StoreOutcome::Stored { held: None }]
+    );
+    replicas[1].apply_all().await.unwrap();
+}
+
+/// A forged Create of the unpublished `draft-open` changes nothing on replica 1.
+fn assert_forged_create_leaves_the_draft(published: bool) {
+    block_on(async {
+        let mut replicas = with_local_draft().await;
+        let before = local_draft_rows(&mut replicas[1]).await;
+        assert_eq!(before.len(), 3);
+
+        let draft = forged_copy(&mut replicas[0], DRAFTS_TABLE, "draft-1", "draft-open").await;
+        let forged = vec![with_published(draft, published)];
+        deliver_forged(&mut replicas, forged).await;
+
+        assert_eq!(local_draft_rows(&mut replicas[1]).await, before);
+        replicas[1].check_invariants().await;
+    });
+}
+
+#[test]
+fn a_forged_unpublished_create_leaves_a_local_draft_and_its_children_unchanged() {
+    assert_forged_create_leaves_the_draft(false);
+}
+
+#[test]
+fn a_forged_published_create_leaves_a_local_draft_and_its_children_unchanged() {
+    assert_forged_create_leaves_the_draft(true);
+}
+
+#[test]
+fn a_forged_create_of_a_draft_child_leaves_it_unchanged() {
+    block_on(async {
+        for (table, from, key) in [
+            (DRAFT_PARTS_TABLE, "part-1", "part-open"),
+            (DRAFT_NOTES_TABLE, "note-1", "note-open"),
+        ] {
+            for with_draft in [false, true] {
+                let mut replicas = with_local_draft().await;
+                let before = local_draft_rows(&mut replicas[1]).await;
+
+                let mut forged = vec![forged_copy(&mut replicas[0], table, from, key).await];
+                if with_draft {
+                    let draft =
+                        forged_copy(&mut replicas[0], DRAFTS_TABLE, "draft-1", "draft-open").await;
+                    forged.insert(0, draft);
+                }
+                deliver_forged(&mut replicas, forged).await;
+
+                assert_eq!(
+                    local_draft_rows(&mut replicas[1]).await,
+                    before,
+                    "a forged {key} Create changed the draft, with_draft {with_draft}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn a_forged_child_stays_out_of_a_local_draft() {
+    block_on(async {
+        for (table, from) in [(DRAFT_PARTS_TABLE, "part-1"), (DRAFT_NOTES_TABLE, "note-1")] {
+            let mut replicas = with_local_draft().await;
+            let before = local_draft_rows(&mut replicas[1]).await;
+
+            let forged = vec![
+                forged_copy(&mut replicas[0], DRAFTS_TABLE, "draft-1", "draft-open").await,
+                forged_copy(&mut replicas[0], table, from, "stray").await,
+            ];
+            deliver_forged(&mut replicas, forged).await;
+
+            assert_eq!(local_draft_rows(&mut replicas[1]).await, before);
+        }
     });
 }

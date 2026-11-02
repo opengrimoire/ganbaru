@@ -21,13 +21,14 @@ const WINDOW_BOUNDS: WindowBounds = WindowBounds {
 /// Keeps rows of the budget sources in `?4`, `?5`, and `?6`. Rule lists bind as one JSON array each
 /// because a configuration can exceed SQLite's expression depth. A key past `?7` could not be
 /// totaled, so it stays out of the window. The suffix compares `substr` instead of `LIKE` because
-/// `%` and `_` in a host are not wildcards.
+/// `%` and `_` in a host are not wildcards, and it probes once per distinct suffix length, so a
+/// row's cost does not grow with the number of website rules.
 const SCOPE_FILTER: &str = "length(CAST(source_key AS BLOB)) <= ?7 AND (
         (source_type = 'website' AND (
             lower(source_key) IN (SELECT rule FROM websites)
             OR EXISTS (
-                SELECT 1 FROM websites
-                WHERE substr(lower(source_key), -length(rule) - 1) = '.' || rule
+                SELECT 1 FROM suffix_lengths
+                WHERE substr(lower(source_key), -size) IN (SELECT suffix FROM suffixes)
             )
         ))
         OR (source_type = 'desktop-app' AND (
@@ -50,9 +51,11 @@ pub(super) const CALENDAR_DATE_FILTER: &str = "date(local_date) = local_date";
 /// left out because its samples already count that usage. Aggregates a bounded, consistent SQLite
 /// window without returning raw intervals to the UI.
 ///
-/// Replicated rows cannot fail the read. A row dated off the calendar is skipped. Past
-/// [`MAX_WINDOW_SAMPLES`] rows or [`MAX_SOURCE_GROUPS`] groups the window keeps this device's
-/// samples first, then the most recent days, in a deterministic order, and reports truncation.
+/// Replicated rows cannot fail the read. A row dated off the calendar is skipped. The scan stops
+/// after [`MAX_WINDOW_SAMPLES`] rows of the window, counted before the budget filter so rows of
+/// unrelated sources cannot extend it. Past that bound or [`MAX_SOURCE_GROUPS`] groups the window
+/// keeps this device's samples first, then the most recent days, in a deterministic order, and
+/// reports truncation.
 pub async fn read_source_days(
     connection: &mut SqliteConnection,
     own_device_id: &str,
@@ -71,7 +74,8 @@ pub async fn read_source_days(
     .await
 }
 
-/// Runs the window read under explicit bounds.
+/// Runs the window read under explicit bounds. Each scan walks its date index from the newest day
+/// and stops at its share of `bounds.samples`, with this device's samples served first.
 pub(super) async fn read_bounded(
     connection: &mut SqliteConnection,
     own_device_id: &str,
@@ -83,33 +87,64 @@ pub(super) async fn read_bounded(
     if scope.is_empty() {
         return Ok(UsageWindow::default());
     }
+    let scanned_rows = sqlx::query(AssertSqlSafe(format!(
+        "SELECT (SELECT COUNT(*) FROM (
+                     SELECT 1 FROM distractions_usage_samples
+                     WHERE local_date >= ?1 AND local_date <= ?2 AND {CALENDAR_DATE_FILTER}
+                     LIMIT ?4
+                 )) AS own_rows,
+                (SELECT COUNT(*) FROM (
+                     SELECT 1 FROM distractions_usage_totals
+                     WHERE local_date >= ?1 AND local_date <= ?2 AND device_id <> ?3
+                           AND {CALENDAR_DATE_FILTER}
+                     LIMIT ?4
+                 )) AS other_rows"
+    )))
+    .bind(week)
+    .bind(local_date)
+    .bind(own_device_id)
+    .bind(bounds.samples + 1)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(|error| format!("measure native usage window: {error}"))?;
+    let own_rows: i64 = scanned_rows
+        .try_get("own_rows")
+        .map_err(|error| error.to_string())?;
+    let other_rows: i64 = scanned_rows
+        .try_get("other_rows")
+        .map_err(|error| error.to_string())?;
     let sql = format!(
         "WITH websites(rule) AS MATERIALIZED (SELECT value FROM json_each(?4)),
+              suffixes(suffix) AS MATERIALIZED (SELECT '.' || rule FROM websites),
+              suffix_lengths(size) AS MATERIALIZED (SELECT DISTINCT length(suffix) FROM suffixes),
               desktop_apps(name) AS MATERIALIZED (SELECT value FROM json_each(?5)),
               mobile_apps(name) AS MATERIALIZED (SELECT value FROM json_each(?6))
          SELECT source_type, source_key, local_date, SUM(elapsed_seconds) AS elapsed_seconds,
-                MIN(origin) AS group_origin, SUM(COUNT(*)) OVER () AS window_rows
+                MIN(origin) AS group_origin
          FROM (
-             SELECT origin, source_type, source_key, local_date, elapsed_seconds
+             SELECT 0 AS origin, source_type, source_key, local_date, elapsed_seconds
              FROM (
-                 SELECT 0 AS origin, '' AS device_id, source_type, source_key, local_date,
-                        elapsed_seconds
+                 SELECT source_type, source_key, local_date, elapsed_seconds
                  FROM distractions_usage_samples
                  WHERE local_date >= ?1 AND local_date <= ?2 AND {CALENDAR_DATE_FILTER}
-                       AND {SCOPE_FILTER}
-                 UNION ALL
-                 SELECT 1, device_id, source_type, source_key, local_date, elapsed_seconds
+                 ORDER BY local_date DESC, source_type DESC, source_key DESC
+                 LIMIT ?8
+             )
+             UNION ALL
+             SELECT 1, source_type, source_key, local_date, elapsed_seconds
+             FROM (
+                 SELECT source_type, source_key, local_date, elapsed_seconds
                  FROM distractions_usage_totals
                  WHERE local_date >= ?1 AND local_date <= ?2 AND device_id <> ?3
-                       AND {CALENDAR_DATE_FILTER} AND {SCOPE_FILTER}
+                       AND {CALENDAR_DATE_FILTER}
+                 ORDER BY local_date DESC, device_id DESC
+                 LIMIT ?9
              )
-             ORDER BY origin, local_date DESC, source_type, source_key, device_id,
-                      elapsed_seconds DESC
-             LIMIT ?8
          )
+         WHERE {SCOPE_FILTER}
          GROUP BY source_type, source_key, local_date
          ORDER BY group_origin, local_date DESC, source_type, source_key
-         LIMIT ?9"
+         LIMIT ?10"
     );
     let rows = sqlx::query(AssertSqlSafe(sql.as_str()))
         .bind(week)
@@ -120,17 +155,12 @@ pub(super) async fn read_bounded(
         .bind(rule_array(&scope.mobile_apps)?)
         .bind(MAX_SOURCE_KEY_BYTES as i64)
         .bind(bounds.samples)
+        .bind((bounds.samples - own_rows).max(0))
         .bind((bounds.groups + 1) as i64)
         .fetch_all(connection)
         .await
         .map_err(|error| format!("aggregate native usage window: {error}"))?;
-    let window_rows: i64 = match rows.first() {
-        Some(row) => row
-            .try_get("window_rows")
-            .map_err(|error| error.to_string())?,
-        None => 0,
-    };
-    let truncated = window_rows >= bounds.samples || rows.len() > bounds.groups;
+    let truncated = own_rows + other_rows > bounds.samples || rows.len() > bounds.groups;
     let sources = rows
         .into_iter()
         .take(bounds.groups)

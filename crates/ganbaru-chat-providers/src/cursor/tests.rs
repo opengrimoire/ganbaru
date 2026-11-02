@@ -737,3 +737,64 @@ fn auto_edit_asks_for_repository_metadata_at_any_depth() {
         assert!(edit(editable), "{editable} must stay auto-approved");
     }
 }
+
+/// Each provider lists every covered path its documentation says it loads, or a path past the
+/// digest bounds would run under a trust decision that never saw its content, and nothing it
+/// never reads, so an oversized tree of another provider leaves it running.
+#[test]
+fn cursor_and_grok_read_their_verified_configuration_paths() {
+    use crate::ProviderDriver;
+    use ProviderConfigurationPath as Covered;
+
+    let home = TestDirectory::new("configuration-paths");
+    let cursor = CursorProviderDriver::new(configuration(home.path(), None)).unwrap();
+    let mut grok_configuration = configuration(home.path(), None);
+    grok_configuration.family_id = ProviderFamilyId::new("grok").unwrap();
+    let grok = CursorProviderDriver::new_grok(grok_configuration).unwrap();
+
+    for (driver, loaded, never_read) in [
+        (
+            &cursor,
+            &[
+                Covered::Cursor,
+                Covered::CursorRules,
+                Covered::ClaudeSettings,
+                Covered::ClaudeLocalSettings,
+                Covered::ClaudeSkills,
+                Covered::Codex,
+            ][..],
+            &[
+                Covered::OpenCodeJson,
+                Covered::OpenCodeJsonc,
+                Covered::OpenCode,
+                Covered::Grok,
+            ][..],
+        ),
+        (
+            &grok,
+            &[
+                Covered::Grok,
+                Covered::ProjectMcp,
+                Covered::ClaudeSettings,
+                Covered::ClaudeSkills,
+                Covered::ClaudeAgents,
+                Covered::Cursor,
+            ][..],
+            &[
+                Covered::OpenCodeJson,
+                Covered::OpenCodeJsonc,
+                Covered::OpenCode,
+                Covered::Codex,
+            ][..],
+        ),
+    ] {
+        let reads = driver.project_configuration_paths();
+        let name = driver.metadata().display_name;
+        for path in loaded {
+            assert!(reads.contains(path), "{name} loads {path:?}");
+        }
+        for path in never_read {
+            assert!(!reads.contains(path), "{name} never loads {path:?}");
+        }
+    }
+}

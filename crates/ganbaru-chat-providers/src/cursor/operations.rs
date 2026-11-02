@@ -33,6 +33,50 @@ impl ProviderDriver for CursorProviderDriver {
         }
     }
 
+    /// Covered paths each flavor loads, from the providers' documentation.
+    ///
+    /// Cursor (cursor.com/docs: `cli/reference/configuration`, `agent/hooks`,
+    /// `reference/third-party-hooks`, `context/mcp`, `context/skills`, `context/rules`) loads
+    /// `.cursor/cli.json`, `hooks.json`, `mcp.json`, rules, commands, and skills, legacy
+    /// `.cursorrules`, Claude Code hooks from `.claude/settings.json` and
+    /// `.claude/settings.local.json` through the third-party import that is on by default, and
+    /// skills from `.claude/skills` and `.codex/skills`. That import also names plugins and other
+    /// configuration without listing their files, so every Claude path and `.mcp.json` stay
+    /// listed.
+    ///
+    /// Grok (docs.x.ai/build: `settings`, `features/hooks`, `features/mcp-servers`,
+    /// `features/skills-plugins-marketplaces`) loads `.grok/config.toml`, `.grok/hooks`,
+    /// `.grok/skills`, and `.grok/plugins`, project `.mcp.json`, Claude Code hooks from
+    /// `.claude/settings.json`, Cursor hooks from `.cursor/hooks.json`, and Claude Code skills,
+    /// agents, and other assets. Claude compatibility is documented without a file list, so
+    /// every Claude path stays listed, and `.cursorrules` stays with the rest of Cursor's files.
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        match self.flavor {
+            AcpProviderFlavor::Cursor => &[
+                ProviderConfigurationPath::ClaudeSettings,
+                ProviderConfigurationPath::ClaudeLocalSettings,
+                ProviderConfigurationPath::ProjectMcp,
+                ProviderConfigurationPath::CursorRules,
+                ProviderConfigurationPath::ClaudeSkills,
+                ProviderConfigurationPath::ClaudeAgents,
+                ProviderConfigurationPath::ClaudeCommands,
+                ProviderConfigurationPath::Codex,
+                ProviderConfigurationPath::Cursor,
+            ],
+            AcpProviderFlavor::Grok => &[
+                ProviderConfigurationPath::ClaudeSettings,
+                ProviderConfigurationPath::ClaudeLocalSettings,
+                ProviderConfigurationPath::ProjectMcp,
+                ProviderConfigurationPath::CursorRules,
+                ProviderConfigurationPath::ClaudeSkills,
+                ProviderConfigurationPath::ClaudeAgents,
+                ProviderConfigurationPath::ClaudeCommands,
+                ProviderConfigurationPath::Cursor,
+                ProviderConfigurationPath::Grok,
+            ],
+        }
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

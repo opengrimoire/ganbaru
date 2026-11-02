@@ -13,9 +13,15 @@
 //! commands: Claude project settings, project MCP servers, and the skills,
 //! agents, and commands whose definitions can carry hooks or shell steps,
 //! Codex project configuration, and the OpenCode, Cursor, and Grok project
-//! files and folders. Instructions such as `CLAUDE.md` are left out. Entries
-//! are digested per file so a worktree can be checked against the folder
-//! decision. Each covered path has its own bounds, and one past them is
+//! files and folders. Instructions such as `CLAUDE.md` are left out, and so
+//! are the instruction-only skills OpenCode and Cursor read from
+//! `.agents/skills` and Cursor reads from nested `.cursor/skills` and
+//! `.agents/skills` folders, whose documented formats carry no hooks or shell
+//! steps. Providers also search the parents of the launch folder up to the
+//! repository root, or further outside a repository; those lie outside the
+//! folder, and bundles cannot place anything beside managed project folders.
+//! Entries are digested per file so a worktree can be checked against the
+//! folder decision. Each covered path has its own bounds, and one past them is
 //! digested as exceeded, so it blocks only the providers that load it.
 
 use super::submodules::{Submodule, populated_submodules};

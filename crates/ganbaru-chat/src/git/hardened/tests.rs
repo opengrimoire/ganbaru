@@ -1058,6 +1058,57 @@ fn provider_digest_changes_with_opencode_and_cursor_configuration() {
     }
 }
 
+/// Every project file that OpenCode, Cursor, or Grok documents as configuration that can run
+/// commands counts toward the digest.
+#[test]
+fn provider_digest_covers_every_verified_path() {
+    let repository = TestRepository::new();
+    let root = repository.root.as_path();
+    let entries = || provider_configuration_entries_blocking(root).expect("entries should read");
+
+    let mut previous = entries();
+    for relative in [
+        "opencode.json",
+        "opencode.jsonc",
+        ".opencode/opencode.json",
+        ".opencode/plugins/marker.ts",
+        ".opencode/package.json",
+        ".opencode/tools/marker.ts",
+        ".opencode/agents/marker.md",
+        ".opencode/commands/marker.md",
+        ".claude/skills/marker/SKILL.md",
+        ".cursor/cli.json",
+        ".cursor/hooks.json",
+        ".cursor/mcp.json",
+        ".cursor/commands/marker.md",
+        ".cursor/skills/marker/SKILL.md",
+        ".cursorrules",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".codex/skills/marker/SKILL.md",
+        ".grok/config.toml",
+        ".grok/hooks/marker.json",
+        ".grok/skills/marker/SKILL.md",
+        ".grok/plugins/marker/plugin.json",
+        ".mcp.json",
+        ".claude/agents/marker.md",
+        ".claude/commands/marker.md",
+    ] {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("entry should have a parent"))
+            .expect("entry folder should exist");
+        fs::write(&path, "{}\n").expect("entry should write");
+        let current = entries();
+        assert_ne!(current.digest(), previous.digest(), "{relative} must count");
+        assert_eq!(
+            current.uncovered_paths(&previous).collect::<Vec<_>>(),
+            vec![relative],
+            "{relative} must be its own entry"
+        );
+        previous = current;
+    }
+}
+
 #[test]
 fn provider_configuration_overflow_blocks_only_its_provider() {
     use ganbaru_chat_contracts::models::ProviderConfigurationPath as Path;

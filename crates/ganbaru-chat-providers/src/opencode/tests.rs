@@ -1311,3 +1311,36 @@ fn ask_rules_keep_repository_metadata_edits_reviewed() {
         );
     }
 }
+
+/// OpenCode lists every covered path its documentation says it loads, so an oversized tree it
+/// reads refuses it, and none of the other providers' paths.
+#[test]
+fn opencode_reads_its_verified_configuration_paths() {
+    use crate::ProviderDriver;
+    use ProviderConfigurationPath as Covered;
+
+    let driver =
+        super::driver::OpenCodeProviderDriver::new(configuration(json!({ "mode": "local" })))
+            .unwrap();
+    let reads = driver.project_configuration_paths();
+    for loaded in [
+        Covered::OpenCodeJson,
+        Covered::OpenCodeJsonc,
+        Covered::OpenCode,
+        Covered::ClaudeSkills,
+    ] {
+        assert!(reads.contains(&loaded), "OpenCode loads {loaded:?}");
+    }
+    for never_read in [
+        Covered::Cursor,
+        Covered::CursorRules,
+        Covered::Grok,
+        Covered::Codex,
+        Covered::ClaudeSettings,
+    ] {
+        assert!(
+            !reads.contains(&never_read),
+            "OpenCode never loads {never_read:?}"
+        );
+    }
+}

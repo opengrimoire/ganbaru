@@ -19,7 +19,10 @@ import type {
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { announceConfigSaved, configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 
-/** Portable preference branch holding the Chat behavior, refreshed when sync or a generic preference write changes it. */
+/**
+ * Preference branch holding the Chat behavior, refreshed when sync or a generic preference write changes it. Its
+ * fields are portable apart from the per-device multiline terminal paste confirmation.
+ */
 const CHAT_BEHAVIOR_CONFIG_KEY = "chat.behavior";
 
 const localExecutionAvailable = platformHasCapability(
@@ -189,11 +192,30 @@ export class ChatConfigurationController {
     await this.refreshSettings();
   }
 
-  /** Saves the Chat behavior and has the other windows of the vault reread it, so none writes back a stale copy. */
+  /**
+   * Saves the Chat behavior and has the other windows of the vault reread it, so none writes back a stale copy. The
+   * portable and device fields land in separate stores, so a failed save may still have stored some fields: the
+   * windows reread then too, and the save error is rethrown.
+   */
   async updateBehavior(behavior: ChatBehaviorPreferences): Promise<void> {
-    await chatApi.updateChatBehavior(behavior);
-    await announceConfigSaved([CHAT_BEHAVIOR_CONFIG_KEY]);
-    await this.refreshSettings();
+    try {
+      await chatApi.updateChatBehavior(behavior);
+    } catch (error) {
+      await this.rereadBehavior().catch((refreshError: unknown) => {
+        console.error("Chat settings refresh after a failed behavior save failed", refreshError);
+      });
+      throw error;
+    }
+    await this.rereadBehavior();
+  }
+
+  /** Has every window of the vault reread the stored Chat behavior, then rereads the settings here. */
+  private async rereadBehavior(): Promise<void> {
+    try {
+      await announceConfigSaved([CHAT_BEHAVIOR_CONFIG_KEY]);
+    } finally {
+      await this.refreshSettings();
+    }
   }
 
   async addExternalWorkingFolder(

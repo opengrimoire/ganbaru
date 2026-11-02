@@ -212,22 +212,36 @@ pub(crate) async fn recompute_classes(
     Ok((entries, contested))
 }
 
-/// Rebuilds the class index from a full scan of the merge state unless it was built under the
-/// engine's duplicate rules, and marks dirty every row of a contested class it finds, so their
-/// materialization and repairs follow the rebuilt classes. An index with no stored fingerprint,
-/// as a vault from before the index or a database reset leaves it, is rebuilt as well.
-async fn ensure_class_rules(
+/// Whether the class index was built under the engine's duplicate rules. An index with no
+/// stored fingerprint, as a vault from before the index or a database reset leaves it, was not.
+async fn built_under_engine_rules(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    dirty: &mut BTreeSet<RowRef>,
-) -> SyncResult<()> {
+) -> SyncResult<bool> {
     let fingerprint = rule_fingerprint(engine.manifest());
     let stored: Option<Vec<u8>> =
         sqlx::query_scalar("SELECT fingerprint FROM sync_unique_class_rules WHERE singleton = 1")
             .fetch_optional(&mut *conn)
             .await?;
-    if stored.as_deref() == Some(fingerprint.as_slice()) {
+    Ok(stored.as_deref() == Some(fingerprint.as_slice()))
+}
+
+/// Rebuilds the class index from a full scan of the merge state unless it was built under the
+/// engine's duplicate rules. Every row of a contested class before or after the rebuild is
+/// marked dirty, so the materialization and repairs of rows that start or stop colliding follow
+/// the rebuilt classes. Runs only inside an engine write, whose finish consumes the dirty rows.
+async fn ensure_class_rules(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    dirty: &mut BTreeSet<RowRef>,
+) -> SyncResult<()> {
+    if built_under_engine_rules(engine, conn).await? {
         return Ok(());
+    }
+    for (table, classes) in contested_classes(conn).await? {
+        for members in classes {
+            dirty.extend(members.into_iter().map(|key| (table, key)));
+        }
     }
     sqlx::query("DELETE FROM sync_contested_classes")
         .execute(&mut *conn)
@@ -269,7 +283,7 @@ async fn ensure_class_rules(
         "INSERT INTO sync_unique_class_rules (singleton, fingerprint) VALUES (1, ?)
          ON CONFLICT (singleton) DO UPDATE SET fingerprint = excluded.fingerprint",
     )
-    .bind(fingerprint.as_slice())
+    .bind(rule_fingerprint(engine.manifest()).as_slice())
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -449,10 +463,15 @@ async fn contested_classes(conn: &mut SqliteConnection) -> SyncResult<Contested>
     )
     .fetch_all(&mut *conn)
     .await?;
-    let mut classes: BTreeMap<(i64, i64, Vec<u8>), BTreeSet<String>> = BTreeMap::new();
+    let mut classes: BTreeMap<ClassId, BTreeSet<String>> = BTreeMap::new();
     for (table, rule, class, key) in rows {
         classes.entry((table, rule, class)).or_default().insert(key);
     }
+    by_table(classes)
+}
+
+/// Contested classes per table, taken in rule and class order.
+fn by_table(classes: BTreeMap<ClassId, BTreeSet<String>>) -> SyncResult<Contested> {
     let mut contested = Contested::new();
     for ((table, _, _), members) in classes {
         let table = u16::try_from(table)
@@ -463,10 +482,31 @@ async fn contested_classes(conn: &mut SqliteConnection) -> SyncResult<Contested>
     Ok(contested)
 }
 
+/// The colliding classes for a read outside an engine write, which writes nothing. An index
+/// built under other duplicate rules is left for the next engine write to rebuild, and the
+/// classes come from a full scan of the merge state until then.
+pub(crate) async fn read_contested(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+) -> SyncResult<Contested> {
+    if built_under_engine_rules(engine, conn).await? {
+        return contested_classes(conn).await;
+    }
+    let (entries, contested) = recompute_classes(engine, conn).await?;
+    let mut classes: BTreeMap<ClassId, BTreeSet<String>> = BTreeMap::new();
+    for (class, key) in entries {
+        if contested.contains(&class) {
+            classes.entry(class).or_default().insert(key);
+        }
+    }
+    by_table(classes)
+}
+
 /// Brings the class index up to date with the dirty rows, marks dirty the rows whose
 /// materialization a dirty row's old or new unique values may change, and returns the colliding
 /// classes. The cost follows the dirty and contested rows, not the rows of the tables, except
-/// for the one full scan that rebuilds an index built under other duplicate rules.
+/// for the one full scan that rebuilds an index built under other duplicate rules. Only engine
+/// writes call it, since it writes the class index; reads use [`read_contested`].
 pub(crate) async fn contested(
     engine: &Engine,
     conn: &mut SqliteConnection,

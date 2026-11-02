@@ -1742,16 +1742,36 @@ const REORDERED_HANDLE_RULES: &[Resolution] = &[
     },
 ];
 
+/// The duplicate rules of [`HANDLES`] with labels compared case-insensitively.
+const NOCASE_LABEL_HANDLE_RULES: &[Resolution] = &[
+    Resolution::DuplicateRepair {
+        columns: &["label"],
+        collation: Collation::NoCase,
+    },
+    Resolution::DuplicateRepair {
+        columns: &["code"],
+        collation: Collation::Binary,
+    },
+];
+
 /// [`TEST_MANIFEST`] with the duplicate rules of [`HANDLES`] in the opposite order, as a manifest
 /// update could list them.
-pub(super) static REORDERED_RULES_MANIFEST: LazyLock<Manifest> = LazyLock::new(|| {
+pub(super) static REORDERED_RULES_MANIFEST: LazyLock<Manifest> =
+    LazyLock::new(|| with_handle_rules(REORDERED_HANDLE_RULES));
+
+/// [`TEST_MANIFEST`] with labels of [`HANDLES`] colliding case-insensitively.
+pub(super) static NOCASE_LABEL_MANIFEST: LazyLock<Manifest> =
+    LazyLock::new(|| with_handle_rules(NOCASE_LABEL_HANDLE_RULES));
+
+/// [`TEST_MANIFEST`] with `rules` as the duplicate rules of [`HANDLES`].
+fn with_handle_rules(rules: &'static [Resolution]) -> Manifest {
     let tables: Vec<TableSpec> = FIXTURE_DOMAIN
         .tables
         .iter()
         .map(|table| {
             if table.id == HANDLES_TABLE {
                 TableSpec {
-                    resolutions: REORDERED_HANDLE_RULES,
+                    resolutions: rules,
                     ..*table
                 }
             } else {
@@ -1777,7 +1797,7 @@ pub(super) static REORDERED_RULES_MANIFEST: LazyLock<Manifest> = LazyLock::new(|
         VAULT_MANIFEST_VERSION,
         Box::leak(domains.into_boxed_slice()),
     )
-});
+}
 
 /// The engine of [`test_engine`] for another manifest of the same tables.
 pub(super) fn test_engine_of(manifest: &'static Manifest) -> Engine {

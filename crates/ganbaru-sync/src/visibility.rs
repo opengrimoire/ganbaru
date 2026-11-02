@@ -474,6 +474,9 @@ impl Visibility {
     /// there can only come from a row of that component, which puts it in scope at the finish
     /// that touches it. Contested rows count toward the scope because keepers read their
     /// hiding wherever they are.
+    ///
+    /// It brings the class index up to date, so only engine writes call it; reads use
+    /// [`Visibility::read`].
     pub(crate) async fn load(
         engine: &Engine,
         conn: &mut SqliteConnection,
@@ -481,6 +484,31 @@ impl Visibility {
         scope: DeriveScope,
     ) -> SyncResult<Self> {
         let contested = repair::contested(engine, conn, dirty).await?;
+        Self::settle(engine, conn, contested, dirty, scope).await
+    }
+
+    /// Visibility of the whole current merge state for a read outside an engine write, as
+    /// [`Visibility::load`] derives it, without writing anything.
+    pub(crate) async fn read(engine: &Engine, conn: &mut SqliteConnection) -> SyncResult<Self> {
+        let contested = repair::read_contested(engine, conn).await?;
+        Self::settle(
+            engine,
+            conn,
+            contested,
+            &mut BTreeSet::new(),
+            DeriveScope::All,
+        )
+        .await
+    }
+
+    /// Chooses the keepers of the contested classes and derives the visibility that follows.
+    async fn settle(
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        contested: Contested,
+        dirty: &mut BTreeSet<RowRef>,
+        scope: DeriveScope,
+    ) -> SyncResult<Self> {
         let scope = scope.tables(engine, dirty, &contested);
         let mut excluded = BTreeSet::new();
         for _ in 0..MAX_DUPLICATE_ROUNDS {

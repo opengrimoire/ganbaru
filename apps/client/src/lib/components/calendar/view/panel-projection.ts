@@ -1,18 +1,14 @@
-import { mayBeShortenedWindowText } from "$lib/calendar/db-rows";
 import type { CalendarEvent } from "$lib/calendar/types";
 import type { EditSessionState, PanelAnchor } from "$lib/components/calendar/edit-session.svelte";
 import type { ParkedPanelSnapshot } from "./panel-lifecycle.svelte";
 
-/** Whether `full` holds the rest of a window value; a differing occurrence override does not. */
-function extendsWindowText(windowValue: string, full: string): boolean {
-  return mayBeShortenedWindowText(windowValue) && full.startsWith(windowValue);
-}
-
 /**
  * Resolve an editor baseline from persisted occurrences, preserving native geometry.
  *
- * A hydrated baseline counts as fully loaded, so it carries the full title and location instead
- * of the shortened window text, which a later save would otherwise write back.
+ * A hydrated baseline counts as fully loaded, so wherever the native window reports shortened
+ * text it carries the full title and location, which a later save would otherwise overwrite with
+ * the shortened value. Text the window did not shorten, such as an occurrence override title,
+ * stays as the window shows it.
  */
 export function resolvePersistedCalendarPanelEvent(
   displayedId: string,
@@ -23,12 +19,10 @@ export function resolvePersistedCalendarPanelEvent(
   if (!canonical) return undefined;
   if (!fullEvent) return canonical;
   if (fullEvent.id !== (canonical.recurringParentId ?? canonical.id)) return undefined;
-  const hydrated = { ...fullEvent, ...canonical };
-  if (extendsWindowText(canonical.title, fullEvent.title)) hydrated.title = fullEvent.title;
-  if (canonical.location && fullEvent.location
-    && extendsWindowText(canonical.location, fullEvent.location)) {
-    hydrated.location = fullEvent.location;
-  }
+  const { windowTitleShortened, windowLocationShortened, ...windowEvent } = canonical;
+  const hydrated: CalendarEvent = { ...fullEvent, ...windowEvent };
+  if (windowTitleShortened) hydrated.title = fullEvent.title;
+  if (windowLocationShortened) hydrated.location = fullEvent.location;
   return hydrated;
 }
 

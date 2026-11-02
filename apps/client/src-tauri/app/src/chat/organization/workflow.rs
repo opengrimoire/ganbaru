@@ -55,6 +55,13 @@ impl AssignmentWrite {
         executes_here: false,
         awaits_acceptance: false,
     };
+
+    /// Whether the post queued the dispatch of new work on this device, the only post that
+    /// carries a local gesture's acceptance of what the work runs.
+    #[cfg(desktop)]
+    pub(super) fn dispatches_here(&self) -> bool {
+        self.executes_here
+    }
 }
 
 pub(super) fn has_authority_bearing_references(references: &[ChatMessageReference]) -> bool {

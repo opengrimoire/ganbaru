@@ -2684,6 +2684,83 @@ fn synced_assignment_stays_queued_until_accepted() {
     });
 }
 
+/// A local reply in `reply-thread:review` that mentions the review agent.
+fn review_reply_mention(client_command_id: &str) -> PostChatMessageCommand {
+    let mut request = message("@Review agent continue");
+    request.client_command_id = ChatCommandId::new(client_command_id).unwrap();
+    request.channel_id = ChatChannelId::new("channel:review").unwrap();
+    request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+    request.references = vec![participant_reference(
+        "reference:reply",
+        ChatParticipantId::new("participant:review-agent").unwrap(),
+        ChatParticipantKind::AiTeammate,
+        "Review agent",
+        "@Review agent",
+        0,
+        13,
+    )];
+    request
+}
+
+#[test]
+fn queued_input_records_no_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let writers = chat_writers_of(&["device:old"]);
+        let device = PostingDevice::this_device("device:old", &writers);
+        let unaccepted = ChatDeviceScope::default();
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &unaccepted,
+            )
+            .await
+            .unwrap(),
+            "the synced work waits for Start here"
+        );
+
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:stale-reply"),
+            None,
+            device,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(posted.assignment_write.assignment_id, Some(assignment_id));
+        assert!(posted.assignment_write.input_queued);
+        assert!(posted.assignment_write.executes_here);
+        assert!(
+            !posted.assignment_write.dispatches_here(),
+            "a reply queued into unaccepted work dispatches nothing, so it accepts nothing"
+        );
+        assert_eq!(dispatch_jobs_of(&pool, "assignment:old").await, 0);
+
+        let pool = review_thread_without_assignment().await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:new-work"),
+            None,
+            PostingDevice::this_device("device:desk", &writers),
+        )
+        .await
+        .unwrap();
+        assert!(!posted.assignment_write.input_queued);
+        assert!(
+            posted.assignment_write.dispatches_here(),
+            "a mention that queues new work here carries the gesture"
+        );
+        let new_assignment = posted.assignment_write.assignment_id.unwrap();
+        assert_eq!(dispatch_job_count(&pool, &new_assignment).await, 1);
+    });
+}
+
 /// Applies grants of `conversation:review` that only a sync apply can store, beside the honest
 /// `folder:review` grant: one for a folder of another project under the channel's project, one
 /// that also claims that project, and one that claims it for a folder of the channel's project.

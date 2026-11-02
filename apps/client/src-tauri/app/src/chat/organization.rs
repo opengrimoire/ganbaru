@@ -318,7 +318,7 @@ pub(super) async fn post_message(
         .filter(|_| posted.assignment_write.executes_here)
     {
         // A scheduled send carries a stored request a peer can edit, so it is not a local gesture.
-        if posted_by_user {
+        if posted_by_user && posted.assignment_write.dispatches_here() {
             assignments::record_gesture_acceptance(&app, &pool, &assignment_id).await;
         }
         if posted.assignment_write.input_queued {

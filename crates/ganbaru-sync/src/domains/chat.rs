@@ -2218,6 +2218,83 @@ mod tests {
         );
     }
 
+    /// Text the stored-row readers refuse, each long enough for the table length check.
+    const NOT_UTC_TIMESTAMPS: [&str; 5] = [
+        "not a timestamp at all, honestly",
+        "2026-10-24t10:51:41.000Z",
+        "2026-10-24 10:51:41.000Z",
+        "2026-10-24T10:51:41.000+02:00",
+        "2026-10-24T10:51:60.000Z",
+    ];
+
+    #[test]
+    fn chat_timestamps_must_be_rfc3339_utc() {
+        let engine = Engine::vault();
+        let adapter = ChatAdapter;
+        for bad in NOT_UTC_TIMESTAMPS {
+            let mut forged = profile_create("access-profile:reviewers", None);
+            forged.groups[0] = GroupValue::new(
+                PROFILES_TABLE,
+                profile_group::CREATED,
+                value(vec![Field::Null, t(bad)]),
+            );
+            assert!(validate::change(&engine, &forged).is_err(), "created {bad}");
+
+            for (table, group) in [
+                (PROFILES_TABLE, profile_group::UPDATED),
+                (PROFILES_TABLE, profile_group::LIFECYCLE),
+                (CHANNELS_TABLE, channel_group::UPDATED),
+                (CHANNELS_TABLE, channel_group::LIFECYCLE),
+                (CONVERSATIONS_TABLE, conversation_group::ACTIVITY),
+                (MESSAGES_TABLE, message_group::LIFECYCLE),
+                (CONVERSATION_CURSORS_TABLE, read_cursor_group::UPDATED),
+                (SCHEDULED_TABLE, scheduled_group::UPDATED),
+                (ASSIGNMENTS_TABLE, assignment_group::UPDATED),
+            ] {
+                assert!(
+                    adapter
+                        .validate(table, group, &value(vec![t(bad)]))
+                        .is_err(),
+                    "{table:?} {group:?} {bad}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chat_timestamps_accept_the_forms_honest_writers_store() {
+        let engine = Engine::vault();
+        let adapter = ChatAdapter;
+        for good in [AT, "2026-10-24T10:51:41Z", "2026-10-24T10:51:41.000+00:00"] {
+            let mut honest = profile_create("access-profile:reviewers", None);
+            honest.groups[0] = GroupValue::new(
+                PROFILES_TABLE,
+                profile_group::CREATED,
+                value(vec![Field::Null, t(good)]),
+            );
+            assert_eq!(validate::change(&engine, &honest), Ok(()), "created {good}");
+            assert!(
+                adapter
+                    .validate(
+                        MESSAGES_TABLE,
+                        message_group::LIFECYCLE,
+                        &value(vec![t(good)])
+                    )
+                    .is_ok(),
+                "{good}"
+            );
+        }
+        assert!(
+            adapter
+                .validate(
+                    MESSAGES_TABLE,
+                    message_group::LIFECYCLE,
+                    &value(vec![Field::Null])
+                )
+                .is_ok()
+        );
+    }
+
     #[test]
     fn recovered_chat_rows_present_their_names() {
         let adapter = ChatAdapter;

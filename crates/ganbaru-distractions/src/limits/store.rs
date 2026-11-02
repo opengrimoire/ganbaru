@@ -40,14 +40,19 @@ const SCOPE_FILTER: &str = "length(CAST(source_key AS BLOB)) <= ?7 AND (
         ))
     )";
 
+/// Keeps rows whose date is on the calendar, matching `is_valid_local_date` inside any usable
+/// window. SQLite rolls an impossible day into the next month, so such a date differs from its own
+/// normalized form, and the row takes no share of the read bounds.
+pub(super) const CALENDAR_DATE_FILTER: &str = "date(local_date) = local_date";
+
 /// Usage of the window from `week` through `local_date` for the sources in `scope`: this device's
 /// own samples plus the totals every other device flushed. The totals `own_device_id` flushed are
 /// left out because its samples already count that usage. Aggregates a bounded, consistent SQLite
 /// window without returning raw intervals to the UI.
 ///
-/// Replicated rows cannot fail the read. Past [`MAX_WINDOW_SAMPLES`] rows or [`MAX_SOURCE_GROUPS`]
-/// groups the window keeps this device's samples first, then the most recent days, in a
-/// deterministic order, and reports truncation.
+/// Replicated rows cannot fail the read. A row dated off the calendar is skipped. Past
+/// [`MAX_WINDOW_SAMPLES`] rows or [`MAX_SOURCE_GROUPS`] groups the window keeps this device's
+/// samples first, then the most recent days, in a deterministic order, and reports truncation.
 pub async fn read_source_days(
     connection: &mut SqliteConnection,
     own_device_id: &str,
@@ -90,11 +95,13 @@ pub(super) async fn read_bounded(
                  SELECT 0 AS origin, '' AS device_id, source_type, source_key, local_date,
                         elapsed_seconds
                  FROM distractions_usage_samples
-                 WHERE local_date >= ?1 AND local_date <= ?2 AND {SCOPE_FILTER}
+                 WHERE local_date >= ?1 AND local_date <= ?2 AND {CALENDAR_DATE_FILTER}
+                       AND {SCOPE_FILTER}
                  UNION ALL
                  SELECT 1, device_id, source_type, source_key, local_date, elapsed_seconds
                  FROM distractions_usage_totals
-                 WHERE local_date >= ?1 AND local_date <= ?2 AND device_id <> ?3 AND {SCOPE_FILTER}
+                 WHERE local_date >= ?1 AND local_date <= ?2 AND device_id <> ?3
+                       AND {CALENDAR_DATE_FILTER} AND {SCOPE_FILTER}
              )
              ORDER BY origin, local_date DESC, source_type, source_key, device_id,
                       elapsed_seconds DESC

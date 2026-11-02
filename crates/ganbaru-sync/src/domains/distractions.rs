@@ -273,9 +273,10 @@ fn validate_host_rule(value: &Value) -> Result<(), AdapterError> {
     Ok(())
 }
 
-/// Whether `date` is a `yyyy-mm-dd` date with a month of 1 to 12 and a day of 1 to 31, the form
-/// usage writers store. Days past a month's end are left to the writer's calendar check.
-fn is_usage_date(date: &str) -> bool {
+/// Whether `date` is a real `yyyy-mm-dd` Gregorian date from year 1 on, the form usage writers
+/// store. Sync admission and usage accounting share this check, because a stored date that is not
+/// on the calendar would fail every budget computed over a window containing it.
+pub fn is_usage_date(date: &str) -> bool {
     let bytes = date.as_bytes();
     let digits = |range: std::ops::Range<usize>| {
         bytes[range.clone()]
@@ -290,10 +291,19 @@ fn is_usage_date(date: &str) -> bool {
     if bytes.len() != USAGE_DATE_CHARS || bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
     }
-    matches!(
-        (digits(0..4), digits(5..7), digits(8..10)),
-        (Some(_), Some(1..=12), Some(1..=31))
-    )
+    let (Some(year @ 1..), Some(month @ 1..=12), Some(day)) =
+        (digits(0..4), digits(5..7), digits(8..10))
+    else {
+        return false;
+    };
+    let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let last_day = match month {
+        2 if leap_year => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=last_day).contains(&day)
 }
 
 fn optional_one_of(
@@ -673,6 +683,37 @@ mod tests {
         assert_eq!(name(&"\u{1F600}".repeat(80)), Ok(()));
         let padded = format!("{}Video", " ".repeat(PAST_PARSER_BOUND));
         assert!(name(&padded).is_err());
+    }
+
+    #[test]
+    fn impossible_usage_date_is_held_invalid() {
+        let bucket = |date: &str| {
+            DistractionsAdapter.validate(
+                USAGE_TOTALS_TABLE,
+                usage_total_group::BUCKET,
+                &value(vec![
+                    text("device"),
+                    text("website"),
+                    text("example.com"),
+                    text(date),
+                ]),
+            )
+        };
+        for date in ["2026-11-30", "2026-12-31", "2024-02-29", "2000-02-29"] {
+            assert_eq!(bucket(date), Ok(()), "{date}");
+        }
+        for date in [
+            "2026-11-31",
+            "2026-02-29",
+            "2100-02-29",
+            "2026-04-31",
+            "2026-13-01",
+            "2026-11-00",
+            "0000-01-01",
+            "2026-1-01",
+        ] {
+            assert!(bucket(date).is_err(), "{date}");
+        }
     }
 
     #[test]

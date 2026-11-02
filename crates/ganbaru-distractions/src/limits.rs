@@ -1,7 +1,7 @@
 //! Pure budget matching over native, bounded daily source aggregates.
 
 use chrono::{Datelike, Duration, NaiveDate};
-use ganbaru_sync::domains::distractions::MAX_LIMIT_TEXT_BYTES;
+use ganbaru_sync::domains::distractions::{MAX_LIMIT_TEXT_BYTES, is_usage_date};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -345,17 +345,9 @@ fn add_seconds(left: i64, right: i64) -> Result<i64, String> {
         .ok_or_else(|| "usage total exceeds the supported integer range".into())
 }
 
+/// Whether `value` is a real `yyyy-mm-dd` local date, under the check sync admission applies.
 pub fn is_valid_local_date(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
-        && !value.starts_with("0000")
-        && NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+    is_usage_date(value)
 }
 
 fn app_name_key(name: &str) -> String {

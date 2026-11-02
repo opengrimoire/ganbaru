@@ -148,6 +148,22 @@ describe("ChatMessageActionToolbar", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("drops the failure of a lookup that outlives the toolbar", async () => {
+    let rejectLookup: (reason: unknown) => void = () => undefined;
+    loadChatMessageProvenance.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectLookup = reject; }));
+    const onError = vi.fn();
+
+    mountToolbar(ORGANIZATIONAL_TARGET, onError).click();
+    await vi.waitFor(() => expect(loadChatMessageProvenance).toHaveBeenCalledOnce());
+    if (component) await unmount(component);
+    component = undefined;
+    rejectLookup(new Error("the lookup failed after the channel changed"));
+    await tick();
+    await tick();
+
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("keeps a run answer out of the sync log lookup", () => {
     mountToolbar({ ...ORGANIZATIONAL_TARGET, kind: "execution" }).click();
 

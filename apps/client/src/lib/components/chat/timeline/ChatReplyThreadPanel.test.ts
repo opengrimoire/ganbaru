@@ -298,6 +298,48 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("keeps the thread readable when a message action failure closes beside an execution failure", async () => {
+    const activePage: ChatReplyThreadPageRead = {
+      ...page,
+      replies: [],
+      agentRuns: [{ ...run, state: "running" }],
+    };
+    chat.openReplyThreadId = activePage.thread.id;
+    chat.replyThread = activePage;
+    chat.replyThreadPages = [activePage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    vi.spyOn(chat, "selectAssignmentExecution").mockRejectedValue(new Error("The execution could not open"));
+    vi.spyOn(provenanceApi, "loadChatMessageProvenance").mockRejectedValue(new Error("lookup failed"));
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[role="alert"]')?.textContent).toContain("The execution could not open");
+    });
+    expect(target.querySelector("[data-notice-dismiss]")).toBeNull();
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="More Chat actions"]')?.click();
+    await vi.waitFor(() => {
+      expect(target?.textContent).toContain("Could not read which devices sent this message");
+    });
+    const alerts = [...target.querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(2);
+    expect(target.querySelectorAll("[data-notice-dismiss]")).toHaveLength(1);
+
+    target.querySelector<HTMLButtonElement>("[data-notice-dismiss]")?.click();
+    await tick();
+
+    const remaining = [...target.querySelectorAll('[role="alert"]')];
+    expect(remaining.map((alert) => alert.textContent)).toEqual([expect.stringContaining("The execution could not open")]);
+    expect(target.querySelector('[data-message-item-id="root:test"]')).not.toBeNull();
+  });
+
   it("renders exact historical turns across provider thread handoffs", async () => {
     const firstRun = {
       ...run,

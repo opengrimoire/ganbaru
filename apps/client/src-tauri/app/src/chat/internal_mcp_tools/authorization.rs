@@ -449,8 +449,152 @@ fn live_approval_covers_frozen(
 
 #[cfg(test)]
 mod tests {
-    use super::{live_approval_covers_frozen, live_runtime_approval};
-    use ganbaru_chat_contracts::models::ChatRuntimeApprovalPolicy;
+    use super::{live_approval_covers_frozen, live_runtime_approval, verify_folder_source};
+    use crate::chat::internal_mcp::{InternalMcpFolderSource, InternalMcpRunScope};
+    use crate::chat::revocation::tests::pool_with_folder_runs;
+    use ganbaru_chat_contracts::models::{
+        ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatFolderCapability,
+        ChatResult, ChatRuntimeApprovalPolicy, ChatTurnId, ChatWorkAssignmentId,
+        ProjectWorkingFolderId,
+    };
+    use sqlx::SqlitePool;
+
+    const TEAMMATE: &str = "participant:folder-agent";
+
+    /// Freezes `auto_approve` on a follow-up authorization of the working run's execution target,
+    /// under an approve-for-me revision that covers it.
+    async fn pool_with_auto_approved_folder_source() -> SqlitePool {
+        let pool = pool_with_folder_runs().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_assignment_authorization_revisions
+                (id, assignment_id, revision, requester_participant_id,
+                 teammate_policy_revision_id, teammate_access_revision,
+                 destination_conversation_id, access_profile_revision_id,
+                 execution_environment_id, working_folder_id,
+                 resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+             SELECT 'authorization:auto', assignment_id, 3, requester_participant_id,
+                    teammate_policy_revision_id, teammate_access_revision,
+                    destination_conversation_id, access_profile_revision_id,
+                    execution_environment_id, working_folder_id, 'auto_approve',
+                    scope_digest, 'allowed', created_at
+             FROM chat_assignment_authorization_revisions
+             WHERE id = 'authorization:working';
+             INSERT INTO chat_assignment_authorized_folder_sources
+                (authorization_revision_id, root_handle, working_folder_id, capability,
+                 is_execution_target, created_at, resolved_runtime_approval_policy)
+             SELECT 'authorization:auto', printf('%032d', 3), working_folder_id, capability,
+                    is_execution_target, created_at, 'auto_approve'
+             FROM chat_assignment_authorized_folder_sources
+             WHERE authorization_revision_id = 'authorization:working'
+               AND working_folder_id = 'workspace-1';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_policy_revision(&pool, "policy:folders-approving", 1, "approve_for_me").await;
+        pool
+    }
+
+    async fn insert_policy_revision(pool: &SqlitePool, id: &str, minute: u32, safety_mode: &str) {
+        sqlx::query(
+            "INSERT INTO chat_teammate_policy_revisions
+                (id, teammate_id, provider_instance_id, model_selection_data, created_at,
+                 safety_mode)
+             VALUES (?, ?, 'codex-personal', '{}', ?, ?)",
+        )
+        .bind(id)
+        .bind(TEAMMATE)
+        .bind(format!("2026-10-20T12:{minute:02}:00.000Z"))
+        .bind(safety_mode)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn point_policy_at(pool: &SqlitePool, revision_id: &str, safety_mode: &str) {
+        sqlx::query(
+            "UPDATE chat_teammates
+             SET current_policy_revision_id = ?, current_policy_safety_mode = ?
+             WHERE participant_id = ?",
+        )
+        .bind(revision_id)
+        .bind(safety_mode)
+        .bind(TEAMMATE)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn verify_target(pool: &SqlitePool) -> ChatResult<()> {
+        let scope = InternalMcpRunScope {
+            run_id: ChatAgentRunId::new("run:working").unwrap(),
+            provider_turn_id: ChatTurnId::new("turn:working").unwrap(),
+            assignment_id: ChatWorkAssignmentId::new("assignment:folders").unwrap(),
+            authorization_revision_id: ChatAuthorizationRevisionId::new("authorization:auto")
+                .unwrap(),
+            destination_conversation_id: ChatConversationId::new(
+                ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+                    .unwrap()
+                    .0,
+            )
+            .unwrap(),
+            authorization_scope_digest: "0".repeat(64),
+            execution_environment_id: None,
+            scratch_generation_id: None,
+            runtime_approval_policy: ChatRuntimeApprovalPolicy::AutoApprove,
+            channel_sources: Vec::new(),
+            folder_sources: Vec::new(),
+        };
+        let source = InternalMcpFolderSource {
+            root_handle: format!("{:032}", 3),
+            working_folder_id: ProjectWorkingFolderId::new("workspace-1").unwrap(),
+            capability: ChatFolderCapability::Execute,
+            is_execution_target: true,
+            runtime_approval_policy: ChatRuntimeApprovalPolicy::AutoApprove,
+        };
+        verify_folder_source(pool, &scope, &source).await
+    }
+
+    /// While the pointed revision has not arrived, the mode the pointer copied decides, so a
+    /// concurrent newer and narrower revision does not refuse covered folder tool calls, and a
+    /// narrower copied mode refuses them while a wider revision is the newest.
+    #[tokio::test]
+    async fn folder_source_follows_the_copied_mode_while_the_pointed_revision_is_missing() {
+        let pool = pool_with_auto_approved_folder_source().await;
+        verify_target(&pool).await.unwrap();
+
+        point_policy_at(&pool, "policy:folders-pointed", "approve_for_me").await;
+        insert_policy_revision(&pool, "policy:folders-concurrent", 20, "ask_for_approval").await;
+        verify_target(&pool).await.unwrap();
+
+        insert_policy_revision(&pool, "policy:folders-pointed", 10, "approve_for_me").await;
+        verify_target(&pool).await.unwrap();
+
+        let pool = pool_with_auto_approved_folder_source().await;
+        point_policy_at(&pool, "policy:folders-never-sent", "ask_for_approval").await;
+        assert!(verify_target(&pool).await.is_err());
+    }
+
+    /// A teammate that holds no arrived revision still has the mode its pointer copied, so
+    /// covered folder tool calls continue. Revisions are immutable and authorizations reference
+    /// them, so the test lifts both guards to reach that state.
+    #[tokio::test]
+    async fn folder_source_follows_the_copied_mode_without_any_arrived_revision() {
+        let pool = pool_with_auto_approved_folder_source().await;
+        point_policy_at(&pool, "policy:folders-pointed", "approve_for_me").await;
+        sqlx::raw_sql(
+            "PRAGMA foreign_keys=OFF;
+             DROP TRIGGER chat_teammate_policy_immutable_delete;
+             DELETE FROM chat_teammate_policy_revisions
+             WHERE teammate_id = 'participant:folder-agent';
+             PRAGMA foreign_keys=ON;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        verify_target(&pool).await.unwrap();
+    }
 
     #[test]
     fn live_approval_follows_the_teammate_approval_behavior() {

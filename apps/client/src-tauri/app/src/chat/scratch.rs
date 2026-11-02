@@ -975,6 +975,50 @@ mod tests {
         assert_eq!(error.code, ChatErrorCode::Permission);
     }
 
+    /// Points the test teammate at `revision_id`, as sync applies a pointer before its revision.
+    async fn apply_policy_pointer(pool: &SqlitePool, revision_id: &str, safety_mode: &str) {
+        sqlx::query(
+            "UPDATE chat_teammates
+             SET current_policy_revision_id = ?, current_policy_safety_mode = ?
+             WHERE participant_id = ?",
+        )
+        .bind(revision_id)
+        .bind(safety_mode)
+        .bind(TEAMMATE)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// While the pointed revision has not arrived, the mode the pointer copied decides, so a
+    /// concurrent newer and narrower revision does not stop covered scratch work.
+    #[tokio::test]
+    async fn scratch_constraints_follow_the_copied_mode_while_the_pointed_revision_is_missing() {
+        let pool = pool_with_auto_approved_scratch().await;
+        apply_policy_pointer(&pool, "policy:scratch-pointed", "approve_for_me").await;
+        apply_policy_revision(&pool, "policy:scratch-concurrent", 20, "ask_for_approval").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        apply_policy_revision(&pool, "policy:scratch-pointed", 10, "approve_for_me").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+    }
+
+    /// A pointer whose revision never arrives still stops scratch work its copied mode does not
+    /// cover, even while a wider arrived revision is the newest.
+    #[tokio::test]
+    async fn scratch_constraints_fail_when_the_copied_mode_is_narrower() {
+        let pool = pool_with_auto_approved_scratch().await;
+        apply_policy_pointer(&pool, "policy:scratch-never-sent", "ask_for_approval").await;
+        let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+
     /// The scratch override replaces the channel override at runtime, so the frozen approval
     /// stays covered by the same override that froze it.
     #[tokio::test]

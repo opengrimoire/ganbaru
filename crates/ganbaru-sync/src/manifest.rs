@@ -1302,7 +1302,8 @@ impl Manifest {
     /// for the life of the row. Duplicate classes, trees, and edges read raw sync state, so a
     /// retained table has none, and what the parent's cascade reaches is free of retention,
     /// trees, and edges, so reading it never returns to a retained row or to unfinished
-    /// derivation.
+    /// derivation. A retained row can be tombstoned, which stores no conflict mask, so a
+    /// retained table surfaces no group.
     fn retention_problems(&self, table: &TableSpec) -> Vec<String> {
         let Some(retained) = table.retained else {
             return Vec::new();
@@ -1314,6 +1315,9 @@ impl Manifest {
             .any(|resolution| matches!(resolution, Resolution::DuplicateRepair { .. }));
         if table.tree.is_some() || table.acyclic.is_some() || duplicate_repair {
             problems.push("a retained table repairs duplicates, a tree, or edges".to_string());
+        }
+        if table.groups.iter().any(|group| group.surfaced) {
+            problems.push("a retained table surfaces a group".to_string());
         }
         match table.group(retained.group) {
             Some(group) if group.kind == MergeKind::Immutable => {

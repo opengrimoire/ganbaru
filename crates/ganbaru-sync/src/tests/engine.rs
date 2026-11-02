@@ -6,17 +6,16 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Envelope, Field, GroupId, GroupMask, GroupValue, Hlc, RowKey,
-    TableId, Value, VersionVector, WriterId,
+    Change, Content, Envelope, Field, GroupId, GroupMask, GroupValue, Hlc, TableId, Value,
+    VersionVector, WriterId,
 };
 
 use super::authorization::{seal_at, view};
 use super::block_on;
 use super::exclusion::{deliver, edit, restore_all};
 use super::fixture::{
-    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, KEPT_OWNER, LINKS_TABLE,
-    MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, kept_links_engine,
-    membership_key,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
+    MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
 use super::holds::sealed_create;
 use super::replica::{
@@ -601,95 +600,6 @@ fn keeping_the_displayed_version_also_resolves_a_conflict() {
                     .await
                     .unwrap()
                     .is_empty()
-            );
-        }
-    });
-}
-
-/// A tombstone of a row its table's retention rule keeps leaves the row live in effect, so a
-/// chosen value of its surfaced group still resolves the concurrent ones. The stored conflict
-/// mask stays empty, since the schema keeps conflict masks on rows whose merge state is live.
-#[test]
-fn a_retained_row_resolves_concurrent_values_after_a_tombstone() {
-    block_on(async {
-        let mut replicas = replicas(3).await;
-        for replica in &mut replicas {
-            replica.engine = kept_links_engine();
-        }
-        replicas[0]
-            .exec(&format!(
-                "INSERT INTO fixture_items (id, created_at, label, label_edits)
-                     VALUES ('{KEPT_OWNER}', '2027-01-01T00:00:00.000Z', 'Kept', 0);
-                 INSERT INTO fixture_links (id, owner_id, note)
-                     VALUES ('link-1', '{KEPT_OWNER}', 'Draft');"
-            ))
-            .await;
-        converge(&mut replicas).await;
-        for (index, note) in [(1, "From B"), (2, "From C")] {
-            replicas[index]
-                .exec(&format!(
-                    "UPDATE fixture_links SET note = '{note}' WHERE id = 'link-1'"
-                ))
-                .await;
-            replicas[index].seal().await.unwrap();
-        }
-        let forged = forge_change(
-            &mut replicas[0],
-            Change {
-                table: LINKS_TABLE,
-                row: RowKey::new("link-1").unwrap(),
-                action: ChangeAction::Tombstone,
-                groups: Vec::new(),
-                replaced_by: None,
-                cause: None,
-            },
-        )
-        .await;
-        for replica in &mut replicas {
-            replica.receive(std::slice::from_ref(&forged)).await;
-            replica.apply_all().await.unwrap();
-        }
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert_eq!(
-                replica
-                    .count("SELECT count(*) FROM fixture_links WHERE id = 'link-1'")
-                    .await,
-                1
-            );
-        }
-
-        let resolver = &mut replicas[1];
-        {
-            let mut tx = sqlx::Connection::begin(&mut resolver.conn).await.unwrap();
-            sqlx::query("UPDATE fixture_links SET note = 'Chosen' WHERE id = 'link-1'")
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-            resolver
-                .engine
-                .force_group(&mut tx, LINKS_TABLE, "link-1", group_id(1), 1)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-        }
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert!(
-                replica
-                    .engine
-                    .conflicts(&mut replica.conn, LINKS_TABLE)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(
-                replica
-                    .count("SELECT count(*) FROM fixture_links WHERE note = 'Chosen'")
-                    .await,
-                1
             );
         }
     });

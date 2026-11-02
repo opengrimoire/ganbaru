@@ -29,8 +29,8 @@ use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable,
     DomainManifest, DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn,
     Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable,
-    PublishedWith, ReferenceColumn, Resolution, RowKeyRule, RowRetention, SYNC_KEY_COLUMN,
-    TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
+    PublishedWith, ReferenceColumn, Resolution, RowKeyRule, SYNC_KEY_COLUMN, TableIdRange,
+    TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 
@@ -1723,89 +1723,6 @@ pub(super) fn test_engine_adapting(adapter: Box<dyn DomainAdapter>) -> Engine {
             .with(OVERRIDES_TABLE, Box::new(OverrideHook::default())),
     )
     .expect("the test manifest, adapters, and hooks should agree")
-}
-
-/// Owner item of the links [`kept_links_engine`] retains.
-pub(super) const KEPT_OWNER: &str = "item-kept";
-
-/// [`LINKS`] with surfaced ends, retaining a link of [`KEPT_OWNER`] while that item lives.
-const KEPT_LINKS: TableSpec = TableSpec {
-    groups: &[
-        LINKS.groups[0],
-        GroupSpec {
-            surfaced: true,
-            ..LINKS.groups[1]
-        },
-        LINKS.groups[2],
-    ],
-    retained: Some(RowRetention {
-        group: group_id(0),
-        column: "owner_id",
-        value: KEPT_OWNER,
-        parent: ITEMS_TABLE,
-    }),
-    ..LINKS
-};
-
-/// [`FIXTURE_DOMAIN`] with [`KEPT_LINKS`] in place of [`LINKS`].
-const KEPT_FIXTURE_DOMAIN: DomainManifest = DomainManifest {
-    tables: &[
-        ITEMS,
-        CYCLE_A,
-        CYCLE_B,
-        HANDLES,
-        KEPT_LINKS,
-        MEMBERSHIPS,
-        NODES,
-        NODE_NOTES,
-        NOTE_POINTERS,
-        EDGES,
-        EDGE_NOTES,
-        DRAFTS,
-        DRAFT_PARTS,
-        DRAFT_NOTES,
-        MEMOS,
-        MEMO_LINES,
-        MEMO_TAGS,
-        LISTS,
-        BOARDS,
-        SCROLLS,
-        OVERRIDES,
-    ],
-    ..FIXTURE_DOMAIN
-};
-
-/// [`TEST_DOMAINS`] with [`KEPT_FIXTURE_DOMAIN`] in place of [`FIXTURE_DOMAIN`].
-const KEPT_DOMAINS: &[&DomainManifest] = &[
-    &quick_notes::DOMAIN,
-    &preferences::DOMAIN,
-    &themes::DOMAIN,
-    &contacts::DOMAIN,
-    &music::DOMAIN,
-    &projects::DOMAIN,
-    &calendar::DOMAIN,
-    &focus::DOMAIN,
-    &distractions::DOMAIN,
-    &notes::DOMAIN,
-    &chat::DOMAIN,
-    &KEPT_FIXTURE_DOMAIN,
-];
-
-/// The manifest of [`KEPT_DOMAINS`]. Its schema and triggers match [`TEST_MANIFEST`].
-static KEPT_MANIFEST: LazyLock<Manifest> =
-    LazyLock::new(|| Manifest::from_domains(VAULT_MANIFEST_VERSION, KEPT_DOMAINS));
-
-/// The engine of [`test_engine`] over [`KEPT_MANIFEST`], so fixture links keep a surfaced
-/// group and a retention rule.
-pub(super) fn kept_links_engine() -> Engine {
-    Engine::with(
-        &KEPT_MANIFEST,
-        test_adapters(),
-        super::notes::with_notes_hooks(vault_hooks())
-            .with(LISTS_TABLE, Box::new(FixtureHook))
-            .with(OVERRIDES_TABLE, Box::new(OverrideHook::default())),
-    )
-    .expect("the kept links manifest, adapters, and hooks should agree")
 }
 
 /// [`test_engine_with`] the default [`OverrideHook`].

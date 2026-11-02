@@ -5,7 +5,7 @@ use crate::distractions::limits::{self as limits, BudgetTotal, UsageSourceDay, U
 use ganbaru_sync::domains::distractions::is_android_package_name;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
@@ -205,9 +205,40 @@ pub(super) struct LastGoodUsage {
     pub local_usage: Vec<UsageSourceDay>,
 }
 
+impl LastGoodUsage {
+    /// The accepted window plus what this device's counters gained since it was read, so usage
+    /// counts once. Growth rows come first, so a window at its bound keeps them.
+    fn with_local_growth(&self, capture: &GuardianCapture) -> Vec<UsageSourceDay> {
+        let accepted: HashMap<(&str, &str), i64> = self
+            .local_usage
+            .iter()
+            .map(|row| {
+                (
+                    (row.source_key.as_str(), row.local_date.as_str()),
+                    row.elapsed_seconds,
+                )
+            })
+            .collect();
+        let growth = capture.local_usage().into_iter().filter_map(|mut row| {
+            let key = (row.source_key.as_str(), row.local_date.as_str());
+            let counted = accepted.get(&key).copied().unwrap_or(0);
+            row.elapsed_seconds = row.elapsed_seconds.saturating_sub(counted);
+            (row.elapsed_seconds > 0).then_some(row)
+        });
+        match limits::merge_source_groups(growth.chain(self.sources.iter().cloned())) {
+            Ok(window) => window.sources,
+            Err(error) => {
+                eprintln!("Guardian kept the last usage window without local growth: {error}");
+                self.sources.clone()
+            }
+        }
+    }
+}
+
 /// Sources Guardian keeps enforcing with after a failed read: the last accepted window of the same
-/// generation, vault, rules, and date, or else this device's own captured usage alone. A reused
-/// window misses usage since it was read, which can only delay a limit.
+/// generation, vault, rules, and date with this device's later usage added, or else this device's
+/// own captured usage alone. Other devices' usage since that read stays out, which can only delay
+/// a limit.
 pub(super) fn fallback_sources(
     last_good: Option<&LastGoodUsage>,
     capture: &GuardianCapture,
@@ -220,7 +251,7 @@ pub(super) fn fallback_sources(
             && usage.rules_revision == rules_revision
             && usage.local_date == capture.local_date
     }) {
-        Some(usage) => usage.sources.clone(),
+        Some(usage) => usage.with_local_growth(capture),
         None => capture.local_usage(),
     }
 }

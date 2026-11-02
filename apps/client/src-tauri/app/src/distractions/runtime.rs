@@ -359,6 +359,7 @@ struct UsageBinding {
 /// The last projection a usage read accepted.
 struct UsageProjectionCache {
     binding: UsageBinding,
+    observed_at: Instant,
     projection: limits_read::UsageProjection,
 }
 
@@ -369,8 +370,8 @@ struct SettledUsage {
 }
 
 /// The projection enforcement runs on after a usage read. A failed read reuses the cached totals
-/// of the same binding and local date; with none, limits have no totals until a read succeeds
-/// while phase enforcement continues.
+/// of the same binding and local date and keeps their read instant, so Settings sees them age out;
+/// with none, limits have no totals until a read succeeds while phase enforcement continues.
 fn settle_usage_read(
     cache: &mut Option<UsageProjectionCache>,
     read: Result<limits_read::UsageProjection, String>,
@@ -382,6 +383,7 @@ fn settle_usage_read(
         Ok(projection) => {
             *cache = Some(UsageProjectionCache {
                 binding: binding.clone(),
+                observed_at: read_at,
                 projection: projection.clone(),
             });
             Some(SettledUsage {
@@ -396,7 +398,7 @@ fn settle_usage_read(
                     && Some(cached.projection.local_date.as_str()) == local_date
             })
             .map(|cached| SettledUsage {
-                observed_at: read_at,
+                observed_at: cached.observed_at,
                 projection: cached.projection.clone(),
             }),
     }

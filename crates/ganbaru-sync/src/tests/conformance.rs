@@ -19,6 +19,7 @@ use crate::assets::{AssetClass, MAX_ASSET_BYTES};
 use crate::codec::{OwnedRow, decode_table, encode, encode_table};
 use crate::domains::themes::MAX_THEME_ID_CHARS;
 use crate::domains::vault_adapters;
+use crate::edges::WALK_BUDGET;
 use crate::manifest::order::{Dependency, DependencyKind};
 use crate::manifest::vault::themes::BUILT_IN_THEMES;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
@@ -2599,6 +2600,15 @@ fn vault_manifest_changes_only_with_a_version_bump() {
         VAULT_MANIFEST.summary(),
         recorded.replace("\r\n", "\n"),
         "the vault manifest changed without a version bump"
+    );
+}
+
+#[test]
+fn the_summary_carries_the_sever_walk_budget() {
+    let line = format!("  acyclic blocking_task_id->blocked_task_id walk budget {WALK_BUDGET}\n");
+    assert!(
+        VAULT_MANIFEST.summary().contains(&line),
+        "a changed budget must fail the recorded manifest"
     );
 }
 

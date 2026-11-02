@@ -143,7 +143,7 @@ async fn edges(
 
 /// Edges one set may walk, as a multiple of its edge count times the search limit. It is checked
 /// between edges, so a set walks at most one more edge search past it.
-const WALK_BUDGET: u64 = 6;
+pub(crate) const WALK_BUDGET: u64 = 6;
 
 /// How a backward search from the start of an edge ended.
 enum Backward {
@@ -514,6 +514,17 @@ mod tests {
         assert!(levels.insert(0, 2), "levels prove this edge safe");
         assert!(!levels.insert(1, 0), "levels prove nothing about this edge");
         assert_eq!(levels.visits, 0, "no search runs past the budget");
+    }
+
+    #[test]
+    fn a_spent_budget_leaves_later_edges_outside_its_component() {
+        let length = 400;
+        let chain = (0..length).map(|at| (at, at + 1));
+        let closing = (0..length).map(|_| (length, 0));
+        let fresh = [(2 * length, 2 * length + 1), (2 * length + 1, 2 * length + 2)];
+        let edges = numbered(chain.chain(closing).chain(fresh));
+        let severed = assert_within_bound("spent chain", edges.clone());
+        assert_eq!(severed, reference(edges), "edges of fresh rows stay taken");
     }
 
     #[test]

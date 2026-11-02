@@ -2639,6 +2639,40 @@ fn validation_refuses_a_retention_rule_that_cannot_hold() {
     );
 }
 
+/// A retained row can be tombstoned, and the schema keeps conflict masks on rows whose merge
+/// state is live, so a retained table surfacing a group would hide its conflicts.
+#[test]
+fn manifest_validation_refuses_a_retained_table_with_a_surfaced_group() {
+    const SURFACED: TableSpec = TableSpec {
+        groups: &[
+            LINKS.groups[0],
+            GroupSpec {
+                surfaced: true,
+                ..LINKS.groups[1]
+            },
+            LINKS.groups[2],
+        ],
+        retained: Some(RowRetention {
+            group: group_id(0),
+            column: "owner_id",
+            value: "selected",
+            parent: ITEMS_TABLE,
+        }),
+        ..LINKS
+    };
+    const SURFACED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, SURFACED],
+        ..FIXTURE_DOMAIN
+    };
+    let result = leaked(&[&SURFACED_DOMAIN]).validate();
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|problems| problems.contains("a retained table surfaces a group")),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn validation_refuses_tables_out_of_dependency_order() {
     const SPLIT_CYCLE: DomainManifest = DomainManifest {

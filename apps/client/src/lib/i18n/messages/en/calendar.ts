@@ -290,6 +290,8 @@ export const calendar = {
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Read-only (${shortcut} to ${action})`,
     saveShortcut: (shortcut: string) => `Save (${shortcut})`,
+    detailsLoadFailed: "Event details could not be loaded.",
+    detailsLoadFailedSaveBlocked: "Event details could not be loaded. The long title or location stays read only until they load.",
   },
   conflict: {
     badge: "Edited on two devices",

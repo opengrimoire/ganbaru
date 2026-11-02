@@ -121,6 +121,7 @@ export class EventPanelSessionController {
   lastFullKey = "";
   lastHeavyAppliedKey = "";
   private heavyLoadGeneration = 0;
+  private heavyLoadFailedState = $state(false);
   private titleShortened = $state(false);
   private locationShortened = $state(false);
   private titleRestored = false;
@@ -312,6 +313,7 @@ export class EventPanelSessionController {
     this.heavyLoadGeneration += 1;
     this.lastFullKey = openedEventId;
     this.fullEvent = null;
+    this.heavyLoadFailedState = false;
     return {
       generation: this.heavyLoadGeneration,
       openedEventId,
@@ -323,11 +325,37 @@ export class EventPanelSessionController {
     this.heavyLoadGeneration += 1;
     this.lastFullKey = "";
     this.fullEvent = null;
+    this.heavyLoadFailedState = false;
+  }
+
+  /** Increments on each retry request so the panel restarts the full load for the same event. */
+  heavyLoadAttempt = $state(0);
+
+  /** Whether the current full load failed, which leaves the heavy sections and any shortened text unavailable. */
+  get heavyLoadFailed(): boolean {
+    return this.heavyLoadFailedState;
+  }
+
+  /** Records a failed full load when the token is still current. */
+  failHeavyLoad(token: EventPanelHeavyLoadToken): boolean {
+    if (!this.isCurrentHeavyLoad(token)) return false;
+    this.heavyLoadFailedState = true;
+    return true;
+  }
+
+  /** Requests a new full load for the open event. */
+  retryHeavyLoad(): void {
+    this.heavyLoadFailedState = false;
+    this.lastFullKey = "";
+    this.heavyLoadAttempt += 1;
+  }
+
+  private isCurrentHeavyLoad(token: EventPanelHeavyLoadToken): boolean {
+    return token.generation === this.heavyLoadGeneration && token.openedEventId === this.lastFullKey;
   }
 
   completeHeavyLoad(token: EventPanelHeavyLoadToken, fullEvent: CalendarEvent): boolean {
-    if (token.generation !== this.heavyLoadGeneration
-      || token.openedEventId !== this.lastFullKey) return false;
+    if (!this.isCurrentHeavyLoad(token)) return false;
     this.fullEvent = fullEvent;
     this.applyHeavyEvent(fullEvent, this.projectId !== token.projectId);
     return true;

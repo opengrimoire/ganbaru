@@ -282,6 +282,8 @@ export const calendar = {
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Solo lectura (${shortcut} para ${action})`,
     saveShortcut: (shortcut: string) => `Guardar (${shortcut})`,
+    detailsLoadFailed: "No se pudieron cargar los detalles del evento.",
+    detailsLoadFailedSaveBlocked: "No se pudieron cargar los detalles del evento. El título o la ubicación largos son de solo lectura hasta que se carguen.",
   },
   conflict: {
     badge: "Editado en dos dispositivos",

@@ -9,6 +9,7 @@
   import MeetingSection from "./MeetingSection.svelte";
   import PomodoroSection from "./PomodoroSection.svelte";
   import EventConflictNotice from "$lib/components/calendar/conflicts/EventConflictNotice.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { hasTimingConflict } from "$lib/calendar/conflicts";
   import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import NotificationsSection from "./NotificationsSection.svelte";
@@ -548,19 +549,24 @@
   // resolver checks `lastFullKey` again at completion so a stale promise
   // for an event the user already navigated away from can't clobber the
   // current panel.
+  // A failed or empty load is shown with a retry, because a shortened title
+  // or location stays uneditable until the full event arrives.
   $effect(() => {
     if (parked || mode !== "edit" || !event?.id || detailsLoaded || !loadFullEvent) {
       session.cancelHeavyLoad();
       return;
     }
+    void session.heavyLoadAttempt;
     const id = event.id;
     if (id === session.lastFullKey) return;
     const request = session.beginHeavyLoad(id);
     const lookupId = eventPanelHeavyLookupId(event);
     loadFullEvent(lookupId).then((full) => {
       if (full) session.completeHeavyLoad(request, full);
+      else session.failHeavyLoad(request);
     }).catch((e) => {
       console.error("[EventPanel] loadFullEvent failed:", e);
+      session.failHeavyLoad(request);
     });
   });
 
@@ -1394,6 +1400,18 @@
 
   <!-- Feature sections -->
   <div class="shrink-0 flex flex-col gap-1.5 px-4 py-1.5">
+
+      {#if session.heavyLoadFailed}
+        <Notice
+          role="status"
+          tone="warning"
+          copy={false}
+          message={t(titleEditBlocked || locationEditBlocked
+            ? "calendar.eventPanel.detailsLoadFailedSaveBlocked"
+            : "calendar.eventPanel.detailsLoadFailed")}
+          onRetry={() => session.retryHeavyLoad()}
+        />
+      {/if}
 
       {#if conflictEventId}
         <EventConflictNotice eventId={conflictEventId} blocked={externalDirty} onResolved={onClose} />

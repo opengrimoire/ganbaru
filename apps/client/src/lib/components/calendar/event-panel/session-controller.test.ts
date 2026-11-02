@@ -125,6 +125,42 @@ describe("EventPanelSessionController", () => {
     expect(session.titleEditBlocked).toBe(false);
   });
 
+  it("reports a failed full load that leaves a shortened title blocked and recovers on retry", () => {
+    const shortened = "T".repeat(WINDOW_TEXT_CHARS);
+    const opened = event("instance", { title: shortened, recurringParentId: "parent" });
+    const { session } = controller();
+    session.initializeEdit(opened);
+    const attempt = session.heavyLoadAttempt;
+    const failed = session.beginHeavyLoad("parent");
+    expect(session.heavyLoadFailed).toBe(false);
+
+    expect(session.failHeavyLoad(failed)).toBe(true);
+    expect(session.heavyLoadFailed).toBe(true);
+    expect(session.titleEditBlocked).toBe(true);
+
+    session.retryHeavyLoad();
+    expect(session.heavyLoadAttempt).toBe(attempt + 1);
+    expect(session.lastFullKey).toBe("");
+    const retried = session.beginHeavyLoad("parent");
+    expect(session.heavyLoadFailed).toBe(false);
+    session.completeHeavyLoad(retried, event("parent", { title: `${shortened} and the rest` }));
+    expect(session.title).toBe(`${shortened} and the rest`);
+    expect(session.titleEditBlocked).toBe(false);
+  });
+
+  it("ignores a failure from a load the panel has moved past", () => {
+    const { session } = controller();
+    session.initializeEdit(event("opened"));
+    const stale = session.beginHeavyLoad("opened");
+    session.beginHeavyLoad("next");
+    expect(session.failHeavyLoad(stale)).toBe(false);
+    expect(session.heavyLoadFailed).toBe(false);
+    const current = session.beginHeavyLoad("next");
+    session.failHeavyLoad(current);
+    session.cancelHeavyLoad();
+    expect(session.heavyLoadFailed).toBe(false);
+  });
+
   it("loads recurring occurrence details from the parent identity", () => {
     expect(eventPanelHeavyLookupId(event("instance", { recurringParentId: "parent" }))).toBe("parent");
     expect(eventPanelHeavyLookupId(event("standalone"))).toBe("standalone");

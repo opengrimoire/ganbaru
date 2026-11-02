@@ -690,6 +690,48 @@ async fn synced_policy_reduction_follows_the_effective_revision_in_either_arriva
     assert!(kept.revoked_teammates.is_empty());
 }
 
+/// A pointer that arrives before the revision it names leaves the coverage decision to that
+/// revision, so a concurrent newer and narrower revision cannot revoke work the pointed revision
+/// still covers, whichever hook or sweep runs before it arrives.
+#[tokio::test]
+async fn pointer_before_revision_keeps_covered_work() {
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:pointed',
+             current_policy_safety_mode = 'approve_for_me'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
+
+    insert_policy_revision(&pool, "policy:concurrent", 20, "ask_for_approval").await;
+    let concurrent = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:concurrent"]).await;
+    assert!(concurrent.revoked_teammates.is_empty(), "{concurrent:?}");
+    let teammate = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
+    assert!(teammate.revoked_teammates.is_empty(), "{teammate:?}");
+    let swept = run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
+    assert!(swept.revoked_teammates.is_empty(), "{swept:?}");
+    let access = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    assert!(access.revoked_teammates.is_empty(), "{access:?}");
+    assert_eq!(
+        authorization_state(&pool, "authorization:wide").await,
+        "allowed"
+    );
+
+    insert_policy_revision(&pool, "policy:pointed", 10, "approve_for_me").await;
+    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:pointed"]).await;
+    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
+    assert_eq!(
+        authorization_state(&pool, "authorization:wide").await,
+        "allowed"
+    );
+}
+
 /// A Custom teammate cannot be ranked against a grant, so the grant alone governs its host tools
 /// and a change that leaves the frozen approval covered keeps the work running.
 #[tokio::test]

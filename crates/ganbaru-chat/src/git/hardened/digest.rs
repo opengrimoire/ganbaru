@@ -23,6 +23,7 @@ use super::{
     GitRunError, GitStdout, StdoutSink, base_command, classify_key, empty_hooks_directory, execute,
     hardening_for, read_effective_config,
 };
+use ganbaru_chat_contracts::models::ProviderConfigurationPath;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -248,6 +249,15 @@ impl ProviderConfigurationEntries {
             hasher.field(digest);
         }
         hasher.finish()
+    }
+
+    /// Paths in `reads` whose content exceeded the digest bounds, so the
+    /// digest cannot vouch for them.
+    pub fn exceeded_paths<'a>(
+        &'a self,
+        reads: &'a [ProviderConfigurationPath],
+    ) -> impl Iterator<Item = ProviderConfigurationPath> + 'a {
+        reads.iter().copied().filter(|_| false)
     }
 
     fn insert(&mut self, path: String, bytes: &[u8]) {

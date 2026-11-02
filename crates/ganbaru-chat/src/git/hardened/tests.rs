@@ -1058,6 +1058,76 @@ fn provider_digest_changes_with_opencode_and_cursor_configuration() {
     }
 }
 
+#[test]
+fn provider_configuration_overflow_blocks_only_its_provider() {
+    use ganbaru_chat_contracts::models::ProviderConfigurationPath as Path;
+    const CLAUDE: &[Path] = &[
+        Path::ClaudeSettings,
+        Path::ClaudeLocalSettings,
+        Path::ProjectMcp,
+        Path::ClaudeSkills,
+        Path::ClaudeAgents,
+        Path::ClaudeCommands,
+    ];
+    const OPENCODE: &[Path] = &[Path::OpenCodeJson, Path::OpenCodeJsonc, Path::OpenCode];
+    const CURSOR: &[Path] = &[Path::CursorRules, Path::Cursor];
+
+    let repository = TestRepository::new();
+    let root = repository.root.as_path();
+    let write = |relative: &str, contents: &str| {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("entry should have a parent"))
+            .expect("entry folder should exist");
+        fs::write(&path, contents).expect("entry should write");
+    };
+    write(".claude/settings.json", "{}\n");
+    write(".opencode/plugin/marker.ts", "export default {}\n");
+    let files_per_package = 128;
+    for index in 0..=super::MAX_TRUST_DIGEST_PROVIDER_FILES {
+        write(
+            &format!(
+                ".opencode/node_modules/package-{}/file-{index}.js",
+                index / files_per_package
+            ),
+            "module.exports = {}\n",
+        );
+    }
+    write(".cursor/a/b/c/d/e/f/g/h/i/rule.mdc", "marker\n");
+
+    let configuration = folder_configuration_blocking(root);
+    assert!(
+        configuration.is_ok(),
+        "an oversized provider tree must not stop Git: {configuration:?}"
+    );
+    let entries =
+        provider_configuration_entries_blocking(root).expect("other providers must still read");
+    assert!(!entries.is_empty());
+    assert_eq!(
+        entries.exceeded_paths(OPENCODE).collect::<Vec<_>>(),
+        vec![Path::OpenCode]
+    );
+    assert_eq!(
+        entries.exceeded_paths(CURSOR).collect::<Vec<_>>(),
+        vec![Path::Cursor]
+    );
+    assert_eq!(entries.exceeded_paths(CLAUDE).count(), 0);
+
+    let before = entries.digest();
+    write(".opencode/plugin/marker.ts", "export default { changed: true }\n");
+    assert_eq!(
+        provider_configuration_entries_blocking(root)
+            .expect("entries should read")
+            .exceeded_paths(OPENCODE)
+            .collect::<Vec<_>>(),
+        vec![Path::OpenCode],
+        "a changed plugin stays refused for OpenCode"
+    );
+    write(".claude/settings.json", "{\"hooks\":{}}\n");
+    let after = provider_configuration_entries_blocking(root).expect("entries should read");
+    assert_ne!(after.digest(), before, "Claude configuration still counts");
+    assert!(!after.is_covered_by(&entries));
+}
+
 #[cfg(unix)]
 #[test]
 fn trust_for_an_older_configuration_runs_untrusted() {

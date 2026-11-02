@@ -15,7 +15,8 @@ use super::block_on;
 use super::exclusion::{deliver, edit, restore_all};
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
-    MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
+    MEMBERSHIPS_TABLE, NODES_TABLE, REORDERED_RULES_MANIFEST, TEST_MANIFEST, edge_group,
+    edge_key, membership_key, test_engine_of,
 };
 use super::holds::sealed_create;
 use super::replica::{
@@ -1137,6 +1138,132 @@ fn class_index_matches_a_full_recompute() {
             texts(&mut anchor, "SELECT id FROM fixture_handles ORDER BY id").await,
             ["h-1", "h-2", "h-5"]
         );
+    });
+}
+
+/// An observer that applied `h-1` and `h-2` from replica 0, before `prepare` changes its class
+/// index or its engine and `h-3` from replica 1, which never saw them, arrives. `h-3` must be
+/// hidden behind the row it collides with, not refused by the domain unique constraint.
+async fn assert_collision_with_an_untouched_row_is_repaired(
+    prepare: impl AsyncFnOnce(&mut Replica),
+    collision: &str,
+) {
+    let mut replicas = replicas(3).await;
+    replicas[0]
+        .exec(
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L1', 'C1');
+             INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', 'L2', 'C2');",
+        )
+        .await;
+    replicas[1]
+        .exec(&format!(
+            "INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', {collision})"
+        ))
+        .await;
+    replicas[0].seal_rotating().await.unwrap();
+    replicas[1].seal_rotating().await.unwrap();
+    let (to, from) = pair(&mut replicas, 2, 0);
+    store_from(to, from).await;
+    apply_without_writer(&mut replicas[2]).await;
+    prepare(&mut replicas[2]).await;
+
+    let (to, from) = pair(&mut replicas, 2, 1);
+    store_from(to, from).await;
+    let observer = &mut replicas[2];
+    apply_without_writer(observer).await;
+
+    assert_eq!(
+        observer.count("SELECT count(*) FROM sync_refused_rows").await,
+        0,
+        "the collision was refused instead of repaired"
+    );
+    assert_eq!(
+        texts(observer, "SELECT id FROM fixture_handles ORDER BY id").await,
+        ["h-1", "h-2"]
+    );
+    observer.check_class_index().await;
+}
+
+/// Merge state from before the class index existed, as an older vault or a rollback copy holds
+/// it: the index starts empty, so it must be built from merge state before it is read.
+#[test]
+fn an_empty_class_index_is_rebuilt_from_merge_state() {
+    block_on(async {
+        assert_collision_with_an_untouched_row_is_repaired(
+            async |observer: &mut Replica| {
+                observer
+                    .exec(
+                        "DELETE FROM sync_contested_classes;
+                         DELETE FROM sync_unique_classes;",
+                    )
+                    .await;
+            },
+            "'L1', 'C3'",
+        )
+        .await;
+    });
+}
+
+/// A manifest update that reorders the duplicate rules of a table moves every class to another
+/// rule position, so entries of untouched rows must follow.
+#[test]
+fn reordered_duplicate_rules_rebuild_the_class_index() {
+    block_on(async {
+        assert_collision_with_an_untouched_row_is_repaired(
+            async |observer: &mut Replica| {
+                observer.engine = test_engine_of(&REORDERED_RULES_MANIFEST);
+            },
+            "'L3', 'C1'",
+        )
+        .await;
+    });
+}
+
+/// A class key is a digest of the folded unique values, so a long value takes the same index
+/// space as a short one, and every replica derives the same key.
+#[test]
+fn class_keys_are_fixed_size_digests_equal_on_every_replica() {
+    block_on(async {
+        let long = "x".repeat(40);
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', '{long}', 'C1')"
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', '{long}', 'C2')"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .count(
+                        "SELECT count(*) FROM sync_unique_classes WHERE length(class_key) <> 32"
+                    )
+                    .await,
+                0,
+                "replica {} stores an unbounded class key",
+                replica.index
+            );
+            replica.check_class_index().await;
+        }
+        let keys: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT class_key FROM sync_unique_classes WHERE row_key = 'h-1' ORDER BY rule_index",
+        )
+        .fetch_all(&mut replicas[0].conn)
+        .await
+        .unwrap();
+        let other: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT class_key FROM sync_unique_classes WHERE row_key = 'h-1' ORDER BY rule_index",
+        )
+        .fetch_all(&mut replicas[1].conn)
+        .await
+        .unwrap();
+        assert_eq!(keys, other, "replicas disagree on a class key");
     });
 }
 

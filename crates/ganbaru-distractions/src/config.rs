@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use ganbaru_sync::domains::distractions::is_android_package_name;
+pub use ganbaru_sync::domains::distractions::is_rule_id;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,7 +35,7 @@ pub const MAX_CATEGORY_NAME_CHARS: usize = 60;
 pub const MAX_NAME_CHARS: usize = 80;
 
 /// Most characters of a custom category, usage limit, or limit entry id.
-pub const MAX_ID_CHARS: usize = 80;
+pub const MAX_ID_CHARS: usize = ganbaru_sync::domains::distractions::MAX_ID_CHARS;
 
 /// Most desktop process names one app rule or limit entry matches.
 pub const MAX_MATCH_NAMES: usize = 64;
@@ -283,16 +284,6 @@ pub fn is_built_in_category(id: &str) -> bool {
     built_in_categories()
         .iter()
         .any(|category| category.id == id)
-}
-
-/// Whether `id` is a custom category, usage limit, or limit entry id.
-pub fn is_rule_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= MAX_ID_CHARS
-        && id.as_bytes()[0].is_ascii_alphanumeric()
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 /// Whether `host` is a normalized host rule: lowercase ASCII labels of letters, digits, and

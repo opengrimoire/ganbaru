@@ -1,6 +1,8 @@
 //! Distraction rules and usage adapter: value checks the column types cannot express, recovery
 //! titles, and the hook that reports rule changes so the app republishes what its blockers read.
 
+use std::collections::HashSet;
+
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, RowKey, TableId, Value};
 use sqlx::SqliteConnection;
 
@@ -182,6 +184,17 @@ pub fn parse_match_names(json: &str) -> Option<Vec<String>> {
             .iter()
             .all(|name| !name.trim().is_empty() && name.chars().count() <= MAX_APP_NAME_CHARS);
     valid.then_some(names)
+}
+
+/// Whether `id` is a custom category, usage limit, or limit entry id: ASCII letters, digits,
+/// underscores, and hyphens, starting with a letter or digit, within [`MAX_ID_CHARS`].
+pub fn is_rule_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ID_CHARS
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 /// The sources of one usage limit entry.
@@ -378,16 +391,22 @@ fn nullable_text(field: &Field) -> Result<Option<&str>, AdapterError> {
     }
 }
 
-/// The sources of every entry of a usage limit.
+/// The entries of a usage limit: at least one, each with a distinct rule id and usable sources,
+/// so load reads every admitted entry and no limit is admitted that load would skip for lack of
+/// entries.
 fn validate_limit_entries(value: &Value) -> Result<(), AdapterError> {
     let [Field::Blob(bytes)] = value.fields() else {
         return Err(AdapterError("distraction limit entries"));
     };
     let rows = codec::decode(&LIMIT_ENTRIES, bytes)
         .map_err(|_| AdapterError("distraction limit entries"))?;
+    if rows.is_empty() {
+        return Err(AdapterError("distraction limit entries"));
+    }
+    let mut ids = HashSet::with_capacity(rows.len());
     rows.iter().try_for_each(|row| {
         let [
-            _,
+            Field::Text(id),
             _,
             _,
             website,
@@ -399,6 +418,9 @@ fn validate_limit_entries(value: &Value) -> Result<(), AdapterError> {
         else {
             return Err(AdapterError("distraction limit entries"));
         };
+        if !is_rule_id(id) || !ids.insert(id.as_str()) {
+            return Err(AdapterError("distraction limit entry id"));
+        }
         let match_names =
             parse_match_names(json).ok_or(AdapterError("distraction limit match names"))?;
         let sources = LimitSources {
@@ -667,6 +689,49 @@ mod tests {
         assert!(
             limit_entries(Field::Null, Field::Null, Field::Null, Field::Null, "[]").is_err(),
             "an entry with no source"
+        );
+    }
+
+    /// The entries group of a limit holding one website entry for each of `ids`.
+    fn limit_entries_with_ids(ids: &[&str]) -> Result<(), AdapterError> {
+        let rows: Vec<OwnedRow> = ids
+            .iter()
+            .map(|id| {
+                OwnedRow::flat(vec![
+                    text(id),
+                    Field::Null,
+                    Field::Null,
+                    text("video.example.com"),
+                    Field::Null,
+                    Field::Null,
+                    Field::Null,
+                    text("[]"),
+                ])
+            })
+            .collect();
+        let blob = codec::encode(&LIMIT_ENTRIES, &rows).unwrap();
+        DistractionsAdapter.validate(
+            USAGE_LIMITS_TABLE,
+            limit_group::ENTRIES,
+            &value(vec![Field::Blob(blob)]),
+        )
+    }
+
+    #[test]
+    fn limit_entries_that_load_skips_are_held_invalid() {
+        assert_eq!(limit_entries_with_ids(&["video"]), Ok(()));
+        assert_eq!(limit_entries_with_ids(&["video", "clips_2-b"]), Ok(()));
+
+        assert!(
+            limit_entries_with_ids(&[]).is_err(),
+            "a limit with no entry"
+        );
+        assert!(limit_entries_with_ids(&["bad id"]).is_err());
+        assert!(limit_entries_with_ids(&["video", "-video"]).is_err());
+        assert!(limit_entries_with_ids(&["video", "vídeo"]).is_err());
+        assert!(
+            limit_entries_with_ids(&["video", "video"]).is_err(),
+            "a repeated entry id"
         );
     }
 

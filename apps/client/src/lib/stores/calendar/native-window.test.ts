@@ -27,6 +27,7 @@ function snapshot() {
     }],
     diagnostics: [],
     omitted_template_count: 0,
+    shortened_text: [] as { event_id: string; title: boolean; location: boolean }[],
   };
 }
 
@@ -95,8 +96,38 @@ describe("native Calendar window boundary", () => {
     (input: ReturnType<typeof snapshot>) => ({ ...input, occurrences: [{ ...input.occurrences[0], recurrence_date: "2024-02-30" }] }),
     (input: ReturnType<typeof snapshot>) => ({ ...input, attendees: [{ event_id: "foreign", email: "guest@example.test", status: "accepted" }] }),
     (input: ReturnType<typeof snapshot>) => ({ ...input, total_event_count: 0 }),
+    (input: ReturnType<typeof snapshot>) => ({ ...input, shortened_text: [{ event_id: "foreign", title: true, location: false }] }),
+    (input: ReturnType<typeof snapshot>) => ({ ...input, shortened_text: [{ event_id: "series", title: 1, location: false }] }),
+    (input: ReturnType<typeof snapshot>) => ({ ...input, shortened_text: undefined }),
   ])("rejects invalid child ownership, identities, dates, or ranges before rendering", (corrupt) => {
     expect(() => parseNativeCalendarWindow(corrupt(snapshot()))).toThrow();
+  });
+
+  it("marks only the values the native window reports as shortened", () => {
+    const long = "T".repeat(WINDOW_TEXT_CHARS);
+    const input = { ...snapshot(), events: [{ ...event(), title: long, location: long }],
+      shortened_text: [{ event_id: "series", title: true, location: true }] };
+    const mapped = mapNativeCalendarWindow(input, "UTC");
+    expect(mapped.sourceEvents[0]).toMatchObject({ windowTitleShortened: true, windowLocationShortened: true });
+    expect(mapped.windowEvents[0]).toMatchObject({ windowTitleShortened: true, windowLocationShortened: true });
+
+    const whole = mapNativeCalendarWindow({ ...input, shortened_text: [] }, "UTC");
+    expect(whole.sourceEvents[0]).not.toHaveProperty("windowTitleShortened");
+    expect(whole.windowEvents[0]).not.toHaveProperty("windowLocationShortened");
+  });
+
+  it("clears the title marker of an occurrence whose override supplies the title", () => {
+    const input = snapshot();
+    const override = {
+      id: "renamed", parent_event_id: "series", recurrence_id: "2024-03-11", recurrence_range: null,
+      title: "T".repeat(WINDOW_TEXT_CHARS), start_time: null, end_time: null, color: null, status: null, transparency: null,
+    };
+    const mapped = mapNativeCalendarWindow({ ...input, overrides: [override],
+      occurrences: [{ ...input.occurrences[0], override_id: "renamed" }],
+      shortened_text: [{ event_id: "series", title: true, location: true }] }, "UTC").windowEvents[0];
+    expect(mapped.title).toBe(override.title);
+    expect(mapped).not.toHaveProperty("windowTitleShortened");
+    expect(mapped.windowLocationShortened).toBe(true);
   });
 
   it("retains explicit unsupported-projection diagnostics with canonical rows", () => {

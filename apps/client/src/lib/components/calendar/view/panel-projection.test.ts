@@ -88,24 +88,57 @@ describe("calendar panel projection", () => {
   it("restores a shortened window title from the full event", () => {
     const shortened = "T".repeat(WINDOW_TEXT_CHARS);
     const full = { ...event("event-a"), title: `${shortened} and the rest` };
-    const canonical = { ...event("event-a"), title: shortened };
-    expect(resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full)?.title).toBe(full.title);
+    const canonical = { ...event("event-a"), title: shortened, windowTitleShortened: true };
+    const resolved = resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full);
+    expect(resolved?.title).toBe(full.title);
+    expect(resolved).not.toHaveProperty("windowTitleShortened");
   });
 
   it("restores a shortened window location from the full event", () => {
     const shortened = "L".repeat(WINDOW_TEXT_CHARS);
     const full = { ...event("event-a"), location: `${shortened} and the place` };
-    const canonical = { ...event("event-a"), location: shortened };
-    expect(resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full)?.location).toBe(full.location);
+    const canonical = { ...event("event-a"), location: shortened, windowLocationShortened: true };
+    const resolved = resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full);
+    expect(resolved?.location).toBe(full.location);
+    expect(resolved).not.toHaveProperty("windowLocationShortened");
   });
 
   it("restores shortened text on an occurrence from its parent", () => {
     const shortened = "T".repeat(WINDOW_TEXT_CHARS);
     const full = { ...event("series"), title: `${shortened} and the rest` };
-    const canonical = { ...event("series::2026-07-12"), title: shortened, recurringParentId: "series" };
+    const canonical = { ...event("series::2026-07-12"), title: shortened, recurringParentId: "series",
+      windowTitleShortened: true };
     const resolved = resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full);
     expect(resolved?.title).toBe(full.title);
     expect(resolved?.id).toBe(canonical.id);
+  });
+
+  it("opens the current full text when a remote edit changed the start of a shortened value", () => {
+    const stale = "A".repeat(WINDOW_TEXT_CHARS);
+    const full = { ...event("event-a"), title: "B".repeat(WINDOW_TEXT_CHARS * 2),
+      location: "C".repeat(WINDOW_TEXT_CHARS * 2) };
+    const canonical = { ...event("event-a"), title: stale, location: stale,
+      windowTitleShortened: true, windowLocationShortened: true };
+    const resolved = resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full);
+    expect(resolved?.title).toBe(full.title);
+    expect(resolved?.location).toBe(full.location);
+  });
+
+  it("keeps a whole override title that is a prefix of the longer parent title", () => {
+    const override = "T".repeat(WINDOW_TEXT_CHARS);
+    const full = { ...event("series"), title: `${override} and the rest` };
+    const canonical = { ...event("series::2026-07-12"), title: override, recurringParentId: "series",
+      windowTitleShortened: false };
+    expect(resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full)?.title).toBe(override);
+  });
+
+  it("keeps whole window text of exactly the window length that the full event extends", () => {
+    const whole = "T".repeat(WINDOW_TEXT_CHARS);
+    const full = { ...event("series"), title: `${whole} and the rest`, location: `${whole} and the place` };
+    const canonical = { ...event("series::2026-07-12"), title: whole, location: whole, recurringParentId: "series" };
+    const resolved = resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full);
+    expect(resolved?.title).toBe(whole);
+    expect(resolved?.location).toBe(whole);
   });
 
   it("keeps a differing occurrence override of exactly the window length", () => {
@@ -129,6 +162,7 @@ describe("calendar panel projection", () => {
     const full = { ...event("event-a"), title: `${shortened} and the rest`, location: `${shortened} and the place`,
       meetingEnabled: true, recurrenceDate: "2026-07-12" };
     const canonical = { ...event("event-a"), title: shortened, location: shortened,
+      windowTitleShortened: true, windowLocationShortened: true,
       meetingEnabled: true, recurrenceDate: "2026-07-12" };
     const hydrated = resolvePersistedCalendarPanelEvent(canonical.id, [canonical], full);
     if (!hydrated) throw new Error("the event did not hydrate");

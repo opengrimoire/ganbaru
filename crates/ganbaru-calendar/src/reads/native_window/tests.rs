@@ -445,6 +445,50 @@ fn template_flood_keeps_honest_events_in_the_window() {
 }
 
 #[test]
+fn native_window_reports_each_value_it_shortens() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("
+            INSERT INTO calendar_events(id, title, location, start_time, end_time, timezone, calendar_id)
+            VALUES
+              ('long-title', replace(hex(zeroblob(1025)), '00', 'x'), 'Room',
+               '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar'),
+              ('long-location', 'Short', replace(hex(zeroblob(2000)), '00', 'y'),
+               '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar'),
+              ('exact-wide', replace(hex(zeroblob(1024)), '00', char(128512)),
+               replace(hex(zeroblob(1024)), '00', 'z'),
+               '2024-03-09T15:00:00Z', '2024-03-09T15:30:00Z', 'UTC', 'native-calendar');")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let result = snapshot(&pool, &window("2024-03-09", "2024-03-15"), false).await;
+        let exact = result
+            .events
+            .iter()
+            .find(|event| event.id == "exact-wide")
+            .unwrap();
+        assert_eq!(exact.title.chars().count(), 1_024);
+        let mut shortened = result.shortened_text;
+        shortened.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        assert_eq!(
+            shortened,
+            vec![
+                ShortenedWindowText {
+                    event_id: "long-location".into(),
+                    title: false,
+                    location: true,
+                },
+                ShortenedWindowText {
+                    event_id: "long-title".into(),
+                    title: true,
+                    location: false,
+                },
+            ]
+        );
+    });
+}
+
+#[test]
 fn expansion_omits_templates_past_the_frontend_text_charge() {
     crate::test_support::block_on(async {
         let pool = pool().await;

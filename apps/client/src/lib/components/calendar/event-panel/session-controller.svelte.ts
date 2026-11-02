@@ -34,7 +34,6 @@ import {
   type PanelSaveData,
 } from "./payloads";
 import { hasMeetingState } from "$lib/calendar/meeting-state";
-import { mayBeShortenedWindowText } from "$lib/calendar/db-rows";
 import {
   COUNT_PRESET_RHYTHMS,
   type SequencePomodoroRhythmStep,
@@ -140,12 +139,12 @@ export class EventPanelSessionController {
     });
   }
 
-  /** Whether the title draft may be a shortened window value the full event has yet to replace. */
+  /** Whether the title draft is a shortened window value the full event has yet to replace. */
   get titleEditBlocked(): boolean {
     return this.titleShortened;
   }
 
-  /** Whether the location draft may be a shortened window value the full event has yet to replace. */
+  /** Whether the location draft is a shortened window value the full event has yet to replace. */
   get locationEditBlocked(): boolean {
     return this.locationShortened;
   }
@@ -236,7 +235,7 @@ export class EventPanelSessionController {
 
   initializeEdit(event: CalendarEvent): void {
     this.title = event.title;
-    this.titleShortened = mayBeShortenedWindowText(event.title);
+    this.titleShortened = event.windowTitleShortened === true;
     this.titleRestored = false;
     this.assignTimes(event.start, event.end);
     this.color = event.color;
@@ -248,7 +247,7 @@ export class EventPanelSessionController {
     this.allDay = event.allDay ?? false;
     this.dateTime.resetAllDayStash();
     this.location = event.location ?? "";
-    this.locationShortened = mayBeShortenedWindowText(this.location);
+    this.locationShortened = event.windowLocationShortened === true;
     this.locationRestored = false;
     this.transparency = event.transparency ?? "opaque";
     this.eventStatus = event.status ?? "confirmed";
@@ -362,13 +361,13 @@ export class EventPanelSessionController {
   }
 
   applyHeavyEvent(fullEvent: CalendarEvent, preserveProjectSelection = false): void {
-    if (this.titleShortened && fullEvent.title.startsWith(this.title)) {
+    if (this.titleShortened) {
       this.titleRestored = fullEvent.title !== this.title;
       this.title = fullEvent.title;
     }
     this.titleShortened = false;
     const fullLocation = fullEvent.location ?? "";
-    if (this.locationShortened && fullLocation.startsWith(this.location)) {
+    if (this.locationShortened) {
       this.locationRestored = fullLocation !== this.location;
       this.location = fullLocation;
     }

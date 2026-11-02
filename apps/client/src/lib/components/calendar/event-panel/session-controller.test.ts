@@ -60,7 +60,8 @@ function controller(selectedProject?: Project) {
 describe("EventPanelSessionController", () => {
   it("replaces a shortened window title and location with the full event and blocks their edit until then", () => {
     const shortened = "T".repeat(WINDOW_TEXT_CHARS);
-    const opened = event("long", { title: shortened, location: shortened });
+    const opened = event("long", { title: shortened, location: shortened,
+      windowTitleShortened: true, windowLocationShortened: true });
     const { session } = controller();
     session.initializeEdit(opened);
     const token = session.beginHeavyLoad(opened.id);
@@ -78,7 +79,7 @@ describe("EventPanelSessionController", () => {
 
   it("keeps restored text out of the dirty state of an untouched event", () => {
     const shortened = "T".repeat(WINDOW_TEXT_CHARS);
-    const opened = event("long", { title: shortened });
+    const opened = event("long", { title: shortened, windowTitleShortened: true });
     const { session } = controller();
     session.initializeEdit(opened);
     const token = session.beginHeavyLoad(opened.id);
@@ -95,12 +96,30 @@ describe("EventPanelSessionController", () => {
     expect(session.locationEditBlocked).toBe(false);
   });
 
-  it("counts characters rather than code units when deciding a value may be shortened", () => {
+  it("blocks only the values the native window reports as shortened, whatever their length", () => {
+    const whole = "T".repeat(WINDOW_TEXT_CHARS);
     const { session } = controller();
-    session.initializeEdit(event("emoji", { title: "\u{1F600}".repeat(WINDOW_TEXT_CHARS) }));
-    expect(session.titleEditBlocked).toBe(true);
-    session.initializeEdit(event("half", { title: "\u{1F600}".repeat(WINDOW_TEXT_CHARS / 2) }));
+    session.initializeEdit(event("whole", { title: whole, location: whole }));
     expect(session.titleEditBlocked).toBe(false);
+    expect(session.locationEditBlocked).toBe(false);
+    session.initializeEdit(event("reported", { title: "Short", windowTitleShortened: true }));
+    expect(session.titleEditBlocked).toBe(true);
+    expect(session.locationEditBlocked).toBe(false);
+  });
+
+  it("takes the current full text when a remote edit changed the start of a shortened value before the late load", () => {
+    const stale = "A".repeat(WINDOW_TEXT_CHARS);
+    const opened = event("long", { title: stale, location: stale,
+      windowTitleShortened: true, windowLocationShortened: true });
+    const { session } = controller();
+    session.initializeEdit(opened);
+    const token = session.beginHeavyLoad(opened.id);
+    const remote = event("long", { title: "B".repeat(WINDOW_TEXT_CHARS * 2), location: "C".repeat(WINDOW_TEXT_CHARS * 2) });
+    session.completeHeavyLoad(token, remote);
+    expect(session.title).toBe(remote.title);
+    expect(session.location).toBe(remote.location);
+    expect(session.titleEditBlocked).toBe(false);
+    expect(session.heavyPayload().title).toBe(remote.title);
   });
 
   it("keeps a differing occurrence title when the parent event replaces the details", () => {
@@ -116,7 +135,7 @@ describe("EventPanelSessionController", () => {
 
   it("stays blocked while the full event has not arrived", () => {
     const shortened = "T".repeat(WINDOW_TEXT_CHARS);
-    const opened = event("long", { title: shortened });
+    const opened = event("long", { title: shortened, windowTitleShortened: true });
     const { session } = controller();
     session.initializeEdit(opened);
     session.beginHeavyLoad(opened.id);

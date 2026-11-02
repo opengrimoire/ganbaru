@@ -78,7 +78,22 @@ pub struct NativeCalendarWindow {
     pub diagnostics: Vec<ExpansionDiagnostic>,
     /// Selected templates left out to keep the window inside its bounds.
     pub omitted_template_count: usize,
+    /// Templates whose title or location the window carries shortened.
+    pub shortened_text: Vec<ShortenedWindowText>,
 }
+
+/// Which window text of one template is shortened, so its full value loads with the event.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ShortenedWindowText {
+    pub event_id: String,
+    pub title: bool,
+    pub location: bool,
+}
+impl_sqlite_from_row!(ShortenedWindowText {
+    event_id,
+    title,
+    location
+});
 
 impl NativeCalendarWindow {
     /// Removes templates with their children, occurrences, and diagnostics, so that every
@@ -92,6 +107,8 @@ impl NativeCalendarWindow {
         self.occurrences
             .retain(|row| !removed.contains(&row.template_id));
         self.diagnostics
+            .retain(|row| !removed.contains(&row.event_id));
+        self.shortened_text
             .retain(|row| !removed.contains(&row.event_id));
         self.omitted_template_count += removed.len();
     }
@@ -357,6 +374,21 @@ fn admitted_events_sql() -> String {
     )
 }
 
+/// Flags each admitted template whose title or location is longer than the window carries.
+/// SQLite `length` counts characters of text as `substr` does.
+fn shortened_text_sql() -> String {
+    format!(
+        "SELECT ce.id AS event_id,
+                length(ce.title) > {WINDOW_TEXT_CHARS} AS title,
+                COALESCE(length(ce.location), 0) > {WINDOW_TEXT_CHARS} AS location
+         FROM json_each(?1) admitted
+         JOIN calendar_events ce ON ce.id = admitted.value
+         WHERE length(ce.title) > {WINDOW_TEXT_CHARS}
+            OR COALESCE(length(ce.location), 0) > {WINDOW_TEXT_CHARS}
+         ORDER BY admitted.key"
+    )
+}
+
 /// Reads the rows of the admitted templates. Admission has already priced them.
 async fn read_rows<T>(
     connection: &mut SqliteConnection,
@@ -396,6 +428,7 @@ pub struct WindowSource {
     attendees: Vec<DbWindowAttendeeRow>,
     total_event_count: Option<i64>,
     omitted_template_count: usize,
+    shortened_text: Vec<ShortenedWindowText>,
 }
 
 pub(crate) fn utc(epoch_ms: i64) -> Result<String, String> {
@@ -483,10 +516,13 @@ pub async fn read(
             attendees: Vec::new(),
             total_event_count,
             omitted_template_count,
+            shortened_text: Vec::new(),
         });
     }
     let mut events: Vec<DbCalendarEventRow> =
         read_rows(connection, &ids, &admitted_events_sql()).await?;
+    let shortened_text: Vec<ShortenedWindowText> =
+        read_rows(connection, &ids, &shortened_text_sql()).await?;
     let overrides: Vec<DbOverrideRow> = read_rows(connection, &ids,
         "SELECT id, parent_event_id, recurrence_id, recurrence_range, title, start_time, end_time, color, status, transparency
          FROM calendar_event_overrides WHERE parent_event_id IN (SELECT value FROM json_each(?1))
@@ -583,11 +619,13 @@ pub async fn read(
         attendees,
         total_event_count,
         omitted_template_count,
+        shortened_text,
     })
 }
 
 impl WindowSource {
     /// Reuse canonical expansion for bounded prepared rows without staging SQL writes.
+    /// Prepared rows carry their full title and location, so nothing is shortened.
     pub(crate) fn from_prepared(
         events: Vec<DbCalendarEventRow>,
         overrides: Vec<DbOverrideRow>,
@@ -599,6 +637,7 @@ impl WindowSource {
             attendees,
             total_event_count: None,
             omitted_template_count: 0,
+            shortened_text: Vec::new(),
         }
     }
 
@@ -659,6 +698,7 @@ impl WindowSource {
             occurrences,
             diagnostics,
             omitted_template_count: self.omitted_template_count,
+            shortened_text: self.shortened_text,
         };
         snapshot.remove_templates(&over_occurrence_limit);
         snapshot.remove_repeated_occurrences();

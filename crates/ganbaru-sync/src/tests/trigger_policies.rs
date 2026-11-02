@@ -17,6 +17,9 @@ use crate::manifest::vault::VAULT_MANIFEST;
 use crate::manifest::{Classification, DomainTrigger, Manifest, TriggerPolicy};
 use crate::triggers::NOT_APPLYING;
 
+/// Name prefix of the triggers the engine renders from the manifest.
+const ENGINE_TRIGGER_PREFIX: &str = "sync_";
+
 /// A trigger split into the table it fires on, its `WHEN` condition, and its body.
 #[derive(Debug)]
 struct TriggerShape {
@@ -283,7 +286,7 @@ fn declared_triggers(
     let mut declared = BTreeMap::new();
     let mut declare = |trigger: &DomainTrigger, tables: Vec<&'static str>| {
         assert!(
-            !trigger.name.starts_with("sync_"),
+            !trigger.name.starts_with(ENGINE_TRIGGER_PREFIX),
             "{}: domain triggers do not use the engine prefix",
             trigger.name
         );
@@ -311,16 +314,21 @@ fn declared_triggers(
     declared
 }
 
-/// `(name, table, sql)` of every installed trigger outside the engine prefix.
-async fn installed_triggers(pool: &SqlitePool) -> Vec<(String, String, String)> {
+/// `(name, table, sql)` of every installed trigger.
+async fn all_triggers(pool: &SqlitePool) -> Vec<(String, String, String)> {
     sqlx::query_as(
-        "SELECT name, tbl_name, sql FROM sqlite_schema
-         WHERE type = 'trigger' AND name NOT LIKE 'sync\\_%' ESCAPE '\\'
-         ORDER BY name",
+        "SELECT name, tbl_name, sql FROM sqlite_schema WHERE type = 'trigger' ORDER BY name",
     )
     .fetch_all(pool)
     .await
     .unwrap()
+}
+
+/// `(name, table, sql)` of every installed trigger outside the engine prefix.
+async fn installed_triggers(pool: &SqlitePool) -> Vec<(String, String, String)> {
+    let mut triggers = all_triggers(pool).await;
+    triggers.retain(|(name, _, _)| !name.starts_with(ENGINE_TRIGGER_PREFIX));
+    triggers
 }
 
 async fn assert_policies(manifest: &Manifest, pool: &SqlitePool) {
@@ -515,7 +523,7 @@ fn every_applier_visible_trigger_is_classified() {
     block_on(async {
         let (_, pool) = cases().await.into_iter().next().unwrap();
         let mut aborting = BTreeSet::new();
-        for (name, table, sql) in installed_triggers(&pool).await {
+        for (name, table, sql) in all_triggers(&pool).await {
             let replicated = matches!(
                 VAULT_MANIFEST.classify(&table),
                 Classification::Replicated | Classification::OwnedChildren

@@ -1858,14 +1858,15 @@ fn chat_an_edit_names_its_device_as_the_revision_creator() {
         converge(&mut replicas).await;
 
         for replica in &mut replicas {
+            let manifest = replica.engine.manifest();
             assert_eq!(
-                row_creating_devices(&mut replica.conn, MESSAGES_TABLE, ROOT)
+                row_creating_devices(&mut replica.conn, manifest, MESSAGES_TABLE, ROOT)
                     .await
                     .unwrap(),
                 vec![device_id(0)]
             );
             assert_eq!(
-                row_creating_devices(&mut replica.conn, REVISIONS_TABLE, "item:root:1")
+                row_creating_devices(&mut replica.conn, manifest, REVISIONS_TABLE, "item:root:1")
                     .await
                     .unwrap(),
                 vec![device_id(1)]

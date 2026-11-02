@@ -26,6 +26,7 @@ use crate::error::failpoints;
 use crate::manifest::group_id;
 use crate::manifest::vault::chat::{CONVERSATIONS_TABLE, conversation_group};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
+use crate::provenance::row_creating_devices;
 use crate::repair;
 use crate::{ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
@@ -2884,8 +2885,9 @@ fn create_that_keeps_an_immutable_version_is_not_listed_as_a_creator() {
         for index in [0, 2] {
             let replica = &mut replicas[index];
             take_forged(replica, &forged).await;
+            let manifest = replica.engine.manifest();
             assert_eq!(
-                crate::provenance::row_creating_devices(&mut replica.conn, ITEMS_TABLE, ITEM)
+                row_creating_devices(&mut replica.conn, manifest, ITEMS_TABLE, ITEM)
                     .await
                     .unwrap(),
                 vec![device_id(0)],

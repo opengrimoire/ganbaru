@@ -606,6 +606,55 @@ fn cascade_walk_handles_a_cycle_and_a_long_chain() {
     }
 }
 
+/// A row that adds nothing to what it reaches keeps the same allocation, whether that result was
+/// joined in this walk or finished in an earlier one, and a row that adds something leaves the
+/// result it reaches as it was.
+#[test]
+fn cascade_walk_shares_a_result_a_row_adds_nothing_to() {
+    let shown = Roots::default;
+    let known = HashMap::new();
+    let gone = || reaching("b-gone", RootKind::Tombstoned);
+    let lower = || reaching("a-gone", RootKind::Tombstoned);
+    let waiting = || reaching("waiting", RootKind::Missing);
+    let rows = graph(vec![
+        ("empty", shown(), &["copy"]),
+        ("copy", gone(), &["two"]),
+        ("two", shown(), &["base", "other"]),
+        ("base", gone(), &[]),
+        ("other", waiting(), &[]),
+        ("lowers", lower(), &["base"]),
+        ("hides", waiting(), &["hidden"]),
+        ("hidden", shown(), &[]),
+        ("x", shown(), &["y"]),
+        ("y", shown(), &["x", "base"]),
+    ]);
+    let (first, _) = walk_graph("empty", &rows, &known);
+    let shared = &first[&node("base")];
+    for row in ["empty", "copy", "two"] {
+        assert!(Arc::ptr_eq(&first[&node(row)], shared), "{row} shares");
+    }
+
+    let (second, read) = walk_graph("lowers", &rows, &first);
+    assert_eq!(read, 1, "the finished row is not read again");
+    assert!(Arc::ptr_eq(&second[&node("base")], shared));
+    assert_eq!(second[&node("base")].cause(), gone().cause());
+    assert!(!Arc::ptr_eq(&second[&node("lowers")], shared));
+    assert_eq!(second[&node("lowers")].cause(), lower().cause());
+
+    let (third, read) = walk_graph("x", &rows, &first);
+    assert_eq!(read, 2);
+    for member in ["x", "y"] {
+        assert!(
+            Arc::ptr_eq(&third[&node(member)], shared),
+            "{member} shares"
+        );
+    }
+
+    let (fourth, _) = walk_graph("hides", &rows, &known);
+    assert!(fourth[&node("hides")].hides());
+    assert!(!fourth[&node("hidden")].hides(), "the row reached is shown");
+}
+
 /// Rows of the tombstone cause chain, each naming the row before it as its cause.
 const CAUSE_ROWS: usize = 256;
 
@@ -855,10 +904,6 @@ fn coverage_join_keeps_the_same_flagged_rows() {
             pull_without_writer(observer, from).await;
         }
         let observer = &mut replicas[2];
-        let mut visibility = loaded_visibility(observer).await;
-        let mut batch = Batch::load(&mut observer.conn, observer.ctx.space)
-            .await
-            .unwrap();
         let mut rows: Vec<RowRef> = [
             "a-plain", "a-root", "a-caused", "a-live", "a-freed", "a-x", "a-y", "a-hidden",
             "a-member",
@@ -867,57 +912,164 @@ fn coverage_join_keeps_the_same_flagged_rows() {
         .into();
         rows.push((CYCLE_B_TABLE, "b-1".to_string()));
         rows.push((MEMBERSHIPS_TABLE, member));
-
-        let mut seen = 0;
-        let mut unseen = BTreeSet::new();
-        for (table, key) in &rows {
-            let versions = merge::versions(&observer.engine, &mut observer.conn, *table, key)
-                .await
-                .unwrap();
-            assert!(!versions.is_empty(), "{key} retains versions");
-            let contexts = recovery::coverage_contexts(
-                &observer.engine,
-                &mut observer.conn,
-                &mut batch,
-                &mut visibility,
-                *table,
-                key,
-            )
-            .await
-            .unwrap();
-            let joined = recovery::coverage(
-                &observer.engine,
-                &mut observer.conn,
-                &mut batch,
-                &mut visibility,
-                *table,
-                key,
-            )
-            .await
-            .unwrap();
-            for version in &versions {
-                let listed = !contexts
-                    .iter()
-                    .any(|context| context.covers(&version.writer, version.seq));
-                assert_eq!(
-                    recovery::uncovered(version, &joined),
-                    listed,
-                    "{key} version {}",
-                    version.seq
-                );
-                if listed {
-                    unseen.insert(key.clone());
-                } else {
-                    seen += 1;
-                }
-            }
-        }
-        assert!(seen > 0, "some version is covered");
         let edited: BTreeSet<String> = rows
             .iter()
             .filter(|(table, _)| *table != CYCLE_B_TABLE)
             .map(|(_, key)| key.clone())
             .collect();
-        assert_eq!(unseen, edited);
+
+        // The memo fills in reading order, so each order enters the cycle from a different row.
+        let mut descending = rows.clone();
+        descending.reverse();
+        for order in [&rows, &descending] {
+            let (seen, unseen) = flagged_rows(observer, order).await;
+            assert!(seen > 0, "some version is covered");
+            assert_eq!(unseen, edited);
+        }
+    });
+}
+
+/// Reads `rows` in order on one visibility, asserting that the joined coverage decides every
+/// retained version the way the row's contexts do one by one. Returns how many versions are
+/// covered and the keys of rows with a version that is not.
+async fn flagged_rows(observer: &mut Replica, rows: &[RowRef]) -> (usize, BTreeSet<String>) {
+    let mut visibility = loaded_visibility(observer).await;
+    let mut batch = Batch::load(&mut observer.conn, observer.ctx.space)
+        .await
+        .unwrap();
+    let mut seen = 0;
+    let mut unseen = BTreeSet::new();
+    for (table, key) in rows {
+        let versions = merge::versions(&observer.engine, &mut observer.conn, *table, key)
+            .await
+            .unwrap();
+        assert!(!versions.is_empty(), "{key} retains versions");
+        let contexts = recovery::coverage_contexts(
+            &observer.engine,
+            &mut observer.conn,
+            &mut batch,
+            &mut visibility,
+            *table,
+            key,
+        )
+        .await
+        .unwrap();
+        let joined = recovery::coverage(
+            &observer.engine,
+            &mut observer.conn,
+            &mut batch,
+            &mut visibility,
+            *table,
+            key,
+        )
+        .await
+        .unwrap();
+        for version in &versions {
+            let listed = !contexts
+                .iter()
+                .any(|context| context.covers(&version.writer, version.seq));
+            assert_eq!(
+                recovery::uncovered(version, &joined),
+                listed,
+                "{key} version {}",
+                version.seq
+            );
+            if listed {
+                unseen.insert(key.clone());
+            } else {
+                seen += 1;
+            }
+        }
+    }
+    (seen, unseen)
+}
+
+/// How many vectors the coverage memo holds for `keys` once they are read in order on one
+/// visibility, counted by allocation.
+async fn memo_vectors(replica: &mut Replica, keys: &[&String]) -> usize {
+    let mut visibility = loaded_visibility(replica).await;
+    let mut batch = Batch::load(&mut replica.conn, replica.ctx.space)
+        .await
+        .unwrap();
+    for key in keys {
+        recovery::coverage(
+            &replica.engine,
+            &mut replica.conn,
+            &mut batch,
+            &mut visibility,
+            CYCLE_A_TABLE,
+            key,
+        )
+        .await
+        .unwrap();
+    }
+    let memo: BTreeSet<*const VersionVector> = keys
+        .iter()
+        .map(|key| {
+            let row = (CYCLE_A_TABLE, (*key).clone());
+            Arc::as_ptr(&visibility.known_coverage(&row).expect("the row was read"))
+        })
+        .collect();
+    memo.len()
+}
+
+/// The rows of a cause chain that add no context hold one vector however a read enters the chain,
+/// so its memory follows the contexts and not its length. A row that adds a context starts one
+/// vector for itself and the rows above it, and the rows below keep theirs. Flagged rows stay
+/// those of the contexts listed one by one.
+#[test]
+fn coverage_chain_shares_one_vector() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let rows: Vec<String> = (0..CAUSE_ROWS).map(cause_row).collect();
+        seal_cycle_rows(&mut replicas[0], &rows).await;
+        converge(&mut replicas).await;
+
+        replicas[1]
+            .exec("UPDATE fixture_cycle_a SET label = label || '-edited'")
+            .await;
+        replicas[1].seal().await.unwrap();
+
+        for (index, row) in rows.iter().enumerate() {
+            let cause = index.checked_sub(1).map(cause_row);
+            seal_tombstone(&mut replicas[0], row, cause.as_deref()).await;
+        }
+        for source in [0, 1] {
+            let (observer, from) = pair(&mut replicas, 2, source);
+            pull_without_writer(observer, from).await;
+        }
+
+        let chain: BTreeSet<String> = rows.iter().cloned().collect();
+        let references: Vec<RowRef> = rows
+            .iter()
+            .map(|key| (CYCLE_A_TABLE, key.clone()))
+            .collect();
+        let middle = CAUSE_ROWS / 2;
+        let ascending: Vec<&String> = rows.iter().collect();
+        let descending: Vec<&String> = rows.iter().rev().collect();
+        let from_the_middle: Vec<&String> = rows[middle..].iter().chain(&rows[..middle]).collect();
+        let orders = [&ascending, &descending, &from_the_middle];
+
+        for order in orders {
+            let vectors = memo_vectors(&mut replicas[2], order).await;
+            assert_eq!(vectors, 1, "vectors for {} first", order[0]);
+        }
+        let (seen, unseen) = flagged_rows(&mut replicas[2], &references).await;
+        assert!(seen > 0, "some version is covered");
+        assert_eq!(unseen, chain);
+
+        seal_tombstone(&mut replicas[0], &rows[middle], None).await;
+        // A second cause at the top of the chain leads to what the first one covers.
+        seal_tombstone(&mut replicas[0], &rows[CAUSE_ROWS - 1], Some(&rows[0])).await;
+        let (observer, from) = pair(&mut replicas, 2, 0);
+        pull_without_writer(observer, from).await;
+
+        for order in orders {
+            let vectors = memo_vectors(&mut replicas[2], order).await;
+            assert_eq!(vectors, 2, "vectors for {} first", order[0]);
+        }
+        let (seen, unseen) = flagged_rows(&mut replicas[2], &references).await;
+        assert!(seen > 0, "some version is covered");
+        assert_eq!(unseen, chain);
     });
 }

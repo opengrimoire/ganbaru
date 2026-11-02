@@ -15,7 +15,8 @@
 //! Codex project configuration, and the OpenCode, Cursor, and Grok project
 //! files and folders. Instructions such as `CLAUDE.md` are left out. Entries
 //! are digested per file so a worktree can be checked against the folder
-//! decision.
+//! decision. Each covered path has its own bounds, and one past them is
+//! digested as exceeded, so it blocks only the providers that load it.
 
 use super::submodules::{Submodule, populated_submodules};
 use super::{
@@ -23,8 +24,9 @@ use super::{
     GitRunError, GitStdout, StdoutSink, base_command, classify_key, empty_hooks_directory, execute,
     hardening_for, read_effective_config,
 };
+use ganbaru_chat_contracts::models::ProviderConfigurationPath;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -36,36 +38,13 @@ use std::time::Duration;
 pub const MAX_TRUST_DIGEST_HOOK_FILES: usize = 1_024;
 /// Largest single file a digest reads.
 pub const MAX_TRUST_DIGEST_FILE_BYTES: u64 = 16 * 1024 * 1024;
-/// Most files a digest reads from project provider directories, kept far
+/// Most files a digest reads from one project provider directory, kept far
 /// above realistic skill and agent collections.
 pub const MAX_TRUST_DIGEST_PROVIDER_FILES: usize = 8_192;
 /// Deepest subdirectory a digest walks.
 const MAX_DIGEST_DIRECTORY_DEPTH: usize = 8;
 /// Upper bound on the repository location output.
 const MAX_LOCATION_OUTPUT_BYTES: usize = 64 * 1024;
-/// Provider configuration files, relative to the folder root, that can run
-/// commands when the provider starts there.
-const PROVIDER_CONFIGURATION_FILES: &[&str] = &[
-    ".claude/settings.json",
-    ".claude/settings.local.json",
-    ".mcp.json",
-    "opencode.json",
-    "opencode.jsonc",
-    ".cursorrules",
-];
-/// Provider directories, relative to the folder root, whose definitions can
-/// carry hooks, shell steps, plugins, or MCP servers. Codex keeps its project
-/// configuration, hooks, and rules under `.codex`, and the other providers
-/// under their own folders.
-const PROVIDER_CONFIGURATION_DIRECTORIES: &[&str] = &[
-    ".claude/skills",
-    ".claude/agents",
-    ".claude/commands",
-    ".codex",
-    ".opencode",
-    ".cursor",
-    ".grok",
-];
 const GIT_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-git-v1";
 const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v4";
 
@@ -208,20 +187,42 @@ fn provider_configuration(root: &Path) -> Result<DigestOutcome, GitRunError> {
 }
 
 /// Content digests of a folder's project provider configuration, keyed by
-/// path relative to the folder root.
+/// path relative to the folder root. A covered path whose tree passes the
+/// digest bounds is recorded as exceeded instead of read, so it blocks only
+/// the providers that load it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ProviderConfigurationEntries(BTreeMap<String, [u8; 32]>);
+pub struct ProviderConfigurationEntries {
+    files: BTreeMap<String, [u8; 32]>,
+    exceeded: BTreeSet<ProviderConfigurationPath>,
+}
 
 impl ProviderConfigurationEntries {
     /// True when the folder has no project provider configuration.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.files.is_empty() && self.exceeded.is_empty()
     }
 
-    /// Relative paths of the entries, in sorted order. The folder controls
-    /// these names, so they are untrusted text.
-    pub fn paths(&self) -> impl ExactSizeIterator<Item = &str> {
-        self.0.keys().map(String::as_str)
+    /// Relative paths of the entries in sorted order, then of exceeded paths.
+    /// The folder controls the entry names, so they are untrusted text.
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        let exceeded: Vec<&str> = self.exceeded_relative_paths().collect();
+        self.files.keys().map(String::as_str).chain(exceeded)
+    }
+
+    /// Paths in `reads` whose content exceeded the digest bounds, so the
+    /// digest cannot vouch for them and a provider loading them cannot start.
+    pub fn exceeded_paths<'a>(
+        &'a self,
+        reads: &'a [ProviderConfigurationPath],
+    ) -> impl Iterator<Item = ProviderConfigurationPath> + 'a {
+        self.exceeded
+            .iter()
+            .copied()
+            .filter(|path| reads.contains(path))
+    }
+
+    fn exceeded_relative_paths(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.exceeded.iter().map(|path| path.relative_path())
     }
 
     /// True when every entry here exists in `other` with the same content, so
@@ -231,27 +232,38 @@ impl ProviderConfigurationEntries {
     }
 
     /// Relative paths of the entries `other` lacks or holds with different
-    /// content, in sorted order. The folder controls these names, so they are
-    /// untrusted text.
+    /// content in sorted order, then of paths exceeded here but not in
+    /// `other`. An exceeded path never vouches for content, and a provider
+    /// loading it cannot start, so exceeding in both counts as covered. The
+    /// folder controls the entry names, so they are untrusted text.
     pub fn uncovered_paths<'a>(&'a self, other: &'a Self) -> impl Iterator<Item = &'a str> {
-        self.0
+        self.files
             .iter()
-            .filter(|(path, digest)| other.0.get(*path) != Some(*digest))
+            .filter(|(path, digest)| other.files.get(*path) != Some(*digest))
             .map(|(path, _)| path.as_str())
+            .chain(
+                self.exceeded
+                    .difference(&other.exceeded)
+                    .map(|path| path.relative_path()),
+            )
     }
 
     /// The digest a folder trust record stores for these entries.
     pub fn digest(&self) -> FolderConfigDigest {
         let mut hasher = DigestWriter::new(PROVIDER_DIGEST_DOMAIN);
-        for (path, digest) in &self.0 {
+        for (path, digest) in &self.files {
             hasher.field(path.as_bytes());
             hasher.field(digest);
+        }
+        for path in self.exceeded_relative_paths() {
+            hasher.field(b"exceeded");
+            hasher.field(path.as_bytes());
         }
         hasher.finish()
     }
 
     fn insert(&mut self, path: String, bytes: &[u8]) {
-        self.0.insert(path, Sha256::digest(bytes).into());
+        self.files.insert(path, Sha256::digest(bytes).into());
     }
 
     #[cfg(test)]
@@ -269,26 +281,45 @@ pub fn provider_configuration_entries_blocking(
     root: &Path,
 ) -> Result<ProviderConfigurationEntries, GitRunError> {
     let mut entries = ProviderConfigurationEntries::default();
-    for relative in PROVIDER_CONFIGURATION_FILES {
-        if let Some(bytes) = read_bounded(&root.join(relative))? {
-            entries.insert((*relative).to_string(), &bytes);
+    for &path in ProviderConfigurationPath::ALL {
+        let mut found = ProviderConfigurationEntries::default();
+        match read_provider_path(root, path, &mut found) {
+            Ok(()) => entries.files.append(&mut found.files),
+            Err(WalkError::Exceeded(_)) => {
+                entries.exceeded.insert(path);
+            }
+            Err(WalkError::Failed(error)) => return Err(error),
         }
     }
-    let mut files = 0;
-    for relative in PROVIDER_CONFIGURATION_DIRECTORIES {
-        let walk = DirectoryWalk {
-            limit: MAX_TRUST_DIGEST_PROVIDER_FILES,
-            skip_samples: false,
-        };
-        walk.visit(
-            &root.join(relative),
-            Path::new(relative),
-            0,
-            &mut files,
-            &mut |path, bytes| entries.insert(portable_path(path), bytes),
-        )?;
-    }
     Ok(entries)
+}
+
+/// Reads one covered path, a single file or a whole tree with its own bounds,
+/// so one oversized tree never consumes the bounds of another provider's.
+fn read_provider_path(
+    root: &Path,
+    path: ProviderConfigurationPath,
+    found: &mut ProviderConfigurationEntries,
+) -> Result<(), WalkError> {
+    let relative = path.relative_path();
+    if !path.is_directory() {
+        if let Some(bytes) = read_bounded(&root.join(relative)).map_err(WalkError::from_read)? {
+            found.insert(relative.to_string(), &bytes);
+        }
+        return Ok(());
+    }
+    let walk = DirectoryWalk {
+        limit: MAX_TRUST_DIGEST_PROVIDER_FILES,
+        skip_samples: false,
+    };
+    let mut files = 0;
+    walk.visit(
+        &root.join(relative),
+        Path::new(relative),
+        0,
+        &mut files,
+        &mut |path, bytes| found.insert(portable_path(path), bytes),
+    )
 }
 
 /// Async form of [`provider_configuration_entries_blocking`].
@@ -416,11 +447,35 @@ fn hash_directory(hasher: &mut DigestWriter, directory: &Path) -> Result<usize, 
             hasher.field(path.to_string_lossy().as_bytes());
             hasher.field(bytes);
         },
-    )?;
+    )
+    .map_err(WalkError::into_inner)?;
     if files == 0 {
         hasher.field(b"\0empty");
     }
     Ok(files)
+}
+
+/// Why a bounded walk stopped.
+enum WalkError {
+    /// The tree passed a file count, entry, depth, or file size bound.
+    Exceeded(GitRunError),
+    /// The tree could not be read.
+    Failed(GitRunError),
+}
+
+impl WalkError {
+    fn from_read(error: GitRunError) -> Self {
+        match error {
+            GitRunError::OutputTooLarge => Self::Exceeded(error),
+            error => Self::Failed(error),
+        }
+    }
+
+    fn into_inner(self) -> GitRunError {
+        match self {
+            Self::Exceeded(error) | Self::Failed(error) => error,
+        }
+    }
 }
 
 /// Bounded walk over the regular files of one directory tree in name order.
@@ -439,19 +494,20 @@ impl DirectoryWalk {
         depth: usize,
         files: &mut usize,
         visit: &mut dyn FnMut(&Path, &[u8]),
-    ) -> Result<(), GitRunError> {
+    ) -> Result<(), WalkError> {
+        let exceeded = || WalkError::Exceeded(GitRunError::Configuration);
         let reader = match fs::read_dir(directory) {
             Ok(reader) => reader,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => return Ok(()),
-            Err(_) => return Err(GitRunError::Configuration),
+            Err(_) => return Err(WalkError::Failed(GitRunError::Configuration)),
         };
         let mut names = Vec::new();
         for entry in reader {
-            let entry = entry.map_err(|_| GitRunError::Configuration)?;
+            let entry = entry.map_err(|_| WalkError::Failed(GitRunError::Configuration))?;
             names.push(entry.file_name());
             if names.len() > self.limit {
-                return Err(GitRunError::Configuration);
+                return Err(exceeded());
             }
         }
         names.sort();
@@ -463,7 +519,7 @@ impl DirectoryWalk {
             };
             if metadata.is_dir() {
                 if depth + 1 >= MAX_DIGEST_DIRECTORY_DEPTH {
-                    return Err(GitRunError::Configuration);
+                    return Err(exceeded());
                 }
                 self.visit(&path, &relative, depth + 1, files, visit)?;
                 continue;
@@ -478,9 +534,9 @@ impl DirectoryWalk {
             }
             *files += 1;
             if *files > self.limit {
-                return Err(GitRunError::Configuration);
+                return Err(exceeded());
             }
-            if let Some(bytes) = read_bounded(&path)? {
+            if let Some(bytes) = read_bounded(&path).map_err(WalkError::from_read)? {
                 visit(&relative, &bytes);
             }
         }

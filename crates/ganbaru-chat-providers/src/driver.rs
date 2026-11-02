@@ -65,6 +65,13 @@ pub trait ProviderDriver: Send {
         ProjectConfigurationRestriction::Unavailable
     }
 
+    /// Project provider configuration paths this provider loads at start. A
+    /// path past the digest bounds refuses only the providers that list it,
+    /// so a driver narrows the default only to paths it never loads.
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        ProviderConfigurationPath::ALL
+    }
+
     fn cached_model_catalog(&self) -> Option<ProviderModelCatalog> {
         None
     }

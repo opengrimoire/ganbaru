@@ -178,6 +178,10 @@ impl ProviderDriver for CodexProviderDriver {
         ProjectConfigurationRestriction::Enforced
     }
 
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        &[ProviderConfigurationPath::Codex]
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

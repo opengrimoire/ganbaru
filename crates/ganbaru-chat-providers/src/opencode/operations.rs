@@ -17,6 +17,17 @@ impl ProviderDriver for OpenCodeProviderDriver {
         Self::metadata_read()
     }
 
+    /// OpenCode loads its project files, the `.opencode` tree with plugins
+    /// and the packages it installs for them, and Claude compatible skills.
+    fn project_configuration_paths(&self) -> &'static [ProviderConfigurationPath] {
+        &[
+            ProviderConfigurationPath::OpenCodeJson,
+            ProviderConfigurationPath::OpenCodeJsonc,
+            ProviderConfigurationPath::OpenCode,
+            ProviderConfigurationPath::ClaudeSkills,
+        ]
+    }
+
     fn instance_configuration(&self) -> &ProviderInstanceConfig {
         &self.configuration
     }

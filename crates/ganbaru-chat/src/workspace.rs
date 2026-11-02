@@ -372,6 +372,9 @@ pub const PROJECT_CONFIGURATION_TRUST_REQUIRED_REASON: &str = "This provider can
 /// Reason a provider with no verified restriction cannot start in a worktree
 /// whose project configuration no decision about the bound folder can cover.
 const WORKTREE_PROJECT_CONFIGURATION_REFUSED_REASON: &str = "This provider cannot skip project configuration, and a decision about the folder does not cover what changed in this worktree. Remove or restore these files, copy them to the folder and trust it, or use a new worktree";
+/// Reason a provider cannot start where project configuration it loads holds
+/// more than the trust digest can read.
+const EXCEEDED_PROJECT_CONFIGURATION_REASON: &str = "This provider loads project configuration that holds more files, deeper folders, or larger files than this device can check, so it cannot start here. Remove what it does not need from these paths, such as installed packages, or use another provider";
 /// Most file names a project configuration refusal lists.
 const MAX_REFUSED_PATHS_LISTED: usize = 8;
 /// Longest file name, in characters, that the refusal lists whole.
@@ -405,6 +408,21 @@ pub fn worktree_project_configuration_refused_error(
     ChatError::new(
         ChatErrorCode::TrustDecisionRequired,
         format!("{WORKTREE_PROJECT_CONFIGURATION_REFUSED_REASON}: {listed}"),
+        true,
+    )
+}
+
+/// Error returned when a provider would load covered paths whose content
+/// passed the digest bounds, so no decision can vouch for it. Trusting the
+/// folder cannot settle this, so the details name no folder to ask about.
+/// `paths` are fixed covered paths, not folder-controlled names.
+pub fn exceeded_project_configuration_error(paths: &[&str]) -> ChatError {
+    ChatError::new(
+        ChatErrorCode::ConfigurationInvalid,
+        format!(
+            "{EXCEEDED_PROJECT_CONFIGURATION_REASON}: {}",
+            paths.join(", ")
+        ),
         true,
     )
 }

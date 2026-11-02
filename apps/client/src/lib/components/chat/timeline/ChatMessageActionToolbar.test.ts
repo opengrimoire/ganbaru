@@ -45,6 +45,7 @@ describe("ChatMessageActionToolbar", () => {
         { deviceId: "b", deviceLabel: "Laptop", ownDevice: true },
         { deviceId: "c", deviceLabel: null, ownDevice: false },
       ],
+      lastEditedBy: [],
     });
 
     mountToolbar(ORGANIZATIONAL_TARGET).click();
@@ -56,12 +57,47 @@ describe("ChatMessageActionToolbar", () => {
         "This device",
         "Another device",
       ]);
+      expect(panel?.textContent).not.toContain("Last edited from");
     });
     expect(loadChatMessageProvenance).toHaveBeenCalledWith("item-1");
   });
 
+  it("names a device that edited the message after another created it", async () => {
+    loadChatMessageProvenance.mockResolvedValue({
+      devices: [{ deviceId: "a", deviceLabel: "Desk", ownDevice: false }],
+      lastEditedBy: [{ deviceId: "b", deviceLabel: "Phone", ownDevice: false }],
+    });
+
+    mountToolbar(ORGANIZATIONAL_TARGET).click();
+
+    await vi.waitFor(() => {
+      const panel = document.querySelector("[role='dialog'][aria-label='Sent from']");
+      expect([...(panel?.querySelectorAll(".menu-label") ?? [])].map((label) => label.textContent)).toEqual([
+        "Sent from",
+        "Last edited from",
+      ]);
+      expect([...(panel?.querySelectorAll("li") ?? [])].map((row) => row.textContent)).toEqual(["Desk", "Phone"]);
+    });
+  });
+
+  it("shows only the editing device when the creation has no sync record", async () => {
+    loadChatMessageProvenance.mockResolvedValue({
+      devices: [],
+      lastEditedBy: [{ deviceId: "b", deviceLabel: "Phone", ownDevice: false }],
+    });
+
+    mountToolbar(ORGANIZATIONAL_TARGET).click();
+
+    await vi.waitFor(() => {
+      const panel = document.querySelector("[role='dialog']");
+      expect([...(panel?.querySelectorAll(".menu-label") ?? [])].map((label) => label.textContent)).toEqual([
+        "Last edited from",
+      ]);
+    });
+  });
+
   it("opens nothing for a message without a sync record", async () => {
-    loadChatMessageProvenance.mockResolvedValue({ devices: [] });
+    loadChatMessageProvenance.mockResolvedValue({ devices: [], lastEditedBy: [] });
 
     const more = mountToolbar(ORGANIZATIONAL_TARGET);
     more.click();

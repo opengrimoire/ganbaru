@@ -4,7 +4,7 @@
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
   import { onDestroy } from "svelte";
-  import { loadChatMessageProvenance } from "$lib/api/chat/provenance";
+  import { loadChatMessageProvenance, type ChatMessageProvenance } from "$lib/api/chat/provenance";
   import type { SyncDeviceRef } from "$lib/api/sync";
   import type IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
@@ -36,7 +36,7 @@
   let ReactionPicker = $state<typeof IconPicker | null>(null);
   let reactionPickerValue = $state("emoji:👍");
   let moreButton = $state<HTMLButtonElement>();
-  let sentFromDevices = $state<readonly SyncDeviceRef[] | null>(null);
+  let provenance = $state<ChatMessageProvenance | null>(null);
   let provenanceRequest = 0;
   const localDisplayName = $derived(preferences.profileDisplayName.trim() || t("chat.timeline.you"));
   const hasProvenance = $derived(target.kind === "organizational");
@@ -79,27 +79,31 @@
 
   function closeSentFrom(): void {
     provenanceRequest += 1;
-    sentFromDevices = null;
+    provenance = null;
   }
 
-  /** Opens the devices that sealed the message; a message without a sync record opens nothing. */
+  /**
+   * Opens the devices that sealed the message and last edited it; a message without a sync
+   * record opens nothing.
+   */
   async function toggleSentFrom(): Promise<void> {
-    if (sentFromDevices) {
+    if (provenance) {
       closeSentFrom();
       return;
     }
     provenanceRequest += 1;
     const request = provenanceRequest;
     try {
-      const { devices } = await loadChatMessageProvenance(target.sourceId);
-      if (request === provenanceRequest && devices.length > 0) sentFromDevices = devices;
+      const loaded = await loadChatMessageProvenance(target.sourceId);
+      const known = loaded.devices.length > 0 || loaded.lastEditedBy.length > 0;
+      if (request === provenanceRequest && known) provenance = loaded;
     } catch (error: unknown) {
       reportError(error);
     }
   }
 
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape" && sentFromDevices) closeSentFrom();
+    if (event.key === "Escape" && provenance) closeSentFrom();
   }
 
   onDestroy(() => {
@@ -162,16 +166,25 @@
     bind:this={moreButton}
     type="button"
     class="message-action-button"
-    class:active={sentFromDevices !== null}
+    class:active={provenance !== null}
     aria-label={t("chat.moreActions")}
     aria-haspopup={hasProvenance ? "dialog" : undefined}
-    aria-expanded={hasProvenance ? sentFromDevices !== null : undefined}
+    aria-expanded={hasProvenance ? provenance !== null : undefined}
     data-app-tooltip={t("chat.moreActions")}
     onclick={hasProvenance ? () => void toggleSentFrom() : undefined}
   ><EllipsisVertical size={14} /></button>
 </div>
 
-{#if sentFromDevices}
+{#snippet deviceSection(label: string, devices: readonly SyncDeviceRef[])}
+  <p class="menu-label">{label}</p>
+  <ul>
+    {#each devices as device (device.deviceId)}
+      <li class="sent-from-device text-panel">{syncDeviceName(device, t("chat.conflict.thisDevice"), t("chat.conflict.otherDevice"))}</li>
+    {/each}
+  </ul>
+{/snippet}
+
+{#if provenance}
   <div
     use:portal
     use:anchoredPopover={{ anchor: moreButton, onOutside: closeSentFrom, horizontalAlign: "end" }}
@@ -180,12 +193,12 @@
     aria-label={t("chat.organization.sentFrom")}
     data-app-floating-surface
   >
-    <p class="menu-label">{t("chat.organization.sentFrom")}</p>
-    <ul>
-      {#each sentFromDevices as device (device.deviceId)}
-        <li class="sent-from-device text-panel">{syncDeviceName(device, t("chat.conflict.thisDevice"), t("chat.conflict.otherDevice"))}</li>
-      {/each}
-    </ul>
+    {#if provenance.devices.length > 0}
+      {@render deviceSection(t("chat.organization.sentFrom"), provenance.devices)}
+    {/if}
+    {#if provenance.lastEditedBy.length > 0}
+      {@render deviceSection(t("chat.organization.lastEditedFrom"), provenance.lastEditedBy)}
+    {/if}
   </div>
 {/if}
 

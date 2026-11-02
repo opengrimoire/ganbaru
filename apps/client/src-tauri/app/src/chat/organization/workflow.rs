@@ -55,6 +55,15 @@ impl AssignmentWrite {
         executes_here: false,
         awaits_acceptance: false,
     };
+
+    /// Whether the post queued the dispatch of new work on this device, the only post that
+    /// carries a local gesture's acceptance of what the work runs. An input of existing work
+    /// starts nothing, since that work may still wait for Start here, and work awaiting
+    /// acceptance has no dispatch.
+    #[cfg(desktop)]
+    pub(super) fn dispatches_here(&self) -> bool {
+        self.executes_here && !self.input_queued && !self.awaits_acceptance
+    }
 }
 
 pub(super) fn has_authority_bearing_references(references: &[ChatMessageReference]) -> bool {

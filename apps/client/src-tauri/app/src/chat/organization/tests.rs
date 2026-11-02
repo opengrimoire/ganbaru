@@ -2779,6 +2779,69 @@ fn synced_assignment_stays_queued_until_accepted() {
     });
 }
 
+#[test]
+fn unaccepted_work_does_not_block_archiving_a_teammate() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+
+        let archived =
+            super::teammate_lifecycle::set_teammate_archived(&pool, &teammate_id, 1, true)
+                .await
+                .expect("queued work nobody accepted here does not block archiving");
+        assert!(archived.participant.archived_at.is_some());
+        assert_eq!(archived.active_assignment_count, 0);
+        let (state, reason, executor, _) = assignment_takeover(&pool, "assignment:old").await;
+        assert_eq!(state, "queued", "the unaccepted work stays queued");
+        assert_eq!(reason, None);
+        assert_eq!(executor.as_deref(), Some("device:old"));
+        assert!(
+            !assignments::adopt_synced_assignment(
+                &pool,
+                &assignment_id,
+                "device:old",
+                &ChatDeviceScope::default(),
+            )
+            .await
+            .unwrap(),
+            "an archived teammate's queued work does not start"
+        );
+
+        let restored = super::teammate_lifecycle::set_teammate_archived(
+            &pool,
+            &teammate_id,
+            archived.participant.revision,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(restored.participant.archived_at.is_none());
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:old", &scope)
+                .await
+                .unwrap(),
+            "the restored teammate's queued work starts once accepted"
+        );
+
+        let error = super::teammate_lifecycle::set_teammate_archived(
+            &pool,
+            &teammate_id,
+            restored.participant.revision,
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            ChatErrorCode::Conflict,
+            "work accepted on this device still blocks archiving"
+        );
+    });
+}
+
 /// A local reply in `reply-thread:review` that mentions the review agent.
 fn review_reply_mention(client_command_id: &str) -> PostChatMessageCommand {
     let mut request = message("@Review agent continue");

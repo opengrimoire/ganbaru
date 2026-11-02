@@ -426,13 +426,8 @@ impl MarkdownRenderer {
     }
 
     fn render_media(&mut self, block: &ExportBlock) -> String {
-        let label = media_label(
-            &block.payload,
-            &block.row.block_type,
-            self,
-            Some(&block.row.id),
-        );
-        let Some(url) = media_url(&block.payload) else {
+        let label = media_label(&block.payload, &block.row.block_type);
+        let Some(url) = media_url(&block.payload).filter(|url| !url.trim().is_empty()) else {
             self.warn_block(
                 block,
                 "markdown_export_media_missing_reference",
@@ -446,6 +441,13 @@ impl MarkdownRenderer {
                 "markdown_export_local_asset_reference",
                 "Local managed asset is exported as a Ganbaru asset reference",
             );
+        } else if !is_exportable_web_reference_url(&block.row.block_type, &url) {
+            self.warn_block(
+                block,
+                "markdown_export_unsafe_media_skipped",
+                "Media URL was exported as its label because it is not a safe link",
+            );
+            return format!("[{}]", escape_link_label(&label));
         }
         if block.row.block_type == "image" {
             format!("![{}]({})", escape_link_label(&label), escape_url(&url))
@@ -845,12 +847,7 @@ fn apply_annotations(
     rendered
 }
 
-fn media_label(
-    payload: &Value,
-    block_type: &str,
-    renderer: &mut MarkdownRenderer,
-    block_id: Option<&str>,
-) -> String {
+fn media_label(payload: &Value, block_type: &str) -> String {
     let caption = payload
         .get("caption")
         .and_then(Value::as_array)
@@ -863,14 +860,6 @@ fn media_label(
         if !name.trim().is_empty() {
             return name.to_string();
         }
-    }
-    if payload.get("type").and_then(Value::as_str) == Some("file_upload") {
-        renderer.warn_source(
-            block_id,
-            None,
-            "markdown_export_file_upload_reference",
-            "File upload object was exported as an opaque reference",
-        );
     }
     block_type.to_string()
 }

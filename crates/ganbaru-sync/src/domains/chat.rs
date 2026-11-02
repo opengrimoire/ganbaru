@@ -25,6 +25,7 @@
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
+use ganbaru_working_folders::UtcTimestamp;
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
@@ -57,8 +58,6 @@ pub const MAX_PROVIDER_INSTANCE_CHARS: usize = 1024;
 pub const MAX_JSON_CHARS: usize = 16_384;
 /// Characters of the longest enumerated value any Chat replicated column holds.
 pub const MAX_ENUM_CHARS: usize = 32;
-/// Fewest characters of a stored timestamp, as the tables check it.
-pub const MIN_TIMESTAMP_CHARS: usize = 20;
 
 /// Participant kinds.
 pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
@@ -233,12 +232,12 @@ fn optional_one_of(
     }
 }
 
+/// A Chat timestamp every reader of the row can parse. Reads parse these columns as
+/// [`UtcTimestamp`], so admitting other text would make the stored row unreadable on every device.
 fn timestamp(field: &Field) -> Result<(), AdapterError> {
-    if text(field)?.chars().count() >= MIN_TIMESTAMP_CHARS {
-        Ok(())
-    } else {
-        Err(AdapterError("chat timestamp is too short"))
-    }
+    UtcTimestamp::new(text(field)?)
+        .map(|_| ())
+        .map_err(|_| AdapterError("chat timestamp is not RFC 3339 UTC"))
 }
 
 fn optional_timestamp(field: &Field) -> Result<(), AdapterError> {

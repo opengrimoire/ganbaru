@@ -278,7 +278,8 @@ mod tests {
             }],
             "2026-10-02",
         )
-        .unwrap();
+        .unwrap()
+        .budgets;
         assert_eq!(
             exhausted_rule(&config, &totals, &sources[0]).unwrap().0,
             DistractionsDesktopRuleIdentity::UsageLimit {

@@ -214,6 +214,13 @@ pub struct BudgetTotal {
     pub entries: Vec<EntryTotal>,
 }
 
+/// Budget totals of one usage window, and whether the matching bound left some sources uncounted.
+#[derive(Clone, Debug)]
+pub struct UsageTotals {
+    pub budgets: Vec<BudgetTotal>,
+    pub truncated: bool,
+}
+
 fn is_valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 80
@@ -368,7 +375,7 @@ pub fn totals(
     config: &LimitsConfig,
     sources: &[UsageSourceDay],
     local_date: &str,
-) -> Result<Vec<BudgetTotal>, String> {
+) -> Result<UsageTotals, String> {
     let week = week_start(local_date)?;
     if sources.len() > MAX_SOURCE_GROUPS {
         return Err("usage source count exceeds the native limit".into());
@@ -440,7 +447,10 @@ pub fn totals(
             });
         }
     }
-    Ok(result)
+    Ok(UsageTotals {
+        budgets: result,
+        truncated: false,
+    })
 }
 
 #[cfg(test)]

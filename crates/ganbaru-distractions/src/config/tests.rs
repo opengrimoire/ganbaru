@@ -13,7 +13,7 @@ use super::store::{
     HostList, LimitDraft, LimitEntryDraft, RuleEdit, RuleRefusal, RuleTarget, RulesError, apply,
     read,
 };
-use super::{DistractionsConfig, MAX_HOST_CHARS};
+use super::{DistractionsConfig, MAX_HOST_CHARS, MAX_LIMIT_ENTRIES, MAX_USAGE_LIMITS};
 use crate::test_support::block_on;
 
 const NOW_MS: i64 = 1_700_000_000_000;
@@ -583,6 +583,44 @@ fn read_entries_always_pass_parse_config() {
                 ("enabled-limit", true, vec!["valid"]),
             ]
         );
+    });
+}
+
+#[test]
+fn hidden_limit_rows_leave_the_limit_cap_free() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let website = ReplicatedSources {
+            website_host: Some("video.example.com"),
+            ..ReplicatedSources::default()
+        };
+        set_applying(&pool, true).await;
+        for index in 0..MAX_USAGE_LIMITS {
+            insert_replicated_limit(&pool, &format!("hidden-{index}"), "Hidden", true).await;
+        }
+        insert_replicated_limit(&pool, "misnamed-entries", "Hidden", true).await;
+        for ordinal in 0..MAX_LIMIT_ENTRIES {
+            let ordinal = i64::try_from(ordinal).expect("ordinal fits");
+            let id = format!("-hidden-{ordinal}");
+            insert_replicated_entry(&pool, "misnamed-entries", ordinal, &id, website).await;
+        }
+        set_applying(&pool, false).await;
+        assert!(read(&pool).await.expect("read rules").limits.items.is_empty());
+
+        let config = apply(
+            &pool,
+            &limit("Video", vec![entry("video", "video.example.com", "")]),
+            NOW_MS,
+        )
+        .await
+        .expect("hidden rows leave room for a new limit");
+        let saved: Vec<&str> = config
+            .limits
+            .items
+            .iter()
+            .map(|limit| limit.name.as_str())
+            .collect();
+        assert_eq!(saved, ["Video"]);
     });
 }
 

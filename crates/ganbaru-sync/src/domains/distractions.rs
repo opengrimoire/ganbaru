@@ -670,6 +670,46 @@ mod tests {
         );
     }
 
+    /// The entries group of a limit holding one website entry for each of `ids`.
+    fn limit_entries_with_ids(ids: &[&str]) -> Result<(), AdapterError> {
+        let rows: Vec<OwnedRow> = ids
+            .iter()
+            .map(|id| {
+                OwnedRow::flat(vec![
+                    text(id),
+                    Field::Null,
+                    Field::Null,
+                    text("video.example.com"),
+                    Field::Null,
+                    Field::Null,
+                    Field::Null,
+                    text("[]"),
+                ])
+            })
+            .collect();
+        let blob = codec::encode(&LIMIT_ENTRIES, &rows).unwrap();
+        DistractionsAdapter.validate(
+            USAGE_LIMITS_TABLE,
+            limit_group::ENTRIES,
+            &value(vec![Field::Blob(blob)]),
+        )
+    }
+
+    #[test]
+    fn limit_entries_that_load_skips_are_held_invalid() {
+        assert_eq!(limit_entries_with_ids(&["video"]), Ok(()));
+        assert_eq!(limit_entries_with_ids(&["video", "clips_2-b"]), Ok(()));
+
+        assert!(limit_entries_with_ids(&[]).is_err(), "a limit with no entry");
+        assert!(limit_entries_with_ids(&["bad id"]).is_err());
+        assert!(limit_entries_with_ids(&["video", "-video"]).is_err());
+        assert!(limit_entries_with_ids(&["video", "vídeo"]).is_err());
+        assert!(
+            limit_entries_with_ids(&["video", "video"]).is_err(),
+            "a repeated entry id"
+        );
+    }
+
     #[test]
     fn oversized_usage_limit_name_is_held_invalid() {
         let name = |name: &str| {

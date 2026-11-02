@@ -676,6 +676,37 @@ mod tests {
     }
 
     #[test]
+    fn impossible_usage_date_is_held_invalid() {
+        let bucket = |date: &str| {
+            DistractionsAdapter.validate(
+                USAGE_TOTALS_TABLE,
+                usage_total_group::BUCKET,
+                &value(vec![
+                    text("device"),
+                    text("website"),
+                    text("example.com"),
+                    text(date),
+                ]),
+            )
+        };
+        for date in ["2026-11-30", "2026-12-31", "2024-02-29", "2000-02-29"] {
+            assert_eq!(bucket(date), Ok(()), "{date}");
+        }
+        for date in [
+            "2026-11-31",
+            "2026-02-29",
+            "2100-02-29",
+            "2026-04-31",
+            "2026-13-01",
+            "2026-11-00",
+            "0000-01-01",
+            "2026-1-01",
+        ] {
+            assert!(bucket(date).is_err(), "{date}");
+        }
+    }
+
+    #[test]
     fn invalid_mobile_identity_is_held_invalid() {
         let adapter = DistractionsAdapter;
         let rule = |platform: &str, identity: &str| {

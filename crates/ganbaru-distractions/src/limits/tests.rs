@@ -261,6 +261,30 @@ async fn flood_totals(pool: &sqlx::SqlitePool, pattern: &str, count: usize) {
 }
 
 #[tokio::test]
+async fn stored_impossible_date_leaves_the_window_readable() {
+    let pool = usage_pool().await;
+    sqlx::raw_sql(
+        "INSERT INTO distractions_usage_totals VALUES
+            ('device-attacker', 'website', 'video.example.com', '2026-09-31', 600),
+            ('device-phone', 'website', 'video.example.com', '2026-09-30', 60);
+         INSERT INTO distractions_usage_samples VALUES
+            ('website', 'video.example.com', '2026-09-31', 600);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let window = read_window(&pool).await.unwrap();
+    assert_eq!(
+        window.sources,
+        vec![source("website", "video.example.com", "2026-09-30", 60)]
+    );
+    assert!(!window.truncated);
+    let config = parse_config(&root()).unwrap();
+    assert!(totals(&config, &window.sources, "2026-10-02").is_ok());
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn usage_flood_outside_budgets_reads_no_rows() {
     let pool = usage_pool().await;
     flood_totals(&pool, "flood-%d.attacker.test", MAX_SOURCE_GROUPS + 1).await;

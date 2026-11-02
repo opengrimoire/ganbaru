@@ -42,6 +42,7 @@ import type {
   ChatScheduledMessageDispatchRead,
   ChatScheduledMessageId,
   ChatScheduledMessageRead,
+  ChatWaitingAssignmentRead,
   CreateChatChannelRequest,
   UpdateChatChannelDetailsRequest,
   ProjectWorkingFolderId,
@@ -68,6 +69,7 @@ import {
   parseChatChannelPage,
   parseChatReplyThreadPage,
   parseChatMessageSearchResults,
+  parseChatWaitingAssignments,
   parsePostChatMessageResult,
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
@@ -423,12 +425,24 @@ export async function retryChatAssignment(
   }));
 }
 
-/** Starts synced work that waits for a local action on this device. */
+/**
+ * Starts synced work that waits for a local action on this device. `seenDigest` names the details the user saw;
+ * when the work changed since then nothing starts and this returns null, so the caller refreshes the offer.
+ */
 export async function acceptChatAssignmentHere(
   assignmentId: ChatWorkAssignmentId,
-): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead> {
-  return parseChatWorkAssignment(await invoke<unknown>("chat_accept_assignment_here", {
-    dbUrl: await ensureDbUrl(), assignmentId,
+  seenDigest: string,
+): Promise<import("$lib/chat/contracts").ChatWorkAssignmentRead | null> {
+  const started = await invoke<unknown>("chat_accept_assignment_here", {
+    dbUrl: await ensureDbUrl(), assignmentId, seenDigest,
+  });
+  return started === null ? null : parseChatWorkAssignment(started);
+}
+
+/** Lists the work that waits for a local action on this device across the vault, newest first. */
+export async function listChatWaitingAssignments(): Promise<ChatWaitingAssignmentRead[]> {
+  return parseChatWaitingAssignments(await invoke<unknown>("chat_list_waiting_assignments", {
+    dbUrl: await ensureDbUrl(),
   }));
 }
 

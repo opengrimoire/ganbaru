@@ -3458,6 +3458,167 @@ fn start_here_refuses_a_digest_the_user_did_not_see() {
 }
 
 #[test]
+fn a_changed_subject_adopts_nothing_on_the_old_acceptance() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        sqlx::query(
+            "UPDATE chat_teammates SET instructions = 'Changed by sync'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+
+        assert!(adopted.is_empty());
+        assert_eq!(
+            dispatch_job_count(&pool, &ChatWorkAssignmentId::new("assignment:old").unwrap()).await,
+            0
+        );
+    });
+}
+
+#[test]
+fn the_acceptance_offer_names_the_provider_folders_and_approvals_behind_its_digest() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+
+        let offer = assignments::read_acceptance_offer(&pool, &assignment_id)
+            .await
+            .unwrap()
+            .expect("queued work with intact references has an offer");
+
+        assert_eq!(offer.digest, digest_of(&pool, "assignment:old").await);
+        assert_eq!(offer.provider_instance_id, "provider:review");
+        assert_eq!(offer.folders.len(), 1);
+        assert_eq!(offer.folders[0].display_name, "Review");
+        assert_eq!(offer.folders[0].capability, "execute");
+        assert!(!offer.folders[0].runtime_approval.is_empty());
+        assert!(!offer.scratch_runtime_approval.is_empty());
+
+        sqlx::query(
+            "UPDATE chat_participants SET archived_at = '2026-08-04T17:30:00.000Z'
+             WHERE id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            assignments::read_acceptance_offer(&pool, &assignment_id)
+                .await
+                .unwrap(),
+            None,
+            "work Start would refuse offers nothing"
+        );
+    });
+}
+
+#[test]
+fn waiting_work_reaches_the_device_that_runs_it_across_reply_threads() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let phone = super::workflow::PostingDevice {
+            id: "device:phone",
+            can_execute: false,
+            chat_writers: &writers,
+            unattended: false,
+        };
+        let scope = ChatDeviceScope::default();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:sibling",
+            "item:sibling-root",
+            "a8",
+            "participant:review-agent",
+        )
+        .await;
+
+        assert!(
+            assignments::waiting_assignments(&pool, phone, &scope)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a device that runs no work has nothing to start"
+        );
+        let waiting = assignments::waiting_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = waiting
+            .iter()
+            .map(|row| row.assignment_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["assignment:old", "assignment:sibling"]);
+        let sibling = waiting
+            .iter()
+            .find(|row| row.assignment_id.as_str() == "assignment:sibling")
+            .unwrap();
+        assert_eq!(sibling.project_id, "project:review");
+        assert_eq!(sibling.channel_id.as_str(), "channel:review");
+        assert_eq!(sibling.channel_name, "general");
+        assert_eq!(sibling.teammate_display_name, "Review agent");
+        assert_eq!(
+            sibling.reply_thread_id.as_str(),
+            "reply-thread:assignment:sibling"
+        );
+
+        sqlx::raw_sql(
+            "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+             UPDATE chat_channels SET archived_at = '2026-08-04T17:30:00.000Z'
+             WHERE id = 'channel:review';
+             UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            assignments::waiting_assignments(&pool, device, &scope)
+                .await
+                .unwrap()
+                .is_empty(),
+            "an archived channel has no thread to open"
+        );
+    });
+}
+
+#[test]
+fn waiting_replies_leave_the_list_once_their_subject_is_accepted() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = super::workflow::PostingDevice::this_device("device:desk", &writers);
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+
+        let waiting = assignments::waiting_assignments(&pool, device, &ChatDeviceScope::default())
+            .await
+            .unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].assignment_id.as_str(), "assignment:review");
+
+        let accepted = scope_accepting(&pool, "assignment:review").await;
+        assert!(
+            assignments::waiting_assignments(&pool, device, &accepted)
+                .await
+                .unwrap()
+                .is_empty(),
+            "recovery continues accepted replies unasked"
+        );
+    });
+}
+
+#[test]
 fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here() {
     tauri::async_runtime::block_on(async {
         let writers = chat_writers_of(&[NEW_OWNER]);

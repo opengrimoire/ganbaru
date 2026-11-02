@@ -262,6 +262,14 @@ export const chat = {
     retry: "Retry work",
     workStopped: "The agent stopped because of an error.",
     workAwaitsStart: "This work came from another device or its access changed, so it will not run here until you start it.",
+    workAwaitsStartAccess: (provider: string, access: string) => `It would run with ${provider}: ${access}.`,
+    workAccessFolder: (capability: string, folder: string, approval: string) => `${capability} in ${folder} (${approval})`,
+    workAccessScratch: (approval: string) => `Private scratch (${approval})`,
+    workAccessChanged: "This work changed before it started. Review the updated details and start it again.",
+    waitingWork: (count: number, teammate: string, channel: string) => count === 1
+      ? `Work for ${teammate} in #${channel} waits for you to start it.`
+      : `${count} pieces of work wait for you to start them. The latest is for ${teammate} in #${channel}.`,
+    openWaitingWork: "Open",
     startHere: "Start here",
     cancelWork: "Cancel work",
     stopWorkShortcut: (shortcut: string) => `Stop work (${shortcut})`,

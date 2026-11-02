@@ -237,6 +237,35 @@ describe("flushConfig", () => {
     }
   });
 
+  it("has the other windows reread the keys of a refused write, since part of it may be stored", async () => {
+    const published: string[][] = [];
+    vi.doMock("$lib/windows/vault-change-channel", () => ({
+      createVaultChangeChannel: () => ({
+        publish: (keys: readonly string[]) => published.push([...keys]),
+        listen: () => Promise.resolve(() => undefined),
+      }),
+    }));
+    invokeMock.mockImplementation(((cmd: string) => {
+      if (cmd === "vault_read_config") return Promise.resolve(JSON.stringify({ theme: { activeId: "light" } }));
+      if (cmd === "vault_patch_config") return Promise.reject(new Error("write device preferences"));
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    }) as unknown as Mock);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { ensureConfigLoaded, flushConfig, setConfigKey } = await loadModule();
+      await ensureConfigLoaded();
+      setConfigKey("theme.activeId", "dark");
+      setConfigKey("preferences.fontScale", 1.2);
+
+      await flushConfig();
+
+      expect(published).toEqual([["theme.activeId", "preferences.fontScale"]]);
+    } finally {
+      errorSpy.mockRestore();
+      vi.doUnmock("$lib/windows/vault-change-channel");
+    }
+  });
+
   it("keeps a newer local edit when an earlier write is refused", async () => {
     let rejectWrite: (error: Error) => void = () => undefined;
     let writes = 0;

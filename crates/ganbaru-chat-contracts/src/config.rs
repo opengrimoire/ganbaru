@@ -1,7 +1,9 @@
 //! Validated nonsecret Chat preferences.
 //!
-//! Chat behavior is portable: each field is one `chat.behavior.*` vault preference that every
-//! device of the vault shares. Everything else, provider instances with their launch arguments,
+//! Chat behavior is stored as one `chat.behavior.*` vault preference per field. Every field is
+//! portable and shared by every device of the vault, except the multiline terminal paste
+//! confirmation, which the preference registry scopes to each device so a safety prompt never
+//! follows a peer. Everything else, provider instances with their launch arguments,
 //! environment, and credential references, remembered composer selections, working folder
 //! provider preferences, and panel sizes, is [device-local](ChatDeviceConfig) and never
 //! replicates.
@@ -247,7 +249,8 @@ impl ChatDeviceConfig {
     }
 }
 
-/// The Chat settings a read returns: this device's configuration with the portable behavior.
+/// The Chat settings a read returns: this device's configuration with the behavior preferences,
+/// which are portable apart from the per-device multiline terminal paste confirmation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatConfiguration {

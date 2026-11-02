@@ -76,6 +76,35 @@ pub fn teammate_policy_covers(
     approval_covers(live, frozen)
 }
 
+/// Returns an SQL scalar expression for the safety mode that decides coverage for the teammate
+/// whose participant id is `teammate_id`, a column or parameter of the enclosing query.
+///
+/// While the teammate's pointer names a revision that has not arrived on this device, the safety
+/// mode the pointer copied decides instead of the newest arrived revision the effective policy
+/// view falls back to, which can be a concurrent narrower one the pointer did not choose.
+/// Coverage depends only on the safety mode, so an honest copy decides as its revision will, a
+/// dishonest copy is contained when its revision arrives, and a pointer whose revision never
+/// arrives still refuses work its copied mode does not cover. Otherwise the effective policy
+/// decides. The expression is null when the teammate has neither, which covers nothing.
+pub fn live_teammate_safety_mode_sql(teammate_id: &str) -> String {
+    format!(
+        "(SELECT CASE
+             WHEN live_teammate.current_policy_revision_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_teammate_policy_revisions named
+                  WHERE named.id = live_teammate.current_policy_revision_id
+              )
+             THEN live_teammate.current_policy_safety_mode
+             ELSE (
+                 SELECT live_policy.safety_mode FROM chat_teammate_effective_policies live_policy
+                 WHERE live_policy.teammate_id = live_teammate.participant_id
+             )
+           END
+           FROM chat_teammates live_teammate
+           WHERE live_teammate.participant_id = {teammate_id})"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

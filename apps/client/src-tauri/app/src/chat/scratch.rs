@@ -5,7 +5,9 @@ pub(crate) mod commands;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
 use super::workspace::AuthorizedWorkingFolder;
 use crate::vault;
-use ganbaru_chat::coordination::reductions::teammate_policy_covers;
+use ganbaru_chat::coordination::reductions::{
+    live_teammate_safety_mode_sql, teammate_policy_covers,
+};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
@@ -318,37 +320,40 @@ pub(crate) async fn generation_constraints_hold(
 }
 
 /// Returns whether the teammate may still run with `authorized_policy`, the runtime approval a
-/// scratch authorization froze: it is not archived, and its effective policy with the override
-/// that governs a scratch target still covers that approval, as a folder source's live check
-/// requires for folder work.
+/// scratch authorization froze: it is not archived, and its safety mode (see
+/// [`live_teammate_safety_mode_sql`]) with the override that governs a scratch target still covers
+/// that approval, as a folder source's live check requires for folder work.
 async fn policy_still_covers(
     connection: &mut SqliteConnection,
     destination_conversation_id: &str,
     teammate_id: &str,
     authorized_policy: &str,
 ) -> ChatResult<bool> {
-    let live: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT policy.safety_mode,
+    let live: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {},
                 coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
          FROM chat_participants participant
-         JOIN chat_teammate_effective_policies policy ON policy.teammate_id = participant.id
          LEFT JOIN chat_teammate_channel_memberships access
            ON access.conversation_id = ?
           AND access.teammate_id = participant.id
           AND access.removed_at IS NULL
          WHERE participant.id = ? AND participant.archived_at IS NULL",
-    )
-    .bind(destination_conversation_id)
-    .bind(teammate_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
+            live_teammate_safety_mode_sql("participant.id"),
+        )))
+        .bind(destination_conversation_id)
+        .bind(teammate_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(live.is_some_and(|(safety_mode, approval_override)| {
-        teammate_policy_covers(
-            &safety_mode,
-            approval_override.as_deref(),
-            authorized_policy,
-        )
+        safety_mode.is_some_and(|safety_mode| {
+            teammate_policy_covers(
+                &safety_mode,
+                approval_override.as_deref(),
+                authorized_policy,
+            )
+        })
     }))
 }
 
@@ -969,6 +974,50 @@ mod tests {
             .unwrap();
 
         apply_policy_revision(&pool, "policy:scratch-narrower", 20, "ask_for_approval").await;
+        let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+    }
+
+    /// Points the test teammate at `revision_id`, as sync applies a pointer before its revision.
+    async fn apply_policy_pointer(pool: &SqlitePool, revision_id: &str, safety_mode: &str) {
+        sqlx::query(
+            "UPDATE chat_teammates
+             SET current_policy_revision_id = ?, current_policy_safety_mode = ?
+             WHERE participant_id = ?",
+        )
+        .bind(revision_id)
+        .bind(safety_mode)
+        .bind(TEAMMATE)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// While the pointed revision has not arrived, the mode the pointer copied decides, so a
+    /// concurrent newer and narrower revision does not stop covered scratch work.
+    #[tokio::test]
+    async fn scratch_constraints_follow_the_copied_mode_while_the_pointed_revision_is_missing() {
+        let pool = pool_with_auto_approved_scratch().await;
+        apply_policy_pointer(&pool, "policy:scratch-pointed", "approve_for_me").await;
+        apply_policy_revision(&pool, "policy:scratch-concurrent", 20, "ask_for_approval").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+
+        apply_policy_revision(&pool, "policy:scratch-pointed", 10, "approve_for_me").await;
+        require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
+            .await
+            .unwrap();
+    }
+
+    /// A pointer whose revision never arrives still stops scratch work its copied mode does not
+    /// cover, even while a wider arrived revision is the newest.
+    #[tokio::test]
+    async fn scratch_constraints_fail_when_the_copied_mode_is_narrower() {
+        let pool = pool_with_auto_approved_scratch().await;
+        apply_policy_pointer(&pool, "policy:scratch-never-sent", "ask_for_approval").await;
         let error = require_reusable_generation(&pool, GENERATION, AUTHORIZATION)
             .await
             .unwrap_err();

@@ -3210,6 +3210,151 @@ fn recovery_skips_a_row_it_cannot_freeze() {
     });
 }
 
+#[test]
+fn follow_up_recovery_stays_in_the_thread() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let scope = scope_accepting(&pool, "assignment:review").await;
+        insert_pending_review_input_from_outside_the_thread(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let recovered = assignments::recover_stranded_follow_up_assignments(
+            &pool,
+            PostingDevice::this_device("device:desk", &writers),
+            &scope,
+            &UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recovered, 1, "the replies inside the thread recover");
+        let (follow_up_id, trigger): (String, String) = sqlx::query_as(
+            "SELECT id, triggering_message_item_id FROM chat_work_assignments
+             WHERE previous_assignment_id = 'assignment:review'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            trigger, "item:review-reply-1",
+            "a message outside the thread never triggers the follow-up"
+        );
+        assert_eq!(
+            assignment_input_messages(&pool, &follow_up_id).await,
+            ["item:review-reply-1", "item:review-reply-2"],
+            "only replies of the thread move onto the follow-up"
+        );
+        assert_eq!(
+            assignment_input_messages(&pool, "assignment:review").await,
+            ["item:review-root", "item:review-elsewhere"],
+            "the outside message stays with the settled assignment"
+        );
+    });
+}
+
+#[test]
+fn a_local_post_carries_pending_review_replies_forward() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let writers = chat_writers_of(&["device:desk"]);
+
+        let posted = persist_post(
+            &pool,
+            &review_reply_mention("command:review-follow-up"),
+            None,
+            PostingDevice::this_device("device:desk", &writers),
+        )
+        .await
+        .unwrap();
+
+        let follow_up_id = posted.assignment_write.assignment_id.unwrap();
+        let (previous, state): (Option<String>, String) = sqlx::query_as(
+            "SELECT follow_up.previous_assignment_id, previous.state
+             FROM chat_work_assignments follow_up
+             JOIN chat_work_assignments previous ON previous.id = follow_up.previous_assignment_id
+             WHERE follow_up.id = ?",
+        )
+        .bind(follow_up_id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(previous.as_deref(), Some("assignment:review"));
+        assert_eq!(state, "completed");
+        assert_eq!(
+            pending_review_inputs(&pool).await,
+            0,
+            "no reply is stranded on the settled assignment"
+        );
+        let inputs = sqlx::query(
+            "SELECT message_item_id, routing_kind, delivery_state
+             FROM chat_work_assignment_inputs WHERE assignment_id = ? ORDER BY ordinal, id",
+        )
+        .bind(follow_up_id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(inputs.len(), 3, "the replies follow the new post");
+        assert_eq!(inputs[0].get::<String, _>("routing_kind"), "follow_up");
+        assert_eq!(
+            inputs[1..]
+                .iter()
+                .map(|input| input.get::<String, _>("message_item_id"))
+                .collect::<Vec<_>>(),
+            ["item:review-reply-1", "item:review-reply-2"]
+        );
+        assert!(inputs[1..].iter().all(|input| {
+            input.get::<String, _>("routing_kind") == "queued_continuation"
+                && input.get::<String, _>("delivery_state") == "pending"
+        }));
+    });
+}
+
+/// Message ids of the inputs of `assignment_id`, in delivery order.
+async fn assignment_input_messages(pool: &SqlitePool, assignment_id: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT message_item_id FROM chat_work_assignment_inputs
+         WHERE assignment_id = ? ORDER BY ordinal, id",
+    )
+    .bind(assignment_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Queues on `assignment:review`, ahead of its replies, a pending input whose message is a
+/// top-level post of the same conversation, as a synced input row can name.
+async fn insert_pending_review_input_from_outside_the_thread(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:review-elsewhere', 'conversation:review', 'message', 'a2',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:review-elsewhere', 'participant:local-owner', 'You',
+                 '2026-08-04T17:00:30.000Z');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:review-elsewhere', 'item:review-elsewhere', 'Run something else',
+                 '2026-08-04T17:00:30.000Z');
+         UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:review-elsewhere'
+         WHERE item_id = 'item:review-elsewhere';
+         UPDATE chat_work_assignment_inputs SET ordinal = ordinal + 1
+         WHERE assignment_id = 'assignment:review' AND ordinal >= 2;
+         INSERT INTO chat_work_assignment_inputs
+             (id, assignment_id, message_item_id, ordinal, routing_kind,
+              delivery_state, created_at, delivered_at)
+         VALUES ('input:review-elsewhere', 'assignment:review', 'item:review-elsewhere', 2,
+                 'queued_continuation', 'pending', '2026-08-04T17:00:30.000Z', NULL);",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Inserts a review assignment sorted before `assignment:review`, accepted under the same
 /// subject, whose pending reply was written by a participant outside the conversation, so its
 /// follow-up cannot freeze a context.

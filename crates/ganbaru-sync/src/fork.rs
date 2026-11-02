@@ -430,6 +430,7 @@ async fn exclude_branches(
         exclusion::restore_displaced(engine, conn, batch, *writer, *keep).await?;
     }
     if !removed.is_empty() {
+        merge::settle_kept(engine, conn, batch).await?;
         exclusion::drop_orphan_rows(conn, batch).await?;
     }
     merge::mark_uncreated(conn, &created).await?;

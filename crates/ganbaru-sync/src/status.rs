@@ -214,9 +214,13 @@ impl Engine {
             .map(|stored| stored_u64(stored, "unconfirmed stored time"))
             .transpose()?;
         status.displaced = count(
-            sqlx::query_scalar("SELECT count(*) FROM sync_displaced_versions")
-                .fetch_one(&mut *conn)
-                .await?,
+            // Held Creates are merge state no anchor mark releases, not versions in wait.
+            sqlx::query_scalar(
+                "SELECT count(*) FROM sync_displaced_versions
+                 WHERE NOT (writer_id = displaced_by_writer AND seq = displaced_by_seq)",
+            )
+            .fetch_one(&mut *conn)
+            .await?,
         )?;
         Ok(status)
     }

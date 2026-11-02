@@ -423,40 +423,241 @@ async fn insert_displaced(
     Ok(())
 }
 
-/// Keeps the value `create` leaves out of its group, once per version in `versions` of another
-/// writer that `context` covers, unless the anchor confirmed storing that version: excluding it
-/// is what can bring the value back, and an exclusion can only reach what the anchor has not
-/// confirmed. In these rows the version the Create saw takes the place of the displacing
-/// operation, so the existing release and removal paths apply to them. A same-writer version
-/// needs no row, since a cutoff that excludes it excludes the later Create too.
-pub(crate) async fn hold_back(
+/// One Create a group [`keeps_immutable`] keeps: a version of the group, or a Create held back
+/// from it.
+struct Kept {
+    stored: Stored,
+    held: bool,
+}
+
+/// The Creates the group `group` of `key` keeps. A held Create is one row of
+/// `sync_displaced_versions` that names its own operation as the displacing one, which no
+/// displaced version does, so anchor marks and removals of other writers never drop it.
+async fn kept_creates(
     conn: &mut SqliteConnection,
-    space: SpaceId,
     table: TableId,
     key: &str,
+    group: GroupId,
+) -> SyncResult<Vec<Kept>> {
+    let rows = sqlx::query(
+        "SELECT group_id, writer_id, seq, clock, value_hash, value, 0
+         FROM sync_register_versions WHERE table_id = ?1 AND row_key = ?2 AND group_id = ?3
+         UNION ALL
+         SELECT group_id, writer_id, seq, clock, value_hash, value, 1
+         FROM sync_displaced_versions WHERE table_id = ?1 AND row_key = ?2 AND group_id = ?3
+            AND displaced_by_writer = writer_id AND displaced_by_seq = seq",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(i64::from(group.get()))
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(Kept {
+                stored: stored_from_row(row, 0)?,
+                held: row.try_get::<i64, _>(6)? == 1,
+            })
+        })
+        .collect()
+}
+
+/// Holds `create` back from its group, keeping its value, hydrated when the version elided it.
+async fn hold(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
     create: &Stored,
-    versions: &[(WriterId, Seq)],
-    context: &VersionVector,
 ) -> SyncResult<()> {
-    let value = create
-        .value
-        .as_ref()
-        .ok_or_else(|| corrupt("a held back Create has no value"))?;
-    for (writer, seq) in versions {
-        if *writer == create.writer || !context.covers(writer, *seq) {
+    let value = match &create.value {
+        Some(value) => value.clone(),
+        None => {
+            hydrate::elided_value(
+                engine,
+                conn,
+                table,
+                key,
+                create.group,
+                create.writer,
+                create.seq,
+                &create.hash,
+            )
+            .await?
+        }
+    };
+    insert_displaced(
+        conn,
+        table.id,
+        key,
+        create,
+        &value,
+        create.writer,
+        create.seq,
+    )
+    .await
+}
+
+/// Drops `kept` from its group, as a version or as a held Create; the reference targets of a
+/// version go with it.
+async fn forget(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    kept: &Kept,
+) -> SyncResult<()> {
+    let statement = if kept.held {
+        "DELETE FROM sync_displaced_versions
+         WHERE table_id = ?1 AND row_key = ?2 AND group_id = ?3 AND writer_id = ?4
+            AND displaced_by_writer = ?4 AND seq = ?5 AND displaced_by_seq = ?5"
+    } else {
+        "DELETE FROM sync_register_versions
+         WHERE table_id = ?1 AND row_key = ?2 AND group_id = ?3 AND writer_id = ?4 AND seq = ?5"
+    };
+    sqlx::query(statement)
+        .bind(table_param(table))
+        .bind(key)
+        .bind(i64::from(kept.stored.group.get()))
+        .bind(kept.stored.writer.as_bytes().as_slice())
+        .bind(seq_i64(kept.stored.seq)?)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Settles a Create of a group [`keeps_immutable`] leaves as it is against the Creates the
+/// group keeps, and returns whether its version enters. Of each writer the group keeps only the
+/// earliest Create. The Create enters unless it saw a kept Create, and is held back otherwise; a
+/// version that saw it, which only an operation applied again after an exclusion was lifted can
+/// meet, is held back in its place. The group thus keeps, whatever order its Creates arrive in,
+/// those that saw no other kept Create, as [`settle_kept`] computes it.
+async fn keep_create(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    table: &TableSpec,
+    key: &str,
+    create: &Stored,
+    context: &VersionVector,
+) -> SyncResult<bool> {
+    let mut kept = kept_creates(conn, table.id, key, create.group).await?;
+    if let Some(own) = kept
+        .iter()
+        .position(|other| other.stored.writer == create.writer)
+    {
+        if kept[own].stored.seq <= create.seq {
+            return Ok(false);
+        }
+        let own = kept.swap_remove(own);
+        forget(conn, table.id, key, &own).await?;
+    }
+    if kept
+        .iter()
+        .any(|other| context.covers(&other.stored.writer, other.stored.seq))
+    {
+        hold(engine, conn, table, key, create).await?;
+        return Ok(false);
+    }
+    // Clocks are not checked against what an operation saw, so every version is asked; the
+    // group keeps at most one per writer.
+    for other in kept {
+        if other.held {
             continue;
         }
-        let confirmed: Option<i64> = sqlx::query_scalar(
-            "SELECT seq FROM sync_anchor_marks WHERE space_id = ? AND writer_id = ?",
-        )
-        .bind(space.as_bytes().as_slice())
-        .bind(writer.as_bytes().as_slice())
-        .fetch_optional(&mut *conn)
-        .await?;
-        let version = seq_i64(*seq)?;
-        if confirmed.is_none_or(|mark| mark < version) {
-            insert_displaced(conn, table, key, create, value, *writer, *seq).await?;
+        let saw = batch
+            .contexts
+            .get(conn, batch.space, other.stored.writer, other.stored.seq)
+            .await?
+            .covers(&create.writer, create.seq);
+        if saw {
+            hold(engine, conn, table, key, &other.stored).await?;
+            forget(conn, table.id, key, &other).await?;
         }
+    }
+    Ok(true)
+}
+
+/// Settles every group [`keeps_immutable`] of the dirty rows that hold a Create back, after
+/// removals or a fork dropped kept Creates: the group keeps as versions exactly the Creates that
+/// saw no other Create it keeps, whichever writers were removed and in whatever order. A held
+/// Create enters with its reference targets, and a version that now saw another is held back.
+pub(crate) async fn settle_kept(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+) -> SyncResult<()> {
+    let mut groups = Vec::new();
+    for (table, key) in &batch.dirty {
+        let rows: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT group_id FROM sync_displaced_versions
+             WHERE table_id = ? AND row_key = ?
+                AND displaced_by_writer = writer_id AND displaced_by_seq = seq",
+        )
+        .bind(table_param(*table))
+        .bind(key)
+        .fetch_all(&mut *conn)
+        .await?;
+        for group in rows {
+            groups.push((*table, key.clone(), group_id(group)?));
+        }
+    }
+    for (table, key, group) in groups {
+        let spec = engine
+            .manifest()
+            .table(table)
+            .ok_or_else(|| corrupt("held Create of an unknown table"))?;
+        let kept = kept_creates(conn, table, &key, group).await?;
+        let mut enters = Vec::with_capacity(kept.len());
+        for entry in &kept {
+            let context = batch
+                .contexts
+                .get(conn, batch.space, entry.stored.writer, entry.stored.seq)
+                .await?;
+            enters.push(!kept.iter().any(|other| {
+                other.stored.writer != entry.stored.writer
+                    && context.covers(&other.stored.writer, other.stored.seq)
+            }));
+        }
+        for (entry, enters) in kept.iter().zip(enters) {
+            if enters && entry.held {
+                let value = entry
+                    .stored
+                    .value
+                    .clone()
+                    .ok_or_else(|| corrupt("a held Create has no value"))?;
+                forget(conn, table, &key, entry).await?;
+                restore_version(conn, spec, &key, &entry.stored, value).await?;
+            } else if !enters && !entry.held {
+                hold(engine, conn, spec, &key, &entry.stored).await?;
+                forget(conn, table, &key, entry).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Drops the Creates `writer` past `keep_through` holds back from a group and marks their rows
+/// dirty, so [`settle_kept`] settles what they kept out.
+pub(crate) async fn forget_held_past(
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    writer: WriterId,
+    keep_through: Seq,
+) -> SyncResult<()> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "DELETE FROM sync_displaced_versions
+         WHERE writer_id = ?1 AND seq > ?2 AND displaced_by_writer = ?1 AND displaced_by_seq = seq
+         RETURNING table_id, row_key",
+    )
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(keep_through)?)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (table, key) in rows {
+        let table = u16::try_from(table)
+            .map(TableId)
+            .map_err(|_| corrupt("held Create of a table id out of range"))?;
+        batch.dirty.insert((table, key));
     }
     Ok(())
 }
@@ -502,7 +703,7 @@ pub(crate) async fn restore_version(
 /// or one of its own writer's: it does not rewrite an Immutable group after that. A concurrent
 /// version it did not see still competes for the Immutable minimum, and a derived-key row is
 /// added again with every group. Nothing else displaces a version of such a group, so its
-/// displaced rows are all Creates held back by [`hold_back`].
+/// displaced rows are all Creates held back by [`keep_create`].
 pub(crate) fn keeps_immutable(table: &TableSpec, spec: &GroupSpec) -> bool {
     spec.kind == MergeKind::Immutable && table.derived_key.is_none()
 }
@@ -511,6 +712,7 @@ pub(crate) fn keeps_immutable(table: &TableSpec, spec: &GroupSpec) -> bool {
 /// it supersedes are kept as displaced until the anchor confirms storing the operation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_change(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
     writer: WriterId,
@@ -519,7 +721,7 @@ pub(crate) async fn apply_change(
     context: &VersionVector,
     table: &TableSpec,
     change: &Change,
-    retain: Option<&Engine>,
+    retain: bool,
 ) -> SyncResult<()> {
     let key = change.row.as_str();
     // Register versions reference their row, so a row created here has none to supersede.
@@ -580,6 +782,20 @@ pub(crate) async fn apply_change(
         let spec = table
             .group(group.group)
             .ok_or_else(|| corrupt("change names an unknown group"))?;
+        if change.action == ChangeAction::Create && !created && keeps_immutable(table, spec) {
+            let create = Stored {
+                group: group.group,
+                writer,
+                seq,
+                clock,
+                hash: group.hash,
+                value: Some(group.value.clone()),
+            };
+            if keep_create(engine, conn, batch, table, key, &create, context).await? {
+                upserts.push((group, spec));
+            }
+            continue;
+        }
         let existing = if created {
             Vec::new()
         } else {
@@ -589,7 +805,7 @@ pub(crate) async fn apply_change(
                  FROM sync_register_versions
                  WHERE table_id = ? AND row_key = ? AND group_id = ?",
             )
-            .bind(retain.is_some())
+            .bind(retain)
             .bind(table_param(change.table))
             .bind(key)
             .bind(i64::from(group.group.get()))
@@ -600,31 +816,10 @@ pub(crate) async fn apply_change(
             .iter()
             .map(|row| stored_from_row(row, 0))
             .collect::<SyncResult<Vec<_>>>()?;
-        if change.action == ChangeAction::Create
-            && keeps_immutable(table, spec)
-            && versions
-                .iter()
-                .any(|other| other.writer == writer || context.covers(&other.writer, other.seq))
-        {
-            let create = Stored {
-                group: group.group,
-                writer,
-                seq,
-                clock,
-                hash: group.hash,
-                value: Some(group.value.clone()),
-            };
-            let held_on = versions
-                .iter()
-                .map(|other| (other.writer, other.seq))
-                .collect::<Vec<_>>();
-            hold_back(conn, batch.space, table.id, key, &create, &held_on, context).await?;
-            continue;
-        }
         let mut superseded = false;
         for other in versions {
             if context.covers(&other.writer, other.seq) {
-                if let Some(engine) = retain {
+                if retain {
                     displace(engine, conn, table, key, other.clone(), writer, seq).await?;
                 }
                 sqlx::query(
@@ -638,15 +833,15 @@ pub(crate) async fn apply_change(
                 .execute(&mut *conn)
                 .await?;
             } else if (other.writer == writer && other.seq > seq)
-                || (other.clock > clock
-                    && batch
-                        .contexts
-                        .get(conn, batch.space, other.writer, other.seq)
-                        .await?
-                        .covers(&writer, seq))
+                || batch
+                    .contexts
+                    .get(conn, batch.space, other.writer, other.seq)
+                    .await?
+                    .covers(&writer, seq)
             {
                 // An operation applied again after an exclusion was lifted never replaces a
-                // version that saw it or a later version of its own writer.
+                // version that saw it or a later version of its own writer. A version that saw
+                // it can carry the lower clock, since a clock far ahead is adopted only in part.
                 superseded = true;
             }
         }

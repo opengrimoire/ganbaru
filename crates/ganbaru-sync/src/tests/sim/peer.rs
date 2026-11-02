@@ -1,10 +1,9 @@
 //! Seeded simulation of a peer topology: the anchor, two admin desktops, and members exchange
 //! with random peers rather than only the anchor, through the same store, apply, and forwarding
 //! paths as the replica crate. Pages carry the authorization chain first, forward operations of
-//! third writers, stop at the first refusal, and leave dependents waiting causally. A session
-//! over a reliable network also runs the whole record exchange ahead of the operation lanes, as
-//! every replica session does; a lossy one fetches only wanted records, so records that depend on
-//! the lanes to spread stay covered.
+//! third writers, stop at the first refusal, and leave dependents waiting causally. Every session
+//! also runs the whole record exchange ahead of the operation lanes, as every replica session
+//! does, so a removal reaches peers in the same session whatever the network drops from the lanes.
 //!
 //! Peers exchange under partitions, crashes at failpoints, and anchor outages, while admins
 //! remove members that keep editing, remove each other, race handovers, hand the anchor over as
@@ -593,10 +592,10 @@ impl PeerSim {
         self.connects(a, b).await && self.exchange(a, b, reliable).await
     }
 
-    /// One exchange `a` opens with `b`: over a reliable network each side first pulls the
-    /// other's record pages, each side forwards what the other lacks, a side that exchanged with
-    /// the anchor of its chain records anchor marks, the anchor sequences the waiting proposals
-    /// of both, and a side that learned of its own removal stops.
+    /// One exchange `a` opens with `b`: each side first pulls the other's record pages, each side
+    /// forwards what the other lacks, a side that exchanged with the anchor of its chain records
+    /// anchor marks, the anchor sequences the waiting proposals of both, and a side that learned
+    /// of its own removal stops.
     async fn exchange(&mut self, a: usize, b: usize, reliable: bool) -> bool {
         let skipped: BTreeSet<String> = self.states[&a]
             .quarantined
@@ -609,15 +608,13 @@ impl PeerSim {
         let (x, y) = two(replicas, hub, a, b);
         let probed = probe_forks(x, y).await;
         let mut changed = false;
-        if reliable {
-            if pull_record_pages(x, y).await {
-                apply_all(rng, y).await;
-                changed = true;
-            }
-            if pull_record_pages(y, x).await {
-                apply_all(rng, x).await;
-                changed = true;
-            }
+        if pull_record_pages(x, y).await {
+            apply_all(rng, y).await;
+            changed = true;
+        }
+        if pull_record_pages(y, x).await {
+            apply_all(rng, x).await;
+            changed = true;
         }
         changed |= forward(rng, x, y, &skipped, reliable).await;
         changed |= forward(rng, y, x, &skipped, reliable).await;

@@ -1338,6 +1338,9 @@ fn opencode_reads_its_verified_configuration_paths() {
         Covered::Codex,
         Covered::ClaudeSettings,
     ] {
-        assert!(!reads.contains(&never_read), "OpenCode never loads {never_read:?}");
+        assert!(
+            !reads.contains(&never_read),
+            "OpenCode never loads {never_read:?}"
+        );
     }
 }

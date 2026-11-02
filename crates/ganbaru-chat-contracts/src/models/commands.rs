@@ -73,9 +73,11 @@ pub enum ProviderConfigurationPath {
     Codex,
     /// `.opencode`, which holds OpenCode plugins and the packages they load.
     OpenCode,
-    /// `.cursor`.
+    /// `.cursor`, which holds Cursor CLI permissions, hooks, MCP servers,
+    /// rules, commands, and skills.
     Cursor,
-    /// `.grok`.
+    /// `.grok`, which holds Grok configuration with MCP servers, plugins, and
+    /// permissions, and Grok hooks, skills, and plugins.
     Grok,
 }
 

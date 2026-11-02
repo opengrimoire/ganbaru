@@ -15,6 +15,9 @@ const MAX_MATCH_NAMES: usize = 64;
 const MAX_MATCH_COMPARISONS: usize = 2_000_000;
 pub const MAX_SOURCE_GROUPS: usize = 10_000;
 pub const MAX_WINDOW_SAMPLES: i64 = 500_000;
+/// Suffix comparisons one window read may spend, so a read of many rows against website rules of
+/// many lengths stays well inside the age limit on enforcement actions.
+pub const MAX_SUFFIX_PROBES: i64 = 2_000_000;
 pub const MAX_SOURCE_KEY_BYTES: usize = 512;
 const MAX_SAFE_SECONDS: i64 = 9_007_199_254_740_991;
 

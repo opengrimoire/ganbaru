@@ -1,10 +1,11 @@
 //! Bounded consistent native usage reads shared by desktop and Android.
 
 use super::{
-    MAX_SOURCE_GROUPS, MAX_SOURCE_KEY_BYTES, MAX_WINDOW_SAMPLES, UsageBudgetScope, UsageSourceDay,
-    UsageWindow,
+    MAX_SOURCE_GROUPS, MAX_SOURCE_KEY_BYTES, MAX_SUFFIX_PROBES, MAX_WINDOW_SAMPLES,
+    UsageBudgetScope, UsageSourceDay, UsageWindow,
 };
 use sqlx::{AssertSqlSafe, Row, SqliteConnection};
+use std::collections::BTreeSet;
 
 /// Rows and groups one read may keep.
 #[derive(Clone, Copy)]
@@ -52,10 +53,11 @@ pub(super) const CALENDAR_DATE_FILTER: &str = "date(local_date) = local_date";
 /// window without returning raw intervals to the UI.
 ///
 /// Replicated rows cannot fail the read. A row dated off the calendar is skipped. The scan stops
-/// after [`MAX_WINDOW_SAMPLES`] rows of the window, counted before the budget filter so rows of
-/// unrelated sources cannot extend it. Past that bound or [`MAX_SOURCE_GROUPS`] groups the window
-/// keeps this device's samples first, then the most recent days, in a deterministic order, and
-/// reports truncation.
+/// after [`MAX_WINDOW_SAMPLES`] rows of the window, or sooner when each row would need many suffix
+/// comparisons, so the read spends at most [`MAX_SUFFIX_PROBES`] of them. Rows are counted before
+/// the budget filter so rows of unrelated sources cannot extend the scan. Past that bound or
+/// [`MAX_SOURCE_GROUPS`] groups the window keeps this device's samples first, then the most recent
+/// days, in a deterministic order, and reports truncation.
 pub async fn read_source_days(
     connection: &mut SqliteConnection,
     own_device_id: &str,
@@ -75,7 +77,7 @@ pub async fn read_source_days(
 }
 
 /// Runs the window read under explicit bounds. Each scan walks its date index from the newest day
-/// and stops at its share of `bounds.samples`, with this device's samples served first.
+/// and stops at its share of [`scan_bound`], with this device's samples served first.
 pub(super) async fn read_bounded(
     connection: &mut SqliteConnection,
     own_device_id: &str,
@@ -87,6 +89,7 @@ pub(super) async fn read_bounded(
     if scope.is_empty() {
         return Ok(UsageWindow::default());
     }
+    let scan_rows = scan_bound(bounds.samples, &scope.websites);
     let scanned_rows = sqlx::query(AssertSqlSafe(format!(
         "SELECT (SELECT COUNT(*) FROM (
                      SELECT 1 FROM distractions_usage_samples
@@ -103,7 +106,7 @@ pub(super) async fn read_bounded(
     .bind(week)
     .bind(local_date)
     .bind(own_device_id)
-    .bind(bounds.samples + 1)
+    .bind(scan_rows + 1)
     .fetch_one(&mut *connection)
     .await
     .map_err(|error| format!("measure native usage window: {error}"))?;
@@ -154,13 +157,13 @@ pub(super) async fn read_bounded(
         .bind(rule_array(&scope.desktop_apps)?)
         .bind(rule_array(&scope.mobile_apps)?)
         .bind(MAX_SOURCE_KEY_BYTES as i64)
-        .bind(bounds.samples)
-        .bind((bounds.samples - own_rows).max(0))
+        .bind(scan_rows)
+        .bind((scan_rows - own_rows).max(0))
         .bind((bounds.groups + 1) as i64)
         .fetch_all(connection)
         .await
         .map_err(|error| format!("aggregate native usage window: {error}"))?;
-    let truncated = own_rows + other_rows > bounds.samples || rows.len() > bounds.groups;
+    let truncated = own_rows + other_rows > scan_rows || rows.len() > bounds.groups;
     let sources = rows
         .into_iter()
         .take(bounds.groups)
@@ -184,6 +187,17 @@ pub(super) async fn read_bounded(
     Ok(UsageWindow { sources, truncated })
 }
 
-fn rule_array(rules: &std::collections::BTreeSet<String>) -> Result<String, String> {
+/// Rows one read may scan: `samples`, lowered so that one suffix comparison per distinct website
+/// rule length on every row stays within [`MAX_SUFFIX_PROBES`].
+fn scan_bound(samples: i64, websites: &BTreeSet<String>) -> i64 {
+    let lengths = websites
+        .iter()
+        .map(|rule| rule.chars().count())
+        .collect::<BTreeSet<_>>()
+        .len();
+    samples.min(MAX_SUFFIX_PROBES / lengths.max(1) as i64)
+}
+
+fn rule_array(rules: &BTreeSet<String>) -> Result<String, String> {
     serde_json::to_string(rules).map_err(|error| format!("encode usage budget scope: {error}"))
 }

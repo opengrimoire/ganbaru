@@ -4,45 +4,6 @@ const LOCAL_ASSET_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const UNSAFE_MEDIA_CODE: &str = "html_export_unsafe_media_skipped";
 const BLOCK_G: &str = "12121212-1212-4212-8212-121212121212";
 
-/// Creates one paragraph per id after `BLOCK_A`, to be overwritten as replicated rows.
-async fn append_placeholder_blocks(pool: &SqlitePool, ids: &[&str]) {
-    writes::append_block_children(
-        pool,
-        NoteAppendBlockChildren {
-            parent: page_parent(PAGE_A),
-            after: Some(BLOCK_A.to_string()),
-            children: ids
-                .iter()
-                .map(|id| block(id, "paragraph", paragraph_payload("placeholder")))
-                .collect(),
-        },
-    )
-    .await
-    .unwrap();
-}
-
-/// Stores a media row directly, as apply does, which skips the checks of the local write path.
-async fn store_replicated_media(
-    pool: &SqlitePool,
-    id: &str,
-    block_type: &str,
-    payload: serde_json::Value,
-) {
-    let payload = payload.to_string();
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET type = ?, attrs = json_remove(?, '$.caption'), text = json_object('caption', json_extract(?, '$.caption'))
-         WHERE id = ?",
-    )
-    .bind(block_type)
-    .bind(&payload)
-    .bind(&payload)
-    .bind(id)
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
 /// Exports the page and returns its `index.html` with the export diagnostics.
 async fn export_index(pool: &SqlitePool, include_assets: bool) -> (String, Vec<serde_json::Value>) {
     let export = serde_json::to_value(
@@ -70,12 +31,6 @@ async fn export_index(pool: &SqlitePool, include_assets: bool) -> (String, Vec<s
         .unwrap()
         .to_string();
     (index, export["diagnostics"].as_array().unwrap().clone())
-}
-
-fn has_diagnostic(diagnostics: &[serde_json::Value], code: &str, block_id: &str) -> bool {
-    diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic["code"] == code && diagnostic["block_id"] == block_id)
 }
 
 #[test]

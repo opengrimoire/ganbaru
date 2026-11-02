@@ -20,6 +20,8 @@ pub(super) trait DesktopProcessController {
     fn signal(&mut self, pinned: &Self::Pinned, signal: DesktopProcessSignal)
     -> Result<(), String>;
     fn wait(&mut self, duration: std::time::Duration);
+    /// The session anchors checked before each signal, or `None` when the name list stands alone.
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<SessionAnchors>>;
 }
 
 /// A Linux process reference that cannot drift to another process.
@@ -93,6 +95,10 @@ impl DesktopProcessController for SystemDesktopProcessController {
 
     fn wait(&mut self, duration: std::time::Duration) {
         std::thread::sleep(duration);
+    }
+
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<SessionAnchors>> {
+        current_session_anchors(|| false)
     }
 }
 

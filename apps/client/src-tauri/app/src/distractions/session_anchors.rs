@@ -261,6 +261,15 @@ impl SessionAnchors {
     pub(super) fn protects(&self, process_id: u32) -> bool {
         self.protected_pids.contains(&process_id)
     }
+
+    /// Anchors that protect exactly `process_ids`.
+    #[cfg(test)]
+    pub(super) fn protecting(process_ids: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            protected_pids: process_ids.into_iter().collect(),
+            collected_at: Instant::now(),
+        }
+    }
 }
 
 /// Returns the anchors collected within the TTL, collecting them when none are. Callers invoke
@@ -314,6 +323,10 @@ mod tests {
     const USER_SLICE: &str = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app.scope";
     const SESSION_SLICE: &str =
         "0::/user.slice/user-1000.slice/user@1000.service/session.slice/dbus.service";
+    const OTHER_SESSION_SERVICE: &str =
+        "0::/user.slice/user-1000.slice/user@1000.service/session.slice/app-launched.service";
+    const SERVICE_MANAGER: &str = "0::/user.slice/user-1000.slice/user@1000.service/init.scope";
+    const FIXTURE_START_TIME: u64 = 4242;
 
     /// A `/proc` tree in a temporary folder, removed when dropped.
     struct ProcFixture {
@@ -346,7 +359,9 @@ mod tests {
             std::fs::create_dir_all(path.join("fd")).unwrap();
             std::fs::write(
                 path.join("stat"),
-                format!("{process_id} (a (name) S {parent_id} {process_id} {process_id} 0\n"),
+                format!(
+                    "{process_id} (a (name) S {parent_id} {process_id} {process_id} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {FIXTURE_START_TIME}\n"
+                ),
             )
             .unwrap();
             std::fs::write(
@@ -362,6 +377,14 @@ mod tests {
                 )
                 .unwrap();
             }
+        }
+
+        fn command(&self, process_id: u32, name: &str) {
+            std::fs::write(
+                self.root.join(process_id.to_string()).join("comm"),
+                format!("{name}\n"),
+            )
+            .unwrap();
         }
 
         fn collect(&self, own_process_id: u32) -> Option<SessionAnchors> {
@@ -535,6 +558,78 @@ mod tests {
             !foreign.is_some_and(|set| set.protects(510)),
             "a window manager process owned by another user"
         );
+    }
+
+    /// A session bus started without `SystemdService=` runs the applications it activates in its
+    /// own cgroup, and a compositor unit can do the same. Those children are ordinary applications.
+    #[test]
+    fn slice_child_sharing_its_parent_cgroup_stays_blockable() {
+        let fixture = ProcFixture::new("slice-child");
+        fixture.unix_sockets(&[(LISTENING, 9001, WAYLAND_SOCKET)]);
+        fixture.process(10, 1, USER, SERVICE_MANAGER, &[]);
+        fixture.process(200, 1, USER, USER_SLICE, &[9001]);
+        fixture.process(450, 10, USER, SESSION_SLICE, &[]);
+        fixture.process(455, 450, USER, SESSION_SLICE, &[]);
+        fixture.process(456, 455, USER, SESSION_SLICE, &[]);
+        fixture.process(460, 10, USER, OTHER_SESSION_SERVICE, &[]);
+        fixture.process(465, 450, USER, OTHER_SESSION_SERVICE, &[]);
+        fixture.process(470, 999, USER, SESSION_SLICE, &[]);
+
+        let anchors = fixture.collect(400);
+        let protects = |process_id| anchors.as_ref().is_some_and(|set| set.protects(process_id));
+
+        assert!(protects(450), "a session service's main process");
+        assert!(protects(460), "an activated service in its own unit");
+        assert!(protects(465), "a child moved into its own unit");
+        assert!(protects(470), "a service whose parent cannot be read");
+        assert!(!protects(455), "an application the session bus started");
+        assert!(!protects(456), "that application's own child");
+        assert!(!protects(10), "the service manager is no session service");
+    }
+
+    /// The guard runs inside the process listing, so a rule matching a session listener lists
+    /// only the unrelated application.
+    #[test]
+    fn session_guard_binds_process_listing() {
+        let user = current_real_uid().expect("current user");
+        let fixture = ProcFixture::new("listing");
+        fixture.unix_sockets(&[(LISTENING, 9001, WAYLAND_SOCKET)]);
+        fixture.process(200, 1, user, USER_SLICE, &[9001]);
+        fixture.process(300, 1, user, USER_SLICE, &[]);
+        fixture.command(200, "customapp");
+        fixture.command(300, "customapp");
+        let anchors = SessionAnchors::collect_from(
+            &fixture.root,
+            &[WAYLAND_SOCKET.to_string()],
+            user,
+            400,
+            None,
+            || false,
+        )
+        .map(Arc::new);
+        assert!(anchors.as_ref().is_some_and(|set| set.protects(200)));
+        let list = |anchors: Option<Arc<SessionAnchors>>| {
+            let apps = vec![DistractionsDesktopAppRuleInput {
+                rule_identity: DistractionsDesktopRuleIdentity::DesktopApp {
+                    rule_id: "customapp".to_string(),
+                },
+                name: "customapp".to_string(),
+                match_names: vec!["customapp".to_string()],
+            }];
+            crate::distractions::processes::scan_blocked_desktop_app_matches(
+                &fixture.root,
+                400,
+                apps,
+                |_| anchors,
+                || false,
+            )
+            .into_iter()
+            .map(|found| found.process_id)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(list(None), vec![200, 300]);
+        assert_eq!(list(anchors), vec![300]);
     }
 
     #[test]

@@ -54,6 +54,39 @@ pub async fn read_workspace(
     .ok_or_else(not_found_error)
 }
 
+/// Resolves the effective primary working folder of `project_id`.
+pub async fn resolve_primary_workspace(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> ChatResult<Option<ProjectWorkingFolder>> {
+    let id: Option<String> = sqlx::query_scalar(
+        "SELECT coalesce(stored_folder.id, managed_folder.id)
+         FROM projects project
+         LEFT JOIN project_primary_working_folders primary_folder
+           ON primary_folder.project_id = project.id
+         LEFT JOIN project_working_folders stored_folder
+           ON stored_folder.id = primary_folder.working_folder_id
+          AND stored_folder.project_id = project.id
+          AND stored_folder.archived_at IS NULL
+         LEFT JOIN project_working_folders managed_folder
+           ON managed_folder.project_id = project.id
+          AND managed_folder.kind = 'managed'
+         WHERE project.id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?
+    .flatten();
+    match id {
+        Some(id) => {
+            let id = ProjectWorkingFolderId::new(id).map_err(|_| corrupt_data_error())?;
+            read_workspace(pool, &id).await.map(Some)
+        }
+        None => Ok(None),
+    }
+}
+
 pub async fn create_workspace(
     pool: &SqlitePool,
     request: &CreateProjectWorkingFolderRequest,

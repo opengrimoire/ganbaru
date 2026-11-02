@@ -732,6 +732,37 @@ async fn pointer_before_revision_keeps_covered_work() {
     );
 }
 
+/// The deferred decision settles when the pointed revision arrives narrower than the frozen
+/// approval, and an access row applied while it is missing leaves the decision to that arrival.
+#[tokio::test]
+async fn a_pointed_revision_that_arrives_narrower_settles_the_deferred_revocation() {
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:pointed',
+             current_policy_safety_mode = 'ask_for_approval'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let access = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    assert!(access.revoked_teammates.is_empty(), "{access:?}");
+
+    insert_policy_revision(&pool, "policy:pointed", 10, "ask_for_approval").await;
+    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:pointed"]).await;
+    assert_eq!(
+        arrived.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        revocation_reason(&pool).await,
+        TEAMMATE_POLICY_REDUCED_REASON
+    );
+}
+
 /// A Custom teammate cannot be ranked against a grant, so the grant alone governs its host tools
 /// and a change that leaves the frozen approval covered keeps the work running.
 #[tokio::test]

@@ -156,7 +156,8 @@ impl ChatSyncEffects {
 /// A teammate or policy revision row revokes the teammate's authorizations once its effective
 /// policy no longer covers an approval they froze, and an archived teammate loses its
 /// authorizations. Both compare current rows, so arrival order does not matter and a widening or
-/// a repeated apply revokes nothing. A later widening or restore does not bring a revoked
+/// a repeated apply revokes nothing. A pointer whose revision has not arrived defers the policy
+/// decision until that revision applies. A later widening or restore does not bring a revoked
 /// authorization back.
 pub async fn after_materialize(
     connection: &mut SqliteConnection,
@@ -939,10 +940,19 @@ fn frozen_approvals_sql() -> String {
 /// Returns whether the teammate holds an active authorization that froze an approval its
 /// effective policy no longer covers. Without an effective policy nothing is covered, as the
 /// live tool checks refuse such a teammate.
+///
+/// While the teammate's pointer names a revision that has not arrived, the decision waits and
+/// this returns `false`: the effective policy view falls back to the newest arrived revision,
+/// which can be a concurrent narrower one that the pointer did not choose, and revocation is
+/// one-way. The policy revision hook decides once the pointed revision applies, and the sweep
+/// decides on any later run.
 async fn holds_authorization_beyond_policy(
     connection: &mut SqliteConnection,
     teammate_id: &str,
 ) -> ChatResult<bool> {
+    if awaits_pointed_revision(connection, teammate_id).await? {
+        return Ok(false);
+    }
     let approvals: Vec<(String, Option<String>, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(frozen_approvals_sql()))
             .bind(teammate_id)
@@ -954,6 +964,29 @@ async fn holds_authorization_beyond_policy(
             .as_deref()
             .is_some_and(|mode| teammate_policy_covers(mode, approval_override.as_deref(), frozen))
     }))
+}
+
+/// Returns whether the teammate's policy pointer names a revision that has not arrived on this
+/// device. An unset pointer waits for nothing.
+async fn awaits_pointed_revision(
+    connection: &mut SqliteConnection,
+    teammate_id: &str,
+) -> ChatResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM chat_teammates teammate
+             WHERE teammate.participant_id = ?
+               AND teammate.current_policy_revision_id IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM chat_teammate_policy_revisions named
+                   WHERE named.id = teammate.current_policy_revision_id
+               )
+         )",
+    )
+    .bind(teammate_id)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(persistence_error)
 }
 
 /// Returns the revocation reason for the teammate when it holds an active authorization that its

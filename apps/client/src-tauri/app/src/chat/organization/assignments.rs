@@ -1246,6 +1246,29 @@ pub(super) async fn record_gesture_acceptance(
     }
 }
 
+/// Records on this device the acceptance `digest` that a post gives to the work
+/// `assignment_id` it dispatched. The post already queued that work, so a failure only makes its
+/// replies ask again.
+pub(super) fn record_post_acceptance(
+    app: &tauri::AppHandle,
+    assignment_id: &ChatWorkAssignmentId,
+    digest: String,
+) {
+    let recorded = now_timestamp().and_then(|now| {
+        update_active_device_scope(app, |scope| {
+            record_assignment_acceptance(scope, digest, now);
+            Ok(())
+        })
+        .map_err(device_state_error)
+    });
+    if let Err(error) = recorded {
+        eprintln!(
+            "Chat assignment {} was not recorded as accepted: {error}",
+            assignment_id.as_str()
+        );
+    }
+}
+
 /// Starts on this device the assignment `assignment_id` that waits for a local action, and
 /// records the acceptance of `seen_digest` so work with the same subject, queued now or later,
 /// runs without asking. Pending replies move to a follow-up this device runs, and work stranded

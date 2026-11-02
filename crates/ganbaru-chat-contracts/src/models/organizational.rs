@@ -857,8 +857,8 @@ pub struct ChatWorkAssignmentRead {
 #[serde(rename_all = "camelCase")]
 pub struct ChatAssignmentAcceptanceFolderRead {
     pub display_name: String,
-    pub capability: String,
-    pub runtime_approval: String,
+    pub capability: ChatFolderCapability,
+    pub runtime_approval: ChatRuntimeApprovalPolicy,
 }
 
 /// What a device accepts by starting a waiting assignment.
@@ -869,7 +869,7 @@ pub struct ChatAssignmentAcceptanceOfferRead {
     pub digest: String,
     pub provider_instance_id: String,
     pub folders: Vec<ChatAssignmentAcceptanceFolderRead>,
-    pub scratch_runtime_approval: String,
+    pub scratch_runtime_approval: ChatRuntimeApprovalPolicy,
 }
 
 /// Work that waits for a local action on the reading device, wherever its reply thread is.

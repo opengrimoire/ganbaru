@@ -3661,9 +3661,56 @@ fn a_local_start_claims_without_a_recorded_acceptance() {
 
         let claim = super::dispatch::claim_dispatch_job(&pool, &started, "device:desk", &now)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("the post itself is the consent");
 
-        assert!(claim.is_some(), "the post itself is the consent");
+        let instructions: String = sqlx::query_scalar(
+            "SELECT instructions FROM chat_teammates
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(claim.instructions, instructions);
+    });
+}
+
+#[test]
+fn a_job_without_a_consented_digest_never_claims() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        sqlx::query(
+            "INSERT INTO chat_assignment_dispatch_jobs
+                (id, assignment_id, state, available_at, created_at, updated_at)
+             VALUES ('dispatch:old', 'assignment:old', 'queued', ?1, ?1, ?1)",
+        )
+        .bind(now.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:other", &now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            dispatch_job_count(&pool, &assignment_id).await,
+            1,
+            "a device that does not execute the work leaves the job alone"
+        );
+
+        assert!(
+            super::dispatch::claim_dispatch_job(&pool, &assignment_id, "device:old", &now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
     });
 }
 
@@ -4084,6 +4131,11 @@ fn only_the_executing_device_claims_dispatch_and_writes_active_states() {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query("UPDATE chat_assignment_dispatch_jobs SET consented_digest = ?")
+            .bind(digest_of(&pool, "assignment:review").await)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let refused = assignments::require_executing_device(&pool, &assignment_id, "device:phone")
             .await

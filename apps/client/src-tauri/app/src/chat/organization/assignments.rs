@@ -1,6 +1,9 @@
 //! Work assignment cancellation, retry, and dispatch recovery.
 
-use super::common::{chat_writers, new_id, this_device_id, wire_work_state};
+use super::common::{
+    chat_writers, new_id, parse_folder_capability, parse_runtime_approval_policy, this_device_id,
+    wire_work_state,
+};
 use super::context::{GrantedAccess, freeze_context_package, read_granted_access};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
@@ -651,7 +654,8 @@ pub(super) async fn persist_retry(
 }
 
 /// Queues the dispatch of `assignment_id` on this device, first freezing its context when the
-/// assignment arrived from the device that created it.
+/// assignment arrived from the device that created it. The job consents to the subject read
+/// here, so a later change returns the work to Start here at claim.
 async fn queue_dispatch_here(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
@@ -700,17 +704,22 @@ async fn queue_dispatch_here(
         )
         .await?;
     }
+    let consented_digest = read_assignment_subject(transaction, assignment_id)
+        .await?
+        .digest();
     sqlx::query(
         "INSERT INTO chat_assignment_dispatch_jobs
-            (id, assignment_id, state, available_at, created_at, updated_at)
-         VALUES (?, ?, 'queued', ?, ?, ?)
+            (id, assignment_id, state, consented_digest, available_at, created_at, updated_at)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?)
          ON CONFLICT(assignment_id) DO UPDATE SET
-            state = 'queued', available_at = excluded.available_at,
+            state = 'queued', consented_digest = excluded.consented_digest,
+            available_at = excluded.available_at,
             claimed_at = NULL, claim_token = NULL, last_error = NULL,
             updated_at = excluded.updated_at",
     )
     .bind(new_id("dispatch")?)
     .bind(assignment_id.as_str())
+    .bind(&consented_digest)
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(now.as_str())
@@ -724,15 +733,15 @@ async fn queue_dispatch_here(
 pub(super) const ADOPTION_FAILED_REASON: &str = "The work could not start on its executing device";
 
 /// What `assignment_id` would run on this device, read from current rows.
-struct AssignmentSubject {
+pub(super) struct AssignmentSubject {
     teammate_id: ChatParticipantId,
-    instructions: String,
+    pub(super) instructions: String,
     provider_instance_id: String,
     access: GrantedAccess,
 }
 
 impl AssignmentSubject {
-    fn digest(&self) -> String {
+    pub(super) fn digest(&self) -> String {
         acceptance_digest(&AcceptanceSubject {
             teammate_id: self.teammate_id.as_str(),
             policy_revision_id: self.access.policy_revision_id.as_str(),
@@ -744,7 +753,7 @@ impl AssignmentSubject {
     }
 }
 
-async fn read_assignment_subject(
+pub(super) async fn read_assignment_subject(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
 ) -> ChatResult<AssignmentSubject> {
@@ -974,15 +983,17 @@ async fn build_acceptance_offer(
                 .map_err(persistence_error)?;
         folders.push(ChatAssignmentAcceptanceFolderRead {
             display_name,
-            capability: grant.capability.clone(),
-            runtime_approval: grant.runtime_approval.clone(),
+            capability: parse_folder_capability(&grant.capability)?,
+            runtime_approval: parse_runtime_approval_policy(&grant.runtime_approval)?,
         });
     }
     Ok(ChatAssignmentAcceptanceOfferRead {
         digest: subject.digest(),
         provider_instance_id: subject.provider_instance_id.clone(),
         folders,
-        scratch_runtime_approval: subject.access.scratch_runtime_approval.to_owned(),
+        scratch_runtime_approval: parse_runtime_approval_policy(
+            subject.access.scratch_runtime_approval,
+        )?,
     })
 }
 

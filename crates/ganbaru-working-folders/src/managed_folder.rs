@@ -13,14 +13,18 @@ const MAX_MANAGED_FOLDER_NAME_BYTES: usize = 240;
 /// Checks that a project identifier can name its managed folder as exactly one path segment on
 /// every supported platform.
 ///
+/// A leading dot is refused as well. Project identifiers are UUIDs, while Git and several coding
+/// agents read configuration from hidden folders in the parents of the folder they run in, so a
+/// project folder named `.opencode` or `.git` would configure tools launched in every other
+/// project folder.
+///
 /// # Errors
 ///
-/// Returns a message when the identifier is empty, too long, a relative marker, or contains a
+/// Returns a message when the identifier is empty, too long, starts with a dot, or contains a
 /// separator, drive marker, wildcard, or control character.
 pub fn validate_managed_folder_name(value: &str) -> Result<(), String> {
     if value.trim().is_empty()
-        || value == "."
-        || value == ".."
+        || value.starts_with('.')
         || value.len() > MAX_MANAGED_FOLDER_NAME_BYTES
         || value.chars().any(|character| {
             character.is_control()

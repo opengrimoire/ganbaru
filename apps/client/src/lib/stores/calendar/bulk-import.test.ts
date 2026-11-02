@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import type { CalendarEvent } from "$lib/calendar/types";
 import type { IcsPreservationPayload } from "$lib/calendar/ics/types";
-import { buildBulkImportPayload } from "./bulk-import";
+import { parseIcs } from "$lib/calendar/ics/parser";
+import { buildBulkImportPayload, type CalendarBulkImportPayload } from "./bulk-import";
 
 const NOW = "2026-04-29 10:00:00";
 const ZONE = "UTC";
@@ -301,6 +302,66 @@ describe("buildBulkImportPayload", () => {
     expect(event.notifications).toBeNull();
     expect(event.categories).toBeNull();
     expect(event.extendedProperties).toBeNull();
+  });
+
+  describe("clamps an out of range SEQUENCE", () => {
+    function icsWithSequence(sequence: string): string {
+      return [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Test//EN",
+        "BEGIN:VEVENT",
+        "UID:sequence@example.com",
+        "DTSTAMP:20260501T100000Z",
+        "DTSTART:20260501T100000Z",
+        "DTEND:20260501T110000Z",
+        "SUMMARY:Sequence",
+        `SEQUENCE:${sequence}`,
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+    }
+
+    function payloadSequences(sequence: string): { event: number; component: number | null } {
+      const parsed = parseIcs(icsWithSequence(sequence), CALENDAR_ID);
+      const payload = buildBulkImportPayload(
+        parsed.events,
+        CALENDAR_ID,
+        NOW,
+        ZONE,
+        deterministicIds(),
+        parsed.preservation ?? null,
+      );
+      // The command receives JSON, so this reads what serialization delivers.
+      const delivered: CalendarBulkImportPayload = JSON.parse(JSON.stringify(payload));
+      const component = delivered.preservation?.objects[0].components.find(
+        (candidate) => candidate.componentType === "vevent",
+      );
+      return { event: delivered.events[0].sequence, component: component?.sequence ?? null };
+    }
+
+    it.each([
+      ["an exported stored maximum", "9223372036854776000"],
+      ["a value past 64 bits", "99999999999999999999999"],
+    ])("keeps %s inside the importer's integer range", (_label, sequence) => {
+      expect(payloadSequences(sequence)).toEqual({
+        event: Number.MAX_SAFE_INTEGER,
+        component: Number.MAX_SAFE_INTEGER,
+      });
+    });
+
+    it("delivers a value too long for a finite number", () => {
+      const sequence = payloadSequences("9".repeat(400));
+      expect(sequence.event).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    it("raises a negative value to zero", () => {
+      expect(payloadSequences("-99999999999999999999999")).toEqual({ event: 0, component: 0 });
+    });
+
+    it("keeps a value already in range", () => {
+      expect(payloadSequences("7")).toEqual({ event: 7, component: 7 });
+    });
   });
 
   it("sanitizes imported event and override descriptions before persistence", () => {

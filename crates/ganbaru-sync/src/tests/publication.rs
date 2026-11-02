@@ -505,8 +505,7 @@ fn walk_graph<V: WalkValue>(
     let mut read = 0;
     while let Some(row) = walk.next_row() {
         if let Some(value) = known.get(&row) {
-            let value = value.as_ref().clone();
-            walk.supply(row, value, Vec::new());
+            walk.supply_finished(row, Arc::clone(value));
             continue;
         }
         read += 1;

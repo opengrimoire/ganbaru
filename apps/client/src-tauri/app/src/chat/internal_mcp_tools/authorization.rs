@@ -8,6 +8,7 @@ use crate::chat::organization::{
     effective_runtime_approval, parse_approval_policy, parse_runtime_approval_policy,
     teammate_runtime_approval, wire_runtime_approval_policy,
 };
+use ganbaru_chat::coordination::reductions::live_teammate_safety_mode_sql;
 use ganbaru_chat_contracts::models::{ChatResult, ChatRuntimeApprovalPolicy};
 use sqlx::{Row, SqlitePool};
 
@@ -315,26 +316,19 @@ pub(super) async fn verify_channel_source(
 
 /// Verifies that a folder source of the run's authorization is still granted and covered.
 ///
-/// While the teammate's policy pointer names a revision that has not arrived, the safety mode the
-/// pointer copied decides, as the sync revocation hooks decide.
+/// The teammate's safety mode follows [`live_teammate_safety_mode_sql`], as the sync revocation
+/// hooks decide, so the pointer's copied mode decides while its revision is missing, even when no
+/// revision of the teammate has arrived.
 pub(super) async fn verify_folder_source(
     pool: &SqlitePool,
     scope: &InternalMcpRunScope,
     source: &InternalMcpFolderSource,
 ) -> ChatResult<()> {
     let capability = wire_folder_capability(source.capability);
-    let live = sqlx::query(
+    let live = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT live_grant.runtime_approval_policy AS grant_runtime_approval_policy,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
-                CASE
-                    WHEN teammate.current_policy_revision_id IS NOT NULL
-                     AND NOT EXISTS (
-                         SELECT 1 FROM chat_teammate_policy_revisions named
-                         WHERE named.id = teammate.current_policy_revision_id
-                     )
-                    THEN teammate.current_policy_safety_mode
-                    ELSE policy.safety_mode
-                END AS teammate_safety_mode
+                {} AS teammate_safety_mode
             FROM chat_assignment_authorized_folder_sources source
             JOIN chat_assignment_authorization_revisions authorization
               ON authorization.id = source.authorization_revision_id
@@ -352,10 +346,6 @@ pub(super) async fn verify_folder_source(
              AND channel_access.removed_at IS NULL
             JOIN chat_teammate_access_state access_state
               ON access_state.teammate_id = membership.participant_id
-            JOIN chat_teammates teammate
-              ON teammate.participant_id = assignment.teammate_id
-            JOIN chat_teammate_effective_policies policy
-              ON policy.teammate_id = teammate.participant_id
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
             JOIN chat_access_profile_effective_revisions profile_revision
@@ -393,7 +383,8 @@ pub(super) async fn verify_folder_source(
                       END
                     )
                   END",
-    )
+        live_teammate_safety_mode_sql("assignment.teammate_id"),
+    )))
     .bind(scope.authorization_revision_id.as_str())
     .bind(&source.root_handle)
     .bind(source.working_folder_id.as_str())
@@ -403,9 +394,12 @@ pub(super) async fn verify_folder_source(
     .await
     .map_err(persistence_error)?
     .ok_or_else(generic_denial_error)?;
+    let teammate_safety_mode: Option<String> = live
+        .try_get("teammate_safety_mode")
+        .map_err(persistence_error)?;
+    let teammate_safety_mode = teammate_safety_mode.ok_or_else(generic_denial_error)?;
     let live_runtime_approval = live_runtime_approval(
-        live.try_get("teammate_safety_mode")
-            .map_err(persistence_error)?,
+        teammate_safety_mode,
         live.try_get::<Option<String>, _>("grant_runtime_approval_policy")
             .map_err(persistence_error)?
             .or(live

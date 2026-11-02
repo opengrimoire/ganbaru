@@ -13,7 +13,7 @@ pub use channel_access::{
 };
 
 use crate::attachment_files;
-use crate::coordination::reductions::teammate_policy_covers;
+use crate::coordination::reductions::{live_teammate_safety_mode_sql, teammate_policy_covers};
 use crate::coordination::revocation::{
     revoke_assignment_authorizations, revoke_teammate_authorizations,
 };
@@ -894,29 +894,28 @@ const RESOLVED_OVERRIDE: &str = "CASE
 END";
 
 /// Frozen approvals of the active authorizations of teammate `?1`, each with the override that
-/// governs it and the teammate's effective safety mode: the execution target of every
-/// authorization, then every folder source with its own frozen approval. A folder source falls
-/// back from its grant override to the channel override, as the live tool check does. The safety
-/// mode is null while the teammate has no effective policy.
+/// governs it and the safety mode that decides coverage (see [`live_teammate_safety_mode_sql`]):
+/// the execution target of every authorization, then every folder source with its own frozen
+/// approval. A folder source falls back from its grant override to the channel override, as the
+/// live tool check does.
 fn frozen_approvals_sql() -> String {
+    let live_mode = live_teammate_safety_mode_sql("assignment.teammate_id");
     format!(
         "SELECT authorization.resolved_runtime_approval_policy AS frozen,
                 {RESOLVED_OVERRIDE} AS approval_override,
-                policy.safety_mode
+                {live_mode} AS safety_mode
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
          LEFT JOIN chat_teammate_channel_memberships access
            ON access.conversation_id = authorization.destination_conversation_id
           AND access.teammate_id = assignment.teammate_id
-         LEFT JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = assignment.teammate_id
          WHERE assignment.teammate_id = ?1
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
          UNION ALL
          SELECT source.resolved_runtime_approval_policy,
                 coalesce(folder_grant.runtime_approval_policy, access.runtime_approval_policy),
-                policy.safety_mode
+                {live_mode}
          FROM chat_assignment_authorization_revisions authorization
          JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
          JOIN chat_assignment_authorized_folder_sources source
@@ -928,8 +927,6 @@ fn frozen_approvals_sql() -> String {
            ON folder_grant.conversation_id = authorization.destination_conversation_id
           AND folder_grant.teammate_id = assignment.teammate_id
           AND folder_grant.working_folder_id = source.working_folder_id
-         LEFT JOIN chat_teammate_effective_policies policy
-           ON policy.teammate_id = assignment.teammate_id
          WHERE assignment.teammate_id = ?1
            AND authorization.decision_state = 'allowed'
            AND authorization.revoked_at IS NULL
@@ -938,20 +935,13 @@ fn frozen_approvals_sql() -> String {
 }
 
 /// Returns whether the teammate holds an active authorization that froze an approval its
-/// effective policy no longer covers. Without an effective policy nothing is covered, as the
-/// live tool checks refuse such a teammate.
-///
-/// While the teammate's pointer names a revision that has not arrived, the safety mode the
-/// pointer copied decides instead of the newest arrived revision the effective policy view falls
-/// back to, which can be a concurrent narrower one the pointer did not choose. Coverage depends
-/// only on the safety mode, so an honest copy decides as its revision will, a dishonest copy is
-/// contained when its revision arrives, and a pointer whose revision never arrives still revokes
-/// work its copied mode does not cover.
+/// policy no longer covers. The safety mode follows [`live_teammate_safety_mode_sql`], so the
+/// pointer's copied mode decides while its revision is missing, and without any safety mode
+/// nothing is covered, as the live tool checks refuse such a teammate.
 async fn holds_authorization_beyond_policy(
     connection: &mut SqliteConnection,
     teammate_id: &str,
 ) -> ChatResult<bool> {
-    let pending_mode = copied_mode_of_missing_revision(connection, teammate_id).await?;
     let approvals: Vec<(String, Option<String>, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(frozen_approvals_sql()))
             .bind(teammate_id)
@@ -959,33 +949,10 @@ async fn holds_authorization_beyond_policy(
             .await
             .map_err(persistence_error)?;
     Ok(approvals.iter().any(|(frozen, approval_override, mode)| {
-        !pending_mode
+        !mode
             .as_deref()
-            .or(mode.as_deref())
             .is_some_and(|mode| teammate_policy_covers(mode, approval_override.as_deref(), frozen))
     }))
-}
-
-/// Returns the safety mode the teammate's policy pointer copied when the revision it names has
-/// not arrived on this device, or `None` when the pointer is unset or its revision is present.
-async fn copied_mode_of_missing_revision(
-    connection: &mut SqliteConnection,
-    teammate_id: &str,
-) -> ChatResult<Option<String>> {
-    sqlx::query_scalar(
-        "SELECT teammate.current_policy_safety_mode FROM chat_teammates teammate
-         WHERE teammate.participant_id = ?
-           AND teammate.current_policy_revision_id IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1 FROM chat_teammate_policy_revisions named
-               WHERE named.id = teammate.current_policy_revision_id
-           )",
-    )
-    .bind(teammate_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map(Option::flatten)
-    .map_err(persistence_error)
 }
 
 /// Returns the revocation reason for the teammate when it holds an active authorization that its

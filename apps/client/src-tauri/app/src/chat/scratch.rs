@@ -5,7 +5,9 @@ pub(crate) mod commands;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
 use super::workspace::AuthorizedWorkingFolder;
 use crate::vault;
-use ganbaru_chat::coordination::reductions::teammate_policy_covers;
+use ganbaru_chat::coordination::reductions::{
+    live_teammate_safety_mode_sql, teammate_policy_covers,
+};
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
@@ -318,37 +320,40 @@ pub(crate) async fn generation_constraints_hold(
 }
 
 /// Returns whether the teammate may still run with `authorized_policy`, the runtime approval a
-/// scratch authorization froze: it is not archived, and its effective policy with the override
-/// that governs a scratch target still covers that approval, as a folder source's live check
-/// requires for folder work.
+/// scratch authorization froze: it is not archived, and its safety mode (see
+/// [`live_teammate_safety_mode_sql`]) with the override that governs a scratch target still covers
+/// that approval, as a folder source's live check requires for folder work.
 async fn policy_still_covers(
     connection: &mut SqliteConnection,
     destination_conversation_id: &str,
     teammate_id: &str,
     authorized_policy: &str,
 ) -> ChatResult<bool> {
-    let live: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT policy.safety_mode,
+    let live: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {},
                 coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
          FROM chat_participants participant
-         JOIN chat_teammate_effective_policies policy ON policy.teammate_id = participant.id
          LEFT JOIN chat_teammate_channel_memberships access
            ON access.conversation_id = ?
           AND access.teammate_id = participant.id
           AND access.removed_at IS NULL
          WHERE participant.id = ? AND participant.archived_at IS NULL",
-    )
-    .bind(destination_conversation_id)
-    .bind(teammate_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(persistence_error)?;
+            live_teammate_safety_mode_sql("participant.id"),
+        )))
+        .bind(destination_conversation_id)
+        .bind(teammate_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(live.is_some_and(|(safety_mode, approval_override)| {
-        teammate_policy_covers(
-            &safety_mode,
-            approval_override.as_deref(),
-            authorized_policy,
-        )
+        safety_mode.is_some_and(|safety_mode| {
+            teammate_policy_covers(
+                &safety_mode,
+                approval_override.as_deref(),
+                authorized_policy,
+            )
+        })
     }))
 }
 

@@ -12,6 +12,7 @@ use super::{
     ColumnType, Deletion, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
     OwnedTable, Resolution, RowKeyRule, RowOwner,
 };
+use crate::edges::WALK_BUDGET;
 
 impl Manifest {
     /// The canonical summary text, one line per table, group, and resolution.
@@ -57,7 +58,7 @@ impl Manifest {
             if let Some(acyclic) = table.acyclic {
                 let _ = writeln!(
                     text,
-                    "  acyclic {}->{}",
+                    "  acyclic {}->{} walk budget {WALK_BUDGET}",
                     acyclic.from_column, acyclic.to_column
                 );
             }

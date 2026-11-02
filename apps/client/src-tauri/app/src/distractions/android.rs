@@ -305,6 +305,8 @@ mod tests {
             ("", false),
             ("android", false),
             ("1com.example", false),
+            ("com.1example", false),
+            ("com.Example_app.x", true),
             ("com.example-app", false),
             ("com..example", false),
             ("com.example.", false),

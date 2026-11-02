@@ -214,6 +214,7 @@ pub const CONTACTS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::ExactChars(PUBLIC_KEY_CHARS),
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 const REQUEST_GROUPS: [GroupSpec; 3] = [
@@ -301,6 +302,7 @@ pub const REQUESTS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 const CARD_GROUPS: [GroupSpec; 2] = [
@@ -359,6 +361,7 @@ pub const CARD: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Fixed(CARD_KEY),
     deletion: Deletion::Never,
+    retained: None,
 };
 
 /// The contacts domain, table ids 32 to 47.

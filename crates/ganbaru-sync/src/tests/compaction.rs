@@ -6,7 +6,11 @@ use std::time::{Duration, Instant};
 use ganbaru_sync_contracts::{VersionVector, WriterId};
 
 use super::block_on;
-use super::replica::{Replica, converge};
+use super::projects::{
+    MANAGED_FOLDER, every_folder_and_grant, folder_tombstone, folders_and_grants,
+    shared_managed_folder,
+};
+use super::replica::{Replica, converge, forge_change, quoted};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{
@@ -785,5 +789,52 @@ fn compaction_stops_at_a_recorded_fork_until_it_settles() {
             known.get(&writer)
         );
         assert_eq!(member.evidence().await.len(), 1);
+    });
+}
+
+#[test]
+fn compaction_keeps_a_tombstoned_managed_folder_while_its_project_lives() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(3).await;
+        let forged = forge_change(&mut replicas[0], folder_tombstone(MANAGED_FOLDER)).await;
+        replicas[1].receive(std::slice::from_ref(&forged)).await;
+        replicas[1].apply_all().await.unwrap();
+        let limit = all_of(&mut replicas[1]).await;
+        replicas[1]
+            .compact(&limit, COMPACTION_BATCH_OPS)
+            .await
+            .unwrap();
+        replicas[1].check_compacted().await;
+        assert_eq!(
+            folders_and_grants(&mut replicas[1]).await,
+            every_folder_and_grant()
+        );
+
+        // With the Create and the tombstone compacted, a later edit materializes the row from
+        // merge state alone.
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders SET display_name = 'Renamed' WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        replicas[2].seal().await.unwrap();
+        let (compacted, editor) = replicas.split_at_mut(2);
+        compacted[1].pull(&mut editor[0]).await;
+        compacted[1].apply_all().await.unwrap();
+        assert_eq!(
+            folders_and_grants(&mut compacted[1]).await,
+            every_folder_and_grant()
+        );
+        assert_eq!(
+            compacted[1]
+                .scalar_text(&format!(
+                    "SELECT display_name FROM project_working_folders WHERE id = {}",
+                    quoted(MANAGED_FOLDER)
+                ))
+                .await
+                .as_deref(),
+            Some("Renamed")
+        );
     });
 }

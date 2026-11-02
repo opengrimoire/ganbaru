@@ -2,8 +2,9 @@
 //!
 //! The stored primary folder row and the folder rows replicate independently, so the stored folder
 //! can be missing, belong to another project, or be archived. Reads then resolve the project's
-//! managed folder. Commands keep the rule that a newly chosen primary belongs to the project and
-//! is active.
+//! managed folder, and report no folder when that row has not reached this replica either, so
+//! settings can still choose one. Commands keep the rule that a newly chosen primary belongs to
+//! the project and is active.
 
 use super::super::channels::{i64_value, identifier_error, persistence_error, u64_value};
 use ganbaru_chat_contracts::models::*;
@@ -12,7 +13,8 @@ use sqlx::{Row, SqlitePool};
 /// Reads the effective primary working folder of `project_id`.
 ///
 /// The revision is that of the stored row, or 0 when the project has no stored row yet, so a
-/// later set with that revision creates it.
+/// later set with that revision creates it. A missing project is not found; a project without a
+/// usable folder reads no folder.
 pub(super) async fn read_effective_primary_working_folder(
     pool: &SqlitePool,
     project_id: &str,
@@ -43,10 +45,10 @@ pub(super) async fn read_effective_primary_working_folder(
         .map_err(persistence_error)?;
     Ok(ChatProjectPrimaryWorkingFolderRead {
         project_id: row.try_get("project_id").map_err(persistence_error)?,
-        working_folder_id: ProjectWorkingFolderId::new(
-            working_folder_id.ok_or_else(not_found_error)?,
-        )
-        .map_err(identifier_error)?,
+        working_folder_id: working_folder_id
+            .map(ProjectWorkingFolderId::new)
+            .transpose()
+            .map_err(identifier_error)?,
         revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
     })
 }
@@ -116,7 +118,15 @@ pub(super) async fn set_primary_working_folder(
         ));
     }
     transaction.commit().await.map_err(persistence_error)?;
-    read_effective_primary_working_folder(pool, project_id).await
+    let read = read_effective_primary_working_folder(pool, project_id).await?;
+    if read.working_folder_id.is_none() {
+        return Err(ChatError::new(
+            ChatErrorCode::Persistence,
+            "The stored primary working folder cannot be read back",
+            false,
+        ));
+    }
+    Ok(read)
 }
 
 fn not_found_error() -> ChatError {

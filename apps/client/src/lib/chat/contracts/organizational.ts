@@ -547,7 +547,8 @@ export interface ChatChannelMembershipRemovalPreview {
 
 export interface ChatProjectPrimaryWorkingFolderRead {
   projectId: string;
-  workingFolderId: ProjectWorkingFolderId;
+  /** `null` when the project has no usable folder on this replica. */
+  workingFolderId: ProjectWorkingFolderId | null;
   revision: number;
 }
 

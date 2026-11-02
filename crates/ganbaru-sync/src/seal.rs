@@ -1807,6 +1807,7 @@ async fn plan_captures(
     let mut consumed = Vec::new();
     // Local deletions of published rows, held back until their causes are known.
     let mut deletions: BTreeMap<RowRef, (usize, Change)> = BTreeMap::new();
+    let mut visibility = Visibility::default();
     for capture in captures {
         let invalid = |reason: &'static str| InvalidRow {
             table: TableId(u16::try_from(capture.table).unwrap_or(0)),
@@ -1835,7 +1836,18 @@ async fn plan_captures(
         let deletion = capture.deleted
             && capture.state == Some(RowState::Live)
             && matches!(domain, DomainRow::Absent);
-        let change = match (capture.state, domain) {
+        // A retained row stays in the domain under its tombstone and keeps publishing edits.
+        let state = match (capture.state, &domain) {
+            (Some(RowState::Tombstoned), DomainRow::Present(_))
+                if visibility
+                    .retained(engine, conn, table.id, key.as_str())
+                    .await? =>
+            {
+                Some(RowState::Live)
+            }
+            (state, _) => state,
+        };
+        let change = match (state, domain) {
             (_, DomainRow::Invalid(reason)) => {
                 report.invalid_rows.push(invalid(reason));
                 continue;

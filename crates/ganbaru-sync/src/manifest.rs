@@ -9,7 +9,7 @@
 //! Each domain declares its tables in one [`DomainManifest`]; a manifest flattens a list of
 //! domains in dependency order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use ganbaru_sync_contracts::bounds::{
@@ -756,6 +756,24 @@ pub struct TableSpec {
     pub key_rule: RowKeyRule,
     /// Whether rows of the table are ever deleted.
     pub deletion: Deletion,
+    /// The rows a tombstone of their own does not remove while their parent lives.
+    pub retained: Option<RowRetention>,
+}
+
+/// Which rows of a table outlive a tombstone of their own: while the value of `column` in the
+/// immutable `group` is `value` and the row of `parent` that the same group references is shown,
+/// the row materializes and reads as live. The merge state keeps the tombstone, so the rule needs
+/// no repair write and replicas that cannot seal agree on it. The row goes with its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowRetention {
+    /// Immutable group holding the column and the cascading reference to the parent.
+    pub group: GroupId,
+    /// Column of the group that selects the retained rows.
+    pub column: &'static str,
+    /// Value of the column on a retained row.
+    pub value: &'static str,
+    /// Table the rows are retained under.
+    pub parent: TableId,
 }
 
 /// Whether a table's rows can be deleted through sync.
@@ -1094,7 +1112,8 @@ impl Manifest {
     /// `Local` column
     /// declares a SQL literal; key-derived columns are named apart from the key of a
     /// single-column key; references, owned tables, derived keys, trees, edges, and
-    /// publication are well formed; no delete can reach a never-deleted table; and tables follow
+    /// publication are well formed; retention rules can hold; no delete can reach a
+    /// never-deleted table; and tables follow
     /// the dependency order of their references. Adapter and hook registration is checked by the
     /// engine.
     pub fn validate(&self) -> Result<(), String> {
@@ -1208,6 +1227,7 @@ impl Manifest {
                 .chain(self.publication_problems(table))
                 .chain(self.key_parent_problems(table))
                 .chain(self.deletion_problems(table))
+                .chain(self.retention_problems(table))
             {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
             }
@@ -1272,6 +1292,90 @@ impl Manifest {
             }
         }
         problems
+    }
+
+    /// Why a retention rule cannot hold. Its group is immutable and holds the text column and a
+    /// cascading reference to a parent that never redirects, so every replica reads one parent
+    /// for the life of the row. Duplicate classes, trees, and edges read raw sync state, so a
+    /// retained table has none, and what the parent's cascade reaches is free of retention,
+    /// trees, and edges, so reading it never returns to a retained row or to unfinished
+    /// derivation.
+    fn retention_problems(&self, table: &TableSpec) -> Vec<String> {
+        let Some(retained) = table.retained else {
+            return Vec::new();
+        };
+        let mut problems = Vec::new();
+        let duplicate_repair = table
+            .resolutions
+            .iter()
+            .any(|resolution| matches!(resolution, Resolution::DuplicateRepair { .. }));
+        if table.tree.is_some() || table.acyclic.is_some() || duplicate_repair {
+            problems.push("a retained table repairs duplicates, a tree, or edges".to_string());
+        }
+        match table.group(retained.group) {
+            Some(group) if group.kind == MergeKind::Immutable => {
+                let selects = group
+                    .columns()
+                    .iter()
+                    .any(|column| column.name == retained.column && column.ty.is_text());
+                if !selects {
+                    problems.push(format!(
+                        "retention column {} is not text of the group",
+                        retained.column
+                    ));
+                }
+                let references = group.reference_columns().any(|(_, reference)| {
+                    reference.table == retained.parent && reference.on_delete == OnDelete::Cascade
+                });
+                if !references {
+                    problems
+                        .push("the retention group does not cascade from the parent".to_string());
+                }
+            }
+            _ => problems.push("the retention group is not immutable".to_string()),
+        }
+        match self.table(retained.parent) {
+            Some(parent) if parent.redirects => {
+                problems.push("the retention parent redirects".to_string());
+            }
+            Some(parent) => {
+                let reaches_derived = self.cascade_closure(parent).iter().any(|id| {
+                    self.table(*id).is_some_and(|reached| {
+                        reached.retained.is_some()
+                            || reached.tree.is_some()
+                            || reached.acyclic.is_some()
+                    })
+                });
+                if reaches_derived {
+                    problems.push(
+                        "the retention parent reaches retention, a tree, or edges".to_string(),
+                    );
+                }
+            }
+            None => problems.push("the retention parent is not a table".to_string()),
+        }
+        problems
+    }
+
+    /// `table` and the tables its cascading references and key parents reach.
+    fn cascade_closure(&self, table: &TableSpec) -> BTreeSet<TableId> {
+        let mut reached = BTreeSet::from([table.id]);
+        let mut pending = vec![table.id];
+        while let Some(id) = pending.pop() {
+            let Some(spec) = self.table(id) else {
+                continue;
+            };
+            let cascades = spec
+                .references()
+                .filter(|(_, _, reference)| reference.on_delete == OnDelete::Cascade)
+                .map(|(_, _, reference)| reference.table);
+            for next in cascades.chain(spec.key_parent) {
+                if reached.insert(next) {
+                    pending.push(next);
+                }
+            }
+        }
+        reached
     }
 
     /// Why a table's publication declarations are malformed. A predicate is one non-blank

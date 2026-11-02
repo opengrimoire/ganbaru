@@ -22,7 +22,7 @@ use crate::manifest::{
     ColumnSpec, ColumnType, Deletion, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
     GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, OnDelete, OwnedBound,
     OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, RowKeyRule,
-    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
+    RowRetention, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Projects.
@@ -676,6 +676,7 @@ const BASE: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `project_groups`.
@@ -853,8 +854,9 @@ pub const PROJECTS: TableSpec = TableSpec {
 };
 
 /// `project_working_folders`. A managed folder is keyed by its project, created with it, and
-/// never archived or removed while the project exists, so its key is never removed and added
-/// again. Received folders never touch the filesystem.
+/// never archived or removed while the project exists, so a tombstone of one is retained until
+/// its project goes and its key is never removed and added again. Received folders never touch
+/// the filesystem.
 pub const FOLDERS: TableSpec = TableSpec {
     id: FOLDERS_TABLE,
     name: "project_working_folders",
@@ -908,6 +910,12 @@ pub const FOLDERS: TableSpec = TableSpec {
         gated("project_working_folders_protect_managed_delete"),
         gated("project_working_folders_protect_managed_update"),
     ],
+    retained: Some(RowRetention {
+        group: folder_group::CREATED,
+        column: "kind",
+        value: "managed",
+        parent: PROJECTS_TABLE,
+    }),
     ..BASE
 };
 

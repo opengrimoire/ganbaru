@@ -687,7 +687,8 @@ pub struct ChatChannelMembershipRemovalPreview {
 #[serde(rename_all = "camelCase")]
 pub struct ChatProjectPrimaryWorkingFolderRead {
     pub project_id: String,
-    pub working_folder_id: ProjectWorkingFolderId,
+    /// `None` when the project has no usable folder on this replica.
+    pub working_folder_id: Option<ProjectWorkingFolderId>,
     pub revision: u64,
 }
 

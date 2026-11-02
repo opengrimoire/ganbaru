@@ -353,7 +353,7 @@ fn unseen<'v>(
 
 /// The recovery flag of a tombstoned row: it, or a live descendant grouped under it, holds a
 /// recoverable version its coverage does not cover. Live rows carry no flag; their root
-/// carries it for them.
+/// carries it for them, and a retained row lost nothing to recover.
 pub(crate) async fn flagged(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -362,6 +362,9 @@ pub(crate) async fn flagged(
     table: TableId,
     key: &str,
 ) -> SyncResult<bool> {
+    if visibility.retained(engine, conn, table, key).await? {
+        return Ok(false);
+    }
     let row = (table, key.to_string());
     if newest_unseen(engine, conn, batch, visibility, &row)
         .await?

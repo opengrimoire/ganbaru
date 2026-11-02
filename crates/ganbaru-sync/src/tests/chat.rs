@@ -665,6 +665,16 @@ fn optional(text: Option<&str>) -> String {
 /// [`TEAMMATE`]'s AI channel access through [`PROFILE`], and its default `edit` grant on
 /// [`FOLDER`]. It needs the rows of [`identity_sql`].
 fn conversation_sql() -> String {
+    conversation_on(PROJECT, FOLDER)
+}
+
+/// [`identity_sql`] and a conversation of `project` that grants `folder`.
+pub(super) fn folder_grant_sql(project: &str, folder: &str) -> String {
+    format!("{}{}", identity_sql(), conversation_on(project, folder))
+}
+
+/// [`conversation_sql`] on `project`, granting `folder`.
+fn conversation_on(project: &str, folder: &str) -> String {
     format!(
         "INSERT INTO chat_conversations
             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
@@ -686,8 +696,8 @@ fn conversation_sql() -> String {
                  {created});",
         conversation = quoted(CONVERSATION),
         channel = quoted(CHANNEL),
-        project = quoted(PROJECT),
-        folder = quoted(FOLDER),
+        project = quoted(project),
+        folder = quoted(folder),
         owner = quoted(OWNER),
         teammate = quoted(TEAMMATE),
         profile = quoted(PROFILE),
@@ -700,7 +710,7 @@ fn conversation_sql() -> String {
         )),
         grant_key = quoted(&key(
             FOLDER_GRANT_KEY_PREFIX,
-            &[CONVERSATION, TEAMMATE, FOLDER]
+            &[CONVERSATION, TEAMMATE, folder]
         )),
     )
 }

@@ -68,10 +68,10 @@ async fn parents(
         let Some(Field::Text(named)) = winner.value.fields().first() else {
             continue;
         };
-        let Some(parent) = visibility.follow(conn, table.id, named).await? else {
+        let Some(parent) = visibility.follow(engine, conn, table.id, named).await? else {
             continue;
         };
-        if visibility.state(conn, table.id, &parent).await? == Some(RowState::Live) {
+        if visibility.state(engine, conn, table.id, &parent).await? == Some(RowState::Live) {
             parents.insert(
                 key,
                 Parent {

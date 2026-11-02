@@ -249,6 +249,7 @@ pub const THEMES: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::ThemeSlug,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// The user themes domain, the rest of the 16 to 31 range after portable preferences.

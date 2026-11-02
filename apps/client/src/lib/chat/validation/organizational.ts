@@ -460,7 +460,9 @@ export function parseChatProjectPrimaryWorkingFolder(
   const record = readRecord(value, label);
   return {
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
+    workingFolderId: record.workingFolderId === null
+      ? null
+      : readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
   };
 }

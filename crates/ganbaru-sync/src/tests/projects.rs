@@ -11,6 +11,7 @@ use ganbaru_sync_contracts::{
 };
 
 use super::block_on;
+use super::chat::folder_grant_sql;
 use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, rank};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
@@ -28,7 +29,7 @@ const SECTION_B: &str = "section-b";
 const OPEN: &str = "status-open";
 const DONE: &str = "status-done";
 const EXTERNAL_FOLDER: &str = "folder-external";
-const MANAGED_FOLDER: &str = "working-folder:project-shared";
+pub(super) const MANAGED_FOLDER: &str = "working-folder:project-shared";
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -1176,6 +1177,218 @@ fn projects_applied_rows_are_reported_under_their_table_names() {
         assert!(
             !notices.iter().any(|notice| notice.topic == PROJECTS.name),
             "{notices:?}"
+        );
+    });
+}
+
+/// A tombstone of `folder` alone, which the engine never seals for a folder of a live project.
+pub(super) fn folder_tombstone(folder: &str) -> Change {
+    Change {
+        table: FOLDERS_TABLE,
+        row: RowKey::new(folder).unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+/// SQL adding the shared project's folders and a Chat grant on its managed folder.
+fn managed_folder_sql() -> String {
+    format!(
+        "{}{}",
+        folders_sql(),
+        folder_grant_sql(PROJECT, MANAGED_FOLDER)
+    )
+}
+
+/// Every replica holding the shared project, its folders, and a Chat grant on the managed one.
+pub(super) async fn shared_managed_folder(count: usize) -> Vec<Replica> {
+    shared(count, &managed_folder_sql()).await
+}
+
+/// The folders of the shared project and the folders Chat grants name.
+pub(super) async fn folders_and_grants(replica: &mut Replica) -> (Vec<String>, Vec<String>) {
+    let folders = texts(
+        replica,
+        "SELECT id FROM project_working_folders WHERE project_id = 'project-shared' ORDER BY id",
+    )
+    .await;
+    let grants = texts(
+        replica,
+        "SELECT working_folder_id FROM chat_teammate_working_folder_grants
+         WHERE project_id = 'project-shared'",
+    )
+    .await;
+    (folders, grants)
+}
+
+/// The result of [`folders_and_grants`] with both folders of the shared project kept.
+pub(super) fn every_folder_and_grant() -> (Vec<String>, Vec<String>) {
+    (
+        vec![EXTERNAL_FOLDER.to_owned(), MANAGED_FOLDER.to_owned()],
+        vec![MANAGED_FOLDER.to_owned()],
+    )
+}
+
+/// `author`'s sealed operations with `forged` at their end.
+async fn delivery_with(author: &mut Replica, forged: Vec<u8>) -> Vec<Vec<u8>> {
+    let mut delivery = author.own_ops().await;
+    delivery.push(forged);
+    delivery
+}
+
+/// Receives and applies `ops` on `replica`.
+async fn deliver(replica: &mut Replica, ops: &[Vec<u8>]) {
+    replica.receive(ops).await;
+    replica.apply_all().await.unwrap();
+}
+
+/// Pulls and applies everything `replicas[source]` holds on `replicas[target]`.
+async fn pull_all(replicas: &mut [Replica], target: usize, source: usize) {
+    let (target, source) = pair(replicas, target, source);
+    target.pull(source).await;
+    target.apply_all().await.unwrap();
+}
+
+#[test]
+fn tombstone_of_a_managed_folder_keeps_it_while_the_project_lives() {
+    block_on(async {
+        // The second replica deletes the folder without having seen it, so its tombstone can
+        // arrive on either side of the Create.
+        let mut replicas = shared(4, "").await;
+        replicas[0].exec(&managed_folder_sql()).await;
+        replicas[0].seal().await.unwrap();
+        replicas[1]
+            .exec(&format!(
+                "UPDATE projects SET name = 'Unrelated' WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[1].seal().await.unwrap();
+        let forged = forge_change(&mut replicas[1], folder_tombstone(MANAGED_FOLDER)).await;
+        let delivery = delivery_with(&mut replicas[1], forged).await;
+
+        // Neither replica seals, so the row stays with no repair write behind it.
+        deliver(&mut replicas[2], &delivery).await;
+        pull_all(&mut replicas, 2, 0).await;
+        pull_all(&mut replicas, 3, 0).await;
+        deliver(&mut replicas[3], &delivery).await;
+        for replica in &mut replicas[2..] {
+            assert_eq!(
+                folders_and_grants(replica).await,
+                every_folder_and_grant(),
+                "replica {} lost the folder",
+                replica.index
+            );
+            replica.check_invariants().await;
+        }
+
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(surfaced(replica).await, (0, 0));
+        }
+
+        // A kept row stays editable, and the edit replicates.
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders
+                 SET repository_kind = 'git', repository_identity = 'origin',
+                     revision = revision + 1, updated_at = {}
+                 WHERE id = {}",
+                quoted(EDITED),
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        let report = replicas[2].seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        assert!(report.sealed_ops > 0);
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    &format!(
+                        "SELECT repository_identity FROM project_working_folders WHERE id = {}",
+                        quoted(MANAGED_FOLDER)
+                    ),
+                )
+                .await,
+                ["origin"]
+            );
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
+fn kept_folder_with_an_unseen_edit_reports_no_recovery_offer() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(3).await;
+        replicas[2]
+            .exec(&format!(
+                "UPDATE project_working_folders SET display_name = 'Offline' WHERE id = {}",
+                quoted(MANAGED_FOLDER)
+            ))
+            .await;
+        replicas[2].seal().await.unwrap();
+        let forged = forge_change(&mut replicas[0], folder_tombstone(MANAGED_FOLDER)).await;
+        deliver(&mut replicas[1], std::slice::from_ref(&forged)).await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(surfaced(replica).await, (0, 0));
+        }
+    });
+}
+
+#[test]
+fn project_deletion_removes_a_kept_folder_in_either_arrival_order() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(4).await;
+        let forged = forge_change(&mut replicas[1], folder_tombstone(MANAGED_FOLDER)).await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[0].seal().await.unwrap();
+
+        deliver(&mut replicas[2], std::slice::from_ref(&forged)).await;
+        pull_all(&mut replicas, 2, 0).await;
+        pull_all(&mut replicas, 3, 0).await;
+        deliver(&mut replicas[3], std::slice::from_ref(&forged)).await;
+        for replica in &mut replicas[2..] {
+            assert_eq!(
+                folders_and_grants(replica).await,
+                (Vec::new(), Vec::new()),
+                "replica {} kept the folder",
+                replica.index
+            );
+        }
+
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn tombstone_of_an_external_folder_removes_it() {
+    block_on(async {
+        let mut replicas = shared_managed_folder(2).await;
+        let forged = forge_change(&mut replicas[0], folder_tombstone(EXTERNAL_FOLDER)).await;
+        deliver(&mut replicas[1], std::slice::from_ref(&forged)).await;
+        assert_eq!(
+            folders_and_grants(&mut replicas[1]).await,
+            (
+                vec![MANAGED_FOLDER.to_owned()],
+                vec![MANAGED_FOLDER.to_owned()]
+            )
         );
     });
 }

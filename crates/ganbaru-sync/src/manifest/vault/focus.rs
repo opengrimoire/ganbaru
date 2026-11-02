@@ -357,6 +357,7 @@ const BASE: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `pomodoro_runs`, published once closed. The plan, outcome, and inheritance groups change only

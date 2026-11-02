@@ -199,6 +199,7 @@ table 97 projects replicated key id rule any
   check icon,icon_byte_size within 3
   check default_pomodoro_mode,default_pomodoro_preset_key,default_pomodoro_focus_minutes,default_pomodoro_short_break_minutes,default_pomodoro_long_break_minutes,default_pomodoro_long_break_after_focus_count within 8
 table 98 project_working_folders replicated key id rule any
+  retained group 0 kind=managed parent 97
   group 0 immutable project_id:row_key->97:cascade kind:text(..=32) managed_relative_path:optional_text(..=2048) sort_order:integer(0..=9223372036854775807) created_at:timestamp
   group 1 register display_name:trimmed_text(1..=240)
   group 2 coupled repository_kind:text(..=32) repository_identity:optional_text(..=1024)

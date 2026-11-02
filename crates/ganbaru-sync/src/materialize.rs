@@ -137,7 +137,7 @@ async fn resolve_reference(
     table: TableId,
     key: &str,
 ) -> SyncResult<Field> {
-    let Some(target) = visibility.follow(conn, table, key).await? else {
+    let Some(target) = visibility.follow(engine, conn, table, key).await? else {
         return Ok(Field::Null);
     };
     if visibility.hidden(engine, conn, table, &target).await? {
@@ -220,7 +220,7 @@ async fn desired(
             None => return Ok(None),
         },
     };
-    if state == RowState::Tombstoned {
+    if state == RowState::Tombstoned && !visibility.retained(engine, conn, table.id, key).await? {
         return Ok(Some(Desired::Absent));
     }
     if visibility.hidden(engine, conn, table.id, key).await? {

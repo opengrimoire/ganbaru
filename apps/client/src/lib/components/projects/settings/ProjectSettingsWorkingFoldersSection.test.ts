@@ -367,6 +367,18 @@ describe("Project working folder settings", () => {
     expect(chat.removeWorkingFolder).toHaveBeenCalledExactlyOnceWith("external");
   });
 
+  it("chooses a primary for a project whose read reports no usable folder", async () => {
+    api.readChatProjectPrimaryWorkingFolder.mockResolvedValue({ projectId: "project", workingFolderId: null, revision: 0 });
+    await render();
+    const menu = await openFolderOptions("external");
+    const primaryButton = action(menu, "Make primary");
+    expect(primaryButton.disabled).toBe(false);
+    primaryButton.click();
+    await tick();
+    await component!.saveDraft();
+    expect(api.setChatProjectPrimaryWorkingFolder).toHaveBeenCalledExactlyOnceWith("project", "external", 0);
+  });
+
   it("keeps primary selection in the open menu and applies it to Chat only on Save", async () => {
     chat.selectedChannel = { projectId: "project" };
     const primary = { projectId: "project", workingFolderId: "external", revision: 4 };

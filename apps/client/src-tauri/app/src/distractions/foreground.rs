@@ -11,8 +11,8 @@ mod windows;
 
 #[cfg(target_os = "linux")]
 pub(super) use linux::{
-    close_current_foreground_desktop_app, foreground_desktop_app_status, x11_intern_atom,
-    x11_property_u32,
+    close_current_foreground_desktop_app, foreground_desktop_app_status, is_wayland_session,
+    x11_intern_atom, x11_property_u32,
 };
 #[cfg(target_os = "macos")]
 pub(super) use macos::{close_current_foreground_desktop_app, foreground_desktop_app_status};

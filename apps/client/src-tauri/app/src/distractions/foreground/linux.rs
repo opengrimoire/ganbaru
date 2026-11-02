@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(target_os = "linux")]
-fn is_wayland_session() -> bool {
+pub(in crate::distractions) fn is_wayland_session() -> bool {
     std::env::var("XDG_SESSION_TYPE")
         .map(|value| value.eq_ignore_ascii_case("wayland"))
         .unwrap_or(false)

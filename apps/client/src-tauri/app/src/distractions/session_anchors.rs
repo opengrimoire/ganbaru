@@ -1,7 +1,7 @@
 //! Positive guard for process closes on Linux: the processes that hold up the running graphical
 //! session are computed from that session instead of from names.
 
-use super::foreground::{x11_intern_atom, x11_property_u32};
+use super::foreground::{is_wayland_session, x11_intern_atom, x11_property_u32};
 use super::processes::{current_real_uid, linux_process_parent_id, linux_process_real_uid};
 use super::*;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -143,6 +143,14 @@ fn runs_in_session_slice(process: &Path) -> bool {
         .is_ok_and(|cgroup| cgroup.contains(SESSION_SLICE_SEGMENT))
 }
 
+/// The `DISPLAY` value whose window manager is looked up: only a local display, so a forwarded
+/// remote display never names a process in the local `/proc`, and never on Wayland, where
+/// connecting can start Xwayland on demand.
+fn window_manager_display(variables: &SessionVariables, wayland_session: bool) -> Option<&str> {
+    let display = variables.display.as_deref()?;
+    (!wayland_session && x11_display_number(display).is_some()).then_some(display)
+}
+
 /// Process ID the X11 window manager on `display` publishes under EWMH: the root window's
 /// `_NET_SUPPORTING_WM_CHECK` names a check window that names itself, and that window carries
 /// `_NET_WM_PID`. An X11 window manager is a client, not a socket listener, so the socket walk
@@ -190,9 +198,7 @@ impl SessionAnchors {
             &session_socket_paths(&variables),
             current_real_uid()?,
             std::process::id(),
-            variables
-                .display
-                .as_deref()
+            window_manager_display(&variables, is_wayland_session())
                 .and_then(x11_window_manager_process_id),
             is_cancelled,
         )
@@ -562,6 +568,28 @@ mod tests {
                 "/run/user/1000/bus".to_string(),
                 "@/tmp/dbus-x".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn window_manager_lookup_needs_a_local_x11_display() {
+        let session = |display: &str| SessionVariables {
+            display: Some(display.to_string()),
+            ..SessionVariables::default()
+        };
+        assert_eq!(window_manager_display(&session(":0"), false), Some(":0"));
+        assert_eq!(
+            window_manager_display(&session("unix:1.0"), false),
+            Some("unix:1.0")
+        );
+        assert_eq!(window_manager_display(&session(":0"), true), None);
+        assert_eq!(
+            window_manager_display(&session("localhost:10.0"), false),
+            None
+        );
+        assert_eq!(
+            window_manager_display(&SessionVariables::default(), false),
+            None
         );
     }
 

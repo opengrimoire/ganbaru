@@ -733,8 +733,8 @@ pub struct TableSpec {
     pub acyclic: Option<AcyclicSpec>,
     /// A SQL condition over the key and group columns that a row satisfies once it is
     /// published. Rows that fail it are drafts: they are not captured, a local update cannot
-    /// make a published row fail it again, and a merged winner that fails it is not
-    /// materialized.
+    /// make a published row fail it again, a merged winner that fails it is not materialized,
+    /// and no replicated operation changes a local draft or adds a row to it.
     pub publish_when: Option<&'static str>,
     /// The predicate table whose row publishes this table's rows.
     pub published_with: Option<PublishedWith>,

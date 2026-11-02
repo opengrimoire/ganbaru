@@ -1,6 +1,8 @@
 //! Installation helpers: space context, writer high-water check, snapshot copies, and
 //! carry-forward across a database replacement.
 
+use super::calendar::{calendar_sql, event_sql};
+use super::focus::open_run_sql;
 use super::replica::{Replica, VAULT_ID, connection_from, person};
 use super::{block_on, migrated_pool};
 use crate::local::{
@@ -875,5 +877,59 @@ fn a_restore_keeps_seeded_rows_the_live_database_lacks_and_live_values_it_has() 
                 .await
                 .unwrap();
         assert_eq!(retention, 7);
+    });
+}
+
+/// Keys of `sql` on `conn`.
+async fn keys(conn: &mut SqliteConnection, sql: &str) -> Vec<String> {
+    sqlx::query_scalar(AssertSqlSafe(sql))
+        .fetch_all(conn)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn a_snapshot_copy_leaves_local_drafts_behind() {
+    block_on(async {
+        let mut replica = Replica::new(0, 2).await;
+        let manifest = replica.engine.manifest();
+        let focus = format!(
+            "{}{}{}",
+            calendar_sql(),
+            event_sql("event-a", "uid-a", "Deep work"),
+            open_run_sql("run-a", "event-a", 3, 4)
+        );
+        replica.exec(&focus).await;
+        replica
+            .exec(
+                "INSERT INTO fixture_drafts (id, title, published) VALUES
+                     ('draft-open', 'Open', 0), ('draft-done', 'Done', 1);
+                 INSERT INTO fixture_draft_parts (id, draft_id, body) VALUES
+                     ('part-open', 'draft-open', 'body'), ('part-done', 'draft-done', 'body');
+                 INSERT INTO fixture_draft_notes (id, draft_id, body) VALUES
+                     ('note-open', 'draft-open', 'body'), ('note-free', NULL, 'body');",
+            )
+            .await;
+
+        let mut copy = connection_from(&replica.snapshot().await).await;
+        prepare_snapshot_copy(&mut copy, manifest).await.unwrap();
+
+        for (sql, expected) in [
+            ("SELECT id FROM fixture_drafts", vec!["draft-done"]),
+            ("SELECT id FROM fixture_draft_parts", vec!["part-done"]),
+            ("SELECT id FROM fixture_draft_notes", vec!["note-free"]),
+            ("SELECT id FROM pomodoro_runs", Vec::new()),
+            ("SELECT id FROM pomodoro_segments", Vec::new()),
+            ("SELECT segment_id FROM pomodoro_pauses", Vec::new()),
+            ("SELECT id FROM pomodoro_run_events", Vec::new()),
+            ("SELECT id FROM calendar_events", vec!["event-a"]),
+        ] {
+            assert_eq!(keys(&mut copy, sql).await, expected, "{sql}");
+        }
+        assert_eq!(
+            replica.count("SELECT count(*) FROM pomodoro_runs").await,
+            1,
+            "the source keeps its open run"
+        );
     });
 }

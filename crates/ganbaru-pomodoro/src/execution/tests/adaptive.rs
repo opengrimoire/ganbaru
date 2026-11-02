@@ -16,6 +16,18 @@ const DAY: i64 = 24 * 60 * MINUTE;
 const EVIDENCE_ROWS_OVER_LIMIT: i64 = 4097;
 /// One more than the replay window, so its oldest opportunity also reads 80 segments.
 const REPLAY_FLOOD_RUNS: i64 = 51;
+/// Passes the replicated column rule and no timestamp parser.
+const MALFORMED_TIMESTAMP: &str = "not-a-timestamp";
+/// Parses as RFC 3339 but lies past every instant native civil time converts.
+const UNCONVERTIBLE_TIMESTAMP: &str = "9999-12-31T23:59:59Z";
+/// Epoch milliseconds of 9999-12-30T22:00:00Z, the last instant native civil time converts.
+const NATIVE_LATEST_INSTANT_MS: i64 = 253_402_207_200_000;
+
+/// Each hostile start value with the degrade reason it must report.
+const HOSTILE_STARTS: [(&str, &str); 2] = [
+    (MALFORMED_TIMESTAMP, "Invalid canonical adaptive timestamp"),
+    (UNCONVERTIBLE_TIMESTAMP, "starts after its decision"),
+];
 
 #[derive(Default)]
 struct TestLocalTime {
@@ -23,6 +35,17 @@ struct TestLocalTime {
     calls: AtomicUsize,
     largest_request: AtomicUsize,
     incomplete: bool,
+    latest_instant_ms: Option<i64>,
+}
+
+impl TestLocalTime {
+    /// A resolver that refuses what the native one refuses.
+    fn native_range() -> Self {
+        Self {
+            latest_instant_ms: Some(NATIVE_LATEST_INSTANT_MS),
+            ..Self::default()
+        }
+    }
 }
 
 impl FocusLocalTimeResolver for TestLocalTime {
@@ -40,6 +63,14 @@ impl FocusLocalTimeResolver for TestLocalTime {
             }
             if self.incomplete {
                 return Ok(LocalTimeFacts::new());
+            }
+            if self
+                .latest_instant_ms
+                .is_some_and(|latest| instants.iter().any(|instant| *instant > latest))
+            {
+                return Err(decisions::invalid_state(
+                    "Calendar instant is outside the supported range",
+                ));
             }
             Ok(instants
                 .into_iter()
@@ -337,6 +368,17 @@ async fn seed_oversized_run_events(pool: &SqlitePool) {
     .unwrap();
 }
 
+/// Overwrite a closed segment's recorded start, as a replicated row can.
+async fn set_segment_start(pool: &SqlitePool, segment_id: &str, actual_start: &str) {
+    let updated = sqlx::query("UPDATE pomodoro_segments SET actual_start = ? WHERE id = ?")
+        .bind(actual_start)
+        .bind(segment_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+}
+
 /// The transition must commit and report why it skipped adaptive evidence.
 fn accepted_degraded(
     result: Result<FocusExecutionSnapshot, FocusExecutionError>,
@@ -344,7 +386,7 @@ fn accepted_degraded(
 ) -> FocusExecutionSnapshot {
     assert!(
         result.is_ok(),
-        "oversized adaptive evidence failed the Focus transition: {:?}",
+        "hostile adaptive evidence failed the Focus transition: {:?}",
         result.err()
     );
     let snapshot = result.unwrap();
@@ -510,6 +552,135 @@ fn adaptive_start_keeps_the_baseline_decision_past_the_local_instant_limit() {
         assert_eq!(run.configuration.rhythm, baseline);
         assert_eq!(run_start_candidates(&pool, &run.id).await, vec![None]);
         assert!(resolver.largest_request.load(Ordering::Relaxed) <= 4096);
+    });
+}
+
+#[test]
+fn adaptive_start_degrades_on_a_malformed_replicated_timestamp() {
+    block_on(async {
+        for (actual_start, reason) in HOSTILE_STARTS {
+            let pool = pool().await;
+            seed_completed_focus_history(&pool).await;
+            set_segment_start(&pool, "history-segment-1", actual_start).await;
+            let resolver = Arc::new(TestLocalTime::native_range());
+            let rhythm = CountRhythm {
+                focus_duration_minutes: 45,
+                ..CountRhythm::BASELINE
+            }
+            .into_rhythm();
+            let mut configured = adaptive_context(START, resolver);
+            configured.commitment.as_mut().unwrap().configuration.rhythm = rhythm.clone();
+            let started = accepted_degraded(
+                execute(&pool, &adaptive_start_command(), &configured).await,
+                reason,
+            );
+            assert_eq!(started.mode, FocusMode::Running);
+            assert_eq!(started.run.as_ref().unwrap().configuration.rhythm, rhythm);
+            assert_eq!(decision_count(&pool).await, 0);
+
+            configured.now_ms = START + 2 * MINUTE;
+            let advanced = accepted_degraded(
+                execute(
+                    &pool,
+                    &command("adaptive-break", started.revision, FocusIntent::Advance),
+                    &configured,
+                )
+                .await,
+                reason,
+            );
+            assert_eq!(
+                advanced.segment.as_ref().unwrap().phase,
+                FocusPhase::ShortBreak
+            );
+            assert_eq!(advanced.run.as_ref().unwrap().configuration.rhythm, rhythm);
+            assert_eq!(decision_count(&pool).await, 0);
+        }
+    });
+}
+
+#[test]
+fn adaptive_boundary_keeps_the_accepted_rhythm_on_a_malformed_replicated_timestamp() {
+    block_on(async {
+        for (actual_start, reason) in HOSTILE_STARTS {
+            let pool = pool().await;
+            seed_completed_focus_history(&pool).await;
+            let resolver = Arc::new(TestLocalTime::native_range());
+            let configured_rhythm = CountRhythm {
+                focus_duration_minutes: 45,
+                ..CountRhythm::BASELINE
+            }
+            .into_rhythm();
+            let mut configured = adaptive_context(START, resolver);
+            configured.commitment.as_mut().unwrap().configuration.rhythm =
+                configured_rhythm.clone();
+            let initial = execute(&pool, &adaptive_start_command(), &configured)
+                .await
+                .unwrap();
+            let accepted = initial.run.as_ref().unwrap().configuration.rhythm.clone();
+            assert_ne!(accepted, configured_rhythm);
+            let decisions = decision_count(&pool).await;
+
+            set_segment_start(&pool, "history-segment-1", actual_start).await;
+            configured.now_ms = initial.phase_deadline_ms.unwrap();
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            let result =
+                focus_apply_observation_tx(&mut tx, &FocusObservation::Deadline, &configured).await;
+            let boundary = accepted_degraded(result, reason);
+            tx.commit().await.unwrap();
+            assert_eq!(
+                boundary.run.as_ref().unwrap().configuration.rhythm,
+                accepted
+            );
+            assert_eq!(decision_count(&pool).await, decisions);
+        }
+    });
+}
+
+#[test]
+fn adaptive_start_keeps_the_baseline_decision_on_malformed_replay_history() {
+    block_on(async {
+        for (actual_start, reason) in HOSTILE_STARTS {
+            let pool = pool().await;
+            let resolver = Arc::new(TestLocalTime::native_range());
+            seed_accepted_replay_candidates(&pool, &resolver).await;
+            // Replay windows reach the hostile segment; the current window stops short of it.
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            seed_closed_segments(&mut tx, "replay-run-1", START - 12 * 60 * MINUTE, 80).await;
+            tx.commit().await.unwrap();
+            set_segment_start(&pool, "replay-segment-4", actual_start).await;
+            let configured = adaptive_context(START, resolver.clone());
+            let baseline = baseline_rhythm(&pool, &configured, &resolver).await;
+            let started = accepted_degraded(
+                execute(&pool, &adaptive_start_command(), &configured).await,
+                reason,
+            );
+            let run = started.run.as_ref().unwrap();
+            assert_eq!(run.configuration.rhythm, baseline);
+            assert_eq!(run_start_candidates(&pool, &run.id).await, vec![None]);
+        }
+    });
+}
+
+#[test]
+fn adaptive_start_keeps_the_baseline_decision_on_a_malformed_replay_plan() {
+    block_on(async {
+        let pool = pool().await;
+        let resolver = Arc::new(TestLocalTime::native_range());
+        seed_accepted_replay_candidates(&pool, &resolver).await;
+        sqlx::query("UPDATE pomodoro_runs SET planned_end = ? WHERE id = 'replay-run-2'")
+            .bind(MALFORMED_TIMESTAMP)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let configured = adaptive_context(START, resolver.clone());
+        let baseline = baseline_rhythm(&pool, &configured, &resolver).await;
+        let started = accepted_degraded(
+            execute(&pool, &adaptive_start_command(), &configured).await,
+            "Invalid canonical adaptive timestamp",
+        );
+        let run = started.run.as_ref().unwrap();
+        assert_eq!(run.configuration.rhythm, baseline);
+        assert_eq!(run_start_candidates(&pool, &run.id).await, vec![None]);
     });
 }
 

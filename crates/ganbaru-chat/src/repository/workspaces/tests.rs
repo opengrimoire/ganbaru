@@ -153,3 +153,89 @@ async fn list_workspaces_keeps_query_errors_fatal() {
 
     assert_eq!(error.code, ChatErrorCode::Persistence);
 }
+
+const MANAGED_FOLDER_ID: &str = "working-folder:project-removal";
+
+/// Stores `working_folder_id` as the primary folder of the test project.
+async fn store_primary(pool: &SqlitePool, working_folder_id: &str) {
+    sqlx::query(
+        "INSERT INTO project_primary_working_folders
+            (project_id, working_folder_id, created_at, updated_at)
+         VALUES ('project-removal', ?1, ?2, ?2)",
+    )
+    .bind(working_folder_id)
+    .bind(now().as_str())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Gives the folder a timestamp that the schema accepts and the reader refuses.
+async fn make_unreadable(pool: &SqlitePool, working_folder_id: &str) {
+    sqlx::query("UPDATE project_working_folders SET updated_at = 'not a timestamp' WHERE id = ?")
+        .bind(working_folder_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn resolved_primary_id(pool: &SqlitePool) -> ChatResult<Option<String>> {
+    resolve_primary_workspace(pool, "project-removal")
+        .await
+        .map(|folder| folder.map(|folder| folder.id.as_str().to_string()))
+}
+
+#[tokio::test]
+async fn resolve_primary_workspace_reads_the_stored_folder_and_then_the_managed_folder() {
+    let pool = migrated_pool().await;
+    insert_project_with_external_folder(&pool).await;
+    assert_eq!(
+        resolved_primary_id(&pool).await.unwrap().as_deref(),
+        Some(MANAGED_FOLDER_ID)
+    );
+
+    store_primary(&pool, EXTERNAL_FOLDER_ID).await;
+
+    assert_eq!(
+        resolved_primary_id(&pool).await.unwrap().as_deref(),
+        Some(EXTERNAL_FOLDER_ID)
+    );
+}
+
+#[tokio::test]
+async fn resolve_primary_workspace_skips_a_stored_primary_that_does_not_parse() {
+    let pool = migrated_pool().await;
+    insert_project_with_external_folder(&pool).await;
+    store_primary(&pool, EXTERNAL_FOLDER_ID).await;
+    make_unreadable(&pool, EXTERNAL_FOLDER_ID).await;
+
+    let resolved = resolved_primary_id(&pool).await;
+
+    assert!(
+        matches!(
+            resolved.as_ref().map(Option::as_deref),
+            Ok(Some(MANAGED_FOLDER_ID))
+        ),
+        "an unreadable stored primary must fall back to the managed folder, got {resolved:?}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_primary_workspace_reads_no_folder_when_no_candidate_parses() {
+    let pool = migrated_pool().await;
+    insert_project_with_external_folder(&pool).await;
+    make_unreadable(&pool, MANAGED_FOLDER_ID).await;
+
+    let resolved = resolved_primary_id(&pool).await;
+    assert!(
+        matches!(resolved, Ok(None)),
+        "an unreadable managed folder must read as no primary, got {resolved:?}"
+    );
+
+    store_primary(&pool, EXTERNAL_FOLDER_ID).await;
+    assert_eq!(
+        resolved_primary_id(&pool).await.unwrap().as_deref(),
+        Some(EXTERNAL_FOLDER_ID),
+        "a readable stored primary still wins over an unreadable managed folder"
+    );
+}

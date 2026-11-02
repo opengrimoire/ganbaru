@@ -5,26 +5,50 @@
 
 use std::collections::VecDeque;
 
-use ganbaru_sync_contracts::{ChangeAction, Field, GroupId, RowKey, TableId, Value};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Content, Field, GroupId, Hlc, RowKey, TableId, Value,
+};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::domains::chat::ChatAdapter;
-use crate::manifest::vault::chat::{PROFILE_REVISIONS_TABLE, PROFILES_TABLE};
+use crate::manifest::group_id;
+use crate::manifest::vault::chat::{
+    PROFILE_REVISIONS_TABLE, PROFILES_TABLE, profile_revision_group,
+};
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE, settings_group};
 use crate::refused::MAX_REFUSED_RETRIES_PER_FINISH;
 use crate::{ApplyReport, HoldReason, StoreOutcome, SyncResult};
 
+use super::authorization::{seal_at, view};
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::distractions::block_sql;
+use super::engine::{take_forged, text_field, with_group};
 use super::exclusion::note;
-use super::fixture::{ASK, FORBIDDEN, REFUSED, RESERVED, UNATTENDED, test_engine_adapting};
+use super::fixture::{
+    ASK, FORBIDDEN, ITEMS_TABLE, REFUSED, RESERVED, UNATTENDED, test_engine_adapting,
+};
 use super::focus::{close_run_sql, open_run_sql, segment_id};
 use super::holds::sealed_create;
 use super::replica::{Replica, converge, forge_change, pair, quoted, rank};
 use super::sim::Rng;
 
 const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
+
+/// The access profile of the immutable revision scenarios.
+const PROFILE: &str = "profile-custom";
+/// The revision a hostile writer creates again.
+const REVISION: &str = "revision-custom";
+/// The capability of the revision its first writer saves.
+const FIRST_CAPABILITY: &str = "read";
+/// The capability of the hostile Create of that revision.
+const FORGED_CAPABILITY: &str = "publish";
+/// The replica of the immutable revision scenarios that writes the hostile Create.
+const FORGER: usize = 2;
+/// Replicas of the immutable revision scenarios.
+const FORGED_REPLICAS: usize = 4;
+/// How far past the first writer the clock of a Create that loses the Immutable minimum runs.
+const CLOCK_AHEAD_MS: u64 = 1_000;
 
 /// Seeds of the built-in key claim simulation.
 const CLAIM_SEEDS: u64 = 8;
@@ -660,6 +684,293 @@ fn ordinary_deletes_and_archives_keep_replicating() {
                 1
             );
         }
+    });
+}
+
+/// SQL creating the custom access profile `id`.
+fn custom_profile_sql(id: &str) -> String {
+    format!(
+        "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
+         VALUES ({}, 'Custom', {CREATED}, {CREATED});",
+        quoted(id),
+    )
+}
+
+/// Replicas sharing [`PROFILE`], with [`REVISION`] sealed by the first and held by no other.
+/// [`FORGER`] has sealed, so its next operation is valid, and has not seen the revision.
+async fn replicas_with_revision(salt: u64) -> Vec<Replica> {
+    let mut replicas = seeded_replicas(FORGED_REPLICAS, salt).await;
+    exec_and_seal(&mut replicas[FORGER], &custom_profile_sql(PROFILE)).await;
+    converge(&mut replicas).await;
+    exec_and_seal(
+        &mut replicas[0],
+        &format!(
+            "INSERT INTO chat_access_profile_revisions
+                (id, access_profile_id, default_read_history, default_participate,
+                 default_history_boundary, maximum_folder_capability, created_at)
+             VALUES ({}, {}, 1, 1, 'entire', {}, {CREATED});",
+            quoted(REVISION),
+            quoted(PROFILE),
+            quoted(FIRST_CAPABILITY),
+        ),
+    )
+    .await;
+    replicas
+}
+
+/// The Create of [`REVISION`] again, with [`FORGED_CAPABILITY`].
+async fn forged_revision_create(creator: &mut Replica) -> Change {
+    let create = sealed_create(creator, PROFILE_REVISIONS_TABLE, REVISION).await;
+    with_group(
+        create,
+        profile_revision_group::CREATED,
+        vec![
+            text_field(PROFILE),
+            Field::Integer(1),
+            Field::Integer(1),
+            text_field("entire"),
+            text_field(FORGED_CAPABILITY),
+            text_field(CREATED.trim_matches('\'')),
+        ],
+    )
+}
+
+/// The operation `replica` seals with `change` at `clock`, outside the engine.
+async fn forge_at(replica: &mut Replica, change: Change, clock: Hlc) -> Vec<u8> {
+    let revision = view(replica).await.revision;
+    let last = replica.own_ops().await.pop().unwrap();
+    seal_at(
+        &last,
+        &replica.identity.key,
+        Content::Changes(vec![change]),
+        revision,
+        clock,
+    )
+}
+
+/// The capability `replica` shows for [`REVISION`].
+async fn revision_capability(replica: &mut Replica) -> Option<String> {
+    replica
+        .scalar_text(&format!(
+            "SELECT maximum_folder_capability FROM chat_access_profile_revisions WHERE id = {}",
+            quoted(REVISION)
+        ))
+        .await
+}
+
+/// A Create that saw the immutable revision leaves it alone: a replica holding the row, one that
+/// takes the row and the Create together, and the first writer agree with nothing refused.
+#[test]
+fn forged_immutable_create_converges() {
+    const HOLDER: usize = 1;
+    const LATE: usize = 3;
+    const OTHER_PROFILE: &str = "profile-other";
+    block_on(async {
+        let mut replicas = replicas_with_revision(71).await;
+        take(&mut replicas, HOLDER, 0).await.unwrap();
+        take(&mut replicas, FORGER, 0).await.unwrap();
+        exec_and_seal(&mut replicas[FORGER], &custom_profile_sql(OTHER_PROFILE)).await;
+
+        let create = forged_revision_create(&mut replicas[0]).await;
+        let forged = forge_change(&mut replicas[FORGER], create).await;
+        let (holder, forger) = pair(&mut replicas, HOLDER, FORGER);
+        holder.pull(forger).await;
+        take_forged(holder, &forged).await;
+        take(&mut replicas, LATE, HOLDER).await.unwrap();
+        take(&mut replicas, 0, HOLDER).await.unwrap();
+
+        for index in [0, HOLDER, LATE] {
+            let replica = &mut replicas[index];
+            assert_eq!(
+                revision_capability(replica).await.as_deref(),
+                Some(FIRST_CAPABILITY),
+                "replica {index} keeps the first value"
+            );
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_refused_rows")
+                    .await,
+                0,
+                "nothing is refused on replica {index}"
+            );
+        }
+        let holder = replicas[HOLDER].dump().await;
+        assert_eq!(replicas[0].dump().await, holder);
+        assert_eq!(replicas[LATE].dump().await, holder);
+    });
+}
+
+/// Asserts the outcome of a Create that did not see the immutable revision: merge state agrees,
+/// `loser_holder` lists its row `kept`, `winner_holder` lists nothing, and a later write changes
+/// neither replica.
+async fn assert_loser_stays_kept(
+    replicas: &mut [Replica],
+    (loser_holder, loser): (usize, &str),
+    (winner_holder, winner): (usize, &str),
+) {
+    for pass in ["after the Create", "after a later write"] {
+        assert_eq!(
+            merge_state(&mut replicas[loser_holder]).await,
+            merge_state(&mut replicas[winner_holder]).await,
+            "merge state agrees {pass}"
+        );
+        assert_eq!(
+            revision_capability(&mut replicas[loser_holder])
+                .await
+                .as_deref(),
+            Some(loser),
+            "the row of replica {loser_holder} stays {pass}"
+        );
+        assert_eq!(
+            refused(&mut replicas[loser_holder], "kept").await,
+            vec![REVISION.to_owned()],
+            "replica {loser_holder} lists the row {pass}"
+        );
+        assert_eq!(
+            revision_capability(&mut replicas[winner_holder])
+                .await
+                .as_deref(),
+            Some(winner),
+            "replica {winner_holder} shows the winner {pass}"
+        );
+        assert_eq!(
+            replicas[winner_holder]
+                .count("SELECT count(*) FROM sync_refused_rows")
+                .await,
+            0,
+            "replica {winner_holder} refuses nothing {pass}"
+        );
+
+        exec_and_seal(
+            &mut replicas[0],
+            &format!(
+                "UPDATE chat_access_profiles SET display_name = {} WHERE id = {}",
+                quoted(pass),
+                quoted(PROFILE)
+            ),
+        )
+        .await;
+        take(replicas, loser_holder, 0).await.unwrap();
+        take(replicas, winner_holder, 0).await.unwrap();
+    }
+}
+
+/// Stores what the first replica sealed and then `forged` on the second replica, and the same
+/// operations in the other order on the last. Returns those two replicas.
+async fn deliver_in_both_orders(replicas: &mut [Replica], forged: &[u8]) -> (usize, usize) {
+    const HONEST_FIRST: usize = 1;
+    const FORGED_FIRST: usize = 3;
+    take(replicas, HONEST_FIRST, 0).await.unwrap();
+    take_forged(&mut replicas[HONEST_FIRST], forged).await;
+    take_forged(&mut replicas[FORGED_FIRST], forged).await;
+    take(replicas, FORGED_FIRST, 0).await.unwrap();
+    (HONEST_FIRST, FORGED_FIRST)
+}
+
+#[test]
+fn a_create_winning_an_immutable_minimum_it_did_not_see_leaves_the_kept_row_different() {
+    block_on(async {
+        let mut replicas = replicas_with_revision(72).await;
+        let create = forged_revision_create(&mut replicas[0]).await;
+        let forged = forge_at(&mut replicas[FORGER], create, Hlc::new(1, 0)).await;
+        let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
+        assert_loser_stays_kept(
+            &mut replicas,
+            (honest_first, FIRST_CAPABILITY),
+            (forged_first, FORGED_CAPABILITY),
+        )
+        .await;
+    });
+}
+
+#[test]
+fn a_create_losing_an_immutable_minimum_it_did_not_see_leaves_the_kept_row_different() {
+    block_on(async {
+        let mut replicas = replicas_with_revision(73).await;
+        let create = forged_revision_create(&mut replicas[0]).await;
+        let clock = Hlc::new(replicas[0].now_ms + CLOCK_AHEAD_MS, 0);
+        let forged = forge_at(&mut replicas[FORGER], create, clock).await;
+        let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
+        assert_loser_stays_kept(
+            &mut replicas,
+            (forged_first, FORGED_CAPABILITY),
+            (honest_first, FIRST_CAPABILITY),
+        )
+        .await;
+    });
+}
+
+/// A row whose delete passes is hidden when its update is refused, so a retry inserts the winner
+/// and the replicas converge: the difference [`assert_loser_stays_kept`] pins needs both
+/// triggers.
+#[test]
+fn a_row_refusing_only_updates_converges_on_the_immutable_winner() {
+    const ITEM: &str = "item-1";
+    const FIRST_CREATED_AT: &str = "2027-01-02T00:00:00.000Z";
+    const FORGED_CREATED_AT: &str = "2027-01-03T00:00:00.000Z";
+    const SELECT_CREATED_AT: &str = "SELECT created_at FROM fixture_items WHERE id = 'item-1'";
+    const FROZEN_SQL: &str = "CREATE TRIGGER frozen_item BEFORE UPDATE OF created_at
+         ON fixture_items BEGIN SELECT RAISE(ABORT, 'frozen'); END;";
+    block_on(async {
+        let mut replicas = seeded_replicas(FORGED_REPLICAS, 74).await;
+        exec_and_seal(&mut replicas[FORGER], &note("note-forger", "Note", 1)).await;
+        converge(&mut replicas).await;
+        exec_and_seal(
+            &mut replicas[0],
+            &format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {}, 'One', 0)",
+                quoted(ITEM),
+                quoted(FIRST_CREATED_AT)
+            ),
+        )
+        .await;
+        let create = sealed_create(&mut replicas[0], ITEMS_TABLE, ITEM).await;
+        let create = with_group(create, group_id(0), vec![text_field(FORGED_CREATED_AT)]);
+        let forged = forge_at(&mut replicas[FORGER], create, Hlc::new(1, 0)).await;
+
+        replicas[1].exec(FROZEN_SQL).await;
+        replicas[3].exec(FROZEN_SQL).await;
+        let (honest_first, forged_first) = deliver_in_both_orders(&mut replicas, &forged).await;
+        assert_eq!(
+            refused(&mut replicas[honest_first], "hidden").await,
+            vec![ITEM.to_owned()]
+        );
+        assert_eq!(
+            replicas[forged_first]
+                .scalar_text(SELECT_CREATED_AT)
+                .await
+                .as_deref(),
+            Some(FORGED_CREATED_AT)
+        );
+
+        exec_and_seal(
+            &mut replicas[0],
+            &format!(
+                "UPDATE fixture_items SET label = 'Two' WHERE id = {}",
+                quoted(ITEM)
+            ),
+        )
+        .await;
+        take(&mut replicas, honest_first, 0).await.unwrap();
+        take(&mut replicas, forged_first, 0).await.unwrap();
+        for index in [honest_first, forged_first] {
+            let replica = &mut replicas[index];
+            assert_eq!(
+                replica.scalar_text(SELECT_CREATED_AT).await.as_deref(),
+                Some(FORGED_CREATED_AT),
+                "replica {index} shows the winner"
+            );
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_refused_rows")
+                    .await,
+                0,
+                "nothing stays refused on replica {index}"
+            );
+        }
+        let first = replicas[honest_first].dump().await;
+        assert_eq!(replicas[forged_first].dump().await, first);
     });
 }
 

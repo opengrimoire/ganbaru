@@ -1426,6 +1426,45 @@ async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_author
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 }
 
+/// The reason recorded on a revoked authorization of the seeded teammate.
+async fn revocation_reason(pool: &SqlitePool) -> String {
+    let states = authorization_states(pool).await;
+    assert!(
+        states.iter().all(|(_, state, _)| state == "revoked"),
+        "{states:?}"
+    );
+    states[0].2.clone()
+}
+
+/// An archive or a policy reduction can reach the sweep, or an access row of a rebuild, before
+/// the participant or teammate hook runs, and the revocation records the same reason that hook
+/// would.
+#[tokio::test]
+async fn sweep_records_the_specific_reason() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    set_applying(&pool, true).await;
+    set_participant_archived(&pool, TEAMMATE_ID, Some(NOW)).await;
+    run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
+    assert_eq!(revocation_reason(&pool).await, TEAMMATE_ARCHIVED_REASON);
+
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    insert_policy_revision(&pool, "policy:narrower", 10, "ask_for_approval").await;
+    run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
+    assert_eq!(
+        revocation_reason(&pool).await,
+        TEAMMATE_POLICY_REDUCED_REASON
+    );
+
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    set_applying(&pool, true).await;
+    set_participant_archived(&pool, TEAMMATE_ID, Some(NOW)).await;
+    run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    assert_eq!(revocation_reason(&pool).await, TEAMMATE_ARCHIVED_REASON);
+}
+
 async fn dispatch_job_state(pool: &SqlitePool) -> String {
     sqlx::query_scalar(
         "SELECT state FROM chat_assignment_dispatch_jobs

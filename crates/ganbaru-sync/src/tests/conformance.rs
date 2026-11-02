@@ -1353,6 +1353,88 @@ fn key_check_terms(create: &str, key: &str, columns: &[String]) -> Vec<String> {
     terms
 }
 
+/// CHECK terms of one table that read its row key and that the shapes of [`check_term_probes`]
+/// do not cover, each reviewed as safe.
+#[derive(Debug, Clone, Copy, Default)]
+struct KnownKeyTerms {
+    /// Columns a CHECK term `column = key` holds equal to the row key. Their other terms read
+    /// as terms on the key.
+    aliases: &'static [&'static str],
+    /// Terms that read the key with another column and never refuse a key the engine writes.
+    cross_column: &'static [&'static str],
+}
+
+/// What the CHECK constraints of a table say about its row key.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct KeyChecks {
+    /// Terms that read only the key, written over the key column.
+    terms: Vec<String>,
+    /// Terms or columns that read the key in a way no known shape or entry covers.
+    unknown: Vec<String>,
+}
+
+/// The CHECK terms of a `CREATE TABLE` on its row key `key`, given the reviewed `known` terms.
+fn key_checks(create: &str, key: &str, columns: &[String], known: KnownKeyTerms) -> KeyChecks {
+    let _ = known;
+    let terms = key_check_terms(create, key, columns);
+    let unknown = terms
+        .iter()
+        .filter(|term| check_term_probes(term, key).is_none())
+        .cloned()
+        .collect();
+    KeyChecks { terms, unknown }
+}
+
+/// A CHECK that reads the row key with another column, or reads a column held equal to the key,
+/// can refuse keys that no row key rule states, so it fails conformance unless it is reviewed.
+#[test]
+fn key_checks_refuse_unreviewed_terms_that_reach_the_key() {
+    let columns = ["id", "other", "sync_key", "slug"].map(str::to_owned);
+    let mixed = "CREATE TABLE t (id TEXT PRIMARY KEY CHECK (id = 'x-' || other), other TEXT)";
+    assert_eq!(
+        key_checks(mixed, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["id = 'x-' || other"],
+        "a term mixing the key with another column is unknown"
+    );
+    let reviewed = KnownKeyTerms {
+        cross_column: &["id = 'x-' || other"],
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(mixed, "id", &columns, reviewed),
+        KeyChecks::default(),
+        "a reviewed cross-column term passes"
+    );
+
+    let aliased = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                   sync_key TEXT NOT NULL CHECK (sync_key = id AND length(sync_key) <= 64))";
+    assert_eq!(
+        key_checks(aliased, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["sync_key = id"],
+        "an undeclared alias of the key is unknown"
+    );
+    let alias = KnownKeyTerms {
+        aliases: &["sync_key"],
+        ..KnownKeyTerms::default()
+    };
+    assert_eq!(
+        key_checks(aliased, "id", &columns, alias),
+        KeyChecks {
+            terms: vec!["length(id) <= 64".to_owned()],
+            unknown: Vec::new(),
+        },
+        "a term on an alias of the key reads as a term on the key"
+    );
+
+    let generated = "CREATE TABLE t (id TEXT PRIMARY KEY, \
+                     slug TEXT GENERATED ALWAYS AS (lower(id)) STORED CHECK (length(slug) <= 8))";
+    assert_eq!(
+        key_checks(generated, "id", &columns, KnownKeyTerms::default()).unknown,
+        ["length(slug) <= 8"],
+        "a CHECK on a column generated from the key is unknown"
+    );
+}
+
 /// Keys on both sides of a limit of `chars` characters, in one-byte and two-byte characters.
 fn keys_around(chars: usize) -> Vec<String> {
     (chars.saturating_sub(1)..=chars + 1)

@@ -171,6 +171,7 @@ where
     let Some(observed) = observe_exact_close_process(request, controller)? else {
         return Ok(false);
     };
+    refuse_anchored_close(request.process_id, controller.session_anchors().as_deref())?;
     authorize(&observed)?;
     if let Err(error) = controller.signal(&pinned, DesktopProcessSignal::Term) {
         if observe_exact_close_process(request, controller)?.is_none() {
@@ -187,6 +188,7 @@ where
     let Some(observed) = observe_exact_close_process(request, controller)? else {
         return Ok(true);
     };
+    refuse_anchored_close(request.process_id, controller.session_anchors().as_deref())?;
     authorize(&observed)?;
     if let Err(error) = controller.signal(&pinned, DesktopProcessSignal::Kill) {
         if observe_exact_close_process(request, controller)?.is_none() {
@@ -209,10 +211,6 @@ pub(super) fn close_desktop_process_checked<R: Runtime>(
     let mut controller = SystemDesktopProcessController;
     close_desktop_process_with(&request, &mut controller, |observed| {
         before_close()?;
-        refuse_anchored_close(
-            request.process_id,
-            current_session_anchors(|| false).as_deref(),
-        )?;
         let authorization = load_close_authorization(app, config, &request.rule_identity)?;
         validate_names_authorized(observed.match_names.clone(), &authorization)
     })

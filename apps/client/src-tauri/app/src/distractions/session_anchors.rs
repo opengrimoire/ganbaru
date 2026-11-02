@@ -20,7 +20,8 @@ const SESSION_SLICE_SEGMENT: &str = "/session.slice/";
 static CURRENT_ANCHORS: Mutex<Option<Arc<SessionAnchors>>> = Mutex::new(None);
 
 /// Processes the running session depends on: display and session bus listeners, the X11 window
-/// manager, the ancestors of each, the ancestors of Ganbaru, and session slice services.
+/// manager, the ancestors of each, the ancestors of Ganbaru, and session slice services, though not
+/// the children a service starts in its own cgroup.
 ///
 /// Session leaders are not anchors, because launchers call `setsid` for ordinary applications.
 pub(super) struct SessionAnchors {
@@ -138,9 +139,32 @@ fn holds_socket(process: &Path, inodes: &HashSet<u64>) -> bool {
     })
 }
 
-fn runs_in_session_slice(process: &Path) -> bool {
+/// The `/proc/<pid>/cgroup` line that places a process in `session.slice`, when one does.
+fn session_slice_cgroup(process: &Path) -> Option<String> {
     std::fs::read_to_string(process.join("cgroup"))
-        .is_ok_and(|cgroup| cgroup.contains(SESSION_SLICE_SEGMENT))
+        .ok()?
+        .lines()
+        .find(|line| line.contains(SESSION_SLICE_SEGMENT))
+        .map(ToOwned::to_owned)
+}
+
+/// Whether the parent of `process` sits in the same cgroup as `cgroup_line`. A service's own
+/// process is started by the service manager from another cgroup, while a child that a service
+/// starts without a unit of its own inherits the service's cgroup. A parent that cannot be read
+/// counts as another cgroup, which keeps the process protected.
+fn shares_parent_cgroup(proc_root: &Path, process: &Path, cgroup_line: &str) -> bool {
+    let Some(parent_id) = linux_process_parent_id(process) else {
+        return false;
+    };
+    std::fs::read_to_string(proc_root.join(parent_id.to_string()).join("cgroup"))
+        .is_ok_and(|parent| parent.lines().any(|line| line == cgroup_line))
+}
+
+/// A same-user session slice service, excluding the applications such a service starts in its
+/// own cgroup, such as a session bus without `SystemdService=` activating an application.
+fn is_session_service(proc_root: &Path, process: &Path) -> bool {
+    session_slice_cgroup(process)
+        .is_some_and(|cgroup_line| !shares_parent_cgroup(proc_root, process, &cgroup_line))
 }
 
 /// The `DISPLAY` value whose window manager is looked up: only a local display, so a forwarded
@@ -239,7 +263,7 @@ impl SessionAnchors {
             if !listening.is_empty() && holds_socket(&process, &listening) {
                 listeners.push(process_id);
             }
-            if runs_in_session_slice(&process) {
+            if is_session_service(proc_root, &process) {
                 session_services.push(process_id);
             }
         }

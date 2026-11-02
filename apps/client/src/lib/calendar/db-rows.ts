@@ -25,11 +25,6 @@ import {
 /** Characters a native window keeps of an event title or location; the full event holds the rest. */
 export const WINDOW_TEXT_CHARS = 1024;
 
-/** A window keeps exactly this many characters of longer text, so anything shorter is whole. */
-export function mayBeShortenedWindowText(value: string): boolean {
-  return value.length >= WINDOW_TEXT_CHARS && [...value].length === WINDOW_TEXT_CHARS;
-}
-
 /**
  * Event row shape returned by native calendar window reads. It carries only
  * the columns the slim in-memory `CalendarEvent` reads. Heavy columns

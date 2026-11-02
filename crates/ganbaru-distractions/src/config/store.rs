@@ -24,10 +24,10 @@ use sqlx::{Row, SqliteConnection, SqlitePool};
 use super::{
     CategoryRule, CustomCategory, DesktopAppRule, DistractionsConfig, DistractionsMode, HostRule,
     LimitEntryRule, LimitRule, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_LIMIT_ENTRIES,
-    MAX_MATCH_NAMES, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK, MAX_NAME_CHARS, MAX_USAGE_LIMITS,
-    MobileAppRule, built_in_categories, is_built_in_category, is_rule_host, is_rule_id,
-    normalize_app_name, normalize_host, normalize_hosts, normalize_match_names, normalize_name,
-    normalize_package,
+    MAX_MATCH_NAMES, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK, MAX_MOBILE_APP_RULES,
+    MAX_NAME_CHARS, MAX_USAGE_LIMITS, MobileAppRule, built_in_categories, is_built_in_category,
+    is_rule_host, is_rule_id, normalize_app_name, normalize_host, normalize_hosts,
+    normalize_match_names, normalize_name, normalize_package,
 };
 use crate::rules::{app_name_key, is_protected_desktop_app_name};
 
@@ -668,6 +668,9 @@ async fn add_mobile_app(
     if existing > 0 {
         return Ok(());
     }
+    if publishable_mobile_rules(conn).await? >= MAX_MOBILE_APP_RULES {
+        return Err(RuleRefusal::TooLarge.into());
+    }
     sqlx::query(
         "INSERT INTO distractions_app_rules
              (id, platform, identity, display_name, enabled, created_at_ms)
@@ -683,6 +686,23 @@ async fn add_mobile_app(
     .await
     .map_err(storage("add mobile distraction app"))?;
     Ok(())
+}
+
+/// How many Android rules Guardian would publish: stored packages it accepts, counted once per
+/// lowercase package whether enabled or not. A synced row with an invalid package holds no slot.
+async fn publishable_mobile_rules(conn: &mut SqliteConnection) -> Result<usize, RulesError> {
+    let identities: Vec<String> =
+        sqlx::query_scalar("SELECT identity FROM distractions_app_rules WHERE platform = ?")
+            .bind(MOBILE_PLATFORM)
+            .fetch_all(conn)
+            .await
+            .map_err(storage("count mobile distraction apps"))?;
+    Ok(identities
+        .iter()
+        .filter_map(|identity| normalize_package(identity))
+        .map(|package| package.to_ascii_lowercase())
+        .collect::<HashSet<_>>()
+        .len())
 }
 
 async fn row_exists(

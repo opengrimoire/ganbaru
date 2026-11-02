@@ -52,6 +52,10 @@ pub const MAX_MINUTES_PER_WEEK: i64 = 10_080;
 /// Most usage limits of a vault.
 pub const MAX_USAGE_LIMITS: usize = crate::limits::MAX_LIMITS;
 
+/// Most Android application rules of a vault, which is also the most packages Guardian enforces
+/// in its rule list or in one usage limit.
+pub const MAX_MOBILE_APP_RULES: usize = 256;
+
 /// Most limit entries of every usage limit together.
 pub const MAX_LIMIT_ENTRIES: usize = 2_000;
 

@@ -111,7 +111,7 @@ pub async fn notes_list_working_markdown<R: Runtime>(
             scan,
         });
     }
-    markdown_tree(scans)
+    Ok(markdown_tree(scans))
 }
 
 /// The outcome of authorizing and scanning one active working folder.
@@ -125,7 +125,11 @@ enum FolderMarkdownScan {
 }
 
 /// Builds the working Markdown tree from per-folder scans.
-fn markdown_tree(scans: Vec<FolderMarkdownScan>) -> ChatResult<NotesWorkingMarkdownTreeRead> {
+///
+/// A folder that cannot be authorized or scanned, for example because one of
+/// its subdirectories is unreadable, is reported unavailable so the other
+/// folders still render.
+fn markdown_tree(scans: Vec<FolderMarkdownScan>) -> NotesWorkingMarkdownTreeRead {
     let mut roots = Vec::new();
     let mut unavailable = Vec::new();
     for entry in scans {
@@ -140,16 +144,27 @@ fn markdown_tree(scans: Vec<FolderMarkdownScan>) -> ChatResult<NotesWorkingMarkd
                 scan,
             } => (folder, canonical_path, scan),
         };
-        let scan = scan.map_err(working_markdown_error)?;
+        let scan = match scan {
+            Ok(scan) => scan,
+            Err(error) => {
+                eprintln!(
+                    "Working folder {} was left out of the Markdown tree: {}",
+                    folder.id,
+                    working_markdown_error(error).message
+                );
+                unavailable.push(folder.id);
+                continue;
+            }
+        };
         if scan.nodes.is_empty() {
             continue;
         }
         roots.push(markdown_root(folder, &canonical_path, scan));
     }
-    Ok(NotesWorkingMarkdownTreeRead {
+    NotesWorkingMarkdownTreeRead {
         roots,
         unavailable_working_folder_ids: unavailable,
-    })
+    }
 }
 
 fn markdown_root(
@@ -469,11 +484,6 @@ mod tests {
             eprintln!("skipped: the process can read a directory with no permissions");
             return;
         }
-        assert!(
-            tree.is_ok(),
-            "one unreadable folder failed the whole working Markdown tree"
-        );
-        let tree = tree.unwrap();
         let roots: Vec<&str> = tree
             .roots
             .iter()

@@ -15,8 +15,8 @@ use super::block_on;
 use super::exclusion::{deliver, edit, restore_all};
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
-    MEMBERSHIPS_TABLE, NODES_TABLE, REORDERED_RULES_MANIFEST, TEST_MANIFEST, edge_group, edge_key,
-    membership_key, test_engine_of,
+    MEMBERSHIPS_TABLE, NOCASE_LABEL_MANIFEST, NODES_TABLE, REORDERED_RULES_MANIFEST, TEST_MANIFEST,
+    edge_group, edge_key, membership_key, test_engine, test_engine_of,
 };
 use super::holds::sealed_create;
 use super::replica::{
@@ -1219,6 +1219,109 @@ fn reordered_duplicate_rules_rebuild_the_class_index() {
             "'L3', 'C1'",
         )
         .await;
+    });
+}
+
+/// Replicas 0 and 1 create `h-1` and `h-4`, whose labels differ only in case, and the observer,
+/// replica 2 running `engine`, applies both without a writer, so a collision stays unrepaired.
+async fn observer_of_case_variants(engine: crate::Engine) -> Vec<Replica> {
+    let mut replicas = replicas(3).await;
+    replicas[2].engine = engine;
+    replicas[0]
+        .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L1', 'C1')")
+        .await;
+    replicas[1]
+        .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-4', 'l1', 'C4')")
+        .await;
+    replicas[0].seal_rotating().await.unwrap();
+    replicas[1].seal_rotating().await.unwrap();
+    for from in [0, 1] {
+        let (to, from) = pair(&mut replicas, 2, from);
+        store_from(to, from).await;
+    }
+    apply_without_writer(&mut replicas[2]).await;
+    replicas
+}
+
+/// Replica 0 creates an unrelated handle, and the observer applies it without a writer.
+async fn apply_unrelated_handle(replicas: &mut [Replica]) {
+    replicas[0]
+        .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-9', 'L9', 'C9')")
+        .await;
+    replicas[0].seal_rotating().await.unwrap();
+    let (to, from) = pair(replicas, 2, 0);
+    store_from(to, from).await;
+    apply_without_writer(&mut replicas[2]).await;
+}
+
+/// The class index with its rule fingerprint, one line per stored row.
+async fn class_index_rows(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT 'rules:' || hex(fingerprint) FROM sync_unique_class_rules
+         UNION ALL SELECT 'class:' || table_id || ':' || rule_index || ':' || hex(class_key)
+             || ':' || row_key FROM sync_unique_classes
+         UNION ALL SELECT 'contested:' || table_id || ':' || rule_index || ':' || hex(class_key)
+             FROM sync_contested_classes
+         ORDER BY 1",
+    )
+    .await
+}
+
+/// A recovery read under changed duplicate rules writes nothing, so the next apply still
+/// rebuilds the class index and hides the row that now collides.
+#[test]
+fn a_recovery_read_under_changed_rules_leaves_the_rebuild_to_the_next_apply() {
+    block_on(async {
+        let mut replicas = observer_of_case_variants(test_engine()).await;
+        assert_eq!(
+            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-4"]
+        );
+        replicas[2].engine = test_engine_of(&NOCASE_LABEL_MANIFEST);
+        let before = class_index_rows(&mut replicas[2]).await;
+        let observer = &mut replicas[2];
+        let offered = observer
+            .engine
+            .recovery_values(&mut observer.conn, HANDLES_TABLE, "h-1")
+            .await
+            .unwrap();
+        assert!(offered.is_none());
+        assert_eq!(
+            class_index_rows(observer).await,
+            before,
+            "a recovery read wrote the class index"
+        );
+
+        apply_unrelated_handle(&mut replicas).await;
+        assert_eq!(
+            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-9"],
+            "the row that now collides stayed shown"
+        );
+        replicas[2].check_class_index().await;
+    });
+}
+
+/// A rule change that dissolves a contested class shows its hidden rows again, although no
+/// operation touches them.
+#[test]
+fn rows_of_a_class_that_stops_colliding_are_shown_after_the_rebuild() {
+    block_on(async {
+        let mut replicas = observer_of_case_variants(test_engine_of(&NOCASE_LABEL_MANIFEST)).await;
+        assert_eq!(
+            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1"]
+        );
+        replicas[2].engine = test_engine();
+
+        apply_unrelated_handle(&mut replicas).await;
+        assert_eq!(
+            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
+            ["h-1", "h-4", "h-9"],
+            "the row of the dissolved class stayed hidden"
+        );
+        replicas[2].check_class_index().await;
     });
 }
 

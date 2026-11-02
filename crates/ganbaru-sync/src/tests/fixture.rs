@@ -1773,7 +1773,10 @@ pub(super) static REORDERED_RULES_MANIFEST: LazyLock<Manifest> = LazyLock::new(|
             }
         })
         .collect();
-    Manifest::from_domains(VAULT_MANIFEST_VERSION, Box::leak(domains.into_boxed_slice()))
+    Manifest::from_domains(
+        VAULT_MANIFEST_VERSION,
+        Box::leak(domains.into_boxed_slice()),
+    )
 });
 
 /// The engine of [`test_engine`] for another manifest of the same tables.

@@ -15,8 +15,8 @@ use super::block_on;
 use super::exclusion::{deliver, edit, restore_all};
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
-    MEMBERSHIPS_TABLE, NODES_TABLE, REORDERED_RULES_MANIFEST, TEST_MANIFEST, edge_group,
-    edge_key, membership_key, test_engine_of,
+    MEMBERSHIPS_TABLE, NODES_TABLE, REORDERED_RULES_MANIFEST, TEST_MANIFEST, edge_group, edge_key,
+    membership_key, test_engine_of,
 };
 use super::holds::sealed_create;
 use super::replica::{
@@ -1173,7 +1173,9 @@ async fn assert_collision_with_an_untouched_row_is_repaired(
     apply_without_writer(observer).await;
 
     assert_eq!(
-        observer.count("SELECT count(*) FROM sync_refused_rows").await,
+        observer
+            .count("SELECT count(*) FROM sync_refused_rows")
+            .await,
         0,
         "the collision was refused instead of repaired"
     );
@@ -1194,7 +1196,8 @@ fn an_empty_class_index_is_rebuilt_from_merge_state() {
                 observer
                     .exec(
                         "DELETE FROM sync_contested_classes;
-                         DELETE FROM sync_unique_classes;",
+                         DELETE FROM sync_unique_classes;
+                         DELETE FROM sync_unique_class_rules;",
                     )
                     .await;
             },
@@ -1241,9 +1244,7 @@ fn class_keys_are_fixed_size_digests_equal_on_every_replica() {
         for replica in &mut replicas {
             assert_eq!(
                 replica
-                    .count(
-                        "SELECT count(*) FROM sync_unique_classes WHERE length(class_key) <> 32"
-                    )
+                    .count("SELECT count(*) FROM sync_unique_classes WHERE length(class_key) <> 32")
                     .await,
                 0,
                 "replica {} stores an unbounded class key",

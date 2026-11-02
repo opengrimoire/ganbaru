@@ -8,9 +8,14 @@
 //! detached to break a cycle or limit depth with a null write of its parent. Hiding and
 //! detaching are pure functions of the merge state, so replicas that cannot seal still
 //! converge on the same domain rows.
+//!
+//! The class index stores each class as a digest of its folded values under the rule's position.
+//! It records a fingerprint of the duplicate rules it was built for, and is rebuilt from merge
+//! state whenever the engine's rules differ, including when no fingerprint is stored yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ganbaru_sync_contracts::signing::{Digest32, domain_digest};
 use ganbaru_sync_contracts::{
     Cause, Change, ChangeAction, Field, GroupId, GroupValue, RowKey, TableId, Value,
 };
@@ -18,7 +23,7 @@ use sqlx::SqliteConnection;
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{Collation, Deletion, Resolution, TableSpec, TreeSpec};
+use crate::manifest::{Collation, Deletion, Manifest, Resolution, TableSpec, TreeSpec};
 use crate::materialize;
 use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::sql;
@@ -53,9 +58,21 @@ fn locate(table: &TableSpec, columns: &[&str]) -> SyncResult<Vec<Location>> {
         .collect()
 }
 
-/// The class a row's unique fields fall in under a collation; `None` when a field is null,
+/// Domain of a class key digest.
+const CLASS_KEY_DOMAIN: &[u8] = b"ganbaru-sync/unique-class/v1";
+
+/// Domain of the duplicate rule fingerprint. Its version changes with the derivation of
+/// [`class_key`], so a changed derivation rebuilds every class index.
+const CLASS_RULES_DOMAIN: &[u8] = b"ganbaru-sync/unique-class-rules/v1";
+
+/// Text whose fold under each collation enters the rule fingerprint, so a changed fold of
+/// ASCII or non-ASCII letters rebuilds the class index.
+const FOLD_PROBE: &str = "AzZa\u{c9}\u{e9}\u{df}\u{130}\u{3a3}\u{2126}";
+
+/// The class a row's unique fields fall in under a collation, as a digest of the folded values,
+/// so every class key has the same size whatever the values hold; `None` when a field is null,
 /// because null never collides.
-pub(crate) fn class_key(fields: &[Field], collation: Collation) -> Option<Vec<u8>> {
+fn class_key(fields: &[Field], collation: Collation) -> Option<Vec<u8>> {
     let folded = fields
         .iter()
         .map(|field| match field {
@@ -64,7 +81,33 @@ pub(crate) fn class_key(fields: &[Field], collation: Collation) -> Option<Vec<u8
             other => Some(other.clone()),
         })
         .collect::<Option<Vec<Field>>>()?;
-    Value::new(folded).ok().map(|value| value.encode())
+    let value = Value::new(folded).ok()?;
+    Some(domain_digest(CLASS_KEY_DOMAIN, &[&value.encode()]).to_vec())
+}
+
+/// Appends a length-prefixed text to a fingerprint input.
+fn push_text(bytes: &mut Vec<u8>, text: &str) {
+    bytes.extend_from_slice(&(text.len() as u64).to_be_bytes());
+    bytes.extend_from_slice(text.as_bytes());
+}
+
+/// A digest of every duplicate rule of a manifest: its table, position, columns, collation, and
+/// the collation's fold. The class index is valid only for the rules it was built under.
+fn rule_fingerprint(manifest: &Manifest) -> Digest32 {
+    let mut bytes = Vec::new();
+    for table in manifest.tables {
+        for (rule, (columns, collation)) in (0_u64..).zip(rules(table)) {
+            bytes.extend_from_slice(&table.id.0.to_be_bytes());
+            bytes.extend_from_slice(&rule.to_be_bytes());
+            push_text(&mut bytes, collation.sql_name());
+            push_text(&mut bytes, &collation.fold(FOLD_PROBE));
+            bytes.extend_from_slice(&(columns.len() as u64).to_be_bytes());
+            for column in columns {
+                push_text(&mut bytes, column);
+            }
+        }
+    }
+    domain_digest(CLASS_RULES_DOMAIN, &[&bytes])
 }
 
 fn rules(table: &TableSpec) -> impl Iterator<Item = (&'static [&'static str], Collation)> + '_ {
@@ -101,7 +144,6 @@ fn winning_fields(
 }
 
 /// Classes of the live rows of a table under one rule, by class key.
-#[cfg(test)]
 async fn classes(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -144,12 +186,10 @@ async fn classes(
 }
 
 /// One class of a table under the rule at a position in its duplicate rules.
-#[cfg(test)]
 pub(crate) type ClassId = (i64, i64, Vec<u8>);
 
 /// What the class index must hold, from a full scan of the merge state: every class entry as a
 /// class and its row, and every class of two or more rows.
-#[cfg(test)]
 pub(crate) async fn recompute_classes(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -170,6 +210,69 @@ pub(crate) async fn recompute_classes(
         }
     }
     Ok((entries, contested))
+}
+
+/// Rebuilds the class index from a full scan of the merge state unless it was built under the
+/// engine's duplicate rules, and marks dirty every row of a contested class it finds, so their
+/// materialization and repairs follow the rebuilt classes. An index with no stored fingerprint,
+/// as a vault from before the index or a database reset leaves it, is rebuilt as well.
+async fn ensure_class_rules(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    dirty: &mut BTreeSet<RowRef>,
+) -> SyncResult<()> {
+    let fingerprint = rule_fingerprint(engine.manifest());
+    let stored: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT fingerprint FROM sync_unique_class_rules WHERE singleton = 1")
+            .fetch_optional(&mut *conn)
+            .await?;
+    if stored.as_deref() == Some(fingerprint.as_slice()) {
+        return Ok(());
+    }
+    sqlx::query("DELETE FROM sync_contested_classes")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM sync_unique_classes")
+        .execute(&mut *conn)
+        .await?;
+    let (entries, contested) = recompute_classes(engine, conn).await?;
+    for ((table, rule, class), key) in &entries {
+        sqlx::query(
+            "INSERT INTO sync_unique_classes (table_id, rule_index, class_key, row_key)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(table)
+        .bind(rule)
+        .bind(class)
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+        if contested.contains(&(*table, *rule, class.clone())) {
+            let table = u16::try_from(*table)
+                .map(TableId)
+                .map_err(|_| corrupt("class of a table id out of range"))?;
+            dirty.insert((table, key.clone()));
+        }
+    }
+    for (table, rule, class) in &contested {
+        sqlx::query(
+            "INSERT INTO sync_contested_classes (table_id, rule_index, class_key)
+             VALUES (?, ?, ?)",
+        )
+        .bind(table)
+        .bind(rule)
+        .bind(class)
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO sync_unique_class_rules (singleton, fingerprint) VALUES (1, ?)
+         ON CONFLICT (singleton) DO UPDATE SET fingerprint = excluded.fingerprint",
+    )
+    .bind(fingerprint.as_slice())
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// Colliding classes of live rows per table: every class of two or more rows under any duplicate
@@ -362,12 +465,14 @@ async fn contested_classes(conn: &mut SqliteConnection) -> SyncResult<Contested>
 
 /// Brings the class index up to date with the dirty rows, marks dirty the rows whose
 /// materialization a dirty row's old or new unique values may change, and returns the colliding
-/// classes. The cost follows the dirty and contested rows, not the rows of the tables.
+/// classes. The cost follows the dirty and contested rows, not the rows of the tables, except
+/// for the one full scan that rebuilds an index built under other duplicate rules.
 pub(crate) async fn contested(
     engine: &Engine,
     conn: &mut SqliteConnection,
     dirty: &mut BTreeSet<RowRef>,
 ) -> SyncResult<Contested> {
+    ensure_class_rules(engine, conn, dirty).await?;
     for table in engine.manifest().tables {
         if rules(table).next().is_none() {
             continue;

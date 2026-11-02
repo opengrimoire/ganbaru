@@ -75,6 +75,8 @@ struct MockDesktopProcessController {
     waits: usize,
     pins: usize,
     calls: Vec<&'static str>,
+    /// Anchors returned by successive lookups; none once exhausted.
+    anchor_lookups: VecDeque<Option<std::sync::Arc<super::SessionAnchors>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -116,6 +118,54 @@ impl super::DesktopProcessController for MockDesktopProcessController {
     fn wait(&mut self, _duration: std::time::Duration) {
         self.waits += 1;
     }
+
+    fn session_anchors(&mut self) -> Option<std::sync::Arc<super::SessionAnchors>> {
+        self.anchor_lookups.pop_front().flatten()
+    }
+}
+
+/// The session guard runs inside the signal flow itself, before TERM and again before KILL,
+/// whatever the caller's authorization closure checks.
+#[cfg(target_os = "linux")]
+#[test]
+fn close_process_refuses_an_anchored_process_before_each_signal() {
+    let anchored = || {
+        Some(std::sync::Arc::new(super::SessionAnchors::protecting([
+            valid_close_request().process_id,
+        ])))
+    };
+    let observed = valid_observed_process();
+    let mut before_term = MockDesktopProcessController {
+        observations: VecDeque::new(),
+        fallback: Some(observed.clone()),
+        signals: Vec::new(),
+        waits: 0,
+        pins: 0,
+        calls: Vec::new(),
+        anchor_lookups: VecDeque::from([anchored()]),
+    };
+
+    assert!(
+        super::close_desktop_process_with(&valid_close_request(), &mut before_term, |_| Ok(()))
+            .is_err()
+    );
+    assert!(before_term.signals.is_empty());
+
+    let mut before_kill = MockDesktopProcessController {
+        observations: VecDeque::new(),
+        fallback: Some(observed),
+        signals: Vec::new(),
+        waits: 0,
+        pins: 0,
+        calls: Vec::new(),
+        anchor_lookups: VecDeque::from([None, anchored()]),
+    };
+
+    assert!(
+        super::close_desktop_process_with(&valid_close_request(), &mut before_kill, |_| Ok(()))
+            .is_err()
+    );
+    assert_eq!(before_kill.signals, vec![super::DesktopProcessSignal::Term]);
 }
 
 #[cfg(target_os = "linux")]
@@ -129,6 +179,7 @@ fn close_process_rechecks_identity_before_kill_fallback() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
     let mut authorization_checks = 0;
 
@@ -212,6 +263,7 @@ fn already_exited_process_does_not_report_an_accepted_close() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
     let signalled =
         super::close_desktop_process_with(&valid_close_request(), &mut controller, |_| Ok(()))
@@ -230,6 +282,7 @@ fn close_process_stops_when_process_exits_between_checks() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
 
     super::close_desktop_process_with(&valid_close_request(), &mut controller, |_| Ok(())).unwrap();
@@ -250,6 +303,7 @@ fn close_process_rejects_pid_reuse_after_term() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
 
     assert!(
@@ -269,6 +323,7 @@ fn close_process_rejects_stale_rule_before_term() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
 
     assert!(
@@ -291,6 +346,7 @@ fn close_process_rejects_rule_revoked_before_kill_fallback() {
         waits: 0,
         pins: 0,
         calls: Vec::new(),
+        anchor_lookups: VecDeque::new(),
     };
     let mut authorization_checks = 0;
 

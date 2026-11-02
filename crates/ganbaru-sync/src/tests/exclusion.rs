@@ -49,10 +49,14 @@ pub(super) async fn deliver(to: &mut Replica, from: &mut Replica) {
     to.pull(from).await;
 }
 
-/// Counts the kept displaced versions, checking that the status reports the same count.
+/// Counts the kept displaced versions, held Creates aside, checking that the status reports the
+/// same count.
 pub(super) async fn displaced(replica: &mut Replica) -> i64 {
     let rows = replica
-        .count("SELECT count(*) FROM sync_displaced_versions")
+        .count(
+            "SELECT count(*) FROM sync_displaced_versions
+             WHERE NOT (writer_id = displaced_by_writer AND seq = displaced_by_seq)",
+        )
         .await;
     let status = replica
         .engine

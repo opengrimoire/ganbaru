@@ -16,7 +16,7 @@ use sqlx::{Connection, Row, SqliteConnection};
 use crate::apply::{Constrained, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
-use crate::merge::{Batch, table_param};
+use crate::merge::{self, Batch, table_param};
 use crate::seal::{Advance, Replay, SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, authorization, exclusion, fork, sql};
 
@@ -115,8 +115,9 @@ fn remap(
     Ok(remapped)
 }
 
-/// Removes the versions, tombstones, and row creations of a writer's operations past
-/// `keep_through`, revives rows left without tombstones, and marks every touched row dirty. A
+/// Removes the versions, held Creates, tombstones, and row creations of a writer's operations
+/// past `keep_through`, revives rows left without tombstones, and marks every touched row dirty;
+/// the caller settles the groups those held Creates kept with [`merge::settle_kept`]. A
 /// re-seal replaces what it removes; a removal cutoff leaves rows its excluded operations
 /// created without merge state, which late changes keep hidden.
 pub(crate) async fn remove_effects(
@@ -149,6 +150,7 @@ pub(crate) async fn remove_effects(
         .execute(&mut *conn)
         .await?;
     }
+    merge::forget_held_past(conn, batch, old, keep_through).await?;
     for (table_id, key) in touched {
         let table = u16::try_from(table_id)
             .map(TableId)
@@ -240,6 +242,7 @@ impl Engine {
         fork::drop_branch(&mut tx, ctx.space, old, keep_through, row.applied).await?;
         batch.applied.set(old, keep_through);
         batch.contexts.clear();
+        merge::settle_kept(self, &mut tx, &mut batch).await?;
         if dropped_entries
             && let Some(selection) = authorization::rederive(&mut tx, ctx.space).await?
         {

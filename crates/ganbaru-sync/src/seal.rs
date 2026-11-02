@@ -704,7 +704,7 @@ impl Sealer {
                     .table(change.table)
                     .ok_or_else(|| corrupt("sealed change of an unknown table"))?;
                 merge::apply_change(
-                    conn, batch, self.id, seq, op_clock, &context, table, change, None,
+                    engine, conn, batch, self.id, seq, op_clock, &context, table, change, false,
                 )
                 .await?;
             }

@@ -822,6 +822,7 @@ async fn apply_one(
                     .table(change.table)
                     .ok_or_else(|| corrupt("change of an unknown table reached apply"))?;
                 merge::apply_change(
+                    engine,
                     conn,
                     batch,
                     candidate.writer,
@@ -830,9 +831,7 @@ async fn apply_one(
                     context,
                     table,
                     change,
-                    retention
-                        .retains(candidate.writer, candidate.seq)
-                        .then_some(engine),
+                    retention.retains(candidate.writer, candidate.seq),
                 )
                 .await?;
             }

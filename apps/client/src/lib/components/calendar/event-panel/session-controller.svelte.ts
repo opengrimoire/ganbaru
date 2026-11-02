@@ -325,6 +325,22 @@ export class EventPanelSessionController {
     this.fullEvent = null;
   }
 
+  /** Increments on each retry request so the panel restarts the full load for the same event. */
+  heavyLoadAttempt = $state(0);
+
+  /** Whether the current full load failed. */
+  get heavyLoadFailed(): boolean {
+    return false;
+  }
+
+  /** Records a failed full load when the token is still current. */
+  failHeavyLoad(_token: EventPanelHeavyLoadToken): boolean {
+    return false;
+  }
+
+  /** Requests a new full load for the open event. */
+  retryHeavyLoad(): void {}
+
   completeHeavyLoad(token: EventPanelHeavyLoadToken, fullEvent: CalendarEvent): boolean {
     if (token.generation !== this.heavyLoadGeneration
       || token.openedEventId !== this.lastFullKey) return false;

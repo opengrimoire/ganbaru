@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(target_os = "linux")]
-fn is_wayland_session() -> bool {
+pub(in crate::distractions) fn is_wayland_session() -> bool {
     std::env::var("XDG_SESSION_TYPE")
         .map(|value| value.eq_ignore_ascii_case("wayland"))
         .unwrap_or(false)
@@ -9,7 +9,10 @@ fn is_wayland_session() -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn x11_intern_atom<C: x11rb::connection::Connection>(conn: &C, name: &[u8]) -> Result<u32, String> {
+pub(in crate::distractions) fn x11_intern_atom<C: x11rb::connection::Connection>(
+    conn: &C,
+    name: &[u8],
+) -> Result<u32, String> {
     use x11rb::protocol::xproto::ConnectionExt as _;
 
     conn.intern_atom(false, name)
@@ -20,7 +23,7 @@ fn x11_intern_atom<C: x11rb::connection::Connection>(conn: &C, name: &[u8]) -> R
 }
 
 #[cfg(target_os = "linux")]
-fn x11_property_u32<C: x11rb::connection::Connection>(
+pub(in crate::distractions) fn x11_property_u32<C: x11rb::connection::Connection>(
     conn: &C,
     window: u32,
     property: u32,

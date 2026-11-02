@@ -1,6 +1,7 @@
 //! Positive guard for process closes on Linux: the processes that hold up the running graphical
 //! session are computed from that session instead of from names.
 
+use super::foreground::{is_wayland_session, x11_intern_atom, x11_property_u32};
 use super::processes::{current_real_uid, linux_process_parent_id, linux_process_real_uid};
 use super::*;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,8 +19,8 @@ const SESSION_SLICE_SEGMENT: &str = "/session.slice/";
 
 static CURRENT_ANCHORS: Mutex<Option<Arc<SessionAnchors>>> = Mutex::new(None);
 
-/// Processes the running session depends on: display and session bus listeners, their ancestors,
-/// the ancestors of Ganbaru, and session slice services.
+/// Processes the running session depends on: display and session bus listeners, the X11 window
+/// manager, the ancestors of each, the ancestors of Ganbaru, and session slice services.
 ///
 /// Session leaders are not anchors, because launchers call `setsid` for ordinary applications.
 pub(super) struct SessionAnchors {
@@ -142,6 +143,39 @@ fn runs_in_session_slice(process: &Path) -> bool {
         .is_ok_and(|cgroup| cgroup.contains(SESSION_SLICE_SEGMENT))
 }
 
+/// The `DISPLAY` value whose window manager is looked up: only a local display, so a forwarded
+/// remote display never names a process in the local `/proc`, and never on Wayland, where
+/// connecting can start Xwayland on demand.
+fn window_manager_display(variables: &SessionVariables, wayland_session: bool) -> Option<&str> {
+    let display = variables.display.as_deref()?;
+    (!wayland_session && x11_display_number(display).is_some()).then_some(display)
+}
+
+/// Process ID the X11 window manager on `display` publishes under EWMH: the root window's
+/// `_NET_SUPPORTING_WM_CHECK` names a check window that names itself, and that window carries
+/// `_NET_WM_PID`. An X11 window manager is a client, not a socket listener, so the socket walk
+/// alone misses it. Returns `None` when the display cannot be reached or the manager publishes no
+/// usable check window, which leaves the other anchors and the name list in place.
+fn x11_window_manager_process_id(display: &str) -> Option<u32> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::AtomEnum;
+
+    let (conn, screen_num) = x11rb::connect(Some(display)).ok()?;
+    let root = conn.setup().roots.get(screen_num)?.root;
+    let check_atom = x11_intern_atom(&conn, b"_NET_SUPPORTING_WM_CHECK").ok()?;
+    let window_type = AtomEnum::WINDOW.into();
+    let check_window = x11_property_u32(&conn, root, check_atom, window_type).ok()??;
+    let named_by_check_window =
+        x11_property_u32(&conn, check_window, check_atom, window_type).ok()??;
+    if check_window == 0 || named_by_check_window != check_window {
+        return None;
+    }
+    let pid_atom = x11_intern_atom(&conn, b"_NET_WM_PID").ok()?;
+    x11_property_u32(&conn, check_window, pid_atom, AtomEnum::CARDINAL.into())
+        .ok()?
+        .filter(|process_id| *process_id > 1)
+}
+
 /// Adds `process_id` and its ancestors below PID 1. Reaching a process already in `visited`
 /// means its ancestors are in too, which also ends a parent cycle.
 fn add_with_ancestors(proc_root: &Path, process_id: u32, visited: &mut HashSet<u32>) {
@@ -158,27 +192,35 @@ impl SessionAnchors {
     /// Returns `None` when no display socket or session bus can be resolved, which keeps the name
     /// list alone on minimal sessions, or when `is_cancelled` turns true.
     fn collect(is_cancelled: impl Fn() -> bool) -> Option<Self> {
+        let variables = SessionVariables::from_environment();
         Self::collect_from(
             Path::new(PROC_ROOT),
-            &session_socket_paths(&SessionVariables::from_environment()),
+            &session_socket_paths(&variables),
             current_real_uid()?,
             std::process::id(),
+            window_manager_display(&variables, is_wayland_session())
+                .and_then(x11_window_manager_process_id),
             is_cancelled,
         )
     }
 
-    /// Computes the anchors below `proc_root`, or returns `None` when no listening session socket
-    /// is found or `is_cancelled` turns true.
+    /// Computes the anchors below `proc_root`, or returns `None` when neither a listening session
+    /// socket nor a same-user window manager is found, or when `is_cancelled` turns true.
     pub(super) fn collect_from(
         proc_root: &Path,
         socket_paths: &[String],
         real_uid: u32,
         own_process_id: u32,
+        window_manager_process_id: Option<u32>,
         is_cancelled: impl Fn() -> bool,
     ) -> Option<Self> {
-        let table = std::fs::read_to_string(proc_root.join("net/unix")).ok()?;
-        let listening = listening_socket_inodes(&table, socket_paths);
-        if listening.is_empty() {
+        let listening = std::fs::read_to_string(proc_root.join("net/unix"))
+            .map(|table| listening_socket_inodes(&table, socket_paths))
+            .unwrap_or_default();
+        let window_manager = window_manager_process_id.filter(|process_id| {
+            linux_process_real_uid(&proc_root.join(process_id.to_string())) == Some(real_uid)
+        });
+        if listening.is_empty() && window_manager.is_none() {
             return None;
         }
         let mut listeners = Vec::new();
@@ -194,7 +236,7 @@ impl SessionAnchors {
             if linux_process_real_uid(&process) != Some(real_uid) {
                 continue;
             }
-            if holds_socket(&process, &listening) {
+            if !listening.is_empty() && holds_socket(&process, &listening) {
                 listeners.push(process_id);
             }
             if runs_in_session_slice(&process) {
@@ -202,7 +244,11 @@ impl SessionAnchors {
             }
         }
         let mut protected_pids = HashSet::new();
-        for process_id in listeners.into_iter().chain([own_process_id]) {
+        for process_id in listeners
+            .into_iter()
+            .chain([own_process_id])
+            .chain(window_manager)
+        {
             add_with_ancestors(proc_root, process_id, &mut protected_pids);
         }
         protected_pids.extend(session_services);
@@ -324,6 +370,7 @@ mod tests {
                 &[WAYLAND_SOCKET.to_string()],
                 USER,
                 own_process_id,
+                None,
                 || false,
             )
         }
@@ -406,7 +453,7 @@ mod tests {
     #[test]
     fn missing_display_sockets_fall_back_to_name_list() {
         let fixture = session_fixture("fallback");
-        let no_socket = SessionAnchors::collect_from(&fixture.root, &[], USER, 400, || false);
+        let no_socket = SessionAnchors::collect_from(&fixture.root, &[], USER, 400, None, || false);
         assert!(no_socket.is_none());
 
         fixture.unix_sockets(&[(LISTENING, 9003, "/run/user/1000/other")]);
@@ -424,6 +471,16 @@ mod tests {
         let fixture = session_fixture("no-table");
         std::fs::remove_file(fixture.root.join("net/unix")).unwrap();
         assert!(fixture.collect(400).is_none());
+
+        let window_manager_only = SessionAnchors::collect_from(
+            &fixture.root,
+            &[WAYLAND_SOCKET.to_string()],
+            USER,
+            400,
+            Some(300),
+            || false,
+        );
+        assert!(window_manager_only.is_some_and(|set| set.protects(300) && !set.protects(200)));
     }
 
     #[test]
@@ -434,9 +491,50 @@ mod tests {
             &[WAYLAND_SOCKET.to_string()],
             USER,
             400,
+            None,
             || true,
         );
         assert!(anchors.is_none());
+    }
+
+    /// An X11 session started by `xinit`: the server runs as root, and a window manager whose
+    /// name no list holds is a sibling of the server, not a socket listener, and Ganbaru was
+    /// started outside the window manager's process tree.
+    #[test]
+    fn x11_window_manager_is_an_anchor() {
+        const X11_SOCKET: &str = "/tmp/.X11-unix/X0";
+        const ROOT: u32 = 0;
+        let fixture = ProcFixture::new("x11-window-manager");
+        fixture.unix_sockets(&[(LISTENING, 9201, X11_SOCKET)]);
+        fixture.process(100, 1, USER, USER_SLICE, &[]);
+        fixture.process(120, 100, USER, USER_SLICE, &[]);
+        fixture.process(150, 120, ROOT, USER_SLICE, &[9201]);
+        fixture.process(210, 120, USER, USER_SLICE, &[]);
+        fixture.process(400, 1, USER, USER_SLICE, &[]);
+        fixture.process(500, 1, USER, USER_SLICE, &[]);
+        fixture.process(510, 1, OTHER_USER, USER_SLICE, &[]);
+        let collect = |window_manager| {
+            SessionAnchors::collect_from(
+                &fixture.root,
+                &[X11_SOCKET.to_string()],
+                USER,
+                400,
+                window_manager,
+                || false,
+            )
+        };
+
+        let anchors = collect(Some(210));
+        let protects = |process_id| anchors.as_ref().is_some_and(|set| set.protects(process_id));
+        assert!(protects(210), "the window manager");
+        assert!(protects(120), "xinit, the window manager's parent");
+        assert!(!protects(500), "an unrelated setsid application");
+
+        let foreign = collect(Some(510));
+        assert!(
+            !foreign.is_some_and(|set| set.protects(510)),
+            "a window manager process owned by another user"
+        );
     }
 
     #[test]
@@ -470,6 +568,28 @@ mod tests {
                 "/run/user/1000/bus".to_string(),
                 "@/tmp/dbus-x".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn window_manager_lookup_needs_a_local_x11_display() {
+        let session = |display: &str| SessionVariables {
+            display: Some(display.to_string()),
+            ..SessionVariables::default()
+        };
+        assert_eq!(window_manager_display(&session(":0"), false), Some(":0"));
+        assert_eq!(
+            window_manager_display(&session("unix:1.0"), false),
+            Some("unix:1.0")
+        );
+        assert_eq!(window_manager_display(&session(":0"), true), None);
+        assert_eq!(
+            window_manager_display(&session("localhost:10.0"), false),
+            None
+        );
+        assert_eq!(
+            window_manager_display(&SessionVariables::default(), false),
+            None
         );
     }
 

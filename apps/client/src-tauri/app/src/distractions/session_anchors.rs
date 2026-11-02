@@ -1,6 +1,7 @@
 //! Positive guard for process closes on Linux: the processes that hold up the running graphical
 //! session are computed from that session instead of from names.
 
+use super::foreground::{x11_intern_atom, x11_property_u32};
 use super::processes::{current_real_uid, linux_process_parent_id, linux_process_real_uid};
 use super::*;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,8 +19,8 @@ const SESSION_SLICE_SEGMENT: &str = "/session.slice/";
 
 static CURRENT_ANCHORS: Mutex<Option<Arc<SessionAnchors>>> = Mutex::new(None);
 
-/// Processes the running session depends on: display and session bus listeners, their ancestors,
-/// the ancestors of Ganbaru, and session slice services.
+/// Processes the running session depends on: display and session bus listeners, the X11 window
+/// manager, the ancestors of each, the ancestors of Ganbaru, and session slice services.
 ///
 /// Session leaders are not anchors, because launchers call `setsid` for ordinary applications.
 pub(super) struct SessionAnchors {
@@ -142,6 +143,31 @@ fn runs_in_session_slice(process: &Path) -> bool {
         .is_ok_and(|cgroup| cgroup.contains(SESSION_SLICE_SEGMENT))
 }
 
+/// Process ID the X11 window manager on `display` publishes under EWMH: the root window's
+/// `_NET_SUPPORTING_WM_CHECK` names a check window that names itself, and that window carries
+/// `_NET_WM_PID`. An X11 window manager is a client, not a socket listener, so the socket walk
+/// alone misses it. Returns `None` when the display cannot be reached or the manager publishes no
+/// usable check window, which leaves the other anchors and the name list in place.
+fn x11_window_manager_process_id(display: &str) -> Option<u32> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::AtomEnum;
+
+    let (conn, screen_num) = x11rb::connect(Some(display)).ok()?;
+    let root = conn.setup().roots.get(screen_num)?.root;
+    let check_atom = x11_intern_atom(&conn, b"_NET_SUPPORTING_WM_CHECK").ok()?;
+    let window_type = AtomEnum::WINDOW.into();
+    let check_window = x11_property_u32(&conn, root, check_atom, window_type).ok()??;
+    let named_by_check_window =
+        x11_property_u32(&conn, check_window, check_atom, window_type).ok()??;
+    if check_window == 0 || named_by_check_window != check_window {
+        return None;
+    }
+    let pid_atom = x11_intern_atom(&conn, b"_NET_WM_PID").ok()?;
+    x11_property_u32(&conn, check_window, pid_atom, AtomEnum::CARDINAL.into())
+        .ok()?
+        .filter(|process_id| *process_id > 1)
+}
+
 /// Adds `process_id` and its ancestors below PID 1. Reaching a process already in `visited`
 /// means its ancestors are in too, which also ends a parent cycle.
 fn add_with_ancestors(proc_root: &Path, process_id: u32, visited: &mut HashSet<u32>) {
@@ -158,29 +184,37 @@ impl SessionAnchors {
     /// Returns `None` when no display socket or session bus can be resolved, which keeps the name
     /// list alone on minimal sessions, or when `is_cancelled` turns true.
     fn collect(is_cancelled: impl Fn() -> bool) -> Option<Self> {
+        let variables = SessionVariables::from_environment();
         Self::collect_from(
             Path::new(PROC_ROOT),
-            &session_socket_paths(&SessionVariables::from_environment()),
+            &session_socket_paths(&variables),
             current_real_uid()?,
             std::process::id(),
-            None,
+            variables
+                .display
+                .as_deref()
+                .and_then(x11_window_manager_process_id),
             is_cancelled,
         )
     }
 
-    /// Computes the anchors below `proc_root`, or returns `None` when no listening session socket
-    /// is found or `is_cancelled` turns true.
+    /// Computes the anchors below `proc_root`, or returns `None` when neither a listening session
+    /// socket nor a same-user window manager is found, or when `is_cancelled` turns true.
     pub(super) fn collect_from(
         proc_root: &Path,
         socket_paths: &[String],
         real_uid: u32,
         own_process_id: u32,
-        _window_manager_process_id: Option<u32>,
+        window_manager_process_id: Option<u32>,
         is_cancelled: impl Fn() -> bool,
     ) -> Option<Self> {
-        let table = std::fs::read_to_string(proc_root.join("net/unix")).ok()?;
-        let listening = listening_socket_inodes(&table, socket_paths);
-        if listening.is_empty() {
+        let listening = std::fs::read_to_string(proc_root.join("net/unix"))
+            .map(|table| listening_socket_inodes(&table, socket_paths))
+            .unwrap_or_default();
+        let window_manager = window_manager_process_id.filter(|process_id| {
+            linux_process_real_uid(&proc_root.join(process_id.to_string())) == Some(real_uid)
+        });
+        if listening.is_empty() && window_manager.is_none() {
             return None;
         }
         let mut listeners = Vec::new();
@@ -196,7 +230,7 @@ impl SessionAnchors {
             if linux_process_real_uid(&process) != Some(real_uid) {
                 continue;
             }
-            if holds_socket(&process, &listening) {
+            if !listening.is_empty() && holds_socket(&process, &listening) {
                 listeners.push(process_id);
             }
             if runs_in_session_slice(&process) {
@@ -204,7 +238,11 @@ impl SessionAnchors {
             }
         }
         let mut protected_pids = HashSet::new();
-        for process_id in listeners.into_iter().chain([own_process_id]) {
+        for process_id in listeners
+            .into_iter()
+            .chain([own_process_id])
+            .chain(window_manager)
+        {
             add_with_ancestors(proc_root, process_id, &mut protected_pids);
         }
         protected_pids.extend(session_services);
@@ -409,8 +447,7 @@ mod tests {
     #[test]
     fn missing_display_sockets_fall_back_to_name_list() {
         let fixture = session_fixture("fallback");
-        let no_socket =
-            SessionAnchors::collect_from(&fixture.root, &[], USER, 400, None, || false);
+        let no_socket = SessionAnchors::collect_from(&fixture.root, &[], USER, 400, None, || false);
         assert!(no_socket.is_none());
 
         fixture.unix_sockets(&[(LISTENING, 9003, "/run/user/1000/other")]);
@@ -428,6 +465,16 @@ mod tests {
         let fixture = session_fixture("no-table");
         std::fs::remove_file(fixture.root.join("net/unix")).unwrap();
         assert!(fixture.collect(400).is_none());
+
+        let window_manager_only = SessionAnchors::collect_from(
+            &fixture.root,
+            &[WAYLAND_SOCKET.to_string()],
+            USER,
+            400,
+            Some(300),
+            || false,
+        );
+        assert!(window_manager_only.is_some_and(|set| set.protects(300) && !set.protects(200)));
     }
 
     #[test]

@@ -10,7 +10,10 @@ mod unsupported;
 mod windows;
 
 #[cfg(target_os = "linux")]
-pub(super) use linux::{close_current_foreground_desktop_app, foreground_desktop_app_status};
+pub(super) use linux::{
+    close_current_foreground_desktop_app, foreground_desktop_app_status, x11_intern_atom,
+    x11_property_u32,
+};
 #[cfg(target_os = "macos")]
 pub(super) use macos::{close_current_foreground_desktop_app, foreground_desktop_app_status};
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

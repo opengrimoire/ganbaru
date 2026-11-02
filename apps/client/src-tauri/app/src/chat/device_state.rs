@@ -182,6 +182,28 @@ pub fn forget_assignment_acceptance(scope: &mut ChatDeviceScope, digest: &str) {
     scope.assignment_acceptances.remove(digest);
 }
 
+/// Records this device's consent to send the scheduled message `scheduled_message_id` with the
+/// request whose consent digest is `digest`.
+#[cfg(desktop)]
+pub fn record_scheduled_message_consent(
+    scope: &mut ChatDeviceScope,
+    _scheduled_message_id: String,
+    digest: String,
+    now: UtcTimestamp,
+) {
+    record_assignment_acceptance(scope, digest, now);
+}
+
+/// Whether this device consented to send `scheduled_message_id` with the request of `digest`.
+#[cfg(desktop)]
+pub fn scheduled_message_is_consented(
+    scope: &ChatDeviceScope,
+    _scheduled_message_id: &str,
+    digest: &str,
+) -> bool {
+    assignment_is_accepted(scope, digest)
+}
+
 #[cfg(desktop)]
 pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -254,6 +276,35 @@ mod tests {
         record_assignment_acceptance(&mut scope, "digest:new".to_owned(), at(1));
 
         assert!(assignment_is_accepted(&scope, "digest:new"));
+    }
+
+    #[test]
+    fn scheduled_consents_leave_assignment_acceptances_in_place() {
+        let mut scope = ChatDeviceScope::default();
+        for index in 0..MAX_ASSIGNMENT_ACCEPTANCES {
+            record_assignment_acceptance(&mut scope, format!("digest:{index}"), at(index + 1));
+        }
+
+        for index in 0..8 {
+            record_scheduled_message_consent(
+                &mut scope,
+                format!("scheduled:{index}"),
+                format!("consent:{index}"),
+                at(MAX_ASSIGNMENT_ACCEPTANCES + index + 1),
+            );
+        }
+
+        for index in 0..8 {
+            assert!(
+                assignment_is_accepted(&scope, &format!("digest:{index}")),
+                "scheduled consent {index} evicted an assignment acceptance"
+            );
+            assert!(scheduled_message_is_consented(
+                &scope,
+                &format!("scheduled:{index}"),
+                &format!("consent:{index}")
+            ));
+        }
     }
 
     #[test]

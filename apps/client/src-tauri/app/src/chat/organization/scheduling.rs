@@ -238,6 +238,16 @@ fn read_scheduled_consent(
     }
 }
 
+/// The scheduled messages `scope` holds consent for that no longer exist here, with the digest
+/// each consent was given for.
+#[cfg(desktop)]
+pub(super) async fn scheduled_consents_without_a_row(
+    _pool: &SqlitePool,
+    _scope: &ChatDeviceScope,
+) -> ChatResult<Vec<(String, String)>> {
+    Ok(Vec::new())
+}
+
 /// Android never executes work, so its due sends need no consent.
 #[cfg(mobile)]
 fn read_scheduled_consent(

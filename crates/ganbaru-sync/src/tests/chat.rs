@@ -631,7 +631,7 @@ const OWNER: &str = "participant:local-owner";
 const PROJECT: &str = "project-routine-learning";
 const FOLDER: &str = "working-folder-routine-learning";
 const CONVERSATION: &str = "conversation:design";
-const CHANNEL: &str = "channel:design";
+pub(super) const CHANNEL: &str = "channel:design";
 
 /// Seeds of the revoke against widen scenario.
 const ACCESS_SEEDS: u64 = 8;

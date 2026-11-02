@@ -14,9 +14,10 @@ use super::block_on;
 use super::exclusion::{
     created_versions, deliver, displaced, edit, late_changes, note, own_head, title,
 };
+use super::projects::{MANAGED_FOLDER, PROJECT, folder_tombstone, managed_folder_sql, project_sql};
 use super::replica::{
-    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_admin, device_id, enroll_entry, pair,
-    person, proposal,
+    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_admin, device_id, enroll_entry,
+    forge_change, pair, person, proposal, quoted,
 };
 use crate::{
     EvidenceOutcome, EvidenceRefusal, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
@@ -700,6 +701,66 @@ async fn change_branch_row_on_the_anchor(space: u64, statement: &str, expected: 
         }
         replica.check_invariants().await;
     }
+}
+
+/// A managed folder its live project keeps after a tombstone is still live to the anchor, so a
+/// fork's edit of it is captured to be published again like an edit of any live row.
+#[test]
+fn the_anchor_captures_a_forked_edit_of_a_kept_folder_again() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 312).await;
+        let mut original = Replica::new(1, 312).await;
+        edit(
+            &mut original,
+            &format!("{}{}", project_sql(), managed_folder_sql()),
+        )
+        .await;
+        let mut clone = original.clone_device().await;
+        let mut forger = Replica::new(2, 312).await;
+        deliver(&mut forger, &mut original).await;
+        edit(
+            &mut forger,
+            &format!(
+                "UPDATE projects SET name = 'Unrelated' WHERE id = {}",
+                quoted(PROJECT)
+            ),
+        )
+        .await;
+        let forged = forge_change(&mut forger, folder_tombstone(MANAGED_FOLDER)).await;
+        deliver(&mut anchor, &mut forger).await;
+        take(&mut anchor, &[forged]).await;
+        let kept = format!(
+            "SELECT count(*) FROM project_working_folders WHERE id = {}",
+            quoted(MANAGED_FOLDER)
+        );
+        assert_eq!(anchor.count(&kept).await, 1);
+
+        for (replica, name) in [(&mut original, "Original"), (&mut clone, "Clone")] {
+            edit(
+                replica,
+                &format!(
+                    "UPDATE project_working_folders SET display_name = '{name}' WHERE id = {}",
+                    quoted(MANAGED_FOLDER)
+                ),
+            )
+            .await;
+        }
+        deliver(&mut anchor, &mut original).await;
+        cross(&mut anchor, &mut clone).await;
+        assert_eq!(anchor.evidence().await.len(), 1);
+        assert_eq!(anchor.count(&kept).await, 1);
+        assert_eq!(
+            anchor
+                .count(&format!(
+                    "SELECT count(*) FROM sync_capture WHERE row_key = {}",
+                    quoted(MANAGED_FOLDER)
+                ))
+                .await,
+            1
+        );
+        assert!(anchor.seal().await.unwrap().sealed_ops > 0);
+        anchor.check_invariants().await;
+    });
 }
 
 #[test]

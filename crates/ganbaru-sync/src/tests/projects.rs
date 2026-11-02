@@ -6,14 +6,17 @@
 //! concurrent edit or insert is offered for recovery.
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Field, GroupId, GroupMask, GroupValue, RowKey, Value, VersionVector,
-    derived_key,
+    Cause, Change, ChangeAction, Field, GroupId, GroupMask, GroupValue, RowKey, TableId, Value,
+    VersionVector, derived_key,
 };
 
 use super::block_on;
-use super::chat::folder_grant_sql;
-use super::replica::{Replica, converge, device_id, forge_change, pair, quoted, rank};
+use super::chat::{CHANNEL, folder_grant_sql};
+use super::replica::{
+    Replica, converge, device_id, forge_change, forge_changes, pair, quoted, rank,
+};
 use crate::manifest::TableSpec;
+use crate::manifest::vault::chat::CHANNELS_TABLE;
 use crate::manifest::vault::projects::{
     DEPENDENCIES, DEPENDENCIES_TABLE, FOLDERS, FOLDERS_TABLE, GROUPS_TABLE, PRIMARY_FOLDERS_TABLE,
     PROJECTS, PROJECTS_TABLE, TASKS, VALUES, dependency_group, folder_group, value_group,
@@ -1194,7 +1197,7 @@ pub(super) fn folder_tombstone(folder: &str) -> Change {
 }
 
 /// SQL adding the shared project's folders and a Chat grant on its managed folder.
-fn managed_folder_sql() -> String {
+pub(super) fn managed_folder_sql() -> String {
     format!(
         "{}{}",
         folders_sql(),
@@ -1390,5 +1393,99 @@ fn tombstone_of_an_external_folder_removes_it() {
                 vec![MANAGED_FOLDER.to_owned()]
             )
         );
+    });
+}
+
+/// A tombstone of the shared project's Chat channel naming the managed folder as its cause.
+fn channel_tombstone_caused_by_the_folder() -> Change {
+    Change {
+        table: CHANNELS_TABLE,
+        row: RowKey::new(CHANNEL).unwrap(),
+        action: ChangeAction::Tombstone,
+        groups: Vec::new(),
+        replaced_by: None,
+        cause: Some(Cause {
+            table: FOLDERS_TABLE,
+            row: RowKey::new(MANAGED_FOLDER).unwrap(),
+        }),
+    }
+}
+
+/// Every replica holding the shared project's folders, after the last replica renamed the
+/// Chat channel and sealed it without sharing it, and the first received a forged tombstone of
+/// the managed folder with a forged channel tombstone it causes.
+async fn forged_folder_and_channel_tombstones() -> Vec<Replica> {
+    let mut replicas = shared_managed_folder(3).await;
+    replicas[2]
+        .exec(&format!(
+            "UPDATE chat_channels SET name = 'offline' WHERE id = {}",
+            quoted(CHANNEL)
+        ))
+        .await;
+    replicas[2].seal().await.unwrap();
+    let forged = forge_changes(
+        &mut replicas[1],
+        vec![
+            folder_tombstone(MANAGED_FOLDER),
+            channel_tombstone_caused_by_the_folder(),
+        ],
+    )
+    .await;
+    deliver(&mut replicas[0], std::slice::from_ref(&forged)).await;
+    replicas
+}
+
+/// The roots of the recovery offers of a replica.
+async fn offered_roots(replica: &mut Replica) -> Vec<(TableId, String)> {
+    replica
+        .engine
+        .recovery_entries(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.table, entry.row_key))
+        .collect()
+}
+
+#[test]
+fn a_chat_tombstone_caused_by_a_kept_folder_is_offered_on_its_own() {
+    block_on(async {
+        let mut replicas = forged_folder_and_channel_tombstones().await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, every_folder_and_grant());
+            assert_eq!(
+                offered_roots(replica).await,
+                [(CHANNELS_TABLE, CHANNEL.to_owned())],
+                "replica {}",
+                replica.index
+            );
+        }
+    });
+}
+
+#[test]
+fn a_deleted_project_offers_what_its_forged_folder_tombstone_caused_under_the_project() {
+    block_on(async {
+        let mut replicas = forged_folder_and_channel_tombstones().await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(folders_and_grants(replica).await, (Vec::new(), Vec::new()));
+            assert_eq!(
+                offered_roots(replica).await,
+                [(PROJECTS_TABLE, PROJECT.to_owned())],
+                "replica {}",
+                replica.index
+            );
+        }
     });
 }

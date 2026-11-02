@@ -25,6 +25,7 @@
 use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_ORDER_KEY_BYTES};
 use ganbaru_sync_contracts::builtin_profiles::{BUILTIN_ACCESS_PROFILES, builtin_profile_key};
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, OrderKey, RowKey, TableId, Value};
+use ganbaru_working_folders::UtcTimestamp;
 
 use crate::adapter::{AdapterError, DomainAdapter, OfferedRows, Presentation};
 use crate::assets::AssetRef;
@@ -57,8 +58,6 @@ pub const MAX_PROVIDER_INSTANCE_CHARS: usize = 1024;
 pub const MAX_JSON_CHARS: usize = 16_384;
 /// Characters of the longest enumerated value any Chat replicated column holds.
 pub const MAX_ENUM_CHARS: usize = 32;
-/// Fewest characters of a stored timestamp, as the tables check it.
-pub const MIN_TIMESTAMP_CHARS: usize = 20;
 
 /// Participant kinds.
 pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
@@ -233,12 +232,12 @@ fn optional_one_of(
     }
 }
 
+/// A Chat timestamp every reader of the row can parse. Reads parse these columns as
+/// [`UtcTimestamp`], so admitting other text would make the stored row unreadable on every device.
 fn timestamp(field: &Field) -> Result<(), AdapterError> {
-    if text(field)?.chars().count() >= MIN_TIMESTAMP_CHARS {
-        Ok(())
-    } else {
-        Err(AdapterError("chat timestamp is too short"))
-    }
+    UtcTimestamp::new(text(field)?)
+        .map(|_| ())
+        .map_err(|_| AdapterError("chat timestamp is not RFC 3339 UTC"))
 }
 
 fn optional_timestamp(field: &Field) -> Result<(), AdapterError> {
@@ -2215,6 +2214,83 @@ mod tests {
         assert_eq!(
             validate::change(&engine, &profile_create("access-profile:reviewers", None)),
             Ok(())
+        );
+    }
+
+    /// Text the stored-row readers refuse, each long enough for the table length check.
+    const NOT_UTC_TIMESTAMPS: [&str; 5] = [
+        "not a timestamp at all, honestly",
+        "2026-10-24t10:51:41.000Z",
+        "2026-10-24 10:51:41.000Z",
+        "2026-10-24T10:51:41.000+02:00",
+        "2026-10-24T10:51:60.000Z",
+    ];
+
+    #[test]
+    fn chat_timestamps_must_be_rfc3339_utc() {
+        let engine = Engine::vault();
+        let adapter = ChatAdapter;
+        for bad in NOT_UTC_TIMESTAMPS {
+            let mut forged = profile_create("access-profile:reviewers", None);
+            forged.groups[0] = GroupValue::new(
+                PROFILES_TABLE,
+                profile_group::CREATED,
+                value(vec![Field::Null, t(bad)]),
+            );
+            assert!(validate::change(&engine, &forged).is_err(), "created {bad}");
+
+            for (table, group) in [
+                (PROFILES_TABLE, profile_group::UPDATED),
+                (PROFILES_TABLE, profile_group::LIFECYCLE),
+                (CHANNELS_TABLE, channel_group::UPDATED),
+                (CHANNELS_TABLE, channel_group::LIFECYCLE),
+                (CONVERSATIONS_TABLE, conversation_group::ACTIVITY),
+                (MESSAGES_TABLE, message_group::LIFECYCLE),
+                (CONVERSATION_CURSORS_TABLE, read_cursor_group::UPDATED),
+                (SCHEDULED_TABLE, scheduled_group::UPDATED),
+                (ASSIGNMENTS_TABLE, assignment_group::UPDATED),
+            ] {
+                assert!(
+                    adapter
+                        .validate(table, group, &value(vec![t(bad)]))
+                        .is_err(),
+                    "{table:?} {group:?} {bad}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chat_timestamps_accept_the_forms_honest_writers_store() {
+        let engine = Engine::vault();
+        let adapter = ChatAdapter;
+        for good in [AT, "2026-10-24T10:51:41Z", "2026-10-24T10:51:41.000+00:00"] {
+            let mut honest = profile_create("access-profile:reviewers", None);
+            honest.groups[0] = GroupValue::new(
+                PROFILES_TABLE,
+                profile_group::CREATED,
+                value(vec![Field::Null, t(good)]),
+            );
+            assert_eq!(validate::change(&engine, &honest), Ok(()), "created {good}");
+            assert!(
+                adapter
+                    .validate(
+                        MESSAGES_TABLE,
+                        message_group::LIFECYCLE,
+                        &value(vec![t(good)])
+                    )
+                    .is_ok(),
+                "{good}"
+            );
+        }
+        assert!(
+            adapter
+                .validate(
+                    MESSAGES_TABLE,
+                    message_group::LIFECYCLE,
+                    &value(vec![Field::Null])
+                )
+                .is_ok()
         );
     }
 

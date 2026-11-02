@@ -32,7 +32,7 @@ use ganbaru_sync_contracts::{Field, TableId, VersionVector};
 use sqlx::SqliteConnection;
 
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{ColumnType, MergeKind, OnDelete, RowRetention, TableSpec};
+use crate::manifest::{ColumnType, Deletion, MergeKind, OnDelete, RowRetention, TableSpec};
 use crate::merge::{self, RowState, table_param};
 use crate::repair::Contested;
 use crate::{Engine, edges, exclusion, publication, refused, repair, sql, tree};
@@ -499,7 +499,7 @@ impl Visibility {
         }
         excluded.clear();
         let duplicates = repair::keepers(&contested, &excluded);
-        let visibility = Self::derive(engine, conn, duplicates, &scope, dirty).await?;
+        let mut visibility = Self::derive(engine, conn, duplicates, &scope, dirty).await?;
         visibility
             .mark_unsettled(engine, conn, &contested, &excluded, dirty)
             .await?;
@@ -599,9 +599,10 @@ impl Visibility {
     /// Marks dirty every contested row whose domain row is present while it should be hidden as
     /// a duplicate or for another reason, or absent while it should be shown. A keeper can
     /// change because a row elsewhere was deleted or published, without any member of its class
-    /// changing.
+    /// changing. A hidden row that [`Self::keeps_hidden`] keeps present is settled, and so is a
+    /// row whose listed refusal explains the difference, which its retry revisits.
     async fn mark_unsettled(
-        &self,
+        &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         contested: &Contested,
@@ -620,9 +621,13 @@ impl Visibility {
                 let present = sql::read_columns(conn, spec.name, spec.key_column, key, &[])
                     .await?
                     .is_some();
-                if shown != present {
-                    dirty.insert(row);
+                if shown == present
+                    || (!shown && self.keeps_hidden(engine, conn, spec, key).await?)
+                    || refused::explains(conn, &row, shown).await?
+                {
+                    continue;
                 }
+                dirty.insert(row);
             }
         }
         Ok(())
@@ -1066,6 +1071,23 @@ impl Visibility {
         key: &str,
     ) -> SyncResult<bool> {
         Ok(self.own_hiding(engine, conn, table, key).await?.late)
+    }
+
+    /// Whether a hidden row stays in its domain table, as a hidden row of a never-deleted table
+    /// does. Exclusion still undoes one that is hidden as a late change of a removed device and
+    /// that no operation which still counts created.
+    pub(crate) async fn keeps_hidden(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        table: &TableSpec,
+        key: &str,
+    ) -> SyncResult<bool> {
+        if table.deletion != Deletion::Never {
+            return Ok(false);
+        }
+        Ok(!self.is_late(engine, conn, table.id, key).await?
+            || exclusion::has_creation(conn, table.id, key).await?)
     }
 
     /// Whether a published row is not materialized.

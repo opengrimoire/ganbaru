@@ -1514,6 +1514,23 @@ pub(crate) async fn created_late(
     .await?)
 }
 
+/// Whether an operation that still counts created this row. Effects of excluded operations
+/// left `sync_row_creations` when they were removed, and a replica that never applied them
+/// has none, so the answer does not depend on arrival order.
+pub(crate) async fn has_creation(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sync_row_creations WHERE table_id = ? AND row_key = ?)",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// One stored late change.
 #[derive(Debug, Clone)]
 pub(crate) struct LateRecord {

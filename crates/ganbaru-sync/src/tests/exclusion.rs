@@ -13,10 +13,12 @@ use super::authorization::{admin_entry, remove_entry, superseded};
 use super::block_on;
 use super::engine::{text_field, with_group};
 use super::holds::sealed_create;
-use super::replica::{Replica, converge, device_admin, forge_change, quoted, rank, sealed_change};
+use super::replica::{
+    Replica, converge, device_admin, forge_change, forge_changes, quoted, rank, sealed_change,
+};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
-use crate::manifest::vault::chat::PROFILES_TABLE;
+use crate::manifest::vault::chat::{PARTICIPANTS_TABLE, PROFILES_TABLE};
 use crate::manifest::vault::contacts::{CARD_KEY, CARD_TABLE, CONTACTS_TABLE};
 use crate::manifest::vault::distractions::{
     HOST_RULE_KEY_PREFIX, HOST_RULES_TABLE, SETTINGS_KEY, SETTINGS_TABLE, host_group,
@@ -944,6 +946,97 @@ fn excluded_writer_row_of_a_never_deleted_table_stays_removable() {
                 "replica {} kept a row of the removed device",
                 replica.index
             );
+        }
+    });
+}
+
+/// A removed device creates, past its cutoff, rows of never-deleted tables that honest members
+/// already created: the late creates list, but the rows stay with their honest values whether
+/// the late change is undecided or discarded.
+#[test]
+fn a_late_create_of_an_honestly_created_never_deleted_row_keeps_it() {
+    const PARTICIPANT: &str = "participant:honest";
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(216).await;
+        edit(
+            &mut honest,
+            &format!(
+                "UPDATE distractions_settings SET desktop_enabled = 0;{}",
+                participant(PARTICIPANT)
+            ),
+        )
+        .await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        edit(&mut removed, &note("note-early", "Early", 0)).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        let settings = sealed_create(&mut honest, SETTINGS_TABLE, SETTINGS_KEY).await;
+        let member = sealed_create(&mut honest, PARTICIPANTS_TABLE, PARTICIPANT).await;
+        let device = removed.device_id.clone();
+        let removal = anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+
+        let forged = forge_changes(&mut removed, vec![settings, member]).await;
+        for replica in [&mut anchor, &mut honest] {
+            replica.receive(std::slice::from_ref(&forged)).await;
+            replica.apply_all().await.unwrap();
+            assert_eq!(
+                late_rows(replica).await,
+                vec![
+                    (SETTINGS_KEY.to_owned(), LateKind::Created),
+                    (PARTICIPANT.to_owned(), LateKind::Created),
+                ]
+            );
+        }
+        let survives = async |replica: &mut Replica| {
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM distractions_settings WHERE desktop_enabled = 0")
+                    .await,
+                1,
+                "replica {} lost the honest settings",
+                replica.index
+            );
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM chat_participants WHERE id = {}",
+                        quoted(PARTICIPANT)
+                    ))
+                    .await,
+                1,
+                "replica {} lost the honest participant",
+                replica.index
+            );
+        };
+        for replica in [&mut anchor, &mut honest] {
+            survives(replica).await;
+        }
+
+        let discard = |table, key: &str| LateRow {
+            table,
+            row: RowKey::new(key.to_owned()).unwrap(),
+            resolution: LateResolution::Discard,
+        };
+        let mut rows = vec![
+            discard(SETTINGS_TABLE, SETTINGS_KEY),
+            discard(PARTICIPANTS_TABLE, PARTICIPANT),
+        ];
+        rows.sort_by(|a, b| (a.table, a.row.as_str()).cmp(&(b.table, b.row.as_str())));
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows,
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest] {
+            survives(replica).await;
+            replica.check_invariants().await;
         }
     });
 }

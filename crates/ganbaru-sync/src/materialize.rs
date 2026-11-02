@@ -229,11 +229,7 @@ async fn desired(
         return Ok(Some(Desired::Absent));
     }
     if visibility.hidden(engine, conn, table.id, key).await? {
-        // A hidden row of a never-deleted table stays as it is, unless it only exists through a
-        // removed device, which exclusion still undoes.
-        if table.deletion == Deletion::Never
-            && !visibility.is_late(engine, conn, table.id, key).await?
-        {
+        if visibility.keeps_hidden(engine, conn, table, key).await? {
             return Ok(None);
         }
         return Ok(Some(Desired::Absent));

@@ -3,7 +3,7 @@
 //! stands for another build by not enforcing the receiver's constraint, so its operations are
 //! validly sealed and its merge state is the one the receiver must reach.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use ganbaru_sync_contracts::{
     Change, ChangeAction, Content, Field, GroupId, Hlc, RowKey, TableId, Value,
@@ -17,6 +17,7 @@ use crate::manifest::vault::chat::{
 };
 use crate::manifest::vault::distractions::{SETTINGS_KEY, SETTINGS_TABLE, settings_group};
 use crate::refused::MAX_REFUSED_RETRIES_PER_FINISH;
+use crate::visibility::{DeriveScope, Visibility};
 use crate::{ApplyReport, HoldReason, StoreOutcome, SyncResult};
 
 use super::authorization::{seal_at, view};
@@ -487,6 +488,116 @@ fn repair_seals_no_tombstone_in_a_never_deleted_table() {
                 .await,
             1
         );
+    });
+}
+
+/// Two replicas after a writer without the unique index claims built-in keys under keys on both
+/// sides of the seeded ones, past an admission check that would hold them.
+async fn claimed_builtin_keys(salt: u64) -> Vec<Replica> {
+    let mut replicas = seeded_replicas(2, salt).await;
+    for replica in &mut replicas {
+        replica.engine = test_engine_adapting(Box::new(ChatWithoutRowChecks));
+    }
+    replicas[1]
+        .exec("DROP INDEX idx_chat_access_profiles_builtin")
+        .await;
+    let claims = format!(
+        "{}{}",
+        claiming_profile_sql("access-profile:aaa", "edit_files"),
+        claiming_profile_sql("access-profile:zzz", "read_only"),
+    );
+    exec_and_seal(&mut replicas[1], &claims).await;
+    take(&mut replicas, 0, 1).await.unwrap();
+    take(&mut replicas, 1, 0).await.unwrap();
+    replicas
+}
+
+/// Visibility loaded again with nothing dirty, and the rows the load marks dirty.
+async fn reload(replica: &mut Replica) -> (Visibility, BTreeSet<(TableId, String)>) {
+    let mut dirty = BTreeSet::new();
+    let visibility = Visibility::load(
+        &replica.engine,
+        &mut replica.conn,
+        &mut dirty,
+        DeriveScope::All,
+    )
+    .await
+    .unwrap();
+    (visibility, dirty)
+}
+
+/// The retry attempt of the refused row `key`.
+async fn refusal_attempt(replica: &mut Replica, key: &str) -> i64 {
+    replica
+        .count(&format!(
+            "SELECT attempt FROM sync_refused_rows WHERE row_key = {}",
+            quoted(key)
+        ))
+        .await
+}
+
+/// A keeper the local unique index refuses stays listed and absent, which counts as settled:
+/// loading visibility again does not plan it, and the least recent retry still reaches it.
+#[test]
+fn a_refused_keeper_is_settled_and_still_retried() {
+    const CLAIM: &str = "access-profile:aaa";
+    block_on(async {
+        let mut replicas = claimed_builtin_keys(74).await;
+        let receiver = &mut replicas[0];
+        assert_eq!(refused(receiver, "hidden").await, [CLAIM]);
+        assert!(
+            !keys(receiver, "chat_access_profiles")
+                .await
+                .contains(&CLAIM.to_owned())
+        );
+        let (_, dirty) = reload(receiver).await;
+        assert!(
+            !dirty.contains(&(PROFILES_TABLE, CLAIM.to_owned())),
+            "a refused keeper is planned again: {dirty:?}"
+        );
+
+        let before = refusal_attempt(&mut replicas[0], CLAIM).await;
+        exec_and_seal(&mut replicas[1], &note("note-later", "Later", 0)).await;
+        take(&mut replicas, 0, 1).await.unwrap();
+        let receiver = &mut replicas[0];
+        assert!(
+            refusal_attempt(receiver, CLAIM).await > before,
+            "a finish with other work retries the refused keeper"
+        );
+        assert_eq!(refused(receiver, "hidden").await, [CLAIM]);
+        assert!(
+            !keys(receiver, "chat_access_profiles")
+                .await
+                .contains(&CLAIM.to_owned())
+        );
+    });
+}
+
+/// A hidden duplicate of a never-deleted table stays in its domain table, and that counts as
+/// settled: loading visibility again marks no row dirty, so no later finish plans it again.
+#[test]
+fn a_kept_hidden_duplicate_of_a_never_deleted_table_is_settled() {
+    block_on(async {
+        let mut replicas = claimed_builtin_keys(73).await;
+        for replica in &mut replicas {
+            let (visibility, dirty) = reload(replica).await;
+            let hidden: BTreeSet<(TableId, String)> = visibility
+                .duplicates
+                .iter()
+                .flat_map(|(table, rows)| rows.keys().map(|key| (*table, key.clone())))
+                .collect();
+            assert!(
+                !hidden.is_empty(),
+                "replica {} holds a hidden duplicate",
+                replica.index
+            );
+            let replanned: Vec<_> = hidden.intersection(&dirty).collect();
+            assert!(
+                replanned.is_empty(),
+                "replica {} plans kept rows again: {replanned:?}",
+                replica.index
+            );
+        }
     });
 }
 

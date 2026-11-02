@@ -167,6 +167,28 @@ mod tests {
         fs::remove_dir_all(vault).unwrap();
     }
 
+    #[test]
+    fn rejects_hidden_folder_names_that_tools_load_from_parent_folders() {
+        let vault = test_vault("hidden");
+        for hidden in [".opencode", ".grok", ".git", ".claude", ". ", ".a..b"] {
+            assert!(
+                validate_managed_folder_name(hidden).is_err(),
+                "{hidden:?} must be refused"
+            );
+            assert!(managed_project_relative_path(hidden).is_err());
+            assert!(resolve_managed_project_folder(&vault, hidden).is_err());
+        }
+        assert!(validate_managed_folder_name("project.opencode").is_ok());
+        assert!(validate_managed_folder_name("a..b").is_ok());
+        assert_eq!(
+            fs::read_dir(vault.join("projects"))
+                .map(|entries| entries.count())
+                .unwrap_or(0),
+            0
+        );
+        fs::remove_dir_all(vault).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn refuses_links_planted_inside_the_vault() {

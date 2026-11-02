@@ -959,6 +959,12 @@ mod tests {
             assert!(!admits("project", "managed", text(unbound)), "{unbound}");
         }
         assert!(!admits("a/b", "managed", text("projects/a/b")));
+        for hidden in [".opencode", ".grok"] {
+            assert!(
+                !admits(hidden, "managed", text(&format!("projects/{hidden}"))),
+                "{hidden}"
+            );
+        }
         assert!(!admits(
             "project:one",
             "managed",

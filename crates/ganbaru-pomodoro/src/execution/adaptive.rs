@@ -1,5 +1,7 @@
 //! Adaptive decisions share the accepted transition's canonical evidence and writes.
 
+use std::collections::BTreeSet;
+
 use sqlx::{Sqlite, Transaction};
 
 use super::decisions::invalid_state;
@@ -12,7 +14,7 @@ use crate::adaptive::decision::{
 };
 use crate::adaptive::experiments::selection::experiment_context_key;
 use crate::adaptive::models::CountRhythm;
-use crate::adaptive::replay::dataset::from_read;
+use crate::adaptive::replay::dataset::{ReplayDataset, from_read};
 use crate::adaptive::replay::models::GateOptions;
 use crate::adaptive::replay::{decide_candidate, default_candidates, evaluate, select_for_context};
 use crate::adaptive::snapshots::SnapshotIds;
@@ -28,9 +30,11 @@ const LOCAL_INSTANT_LIMIT_MESSAGE: &str = "Adaptive local-day evidence exceeds i
 impl Session {
     /// Choose the adaptive rhythm for this transition.
     ///
-    /// Replicated evidence can outgrow its bounds, and a linked device must not
-    /// be able to stop local Focus that way. Oversized current history returns
-    /// `None`, which keeps the configured rhythm with no decision row. Oversized
+    /// Replicated evidence can outgrow its bounds or carry timestamps this
+    /// decision cannot use, and a linked device must not be able to stop local
+    /// Focus that way. Oversized or malformed current history returns `None`,
+    /// which writes no decision row and keeps the run's rhythm: the configured
+    /// one at run start, the latest accepted one mid-run. Oversized or malformed
     /// replay evidence keeps the baseline decision and considers no candidate.
     /// Evidence is never truncated, and `adaptive_degraded` records the reason.
     pub(super) async fn adaptive_decision(
@@ -77,6 +81,14 @@ impl Session {
             },
             history: Some(history.into()),
         };
+        // The bounded segment window keeps the current input under the limit alone.
+        let input_instants = match decision_local_instants(&input) {
+            Ok(instants) => instants,
+            Err(message) => {
+                self.adaptive_degraded = Some(message);
+                return Ok(None);
+            }
+        };
         let mut dataset = if is_run_start {
             match load_adaptive_replay_dataset_tx(
                 tx,
@@ -97,12 +109,14 @@ impl Session {
         } else {
             None
         };
-        // The bounded segment window keeps the current input under the limit alone.
-        let input_instants = decision_local_instants(&input)?;
         let mut instants = input_instants.clone();
-        if let Some(dataset) = &dataset {
-            for opportunity in &dataset.opportunities {
-                instants.extend(decision_local_instants(&opportunity.input)?);
+        if let Some(replay) = &dataset {
+            match replay_local_instants(replay) {
+                Ok(replay_instants) => instants.extend(replay_instants),
+                Err(message) => {
+                    self.adaptive_degraded = Some(message);
+                    dataset = None;
+                }
             }
         }
         if instants.len() > MAX_LOCAL_INSTANTS {
@@ -138,23 +152,27 @@ impl Session {
                 observed_candidate_outcome_scores: dataset.observed_scores,
                 ..GateOptions::default()
             };
-            let workflow = evaluate(
+            match evaluate(
                 &dataset.opportunities,
                 &candidates,
                 &dataset.outcomes,
                 &options,
                 &facts,
-            )?;
-            if let Some(review) =
-                select_for_context(&workflow, &experiment_context_key(&decision.context))
-            {
-                let candidate = candidates
-                    .iter()
-                    .find(|candidate| candidate.id == review.candidate_id)
-                    .ok_or_else(|| {
-                        invalid_state("Accepted adaptive replay candidate is missing")
-                    })?;
-                decision = decide_candidate(&input, candidate, &facts)?;
+            ) {
+                Ok(workflow) => {
+                    if let Some(review) =
+                        select_for_context(&workflow, &experiment_context_key(&decision.context))
+                    {
+                        let candidate = candidates
+                            .iter()
+                            .find(|candidate| candidate.id == review.candidate_id)
+                            .ok_or_else(|| {
+                                invalid_state("Accepted adaptive replay candidate is missing")
+                            })?;
+                        decision = decide_candidate(&input, candidate, &facts)?;
+                    }
+                }
+                Err(message) => self.adaptive_degraded = Some(message),
             }
         }
         Ok(Some(decision))
@@ -174,4 +192,13 @@ impl Session {
             assignment: allocate_id(tx).await?,
         })
     }
+}
+
+/// Collect the local-day instants of every replay opportunity.
+fn replay_local_instants(dataset: &ReplayDataset) -> Result<BTreeSet<i64>, String> {
+    let mut instants = BTreeSet::new();
+    for opportunity in &dataset.opportunities {
+        instants.extend(decision_local_instants(&opportunity.input)?);
+    }
+    Ok(instants)
 }

@@ -24,7 +24,7 @@ Rationale: without these rules, a phone alarm or a desktop that was off at event
 
 - Every command carries an ID. An accepted command stores an immutable receipt in the same transaction as its effects, so retries return the committed result instead of executing again. A later stopped run cannot be replaced by an earlier receipt.
 - User actions are bound to the revision shown when the user clicked. Stale revisions are rejected; they never postpone execution deadlines.
-- Outgoing and incoming phases, the adaptive decision, and the receipt commit in one transaction. Failed timezone resolution or persistence rejects the operation without publishing execution. Oversized evidence degrades the decision instead, as [the adaptive policy](adaptive-policy.md) describes.
+- Outgoing and incoming phases, the adaptive decision, and the receipt commit in one transaction. Failed timezone resolution or persistence rejects the operation without publishing execution. Oversized or malformed evidence degrades the decision instead, as [the adaptive policy](adaptive-policy.md) describes.
 - The Calendar configuration and the adaptively selected rhythm stay separate, so a policy change cannot masquerade as a Calendar reconfiguration. Accepted phase durations are fixed; only a later boundary can select another rhythm.
 - Presentation subscriptions carry compact revision and availability notices, are bound to the invoking window, are limited to eight, and expire after 30 seconds without renewal. Reading presentation never admits a run.
 

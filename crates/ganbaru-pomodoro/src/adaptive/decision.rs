@@ -273,16 +273,25 @@ pub fn decide_run_start(
 }
 
 /// Collect every instant whose device-local date participates in this decision.
+///
+/// History holds closed segments, so a start after the decision is hostile
+/// evidence. Refusing it also keeps resolved instants inside the range native
+/// civil time can convert, which `chrono` parsing alone does not guarantee.
 pub fn decision_local_instants(input: &AdaptiveDecisionInput) -> Result<BTreeSet<i64>, String> {
-    let mut instants = BTreeSet::from([parse_timestamp_ms(&input.started_at)?]);
+    let started_at_ms = parse_timestamp_ms(&input.started_at)?;
+    let mut instants = BTreeSet::from([started_at_ms]);
     if let Some(history) = &input.history {
         for segment in &history.segments {
-            instants.insert(parse_timestamp_ms(
+            let segment_start_ms = parse_timestamp_ms(
                 segment
                     .actual_start
                     .as_deref()
                     .unwrap_or(&segment.planned_start),
-            )?);
+            )?;
+            if segment_start_ms > started_at_ms {
+                return Err("Adaptive evidence starts after its decision".to_owned());
+            }
+            instants.insert(segment_start_ms);
         }
     }
     Ok(instants)

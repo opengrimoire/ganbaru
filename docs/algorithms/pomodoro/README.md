@@ -19,6 +19,6 @@ Durable rows are summarized in [Pomodoro schema](../../data/schema/pomodoro.md).
 - Commit canonical state before notifications, overlays, media, or window events.
 - Treat desktop and mobile recovery evidence separately.
 - Record adaptive decisions in the same transaction as the run or phase they select.
-- Keep at most one globally active segment.
+- Keep at most one active segment across open runs.
 
 Algorithm names describe responsibilities, not file or helper names. Source may be reorganized without changing these contracts.

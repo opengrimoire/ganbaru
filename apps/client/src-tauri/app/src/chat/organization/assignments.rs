@@ -1368,7 +1368,8 @@ async fn queue_accepted_dispatch(
 
 /// Queues the dispatch of the synced queued assignment `assignment_id` when the device
 /// `device_id` executes it, has not queued it yet, and `scope` accepted what it would run,
-/// reporting whether it did. Unaccepted work stays queued and visible. An assignment whose
+/// reporting whether it did. Unaccepted work, and work of an archived teammate, stays queued
+/// and visible, so a restore makes it actionable again. An assignment whose
 /// references do not hold or whose context cannot be frozen here fails with a reason instead of
 /// staying queued.
 pub(super) async fn adopt_synced_assignment(
@@ -1387,6 +1388,11 @@ pub(super) async fn adopt_synced_assignment(
              AND NOT EXISTS (
                SELECT 1 FROM chat_assignment_dispatch_jobs job
                WHERE job.assignment_id = assignment.id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM chat_participants participant
+               WHERE participant.id = assignment.teammate_id
+                 AND participant.archived_at IS NOT NULL
              )
          )",
     )

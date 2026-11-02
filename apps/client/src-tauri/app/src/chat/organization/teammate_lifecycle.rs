@@ -8,6 +8,13 @@ pub(super) struct TeammateLifecycleState {
     pub active_assignment_count: u64,
 }
 
+/// Reads the work that keeps `teammate_id` from being archived.
+///
+/// Started work counts wherever it runs. Queued work counts only when this device holds its
+/// dispatch, which exists only after a local post or Start accepted it. Queued work with no
+/// dispatch here waits for an acceptance this device cannot see, so a peer's unaccepted row
+/// cannot block the archive. It stays queued, does not start while the teammate is archived,
+/// and becomes actionable again after a restore.
 pub(super) async fn read_teammate_lifecycle<'e, E>(
     executor: E,
     teammate_id: &ChatParticipantId,
@@ -19,9 +26,17 @@ where
         "SELECT
             (SELECT count(*) FROM chat_work_assignments assignment
              WHERE assignment.teammate_id = ?
-               AND assignment.state IN (
-                 'queued', 'working', 'waiting_for_answer',
-                 'waiting_for_approval', 'ready_for_review'
+               AND (
+                 assignment.state IN (
+                   'working', 'waiting_for_answer', 'waiting_for_approval', 'ready_for_review'
+                 )
+                 OR (
+                   assignment.state = 'queued'
+                   AND EXISTS (
+                     SELECT 1 FROM chat_assignment_dispatch_jobs job
+                     WHERE job.assignment_id = assignment.id
+                   )
+                 )
                )) AS active_assignment_count",
     )
     .bind(teammate_id.as_str())

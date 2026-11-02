@@ -26,8 +26,10 @@ pub(super) async fn dispatch_assignment_job(
         dispatch_claimed_assignment(app.clone(), db_url.clone(), &pool, &assignment_id, &claim)
             .await;
     if let Err(error) = result {
-        fail_assignment_dispatch(&pool, &assignment_id, &claim.token, &error).await?;
-        return Err(error);
+        return match settle_dispatch_error(&pool, &assignment_id, &claim.token, &error).await? {
+            DispatchSettlement::Failed => Err(error),
+            DispatchSettlement::Waiting => Ok(()),
+        };
     }
     mark_initial_assignment_input_delivered(&pool, &assignment_id).await?;
     deliver_pending_assignment_inputs(app, db_url, &pool, &assignment_id).await
@@ -45,7 +47,8 @@ pub(super) struct ClaimedDispatch {
 /// device-local dispatch job.
 ///
 /// The job starts only what it consented to: when the current subject is not its consented
-/// digest, or cannot be read, the job is dropped so the assignment waits for Start here again.
+/// digest, or cannot be read (as for an archived teammate), the job is dropped so the
+/// assignment stays queued and waits for Start here again.
 pub(super) async fn claim_dispatch_job(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -620,6 +623,51 @@ async fn require_live_folder_target(
             false,
         ))
     }
+}
+
+/// How a claimed dispatch that could not start was settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DispatchSettlement {
+    /// The assignment and its job were failed with the dispatch error.
+    Failed,
+    /// The job was dropped and the assignment stays queued.
+    Waiting,
+}
+
+/// Settles the claim `claim_token` of `assignment_id` after its dispatch returned `error`.
+///
+/// When the teammate was archived, for example by a linked device after this device claimed
+/// the work, the still queued assignment is not failed: its job is dropped so the work waits,
+/// and after a restore it is started again like any other unaccepted work. Any other error
+/// fails the assignment.
+pub(super) async fn settle_dispatch_error(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+    claim_token: &str,
+    error: &ChatError,
+) -> ChatResult<DispatchSettlement> {
+    let released = sqlx::query(
+        "DELETE FROM chat_assignment_dispatch_jobs
+         WHERE assignment_id = ?1 AND claim_token = ?2
+           AND EXISTS (
+             SELECT 1 FROM chat_work_assignments assignment
+             JOIN chat_participants participant ON participant.id = assignment.teammate_id
+             WHERE assignment.id = ?1 AND assignment.state = 'queued'
+               AND participant.archived_at IS NOT NULL
+           )",
+    )
+    .bind(assignment_id.as_str())
+    .bind(claim_token)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?
+    .rows_affected()
+        > 0;
+    if released {
+        return Ok(DispatchSettlement::Waiting);
+    }
+    fail_assignment_dispatch(pool, assignment_id, claim_token, error).await?;
+    Ok(DispatchSettlement::Failed)
 }
 
 async fn fail_assignment_dispatch(

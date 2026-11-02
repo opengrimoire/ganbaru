@@ -126,11 +126,59 @@ pub(crate) async fn load_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<Option<LocalIdentity>, String> {
+    let identity = read_identity(pool, &|| load_key(app)).await?;
+    Ok(identity.map(|(identity, _)| identity))
+}
+
+/// Reads the identity row, then the key copy `load_key` returns, and pairs the identity with the
+/// card nonce text exactly as stored.
+async fn read_identity<L, K>(
+    pool: &SqlitePool,
+    load_key: &L,
+) -> Result<Option<(LocalIdentity, String)>, String>
+where
+    L: Fn() -> K,
+    K: Future<Output = Result<Option<Vec<u8>>, String>>,
+{
     let Some(row) = load_identity_row(pool).await? else {
         return Ok(None);
     };
-    let key = load_key(app).await?;
-    identity_from_row(row, key.as_deref()).map(Some)
+    let stored_nonce = row.card_nonce.clone();
+    let key = load_key().await?;
+    identity_from_row(row, key.as_deref()).map(|identity| Some((identity, stored_nonce)))
+}
+
+/// The identity as found before any creation step.
+pub(crate) enum ExistingIdentity {
+    /// An identity whose card nonce is readable, after a repair when the stored one was not.
+    Ready(LocalIdentity),
+    /// No identity exists. The guard keeps creation to one caller until it is dropped.
+    Missing(tokio::sync::MutexGuard<'static, ()>),
+}
+
+/// Loads the identity and heals an unreadable card nonce. A readable identity returns without
+/// waiting on the creation lock. Otherwise the lock is taken and the row is read again, so a racing
+/// caller never repairs or creates over what another caller just wrote.
+pub(crate) async fn existing_identity<L, K>(
+    pool: &SqlitePool,
+    load_key: L,
+) -> Result<ExistingIdentity, ContactsError>
+where
+    L: Fn() -> K,
+    K: Future<Output = Result<Option<Vec<u8>>, String>>,
+{
+    if let Some((identity, _)) = read_identity(pool, &load_key).await?
+        && identity.card_nonce.is_some()
+    {
+        return Ok(ExistingIdentity::Ready(identity));
+    }
+    let creating = IDENTITY_CREATION.lock().await;
+    if let Some((identity, stored_nonce)) = read_identity(pool, &load_key).await? {
+        return super::card::heal_unreadable_nonce(pool, identity, &stored_nonce)
+            .await
+            .map(ExistingIdentity::Ready);
+    }
+    Ok(ExistingIdentity::Missing(creating))
 }
 
 /// Writes the identity and its first card in one transaction.
@@ -165,18 +213,12 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<LocalIdentity, ContactsError> {
-    if let Some(identity) = load_identity(app, pool).await?
-        && identity.card_nonce.is_some()
-    {
-        return Ok(identity);
-    }
     // Callers race on a fresh vault, and a losing insert removes the stored key, so creation
-    // runs one at a time and rechecks the row. A repair rechecks too, so a racing caller never
-    // rotates away the nonce another caller just signed.
-    let _creating = IDENTITY_CREATION.lock().await;
-    if let Some(identity) = load_identity(app, pool).await? {
-        return super::card::heal_unreadable_nonce(pool, identity).await;
-    }
+    // runs under the guard `existing_identity` returns.
+    let _creating = match existing_identity(pool, || load_key(app)).await? {
+        ExistingIdentity::Ready(identity) => return Ok(identity),
+        ExistingIdentity::Missing(creating) => creating,
+    };
     if app.state::<PairingManager>().coordinator_pin()?.is_some() {
         return Err(ContactsError::IdentityUnavailable(
             "the coordinator creates the person identity".to_string(),

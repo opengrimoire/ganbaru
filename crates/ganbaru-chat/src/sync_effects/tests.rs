@@ -639,8 +639,9 @@ async fn synced_policy_reduction_revokes_active_authorization() {
     assert_eq!(queued_jobs(&pool).await.len(), 2);
 }
 
-/// A pointer can apply before or after the revision it names, and a stale narrower revision that
-/// no pointer names changes nothing, so only the effective revision can revoke.
+/// A pointer can apply before or after the revision it names, deciding by its copied safety mode
+/// until the revision arrives, and a stale narrower revision that no pointer names changes
+/// nothing, so only the effective revision can revoke.
 #[tokio::test]
 async fn synced_policy_reduction_follows_the_effective_revision_in_either_arrival_order() {
     let pool = migrated_pool().await;
@@ -657,17 +658,17 @@ async fn synced_policy_reduction_follows_the_effective_revision_in_either_arriva
     .await
     .unwrap();
     let pending = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
-    assert!(pending.revoked_teammates.is_empty());
     assert_eq!(
-        authorization_state(&pool, "authorization:wide").await,
-        "allowed"
+        pending.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
     );
 
     insert_policy_revision(&pool, "policy:narrower", 10, "ask_for_approval").await;
     let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:narrower"]).await;
+    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
     assert_eq!(
-        arrived.revoked_teammates,
-        BTreeSet::from([TEAMMATE_ID.to_string()])
+        authorization_state(&pool, "authorization:wide").await,
+        "revoked"
     );
 
     let pool = migrated_pool().await;
@@ -688,6 +689,110 @@ async fn synced_policy_reduction_follows_the_effective_revision_in_either_arriva
     assert!(kept.is_empty(), "{kept:?}");
     let kept = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
     assert!(kept.revoked_teammates.is_empty());
+}
+
+/// A pointer that arrives before the revision it names decides coverage by the safety mode it
+/// copied, so a concurrent newer and narrower revision cannot revoke work the pointed revision
+/// still covers, whichever hook or sweep runs before it arrives.
+#[tokio::test]
+async fn pointer_before_revision_keeps_covered_work() {
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:pointed',
+             current_policy_safety_mode = 'approve_for_me'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
+
+    insert_policy_revision(&pool, "policy:concurrent", 20, "ask_for_approval").await;
+    let concurrent = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:concurrent"]).await;
+    assert!(concurrent.revoked_teammates.is_empty(), "{concurrent:?}");
+    let teammate = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
+    assert!(teammate.revoked_teammates.is_empty(), "{teammate:?}");
+    let swept = run_hook(&pool, CONVERSATIONS_TABLE, &["conversation:removed"]).await;
+    assert!(swept.revoked_teammates.is_empty(), "{swept:?}");
+    let access = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    assert!(access.revoked_teammates.is_empty(), "{access:?}");
+    assert_eq!(
+        authorization_state(&pool, "authorization:wide").await,
+        "allowed"
+    );
+
+    insert_policy_revision(&pool, "policy:pointed", 10, "approve_for_me").await;
+    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:pointed"]).await;
+    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
+    assert_eq!(
+        authorization_state(&pool, "authorization:wide").await,
+        "allowed"
+    );
+}
+
+/// A pointer whose revision never arrives cannot hold back revocation: its copied safety mode
+/// decides, so a copy narrower than the frozen approval revokes on every hook and sweep.
+#[tokio::test]
+async fn a_pointer_whose_revision_never_arrives_decides_by_its_copied_mode() {
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:never-sent',
+             current_policy_safety_mode = 'ask_for_approval'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let pointed = run_hook(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await;
+
+    assert_eq!(
+        pointed.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        revocation_reason(&pool).await,
+        TEAMMATE_POLICY_REDUCED_REASON
+    );
+}
+
+/// A pointer that copied a mode narrower than the frozen approval revokes when an access row
+/// applies before its revision arrives, and the arriving revision then revokes nothing more.
+#[tokio::test]
+async fn a_narrower_copied_mode_revokes_before_its_revision_arrives() {
+    let pool = migrated_pool().await;
+    seed_auto_approved_work(&pool).await;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:pointed',
+             current_policy_safety_mode = 'ask_for_approval'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let access = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    assert_eq!(
+        access.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        revocation_reason(&pool).await,
+        TEAMMATE_POLICY_REDUCED_REASON
+    );
+    let jobs = queued_jobs(&pool).await.len();
+
+    insert_policy_revision(&pool, "policy:pointed", 10, "ask_for_approval").await;
+    let arrived = run_hook(&pool, POLICY_REVISIONS_TABLE, &["policy:pointed"]).await;
+    assert!(arrived.revoked_teammates.is_empty(), "{arrived:?}");
+    assert_eq!(queued_jobs(&pool).await.len(), jobs);
 }
 
 /// A Custom teammate cannot be ranked against a grant, so the grant alone governs its host tools

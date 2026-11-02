@@ -156,7 +156,8 @@ impl ChatSyncEffects {
 /// A teammate or policy revision row revokes the teammate's authorizations once its effective
 /// policy no longer covers an approval they froze, and an archived teammate loses its
 /// authorizations. Both compare current rows, so arrival order does not matter and a widening or
-/// a repeated apply revokes nothing. A later widening or restore does not bring a revoked
+/// a repeated apply revokes nothing. While a pointer's revision has not arrived, the safety mode
+/// the pointer copied decides. A later widening or restore does not bring a revoked
 /// authorization back.
 pub async fn after_materialize(
     connection: &mut SqliteConnection,
@@ -939,10 +940,18 @@ fn frozen_approvals_sql() -> String {
 /// Returns whether the teammate holds an active authorization that froze an approval its
 /// effective policy no longer covers. Without an effective policy nothing is covered, as the
 /// live tool checks refuse such a teammate.
+///
+/// While the teammate's pointer names a revision that has not arrived, the safety mode the
+/// pointer copied decides instead of the newest arrived revision the effective policy view falls
+/// back to, which can be a concurrent narrower one the pointer did not choose. Coverage depends
+/// only on the safety mode, so an honest copy decides as its revision will, a dishonest copy is
+/// contained when its revision arrives, and a pointer whose revision never arrives still revokes
+/// work its copied mode does not cover.
 async fn holds_authorization_beyond_policy(
     connection: &mut SqliteConnection,
     teammate_id: &str,
 ) -> ChatResult<bool> {
+    let pending_mode = copied_mode_of_missing_revision(connection, teammate_id).await?;
     let approvals: Vec<(String, Option<String>, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(frozen_approvals_sql()))
             .bind(teammate_id)
@@ -950,10 +959,33 @@ async fn holds_authorization_beyond_policy(
             .await
             .map_err(persistence_error)?;
     Ok(approvals.iter().any(|(frozen, approval_override, mode)| {
-        !mode
+        !pending_mode
             .as_deref()
+            .or(mode.as_deref())
             .is_some_and(|mode| teammate_policy_covers(mode, approval_override.as_deref(), frozen))
     }))
+}
+
+/// Returns the safety mode the teammate's policy pointer copied when the revision it names has
+/// not arrived on this device, or `None` when the pointer is unset or its revision is present.
+async fn copied_mode_of_missing_revision(
+    connection: &mut SqliteConnection,
+    teammate_id: &str,
+) -> ChatResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT teammate.current_policy_safety_mode FROM chat_teammates teammate
+         WHERE teammate.participant_id = ?
+           AND teammate.current_policy_revision_id IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM chat_teammate_policy_revisions named
+               WHERE named.id = teammate.current_policy_revision_id
+           )",
+    )
+    .bind(teammate_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map(Option::flatten)
+    .map_err(persistence_error)
 }
 
 /// Returns the revocation reason for the teammate when it holds an active authorization that its

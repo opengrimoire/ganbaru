@@ -313,6 +313,10 @@ pub(super) async fn verify_channel_source(
     }
 }
 
+/// Verifies that a folder source of the run's authorization is still granted and covered.
+///
+/// While the teammate's policy pointer names a revision that has not arrived, the safety mode the
+/// pointer copied decides, as the sync revocation hooks decide.
 pub(super) async fn verify_folder_source(
     pool: &SqlitePool,
     scope: &InternalMcpRunScope,
@@ -322,7 +326,15 @@ pub(super) async fn verify_folder_source(
     let live = sqlx::query(
         "SELECT live_grant.runtime_approval_policy AS grant_runtime_approval_policy,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
-                policy.safety_mode AS teammate_safety_mode
+                CASE
+                    WHEN teammate.current_policy_revision_id IS NOT NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM chat_teammate_policy_revisions named
+                         WHERE named.id = teammate.current_policy_revision_id
+                     )
+                    THEN teammate.current_policy_safety_mode
+                    ELSE policy.safety_mode
+                END AS teammate_safety_mode
             FROM chat_assignment_authorized_folder_sources source
             JOIN chat_assignment_authorization_revisions authorization
               ON authorization.id = source.authorization_revision_id

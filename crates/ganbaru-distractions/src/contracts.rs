@@ -79,7 +79,13 @@ pub struct DistractionsUsageSampleRow {
 pub struct DistractionsLimitState {
     pub local_date: String,
     pub week_start_local_date: String,
+    /// When these totals were read. The browser host ages the snapshot from this instant.
     pub updated_at: String,
+    /// When the native owner last confirmed these totals still bind to the current rules and date
+    /// after a failed read. Close authorization ages from this instant, or from `updated_at`
+    /// without one.
+    #[serde(default)]
+    pub confirmed_at: Option<String>,
     #[serde(default)]
     pub database_path: Option<String>,
     #[serde(default)]

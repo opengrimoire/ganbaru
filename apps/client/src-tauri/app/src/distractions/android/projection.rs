@@ -11,6 +11,7 @@ pub(super) const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 pub(super) const MAX_CAPTURE_AGE_MS: i64 = 10_000;
 const MAX_MOBILE_RULES: usize = 256;
 const MAX_RULE_NAME_CHARS: usize = 120;
+const MAX_LIMIT_NAME_CHARS: usize = 80;
 const MAX_MOBILE_LIMITS: usize = 128;
 const MAX_SAFE_SECONDS: i64 = 9_007_199_254_740_991;
 
@@ -290,17 +291,33 @@ impl Default for MobileSchedule {
     }
 }
 
-/// Whether Guardian accepts `rule`. The display name comes from a separate replicated group, so
-/// sync admission cannot check it together with the identity.
-fn is_publishable_rule(rule: &MobileRule, package: &str) -> bool {
-    is_android_package_name(package)
-        && !rule.name.trim().is_empty()
-        && rule.name.chars().count() <= MAX_RULE_NAME_CHARS
+/// Whether Guardian's decoder may trim `c` from the ends of a name. Kotlin `trim()` removes the
+/// Unicode separators and the ASCII controls 9 to 13 and 28 to 31, and older Android Unicode data
+/// counts U+180E as a separator; this set covers all of them.
+fn is_guardian_trimmed(c: char) -> bool {
+    c.is_whitespace() || c.is_control() || c == '\u{180E}'
+}
+
+/// A display name Guardian's decoder accepts: `name` without leading or trailing whitespace or
+/// control characters, cut to `max_chars`, or `fallback` when nothing remains. Display names come
+/// from a replicated group that sync admission cannot check against Guardian's rule, and one
+/// refused name would fail the whole publication. `fallback` must start and end with a character
+/// Guardian keeps, as package names and limit identities do.
+fn guardian_label(name: &str, fallback: &str, max_chars: usize) -> String {
+    let trimmed = name.trim_matches(is_guardian_trimmed);
+    let source = if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed
+    };
+    let cut: String = source.chars().take(max_chars).collect();
+    cut.trim_end_matches(is_guardian_trimmed).to_owned()
 }
 
 /// The rules Guardian enforces: rows with a package, one per lowercase package, up to
-/// [`MAX_MOBILE_RULES`]. An invalid or surplus row is dropped with a diagnostic, because failing
-/// publication would revoke every rule Guardian holds.
+/// [`MAX_MOBILE_RULES`], each under a name Guardian accepts. A row with an invalid package or a
+/// surplus row is dropped with a diagnostic, because failing publication would revoke every rule
+/// Guardian holds.
 fn publishable_rules(rules: Vec<MobileRule>) -> Vec<MobileRule> {
     let mut skipped = 0_usize;
     let mut packages_seen = HashSet::new();
@@ -309,13 +326,14 @@ fn publishable_rules(rules: Vec<MobileRule>) -> Vec<MobileRule> {
         let Some(package) = rule.package_name.take() else {
             continue;
         };
-        if !is_publishable_rule(&rule, &package) {
+        if !is_android_package_name(&package) {
             skipped += 1;
             eprintln!("Guardian skipped an invalid application rule: {package:?}");
             continue;
         }
         let package = package.to_ascii_lowercase();
         if packages_seen.insert(package.clone()) {
+            rule.name = guardian_label(&rule.name, &package, MAX_RULE_NAME_CHARS);
             rule.package_name = Some(package);
             publishable.push(rule);
         }
@@ -384,17 +402,11 @@ pub(super) fn build(
         };
         let mut sorted: Vec<_> = packages.iter().cloned().collect();
         sorted.sort();
-        let name = if limit.name.trim().is_empty() {
-            &limit.id
-        } else {
-            &limit.name
-        };
-        items.push(
-            json!({"id": limit.id, "name": name.chars().take(80).collect::<String>(),
+        let name = guardian_label(&limit.name, &limit.id, MAX_LIMIT_NAME_CHARS);
+        items.push(json!({"id": limit.id, "name": name,
             "enabled": limit.enabled, "minutesPerDay": limit.minutes_per_day,
             "minutesPerWeek": limit.minutes_per_week, "packages": sorted,
-            "acceptedUsage": {"day": accepted("day")?, "week": accepted("week")?}}),
-        );
+            "acceptedUsage": {"day": accepted("day")?, "week": accepted("week")?}}));
     }
     if items.len() > MAX_MOBILE_LIMITS {
         return Err("too many Guardian package limits".into());
@@ -520,10 +532,160 @@ mod tests {
         ]);
         let built = build(&config, &capture(), &[], &copy(), "native-skip");
         assert!(built.is_ok(), "one row stopped publication: {built:?}");
+        let (rules, _) = built.unwrap();
         assert_eq!(
-            published_packages(&built.unwrap().0),
-            ["com.example.video", "com.example.feed"]
+            published_packages(&rules),
+            [
+                "com.example.video",
+                "com.example.blank",
+                "com.example.long",
+                "com.example.feed"
+            ]
         );
+        let names = &rules["mobile"]["blockedApps"];
+        assert_eq!(names[1]["name"], "com.example.blank");
+        assert_eq!(names[2]["name"], "n".repeat(MAX_RULE_NAME_CHARS));
+    }
+
+    /// Reads the bound Kotlin's decoder applies to the `name` field in `marker`'s line.
+    fn kotlin_name_bound(source: &str, marker: &str) -> usize {
+        let line = source
+            .lines()
+            .find(|line| line.contains("bounded(item.getString(\"name\")") && line.contains(marker))
+            .unwrap_or_else(|| panic!("Kotlin decoder has no {marker} bound"));
+        let arguments: Vec<&str> = line.split(',').map(str::trim).collect();
+        assert_eq!(arguments[1], "1", "{marker} minimum");
+        arguments[2].parse().unwrap()
+    }
+
+    #[test]
+    fn name_normalization_matches_the_kotlin_decoder() {
+        let source = include_str!(
+            "../../../../../../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/DistractionsModels.kt"
+        );
+        assert_eq!(
+            kotlin_name_bound(source, "\"app name\""),
+            MAX_RULE_NAME_CHARS
+        );
+        assert_eq!(
+            kotlin_name_bound(source, "\"limit name\""),
+            MAX_LIMIT_NAME_CHARS
+        );
+        assert!(
+            source.contains("value.trim().also {")
+                && source.contains("it.codePointCount(0, it.length) in minimum..maximum"),
+            "Kotlin bounded() no longer trims and counts code points"
+        );
+        let hostile = [
+            "\u{1F}",
+            "\u{1C}\u{1D}\u{1E}\u{1F}",
+            "\u{85}",
+            "\u{180E}",
+            "\u{A0}\u{2007}\u{202F}\u{3000}",
+            "\t\n\u{B}\u{C}\r",
+            "",
+        ];
+        for name in hostile {
+            let label = guardian_label(name, "com.example.app", MAX_RULE_NAME_CHARS);
+            assert_eq!(label, "com.example.app", "{name:?}");
+        }
+        let padded = format!("{}x", " ".repeat(MAX_LIMIT_NAME_CHARS));
+        assert_eq!(guardian_label(&padded, "id", MAX_LIMIT_NAME_CHARS), "x");
+        let wide = format!("a{}b", "\u{3000}".repeat(MAX_LIMIT_NAME_CHARS));
+        let label = guardian_label(&wide, "id", MAX_LIMIT_NAME_CHARS);
+        assert_eq!(label, "a");
+        assert!(kotlin_accepts(&label, 1, MAX_LIMIT_NAME_CHARS));
+        let long_package = format!("com.{}", "a".repeat(250));
+        let label = guardian_label("\u{1F}", &long_package, MAX_RULE_NAME_CHARS);
+        assert!(kotlin_accepts(&label, 1, MAX_RULE_NAME_CHARS));
+        assert_eq!(guardian_label(" a\u{1F}b ", "id", 80), "a\u{1F}b");
+    }
+
+    /// Kotlin `Char.isWhitespace` on Android: `Character.isWhitespace` or `Character.isSpaceChar`,
+    /// which covers the ASCII controls 9 to 13 and 28 to 31 and the space, line, and paragraph
+    /// separators.
+    fn is_kotlin_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\t'..='\r'
+                | '\u{1C}'..='\u{1F}'
+                | ' '
+                | '\u{A0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200A}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202F}'
+                | '\u{205F}'
+                | '\u{3000}'
+        )
+    }
+
+    /// Kotlin `DistractionsRuleCodec.bounded`: trims, then requires a code point count in range.
+    fn kotlin_accepts(value: &str, minimum: usize, maximum: usize) -> bool {
+        let count = value.trim_matches(is_kotlin_whitespace).chars().count();
+        (minimum..=maximum).contains(&count)
+    }
+
+    fn published_names(rules: &Value, pointer: &str) -> Vec<(String, String)> {
+        rules
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let key = item
+                    .get("packageName")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned();
+                (key, item["name"].as_str().unwrap().to_owned())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn names_kotlin_refuses_are_normalized_before_publication() {
+        let mut config = root();
+        config["distractions"]["mobile"]["blockedApps"] = json!([
+            {"name": "Video", "packageName": "com.example.video", "enabled": true},
+            {"name": "\u{1F}", "packageName": "com.example.control", "enabled": true},
+            {"name": "\u{1C}\u{2007}Feed\u{3000}", "packageName": "com.example.feed", "enabled": true},
+        ]);
+        config["distractions"]["limits"]["items"] = json!([
+            {"id": "control", "name": "\u{1F}", "minutesPerDay": 10,
+                "entries": [{"id": "one", "mobileAppPackage": "com.example.video"}]},
+            {"id": "padded", "name": format!("{}x", " ".repeat(80)), "minutesPerDay": 10,
+                "entries": [{"id": "one", "mobileAppPackage": "com.example.feed"}]},
+        ]);
+        let (rules, _) = build(&config, &capture(), &[], &copy(), "native-names").unwrap();
+        let apps = published_names(&rules, "/mobile/blockedApps");
+        let limits = published_names(&rules, "/limits/items");
+        for (key, name) in apps.iter() {
+            assert!(
+                kotlin_accepts(name, 1, MAX_RULE_NAME_CHARS),
+                "Kotlin refuses rule {key} named {name:?}"
+            );
+        }
+        for (key, name) in limits.iter() {
+            assert!(
+                kotlin_accepts(name, 1, MAX_LIMIT_NAME_CHARS),
+                "Kotlin refuses limit {key} named {name:?}"
+            );
+        }
+        let keys = |names: &[(String, String)]| -> Vec<String> {
+            names.iter().map(|(key, _)| key.clone()).collect()
+        };
+        assert_eq!(
+            keys(&apps),
+            [
+                "com.example.video",
+                "com.example.control",
+                "com.example.feed"
+            ]
+        );
+        assert_eq!(keys(&limits), ["control", "padded"]);
     }
 
     #[test]

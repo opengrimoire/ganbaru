@@ -3241,6 +3241,222 @@ fn only_unadopted_work_for_this_device_awaits_local_acceptance() {
     });
 }
 
+/// A second reply thread under `root_item_id` holding a queued assignment of `teammate_id` that
+/// `device:old` executes.
+async fn seed_queued_assignment_in_new_thread(
+    pool: &SqlitePool,
+    assignment_id: &str,
+    root_item_id: &str,
+    order_key: &str,
+    teammate_id: &str,
+) {
+    sqlx::query(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES (?, 'conversation:review', 'message', ?, '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(root_item_id)
+    .bind(order_key)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES (?, 'participant:local-owner', 'You', '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(root_item_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    let reply_thread_id = format!("reply-thread:{assignment_id}");
+    sqlx::query(
+        "INSERT INTO chat_reply_threads
+             (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES (?, 'conversation:review', ?, '2026-08-04T17:02:00.000Z',
+                 '2026-08-04T17:02:00.000Z', '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(&reply_thread_id)
+    .bind(root_item_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_work_assignments
+             (id, reply_thread_id, teammate_id, triggering_message_item_id,
+              executing_device_id, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'device:old', 'queued', '2026-08-04T17:02:00.000Z',
+                 '2026-08-04T17:02:00.000Z')",
+    )
+    .bind(assignment_id)
+    .bind(&reply_thread_id)
+    .bind(teammate_id)
+    .bind(root_item_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// A teammate of the review channel whose instructions differ from the review agent, so its
+/// work has another acceptance digest.
+async fn seed_other_review_teammate(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_participants
+             (id, participant_kind, display_name, created_at, updated_at)
+         VALUES (
+             'participant:other-agent', 'ai_teammate', 'Other agent',
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_teammates
+             (participant_id, role, instructions, created_at, updated_at)
+         VALUES (
+             'participant:other-agent', 'Test', 'Other instructions',
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_teammate_policy_revisions
+             (id, teammate_id, provider_instance_id,
+              model_selection_data, created_at)
+         VALUES (
+             'policy:other', 'participant:other-agent', 'provider:review',
+             '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
+             '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_conversation_memberships
+             (conversation_id, participant_id, sync_key, membership_role, created_at,
+              updated_at)
+         VALUES (
+             'conversation:review', 'participant:other-agent', 'membership:other', 'member',
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         INSERT INTO chat_teammate_channel_memberships
+             (conversation_id, teammate_id, sync_key, access_profile_id,
+              read_history, read_history_inherits_profile,
+              participate, participate_inherits_profile,
+              history_boundary, history_boundary_inherits_profile,
+              created_at, updated_at)
+         VALUES (
+             'conversation:review', 'participant:other-agent', 'channel-membership:other',
+             'access-profile:build-and-test', 1, 1, 1, 1, 'entire', 1,
+             '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
+         );
+         UPDATE chat_teammate_access_state
+         SET access_revision = 1, updated_at = '2026-08-04T17:00:00.000Z'
+         WHERE teammate_id = 'participant:other-agent';",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Acceptance digest of `assignment_id`.
+async fn digest_of(pool: &SqlitePool, assignment_id: &str) -> String {
+    assignments::assignment_acceptance_digest(
+        pool,
+        &ChatWorkAssignmentId::new(assignment_id).unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[test]
+fn start_here_adopts_queued_siblings_of_the_same_digest() {
+    tauri::async_runtime::block_on(async {
+        let writers = chat_writers_of(&["device:old"]);
+        let device = super::workflow::PostingDevice::this_device("device:old", &writers);
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:sibling",
+            "item:sibling-root",
+            "a8",
+            "participant:review-agent",
+        )
+        .await;
+        seed_other_review_teammate(&pool).await;
+        seed_queued_assignment_in_new_thread(
+            &pool,
+            "assignment:other-digest",
+            "item:other-root",
+            "a9",
+            "participant:other-agent",
+        )
+        .await;
+        let accepted = digest_of(&pool, "assignment:old").await;
+        assert_eq!(accepted, digest_of(&pool, "assignment:sibling").await);
+        assert_ne!(accepted, digest_of(&pool, "assignment:other-digest").await);
+
+        let scope = scope_accepting(&pool, "assignment:old").await;
+        assert!(
+            assignments::adopt_synced_assignment(
+                &pool,
+                &ChatWorkAssignmentId::new("assignment:old").unwrap(),
+                "device:old",
+                &scope,
+            )
+            .await
+            .unwrap()
+        );
+
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &scope)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            adopted,
+            vec![ChatWorkAssignmentId::new("assignment:sibling").unwrap()]
+        );
+        assert_eq!(
+            dispatch_job_count(
+                &pool,
+                &ChatWorkAssignmentId::new("assignment:sibling").unwrap()
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            dispatch_job_count(
+                &pool,
+                &ChatWorkAssignmentId::new("assignment:other-digest").unwrap()
+            )
+            .await,
+            0
+        );
+        let (state, _, _, _) = assignment_takeover(&pool, "assignment:other-digest").await;
+        assert_eq!(state, "queued");
+    });
+}
+
+#[test]
+fn start_here_refuses_a_digest_the_user_did_not_see() {
+    tauri::async_runtime::block_on(async {
+        let assignment_id = ChatWorkAssignmentId::new("assignment:old").unwrap();
+        let pool = review_thread_without_assignment().await;
+        seed_assignment_on_old_owner(&pool, "queued").await;
+        let seen = digest_of(&pool, "assignment:old").await;
+        assert!(
+            assignments::seen_digest_is_current(&pool, &assignment_id, &seen)
+                .await
+                .unwrap()
+        );
+
+        sqlx::query(
+            "UPDATE chat_teammates SET instructions = 'Changed by sync'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            !assignments::seen_digest_is_current(&pool, &assignment_id, &seen)
+                .await
+                .unwrap(),
+            "a sync between render and click changes what the user would accept"
+        );
+    });
+}
+
 #[test]
 fn started_work_on_the_old_owner_fails_visibly_and_retry_or_start_moves_it_here() {
     tauri::async_runtime::block_on(async {

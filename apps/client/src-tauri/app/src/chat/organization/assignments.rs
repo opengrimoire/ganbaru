@@ -874,6 +874,24 @@ pub(super) async fn assignment_acceptance_digest(
     Ok(digest)
 }
 
+/// Whether `seen_digest` still names what `assignment_id` would run.
+pub(super) async fn seen_digest_is_current(
+    _pool: &SqlitePool,
+    _assignment_id: &ChatWorkAssignmentId,
+    _seen_digest: &str,
+) -> ChatResult<bool> {
+    Ok(true)
+}
+
+/// Queues the dispatch of the queued work `device` executes whose subject `scope` accepted.
+pub(super) async fn adopt_accepted_queued_assignments(
+    _pool: &SqlitePool,
+    _device: PostingDevice<'_>,
+    _scope: &ChatDeviceScope,
+) -> ChatResult<Vec<ChatWorkAssignmentId>> {
+    Ok(Vec::new())
+}
+
 /// Whether `assignment_id` waits for a local action to start on `device`: it is queued with no
 /// local dispatch, on `device` or on a device that can no longer write Chat, or it holds pending
 /// replies that recovery leaves in place because `scope` did not accept its current subject.

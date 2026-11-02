@@ -324,7 +324,7 @@ describe("normalizeDistractionsConfig", () => {
           { identity: "first", name: "Steam" },
           { identity: "Second  Row", name: "steam", enabled: false },
           { name: "Discord" },
-          { identity: "   ", name: "Spotify" },
+          { identity: "", name: "Spotify" },
         ],
       },
     });

@@ -36,7 +36,7 @@ use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::repair;
 use crate::seal::{SealReport, SealSlot, existence_write};
 use crate::visibility::{
-    CascadeWalk, DeriveScope, MAX_REDIRECT_DEPTH, RowRef, Visibility, removed,
+    CascadeWalk, DeriveScope, MAX_REDIRECT_DEPTH, RowRef, Visibility, removed, retention_parent,
 };
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, log, sql};
 
@@ -185,15 +185,15 @@ async fn removal_context(
     }
 }
 
-/// Whether a row named as a cause is deleted: tombstoned, removed, or hidden by cascade from
-/// a deleted root.
+/// Whether a row named as a cause is deleted: tombstoned and not retained, removed, or hidden by
+/// cascade from a deleted root.
 async fn deleted(
     engine: &Engine,
     conn: &mut SqliteConnection,
     visibility: &mut Visibility,
     (table, key): &RowRef,
 ) -> SyncResult<bool> {
-    Ok(match merge::row_state(conn, *table, key).await? {
+    Ok(match visibility.state(engine, conn, *table, key).await? {
         None => false,
         Some(RowState::Tombstoned) => true,
         Some(RowState::Live) => {
@@ -398,14 +398,16 @@ pub(crate) async fn flag_root(
     }
     let root = group_root(engine, conn, visibility, (table, key.to_string())).await?;
     Ok(
-        (merge::row_state(conn, root.0, &root.1).await? == Some(RowState::Tombstoned))
+        (visibility.state(engine, conn, root.0, &root.1).await? == Some(RowState::Tombstoned))
             .then_some(root),
     )
 }
 
-/// The root a deleted row is grouped under for recovery: itself when it has a tombstone
-/// without a cause, otherwise the lowest cause of its tombstones or the cause of its cascade,
-/// followed until a row has no further cause.
+/// The root a deleted row is grouped under for recovery, followed until a row has no further
+/// cause. A tombstoned row its table's retention rule selects goes with its deleted parent,
+/// whose restoration brings it back. Any other tombstoned row is its own root when one of its
+/// tombstones has no cause or a cause that is not deleted, and otherwise follows the lowest
+/// cause. A live row follows the cause of its cascade.
 pub(crate) async fn group_root(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -415,17 +417,15 @@ pub(crate) async fn group_root(
     let mut current = row;
     for _ in 0..MAX_REDIRECT_DEPTH {
         let (table, key) = &current;
-        let next = match merge::row_state(conn, *table, key).await? {
+        let next = match visibility.state(engine, conn, *table, key).await? {
             None => None,
             Some(RowState::Tombstoned) => {
-                let tombstones = tombstones(conn, *table, key).await?;
-                if tombstones.iter().any(|tombstone| tombstone.cause.is_none()) {
-                    None
+                if let Some(parent) =
+                    deleted_retention_parent(engine, conn, visibility, &current).await?
+                {
+                    Some(parent)
                 } else {
-                    tombstones
-                        .into_iter()
-                        .filter_map(|tombstone| tombstone.cause)
-                        .min()
+                    tombstoned_root_cause(engine, conn, visibility, &current).await?
                 }
             }
             Some(RowState::Live) => visibility
@@ -440,6 +440,56 @@ pub(crate) async fn group_root(
         }
     }
     Ok(current)
+}
+
+/// The parent a tombstoned row goes with: the one its table's retention rule names from the
+/// row's winning versions, when that parent is deleted.
+async fn deleted_retention_parent(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<Option<RowRef>> {
+    let spec = table_spec(engine, *table)?;
+    let Some(rule) = spec.retained else {
+        return Ok(None);
+    };
+    let versions = merge::versions(engine, conn, *table, key).await?;
+    let winners = merge::winners(engine, spec, &versions);
+    let Some(parent) = winners
+        .get(&rule.group)
+        .and_then(|winner| retention_parent(spec, rule, winner.value.fields()))
+    else {
+        return Ok(None);
+    };
+    let parent = (rule.parent, parent);
+    Ok(deleted(engine, conn, visibility, &parent)
+        .await?
+        .then_some(parent))
+}
+
+/// The lowest cause a tombstoned row follows toward its root, or `None` when one of its
+/// tombstones has no cause or a cause that is not deleted, as its coverage reads them.
+async fn tombstoned_root_cause(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<Option<RowRef>> {
+    let mut lowest: Option<RowRef> = None;
+    for tombstone in tombstones(conn, *table, key).await? {
+        let Some(cause) = tombstone.cause else {
+            return Ok(None);
+        };
+        if !deleted(engine, conn, visibility, &cause).await? {
+            return Ok(None);
+        }
+        lowest = Some(match lowest {
+            Some(lowest) => lowest.min(cause),
+            None => cause,
+        });
+    }
+    Ok(lowest)
 }
 
 /// The root, its flagged members, and its descendants, each once.

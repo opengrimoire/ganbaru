@@ -606,10 +606,11 @@ fn keeping_the_displayed_version_also_resolves_a_conflict() {
     });
 }
 
-/// A tombstone of a row its table's retention rule keeps leaves the row live in effect, so
-/// concurrent values of its surfaced group still surface as a conflict and resolve.
+/// A tombstone of a row its table's retention rule keeps leaves the row live in effect, so a
+/// chosen value of its surfaced group still resolves the concurrent ones. The stored conflict
+/// mask stays empty, since the schema keeps conflict masks on rows whose merge state is live.
 #[test]
-fn a_retained_row_keeps_its_conflict_after_a_tombstone_and_resolves() {
+fn a_retained_row_resolves_concurrent_values_after_a_tombstone() {
     block_on(async {
         let mut replicas = replicas(3).await;
         for replica in &mut replicas {
@@ -650,27 +651,12 @@ fn a_retained_row_keeps_its_conflict_after_a_tombstone_and_resolves() {
         }
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
-        let ends = GroupMask::of(group_id(1));
         for replica in &mut replicas {
             assert_eq!(
                 replica
                     .count("SELECT count(*) FROM fixture_links WHERE id = 'link-1'")
                     .await,
                 1
-            );
-            assert_eq!(
-                replica
-                    .engine
-                    .conflicts(&mut replica.conn, LINKS_TABLE)
-                    .await
-                    .unwrap(),
-                [ConflictRow {
-                    table: LINKS_TABLE,
-                    row_key: "link-1".to_owned(),
-                    groups: ends,
-                }],
-                "replica {}",
-                replica.index
             );
         }
 

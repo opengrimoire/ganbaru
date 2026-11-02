@@ -39,6 +39,7 @@ use sqlx::{Connection, SqliteConnection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, clamp_ms, seq_i64, stored_u64};
 use crate::merge::{self, Batch, RowState};
+use crate::visibility::Visibility;
 use crate::{Engine, SpaceContext};
 use crate::{authorization, exclusion, seal, sql};
 
@@ -499,8 +500,9 @@ pub(crate) async fn collect_released(
     let through = stored_u64(released, "released mark")?;
     let mut groups = BTreeMap::new();
     collect_written(engine, conn, space, &mut groups, writer, keep, through).await?;
+    let mut visibility = Visibility::default();
     for ((table, key), mask) in groups {
-        if merge::row_state(conn, table, &key).await? == Some(RowState::Live) {
+        if visibility.state(engine, conn, table, &key).await? == Some(RowState::Live) {
             record_restated(engine, conn, table, &key, mask).await?;
         }
         let entry = batch
@@ -634,11 +636,11 @@ pub(crate) async fn capture_released(
     capture_rows(engine, conn, released, now_ms, false).await
 }
 
-/// Captures `groups` on live rows, so the next seal publishes their current values, and records
-/// their winning values as restatements. A live row of a derived-key table its domain table does
-/// not hold publishes its existence register as absent when `groups` names it; any other row the
-/// domain table does not hold, and a row an exclusion left orphaned or a tombstone deleted, is
-/// skipped.
+/// Captures `groups` on live rows, a retained tombstoned row among them, so the next seal
+/// publishes their current values, and records their winning values as restatements. A live row
+/// of a derived-key table its domain table does not hold publishes its existence register as
+/// absent when `groups` names it; any other row the domain table does not hold, and a row an
+/// exclusion left orphaned or a tombstone deleted, is skipped.
 pub(crate) async fn capture_groups(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -657,11 +659,12 @@ async fn capture_rows(
     now_ms: u64,
     restate: bool,
 ) -> SyncResult<()> {
+    let mut visibility = Visibility::default();
     for ((table, key), mask) in groups {
         let Some(spec) = engine.manifest().table(table) else {
             continue;
         };
-        if merge::row_state(conn, table, &key).await? != Some(RowState::Live) {
+        if visibility.state(engine, conn, table, &key).await? != Some(RowState::Live) {
             continue;
         }
         if sql::read_columns(conn, spec.name, spec.key_column, &key, &[])

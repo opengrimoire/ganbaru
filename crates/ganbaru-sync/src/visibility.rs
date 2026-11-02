@@ -1089,7 +1089,11 @@ impl Visibility {
 
 /// The parent row `rule` retains a row under, from the winning `fields` of its group, when the
 /// fields select the row.
-fn retention_parent(spec: &TableSpec, rule: RowRetention, fields: &[Field]) -> Option<String> {
+pub(crate) fn retention_parent(
+    spec: &TableSpec,
+    rule: RowRetention,
+    fields: &[Field],
+) -> Option<String> {
     let group = spec.group(rule.group)?;
     let selector = group
         .columns()

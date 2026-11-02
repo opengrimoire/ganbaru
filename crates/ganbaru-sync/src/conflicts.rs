@@ -10,6 +10,7 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use crate::error::{SyncResult, corrupt};
 use crate::merge::{self, RowState, table_param};
 use crate::seal::force_capture;
+use crate::visibility::Visibility;
 use crate::{Engine, SyncError, log, sql};
 
 /// SQL expression for the open conflict mask of the `sync_rows` row aliased `r`: its groups in
@@ -173,9 +174,9 @@ impl Engine {
         Ok(details)
     }
 
-    /// Marks a group of a live row to be sealed even when its value did not change, so the
-    /// next seal resolves its conflict. The caller writes the chosen value to the domain row
-    /// first, in the same transaction.
+    /// Marks a group of a live row, or of a tombstoned row its table's retention rule keeps, to
+    /// be sealed even when its value did not change, so the next seal resolves its conflict.
+    /// The caller writes the chosen value to the domain row first, in the same transaction.
     pub async fn force_group(
         &self,
         conn: &mut SqliteConnection,
@@ -194,7 +195,10 @@ impl Engine {
             return Err(SyncError::InvalidRequest("group is not surfaced"));
         }
         let mut tx = conn.begin().await?;
-        if merge::row_state(&mut tx, table, key).await? != Some(RowState::Live)
+        if Visibility::default()
+            .state(self, &mut tx, table, key)
+            .await?
+            != Some(RowState::Live)
             || sql::read_columns(&mut tx, spec.name, spec.key_column, key, &[])
                 .await?
                 .is_none()

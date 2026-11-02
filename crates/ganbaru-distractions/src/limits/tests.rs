@@ -285,6 +285,55 @@ async fn stored_impossible_date_leaves_the_window_readable() {
 }
 
 #[tokio::test]
+async fn window_date_filter_agrees_with_the_shared_date_check() {
+    let pool = usage_pool().await;
+    let sql = format!(
+        "SELECT EXISTS (
+             SELECT 1 FROM (SELECT ?1 AS local_date) WHERE {}
+         )",
+        super::store::CALENDAR_DATE_FILTER
+    );
+    for date in [
+        "2026-09-30",
+        "2026-09-31",
+        "2026-02-28",
+        "2026-02-29",
+        "2024-02-29",
+        "2000-02-29",
+        "2100-02-29",
+        "2026-12-31",
+        "2026-13-01",
+        "2026-11-00",
+        "2026-1-01",
+        "2026-11-30 ",
+    ] {
+        let kept: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(date)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, is_valid_local_date(date), "{date:?}");
+    }
+    pool.close().await;
+}
+
+#[test]
+fn shared_date_check_matches_the_calendar() {
+    for year in [1, 4, 100, 400, 1900, 2000, 2024, 2026, 2100, 9999] {
+        for month in 0..=13 {
+            for day in 0..=32 {
+                let date = format!("{year:04}-{month:02}-{day:02}");
+                assert_eq!(
+                    is_valid_local_date(&date),
+                    NaiveDate::parse_from_str(&date, "%Y-%m-%d").is_ok(),
+                    "{date}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn usage_flood_outside_budgets_reads_no_rows() {
     let pool = usage_pool().await;
     flood_totals(&pool, "flood-%d.attacker.test", MAX_SOURCE_GROUPS + 1).await;

@@ -346,8 +346,9 @@ pub(super) async fn post_message(
 }
 
 /// The acceptance digest the post that wrote `write` gives on this device, or `None` when it
-/// gives none. A scheduled send carries a stored request a peer can edit, so it is not a local
-/// gesture.
+/// gives none. A user post, or a scheduled send with local consent, that dispatches new work
+/// accepts exactly the subject its dispatch job consented to run. An unattended scheduled send
+/// accepts nothing, since a peer may have written or rewritten its request.
 #[cfg(desktop)]
 async fn post_acceptance_digest(
     pool: &SqlitePool,
@@ -357,12 +358,18 @@ async fn post_acceptance_digest(
     let Some(assignment_id) = write.assignment_id.as_ref() else {
         return Ok(None);
     };
-    if scheduled.is_some() || !write.dispatches_here() {
+    let consented = scheduled.is_none_or(|send| send.consent == ScheduledConsent::Local);
+    if !consented || !write.dispatches_here() {
         return Ok(None);
     }
-    assignments::assignment_acceptance_digest(pool, assignment_id)
-        .await
-        .map(Some)
+    let digest = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT consented_digest FROM chat_assignment_dispatch_jobs WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(digest.flatten())
 }
 
 /// A post written to the vault. Only desktop dispatches the work it routed.

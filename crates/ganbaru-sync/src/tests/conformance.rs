@@ -437,6 +437,17 @@ fn derived_key_refuses_a_non_key_column_in_an_immutable_group() {
         groups: &[IDENTITY_WITH_TIME, ROLE_ONLY, MEMBERSHIPS.groups[2]],
         ..MEMBERSHIPS
     };
+    const TIME_IN_IDENTITY_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, TIME_IN_IDENTITY],
+        ..FIXTURE_DOMAIN
+    };
+    // A re-add or a Create on a known row rewrites every group of a derived-key row, so an
+    // immutable value that is not derived from the key would let a later Create replace it.
+    let refused = validation_error(&[&quick_notes::DOMAIN, &TIME_IN_IDENTITY_DOMAIN]);
+    assert!(
+        refused.contains("immutable column created_at is neither the key column nor a key input"),
+        "{refused}"
+    );
     block_on(async {
         let pool = fixture_pool().await;
         assert_eq!(

@@ -2934,6 +2934,70 @@ fn concurrent_creates_converge_on_the_lowest_clock() {
 }
 
 #[test]
+fn derived_key_create_covering_a_removed_row_rewrites_every_group() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "first"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_memberships WHERE item_id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        // The adder's next operation carries a context that covers the removal.
+        replicas[1]
+            .exec("UPDATE fixture_items SET label = 'Two' WHERE id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+
+        // A Create that saw the removal adds the row again with every group, Immutable ones
+        // included, because their values are the ones the key derives from.
+        let key = membership_key("item-1", "a-1");
+        let create = sealed_create(&mut replicas[0], MEMBERSHIPS_TABLE, &key).await;
+        let create = with_group(
+            create,
+            super::fixture::membership_group::DETAILS,
+            vec![text_field("2027-01-01T00:00:00.000Z"), text_field("again")],
+        );
+        let forged = forge_change(&mut replicas[1], create).await;
+        let adder: String = replicas[1]
+            .writer()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let groups = TEST_MANIFEST.table(MEMBERSHIPS_TABLE).unwrap().groups.len();
+        let groups = i64::try_from(groups).unwrap();
+        let by_adder = format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {{table}} AND writer_id = x'{adder}'"
+        );
+        for index in [0, 2] {
+            let replica = &mut replicas[index];
+            take_forged(replica, &forged).await;
+            assert_eq!(memberships(replica).await, ["item-1>a-1:again"]);
+            assert_eq!(
+                membership_rows(replica, &by_adder).await,
+                groups,
+                "replica {index} takes every group of the Create"
+            );
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_register_versions WHERE table_id = {table}"
+                )
+                .await,
+                groups,
+                "replica {index} keeps no other version"
+            );
+        }
+        assert_eq!(replicas[0].dump().await, replicas[2].dump().await);
+    });
+}
+
+#[test]
 fn derived_key_readd_rewrites_every_group() {
     block_on(async {
         let mut replicas = replicas(2).await;

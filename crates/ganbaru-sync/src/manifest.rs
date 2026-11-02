@@ -1833,7 +1833,8 @@ pub(crate) fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<Stri
 
 /// Why a table's derived key or existence group is malformed. Only the existence group has no
 /// column; it is a plain register the user never sees in a conflict or recovery entry. A
-/// derived-key table never tombstones, so it neither redirects nor repairs duplicates.
+/// derived-key table never tombstones, so it neither redirects nor repairs duplicates. Its key
+/// inputs are immutable columns, and its immutable columns are the key column or key inputs.
 fn derived_key_problems(table: &TableSpec) -> Vec<String> {
     let mut problems = Vec::new();
     for group in table.groups {
@@ -1880,6 +1881,16 @@ fn derived_key_problems(table: &TableSpec) -> Vec<String> {
             .any(|column| column.name == *input)
         {
             problems.push(format!("key input {input} is not an immutable column"));
+        }
+    }
+    // A re-add, or a Create covering a known row, writes every group again, and merge lets it
+    // replace Immutable versions, so they may hold only values the key derives from.
+    for column in table.immutable_columns() {
+        if column.name != table.key_column && !derived.key_inputs.contains(&column.name) {
+            problems.push(format!(
+                "immutable column {} is neither the key column nor a key input",
+                column.name
+            ));
         }
     }
     match derived.prefix {

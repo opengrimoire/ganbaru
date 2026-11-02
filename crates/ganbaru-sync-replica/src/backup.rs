@@ -61,8 +61,12 @@ const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
 
 /// Whether `relative` belongs to the vault layout a bundle carries: the vault marker and
 /// database files, the skeleton directories with their contents, and only folders directly
-/// below `projects`. Anything else, such as a `.git`, `.claude`, `.codex`, or `.vscode` folder
-/// or a stray `config.json` at the vault root, stays out of bundles in both directions.
+/// below `projects` whose names do not start with a dot. Anything else, such as a `.git`,
+/// `.claude`, `.codex`, or `.vscode` folder or a stray `config.json` at the vault root, stays
+/// out of bundles in both directions. Project folders are named by project IDs, which Ganbaru
+/// creates as UUIDs, while Git and the OpenCode, Cursor, and Grok CLIs search the parents of a launch
+/// folder that is not a repository root, so a hidden folder beside the project folders, such
+/// as `projects/.opencode` or `projects/.git`, would configure every one of them.
 pub fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
     let mut components = relative.components().map(|component| match component {
         Component::Normal(name) => name.to_str(),
@@ -75,8 +79,8 @@ pub fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
         None if directory => BUNDLE_DIRECTORIES.contains(&top),
         None => [VAULT_MANIFEST_FILE, DATABASE_FILE].contains(&top),
         Some(None) => false,
-        Some(Some(_)) if top == BUNDLE_PROJECTS_DIRECTORY => {
-            directory || components.next().is_some()
+        Some(Some(name)) if top == BUNDLE_PROJECTS_DIRECTORY => {
+            !name.starts_with('.') && (directory || components.next().is_some())
         }
         Some(Some(_)) => BUNDLE_DIRECTORIES.contains(&top),
     }

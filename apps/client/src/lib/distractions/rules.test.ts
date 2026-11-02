@@ -332,6 +332,19 @@ describe("normalizeDistractionsConfig", () => {
     expect(desktop.blockedApps.map((rule) => rule.identity)).toEqual(["first", "Second  Row"]);
   });
 
+  it("keeps a row whose identity is not empty even when JavaScript trims it away", () => {
+    const { desktop } = normalizeDistractionsConfig({
+      desktop: {
+        blockedApps: [
+          { identity: "﻿", name: "Steam" },
+          { identity: "", name: "Discord" },
+        ],
+      },
+    });
+
+    expect(desktop.blockedApps.map((rule) => [rule.identity, rule.name])).toEqual([["﻿", "Steam"]]);
+  });
+
   it("normalizes mobile app rules by stable package identity", () => {
     expect(normalizeDistractionsConfig({
       mobile: {

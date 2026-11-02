@@ -1254,6 +1254,11 @@ async fn apply_unrelated_handle(replicas: &mut [Replica]) {
     apply_without_writer(&mut replicas[2]).await;
 }
 
+/// Ids of the materialized handles, in order.
+async fn handle_ids(replica: &mut Replica) -> Vec<String> {
+    texts(replica, "SELECT id FROM fixture_handles ORDER BY id").await
+}
+
 /// The class index with its rule fingerprint, one line per stored row.
 async fn class_index_rows(replica: &mut Replica) -> Vec<String> {
     texts(
@@ -1274,10 +1279,7 @@ async fn class_index_rows(replica: &mut Replica) -> Vec<String> {
 fn a_recovery_read_under_changed_rules_leaves_the_rebuild_to_the_next_apply() {
     block_on(async {
         let mut replicas = observer_of_case_variants(test_engine()).await;
-        assert_eq!(
-            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
-            ["h-1", "h-4"]
-        );
+        assert_eq!(handle_ids(&mut replicas[2]).await, ["h-1", "h-4"]);
         replicas[2].engine = test_engine_of(&NOCASE_LABEL_MANIFEST);
         let before = class_index_rows(&mut replicas[2]).await;
         let observer = &mut replicas[2];
@@ -1295,7 +1297,7 @@ fn a_recovery_read_under_changed_rules_leaves_the_rebuild_to_the_next_apply() {
 
         apply_unrelated_handle(&mut replicas).await;
         assert_eq!(
-            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
+            handle_ids(&mut replicas[2]).await,
             ["h-1", "h-9"],
             "the row that now collides stayed shown"
         );
@@ -1309,15 +1311,12 @@ fn a_recovery_read_under_changed_rules_leaves_the_rebuild_to_the_next_apply() {
 fn rows_of_a_class_that_stops_colliding_are_shown_after_the_rebuild() {
     block_on(async {
         let mut replicas = observer_of_case_variants(test_engine_of(&NOCASE_LABEL_MANIFEST)).await;
-        assert_eq!(
-            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
-            ["h-1"]
-        );
+        assert_eq!(handle_ids(&mut replicas[2]).await, ["h-1"]);
         replicas[2].engine = test_engine();
 
         apply_unrelated_handle(&mut replicas).await;
         assert_eq!(
-            texts(&mut replicas[2], "SELECT id FROM fixture_handles ORDER BY id").await,
+            handle_ids(&mut replicas[2]).await,
             ["h-1", "h-4", "h-9"],
             "the row of the dissolved class stayed hidden"
         );

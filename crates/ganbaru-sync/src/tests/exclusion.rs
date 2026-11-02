@@ -22,6 +22,7 @@ use crate::manifest::vault::distractions::{
 };
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
+use crate::provenance::row_creating_devices;
 use crate::{HoldReason, LateChange, LateKind, StoreOutcome, SyncError};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
@@ -1577,6 +1578,48 @@ fn covering_create_and_exclusion_converge_in_either_order() {
         take(after, std::slice::from_ref(&covering)).await;
 
         assert_same_end(&mut orders, &[EDITED_AT]).await;
+    });
+}
+
+/// The devices `replica` names as creators of [`HELD_NOTE`].
+async fn held_note_creators(replica: &mut Replica) -> Vec<String> {
+    let manifest = replica.engine.manifest();
+    row_creating_devices(&mut replica.conn, manifest, NOTES_TABLE, HELD_NOTE)
+        .await
+        .unwrap()
+}
+
+/// A held Create names its device as a creator once an exclusion lets its value in, and not
+/// before.
+#[test]
+fn held_create_names_its_device_once_its_value_enters() {
+    block_on(async {
+        let mut orders = Orders::new(224).await;
+        let Orders {
+            anchor,
+            first,
+            second,
+            before,
+            ..
+        } = &mut orders;
+        edit(first, &note(HELD_NOTE, "Late", 1)).await;
+        deliver(second, first).await;
+        let covering = create_again(first, second, EDITED_AT).await;
+
+        deliver(before, second).await;
+        take(before, std::slice::from_ref(&covering)).await;
+        assert_eq!(
+            held_note_creators(before).await,
+            std::slice::from_ref(&first.device_id)
+        );
+
+        let device = first.device_id.clone();
+        Orders::remove(anchor, before, &device).await;
+        assert_eq!(held_versions(before).await, [EDITED_AT]);
+        assert_eq!(
+            held_note_creators(before).await,
+            std::slice::from_ref(&second.device_id)
+        );
     });
 }
 

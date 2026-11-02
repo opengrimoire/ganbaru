@@ -28,14 +28,16 @@ fn row_creating_devices_returns_each_creator() {
 
         let expected = vec![device_id(0), device_id(1)];
         for replica in [&mut left, &mut right] {
-            let devices = row_creating_devices(&mut replica.conn, NOTES_TABLE, "shared")
+            let manifest = replica.engine.manifest();
+            let devices = row_creating_devices(&mut replica.conn, manifest, NOTES_TABLE, "shared")
                 .await
                 .unwrap();
             assert_eq!(devices, expected);
         }
 
         local::reset_sync_state(&mut left.conn).await.unwrap();
-        let devices = row_creating_devices(&mut left.conn, NOTES_TABLE, "shared")
+        let manifest = left.engine.manifest();
+        let devices = row_creating_devices(&mut left.conn, manifest, NOTES_TABLE, "shared")
             .await
             .unwrap();
         assert!(devices.is_empty());
@@ -50,8 +52,9 @@ fn a_row_names_the_sealing_device_whatever_its_columns_claim() {
         add_note(&mut sender, "note").await;
         sender.seal().await.unwrap();
         reader.pull(&mut sender).await;
+        let manifest = reader.engine.manifest();
         assert_eq!(
-            row_creating_devices(&mut reader.conn, NOTES_TABLE, "note")
+            row_creating_devices(&mut reader.conn, manifest, NOTES_TABLE, "note")
                 .await
                 .unwrap(),
             vec![device_id(0)]
@@ -63,13 +66,13 @@ fn a_row_names_the_sealing_device_whatever_its_columns_claim() {
         reader.seal().await.unwrap();
         reader.apply_all().await.unwrap();
         assert_eq!(
-            row_creating_devices(&mut reader.conn, NOTES_TABLE, "note")
+            row_creating_devices(&mut reader.conn, manifest, NOTES_TABLE, "note")
                 .await
                 .unwrap(),
             vec![device_id(0)]
         );
         assert!(
-            row_creating_devices(&mut reader.conn, NOTES_TABLE, "absent")
+            row_creating_devices(&mut reader.conn, manifest, NOTES_TABLE, "absent")
                 .await
                 .unwrap()
                 .is_empty()

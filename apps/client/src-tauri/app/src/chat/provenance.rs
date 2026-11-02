@@ -6,6 +6,7 @@
 //! device that sealed the message and with the device that wrote its current text.
 
 use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
+use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::manifest::vault::chat::{MESSAGES_TABLE, REVISIONS_TABLE};
 use ganbaru_sync::{DeviceNames, DeviceRef, provenance};
 use serde::Serialize;
@@ -59,7 +60,7 @@ async fn current_revision_devices(
     let Some(revision_id) = revision_id.flatten() else {
         return Ok(Vec::new());
     };
-    provenance::row_creating_devices(connection, REVISIONS_TABLE, &revision_id)
+    provenance::row_creating_devices(connection, &VAULT_MANIFEST, REVISIONS_TABLE, &revision_id)
         .await
         .map_err(sync_error)
 }
@@ -72,10 +73,14 @@ async fn provenance_from_pool(
     message_item_id: &str,
 ) -> ChatResult<ChatMessageProvenance> {
     let mut connection = pool.acquire().await.map_err(database_error)?;
-    let device_ids =
-        provenance::row_creating_devices(&mut connection, MESSAGES_TABLE, message_item_id)
-            .await
-            .map_err(sync_error)?;
+    let device_ids = provenance::row_creating_devices(
+        &mut connection,
+        &VAULT_MANIFEST,
+        MESSAGES_TABLE,
+        message_item_id,
+    )
+    .await
+    .map_err(sync_error)?;
     let editor_ids = current_revision_devices(&mut connection, message_item_id).await?;
     let labels = provenance::device_labels(&mut connection)
         .await
@@ -111,6 +116,7 @@ pub async fn chat_message_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync::manifest::MergeKind;
     use ganbaru_sync_contracts::TableId;
 
     const SPACE: [u8; 16] = [7; 16];
@@ -169,8 +175,34 @@ mod tests {
         .unwrap();
     }
 
-    /// Records that `writer` created `row_key`.
+    /// Records that `writer` created `row_key` and holds its versions of the Immutable groups.
     async fn seed_creation(pool: &SqlitePool, table: TableId, row_key: &str, writer: u8) {
+        seed_skipped_creation(pool, table, row_key, writer).await;
+        let spec = VAULT_MANIFEST.table(table).unwrap();
+        for group in spec
+            .groups
+            .iter()
+            .filter(|group| group.kind == MergeKind::Immutable)
+        {
+            sqlx::query(
+                "INSERT INTO sync_register_versions
+                    (table_id, row_key, group_id, writer_id, seq, clock, value_hash)
+                 VALUES (?, ?, ?, ?, 1, 0, ?)",
+            )
+            .bind(i64::from(table.0))
+            .bind(row_key)
+            .bind(i64::from(group.id.get()))
+            .bind([writer; 16].as_slice())
+            .bind([writer; 32].as_slice())
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Records that `writer` created `row_key` with a Create that left the Immutable groups to
+    /// another writer.
+    async fn seed_skipped_creation(pool: &SqlitePool, table: TableId, row_key: &str, writer: u8) {
         sqlx::query(
             "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq)
              VALUES (?, ?, ?, 1)",
@@ -292,6 +324,30 @@ mod tests {
 
         assert!(provenance.devices.is_empty());
         assert_eq!(provenance.last_edited_by.len(), 1);
+    }
+
+    /// A device whose Create left the message's Immutable values to another device is not
+    /// named as a sealing device.
+    #[tokio::test]
+    async fn a_create_that_kept_another_devices_values_is_not_named() {
+        let pool = seeded_pool().await;
+        seed_device(&pool, 1, "honest", "Desk").await;
+        seed_device(&pool, 2, "forger", "Phone").await;
+        seed_message(&pool, "item-1", "revision-1").await;
+        seed_creation(&pool, MESSAGES_TABLE, "item-1", 1).await;
+        seed_skipped_creation(&pool, MESSAGES_TABLE, "item-1", 2).await;
+        seed_creation(&pool, REVISIONS_TABLE, "revision-1", 1).await;
+        seed_skipped_creation(&pool, REVISIONS_TABLE, "revision-1", 2).await;
+
+        let provenance = provenance_from_pool(&pool, "own", "item-1").await.unwrap();
+
+        let creators: Vec<&str> = provenance
+            .devices
+            .iter()
+            .map(|device| device.device_id.as_str())
+            .collect();
+        assert_eq!(creators, ["honest"]);
+        assert!(provenance.last_edited_by.is_empty());
     }
 
     #[tokio::test]

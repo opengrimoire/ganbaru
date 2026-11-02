@@ -26,6 +26,7 @@ use crate::error::failpoints;
 use crate::manifest::group_id;
 use crate::manifest::vault::chat::{CONVERSATIONS_TABLE, conversation_group};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
+use crate::provenance::row_creating_devices;
 use crate::repair;
 use crate::{ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
@@ -2870,6 +2871,40 @@ fn create_by_the_same_writer_keeps_its_immutable_version() {
         let change = forged_item_create(&mut replicas[0]).await;
         let forged = forge_change(&mut replicas[0], change).await;
         assert_item_keeps_created_at(&mut replicas, [1, 2], &forged).await;
+    });
+}
+
+/// A Create that left the Immutable groups as they were does not name its device as a creator,
+/// while its record still keeps the row created for exclusion.
+#[test]
+fn create_that_keeps_an_immutable_version_is_not_listed_as_a_creator() {
+    block_on(async {
+        let mut replicas = replicas_with_item().await;
+        let change = forged_item_create(&mut replicas[0]).await;
+        let forged = forge_change(&mut replicas[1], change).await;
+        for index in [0, 2] {
+            let replica = &mut replicas[index];
+            take_forged(replica, &forged).await;
+            let manifest = replica.engine.manifest();
+            assert_eq!(
+                row_creating_devices(&mut replica.conn, manifest, ITEMS_TABLE, ITEM)
+                    .await
+                    .unwrap(),
+                vec![device_id(0)],
+                "replica {index} names only the device whose creation stands"
+            );
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM sync_row_creations
+                         WHERE table_id = {} AND row_key = '{ITEM}'",
+                        ITEMS_TABLE.0
+                    ))
+                    .await,
+                2,
+                "replica {index} keeps both creation records"
+            );
+        }
     });
 }
 

@@ -1280,54 +1280,59 @@ async fn seed_test_channel(pool: &SqlitePool, now: &UtcTimestamp) {
     .unwrap();
 }
 
+/// Writes the seeded inputs of the review thread again under the ids that derive from their
+/// messages, since input ids are immutable keys, and returns those ids.
+async fn rekey_review_inputs_by_message(pool: &SqlitePool) -> Vec<String> {
+    let mut input_ids = Vec::new();
+    for message in [
+        "item:review-root",
+        "item:review-reply-1",
+        "item:review-reply-2",
+    ] {
+        let id = super::common::assignment_input_id(message).unwrap();
+        let seeded = sqlx::query(
+            "SELECT assignment_id, ordinal, routing_kind, delivery_state, created_at,
+                    delivered_at
+             FROM chat_work_assignment_inputs WHERE message_item_id = ?",
+        )
+        .bind(message)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM chat_work_assignment_inputs WHERE message_item_id = ?")
+            .bind(message)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_work_assignment_inputs
+                (id, assignment_id, message_item_id, ordinal, routing_kind,
+                 delivery_state, created_at, delivered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(seeded.get::<String, _>("assignment_id"))
+        .bind(message)
+        .bind(seeded.get::<i64, _>("ordinal"))
+        .bind(seeded.get::<String, _>("routing_kind"))
+        .bind(seeded.get::<String, _>("delivery_state"))
+        .bind(seeded.get::<String, _>("created_at"))
+        .bind(seeded.get::<Option<String>, _>("delivered_at"))
+        .execute(pool)
+        .await
+        .unwrap();
+        input_ids.push(id);
+    }
+    input_ids
+}
+
 #[test]
 fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
         let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
-        let mut input_ids = Vec::new();
-        for message in [
-            "item:review-root",
-            "item:review-reply-1",
-            "item:review-reply-2",
-        ] {
-            // Input ids are immutable keys, so the seeded input is written again under the id
-            // that derives from its message.
-            let id = super::common::assignment_input_id(message).unwrap();
-            let seeded = sqlx::query(
-                "SELECT assignment_id, ordinal, routing_kind, delivery_state, created_at,
-                        delivered_at
-                 FROM chat_work_assignment_inputs WHERE message_item_id = ?",
-            )
-            .bind(message)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            sqlx::query("DELETE FROM chat_work_assignment_inputs WHERE message_item_id = ?")
-                .bind(message)
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query(
-                "INSERT INTO chat_work_assignment_inputs
-                    (id, assignment_id, message_item_id, ordinal, routing_kind,
-                     delivery_state, created_at, delivered_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(seeded.get::<String, _>("assignment_id"))
-            .bind(message)
-            .bind(seeded.get::<i64, _>("ordinal"))
-            .bind(seeded.get::<String, _>("routing_kind"))
-            .bind(seeded.get::<String, _>("delivery_state"))
-            .bind(seeded.get::<String, _>("created_at"))
-            .bind(seeded.get::<Option<String>, _>("delivered_at"))
-            .execute(&pool)
-            .await
-            .unwrap();
-            input_ids.push(id);
-        }
+        let input_ids = rekey_review_inputs_by_message(&pool).await;
 
         let desk_writers = chat_writers_of(&["device:desk"]);
         let scope = scope_accepting(&pool, "assignment:review").await;
@@ -3215,6 +3220,7 @@ fn follow_up_recovery_stays_in_the_thread() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         seed_review_assignment_with_stranded_replies(&pool).await;
+        rekey_review_inputs_by_message(&pool).await;
         let scope = scope_accepting(&pool, "assignment:review").await;
         insert_pending_review_input_from_outside_the_thread(&pool).await;
         let writers = chat_writers_of(&["device:desk"]);

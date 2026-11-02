@@ -366,7 +366,8 @@ pub(super) struct NewAssignment<'a> {
 
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
 /// predecessor. A trigger message that is already an input moves to the new assignment, since
-/// its input id derives from the message. When this device executes it and someone here consented
+/// its input id derives from the message, and the predecessor's other pending replies of the
+/// same reply thread follow it in order. When this device executes it and someone here consented
 /// to the post, the same transaction freezes its context and queues its dispatch; otherwise the
 /// executing device does both when the assignment passes its acceptance check.
 pub(super) async fn create_assignment(
@@ -381,10 +382,10 @@ pub(super) async fn create_assignment(
         assignment.teammate_id,
         previous_id,
     )?;
-    if let Some(previous) = assignment
+    let reviewed_previous = assignment
         .latest_assignment
-        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)
-    {
+        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview);
+    if let Some(previous) = reviewed_previous {
         let settled = sqlx::query(
             "UPDATE chat_work_assignments
              SET state = 'completed', settled_at = ?, revision = revision + 1, updated_at = ?
@@ -441,6 +442,15 @@ pub(super) async fn create_assignment(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
+    if let Some(previous) = reviewed_previous {
+        let carried = pending_thread_inputs(transaction, &previous.id, assignment.reply_thread_id)
+            .await?
+            .into_iter()
+            .filter(|input| input.message_item_id != assignment.message_item_id.as_str())
+            .map(|input| input.id)
+            .collect::<Vec<_>>();
+        move_pending_inputs(transaction, &carried, &assignment_id).await?;
+    }
     #[cfg(desktop)]
     if device.executes(Some(assignment.executing_device_id)) && !device.unattended {
         queue_assignment_dispatch(
@@ -457,6 +467,92 @@ pub(super) async fn create_assignment(
     #[cfg(mobile)]
     let _ = (device, assignment.execution_target);
     Ok(assignment_id)
+}
+
+/// A pending input and the message it delivers.
+pub(super) struct PendingInput {
+    pub(super) id: String,
+    pub(super) message_item_id: String,
+}
+
+/// Reads, in delivery order, the pending replies of `assignment_id` whose messages belong to
+/// `reply_thread_id`. A synced input row can name any message, so the thread is checked on the
+/// message itself.
+pub(super) async fn pending_thread_inputs(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    reply_thread_id: &ChatReplyThreadId,
+) -> ChatResult<Vec<PendingInput>> {
+    let rows = sqlx::query(
+        "SELECT input.id, input.message_item_id
+         FROM chat_work_assignment_inputs input
+         JOIN chat_reply_threads thread ON thread.id = ?2
+         JOIN chat_conversation_items item
+           ON item.id = input.message_item_id
+          AND item.conversation_id = thread.conversation_id
+         WHERE input.assignment_id = ?1
+           AND (item.reply_thread_id = thread.id OR thread.root_item_id = item.id)
+           AND input.routing_kind IN ('steer', 'queued_continuation')
+           AND input.delivery_state = 'pending'
+         ORDER BY input.ordinal, input.id",
+    )
+    .bind(assignment_id.as_str())
+    .bind(reply_thread_id.as_str())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(PendingInput {
+                id: row.try_get("id").map_err(persistence_error)?,
+                message_item_id: row.try_get("message_item_id").map_err(persistence_error)?,
+            })
+        })
+        .collect()
+}
+
+/// Moves the pending inputs `input_ids`, in order, behind the inputs `assignment_id` already
+/// holds, as queued continuations.
+pub(super) async fn move_pending_inputs(
+    transaction: &mut Transaction<'_, Sqlite>,
+    input_ids: &[String],
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<()> {
+    if input_ids.is_empty() {
+        return Ok(());
+    }
+    let last_ordinal: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(ordinal), 0) FROM chat_work_assignment_inputs
+         WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    for (index, input_id) in input_ids.iter().enumerate() {
+        let ordinal = i64::try_from(index)
+            .ok()
+            .and_then(|offset| last_ordinal.checked_add(offset)?.checked_add(1))
+            .ok_or_else(|| {
+                ChatError::new(
+                    ChatErrorCode::Validation,
+                    "Too many pending follow-up messages",
+                    true,
+                )
+            })?;
+        sqlx::query(
+            "UPDATE chat_work_assignment_inputs
+             SET assignment_id = ?, ordinal = ?, routing_kind = 'queued_continuation'
+             WHERE id = ? AND delivery_state = 'pending'",
+        )
+        .bind(assignment_id.as_str())
+        .bind(ordinal)
+        .bind(input_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    Ok(())
 }
 
 /// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,

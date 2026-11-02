@@ -9,7 +9,8 @@ use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
     NewAssignment, PostingDevice, create_assignment, end_assignment_dispatch_jobs,
-    read_assignment_executing_device, require_participating_teammate, set_assignment_state,
+    move_pending_inputs, pending_thread_inputs, read_assignment_executing_device,
+    require_participating_teammate, set_assignment_state,
 };
 use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error, timestamp};
 use crate::chat::device_state::{
@@ -337,36 +338,6 @@ async fn reroute_assignment(
     Ok(Some(successor_id))
 }
 
-/// Moves the pending inputs `input_ids`, in order, behind the trigger of `assignment_id` as
-/// queued continuations.
-async fn move_pending_inputs(
-    transaction: &mut Transaction<'_, Sqlite>,
-    input_ids: &[String],
-    assignment_id: &ChatWorkAssignmentId,
-) -> ChatResult<()> {
-    for (index, input_id) in input_ids.iter().enumerate() {
-        let ordinal = i64::try_from(index + 2).map_err(|_| {
-            ChatError::new(
-                ChatErrorCode::Validation,
-                "Too many pending follow-up messages",
-                true,
-            )
-        })?;
-        sqlx::query(
-            "UPDATE chat_work_assignment_inputs
-             SET assignment_id = ?, ordinal = ?, routing_kind = 'queued_continuation'
-             WHERE id = ? AND delivery_state = 'pending'",
-        )
-        .bind(assignment_id.as_str())
-        .bind(ordinal)
-        .bind(input_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-    }
-    Ok(())
-}
-
 /// Reads, past `after_id` and up to `limit`, the assignments with pending replies that arrived
 /// after they asked for review, which `device` executes, ran without an executing device, or
 /// takes over from an executing device that can no longer write Chat. `only` narrows the read
@@ -448,8 +419,10 @@ pub(super) async fn recover_stranded_follow_up_assignments(
     }
 }
 
-/// Moves the pending inputs of `assignment_id` onto a follow-up assignment `device` runs, when
-/// `scope` accepted the current subject, and returns the follow-up.
+/// Moves the pending replies of `assignment_id` that belong to its reply thread onto a
+/// follow-up assignment `device` runs, when `scope` accepted the current subject, and returns
+/// the follow-up. An input whose message lies outside the thread stays with the settled
+/// assignment.
 async fn recover_follow_up(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -458,35 +431,24 @@ async fn recover_follow_up(
     now: &UtcTimestamp,
 ) -> ChatResult<Option<ChatWorkAssignmentId>> {
     let previous = read_assignment(pool, assignment_id).await?;
+    if previous.state != ChatWorkAssignmentState::ReadyForReview {
+        return Ok(None);
+    }
     let reply_thread_id = previous.reply_thread_id.clone();
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     if !assignment_subject_is_accepted(&mut transaction, assignment_id, scope).await? {
         transaction.rollback().await.map_err(persistence_error)?;
         return Ok(None);
     }
-    let stranded = sqlx::query(
-        "SELECT input.id, input.message_item_id
-         FROM chat_work_assignment_inputs input
-         JOIN chat_work_assignments assignment ON assignment.id = input.assignment_id
-         WHERE input.assignment_id = ? AND assignment.state = 'ready_for_review'
-           AND input.routing_kind IN ('steer', 'queued_continuation')
-           AND input.delivery_state = 'pending'
-         ORDER BY input.ordinal",
-    )
-    .bind(assignment_id.as_str())
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(persistence_error)?;
-    let Some(first) = stranded.first() else {
+    // The first reply of the thread triggers the follow-up, and `create_assignment` carries
+    // the later ones behind it.
+    let stranded = pending_thread_inputs(&mut transaction, assignment_id, &reply_thread_id).await?;
+    let Some(first) = stranded.into_iter().next() else {
         transaction.rollback().await.map_err(persistence_error)?;
         return Ok(None);
     };
-    let first_message_id = ChatConversationItemId::new(
-        first
-            .try_get::<String, _>("message_item_id")
-            .map_err(persistence_error)?,
-    )
-    .map_err(identifier_error)?;
+    let first_message_id =
+        ChatConversationItemId::new(first.message_item_id).map_err(identifier_error)?;
     let teammate_id = previous.teammate.id.clone();
     let recovered_assignment_id = create_assignment(
         &mut transaction,
@@ -500,17 +462,6 @@ async fn recover_follow_up(
         },
         device,
         now,
-    )
-    .await?;
-    let following_input_ids = stranded
-        .iter()
-        .skip(1)
-        .map(|input| input.try_get::<String, _>("id").map_err(persistence_error))
-        .collect::<ChatResult<Vec<_>>>()?;
-    move_pending_inputs(
-        &mut transaction,
-        &following_input_ids,
-        &recovered_assignment_id,
     )
     .await?;
     transaction.commit().await.map_err(persistence_error)?;

@@ -366,8 +366,8 @@ fn an_honest_edit_of_a_late_row_keeps_its_effects_and_a_restore_brings_the_row_b
 }
 
 /// A removed device deletes a row no operation may delete, past its cutoff: the deletion lists no
-/// late change, a listing kept for it seals nothing, and the admin's writer keeps applying on its
-/// peers, which hold such a deletion as invalid.
+/// late change, a restore of a listing kept for it is refused, and the admin's writer keeps
+/// applying on its peers, which hold such a deletion as invalid.
 #[test]
 fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
     block_on(async {
@@ -416,7 +416,7 @@ fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
             .await;
         let listed = late_changes(&mut anchor).await;
         assert_eq!(listed.len(), 1);
-        let report = anchor
+        let restored = anchor
             .engine
             .restore_late_change(
                 &mut anchor.conn,
@@ -425,9 +425,11 @@ fn a_late_tombstone_of_a_never_deleted_row_is_neither_listed_nor_restored() {
                 &mut anchor.identity.local(),
                 anchor.now_ms,
             )
-            .await
-            .unwrap();
-        assert_eq!(report.sealed_ops, 0);
+            .await;
+        assert!(
+            matches!(restored, Err(SyncError::InvalidRequest(_))),
+            "{restored:?}"
+        );
         assert_eq!(
             anchor.count("SELECT count(*) FROM sync_tombstones").await,
             0

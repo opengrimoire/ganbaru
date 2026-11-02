@@ -133,6 +133,7 @@ pub(crate) async fn read_mcp_status(
         workspace,
         crate::chat::workspace::commands::UndecidedProjectConfiguration::Restrict,
         driver.project_configuration_restriction(),
+        driver.project_configuration_paths(),
     )
     .await?;
     driver

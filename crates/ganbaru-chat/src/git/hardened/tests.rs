@@ -1113,7 +1113,10 @@ fn provider_configuration_overflow_blocks_only_its_provider() {
     assert_eq!(entries.exceeded_paths(CLAUDE).count(), 0);
 
     let before = entries.digest();
-    write(".opencode/plugin/marker.ts", "export default { changed: true }\n");
+    write(
+        ".opencode/plugin/marker.ts",
+        "export default { changed: true }\n",
+    );
     assert_eq!(
         provider_configuration_entries_blocking(root)
             .expect("entries should read")

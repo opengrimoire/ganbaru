@@ -74,6 +74,7 @@ pub(crate) async fn send_turn(
         &origin,
         existing.as_ref(),
         inspection_driver.project_configuration_restriction(),
+        inspection_driver.project_configuration_paths(),
     )
     .await?;
     require_project_accepts_ai_work(&pool, &target.project_id).await?;
@@ -380,6 +381,7 @@ async fn resolve_turn_target(
     origin: &TurnOrigin,
     existing: Option<&super::persistence::ThreadRuntimeData>,
     restriction: ganbaru_chat_contracts::models::ProjectConfigurationRestriction,
+    reads: &[ganbaru_chat_contracts::models::ProviderConfigurationPath],
 ) -> ChatResult<(
     TurnPersistenceTarget,
     crate::chat::workspace::AuthorizedWorkingFolder,
@@ -437,6 +439,7 @@ async fn resolve_turn_target(
                     crate::chat::workspace::commands::UndecidedProjectConfiguration::Ask
                 },
                 restriction,
+                reads,
             )
             .await?;
             if matches!(

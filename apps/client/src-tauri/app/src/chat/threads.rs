@@ -178,6 +178,7 @@ pub async fn chat_fork_thread(
                 authorized,
                 super::workspace::commands::UndecidedProjectConfiguration::Ask,
                 driver.project_configuration_restriction(),
+                driver.project_configuration_paths(),
             )
             .await?;
             let verified = ganbaru_chat_contracts::models::VerifiedWorkspaceContext {

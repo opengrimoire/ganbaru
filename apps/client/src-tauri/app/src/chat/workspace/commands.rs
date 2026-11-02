@@ -5,11 +5,11 @@ use super::{
     ProjectWorkingFolder, ProjectWorkingFolderRead, TrustDecisionCheck,
     WorkingFolderAuthorizationOperation, WorkingFolderKind, authorize_workspace,
     automatic_trust_record, check_project_configuration, check_trust_decision,
-    ensure_managed_working_folder_binding, filesystem_identity, initialized_repository_identity,
-    open_authorized_workspace, prepare_workspace_binding, probe_repository,
-    project_configuration_trust_required_error, remove_active_device_binding,
-    store_active_device_binding, trust_decision_required_error, trust_record,
-    validate_external_folder_outside_vault, workspace_read,
+    ensure_managed_working_folder_binding, exceeded_project_configuration_error,
+    filesystem_identity, initialized_repository_identity, open_authorized_workspace,
+    prepare_workspace_binding, probe_repository, project_configuration_trust_required_error,
+    remove_active_device_binding, store_active_device_binding, trust_decision_required_error,
+    trust_record, validate_external_folder_outside_vault, workspace_read,
     worktree_project_configuration_refused_error,
 };
 use crate::chat::revocation::ActiveRunSelector;
@@ -25,7 +25,8 @@ use ganbaru_chat::git::hardened::{
 use ganbaru_chat::repository::workspaces as repository;
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess,
-    ProjectConfigurationRestriction, ProjectWorkingFolderId, UtcTimestamp,
+    ProjectConfigurationRestriction, ProjectWorkingFolderId, ProviderConfigurationPath,
+    UtcTimestamp,
 };
 use ganbaru_working_folders::WorkingFolderTrustRecord;
 use sqlx::SqlitePool;
@@ -348,13 +349,16 @@ async fn require_trust_decision<R: Runtime>(
 /// failing with [`trust_decision_required_error`] so the user can decide and
 /// retry, and starting restricted for turns nobody is present to answer. A
 /// provider whose `restriction` is unavailable never starts restricted in a
-/// launch folder that holds configuration.
+/// launch folder that holds configuration. `reads` lists the covered paths the
+/// provider loads; one of them past the digest bounds refuses the start
+/// whenever the provider would load it.
 pub async fn settle_project_configuration<R: Runtime>(
     app: &tauri::AppHandle<R>,
     root: &Path,
     mut launch: AuthorizedWorkingFolder,
     undecided: UndecidedProjectConfiguration,
     restriction: ProjectConfigurationRestriction,
+    reads: &[ProviderConfigurationPath],
 ) -> ChatResult<AuthorizedWorkingFolder> {
     let root_entries = provider_configuration_entries(root.to_path_buf()).await?;
     let launch_entries = if launch.canonical_path == root {
@@ -363,15 +367,62 @@ pub async fn settle_project_configuration<R: Runtime>(
         provider_configuration_entries(launch.canonical_path.clone()).await?
     };
     let scope = read_active_working_folder_scope(app).map_err(device_state_error)?;
-    launch.project_configuration = resolve_project_configuration(
+    launch.project_configuration = resolve_loaded_project_configuration(
         &scope,
         &launch.working_folder_id,
         &root_entries,
         &launch_entries,
         undecided,
         restriction,
+        reads,
     )?;
     Ok(launch)
+}
+
+/// Resolves the access of one provider start as
+/// [`resolve_project_configuration`] does, and refuses it when the provider
+/// would load a path of `reads` that passed the digest bounds in `launch`. No
+/// decision covers that content, so a provider with no restricted launch is
+/// refused before any question, and an enforcing one only when trusted.
+fn resolve_loaded_project_configuration(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+    undecided: UndecidedProjectConfiguration,
+    restriction: ProjectConfigurationRestriction,
+    reads: &[ProviderConfigurationPath],
+) -> ChatResult<ProjectConfigurationAccess> {
+    if restriction == ProjectConfigurationRestriction::Unavailable {
+        refuse_exceeded_project_configuration(launch, reads)?;
+    }
+    let access = resolve_project_configuration(
+        scope,
+        working_folder_id,
+        root,
+        launch,
+        undecided,
+        restriction,
+    )?;
+    if access == ProjectConfigurationAccess::Trusted {
+        refuse_exceeded_project_configuration(launch, reads)?;
+    }
+    Ok(access)
+}
+
+fn refuse_exceeded_project_configuration(
+    launch: &ProviderConfigurationEntries,
+    reads: &[ProviderConfigurationPath],
+) -> ChatResult<()> {
+    let exceeded = launch
+        .exceeded_paths(reads)
+        .map(ProviderConfigurationPath::relative_path)
+        .collect::<Vec<_>>();
+    if exceeded.is_empty() {
+        Ok(())
+    } else {
+        Err(exceeded_project_configuration_error(&exceeded))
+    }
 }
 
 /// Decides the project configuration access of one provider start from this
@@ -1155,14 +1206,15 @@ mod tests {
         FolderSelectionReceipt, MAX_PENDING_FOLDER_SELECTIONS, MessageDialogResult,
         ProjectWorkingFolderSelections, TrustAnswer, UndecidedProjectConfiguration,
         WorkingFolderDeviceScope, WorkingFolderTrustPrompt, preferred_workspace_picker_directory,
-        resolve_project_configuration, trust_answer, validate_trust_prompt,
+        resolve_loaded_project_configuration, resolve_project_configuration, trust_answer,
+        validate_trust_prompt,
     };
     use ganbaru_chat::git::hardened::{
         ProviderConfigurationEntries, provider_configuration_entries_blocking,
     };
     use ganbaru_chat_contracts::models::{
         ChatError, ChatErrorCode, ProjectConfigurationAccess, ProjectConfigurationRestriction,
-        ProjectWorkingFolderId, UtcTimestamp,
+        ProjectWorkingFolderId, ProviderConfigurationPath, UtcTimestamp,
     };
     use ganbaru_working_folders::WorkingFolderTrustRecord;
     use std::fs;
@@ -1267,6 +1319,82 @@ mod tests {
                 file,
             );
         }
+    }
+
+    #[test]
+    fn restricted_run_refuses_exceeded_configuration_only_for_providers_loading_it() {
+        const CLAUDE: &[ProviderConfigurationPath] = &[
+            ProviderConfigurationPath::ClaudeSettings,
+            ProviderConfigurationPath::ClaudeSkills,
+        ];
+        const OPENCODE: &[ProviderConfigurationPath] = &[
+            ProviderConfigurationPath::OpenCodeJson,
+            ProviderConfigurationPath::OpenCode,
+        ];
+        let folder = ConfigurationFolder::with_files(&[
+            ".claude/settings.json",
+            ".opencode/node_modules/a/b/c/d/e/f/g/h/index.js",
+        ]);
+        let entries = folder.entries();
+        let resolve = |scope: &WorkingFolderDeviceScope,
+                       undecided: UndecidedProjectConfiguration,
+                       restriction: ProjectConfigurationRestriction,
+                       reads: &[ProviderConfigurationPath]| {
+            resolve_loaded_project_configuration(
+                scope,
+                &trust_folder_id(),
+                &entries,
+                &entries,
+                undecided,
+                restriction,
+                reads,
+            )
+        };
+        let trusted = scope_deciding(&entries, true);
+
+        for scope in [&trusted, &WorkingFolderDeviceScope::default()] {
+            let error = resolve(
+                scope,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Unavailable,
+                OPENCODE,
+            )
+            .expect_err("OpenCode must not load an unchecked tree");
+            assert_eq!(error.code, ChatErrorCode::ConfigurationInvalid);
+            assert!(error.message.contains(".opencode"), "{}", error.message);
+            assert!(error.details.is_none(), "trusting cannot settle it");
+        }
+        assert_eq!(
+            resolve(
+                &trusted,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Enforced,
+                CLAUDE,
+            )
+            .expect("Claude does not load the oversized tree"),
+            ProjectConfigurationAccess::Trusted
+        );
+        assert_eq!(
+            resolve(
+                &WorkingFolderDeviceScope::default(),
+                UndecidedProjectConfiguration::Restrict,
+                ProjectConfigurationRestriction::Enforced,
+                ProviderConfigurationPath::ALL,
+            )
+            .expect("a restricted enforcing start loads no project configuration"),
+            ProjectConfigurationAccess::Restricted
+        );
+        assert_eq!(
+            resolve(
+                &trusted,
+                UndecidedProjectConfiguration::Ask,
+                ProjectConfigurationRestriction::Enforced,
+                ProviderConfigurationPath::ALL,
+            )
+            .expect_err("a trusted start loading the tree must be refused")
+            .code,
+            ChatErrorCode::ConfigurationInvalid
+        );
     }
 
     #[test]

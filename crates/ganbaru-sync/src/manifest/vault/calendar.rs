@@ -556,6 +556,7 @@ const BASE: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `calendars`. Removal is a tombstone without redirect.

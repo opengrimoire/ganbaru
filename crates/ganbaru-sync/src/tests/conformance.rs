@@ -27,8 +27,8 @@ use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, Deletion, DerivedKey, DomainManifest,
     GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest,
     MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn,
-    Resolution, RowKeyRule, SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange,
-    TableSpec, TreeSpec, group_id, is_sql_literal,
+    Resolution, RowKeyRule, RowRetention, SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES,
+    TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -2331,6 +2331,86 @@ fn validation_refuses_malformed_references() {
     ] {
         assert!(malformed.contains(problem), "{problem}: {malformed}");
     }
+}
+
+#[test]
+fn validation_refuses_a_retention_rule_that_cannot_hold() {
+    const RULE: RowRetention = RowRetention {
+        group: group_id(0),
+        column: "owner_id",
+        value: "selected",
+        parent: ITEMS_TABLE,
+    };
+    const RETAINED: TableSpec = TableSpec {
+        retained: Some(RULE),
+        ..LINKS
+    };
+    const WELL_FORMED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, RETAINED],
+        ..FIXTURE_DOMAIN
+    };
+    leaked(&[&WELL_FORMED]).validate().unwrap();
+
+    const MUTABLE: TableSpec = TableSpec {
+        retained: Some(RowRetention {
+            group: group_id(1),
+            ..RULE
+        }),
+        ..LINKS
+    };
+    const MUTABLE_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, MUTABLE],
+        ..FIXTURE_DOMAIN
+    };
+    let mutable = validation_error(&[&MUTABLE_DOMAIN]);
+    assert!(
+        mutable.contains("the retention group is not immutable"),
+        "{mutable}"
+    );
+
+    const UNRELATED: TableSpec = TableSpec {
+        retained: Some(RowRetention {
+            column: "missing",
+            parent: CYCLE_A_TABLE,
+            ..RULE
+        }),
+        resolutions: &[Resolution::DuplicateRepair {
+            columns: &["note"],
+            collation: Collation::Binary,
+        }],
+        ..LINKS
+    };
+    const UNRELATED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, UNRELATED],
+        ..FIXTURE_DOMAIN
+    };
+    let unrelated = validation_error(&[&UNRELATED_DOMAIN]);
+    for problem in [
+        "a retained table repairs duplicates, a tree, or edges",
+        "retention column missing is not text of the group",
+        "the retention group does not cascade from the parent",
+    ] {
+        assert!(unrelated.contains(problem), "{problem}: {unrelated}");
+    }
+
+    const CHAINED_PARENT: TableSpec = TableSpec {
+        retained: Some(RowRetention {
+            group: group_id(0),
+            column: "peer",
+            value: "selected",
+            parent: LINKS_TABLE,
+        }),
+        ..CYCLE_A
+    };
+    const CHAINED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CHAINED_PARENT, CYCLE_B, RETAINED],
+        ..FIXTURE_DOMAIN
+    };
+    let chained = validation_error(&[&CHAINED]);
+    assert!(
+        chained.contains("the retention parent reaches retention, a tree, or edges"),
+        "{chained}"
+    );
 }
 
 #[test]

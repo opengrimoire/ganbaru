@@ -324,6 +324,7 @@ pub const TAGS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `quick_notes`.
@@ -361,6 +362,7 @@ pub const NOTES: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.

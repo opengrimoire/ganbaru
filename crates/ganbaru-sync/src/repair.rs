@@ -550,7 +550,7 @@ async fn continues_through(
     visibility: &mut Visibility,
     (table, key): &RowRef,
 ) -> SyncResult<bool> {
-    if visibility.state(conn, *table, key).await?.is_none() {
+    if visibility.state(engine, conn, *table, key).await?.is_none() {
         return Ok(false);
     }
     if visibility.hidden(engine, conn, *table, key).await? {
@@ -662,7 +662,7 @@ pub(crate) async fn repair_changes(
             });
         }
         for (_, key) in dirty.iter().filter(|(dirty, _)| *dirty == table.id) {
-            if visibility.state(conn, table.id, key).await? != Some(RowState::Live)
+            if visibility.state(engine, conn, table.id, key).await? != Some(RowState::Live)
                 || visibility.self_hidden(engine, conn, table.id, key).await?
             {
                 continue;

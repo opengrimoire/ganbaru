@@ -113,6 +113,7 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_items`.
@@ -186,6 +187,7 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -329,6 +331,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
@@ -453,6 +456,7 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// Group ids of [`NODES`].
@@ -544,6 +548,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_nodes`.
@@ -686,6 +691,7 @@ pub(super) const EDGES: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_edges`.
@@ -755,6 +761,7 @@ pub(super) const DRAFTS: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `fixture_drafts`.

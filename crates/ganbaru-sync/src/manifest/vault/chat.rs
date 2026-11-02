@@ -643,6 +643,7 @@ const BASE: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `chat_participants`, archive-only. The local owner keeps the id the baseline seeds, which an

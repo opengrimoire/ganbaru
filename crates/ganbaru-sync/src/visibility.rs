@@ -15,18 +15,24 @@
 //! it finishes, so each row is walked once per [`Visibility`]. Every input is merge state, so
 //! replicas that cannot seal repairs still agree on which rows are shown.
 //!
+//! A tombstoned row that its table's [`crate::manifest::RowRetention`] keeps reads as live while
+//! its parent is shown, through [`Visibility::state`] and everything built on it. The merge state
+//! keeps the tombstone, and the row reads as tombstoned again once the parent goes.
+//!
 //! The one local input is a row a domain constraint refused, see [`crate::refused`]. It joins
 //! through [`Visibility::admit_refusals`] after repairs and row flags are done, and only decides
 //! what materializes on this replica.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use ganbaru_sync_contracts::{Field, TableId, VersionVector};
 use sqlx::SqliteConnection;
 
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{ColumnType, MergeKind, OnDelete, TableSpec};
+use crate::manifest::{ColumnType, MergeKind, OnDelete, RowRetention, TableSpec};
 use crate::merge::{self, RowState, table_param};
 use crate::repair::Contested;
 use crate::{Engine, edges, exclusion, publication, refused, repair, sql, tree};
@@ -371,7 +377,8 @@ impl OwnHiding {
 /// Rows hidden by merge state, and the cascade roots computed so far.
 ///
 /// Merge state stays fixed while a visibility is in use, so the merge state it reads for a row
-/// is read once and kept with the cascade roots.
+/// is read once and kept with the cascade roots. [`Visibility::state`] is the effective state,
+/// which retention decides; recovery of a deletion reads the raw state instead.
 #[derive(Debug, Default)]
 pub(crate) struct Visibility {
     /// Hidden duplicates.
@@ -393,6 +400,9 @@ pub(crate) struct Visibility {
     facts: HashMap<RowRef, RowFacts>,
     /// Own hiding per live row read so far.
     own: HashMap<RowRef, OwnHiding>,
+    /// Whether a row of a table with a retention rule is retained, per row read so far. It
+    /// follows its parent's visibility, so it is dropped with the cascade roots.
+    retained: HashMap<RowRef, bool>,
     /// Refused rows count as hidden: they were admitted and at least one is listed.
     refusals_on: bool,
     /// Listed rows that are not hidden, since this materialization writes them again.
@@ -535,7 +545,7 @@ impl Visibility {
         for (table, classes) in contested {
             let keys: BTreeSet<&String> = classes.iter().flatten().collect();
             for key in keys {
-                let facts = self.facts(conn, *table, key).await?;
+                let facts = self.effective(engine, conn, *table, key).await?;
                 if facts.state != Some(RowState::Live) {
                     continue;
                 }
@@ -595,6 +605,7 @@ impl Visibility {
         self.retrying = retrying;
         self.cascade.clear();
         self.coverage.clear();
+        self.retained.clear();
         Ok(())
     }
 
@@ -655,13 +666,14 @@ impl Visibility {
     /// or exceeds [`MAX_REDIRECT_DEPTH`].
     pub(crate) async fn follow(
         &mut self,
+        engine: &Engine,
         conn: &mut SqliteConnection,
         table: TableId,
         key: &str,
     ) -> SyncResult<Option<String>> {
         let mut current = key.to_string();
         for _ in 0..MAX_REDIRECT_DEPTH {
-            match self.state(conn, table, &current).await? {
+            match self.state(engine, conn, table, &current).await? {
                 None => return Ok(None),
                 Some(RowState::Live) => match self.keeper(table, &current) {
                     Some(keeper) => current = keeper.clone(),
@@ -685,7 +697,7 @@ impl Visibility {
         identity: bool,
     ) -> SyncResult<Option<RootKind>> {
         let (table, key) = row;
-        let facts = self.facts(conn, *table, key).await?;
+        let facts = self.effective(engine, conn, *table, key).await?;
         Ok(match facts.state {
             None => Some(RootKind::Missing),
             Some(RowState::Tombstoned) => Some(RootKind::Tombstoned),
@@ -762,7 +774,7 @@ impl Visibility {
             let followed = if identity {
                 Some(target.clone())
             } else {
-                self.follow(conn, reference.table, target).await?
+                self.follow(engine, conn, reference.table, target).await?
             };
             match followed {
                 Some(followed) => targets.push(CascadeTarget {
@@ -852,7 +864,7 @@ impl Visibility {
         table: TableId,
         key: &str,
     ) -> SyncResult<bool> {
-        let facts = self.facts(conn, table, key).await?;
+        let facts = self.effective(engine, conn, table, key).await?;
         Ok(match facts.state {
             None => false,
             Some(RowState::Tombstoned) => true,
@@ -865,14 +877,74 @@ impl Visibility {
         })
     }
 
-    /// The sync state of a row, read once per visibility.
+    /// The effective sync state of a row: a retained tombstoned row reads as live.
     pub(crate) async fn state(
         &mut self,
+        engine: &Engine,
         conn: &mut SqliteConnection,
         table: TableId,
         key: &str,
     ) -> SyncResult<Option<RowState>> {
-        Ok(self.facts(conn, table, key).await?.state)
+        Ok(self.effective(engine, conn, table, key).await?.state)
+    }
+
+    /// [`Self::facts`] with a retained tombstoned row read as live.
+    async fn effective(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        table: TableId,
+        key: &str,
+    ) -> SyncResult<RowFacts> {
+        let facts = self.facts(conn, table, key).await?;
+        if facts.state == Some(RowState::Tombstoned)
+            && self.retained(engine, conn, table, key).await?
+        {
+            return Ok(RowFacts {
+                state: Some(RowState::Live),
+                ..facts
+            });
+        }
+        Ok(facts)
+    }
+
+    /// Whether a tombstone of this row is overridden: its table's retention rule selects the row
+    /// from its winning versions, and the parent they name is live and shown. Reads merge state
+    /// and never the domain row, so every replica answers the same. The future is boxed because
+    /// reading the parent's visibility comes back through this function's callers.
+    pub(crate) fn retained<'a>(
+        &'a mut self,
+        engine: &'a Engine,
+        conn: &'a mut SqliteConnection,
+        table: TableId,
+        key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = SyncResult<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(spec) = engine.manifest().table(table) else {
+                return Err(corrupt("retention read of an unknown table"));
+            };
+            let Some(rule) = spec.retained else {
+                return Ok(false);
+            };
+            let row = (table, key.to_string());
+            if let Some(retained) = self.retained.get(&row) {
+                return Ok(*retained);
+            }
+            let versions = merge::versions(engine, conn, table, key).await?;
+            let winners = merge::winners(engine, spec, &versions);
+            let parent = winners
+                .get(&rule.group)
+                .and_then(|winner| retention_parent(spec, rule, winner.value.fields()));
+            let retained = match parent {
+                Some(parent) => {
+                    self.state(engine, conn, rule.parent, &parent).await? == Some(RowState::Live)
+                        && !self.hidden(engine, conn, rule.parent, &parent).await?
+                }
+                None => false,
+            };
+            self.retained.insert(row, retained);
+            Ok(retained)
+        })
     }
 
     /// The sync state of a row and whether it waits for a creation, read once per visibility.
@@ -970,7 +1042,7 @@ impl Visibility {
         table: TableId,
         key: &str,
     ) -> SyncResult<bool> {
-        if self.state(conn, table, key).await?.is_none() {
+        if self.state(engine, conn, table, key).await?.is_none() {
             return Ok(false);
         }
         if self.is_refused(conn, &(table, key.to_string())).await? {
@@ -978,6 +1050,27 @@ impl Visibility {
         }
         Ok(self.self_hidden(engine, conn, table, key).await?
             || self.cascade_roots(engine, conn, table, key).await?.hides())
+    }
+}
+
+/// The parent row `rule` retains a row under, from the winning `fields` of its group, when the
+/// fields select the row.
+fn retention_parent(spec: &TableSpec, rule: RowRetention, fields: &[Field]) -> Option<String> {
+    let group = spec.group(rule.group)?;
+    let selector = group
+        .columns()
+        .iter()
+        .position(|column| column.name == rule.column)?;
+    let selected = matches!(fields.get(selector), Some(Field::Text(value)) if value == rule.value);
+    if !selected {
+        return None;
+    }
+    let (field, _) = group
+        .reference_columns()
+        .find(|(_, reference)| reference.table == rule.parent)?;
+    match fields.get(field) {
+        Some(Field::Text(parent)) => Some(parent.clone()),
+        _ => None,
     }
 }
 

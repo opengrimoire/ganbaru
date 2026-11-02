@@ -306,6 +306,7 @@ const BASE: TableSpec = TableSpec {
     holds_deletes: false,
     key_rule: RowKeyRule::Any,
     deletion: Deletion::Ordinary,
+    retained: None,
 };
 
 /// `distractions_settings`, the seeded singleton row [`SETTINGS_KEY`]. It is never deleted.

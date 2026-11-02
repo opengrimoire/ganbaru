@@ -74,6 +74,16 @@ impl Manifest {
             if let Some(parent) = table.key_parent {
                 let _ = writeln!(text, "  key parent {}", parent.0);
             }
+            if let Some(retained) = table.retained {
+                let _ = writeln!(
+                    text,
+                    "  retained group {} {}={} parent {}",
+                    retained.group.get(),
+                    retained.column,
+                    retained.value,
+                    retained.parent.0
+                );
+            }
             match table.owner {
                 Some(RowOwner::KeyIsDevice { device_column }) => {
                     let _ = writeln!(text, "  owner key is device {device_column}");

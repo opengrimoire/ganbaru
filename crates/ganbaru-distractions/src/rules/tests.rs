@@ -215,7 +215,9 @@ fn desktop_rule_matchers_enforce_a_whitespace_identity_and_skip_only_an_empty_on
         Some(&desktop_identity)
     );
     assert_eq!(
-        matchers.get("discord").map(|matcher| &matcher.rule_identity),
+        matchers
+            .get("discord")
+            .map(|matcher| &matcher.rule_identity),
         Some(&limit_identity)
     );
     assert!(!matchers.contains_key("spotify"));

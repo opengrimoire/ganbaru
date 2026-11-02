@@ -606,8 +606,8 @@ function normalizeAppRuleValue(value: unknown): DistractionsAppRule | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.name !== "string") return null;
-  // Only an empty identity is dropped. JavaScript trimming removes characters that native
-  // enforcement keeps, so any other identity stays visible and removable in Settings.
+  // Only an empty identity is dropped, matching native enforcement, which skips only empty
+  // identities. Every enforced row therefore stays visible and removable in Settings.
   if (typeof record.identity !== "string" || record.identity === "") return null;
   const name = normalizeDistractionsAppName(record.name);
   if (!name) return null;

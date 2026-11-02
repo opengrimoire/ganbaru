@@ -438,17 +438,16 @@ pub fn desktop_rule_matchers(
             continue;
         }
         let rule_identity = match &app.rule_identity {
-            // The stored identity stays exact because close authorization finds the rule by it.
-            DistractionsDesktopRuleIdentity::DesktopApp { rule_id }
-                if !rule_id.trim().is_empty() =>
-            {
+            // The stored identity stays exact because close authorization finds the rule by it,
+            // so only an empty identity is skipped and Settings shows every enforced row.
+            DistractionsDesktopRuleIdentity::DesktopApp { rule_id } if !rule_id.is_empty() => {
                 DistractionsDesktopRuleIdentity::DesktopApp {
                     rule_id: rule_id.clone(),
                 }
             }
             DistractionsDesktopRuleIdentity::DesktopApp { .. } => continue,
             DistractionsDesktopRuleIdentity::UsageLimit { rule_id, entry_id }
-                if !rule_id.trim().is_empty() && !entry_id.trim().is_empty() =>
+                if !rule_id.is_empty() && !entry_id.is_empty() =>
             {
                 DistractionsDesktopRuleIdentity::UsageLimit {
                     rule_id: rule_id.clone(),

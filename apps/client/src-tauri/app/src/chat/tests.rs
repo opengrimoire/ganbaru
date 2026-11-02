@@ -3,6 +3,7 @@ mod contracts;
 mod credentials;
 mod device_state;
 mod fake_driver;
+mod launch_gate;
 mod process;
 #[cfg(windows)]
 mod process_windows;

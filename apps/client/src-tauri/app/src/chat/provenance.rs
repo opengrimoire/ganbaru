@@ -196,6 +196,38 @@ mod tests {
         .unwrap();
     }
 
+    /// A creation under the wrong table or the wrong key must not reach the result.
+    #[tokio::test]
+    async fn provenance_reads_the_message_row() {
+        let pool = seeded_pool().await;
+        seed_device(&pool, 1, "honest", "Desk").await;
+        seed_device(&pool, 2, "other", "Phone").await;
+        seed_message(&pool, "item-1", "revision-1").await;
+        seed_creation(&pool, MESSAGES_TABLE, "item-1", 1).await;
+        seed_creation(&pool, REVISIONS_TABLE, "revision-1", 1).await;
+        seed_creation(&pool, MESSAGES_TABLE, "item-2", 2).await;
+        seed_creation(&pool, MESSAGES_TABLE, "revision-1", 2).await;
+        seed_creation(&pool, REVISIONS_TABLE, "item-1", 2).await;
+
+        let provenance = provenance_from_pool(&pool, "honest", "item-1")
+            .await
+            .unwrap();
+
+        let creators: Vec<(&str, Option<&str>, bool)> = provenance
+            .devices
+            .iter()
+            .map(|device| {
+                (
+                    device.device_id.as_str(),
+                    device.device_label.as_deref(),
+                    device.own_device,
+                )
+            })
+            .collect();
+        assert_eq!(creators, [("honest", Some("Desk"), true)]);
+        assert!(provenance.last_edited_by.is_empty());
+    }
+
     #[tokio::test]
     async fn a_later_edit_names_its_device() {
         let pool = seeded_pool().await;

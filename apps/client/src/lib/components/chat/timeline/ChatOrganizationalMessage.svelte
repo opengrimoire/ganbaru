@@ -22,12 +22,15 @@
     showReplyStrip = true,
     currentResponseSettings = false,
     onOpenThread = () => undefined,
+    onActionError,
   }: {
     message: ChatMessageRead;
     grouped?: boolean;
     showReplyStrip?: boolean;
     currentResponseSettings?: boolean;
     onOpenThread?: (trigger: HTMLElement) => void;
+    /** Shows a failed message action, such as a Sent from lookup, in the surrounding view. */
+    onActionError?: (error: unknown) => void;
   } = $props();
 
   const localization = getLocalization();
@@ -137,6 +140,7 @@
       target={actionTarget}
       visible={actionToolbarVisible || heldMessageActionsKey() === touchActionsKey}
       placement={grouped ? "grouped-message" : "participant-header"}
+      onError={onActionError}
     />
   </div>
 </article>

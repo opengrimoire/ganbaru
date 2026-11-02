@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mount, unmount } from "svelte";
+import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
 import ChatMessageActionToolbar from "./ChatMessageActionToolbar.svelte";
@@ -29,10 +29,13 @@ describe("ChatMessageActionToolbar", () => {
     loadChatMessageProvenance.mockReset();
   });
 
-  function mountToolbar(actionTarget: ChatMessageActionTarget): HTMLButtonElement {
+  function mountToolbar(
+    actionTarget: ChatMessageActionTarget,
+    onError?: (error: unknown) => void,
+  ): HTMLButtonElement {
     target = document.createElement("div");
     document.body.append(target);
-    component = mount(ChatMessageActionToolbar, { target, props: { target: actionTarget, visible: true } });
+    component = mount(ChatMessageActionToolbar, { target, props: { target: actionTarget, visible: true, onError } });
     const more = target.querySelector<HTMLButtonElement>("button[aria-label='More Chat actions']");
     if (!more) throw new Error("the more actions button is missing");
     return more;
@@ -106,6 +109,59 @@ describe("ChatMessageActionToolbar", () => {
     await Promise.resolve();
     expect(document.querySelector("[role='dialog']")).toBeNull();
     expect(more.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("reports a failed lookup in the reader's language and opens nothing", async () => {
+    const cause = { code: "persistence", message: "Read Chat message provenance", retryable: true };
+    loadChatMessageProvenance.mockRejectedValue(cause);
+    const onError = vi.fn();
+
+    const more = mountToolbar(ORGANIZATIONAL_TARGET, onError);
+    more.click();
+
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    const reported: unknown = onError.mock.calls[0]?.[0];
+    expect(reported).toBeInstanceOf(Error);
+    expect((reported as Error).message).toBe("Could not read which devices sent this message");
+    expect((reported as Error).cause).toBe(cause);
+    expect(document.querySelector("[role='dialog']")).toBeNull();
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("drops the failure of a lookup that a later press replaced", async () => {
+    let rejectFirst: (reason: unknown) => void = () => undefined;
+    loadChatMessageProvenance.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectFirst = reject; }));
+    loadChatMessageProvenance.mockResolvedValueOnce({
+      devices: [{ deviceId: "a", deviceLabel: "Desk", ownDevice: false }],
+      lastEditedBy: [],
+    });
+    const onError = vi.fn();
+
+    const more = mountToolbar(ORGANIZATIONAL_TARGET, onError);
+    more.click();
+    more.click();
+    await vi.waitFor(() => expect(document.querySelector("[role='dialog']")).not.toBeNull());
+    rejectFirst(new Error("the first lookup failed"));
+    await tick();
+    await tick();
+
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("drops the failure of a lookup that outlives the toolbar", async () => {
+    let rejectLookup: (reason: unknown) => void = () => undefined;
+    loadChatMessageProvenance.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectLookup = reject; }));
+    const onError = vi.fn();
+
+    mountToolbar(ORGANIZATIONAL_TARGET, onError).click();
+    await vi.waitFor(() => expect(loadChatMessageProvenance).toHaveBeenCalledOnce());
+    if (component) await unmount(component);
+    component = undefined;
+    rejectLookup(new Error("the lookup failed after the channel changed"));
+    await tick();
+    await tick();
+
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("keeps a run answer out of the sync log lookup", () => {

@@ -84,7 +84,7 @@
 
   /**
    * Opens the devices that sealed the message and last edited it; a message without a sync
-   * record opens nothing.
+   * record opens nothing, and a failed lookup goes to the error path of the surrounding view.
    */
   async function toggleSentFrom(): Promise<void> {
     if (provenance) {
@@ -98,7 +98,9 @@
       const known = loaded.devices.length > 0 || loaded.lastEditedBy.length > 0;
       if (request === provenanceRequest && known) provenance = loaded;
     } catch (error: unknown) {
-      reportError(error);
+      if (request === provenanceRequest) {
+        reportError(new Error(t("chat.organization.sentFromFailed"), { cause: error }));
+      }
     }
   }
 
@@ -107,6 +109,7 @@
   }
 
   onDestroy(() => {
+    provenanceRequest += 1;
     if (copiedResetTimer) clearTimeout(copiedResetTimer);
   });
 </script>

@@ -5,6 +5,7 @@
   import { tick } from "svelte";
   import * as chatApi from "$lib/api/chat";
   import type { ChatAgentRunRead, ChatThreadShellRead, ChatTimelinePageRead } from "$lib/chat/contracts";
+  import { chatErrorMessage } from "$lib/chat/error-presentation";
   import {
     exactRunPresentationsReady,
     latestRenderableAgentRun,
@@ -51,6 +52,8 @@
   );
   let scroller = $state<HTMLDivElement | null>(null);
   let actionError = $state<string | null>(null);
+  /** A failed message action; unlike `actionError`, it never decides whether the thread can render. */
+  let messageActionError = $state<string | null>(null);
   let executionSelectionRequest = 0;
   let executionThreadScope = $state<string | null>(null);
   let exactExecutionScope = "";
@@ -149,6 +152,10 @@
     return scratchManagerLoad;
   }
 
+  function reportMessageActionError(error: unknown): void {
+    messageActionError = chatErrorMessage(error);
+  }
+
   async function openScratchManager(): Promise<void> {
     if (scratchManagerLoading || scratchManagerOpen) return;
     scratchManagerLoading = true;
@@ -213,6 +220,7 @@
     executionThreadScope = replyThreadId;
     executionSelectionRequest += 1;
     actionError = null;
+    messageActionError = null;
   });
 
   $effect(() => {
@@ -328,6 +336,7 @@
   </header>
 
   {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} />{/if}
+  {#if messageActionError}<Notice class="thread-error" message={messageActionError} onDismiss={() => { messageActionError = null; }} />{/if}
 
   <div
     bind:this={scroller}
@@ -342,7 +351,7 @@
     {#if page && executionPresentationReady}
       {#if page.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderReplyThreadMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
-      <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings />
+      <ChatOrganizationalMessage message={page.rootMessage} showReplyStrip={false} currentResponseSettings onActionError={reportMessageActionError} />
       {#each renderEntries as entry, index (entry.key)}
         {@const previousEntry = renderEntries[index - 1]}
         {@const previousCreatedAt = previousEntry ? entryCreatedAt(previousEntry) : page.rootMessage.createdAt}
@@ -355,6 +364,7 @@
             showReplyStrip={false}
             currentResponseSettings
             grouped={previousEntry?.kind === "message" && shouldGroupReplyMessages(previousEntry.message, entry.message)}
+            onActionError={reportMessageActionError}
           />
         {:else}
           {@const exactExecution = exactExecutions[entry.run.id]}

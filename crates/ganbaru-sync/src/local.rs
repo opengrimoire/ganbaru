@@ -19,7 +19,7 @@ use crate::error::{SyncError, SyncResult, corrupt};
 use crate::hooks::Notices;
 use crate::log::{self, WriterState};
 use crate::manifest::Manifest;
-use crate::{Engine, SpaceContext, StoreOutcome, hydrate, sql};
+use crate::{Engine, SpaceContext, StoreOutcome, hydrate, publication, sql};
 
 /// Most operations one carry-forward store transaction takes.
 const IMPORT_CHUNK: usize = 256;
@@ -229,9 +229,10 @@ pub(crate) async fn write_local_seeds(
 
 /// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
 /// emptied, keeping only their seeded rows at new-vault values, and every `Local` column is reset
-/// to its materialization value, because device state belongs to the device that wrote it;
-/// captures belong to the installation that made them, so the copy drops any that could not be
-/// sealed; and the apply flag is clear.
+/// to its materialization value, because device state belongs to the device that wrote it; local
+/// drafts stay behind for the same reason, and the operation that publishes one later reaches the
+/// copy as a new row; captures belong to the installation that made them, so the copy drops any
+/// that could not be sealed; and the apply flag is clear.
 ///
 /// The resets run with the apply flag set, so gated domain triggers and capture stay quiet.
 pub async fn prepare_snapshot_copy(
@@ -264,6 +265,7 @@ pub async fn prepare_snapshot_copy(
         .execute(&mut *tx)
         .await?;
     }
+    publication::delete_local_drafts(&mut tx, manifest).await?;
     sqlx::query("DELETE FROM sync_capture")
         .execute(&mut *tx)
         .await?;

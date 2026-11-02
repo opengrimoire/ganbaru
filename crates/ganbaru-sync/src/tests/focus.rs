@@ -878,11 +878,7 @@ async fn forged_run(replica: &mut Replica, ended: Option<&str>) -> Change {
             if ended.is_none() {
                 fields[OUTCOME_END_REASON_FIELD] = Field::Null;
             }
-            GroupValue::new(
-                RUNS_TABLE,
-                run_group::OUTCOME,
-                Value::new(fields).unwrap(),
-            )
+            GroupValue::new(RUNS_TABLE, run_group::OUTCOME, Value::new(fields).unwrap())
         })
         .collect();
     Change {
@@ -966,7 +962,10 @@ fn assert_forged_create_leaves_the_open_run(ended: Option<&'static str>) {
     block_on(async {
         let mut replicas = with_open_run().await;
         let before = open_run_rows(&mut replicas[DEVICE]).await;
-        assert_eq!(before.len(), 1 + SEGMENTS as usize + 1 + RUN_EVENTS as usize);
+        assert_eq!(
+            before.len(),
+            1 + SEGMENTS as usize + 1 + RUN_EVENTS as usize
+        );
 
         let forged = forged_run(&mut replicas[0], ended).await;
         deliver_forged(&mut replicas, vec![forged]).await;

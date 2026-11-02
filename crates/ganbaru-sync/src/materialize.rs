@@ -32,6 +32,7 @@ use crate::manifest::{
     ColumnSpec, ColumnType, Deletion, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec,
 };
 use crate::merge::{self, MergedRows, RowState};
+use crate::publication;
 use crate::refused::{Refusal, RefusalKind};
 use crate::seal::{self, InvalidRow};
 use crate::sql::{self, ident};
@@ -198,8 +199,9 @@ async fn resolve_owned(
     Ok(kept)
 }
 
-/// The domain state of one row, or `None` when the row has no merge state and nothing says it
-/// must be absent. `orphaned` marks a row whose merge state an exclusion dropped.
+/// The domain state of one row, or `None` when the row stays as it is: it has no merge state and
+/// nothing says it must be absent, or the row is a local draft, or it would join one. `orphaned`
+/// marks a row whose merge state an exclusion dropped.
 async fn desired(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -209,6 +211,9 @@ async fn desired(
     visibility: &mut Visibility,
     merged: &mut MergedRows,
 ) -> SyncResult<Option<Desired>> {
+    if publication::is_local_draft(conn, engine.manifest(), table, key).await? {
+        return Ok(None);
+    }
     let (state, versions) = match merged.remove(&(table.id, key.to_string())) {
         Some((state, versions)) => (state, Some(versions)),
         None => match merge::row_state(conn, table.id, key).await? {
@@ -341,6 +346,9 @@ async fn desired(
         if holds_value {
             present.elisions.push((group.id, version.writer));
         }
+    }
+    if publication::names_local_draft(conn, engine.manifest(), table, &present.columns).await? {
+        return Ok(None);
     }
     Ok(Some(Desired::Present(present)))
 }
@@ -1041,7 +1049,11 @@ fn refusal_of(result: SyncResult<()>) -> SyncResult<Option<RefusedWrite>> {
 }
 
 /// Deletes a row and its owned rows.
-async fn delete_row(conn: &mut SqliteConnection, table: &TableSpec, key: &str) -> SyncResult<()> {
+pub(crate) async fn delete_row(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+) -> SyncResult<()> {
     // Nested tables follow their owned table, so the reverse deletes them first.
     let children: Vec<_> = table.owned_children().collect();
     for (_, owned) in children.into_iter().rev() {

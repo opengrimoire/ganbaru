@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatApi from "$lib/api/chat";
+import * as provenanceApi from "$lib/api/chat/provenance";
 import type {
   ChatAgentRunRead,
   ChatMessageRead,
@@ -260,6 +261,41 @@ describe("ChatReplyThreadPanel", () => {
     expect(target.querySelectorAll('button[aria-label="Add reaction"]')).toHaveLength(2);
     expect(target.querySelectorAll('button[aria-label="More Chat actions"]')).toHaveLength(2);
     expect(target.textContent).not.toContain("1 reply");
+  });
+
+  it("shows a failed Sent from lookup above the thread until it is dismissed", async () => {
+    const messageOnlyPage = { ...page, agentRuns: [] };
+    chat.openReplyThreadId = messageOnlyPage.thread.id;
+    chat.replyThread = messageOnlyPage;
+    chat.replyThreadPages = [messageOnlyPage];
+    chat.selectedExecutionRunId = null;
+    chat.selectedThreadId = null;
+    vi.spyOn(chat, "listScheduledOrganizationalMessages").mockResolvedValue([]);
+    vi.spyOn(provenanceApi, "loadChatMessageProvenance").mockRejectedValue({
+      code: "persistence",
+      message: "Read Chat message provenance",
+      retryable: true,
+    });
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReplyThreadPanel, {
+      target,
+      props: { onClose: vi.fn() },
+    });
+    await tick();
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="More Chat actions"]')?.click();
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector('[role="alert"]')?.textContent).toContain(
+        "Could not read which devices sent this message",
+      );
+    });
+    expect(target.querySelector('.thread-scroll [role="alert"]')).toBeNull();
+
+    target.querySelector<HTMLButtonElement>('[role="alert"] [data-notice-dismiss]')?.click();
+    await tick();
+    expect(target.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("renders exact historical turns across provider thread handoffs", async () => {

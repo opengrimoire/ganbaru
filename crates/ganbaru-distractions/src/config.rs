@@ -56,6 +56,9 @@ pub const MAX_USAGE_LIMITS: usize = crate::limits::MAX_LIMITS;
 /// in its rule list or in one usage limit.
 pub const MAX_MOBILE_APP_RULES: usize = 256;
 
+/// Most usage limits with Android packages Guardian enforces.
+pub const MAX_GUARDIAN_USAGE_LIMITS: usize = 128;
+
 /// Most limit entries of every usage limit together.
 pub const MAX_LIMIT_ENTRIES: usize = 2_000;
 

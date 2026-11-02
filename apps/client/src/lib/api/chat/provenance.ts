@@ -11,6 +11,8 @@ import { readArray, readRecord } from "$lib/utils/readers";
 export interface ChatMessageProvenance {
   /** Devices whose writers created the message, empty when sync holds no record of it. */
   devices: SyncDeviceRef[];
+  /** Devices that created the current text, empty when they match `devices` or sync holds no record of it. */
+  lastEditedBy: SyncDeviceRef[];
 }
 
 /**
@@ -22,7 +24,10 @@ export interface ChatMessageProvenance {
  */
 export function mapChatMessageProvenance(value: unknown): ChatMessageProvenance {
   const row = readRecord(value, "chat message provenance");
-  return { devices: readArray(row.devices, "chat message provenance.devices", mapSyncDeviceRef) };
+  return {
+    devices: readArray(row.devices, "chat message provenance.devices", mapSyncDeviceRef),
+    lastEditedBy: readArray(row.lastEditedBy, "chat message provenance.lastEditedBy", mapSyncDeviceRef),
+  };
 }
 
 /**

@@ -22,7 +22,7 @@ use super::fixture::{
 };
 use super::holds::sealed_create;
 use super::refusal::take;
-use super::replica::{Replica, converge, forge_change, quoted};
+use super::replica::{Replica, converge, device_id, forge_change, quoted};
 use super::sim::Rng;
 use crate::domains::chat::LOCAL_OWNER_PARTICIPANT_KEY;
 use crate::error::failpoints;
@@ -35,6 +35,7 @@ use crate::manifest::vault::chat::{
     REPLY_THREAD_KEY_PREFIX, REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
+use crate::provenance::row_creating_devices;
 use crate::validate;
 use crate::{Engine, HoldReason, MAX_UNSEEN_PRESENTATIONS, StoreOutcome, SyncError, SyncResult};
 
@@ -1839,6 +1840,38 @@ async fn delete_project_against(replicas: &mut [Replica], offline: &str) {
     replicas[1].exec(offline).await;
     converge(replicas).await;
     assert_converged(replicas).await;
+}
+
+/// An edit from another device leaves the message's creator alone and names the editing device
+/// as the creator of the new revision, on every replica.
+#[test]
+fn chat_an_edit_names_its_device_as_the_revision_creator() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&message_sql(ROOT, None, "c001", "Root"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[1]
+            .exec(&edit_sql(ROOT, "item:root:1", "Root edited", &at(1, 0)))
+            .await;
+        converge(&mut replicas).await;
+
+        for replica in &mut replicas {
+            assert_eq!(
+                row_creating_devices(&mut replica.conn, MESSAGES_TABLE, ROOT)
+                    .await
+                    .unwrap(),
+                vec![device_id(0)]
+            );
+            assert_eq!(
+                row_creating_devices(&mut replica.conn, REVISIONS_TABLE, "item:root:1")
+                    .await
+                    .unwrap(),
+                vec![device_id(1)]
+            );
+        }
+    });
 }
 
 /// A post written and then edited offline shows only its newest text in the offer, in both

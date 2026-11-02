@@ -27,13 +27,16 @@ const KEY_UNAVAILABLE_CODE: &str = "key_unavailable";
 /// Vault whose key copy this device has already confirmed, so reconnect polls skip the lookup.
 static KEY_CONFIRMED_FOR_VAULT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Serializes identity creation between Contacts commands and the sync service.
+/// Serializes identity creation and card nonce repair between Contacts commands and the sync
+/// service.
 static IDENTITY_CREATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The person identity as this device knows it.
 pub(crate) struct LocalIdentity {
     pub public_key: PersonPublicKey,
-    pub card_nonce: [u8; CARD_NONCE_BYTES],
+    /// `None` while the stored nonce does not decode: a snapshot copy skips sync admission, so
+    /// the row can hold one, and the rest of the identity stays usable until it is rotated.
+    pub card_nonce: Option<[u8; CARD_NONCE_BYTES]>,
     pub card_revision: i64,
     /// Present only when this device holds a copy of the private key.
     pub key: Option<PersonKeyPair>,
@@ -55,6 +58,12 @@ impl LocalIdentity {
                 "this device holds no copy of the person key yet".to_string(),
             )
         })
+    }
+
+    /// The nonce a card can carry, refused until an unreadable stored nonce is rotated.
+    pub(crate) fn readable_nonce(&self) -> Result<[u8; CARD_NONCE_BYTES], ContactsError> {
+        self.card_nonce
+            .ok_or_else(|| ContactsError::Failed("the stored card nonce is unreadable".to_string()))
     }
 }
 
@@ -79,15 +88,16 @@ pub(crate) async fn load_identity_row(pool: &SqlitePool) -> Result<Option<Identi
     .map_err(|error| format!("read person identity: {error}"))
 }
 
-/// Combines the identity row with a key copy, which is kept only when it matches the row.
+/// Combines the identity row with a key copy, which is kept only when it matches the row. Only
+/// the public key can fail: the card row replicates, so its nonce never decides whether the
+/// person identity loads.
 pub(crate) fn identity_from_row(
     row: IdentityRow,
     key_pkcs8: Option<&[u8]>,
 ) -> Result<LocalIdentity, String> {
     let public_key = PersonPublicKey::from_text(&row.public_key)
         .map_err(|_| "stored person public key is invalid".to_string())?;
-    let card_nonce =
-        decode_nonce(&row.card_nonce).ok_or_else(|| "stored card nonce is invalid".to_string())?;
+    let card_nonce = decode_nonce(&row.card_nonce);
     let key = key_pkcs8
         .and_then(|bytes| PersonKeyPair::from_pkcs8(bytes).ok())
         .filter(|key| key.public_key() == public_key);
@@ -149,19 +159,23 @@ async fn insert_identity(
     tx.commit().await
 }
 
-/// Loads the identity, creating it on the first writable use of a vault that has none.
+/// Loads the identity, creating it on the first writable use of a vault that has none and
+/// rotating a card nonce that does not decode.
 pub(crate) async fn ensure_identity<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
 ) -> Result<LocalIdentity, ContactsError> {
-    if let Some(identity) = load_identity(app, pool).await? {
+    if let Some(identity) = load_identity(app, pool).await?
+        && identity.card_nonce.is_some()
+    {
         return Ok(identity);
     }
     // Callers race on a fresh vault, and a losing insert removes the stored key, so creation
-    // runs one at a time and rechecks the row.
+    // runs one at a time and rechecks the row. A repair rechecks too, so a racing caller never
+    // rotates away the nonce another caller just signed.
     let _creating = IDENTITY_CREATION.lock().await;
     if let Some(identity) = load_identity(app, pool).await? {
-        return Ok(identity);
+        return super::card::heal_unreadable_nonce(pool, identity).await;
     }
     if app.state::<PairingManager>().coordinator_pin()?.is_some() {
         return Err(ContactsError::IdentityUnavailable(
@@ -191,7 +205,7 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     }
     Ok(LocalIdentity {
         public_key,
-        card_nonce,
+        card_nonce: Some(card_nonce),
         card_revision: 1,
         key: Some(key),
     })
@@ -487,6 +501,24 @@ mod tests {
             card_nonce: encode_nonce(&[7; CARD_NONCE_BYTES]),
             card_revision: 1,
         }
+    }
+
+    #[test]
+    fn key_release_survives_an_unreadable_card_nonce() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let mut row = row_for(&key.public_key());
+        row.card_nonce = "!".repeat(22);
+
+        let released = key_release_response(Some(row), Some(pkcs8));
+
+        assert!(
+            matches!(
+                released,
+                Ok(CoordinatorResponse::PersonKeyReleased { ref public_key, .. })
+                    if *public_key == key.public_key().to_text()
+            ),
+            "the key is released whatever the card nonce holds"
+        );
     }
 
     #[test]

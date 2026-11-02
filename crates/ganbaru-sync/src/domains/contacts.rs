@@ -5,7 +5,9 @@
 //! concurrent accept on another. A request answer outranks a pending state, and acceptance
 //! outranks every other answer. A rotated card outranks every card with a lower revision.
 
-use ganbaru_contacts::{is_stored_timestamp, is_valid_public_key_text, is_valid_request_window};
+use ganbaru_contacts::{
+    decode_nonce, is_stored_timestamp, is_valid_public_key_text, is_valid_request_window,
+};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -223,6 +225,9 @@ fn validate_card(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (card_group::CARD, [nonce, revision]) => {
             exact_chars(nonce, CARD_NONCE_CHARS, "contact card nonce")?;
+            if decode_nonce(text(nonce)?).is_none() {
+                return Err(AdapterError("contact card nonce encoding"));
+            }
             if (1..=MAX_CONTACT_CARD_REVISION).contains(&integer(revision)?) {
                 Ok(())
             } else {
@@ -342,6 +347,7 @@ impl DomainAdapter for ContactsAdapter {
 
 #[cfg(test)]
 mod tests {
+    use ganbaru_contacts::{CARD_NONCE_BYTES, encode_nonce};
     use ganbaru_sync_contracts::{Change, ChangeAction, GroupValue, RowKey};
 
     use super::*;
@@ -363,6 +369,15 @@ mod tests {
         "+10000-01-01T00:00:00.000Z",
         "2026-10-22T10:51:60.000Z",
         "zzzzzzzzzzzzzzzzzzzzzzzz",
+    ];
+    /// Nonces of the stored length that no reader can decode: outside base64url, with nonzero
+    /// trailing bits, padded, from the standard alphabet, and not ASCII.
+    const UNDECODABLE_NONCES: [&str; 5] = [
+        "!!!!!!!!!!!!!!!!!!!!!!",
+        "BBBBBBBBBBBBBBBBBBBBBB",
+        "AAAAAAAAAAAAAAAAAAAAA=",
+        "AAAAAAAAAAAAAAAAAAAAA+",
+        "éééééééééééééééééééééé",
     ];
 
     fn value(fields: Vec<Field>) -> Value {
@@ -390,7 +405,11 @@ mod tests {
     }
 
     fn card(revision: i64) -> Value {
-        value(vec![t("AAAAAAAAAAAAAAAAAAAAAA"), Field::Integer(revision)])
+        card_with_nonce("AAAAAAAAAAAAAAAAAAAAAA", revision)
+    }
+
+    fn card_with_nonce(nonce: &str, revision: i64) -> Value {
+        value(vec![t(nonce), Field::Integer(revision)])
     }
 
     fn created_request(peer: Field, fingerprint: &str) -> Value {
@@ -591,6 +610,44 @@ mod tests {
                     "expires {expires_at}, created {created_at}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn undecodable_card_nonce_is_refused() {
+        let adapter = ContactsAdapter;
+        let engine = Engine::vault();
+        let card_change = |nonce: &str| {
+            let mut change = card_create(1);
+            change.groups[0] =
+                GroupValue::new(CARD_TABLE, card_group::CARD, card_with_nonce(nonce, 2));
+            change
+        };
+
+        for bytes in [
+            [0; CARD_NONCE_BYTES],
+            [5; CARD_NONCE_BYTES],
+            [u8::MAX; CARD_NONCE_BYTES],
+        ] {
+            let nonce = encode_nonce(&bytes);
+            assert_eq!(
+                adapter.validate(CARD_TABLE, card_group::CARD, &card_with_nonce(&nonce, 2)),
+                Ok(()),
+                "{nonce}"
+            );
+            assert_eq!(validate::change(&engine, &card_change(&nonce)), Ok(()));
+        }
+        for nonce in UNDECODABLE_NONCES {
+            assert!(
+                adapter
+                    .validate(CARD_TABLE, card_group::CARD, &card_with_nonce(nonce, 2))
+                    .is_err(),
+                "{nonce}"
+            );
+            assert!(
+                validate::change(&engine, &card_change(nonce)).is_err(),
+                "{nonce}"
+            );
         }
     }
 

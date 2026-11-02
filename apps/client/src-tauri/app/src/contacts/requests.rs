@@ -153,7 +153,10 @@ pub(crate) async fn receive_request(
     if verify(&signed.card.public_key, &payload, &signature).is_err() {
         return Ok(PeerReply::invalid());
     }
-    if !nonces_match(&nonce, &identity.card_nonce) {
+    if !identity
+        .card_nonce
+        .is_some_and(|current| nonces_match(&nonce, &current))
+    {
         return Ok(PeerReply::revoked());
     }
     if signed.card.public_key == identity.public_key {

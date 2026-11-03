@@ -222,11 +222,12 @@ pub async fn sync_recover_through_server(
         .space
         .clone()
         .ok_or_else(|| "this server runs no vault yet".to_string())?;
-    let charter = PinnedCharter {
+    let pinned = PinnedCharter {
         charter: space.charter,
         person_key: space.person_key,
-    }
-    .verify(&space.vault_id)?;
+    };
+    let trust = super::host::charter_trust(&pinned, &space.vault_id)?;
+    let charter = &trust.0;
     if AppHost::of(&app).active_vault_id()? == space.vault_id {
         return Err("this vault is already open on this device".to_string());
     }
@@ -273,5 +274,5 @@ pub async fn sync_recover_through_server(
         .await?;
     }
     drop(connection);
-    receive_recovered(app, setup_target(&code), space.vault_id).await
+    receive_recovered(app, setup_target(&code), space.vault_id, trust).await
 }

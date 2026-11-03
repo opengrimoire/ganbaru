@@ -23,10 +23,12 @@ use ganbaru_sync_contracts::{
     AuthorizationRecord, Content, DevicePublicKey, DeviceRole, Digest32, Entry, Envelope,
     OperationKind, Seq, SetRole, SignedCharter, SpaceId, WriterId, WriterPublicKey,
 };
-use sqlx::{Row, SqliteConnection};
+use sqlx::{Connection, Row, SqliteConnection};
 
-use crate::error::{SyncResult, corrupt};
+use crate::authorization::{load_charter, rederive};
+use crate::error::{SyncError, SyncResult, corrupt};
 use crate::log::{self, clamp_ms, seq_i64, stored_u64};
+use crate::sql;
 
 /// What a stored envelope is to the record store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -825,6 +827,79 @@ pub struct ReverifyReport {
     pub merged_from_live: usize,
 }
 
+/// One stored row of the record store, as re-verification reads it.
+struct StoredEnvelope {
+    role: String,
+    hash: Vec<u8>,
+    envelope: Vec<u8>,
+    stored_at_ms: i64,
+}
+
+/// The rows of the record store of `space` in storage order, only verified ones when
+/// `verified_only`.
+async fn stored_envelopes(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    verified_only: bool,
+) -> SyncResult<Vec<StoredEnvelope>> {
+    let rows = sqlx::query(
+        "SELECT role, envelope_hash, envelope, stored_at_ms FROM sync_auth_envelopes
+         WHERE space_id = ? AND (verified = 1 OR NOT ?) ORDER BY stored_order",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(verified_only)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(StoredEnvelope {
+                role: row.try_get(0)?,
+                hash: row.try_get(1)?,
+                envelope: row.try_get(2)?,
+                stored_at_ms: row.try_get(3)?,
+            })
+        })
+        .collect()
+}
+
+/// The verified rows of the live record store of `space`, or none when it holds no log under
+/// `charter`, since records of another log never chain to it.
+async fn live_envelopes(
+    live: &mut SqliteConnection,
+    space: SpaceId,
+    charter: &SignedCharter,
+) -> SyncResult<Vec<StoredEnvelope>> {
+    if log::ensure_space(live, space).await.is_err()
+        || load_charter(live, space).await?.as_ref() != Some(charter)
+    {
+        return Ok(Vec::new());
+    }
+    stored_envelopes(live, space, true).await
+}
+
+/// Admits one stored row again from its bytes, keeping its stored time but never a time past
+/// `now_ms`. A row whose bytes do not hash to its stored hash is not admitted. Returns whether
+/// the store grew.
+async fn readmit(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    row: &StoredEnvelope,
+    now_ms: u64,
+) -> SyncResult<bool> {
+    let Ok(envelope) = Envelope::decode(&row.envelope) else {
+        return Ok(false);
+    };
+    if envelope.hash().as_slice() != row.hash.as_slice() {
+        return Ok(false);
+    }
+    let stored_at_ms = u64::try_from(row.stored_at_ms).unwrap_or(0).min(now_ms);
+    if row.role == Role::Evidence.as_str() {
+        admit_evidence(conn, space, &[&row.envelope], stored_at_ms).await
+    } else {
+        admit(conn, space, &row.envelope, stored_at_ms).await
+    }
+}
+
 impl crate::Engine {
     /// Rebuilds the authorization record store of a staged snapshot copy by admitting each of its
     /// envelopes again under `charter`, which the receiving device trusts, and merges the
@@ -837,8 +912,56 @@ impl crate::Engine {
         charter: &SignedCharter,
         now_ms: u64,
     ) -> SyncResult<ReverifyReport> {
-        let _ = (staged, live, ctx, charter, now_ms);
-        Ok(ReverifyReport::default())
+        if charter.charter.space != ctx.space || charter.verify(&ctx.person_key).is_err() {
+            return Err(SyncError::InvalidCharter);
+        }
+        let live_rows = match live {
+            Some(live) => live_envelopes(live, ctx.space, charter).await?,
+            None => Vec::new(),
+        };
+        let mut tx = staged.begin().await?;
+        if log::ensure_space(&mut tx, ctx.space).await.is_err() {
+            return Err(SyncError::SnapshotCharter);
+        }
+        match load_charter(&mut tx, ctx.space).await {
+            Ok(Some(installed)) if installed == *charter => {}
+            Ok(None) => {
+                sqlx::query("UPDATE sync_spaces SET charter = ? WHERE space_id = ?")
+                    .bind(charter.encode())
+                    .bind(ctx.space.as_bytes().as_slice())
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            Ok(Some(_)) | Err(_) => return Err(SyncError::SnapshotCharter),
+        }
+        sql::begin_engine_write(&mut tx).await?;
+        let rows = stored_envelopes(&mut tx, ctx.space, false).await?;
+        sqlx::query("DELETE FROM sync_auth_envelopes WHERE space_id = ?")
+            .bind(ctx.space.as_bytes().as_slice())
+            .execute(&mut *tx)
+            .await?;
+        let mut report = ReverifyReport::default();
+        for row in &rows {
+            if readmit(&mut tx, ctx.space, row, now_ms).await? {
+                report.admitted += 1;
+            } else {
+                report.dropped += 1;
+            }
+        }
+        for row in &live_rows {
+            if readmit(&mut tx, ctx.space, row, now_ms).await? {
+                report.merged_from_live += 1;
+            }
+        }
+        rederive(&mut tx, ctx.space).await?;
+        // The service rebuilds the space keys from the admitted records at start.
+        sqlx::query("DELETE FROM sync_space_keys WHERE space_id = ?")
+            .bind(ctx.space.as_bytes().as_slice())
+            .execute(&mut *tx)
+            .await?;
+        sql::set_applying(&mut tx, false).await?;
+        tx.commit().await?;
+        Ok(report)
     }
 
     /// Whether the local device must retire `writer`, see [`WriterRetirement`]. The successor's

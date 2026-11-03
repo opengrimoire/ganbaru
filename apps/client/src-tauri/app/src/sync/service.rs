@@ -109,6 +109,23 @@ pub(crate) async fn bootstrap_members<R: Runtime>(
     replica::peers::bootstrap_members(&AppHost::of(app), vault_id, coordinator_device_id).await
 }
 
+/// Whether the pinned coordinator stays a copy source for `vault_id`: not once this installation
+/// quarantined it, or the local selected log under `pinned_charter` removed it.
+pub(crate) async fn bootstrap_coordinator_allowed<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_id: &str,
+    coordinator_device_id: &str,
+    pinned_charter: Option<[u8; 32]>,
+) -> Result<bool, String> {
+    replica::peers::bootstrap_coordinator_allowed(
+        &AppHost::of(app),
+        vault_id,
+        coordinator_device_id,
+        pinned_charter,
+    )
+    .await
+}
+
 /// What starts the service in the app: the vault commit notice and the Tauri async runtime.
 fn service_start() -> ServiceStart {
     ServiceStart {

@@ -95,21 +95,23 @@ fn staged_copy_with_a_truncated_log_regains_the_removal() {
             )
             .await
             .unwrap();
-        assert_eq!((report.dropped, report.merged_from_live), (1, 1), "{report:?}");
-        let stored: Vec<u8> = sqlx::query_scalar(
-            "SELECT envelope FROM sync_auth_envelopes WHERE envelope_hash = ?",
-        )
-        .bind(removal.as_slice())
-        .fetch_one(&mut staged.conn)
-        .await
-        .unwrap();
-        let honest: Vec<u8> = sqlx::query_scalar(
-            "SELECT envelope FROM sync_auth_envelopes WHERE envelope_hash = ?",
-        )
-        .bind(removal.as_slice())
-        .fetch_one(&mut hub.conn)
-        .await
-        .unwrap();
+        assert_eq!(
+            (report.dropped, report.merged_from_live),
+            (1, 1),
+            "{report:?}"
+        );
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT envelope FROM sync_auth_envelopes WHERE envelope_hash = ?")
+                .bind(removal.as_slice())
+                .fetch_one(&mut staged.conn)
+                .await
+                .unwrap();
+        let honest: Vec<u8> =
+            sqlx::query_scalar("SELECT envelope FROM sync_auth_envelopes WHERE envelope_hash = ?")
+                .bind(removal.as_slice())
+                .fetch_one(&mut hub.conn)
+                .await
+                .unwrap();
         assert_eq!(stored, honest);
         assert!(removes(&view(&mut staged).await, 3));
         assert_eq!(view(&mut staged).await, view(&mut hub).await);

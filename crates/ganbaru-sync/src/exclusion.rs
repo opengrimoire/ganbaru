@@ -48,8 +48,9 @@ pub const MAX_EXCLUDED_PER_WRITER: u64 = 1024;
 /// removed device: the ones with the lowest writer ids, so every replica derives the same late
 /// changes whatever order the writers arrived in. Each keeps up to [`MAX_EXCLUDED_PER_WRITER`]
 /// operations. A surplus writer keeps only its genesis and the authorization entries contiguous
-/// from it, a genesis above the lowest ids is refused as revoked, and a lower one displaces the
-/// highest, so a removed device that mints writers stores a bounded amount anywhere.
+/// from it, and a lower one displaces the highest, so a removed device that mints writers stores
+/// a bounded amount anywhere. Every replica stores a surplus genesis, so a context covering it
+/// becomes ready everywhere.
 pub const MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE: i64 = 2;
 
 /// A static query with, between `$before` and `$after`, the SQL condition on the writer row
@@ -175,11 +176,23 @@ pub(crate) async fn record_local_device(
 /// A writer some of whose operations the selected state excludes on this replica.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Excluding {
-    /// Removal cutoff and stored sequence, when the writer's device was removed and is not the
-    /// local one.
-    pub(crate) removal: Option<(Seq, Seq)>,
+    /// What the removal keeps of the writer, when its device was removed and is not the local
+    /// one.
+    pub(crate) removal: Option<Removal>,
     /// Last sequence the copies of a forked writer share.
     pub(crate) fork: Option<Seq>,
+}
+
+/// What a removal keeps of one writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Removal {
+    /// Removal cutoff of the writer.
+    pub(crate) cutoff: Seq,
+    /// Last sequence of the writer stored here.
+    pub(crate) stored: Seq,
+    /// Last sequence of the writer outside authorization entries any replica keeps:
+    /// [`excluded_limit`] of the cutoff, or [`SURPLUS_LIMIT`] for a surplus unnamed writer.
+    pub(crate) limit: Seq,
 }
 
 /// Writers some of whose operations are excluded on this replica: every writer of a removed
@@ -188,24 +201,33 @@ pub(crate) async fn excluding(
     conn: &mut SqliteConnection,
     space: SpaceId,
 ) -> SyncResult<BTreeMap<WriterId, Excluding>> {
-    let rows: Vec<(Vec<u8>, i64, i64)> = sqlx::query_as(
-        "SELECT w.writer_id, w.removal_cutoff_seq, w.stored_seq
+    let rows: Vec<(Vec<u8>, i64, i64, bool)> = sqlx::query_as(surplus_unnamed_query!(
+        "SELECT w.writer_id, w.removal_cutoff_seq, w.stored_seq, ",
+        2,
+        " AS surplus
          FROM sync_writers w JOIN sync_spaces s ON s.space_id = w.space_id
-         WHERE w.space_id = ? AND w.removal_cutoff_seq IS NOT NULL
-            AND (s.local_device_id IS NULL OR w.device_id <> s.local_device_id)",
-    )
+         WHERE w.space_id = ?1 AND w.removal_cutoff_seq IS NOT NULL
+            AND (s.local_device_id IS NULL OR w.device_id <> s.local_device_id)"
+    ))
     .bind(space.as_bytes().as_slice())
+    .bind(MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
     .fetch_all(&mut *conn)
     .await?;
     let mut excluding = BTreeMap::new();
-    for (writer, cutoff, stored) in &rows {
+    for (writer, cutoff, stored, surplus) in &rows {
+        let cutoff = stored_u64(*cutoff, "removal cutoff")?;
         excluding.insert(
             log::writer_id(writer)?,
             Excluding {
-                removal: Some((
-                    stored_u64(*cutoff, "removal cutoff")?,
-                    stored_u64(*stored, "stored sequence")?,
-                )),
+                removal: Some(Removal {
+                    cutoff,
+                    stored: stored_u64(*stored, "stored sequence")?,
+                    limit: if *surplus {
+                        SURPLUS_LIMIT
+                    } else {
+                        excluded_limit(cutoff)
+                    },
+                }),
                 fork: None,
             },
         );
@@ -227,9 +249,10 @@ pub(crate) async fn excluding(
 /// - Fork: `s` is past the last sequence the copies of the forked writer `W` share, and `W` is
 ///   applied through that sequence. No replica stores either branch once it holds the evidence.
 /// - Removal: `s` is past the removal cutoff of `W`, `W` is applied through the cutoff, and the
-///   excluded operation is stored, or `s` is past the [`excluded_limit`] of the
-///   cutoff, where no replica stores it. Storing the excluded operations first lets the late
-///   changes they leave know the rows they created.
+///   excluded operation is stored, or `s` is past the writer's [`Removal::limit`], where no
+///   replica stores it. Storing the excluded operations first lets the late changes they leave
+///   know the rows they created. A surplus unnamed writer's limit is its genesis, which every
+///   replica stores.
 ///
 /// The excluded operations never apply, so waiting for them would hold an honest operation
 /// forever. A fork clamps `s` to the shared prefix before the removal rule applies.
@@ -247,19 +270,18 @@ pub(crate) fn ready(
         };
         let seq = excluded.fork.map_or(seq, |keep| seq.min(keep));
         match excluded.removal {
-            Some((cutoff, stored)) if seq > cutoff => {
-                let beyond = seq > excluded_limit(cutoff);
-                applied.get(&writer) >= cutoff && (stored >= seq || beyond)
+            Some(removal) if seq > removal.cutoff => {
+                applied.get(&writer) >= removal.cutoff
+                    && (removal.stored >= seq || seq > removal.limit)
             }
             _ => applied.get(&writer) >= seq,
         }
     })
 }
 
-/// Whether `context` covers an operation past the [`excluded_limit`] of the
-/// removal cutoff of an excluded writer. No replica keeps such an operation, so a row only it
-/// created is unknown everywhere, and an honest change to that row is dropped on every replica
-/// alike instead of holding its writer.
+/// Whether `context` covers an operation past the [`Removal::limit`] of an excluded writer. No
+/// replica keeps such an operation, so a row only it created is unknown everywhere, and an
+/// honest change to that row is dropped on every replica alike instead of holding its writer.
 pub(crate) fn beyond_bound(
     context: &VersionVector,
     excluding: &BTreeMap<WriterId, Excluding>,
@@ -269,7 +291,7 @@ pub(crate) fn beyond_bound(
             excluding
                 .get(&writer)
                 .and_then(|excluded| excluded.removal)
-                .is_some_and(|(cutoff, _)| seq > excluded_limit(cutoff))
+                .is_some_and(|removal| seq > removal.limit)
         })
 }
 

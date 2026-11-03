@@ -1230,19 +1230,19 @@ fn a_removed_device_keeps_the_lowest_writers_its_removal_does_not_name_in_any_or
         for (_, ops, _) in writers.iter().rev() {
             take(&mut descending, ops).await;
         }
-        assert_eq!(ascending.stored_vector().await.get(surplus), 0);
-        assert_eq!(
-            take(&mut ascending, &surplus_ops[..1]).await,
-            vec![REVOKED],
-            "a genesis above the lowest unnamed writers is refused"
-        );
-        assert_eq!(
-            take(&mut descending, &surplus_ops[1..]).await.first(),
-            Some(&REVOKED),
-            "a displaced writer keeps only its genesis"
-        );
-        for replica in [&mut a, &mut descending] {
-            assert_eq!(replica.stored_vector().await.get(surplus), 1);
+        for replica in [&mut ascending, &mut descending] {
+            assert_eq!(
+                take(replica, &surplus_ops[1..]).await.first(),
+                Some(&REVOKED),
+                "a surplus writer keeps only its genesis"
+            );
+        }
+        for replica in [&mut a, &mut ascending, &mut descending] {
+            assert_eq!(
+                replica.stored_vector().await.get(surplus),
+                1,
+                "every replica stores the surplus genesis"
+            );
         }
         for (writer, ops, _) in kept {
             for replica in [&mut a, &mut ascending, &mut descending] {

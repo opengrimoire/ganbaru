@@ -2102,3 +2102,75 @@ fn a_lifted_exclusion_settles_versions_that_saw_a_fast_clock_like_causal_order()
         assert_eq!(causal.dump().await, lifted.dump().await);
     });
 }
+
+#[test]
+fn context_past_a_surplus_genesis_becomes_ready() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(232).await;
+        let mut peer = Replica::new(3, 232).await;
+        // The anchor never stores the device's writers, so its removal names none of them.
+        let mut writers = Vec::new();
+        for (position, id) in ["note-first", "note-second", "note-third"]
+            .into_iter()
+            .enumerate()
+        {
+            if position > 0 {
+                removed.rotate();
+            }
+            edit(&mut removed, &note(id, "Late", 0)).await;
+            edit(
+                &mut removed,
+                &format!("UPDATE quick_notes SET title = 'Later' WHERE id = '{id}'"),
+            )
+            .await;
+            writers.push((removed.writer(), removed.own_ops().await));
+        }
+        writers.sort_by_key(|(writer, _)| *writer);
+        let (kept, rest) = writers.split_at(2);
+        let (surplus, surplus_ops) = &rest[0];
+
+        // The honest device sees the surplus writer before the removal and edits past it.
+        take(&mut honest, surplus_ops).await;
+        edit(&mut honest, &note("note-honest", "Honest", 1)).await;
+        let dependent = honest.own_ops().await;
+        anchor.remove(&removed.device_id).await.unwrap();
+
+        // The peer learns of the removal and the lower writers first, then the honest change.
+        deliver(&mut peer, &mut anchor).await;
+        for (_, ops) in kept {
+            take(&mut peer, ops).await;
+        }
+        take(&mut peer, surplus_ops).await;
+        take(&mut peer, &dependent).await;
+        assert_eq!(
+            peer.applied_vector().await.get(&honest.writer()),
+            honest.stored_vector().await.get(&honest.writer()),
+            "the honest change leaves the hold"
+        );
+        assert_eq!(
+            peer.stored_vector().await.get(surplus),
+            1,
+            "the surplus genesis is stored"
+        );
+        assert_eq!(
+            title(&mut peer, "note-honest").await.as_deref(),
+            Some("Honest")
+        );
+
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut anchor, &mut peer).await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut honest, &mut anchor).await;
+        deliver(&mut peer, &mut anchor).await;
+        let expected = anchor.domain_dump().await;
+        for replica in [&mut anchor, &mut honest, &mut peer] {
+            assert_eq!(replica.domain_dump().await, expected);
+            assert_eq!(replica.stored_vector().await.get(surplus), 1);
+            assert_eq!(
+                title(replica, "note-honest").await.as_deref(),
+                Some("Honest")
+            );
+            replica.check_invariants().await;
+        }
+    });
+}

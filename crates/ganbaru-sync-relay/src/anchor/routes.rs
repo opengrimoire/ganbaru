@@ -222,12 +222,17 @@ impl SetupRoute {
             .await
             .map_err(|error| format!("read sync charter: {error}"))?
             .ok_or_else(|| "this server has no charter".to_string())?;
+        let view = Engine::vault()
+            .authorization(&mut conn, &ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "this server has no authorization log".to_string())?;
         Ok(Some(AnchorSpace {
             vault_id: active.vault_id,
             charter: encode_sync_charter(&charter),
             person_key: ctx.person_key.to_text(),
-            kit_admin_key: String::new(),
-            recovery_admin_key: String::new(),
+            kit_admin_key: encode_sync_admin_key(&view.kit_admin_key),
+            recovery_admin_key: encode_sync_admin_key(&view.recovery_admin_key),
         }))
     }
 

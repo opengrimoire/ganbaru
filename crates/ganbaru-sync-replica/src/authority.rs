@@ -695,8 +695,8 @@ pub fn kit_public_keys(kit_code: &KitCode) -> Result<RecoveryPublicKeys, String>
 
 /// Whether a selected log names this kit: the key only a rotation replaces, or the recovery key
 /// the anchor admits. These are the two keys the anchor accepts as a recovery author.
-pub fn log_names_kit(_view: &AuthorizationView, _kit: &RecoveryPublicKeys) -> bool {
-    true
+pub fn log_names_kit(view: &AuthorizationView, kit: &RecoveryPublicKeys) -> bool {
+    view.kit_admin_key == kit.admin || view.recovery_admin_key == kit.admin
 }
 
 /// The recovery admin key `kit_code` derives, whether or not any log names it. Refuses a code
@@ -759,7 +759,8 @@ pub fn recovery_promotion(
 /// Signs, with the recovery admin key `kit_code` derives, the proposal that enrolls a new desktop
 /// as an admin after every device of the space is lost. The derived key lives only inside this
 /// call. The anchor accepts the kit that holds the lineage even after a recovery key replaced
-/// it, and refuses a kit a rotation retired.
+/// it, and refuses a kit a rotation retired. The signed proposal discloses the kit's admin public
+/// key, so callers send it only to a server that already named that key.
 pub fn recovery_enrollment(
     space: SpaceId,
     charter: Digest32,

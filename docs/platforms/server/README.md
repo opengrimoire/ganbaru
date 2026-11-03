@@ -213,6 +213,8 @@ The server must hold the anchor role, and you need the recovery kit.
 2. On a new desktop, choose **Recover from an anchor server** on the linking screen of the first launch, or in Settings > Data when the device is not linked, and enter the code and the kit. The desktop derives the recovery admin key in memory, enrolls itself as an admin through the server, and copies the vault into a new folder.
 3. Keep the recovery kit. The person key does not return this way: a linked phone or desktop that still holds it can share it again, and otherwise anything signed with it stays as it is.
 
+Before the desktop signs anything with the kit, the server must name the kit's public key, and the copied log must name the kit the same way before the vault opens. A kit that does not belong to the vault on the server is refused with "this recovery kit does not belong to the vault on this server", and no copy opens. The check proves only that the server knew the kit's public keys, not that it runs your vault: a server that already learned them, such as from an earlier recovery attempt, can pass it.
+
 If the copy fails after the enrollment, repeat the steps with a fresh code and the same kit.
 
 ## Removing a server

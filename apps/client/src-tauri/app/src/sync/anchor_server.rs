@@ -10,21 +10,23 @@ use super::host::{AppHost, SyncHost};
 use super::server::{SyncServerAdded, SyncServerError, admin_context};
 use super::service::{AuthorityAction, SyncRuntime, blocking};
 use super::writer::ensure_device_key;
-#[cfg_attr(not(test), allow(unused_imports))]
-use super::{AnsweredKitKeys, RECOVERY_KIT_MISMATCH};
+use super::{AnsweredKitKeys, RECOVERY_KIT_MISMATCH, RecoveryBinding};
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter, random_token};
 use crate::vault::handoff::protocol::encode_sync_charter;
 use crate::vault::handoff::receiver::{ReceiveOutcome, receive_recovered};
 use crate::vault::handoff::snapshot::{archive_active_vault, bundle_metadata};
 use crate::vault::quiescence::begin_snapshot_quiescence;
 use ganbaru_handoff::protocol::anchor::{AnchorSetupCode, AnchorSpace};
+use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, Engine, EnrolledDevice, local};
 use ganbaru_sync_contracts::authorization::Server;
 use ganbaru_sync_contracts::{DeviceKind, DeviceRole, KitCode, RecoveryPublicKeys};
 use ganbaru_sync_replica::anchor_setup::{
     AnchorSetupError, SetupConnection, open_setup, setup_target,
 };
-use ganbaru_sync_replica::authority::{Enrollment, ensure_admin_key, recovery_enrollment};
+use ganbaru_sync_replica::authority::{
+    Enrollment, ensure_admin_key, kit_public_keys, recovery_enrollment,
+};
 use ganbaru_sync_replica::service::{RELAY_LOOPBACK, ServerEnrollment};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -207,8 +209,10 @@ pub(super) async fn add_anchor_server<R: Runtime>(
 
 /// Recovers the vault an anchor server runs on this new desktop: proves the code, derives the
 /// recovery admin key from `kit` in memory, enrolls this desktop as an admin through the server,
-/// and copies the vault into a new folder. A copy that failed after the enrollment is repeated
-/// with a fresh code and the same kit.
+/// and copies the vault into a new folder. The server must name the kit's admin key before the
+/// signed enrollment discloses it, and the copy opens only when its log names the kit through a
+/// key the server answered. A copy that failed after the enrollment is repeated with a fresh code
+/// and the same kit.
 #[tauri::command]
 pub async fn sync_recover_through_server(
     app: AppHandle,
@@ -216,6 +220,7 @@ pub async fn sync_recover_through_server(
     kit: String,
 ) -> Result<ReceiveOutcome, String> {
     let kit = KitCode::new(kit);
+    let kit_keys = kit_public_keys(&kit)?;
     let code = AnchorSetupCode::from_text(code.trim())?;
     let mut connection = open(&app, &code, None)
         .await
@@ -226,14 +231,14 @@ pub async fn sync_recover_through_server(
         .clone()
         .ok_or_else(|| "this server runs no vault yet".to_string())?;
     let pinned = PinnedCharter {
-        charter: space.charter,
-        person_key: space.person_key,
+        charter: space.charter.clone(),
+        person_key: space.person_key.clone(),
     };
-    let trust = super::host::charter_trust(&pinned, &space.vault_id)?;
-    let charter = &trust.0;
+    let (charter, person_key) = super::host::charter_trust(&pinned, &space.vault_id)?;
     if AppHost::of(&app).active_vault_id()? == space.vault_id {
         return Err("this vault is already open on this device".to_string());
     }
+    let answered = server_names_kit(&space, &kit_keys)?;
     let host = AppHost::of(&app);
     let marker = host.sync_files(&space.vault_id)?.server_recovery_path();
     if !marker.exists() {
@@ -277,20 +282,29 @@ pub async fn sync_recover_through_server(
         .await?;
     }
     drop(connection);
-    receive_recovered(app, setup_target(&code), space.vault_id, trust).await
+    let binding = RecoveryBinding {
+        charter,
+        person_key,
+        kit: kit_keys,
+        answered,
+    };
+    receive_recovered(app, setup_target(&code), space.vault_id, binding).await
 }
 
 /// The kit keys `space` answered, refused unless one of them is the admin key of `kit`. A server
 /// that never held the vault cannot name that key, because no proposal has disclosed it yet.
-#[cfg_attr(not(test), allow(dead_code))]
 fn server_names_kit(
-    _space: &AnchorSpace,
+    space: &AnchorSpace,
     kit: &RecoveryPublicKeys,
 ) -> Result<AnsweredKitKeys, String> {
-    Ok(AnsweredKitKeys {
-        kit_admin_key: kit.admin,
-        recovery_admin_key: kit.admin,
-    })
+    let answered = AnsweredKitKeys {
+        kit_admin_key: decode_sync_admin_key(&space.kit_admin_key)?,
+        recovery_admin_key: decode_sync_admin_key(&space.recovery_admin_key)?,
+    };
+    if answered.kit_admin_key != kit.admin && answered.recovery_admin_key != kit.admin {
+        return Err(RECOVERY_KIT_MISMATCH.to_string());
+    }
+    Ok(answered)
 }
 
 #[cfg(test)]

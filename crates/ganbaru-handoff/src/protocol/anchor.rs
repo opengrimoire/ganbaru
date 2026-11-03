@@ -100,7 +100,9 @@ impl AnchorSpace {
     /// vault with [`crate::pairing::PinnedCharter::verify`].
     pub fn validate(&self) -> Result<(), String> {
         super::validate_identifier("vault id", &self.vault_id)?;
-        super::decode_sync_charter(&self.charter, &self.person_key).map(drop)
+        super::decode_sync_charter(&self.charter, &self.person_key)?;
+        super::decode_sync_admin_key(&self.kit_admin_key)?;
+        super::decode_sync_admin_key(&self.recovery_admin_key).map(drop)
     }
 }
 

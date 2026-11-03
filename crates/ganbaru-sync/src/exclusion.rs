@@ -1612,7 +1612,8 @@ pub struct LateChange {
     /// Clock of the newest late value, or `None` when the change only deleted the row.
     pub clock: Option<Hlc>,
     /// Whether restoring the change can write it back. A row the removed device owns only that
-    /// device may write, so restoring it records the decision and writes nothing.
+    /// device may write, so restoring it records the decision and writes nothing, and the
+    /// listing offers only discarding it.
     pub restorable: bool,
 }
 
@@ -1777,7 +1778,9 @@ impl Engine {
                 presentation,
                 clock: record.groups.values().map(|late| late.clock).max(),
                 values,
-                restorable: true,
+                // Every replica holds a write to an owned row by another device as invalid,
+                // so a late change to one is the removed device's own row.
+                restorable: spec.owner.is_none(),
             });
         }
         Ok(changes)

@@ -934,7 +934,11 @@ fn a_forked_total_the_anchor_cannot_seal_again_settles_on_the_owners_reseal() {
         original.take_evidence(&mut anchor).await;
         let forked = original.writer();
         original.apply_all().await.unwrap();
-        assert_ne!(original.writer(), forked, "the original re-seals its branch");
+        assert_ne!(
+            original.writer(),
+            forked,
+            "the original re-seals its branch"
+        );
         let mut replicas = vec![anchor, member, original];
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
@@ -962,7 +966,13 @@ fn an_owners_create_over_a_total_without_sync_state_applies_everywhere() {
         }
         replicas[1].exec(&flush_sql(&owner, HOST, 100)).await;
         replicas[1].seal().await.unwrap();
-        sealed_change(&mut replicas[1], USAGE_TOTALS_TABLE, &key, ChangeAction::Create).await;
+        sealed_change(
+            &mut replicas[1],
+            USAGE_TOTALS_TABLE,
+            &key,
+            ChangeAction::Create,
+        )
+        .await;
 
         let ops = replicas[1].own_ops().await;
         for index in [0, 2] {

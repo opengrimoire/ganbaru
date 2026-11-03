@@ -61,6 +61,8 @@ export const dataFolderError = {
     "Esta carpeta está abierta en otra app de Ganbaru. Cierra esa app o elige otra carpeta.",
   linkedAndroid:
     "Este teléfono está vinculado a otros dispositivos. Desvincula primero este teléfono y luego restaura.",
+  anchorRollback:
+    "Esta computadora es el ancla de tus dispositivos vinculados y esta copia desharía cambios que ellos ya siguen. Traspasa el ancla o quita esos dispositivos y luego restaura.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {

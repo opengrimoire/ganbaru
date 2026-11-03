@@ -847,6 +847,126 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
     });
 }
 
+/// A member laptop holding the log of a lost hub that enrolled it and `others`, each
+/// `(device id, removed)`, removing the ones marked removed before it was lost. Returns the
+/// laptop with the hub already closed.
+async fn lost_hub_space(label: &str, others: &[(&str, bool)]) -> Replica {
+    let mut hub_replica = Replica::new(&format!("hub-{label}"), HUB_DEVICE).await;
+    let mut laptop = Replica::new(&format!("laptop-{label}"), LAPTOP_DEVICE).await;
+    let charter = hub_replica.charter().await;
+    let space = hub_replica.ctx.space;
+    let enroll = authority::propose(
+        space,
+        charter,
+        &hub_keys().admin,
+        authority::enroll_entry(Enrollment {
+            device_id: LAPTOP_DEVICE.to_string(),
+            device_key: device_key(LAPTOP_DEVICE).public_key(),
+            tls_fingerprint: [33; 32],
+            label: "Laptop".to_string(),
+            device_kind: DeviceKind::Desktop,
+        }),
+        NOW_MS,
+    )
+    .expect("sign enrollment");
+    sequence_here(&mut hub_replica, &enroll).await;
+    for (index, (device_id, removed)) in others.iter().enumerate() {
+        let seed = 50 + u8::try_from(index).expect("few devices");
+        sequence_here(
+            &mut hub_replica,
+            &enroll_mobile(space, charter, device_id, seed),
+        )
+        .await;
+        if *removed {
+            let removal = authority::propose(
+                space,
+                charter,
+                &hub_keys().admin,
+                authority::remove_entry(device_id),
+                NOW_MS,
+            )
+            .expect("sign removal");
+            sequence_here(&mut hub_replica, &removal).await;
+        }
+    }
+    laptop
+        .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
+        .await
+        .expect("pull the log");
+    laptop.apply().await;
+    hub_replica.close().await;
+    laptop
+}
+
+#[test]
+fn a_crash_after_the_forced_seal_finishes_the_follow_ups() {
+    block_on(async {
+        let mut laptop = lost_hub_space("forced-crash", &[("device-watch", false)]).await;
+        let laptop_admin = AdminKeyPair::from_seed(&[32; 32]).expect("admin seed");
+        let view = view_of(&laptop).await;
+        let recovery =
+            authority::recovery_admin(&view, &hub_recovery_seed().kit_code()).expect("kit");
+        let forced = authority::ForcedHandover {
+            signer: &recovery,
+            promote: Some(laptop_admin.public_key()),
+            point: None,
+            removals: vec!["device-watch".to_string()],
+            recovery: None,
+        };
+        let outbox_path = laptop.directory.files().outbox_path();
+        {
+            let mut conn = acquire(&laptop.pool).await;
+            authority::CRASH_AFTER_FORCED_SEAL.with(|crash| crash.set(true));
+            let crashed = authority::force_handover_here(
+                &laptop.engine,
+                &mut conn,
+                &laptop.ctx,
+                &forced,
+                &mut laptop.writer.local(),
+                NOW_MS,
+            )
+            .await;
+            authority::CRASH_AFTER_FORCED_SEAL.with(|crash| crash.set(false));
+            assert!(crashed.is_err(), "the forced handover stops after its seal");
+        }
+        let sealed = view_of(&laptop).await;
+        assert_eq!(sealed.anchor_device_id, LAPTOP_DEVICE, "the handover is durable");
+
+        // The restarted service loop sequences what the outbox on disk holds.
+        let mut outbox = Outbox::load(&outbox_path).expect("outbox");
+        let mut conn = acquire(&laptop.pool).await;
+        authority::sequence_outbox(
+            &laptop.engine,
+            &mut conn,
+            &laptop.ctx,
+            &mut laptop.writer.local(),
+            &mut outbox,
+            &VersionVector::new(),
+            &Default::default(),
+            NOW_MS,
+        )
+        .await
+        .expect("sequence the outbox");
+        drop(conn);
+        let view = view_of(&laptop).await;
+        for device_id in [HUB_DEVICE, "device-watch"] {
+            assert!(
+                view.devices
+                    .iter()
+                    .any(|device| device.device_id == device_id
+                        && device.removed_revision.is_some()),
+                "{device_id} is removed after the restart"
+            );
+        }
+        assert!(authority::is_admin(
+            &view,
+            LAPTOP_DEVICE,
+            &laptop_admin.public_key()
+        ));
+        laptop.close().await;
+    });
+}
+
 /// A laptop desktop holding the log of a lost hub that started the key epochs with the founding
 /// kit and then regenerated the recovery key, with the laptop's encryption keys attached. With
 /// `publish_laptop_key`, the hub sequenced the laptop's device key before it was lost. Returns

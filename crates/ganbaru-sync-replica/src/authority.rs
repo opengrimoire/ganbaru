@@ -1089,6 +1089,13 @@ pub async fn force_handover_here(
     force_handover_with(engine, conn, ctx, forced, &mut with_kit, now_ms).await
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes a forced handover stop right after its seal commits, as a crash there would.
+    pub(crate) static CRASH_AFTER_FORCED_SEAL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 async fn force_handover_with(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1149,6 +1156,10 @@ async fn force_handover_with(
         Ok(revision) => revision,
         Err(rejection) => return Ok(Err(rejection)),
     };
+    #[cfg(test)]
+    if CRASH_AFTER_FORCED_SEAL.with(std::cell::Cell::get) {
+        return Err("the test stopped the forced handover after its seal".to_string());
+    }
     if forced.recovery.is_some() {
         match sequence_own_device_key(engine, conn, ctx, writer, now_ms).await? {
             Ok(Some(sealed)) => revision = revision.max(sealed),

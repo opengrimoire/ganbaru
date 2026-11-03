@@ -998,7 +998,8 @@ export async function promoteSyncDevice(deviceId: string): Promise<void> {
 }
 
 /**
- * Replaces the recovery kit from the anchor desktop. The new kit then waits to be saved, as
+ * Makes a recovery key from the anchor desktop. The printed kit keeps working; only
+ * {@link rotateSyncRecoveryKit} retires it. The new kit then waits to be saved, as
  * {@link getSyncRecoveryKitState} shows.
  */
 export async function regenerateSyncRecoveryKit(): Promise<void> {
@@ -1006,13 +1007,14 @@ export async function regenerateSyncRecoveryKit(): Promise<void> {
 }
 
 /**
- * Replaces the recovery kit with one the current kit `kitCode` signs.
+ * Replaces the printed recovery kit with a new one, signed by the current kit, from any linked
+ * desktop. Once the anchor sequences it, the old code no longer signs. The new kit then waits
+ * to be saved, as {@link getSyncRecoveryKitState} shows.
  *
- * @param kitCode - The code of the vault's current recovery kit.
+ * @param kitCode - The code of the vault's current printed recovery kit.
  */
 export async function rotateSyncRecoveryKit(kitCode: string): Promise<void> {
-  void kitCode;
-  throw new Error("recovery kit rotation is not available");
+  await invoke("sync_rotate_recovery_kit", { kitCode });
 }
 
 /** The active vault's recovery kit, with the kit this desktop holds until the user saves it. */

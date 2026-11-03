@@ -14,6 +14,7 @@
     buttonClass,
     canManage,
     canInstallKey,
+    canRotate,
     use,
     anchor,
     pendingKit,
@@ -27,6 +28,11 @@
     canManage: boolean;
     /** Whether this anchor desktop may install a new recovery key. */
     canInstallKey: boolean;
+    /**
+     * Whether this desktop may replace the printed kit with its code, admin or not. It then
+     * shows and saves the new kit too.
+     */
+    canRotate: boolean;
     /** How this desktop may use a kit to become an admin, or null when it may not. */
     use: SyncKitUse | null;
     /** The anchor a forced handover may also quarantine, when there is one. */
@@ -41,8 +47,10 @@
   let busy = $state(false);
   let message = $state("");
   let failed = $state(false);
-  let confirmation = $state<"regenerate" | "force" | null>(null);
+  let confirmation = $state<"regenerate" | "force" | "rotate" | null>(null);
   let code = $state("");
+  let rotating = $state(false);
+  let rotateCode = $state("");
   let quarantineAnchor = $state(false);
   /** The user's marks in the device review, by device id, over each device's preselection. */
   let reviewMarks = $state<Record<string, boolean>>({});
@@ -118,11 +126,28 @@
     }
   }
 
+  function askRotate(event: SubmitEvent): void {
+    event.preventDefault();
+    if (rotateCode.trim()) confirmation = "rotate";
+  }
+
+  /** Replaces the printed kit with the entered code; the new kit then waits to be saved. */
+  async function rotateKit(): Promise<void> {
+    const entered = rotateCode.trim();
+    if (!entered) return;
+    await run(() => authorityState.rotateKit(entered), "", t("sync.kit.rotateFailed"));
+    if (!failed) {
+      rotateCode = "";
+      rotating = false;
+    }
+  }
+
   function confirm(): void {
     const current = confirmation;
     confirmation = null;
     if (current === "regenerate") void run(authorityState.regenerateKit, "", t("sync.kit.regenerateFailed"));
     else if (current === "force") void forceWithKit();
+    else if (current === "rotate") void rotateKit();
   }
 </script>
 
@@ -131,16 +156,51 @@
     <div class="text-[0.866667rem] text-foreground">{t("sync.kit.heading")}</div>
     <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("sync.kit.description")}</div>
   </div>
-  {#if !canManage}
-    <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.kit.adminOnly")}</p>
-  {:else if pendingKit}
+  {#if pendingKit && (canManage || canRotate)}
     <SyncRecoveryKitSheet kit={pendingKit} {buttonClass} onConfirm={authorityState.confirmKitSaved} />
-  {:else if canInstallKey}
-    <div class="flex flex-wrap gap-2">
-      <button type="button" class={buttonClass} disabled={busy} onclick={() => { confirmation = "regenerate"; }}>
-        {t("sync.kit.regenerate")}
-      </button>
-    </div>
+  {:else}
+    {#if !canManage && !canRotate}
+      <p class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{t("sync.kit.adminOnly")}</p>
+    {/if}
+    {#if canRotate && rotating}
+      <form class="flex min-w-0 flex-col gap-2 px-1" onsubmit={askRotate}>
+        <label class="text-[0.8rem] text-muted-foreground" for="sync-recovery-kit-rotate-code">
+          {t("sync.kit.rotateDescription")}
+        </label>
+        <input
+          id="sync-recovery-kit-rotate-code"
+          class="field h-9 w-full px-3 font-mono text-sm"
+          dir="ltr"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          placeholder={t("sync.kit.code")}
+          bind:value={rotateCode}
+          disabled={busy}
+        />
+        <div class="flex flex-wrap gap-2">
+          <button type="submit" class={buttonClass} disabled={busy || rotateCode.trim().length === 0}>
+            {t("sync.kit.rotateSubmit")}
+          </button>
+          <button type="button" class={buttonClass} disabled={busy} onclick={() => { rotating = false; rotateCode = ""; }}>
+            {t("common.cancel")}
+          </button>
+        </div>
+      </form>
+    {:else if canInstallKey || canRotate}
+      <div class="flex flex-wrap gap-2">
+        {#if canInstallKey}
+          <button type="button" class={buttonClass} disabled={busy} onclick={() => { confirmation = "regenerate"; }}>
+            {t("sync.kit.regenerate")}
+          </button>
+        {/if}
+        {#if canRotate}
+          <button type="button" class={buttonClass} disabled={busy} onclick={() => { rotating = true; }}>
+            {t("sync.kit.rotateAction")}
+          </button>
+        {/if}
+      </div>
+    {/if}
   {/if}
   {#if use}
     <form class="flex min-w-0 flex-col gap-2 px-1" onsubmit={(event) => void useKit(event)}>
@@ -229,6 +289,15 @@
     title={t("sync.kit.regenerateTitle")}
     message={t("sync.kit.regenerateMessage")}
     confirmLabel={t("sync.kit.regenerate")}
+    cancelLabel={t("common.cancel")}
+    onConfirm={confirm}
+    onCancel={() => { confirmation = null; }}
+  />
+{:else if confirmation === "rotate"}
+  <ConfirmDialog
+    title={t("sync.kit.rotateTitle")}
+    message={t("sync.kit.rotateMessage")}
+    confirmLabel={t("sync.kit.rotateSubmit")}
     cancelLabel={t("common.cancel")}
     onConfirm={confirm}
     onCancel={() => { confirmation = null; }}

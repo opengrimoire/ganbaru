@@ -653,7 +653,7 @@ impl RecordExchange {
     ) -> Result<Option<BackstopState>, SyncError> {
         let free = self.free_space();
         if self.lock().backstop.is_none() {
-            let storage = engine.authorization_storage(conn, ctx).await?;
+            let storage = engine.authorization_totals(conn, ctx).await?;
             let full = storage.bytes > self.limits.backstop_bytes
                 || storage.envelopes > self.limits.backstop_envelopes
                 || free.is_some_and(|free| free < self.limits.backstop_free_bytes);

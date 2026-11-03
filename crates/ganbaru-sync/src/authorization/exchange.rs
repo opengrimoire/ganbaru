@@ -148,6 +148,15 @@ pub struct RecordAdmission {
     pub unpaired: Vec<usize>,
 }
 
+/// Stored envelope bytes and envelope count of the record store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AuthorizationTotals {
+    /// Bytes of every stored envelope and refetch hash.
+    pub bytes: u64,
+    /// Stored envelopes and refetch hashes, each refetch hash counted as one envelope.
+    pub envelopes: u64,
+}
+
 /// Stored envelope bytes and envelope count of the record store, in total and by the device
 /// whose enrolled key certified each writer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -924,15 +933,14 @@ impl Engine {
         Ok(out)
     }
 
-    /// Stored bytes and envelopes of the record store, for the storage backstop and growth
-    /// alerts.
-    pub async fn authorization_storage(
+    /// Stored bytes and envelopes of the record store, for the storage backstop and the apply
+    /// trigger.
+    pub async fn authorization_totals(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
-    ) -> SyncResult<AuthorizationStorage> {
+    ) -> SyncResult<AuthorizationTotals> {
         log::ensure_space(conn, ctx.space).await?;
-        let space = ctx.space.as_bytes().as_slice();
         let (bytes, envelopes): (i64, i64) = sqlx::query_as(
             "SELECT coalesce(sum(bytes), 0), coalesce(sum(rows), 0) FROM (
                  SELECT sum(length(envelope)) AS bytes, count(*) AS rows
@@ -941,9 +949,25 @@ impl Engine {
                  SELECT sum(length(envelope_hash)), count(*)
                  FROM sync_auth_refetch WHERE space_id = ?1)",
         )
-        .bind(space)
+        .bind(ctx.space.as_bytes().as_slice())
         .fetch_one(&mut *conn)
         .await?;
+        Ok(AuthorizationTotals {
+            bytes: stored_u64(bytes, "authorization storage bytes")?,
+            envelopes: stored_u64(envelopes, "authorization envelope count")?,
+        })
+    }
+
+    /// Stored bytes and envelopes of the record store with the per-device and fork breakdown
+    /// the growth alerts read. It reads every envelope row, so the backstop and the apply
+    /// trigger read [`Self::authorization_totals`] instead.
+    pub async fn authorization_storage(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<AuthorizationStorage> {
+        let AuthorizationTotals { bytes, envelopes } = self.authorization_totals(conn, ctx).await?;
+        let space = ctx.space.as_bytes().as_slice();
         // A writer is charged to a device only through a verified certificate that names the
         // device together with the key the selected chain enrolls for it, the pair the Live
         // class also requires, so a certificate naming another device's id under a foreign key
@@ -985,8 +1009,8 @@ impl Engine {
         .fetch_all(&mut *conn)
         .await?;
         Ok(AuthorizationStorage {
-            bytes: stored_u64(bytes, "authorization storage bytes")?,
-            envelopes: stored_u64(envelopes, "authorization envelope count")?,
+            bytes,
+            envelopes,
             by_device: by_device
                 .into_iter()
                 .map(|(device, carried)| {

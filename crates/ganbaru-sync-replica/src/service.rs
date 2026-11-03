@@ -2434,7 +2434,7 @@ impl ServiceState {
                 .map_err(|error| format!("read sync log: {error}"))?;
             let records = session
                 .engine
-                .authorization_storage(&mut conn, &session.ctx)
+                .authorization_totals(&mut conn, &session.ctx)
                 .await
                 .map_err(|error| format!("read authorization storage: {error}"))?
                 .envelopes;

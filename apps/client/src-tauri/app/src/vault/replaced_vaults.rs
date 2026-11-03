@@ -6,8 +6,9 @@
 //! Data lists them with export to Downloads and delete. When the backup cannot be written, the
 //! replacement is refused.
 
+use super::encrypted_backup::BackupRefusal;
 use super::{MAX_VAULT_MANIFEST_BYTES, VAULT_MANIFEST_FILE, parse_vault_manifest};
-use ganbaru_sync_replica::backup::{ArchiveGate, create_backup_archive};
+use ganbaru_sync_replica::backup::{ArchiveGate, BackupSealKeys, create_backup_archive};
 use serde::Serialize;
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -228,6 +229,25 @@ fn archived_manifest(path: &Path) -> Option<super::VaultManifest> {
     parse_vault_manifest(&contents).ok()
 }
 
+#[allow(dead_code)]
+pub(crate) fn replaced_export_seal_keys(
+    replaced_vault_id: &str,
+    active: Option<BackupSealKeys>,
+) -> Result<BackupSealKeys, BackupRefusal> {
+    let _ = replaced_vault_id;
+    active.ok_or(BackupRefusal::NoRecoveryKit)
+}
+
+#[allow(dead_code)]
+pub(crate) fn seal_replaced_backup(
+    archive: &Path,
+    keys: &BackupSealKeys,
+    destination: &Path,
+) -> Result<u64, String> {
+    let _ = keys;
+    fs::copy(archive, destination).map_err(|error| format!("export the backup: {error}"))
+}
+
 /// Whether `root` keeps a backup of the vault `vault_id` written at or after `since_ms`, in Unix
 /// milliseconds.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -324,6 +344,8 @@ pub fn vault_delete_replaced_backup(id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync_contracts::{RecoverySeed, SpaceId, SpaceKey};
+    use ganbaru_sync_replica::backup::{decrypt_backup, read_backup_header};
 
     fn unique_root(name: &str) -> PathBuf {
         crate::vault::tests::unique_path(name)
@@ -424,6 +446,76 @@ mod tests {
             .unwrap_err();
         assert!(error.starts_with(REPLACED_VAULT_BACKUP_FAILED), "{error}");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    /// The kit of the vault in use, which opens every export.
+    fn active_kit() -> RecoverySeed {
+        RecoverySeed::from_bytes([0x42; 32])
+    }
+
+    /// The seal keys of the vault in use, linked at epoch 3.
+    fn active_seal_keys() -> BackupSealKeys {
+        BackupSealKeys {
+            space: SpaceId::personal("vault-in-use"),
+            epoch_key: Some(SpaceKey::generate(3).unwrap()),
+            recovery: active_kit().public_keys().unwrap().encryption,
+        }
+    }
+
+    #[test]
+    fn replaced_export_seal_keys_name_the_replaced_vault() {
+        let keys = replaced_export_seal_keys("replaced-vault", Some(active_seal_keys())).unwrap();
+        assert_eq!(keys.space, SpaceId::personal("replaced-vault"));
+        assert!(
+            keys.epoch_key.is_none(),
+            "no epoch key of the vault in use opens an export of another vault"
+        );
+        assert_eq!(keys.recovery, active_seal_keys().recovery);
+        assert_eq!(
+            replaced_export_seal_keys("replaced-vault", None).unwrap_err(),
+            BackupRefusal::NoRecoveryKit
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exported_replaced_backup_is_sealed() {
+        let parent = unique_root("replaced-export");
+        let vault = vault_at(&parent, "Ganbaru");
+        let root = parent.join(REPLACED_VAULTS_DIRECTORY);
+        let backup = write_replaced_vault_backup(&root, &vault, 1_000)
+            .await
+            .unwrap();
+        let archive = root.join(&backup.id);
+        let manifest = archived_manifest(&archive).unwrap();
+        let exported = parent.join("exported.ganbaru-backup");
+
+        let keys =
+            replaced_export_seal_keys(&manifest.vault_id, Some(active_seal_keys())).unwrap();
+        seal_replaced_backup(&archive, &keys, &exported).unwrap();
+
+        // Read as anyone with access to Downloads would: no zip structure or entry name shows.
+        let bytes = fs::read(&exported).unwrap();
+        assert!(bytes.starts_with(b"GBBK"), "the export is an encrypted backup");
+        for plaintext in [&b"PK\x03\x04"[..], VAULT_MANIFEST_FILE.as_bytes()] {
+            assert!(
+                !bytes.windows(plaintext.len()).any(|window| window == plaintext),
+                "the export carries {:?} in the clear",
+                String::from_utf8_lossy(plaintext)
+            );
+        }
+        let header = read_backup_header(&exported).unwrap();
+        assert_eq!(header.space, SpaceId::personal(&manifest.vault_id));
+        assert_eq!(header.epoch, 0, "no epoch key opens the export");
+        let opened = parent.join("opened.zip");
+        let pair = active_kit().recovery_encryption_key().unwrap();
+        decrypt_backup(
+            &exported,
+            |header| header.open_with_recovery(&pair),
+            &opened,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&opened).unwrap(), fs::read(&archive).unwrap());
         let _ = fs::remove_dir_all(parent);
     }
 

@@ -398,7 +398,7 @@ fn held_device_records_no_anchor_marks() {
     block_on(async {
         let hub_replica = Replica::new("hub-held-marks", HUB_DEVICE).await;
         let mut phone = Replica::new("phone-held-marks", PHONE_DEVICE).await;
-        let mut tablet = Replica::new("tablet-held-marks", TABLET_DEVICE).await;
+        let tablet = Replica::new("tablet-held-marks", TABLET_DEVICE).await;
         let (transport, _changes) = hub(&hub_replica);
         let reached = phone.seal_note("note-1").await;
         done(
@@ -457,11 +457,16 @@ fn held_device_records_no_anchor_marks() {
             .expect("authorization view");
         assert_eq!(view.anchor_device_id, HUB_DEVICE);
         assert!(
-            !tablet
-                .engine
-                .record_anchor_marks(&mut conn, &tablet.ctx, HUB_DEVICE, &echoed.hub)
-                .await
-                .expect("record anchor marks"),
+            !crate::client::record_anchor_marks(
+                &tablet.engine,
+                &mut conn,
+                &tablet.ctx,
+                TABLET_DEVICE,
+                HUB_DEVICE,
+                &echoed.hub,
+            )
+            .await
+            .expect("record anchor marks"),
             "a held device records no anchor marks from an echo"
         );
         let marked: Option<i64> =

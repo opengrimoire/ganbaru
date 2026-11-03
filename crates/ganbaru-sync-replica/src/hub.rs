@@ -808,7 +808,9 @@ impl HubSession {
 
     /// The stored vector a peer may read: all of `stored` unless it is held, and then its own
     /// writers at the hub's value and every other writer the hub stores at the value of
-    /// `claimed`, so the answer tells it nothing it did not say. A writer the hub stores
+    /// `claimed`, so the answer tells it nothing it did not say. Those echoed values are not
+    /// what the hub stores, so a held device records no anchor marks from them, see
+    /// `client::record_anchor_marks`. A writer the hub stores
     /// nothing of reads as absent, so a new writer of the peer, whose genesis the hub has not
     /// stored yet, is pushed from its start; which writers exist travels in the authorization
     /// records a held peer is served anyway.

@@ -1339,6 +1339,113 @@ fn unattended_work_keeps_the_execution_target_its_request_chose() {
     });
 }
 
+/// Posts an unattended reply on `device:desk` whose request chose `folder:second`, returning
+/// the queued assignment that waits for Start here.
+async fn post_unattended_work_on_second_folder(pool: &SqlitePool) -> ChatWorkAssignmentRead {
+    seed_second_review_folder(pool).await;
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let target = ChatExecutionTarget::WorkingFolder {
+        working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+        execution_environment_id: ChatExecutionEnvironmentId::new(
+            ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+        )
+        .unwrap(),
+    };
+    let (request, scheduled_message_id) =
+        claim_scheduled_mention_on(pool, &now, Some(target)).await;
+    let send = ScheduledSend {
+        scheduled_message_id: &scheduled_message_id,
+        claim_token: "claim:a",
+        consent: ScheduledConsent::Unattended,
+    };
+    let writers = chat_writers_of(&["device:desk"]);
+    let device = PostingDevice::this_device("device:desk", &writers);
+    let posted = persist_post(pool, &request, Some(send), device)
+        .await
+        .unwrap();
+    let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+    read_assignment(pool, &assignment_id).await.unwrap()
+}
+
+/// How many execution targets this device keeps for `assignment_id`.
+async fn requested_target_count(pool: &SqlitePool, assignment_id: &ChatWorkAssignmentId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_assignment_requested_targets WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn retry_of_cancelled_unattended_work_resolves_its_target_again() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let queued = post_unattended_work_on_second_folder(&pool).await;
+        // A cancel synced from another device settles the work without this device's cancel path.
+        sqlx::query(
+            "UPDATE chat_work_assignments
+             SET state = 'cancelled', settled_at = updated_at, revision = revision + 1
+             WHERE id = ?",
+        )
+        .bind(queued.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "DELETE FROM chat_teammate_working_folder_grants WHERE working_folder_id = 'folder:second'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let cancelled = read_assignment(&pool, &queued.id).await.unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:04:00.000Z").unwrap();
+
+        let retried =
+            assignments::persist_retry(&pool, &cancelled.id, cancelled.revision, device, &now)
+                .await;
+
+        assert!(
+            retried.is_ok(),
+            "retry kept the target whose grant was removed: {retried:?}"
+        );
+        assert_eq!(
+            frozen_execution_folder(&pool, &cancelled.id)
+                .await
+                .as_deref(),
+            Some("folder:review")
+        );
+    });
+}
+
+#[test]
+fn cancelling_unattended_work_drops_its_kept_target() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let queued = post_unattended_work_on_second_folder(&pool).await;
+        assert_eq!(requested_target_count(&pool, &queued.id).await, 1);
+
+        super::workflow::set_assignment_state(
+            &pool,
+            &queued.id,
+            queued.revision,
+            ChatWorkAssignmentState::Cancelled,
+            Some("Cancelled by the user"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            requested_target_count(&pool, &queued.id).await,
+            0,
+            "the target outlived the work it was kept for"
+        );
+    });
+}
+
 /// The subject digest the dispatch job of `assignment_id` consented to run.
 async fn consented_dispatch_digest(
     pool: &SqlitePool,

@@ -1618,12 +1618,11 @@ fn fork_evidence_is_stored_without_bodies() {
         );
         let evidence = member.evidence().await;
         assert_eq!(evidence.len(), 1);
-        let rows: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT envelope FROM sync_auth_envelopes WHERE role = 'evidence'",
-        )
-        .fetch_all(&mut member.conn)
-        .await
-        .unwrap();
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT envelope FROM sync_auth_envelopes WHERE role = 'evidence'")
+                .fetch_all(&mut member.conn)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 3, "both branches and the shared prefix");
         let stored = rows
             .iter()

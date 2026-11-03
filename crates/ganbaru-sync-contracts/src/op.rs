@@ -348,26 +348,14 @@ impl Change {
         if !ascending {
             return Err(CodecError::Malformed("change groups"));
         }
-        match self.action {
-            ChangeAction::Create | ChangeAction::Write => {
-                if self.groups.is_empty() || self.replaced_by.is_some() || self.cause.is_some() {
-                    return Err(CodecError::Malformed("change"));
-                }
-            }
-            ChangeAction::Tombstone => {
-                let names_itself = self.replaced_by.as_ref() == Some(&self.row)
-                    || self
-                        .cause
-                        .as_ref()
-                        .is_some_and(|cause| cause.table == self.table && cause.row == self.row);
-                if !self.groups.is_empty()
-                    || names_itself
-                    || (self.replaced_by.is_some() && self.cause.is_some())
-                {
-                    return Err(CodecError::Malformed("tombstone"));
-                }
-            }
-        }
+        validate_change_shape(
+            self.table,
+            &self.row,
+            self.action,
+            !self.groups.is_empty(),
+            self.replaced_by.as_ref(),
+            self.cause.as_ref(),
+        )?;
         for group in &self.groups {
             if group.value.hash(self.table, group.group) != group.hash {
                 return Err(CodecError::Malformed("value hash"));
@@ -375,6 +363,58 @@ impl Change {
         }
         Ok(())
     }
+}
+
+/// Checks the rules of one change that its signed header alone decides: a create or write
+/// writes at least one group and names no successor, and a tombstone writes none and names at
+/// most one successor, never its own row.
+fn validate_change_shape(
+    table: TableId,
+    row: &RowKey,
+    action: ChangeAction,
+    writes_groups: bool,
+    replaced_by: Option<&RowKey>,
+    cause: Option<&Cause>,
+) -> Result<(), CodecError> {
+    match action {
+        ChangeAction::Create | ChangeAction::Write => {
+            if !writes_groups || replaced_by.is_some() || cause.is_some() {
+                return Err(CodecError::Malformed("change"));
+            }
+        }
+        ChangeAction::Tombstone => {
+            let names_itself = replaced_by == Some(row)
+                || cause.is_some_and(|cause| cause.table == table && cause.row == *row);
+            if writes_groups || names_itself || (replaced_by.is_some() && cause.is_some()) {
+                return Err(CodecError::Malformed("tombstone"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks the rules of an envelope that hold for every kind: only a genesis sits at sequence 1
+/// and continues from the zero hash, dependencies are ordered and name other writers, and only
+/// a changes operation continues its apply group.
+fn validate_frame(
+    kind: OperationKind,
+    writer: WriterId,
+    seq: Seq,
+    previous_hash: &Digest32,
+    header: &Header,
+) -> Result<(), OperationError> {
+    let genesis = kind == OperationKind::Genesis;
+    if seq == 0 || genesis != (seq == 1) {
+        return Err(CodecError::Malformed("sequence").into());
+    }
+    if (*previous_hash == GENESIS_PREVIOUS_HASH) != genesis {
+        return Err(CodecError::Malformed("previous hash").into());
+    }
+    validate_dependencies(&header.dependencies, &writer)?;
+    if header.group_continues && kind != OperationKind::Changes {
+        return Err(CodecError::Malformed("header flags").into());
+    }
+    Ok(())
 }
 
 /// Header fields shared by every kind.
@@ -525,17 +565,13 @@ impl Operation {
 
     /// Checks every rule of the format that does not depend on the manifest.
     pub fn validate(&self) -> Result<(), OperationError> {
-        let genesis = self.kind() == OperationKind::Genesis;
-        if self.seq == 0 || genesis != (self.seq == 1) {
-            return Err(CodecError::Malformed("sequence").into());
-        }
-        if (self.previous_hash == GENESIS_PREVIOUS_HASH) != genesis {
-            return Err(CodecError::Malformed("previous hash").into());
-        }
-        validate_dependencies(&self.header.dependencies, &self.writer)?;
-        if self.header.group_continues && self.kind() != OperationKind::Changes {
-            return Err(CodecError::Malformed("header flags").into());
-        }
+        validate_frame(
+            self.kind(),
+            self.writer,
+            self.seq,
+            &self.previous_hash,
+            &self.header,
+        )?;
         match &self.content {
             Content::Changes(changes) => {
                 if changes.len() > MAX_CHANGES_PER_OPERATION {
@@ -840,6 +876,97 @@ impl<'a> Envelope<'a> {
     /// The header is decoded completely before the body, so [`PayloadError::Body`] means the
     /// signed header is well formed and only the unsigned body fails to match it.
     pub fn operation(&self) -> Result<Operation, PayloadError> {
+        let (header, payload) = self.decode_header()?;
+        let content = match payload {
+            HeaderPayload::Changes(changes) => {
+                Content::Changes(attach_values(changes, self.body).map_err(PayloadError::Body)?)
+            }
+            HeaderPayload::Authorization(hash) => {
+                if entry_hash(self.body) != hash {
+                    return Err(PayloadError::Body(CodecError::Malformed(
+                        "authorization entry hash",
+                    )));
+                }
+                let record = AuthorizationRecord::decode(self.body)
+                    .map_err(|error| PayloadError::Invalid(error.into()))?;
+                Content::Authorization(Box::new(record))
+            }
+            HeaderPayload::Complete(content) => {
+                expect_empty_body(self.body).map_err(PayloadError::Body)?;
+                content
+            }
+        };
+        let operation = Operation {
+            space: self.space,
+            writer: self.writer,
+            seq: self.seq,
+            previous_hash: self.previous_hash,
+            header,
+            content,
+        };
+        operation.validate().map_err(PayloadError::Invalid)?;
+        Ok(operation)
+    }
+
+    /// Decodes the signed header only, for an envelope whose body was left out, and checks every
+    /// rule of the format the header alone decides. [`Envelope::operation`] decodes the header
+    /// with the same code, so both return the same header from one envelope; the body, and an
+    /// authorization record inside it, is not read.
+    pub fn header_fields(&self) -> Result<Header, PayloadError> {
+        let (header, payload) = self.decode_header()?;
+        let kind = match &payload {
+            HeaderPayload::Changes(changes) => {
+                let mut rows = BTreeSet::new();
+                for change in changes {
+                    if !rows.insert((change.table, &change.row)) {
+                        return Err(CodecError::Malformed("duplicate row change").into());
+                    }
+                    validate_change_shape(
+                        change.table,
+                        &change.row,
+                        change.action,
+                        !change.hashes.is_empty(),
+                        change.replaced_by.as_ref(),
+                        change.cause.as_ref(),
+                    )?;
+                }
+                OperationKind::Changes
+            }
+            HeaderPayload::Authorization(_) => OperationKind::Authorization,
+            HeaderPayload::Complete(Content::Genesis(certificate)) => {
+                if certificate.certificate.writer_id() != self.writer {
+                    return Err(PayloadError::Invalid(OperationError::WriterMismatch));
+                }
+                OperationKind::Genesis
+            }
+            HeaderPayload::Complete(_) => OperationKind::Acknowledgement,
+        };
+        validate_frame(kind, self.writer, self.seq, &self.previous_hash, &header)
+            .map_err(PayloadError::Invalid)?;
+        Ok(header)
+    }
+
+    /// The envelope bytes that prove this operation to a peer: the signed bytes, an empty body,
+    /// and the signature, with the same hash and signature. Authorization and genesis envelopes
+    /// keep their body, because their body or header is their content. The body is not covered
+    /// by the signature, so leaving it out loses no proof, and [`Envelope::header_fields`] reads
+    /// what the result still holds.
+    pub fn proof_bytes(&self) -> Vec<u8> {
+        let body = match OperationKind::from_u8(self.kind) {
+            Some(OperationKind::Authorization | OperationKind::Genesis) => self.body,
+            _ => &[],
+        };
+        let mut writer =
+            Writer::with_capacity(self.signed.len() + 4 + body.len() + self.signature.len());
+        writer.raw(self.signed);
+        writer.bytes_u32(body);
+        writer.raw(self.signature);
+        writer.into_bytes()
+    }
+
+    /// Decodes the signed header into its shared fields and its kind payload, before the body
+    /// is read.
+    fn decode_header(&self) -> Result<(Header, HeaderPayload), PayloadError> {
         if self.format_version > FORMAT_VERSION {
             return Err(PayloadError::NewerFormat);
         }
@@ -880,42 +1007,15 @@ impl<'a> Envelope<'a> {
             }
         };
         header.finish()?;
-        let content = match payload {
-            HeaderPayload::Changes(changes) => {
-                Content::Changes(attach_values(changes, self.body).map_err(PayloadError::Body)?)
-            }
-            HeaderPayload::Authorization(hash) => {
-                if entry_hash(self.body) != hash {
-                    return Err(PayloadError::Body(CodecError::Malformed(
-                        "authorization entry hash",
-                    )));
-                }
-                let record = AuthorizationRecord::decode(self.body)
-                    .map_err(|error| PayloadError::Invalid(error.into()))?;
-                Content::Authorization(Box::new(record))
-            }
-            HeaderPayload::Complete(content) => {
-                expect_empty_body(self.body).map_err(PayloadError::Body)?;
-                content
-            }
+        let header = Header {
+            clock,
+            manifest_version,
+            authorization_revision,
+            key_epoch,
+            group_continues: flags & FLAG_GROUP_CONTINUES != 0,
+            dependencies,
         };
-        let operation = Operation {
-            space: self.space,
-            writer: self.writer,
-            seq: self.seq,
-            previous_hash: self.previous_hash,
-            header: Header {
-                clock,
-                manifest_version,
-                authorization_revision,
-                key_epoch,
-                group_continues: flags & FLAG_GROUP_CONTINUES != 0,
-                dependencies,
-            },
-            content,
-        };
-        operation.validate().map_err(PayloadError::Invalid)?;
-        Ok(operation)
+        Ok((header, payload))
     }
 
     /// Decodes a genesis and verifies the envelope signature with the key it certifies.

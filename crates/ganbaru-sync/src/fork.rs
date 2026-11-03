@@ -6,7 +6,7 @@
 //! that holds such a pair stores it in `sync_fork_evidence`, keeps the writer's chain through the
 //! common prefix, and from then on refuses everything past it, so neither branch survives
 //! anywhere: the writer becomes forked with the last shared sequence as its cutoff. A pair is
-//! evidence only when both operations decode and neither claims a revision below the shared
+//! evidence only when both signed headers decode and neither claims a revision below the shared
 //! operation before them, so every stored fork proves the revision it freezes at.
 //!
 //! Every replica but the forked writer's own device excludes both branches: the merge effects
@@ -185,15 +185,16 @@ pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> Syn
 /// sequence as its cutoff. Evidence of a fork at an earlier sequence replaces a later one, since
 /// the cutoff only falls. A revoked writer keeps its removal cutoff apart, so its cutoff becomes
 /// the fork's and the result does not depend on whether the removal or the evidence came first.
-/// The envelopes are stored ordered by hash, so every replica holds the same row. A fork at or
-/// below the writer's compacted sequence is refused, since its bodies are gone here and that
-/// branch cannot be excluded.
+/// The envelopes are stored ordered by hash and without their bodies, see
+/// [`Envelope::proof_bytes`], so every replica holds the same row and none holds the values of a
+/// forked operation. A fork at or below the writer's compacted sequence is refused, since its
+/// bodies are gone here and that branch cannot be excluded.
 pub(crate) async fn record(
     conn: &mut SqliteConnection,
     space: SpaceId,
     writer: WriterId,
     seq: Seq,
-    pair: [(&[u8], Digest32); 2],
+    pair: [&Envelope<'_>; 2],
     now_ms: u64,
 ) -> SyncResult<EvidenceOutcome> {
     let existing: Option<i64> = sqlx::query_scalar(
@@ -222,11 +223,11 @@ pub(crate) async fn record(
             EvidenceRefusal::InsideCompactedRange,
         ));
     }
-    let [(first, first_hash), (second, second_hash)] = pair;
-    let (first, second) = if first_hash <= second_hash {
-        (first, second)
+    let [first, second] = pair;
+    let (first, second) = if first.hash() <= second.hash() {
+        (first.proof_bytes(), second.proof_bytes())
     } else {
-        (second, first)
+        (second.proof_bytes(), first.proof_bytes())
     };
     sqlx::query(
         "INSERT INTO sync_fork_evidence
@@ -258,8 +259,9 @@ pub(crate) async fn record(
 }
 
 /// Checks that two operations of `writer` at `seq`, both signed by its key, prove the revision
-/// their fork freezes at: both decode, and neither claims a revision below the one the shared
-/// operation before them was sealed against, which this replica must store. Both copies of an
+/// their fork freezes at: both signed headers decode, and neither claims a revision below the one
+/// the shared operation before them was sealed against, which this replica must store. Only the
+/// headers are read, since stored evidence keeps no bodies. Both copies of an
 /// honest fork continue from that operation and seal against what their installation selected
 /// since, so a lower claim cannot be told apart from a forgery: it is refused rather than
 /// freezing an epoch below entries the writer already saw.
@@ -272,10 +274,10 @@ pub(crate) async fn unprovable(
 ) -> SyncResult<Option<EvidenceRefusal>> {
     let mut claimed = Vec::with_capacity(pair.len());
     for envelope in pair {
-        let Ok(operation) = envelope.operation() else {
+        let Ok(header) = envelope.header_fields() else {
             return Ok(Some(EvidenceRefusal::Malformed));
         };
-        claimed.push(operation.header.authorization_revision);
+        claimed.push(header.authorization_revision);
     }
     if seq <= 1 {
         return Ok(None);
@@ -330,15 +332,7 @@ async fn store_evidence(
     if let Some(refusal) = unprovable(conn, ctx.space, a.writer, a.seq, [&a, &b]).await? {
         return refused(refusal);
     }
-    record(
-        conn,
-        ctx.space,
-        a.writer,
-        a.seq,
-        [(first, a.hash()), (second, b.hash())],
-        now_ms,
-    )
-    .await
+    record(conn, ctx.space, a.writer, a.seq, [&a, &b], now_ms).await
 }
 
 /// Settles fork evidence stored since the last engine write, inside one: both branches of every

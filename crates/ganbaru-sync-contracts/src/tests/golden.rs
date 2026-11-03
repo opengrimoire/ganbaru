@@ -3,7 +3,9 @@
 //! log, so a mismatch means the format changed by accident. Set `GANBARU_SYNC_BLESS_VECTORS=1`
 //! only when introducing a new format version deliberately.
 
-use super::fixtures::{golden_cause, golden_chain, golden_group, writer_key};
+use super::fixtures::{
+    golden_authorization_log, golden_cause, golden_chain, golden_group, writer_key,
+};
 use crate::bounds::{MAX_GROUP_BYTES, MAX_OPERATIONS_PER_GROUP};
 use crate::codec::{CodecError, Reader, Writer};
 use crate::ids::hex;
@@ -13,7 +15,7 @@ use crate::op::{
 };
 use crate::signing::WriterPublicKey;
 use crate::{
-    Cause, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, OperationError,
+    Cause, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, Operation, OperationError,
     OperationKind, PayloadError, SignedCertificate, Value, ends_group,
 };
 use std::path::PathBuf;
@@ -452,4 +454,49 @@ fn verification_requires_the_writer_key_of_the_envelope() {
     let envelope = Envelope::decode(&chain[1].1).unwrap();
     let other = super::fixtures::other_writer_key().public_key();
     assert!(!envelope.verify(&other));
+}
+
+/// Proof bytes keep the hash, the signature, and the signed header of every golden operation:
+/// changes and acknowledgement envelopes lose their body, and genesis and authorization envelopes
+/// come back unchanged.
+#[test]
+fn proof_bytes_keep_hash_and_signature() {
+    let key = writer_key().public_key();
+    let mut operations: Vec<(Operation, Vec<u8>, WriterPublicKey)> = golden_chain()
+        .into_iter()
+        .chain([golden_cause(), golden_group()])
+        .map(|(operation, bytes)| (operation, bytes, key))
+        .collect();
+    operations.extend(
+        golden_authorization_log()
+            .into_iter()
+            .map(|(_, operation, bytes, key)| (operation, bytes, key)),
+    );
+    for (operation, bytes, key) in &operations {
+        let envelope = Envelope::decode(bytes).unwrap();
+        let proof_bytes = envelope.proof_bytes();
+        let proof = Envelope::decode(&proof_bytes).unwrap();
+        assert_eq!(proof.hash(), envelope.hash());
+        assert_eq!(proof.signature, envelope.signature);
+        assert!(proof.verify(key));
+        assert_eq!(envelope.header_fields().unwrap(), operation.header);
+        assert_eq!(proof.header_fields().unwrap(), operation.header);
+        assert_eq!(proof.proof_bytes(), proof_bytes);
+        match operation.kind() {
+            OperationKind::Genesis | OperationKind::Authorization => {
+                assert_eq!(proof_bytes, *bytes);
+            }
+            OperationKind::Changes | OperationKind::Acknowledgement => {
+                assert!(proof.body.is_empty());
+                assert_eq!(proof_bytes.len(), bytes.len() - envelope.body.len());
+            }
+        }
+    }
+    let changes = Envelope::decode(&operations[1].1).unwrap();
+    assert!(!changes.body.is_empty());
+    let proof_bytes = changes.proof_bytes();
+    assert!(matches!(
+        Envelope::decode(&proof_bytes).unwrap().operation(),
+        Err(PayloadError::Body(_))
+    ));
 }

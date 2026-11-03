@@ -1266,6 +1266,295 @@ fn unattended_scheduled_send_accepts_nothing() {
     });
 }
 
+/// Seeds the review thread with `assignment:review` in `state` on `device:desk`, without
+/// pending replies, and stores and claims as `claim:a` a scheduled reply in that thread that
+/// names no teammate, so its routing infers the review agent. Returns the pool, the request,
+/// and the scheduled message.
+async fn claim_scheduled_review_reply(
+    state: &str,
+    now: &UtcTimestamp,
+) -> (SqlitePool, PostChatMessageCommand, ChatScheduledMessageId) {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    sqlx::query(
+        "DELETE FROM chat_work_assignment_inputs
+         WHERE assignment_id = 'assignment:review' AND routing_kind <> 'trigger'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE chat_work_assignments SET state = ? WHERE id = 'assignment:review'")
+        .bind(state)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut request = message("Also cover the edge cases");
+    request.client_command_id = ChatCommandId::new("command:scheduled-reply").unwrap();
+    request.channel_id = ChatChannelId::new("channel:review").unwrap();
+    request.reply_thread_id = Some(ChatReplyThreadId::new("reply-thread:review").unwrap());
+    sqlx::query(
+        "INSERT INTO chat_scheduled_messages
+            (id, client_command_id, channel_id, reply_thread_id, executing_device_id,
+             request_data, scheduled_for, created_at, updated_at)
+         VALUES ('scheduled:reply', 'command:scheduled-reply', 'channel:review',
+                 'reply-thread:review', 'device:desk', ?1, ?2, ?2, ?2)",
+    )
+    .bind(serde_json::to_string(&request).unwrap())
+    .bind(now.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let scheduled_message_id = ChatScheduledMessageId::new("scheduled:reply").unwrap();
+    claim_scheduled_message_for_immediate_send(
+        &pool,
+        &scheduled_message_id,
+        "device:desk",
+        now,
+        "claim:a",
+    )
+    .await
+    .unwrap();
+    (pool, request, scheduled_message_id)
+}
+
+/// Sends the claimed scheduled reply of [`claim_scheduled_review_reply`] on `device:desk`.
+async fn send_scheduled_review_reply(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled_message_id: &ChatScheduledMessageId,
+    consent: ScheduledConsent,
+) -> super::PersistedPost {
+    let send = ScheduledSend {
+        scheduled_message_id,
+        claim_token: "claim:a",
+        consent,
+    };
+    let writers = chat_writers_of(&["device:desk"]);
+    persist_post(
+        pool,
+        request,
+        Some(send),
+        PostingDevice::this_device("device:desk", &writers),
+    )
+    .await
+    .unwrap()
+}
+
+/// The number of assignment inputs that deliver the message `message_item_id`.
+async fn inputs_of_message(pool: &SqlitePool, message_item_id: &ChatConversationItemId) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM chat_work_assignment_inputs WHERE message_item_id = ?")
+        .bind(message_item_id.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn unattended_scheduled_reply_queues_no_input_on_active_work() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("working", &now).await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+        let before = read_assignment(&pool, &assignment_id).await.unwrap();
+
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Unattended,
+        )
+        .await;
+
+        assert!(
+            !posted.assignment_write.input_queued,
+            "the unattended reply queued input on active work"
+        );
+        assert_eq!(inputs_of_message(&pool, &posted.item_id).await, 0);
+        let after = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(after.state, ChatWorkAssignmentState::Working);
+        assert_eq!(after.revision, before.revision);
+        assert!(
+            read_post_receipt(&pool, &request.client_command_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the unattended reply stays visible"
+        );
+    });
+}
+
+#[test]
+fn unattended_scheduled_reply_settles_no_reviewed_work() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("ready_for_review", &now).await;
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Unattended,
+        )
+        .await;
+
+        let reviewed = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(
+            reviewed.state,
+            ChatWorkAssignmentState::ReadyForReview,
+            "the unattended reply settled the reviewed work"
+        );
+        let assignments: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_work_assignments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(assignments, 1, "the unattended reply created a follow-up");
+        assert!(!posted.assignment_write.dispatches_here());
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &ChatDeviceScope::default(),
+            )
+            .await
+            .unwrap(),
+            "the reply waits for Start here"
+        );
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        let started =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+        assert_eq!(started, 1, "accepting the work did not start the follow-up");
+        let settled = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(settled.state, ChatWorkAssignmentState::Completed);
+    });
+}
+
+#[test]
+fn consented_scheduled_replies_still_route_to_their_work() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let assignment_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("working", &now).await;
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Local,
+        )
+        .await;
+        assert!(posted.assignment_write.input_queued);
+        assert!(posted.assignment_write.executes_here);
+        assert_eq!(
+            posted.assignment_write.assignment_id.as_ref(),
+            Some(&assignment_id)
+        );
+        assert_eq!(inputs_of_message(&pool, &posted.item_id).await, 1);
+
+        let (pool, request, scheduled_message_id) =
+            claim_scheduled_review_reply("ready_for_review", &now).await;
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Local,
+        )
+        .await;
+        let follow_up_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_ne!(follow_up_id, assignment_id);
+        assert_eq!(dispatch_job_count(&pool, &follow_up_id).await, 1);
+        let reviewed = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(reviewed.state, ChatWorkAssignmentState::Completed);
+    });
+}
+
+#[test]
+fn unattended_scheduled_mention_of_another_teammate_waits_for_start_here() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (pool, mut request, scheduled_message_id) =
+            claim_scheduled_review_reply("ready_for_review", &now).await;
+        seed_other_review_teammate(&pool).await;
+        request.normalized_markdown = "@Other agent take a look".to_owned();
+        request.references = vec![participant_reference(
+            "reference:other",
+            ChatParticipantId::new("participant:other-agent").unwrap(),
+            ChatParticipantKind::AiTeammate,
+            "Other agent",
+            "@Other agent",
+            0,
+            12,
+        )];
+        sqlx::query("UPDATE chat_scheduled_messages SET request_data = ? WHERE id = ?")
+            .bind(serde_json::to_string(&request).unwrap())
+            .bind(scheduled_message_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let reviewed_id = ChatWorkAssignmentId::new("assignment:review").unwrap();
+
+        let posted = send_scheduled_review_reply(
+            &pool,
+            &request,
+            &scheduled_message_id,
+            ScheduledConsent::Unattended,
+        )
+        .await;
+
+        let reviewed = read_assignment(&pool, &reviewed_id).await.unwrap();
+        assert_eq!(
+            reviewed.state,
+            ChatWorkAssignmentState::ReadyForReview,
+            "the mention settled the reviewed work of another teammate"
+        );
+        let assignment_id = posted
+            .assignment_write
+            .assignment_id
+            .clone()
+            .expect("the mention created no work for the other teammate");
+        assert_ne!(assignment_id, reviewed_id);
+        assert!(posted.assignment_write.awaits_acceptance);
+        assert!(!posted.assignment_write.dispatches_here());
+        let created = read_assignment(&pool, &assignment_id).await.unwrap();
+        assert_eq!(created.state, ChatWorkAssignmentState::Queued);
+        assert_eq!(created.teammate.id.as_str(), "participant:other-agent");
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &ChatDeviceScope::default(),
+            )
+            .await
+            .unwrap(),
+            "the new work waits for Start here"
+        );
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:desk", &accepted)
+                .await
+                .unwrap(),
+            "an accepted teammate runs through the adoption gate"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+        let reviewed = read_assignment(&pool, &reviewed_id).await.unwrap();
+        assert_eq!(reviewed.state, ChatWorkAssignmentState::ReadyForReview);
+    });
+}
+
 #[test]
 fn a_user_post_accepts_the_work_it_dispatches() {
     tauri::async_runtime::block_on(async {

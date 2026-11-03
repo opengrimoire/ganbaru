@@ -22,10 +22,12 @@ use super::{
     FileAccess, VaultInfo, VaultManifest, database_path, manifest_path, new_vault_id, now_utc,
     read_vault_manifest, vault_info_from_path, write_text_file_atomically,
 };
-use crate::sync::backup_keys::{self, LinkSummary};
+use crate::sync::backup_keys::{self, LinkSummary, RestoreKeys};
 use chrono::SecondsFormat;
 use ganbaru_sync_contracts::backup::{BackupError, BackupHeader, FileKey};
-use ganbaru_sync_contracts::{EncryptionKeyPair, RecoverySeed, SpaceId, SpaceKey};
+use ganbaru_sync_contracts::{
+    EncryptionKeyPair, EncryptionPublicKey, RecoverySeed, SpaceId, SpaceKey,
+};
 use ganbaru_sync_replica::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, create_encrypted_backup, decrypt_backup,
     read_backup_header,
@@ -198,7 +200,11 @@ pub(super) fn refuse_other_vault_while_linked(
 /// vault `active`, or `None` when nothing is active. Any device a log ever enrolled, removed
 /// ones included, makes an independent copy, so a restore never rewinds a space another device
 /// may have acknowledged. A device that is linked now is refused before this.
-fn plan_restore(active: Option<&LinkSummary>, backup: &LinkSummary) -> RestorePlacement {
+fn plan_restore(
+    active: Option<&LinkSummary>,
+    backup: &LinkSummary,
+    _trusted: bool,
+) -> RestorePlacement {
     match active {
         Some(active)
             if active.space == backup.space
@@ -209,6 +215,16 @@ fn plan_restore(active: Option<&LinkSummary>, backup: &LinkSummary) -> RestorePl
         }
         _ => RestorePlacement::IndependentCopy,
     }
+}
+
+/// Whether the staged vault names the same authority as the active one.
+#[cfg_attr(not(test), allow(dead_code))]
+fn same_authority(
+    _active: &RestoreKeys,
+    _staged: &RestoreKeys,
+    _opener: Option<&EncryptionPublicKey>,
+) -> bool {
+    true
 }
 
 /// The refusal a format error means, `None` for a local failure such as the random source.
@@ -1050,7 +1066,7 @@ async fn place_restored_backup(
         let staged = StagedFolder::new(&staging);
         let info = stage_restored_vault(archive, &staging, expected_space).await?;
         let backup = staged_summary(app, &staging, &info.vault_id).await?;
-        if plan_restore(Some(&active.summary), &backup) == RestorePlacement::InPlace {
+        if plan_restore(Some(&active.summary), &backup, true) == RestorePlacement::InPlace {
             let restored = replace_active_vault(
                 app,
                 transition,
@@ -1137,7 +1153,7 @@ async fn place_restored_backup(
     let staged = StagedFolder::new(&staging);
     let info = stage_restored_vault(archive, &staging, expected_space).await?;
     let backup = staged_summary(app, &staging, &info.vault_id).await?;
-    let placement = plan_restore(active.map(|active| &active.summary), &backup);
+    let placement = plan_restore(active.map(|active| &active.summary), &backup, true);
     let other_vault = placement == RestorePlacement::IndependentCopy;
     if other_vault {
         detach_restored_copy(&staging).await?;

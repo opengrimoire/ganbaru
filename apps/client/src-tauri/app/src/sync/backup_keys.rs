@@ -2,7 +2,7 @@
 //! epoch key that opens a backup of the active space, and how many other devices a space log
 //! enrolled, which decides how a backup restores.
 
-use ganbaru_sync_contracts::{SpaceId, SpaceKey};
+use ganbaru_sync_contracts::{Digest32, EncryptionPublicKey, SpaceId, SpaceKey};
 use ganbaru_sync_replica::backup::BackupSealKeys;
 use ganbaru_sync_replica::backup::seal_keys::{self, opened_space_keys, space_state};
 use sqlx::SqliteConnection;
@@ -18,6 +18,16 @@ pub(crate) struct LinkSummary {
     /// Devices other than this one that the selected log enrolled, removed ones included,
     /// since a removed device may still hold acknowledgements of the space.
     pub(crate) other_devices: usize,
+}
+
+/// The authority a vault's sync state names, which a restore compares before it places a
+/// backup in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RestoreKeys {
+    /// The recovery encryption key the selected log published, or else the vault's stored one.
+    pub(crate) recovery: Option<EncryptionPublicKey>,
+    /// The charter hash of the selected log, `None` without one.
+    pub(crate) charter: Option<Digest32>,
 }
 
 /// The link summary of the vault `vault_id` whose database `conn` opens, seen from the device

@@ -41,11 +41,42 @@ fn restore_outcome_matrix() {
     ];
     for (active, backup, expected) in cases {
         assert_eq!(
-            plan_restore(active, backup),
+            plan_restore(active, backup, true),
             expected,
             "{active:?} {backup:?}"
         );
     }
+}
+
+/// The recovery encryption key of the kit derived from `seed`.
+fn kit_key(seed: u8) -> EncryptionPublicKey {
+    RecoverySeed::from_bytes([seed; 32])
+        .public_keys()
+        .unwrap()
+        .encryption
+}
+
+#[test]
+fn a_forged_backup_with_another_recovery_key_is_never_in_place() {
+    // The file is sealed to the victim's kit, which opens it, but the staged vault inside
+    // names the attacker's recovery key, so later backups would be sealed to the attacker.
+    let victim = kit_key(0x42);
+    let attacker = kit_key(0x66);
+    let active = RestoreKeys {
+        recovery: Some(victim),
+        charter: None,
+    };
+    let staged = RestoreKeys {
+        recovery: Some(attacker),
+        charter: None,
+    };
+    let trusted = same_authority(&active, &staged, Some(&victim));
+    assert!(!trusted, "a staged key other than the opener is not trusted");
+    let alone = summary("vault-a", 0);
+    assert_eq!(
+        plan_restore(Some(&alone), &alone, trusted),
+        RestorePlacement::IndependentCopy
+    );
 }
 
 #[test]
@@ -348,11 +379,11 @@ fn a_linked_android_phone_refuses_to_restore_another_vault_until_it_unlinks() {
     assert_eq!(refuse_other_vault_while_linked(Android, linked), Ok(()));
     let once_linked = summary("vault-a", 2);
     assert_eq!(
-        plan_restore(Some(&once_linked), &summary("vault-b", 0)),
+        plan_restore(Some(&once_linked), &summary("vault-b", 0), true),
         RestorePlacement::IndependentCopy
     );
     assert_eq!(
-        plan_restore(Some(&once_linked), &summary("vault-a", 0)),
+        plan_restore(Some(&once_linked), &summary("vault-a", 0), true),
         RestorePlacement::IndependentCopy
     );
     fs::remove_dir_all(root).unwrap();

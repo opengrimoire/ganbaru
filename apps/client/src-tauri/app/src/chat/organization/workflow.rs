@@ -322,7 +322,8 @@ async fn append_assignment_input(
 /// records only the mention when the thread has active work. A reply to work that asked for
 /// review becomes a pending reply of that work, which waits for Start here or for a local
 /// acceptance of the teammate before a follow-up settles the review; a mention of another
-/// teammate there records only the mention.
+/// teammate there creates that teammate's new work awaiting Start here and leaves the review
+/// open.
 pub(super) async fn persist_assignment_routing(
     transaction: &mut Transaction<'_, Sqlite>,
     reply_thread_id: &ChatReplyThreadId,
@@ -337,6 +338,8 @@ pub(super) async fn persist_assignment_routing(
     };
     if let Some(active) = &invocation.active_assignment {
         if device.leaves_existing_work() {
+            // By design an unattended reply on active work stays a plain message: it would
+            // steer a run no one here agreed to, and the user can repeat it themselves.
             return Ok(AssignmentWrite::NONE);
         }
         let routing_kind = if active.state == ChatWorkAssignmentState::Working {
@@ -355,14 +358,16 @@ pub(super) async fn persist_assignment_routing(
             awaits_acceptance: false,
         });
     }
-    let reviewed = invocation
-        .latest_assignment
-        .as_ref()
-        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview);
-    if let Some(reviewed) = reviewed.filter(|_| device.leaves_existing_work()) {
-        if reviewed.teammate.id != invocation.teammate_id {
-            return Ok(AssignmentWrite::NONE);
-        }
+    let mut latest_assignment = invocation.latest_assignment.as_ref();
+    let reviewed = latest_assignment
+        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview)
+        .filter(|_| device.leaves_existing_work());
+    if reviewed.is_some_and(|reviewed| reviewed.teammate.id != invocation.teammate_id) {
+        // New work for another teammate does not follow the reviewed work, so creating it
+        // leaves that review open; it waits for Start here like any unattended new work.
+        latest_assignment = None;
+    }
+    if let Some(reviewed) = reviewed.filter(|_| latest_assignment.is_some()) {
         append_assignment_input(
             transaction,
             &reviewed.id,
@@ -392,7 +397,7 @@ pub(super) async fn persist_assignment_routing(
             reply_thread_id,
             message_item_id,
             teammate_id: &invocation.teammate_id,
-            latest_assignment: invocation.latest_assignment.as_ref(),
+            latest_assignment,
             executing_device_id: &executing_device_id,
             execution_target,
         },

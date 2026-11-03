@@ -193,7 +193,8 @@ struct Classes {
     /// Writers whose certificates are class 1 or class 2, with the better class: the class of
     /// the best record the writer carries bound.
     writers: BTreeMap<WriterId, RecordClass>,
-    /// Writers of devices live and not held at the local head.
+    /// Writers whose certificate names a device live and not held at the local head with the
+    /// device key that head enrolls for it.
     live: BTreeSet<WriterId>,
     /// Keys of the wanted set among those of the envelopes being classed: entry and envelope
     /// hashes, and writers. Empty outside [`Engine::record_classes`], which reads it per key so
@@ -1084,8 +1085,8 @@ fn light(row: &sqlx::sqlite::SqliteRow) -> SyncResult<Light> {
 }
 
 /// The classes of the local selected head: the records the kit key signs that [`Binding`] binds
-/// and their ancestors, yields and objections, and the writers of live devices that are not
-/// held. `needed` names further entry hashes whose state on the selected chain the binding should
+/// and their ancestors, yields and objections, and the writers certified by the enrolled key of a
+/// live device that is not held. `needed` names further entry hashes whose state on the selected chain the binding should
 /// read, the parents of records a peer sends. With `yields` set, the stored yields whose parent
 /// on the selected chain admits them and whose author is an admin at the selected head join
 /// [`Classes::priority`].
@@ -1201,8 +1202,10 @@ async fn classes(
                 .or_insert(class);
         }
     }
-    let live: BTreeSet<String> = sqlx::query_scalar(
-        "SELECT device_id FROM sync_devices
+    // A certificate places its writer in the Live class only when it names a live device with
+    // the device key the selected chain enrolls for it, the pair `Stored::bound` also requires.
+    let live: BTreeMap<String, Vec<u8>> = sqlx::query_as(
+        "SELECT device_id, device_key FROM sync_devices
          WHERE space_id = ? AND removed_revision IS NULL AND held = 0",
     )
     .bind(ctx.space.as_bytes().as_slice())
@@ -1211,7 +1214,11 @@ async fn classes(
     .into_iter()
     .collect();
     for (writer, names) in &stored.certificates {
-        if names.iter().any(|(device, _)| live.contains(device)) {
+        let is_live = names.iter().any(|(device, key)| {
+            live.get(device)
+                .is_some_and(|enrolled| enrolled.as_slice() == key.as_bytes().as_slice())
+        });
+        if is_live {
             classes.live.insert(*writer);
         }
     }

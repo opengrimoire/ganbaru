@@ -931,9 +931,11 @@ async fn restore_pending(
     place_restored_backup(app, transition, &archive, origin, active.as_ref()).await
 }
 
-/// Extracts the archive into the new folder `staging` and checks that it is a whole vault. A
-/// backup file must be a vault of the space it declares, and its device-local rows are reset,
-/// since the file proves only that the kit or an epoch key opens it.
+/// Extracts the archive into the new folder `staging` and checks that it is a whole vault
+/// whose schema is exactly the one the current migrations create, before any row is read or
+/// written, so a forged trigger, view, index, or table never reaches a later write. A backup
+/// file must be a vault of the space it declares, and its device-local rows are reset, since
+/// the file proves only that the kit or an epoch key opens it.
 async fn stage_restored_vault(
     archive: &Path,
     staging: &Path,

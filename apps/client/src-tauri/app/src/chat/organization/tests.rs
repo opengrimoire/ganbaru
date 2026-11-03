@@ -820,15 +820,14 @@ fn scheduled_request_mismatch_refuses_foreign_channel() {
         let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
         let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
 
-        let refusal = refuse_mismatched_request(&pool, send, &request)
+        let outcome = write_post(&pool, &request, Some(send), device)
             .await
             .unwrap();
-        if refusal.is_none() {
-            persist_post(&pool, &request, Some(send), device)
-                .await
-                .unwrap();
-        }
 
+        let PostOutcome::Refused(refusal) = outcome else {
+            panic!("the mismatched request was not refused");
+        };
+        assert_eq!(refusal.code, ChatErrorCode::Conflict);
         let items: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversation_items")
             .fetch_one(&pool)
             .await
@@ -848,6 +847,52 @@ fn scheduled_request_mismatch_refuses_foreign_channel() {
             last_error.as_deref(),
             Some(SCHEDULED_REQUEST_MISMATCH_REASON)
         );
+    });
+}
+
+#[test]
+fn scheduled_write_post_sends_a_matching_request() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
+        seed_test_channel(&pool, &now).await;
+        let request = message("Send this on time");
+        let request_data = serde_json::to_string(&request).unwrap();
+        insert_test_scheduled_message(&pool, &request_data, Some(SCHEDULING_DEVICE), true, &now)
+            .await;
+        let scheduled_message_id = ChatScheduledMessageId::new("scheduled:test").unwrap();
+        claim_scheduled_message_for_immediate_send(
+            &pool,
+            &scheduled_message_id,
+            SCHEDULING_DEVICE,
+            &now,
+            "claim:a",
+        )
+        .await
+        .unwrap();
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Local,
+        };
+        let writers = chat_writers_of(&[SCHEDULING_DEVICE]);
+        let device = PostingDevice::this_device(SCHEDULING_DEVICE, &writers);
+
+        let outcome = write_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(outcome, PostOutcome::Posted(_)),
+            "the matching request was refused"
+        );
+        let scheduled_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat_scheduled_messages WHERE id = 'scheduled:test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(scheduled_rows, 0);
     });
 }
 

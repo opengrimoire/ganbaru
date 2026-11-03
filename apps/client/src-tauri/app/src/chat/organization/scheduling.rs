@@ -9,9 +9,9 @@ use super::common::{
     this_device_id, validate_message_request, wire_participant_kind,
 };
 use super::{
-    ScheduledConsent, ScheduledSend, chat_pool, i64_value, identifier_error, now_timestamp,
-    persistence_error, post_message, require_continuation_scope_is_unchanged, require_reply_thread,
-    resolve_invoked_teammate,
+    PostOutcome, ScheduledConsent, ScheduledSend, chat_pool, i64_value, identifier_error,
+    now_timestamp, persistence_error, post_message, require_continuation_scope_is_unchanged,
+    require_reply_thread, resolve_invoked_teammate,
 };
 #[cfg(desktop)]
 use crate::chat::device_state::{
@@ -693,9 +693,9 @@ pub(super) async fn send_scheduled_message_now(
         consent: ScheduledConsent::Local,
     };
     let result = match serde_json::from_str::<PostChatMessageCommand>(&request_data) {
-        Ok(request) => match refuse_mismatched_request(&pool, send, &request).await {
-            Ok(Some(refusal)) => return Err(refusal),
-            Ok(None) => post_message(app.clone(), db_url, &request, Some(send)).await,
+        Ok(request) => match post_message(app.clone(), db_url, &request, Some(send)).await {
+            Ok(PostOutcome::Posted(result)) => Ok(result),
+            Ok(PostOutcome::Refused(refusal)) => return Err(refusal),
             Err(error) => Err(error),
         },
         Err(error) => Err(serialization_error(error)),
@@ -953,11 +953,9 @@ pub(super) async fn dispatch_due_scheduled_messages(
                     claim_token: &claim_token,
                     consent: read_scheduled_consent(&app, &scheduled_message_id, &request_data),
                 };
-                match refuse_mismatched_request(&pool, send, &message).await {
-                    Ok(Some(_)) => continue,
-                    Ok(None) => post_message(app.clone(), db_url.clone(), &message, Some(send))
-                        .await
-                        .map(|_| message.channel_id.clone()),
+                match post_message(app.clone(), db_url.clone(), &message, Some(send)).await {
+                    Ok(PostOutcome::Posted(_)) => Ok(message.channel_id.clone()),
+                    Ok(PostOutcome::Refused(_)) => continue,
                     Err(error) => Err(error),
                 }
             }

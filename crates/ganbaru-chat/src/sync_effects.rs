@@ -596,10 +596,9 @@ async fn sweep_uncovered_authorizations(
 ///
 /// A queued assignment is reported so its executing device starts it, and a started one so a
 /// device that runs it without being its executing device stops its run. A settled assignment
-/// ends the device's queued or claimed dispatch job, drops the execution target kept for its
-/// start, and revokes its active authorizations with
-/// their revocation jobs, so a run this device executes stops when another device settled the
-/// work. A deleted assignment, whose cascade removed its local runs and authorizations, is
+/// ends the device's queued or claimed dispatch job, drops the execution targets kept for its
+/// start and its pending replies, and revokes its active authorizations with their revocation
+/// jobs, so a run this device executes stops when another device settled the work. A deleted assignment, whose cascade removed its local runs and authorizations, is
 /// reported so the caller stops the work those runs still execute. Other states change nothing.
 /// Repeating it for a settled assignment revokes nothing more.
 async fn follow_assignment_state(
@@ -653,6 +652,16 @@ async fn follow_assignment_state(
                 .execute(&mut *connection)
                 .await
                 .map_err(persistence_error)?;
+            sqlx::query(
+                "DELETE FROM chat_assignment_input_requested_targets
+                 WHERE input_id IN (
+                   SELECT id FROM chat_work_assignment_inputs WHERE assignment_id = ?
+                 )",
+            )
+            .bind(assignment_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?;
             let revoked = revoke_assignment_authorizations(
                 connection,
                 assignment_id,

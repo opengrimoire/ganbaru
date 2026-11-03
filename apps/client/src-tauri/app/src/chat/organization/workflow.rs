@@ -321,7 +321,8 @@ async fn append_assignment_input(
 /// A post no one on this executing device consented to leaves existing work as it is. It
 /// records only the mention when the thread has active work. A reply to work that asked for
 /// review becomes a pending reply of that work, which waits for Start here or for a local
-/// acceptance of the teammate before a follow-up settles the review; a mention of another
+/// acceptance of the teammate before a follow-up settles the review, and this device keeps the
+/// execution target the post chose for that follow-up; a mention of another
 /// teammate there creates that teammate's new work awaiting Start here and leaves the review
 /// open.
 pub(super) async fn persist_assignment_routing(
@@ -379,6 +380,10 @@ pub(super) async fn persist_assignment_routing(
         let executing_device_id =
             read_assignment_executing_device(&mut **transaction, reviewed.id.as_str()).await?;
         let executes_here = device.executes(executing_device_id.as_deref());
+        #[cfg(desktop)]
+        if let Some(target) = execution_target.filter(|_| executes_here) {
+            record_input_requested_target(transaction, message_item_id, target, now).await?;
+        }
         return Ok(AssignmentWrite {
             assignment_id: Some(reviewed.id.clone()),
             input_queued: true,
@@ -429,9 +434,11 @@ pub(super) struct NewAssignment<'a> {
 /// Writes the queued assignment `assignment` with its trigger input, settling a reviewed
 /// predecessor. A trigger message that is already an input moves to the new assignment, since
 /// its input id derives from the message, and the predecessor's other pending replies of the
-/// same reply thread follow it in order. When this device executes it and someone here consented
-/// to the post, the same transaction freezes its context and queues its dispatch; otherwise the
-/// executing device does both when the assignment passes its acceptance check.
+/// same reply thread follow it in order. The execution targets kept for the predecessor's
+/// pending replies go, since no reply waits on it anymore. When this device executes it and
+/// someone here consented to the post, the same transaction freezes its context and queues its
+/// dispatch; otherwise the executing device does both when the assignment passes its acceptance
+/// check.
 pub(super) async fn create_assignment(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment: NewAssignment<'_>,
@@ -512,6 +519,8 @@ pub(super) async fn create_assignment(
             .map(|input| input.id)
             .collect::<Vec<_>>();
         move_pending_inputs(transaction, &carried, &assignment_id).await?;
+        drop_input_requested_targets(transaction, &previous.id).await?;
+        drop_input_requested_targets(transaction, &assignment_id).await?;
     }
     #[cfg(desktop)]
     if device.executes(Some(assignment.executing_device_id)) {
@@ -666,6 +675,70 @@ pub(super) async fn take_requested_target(
     target_data
         .map(|data| serde_json::from_str(&data).map_err(serialization_error))
         .transpose()
+}
+
+/// Keeps on this device the execution target `target` that the post `message_item_id` chose
+/// when it became a pending reply to work awaiting review, so the follow-up that a later
+/// acceptance creates from it runs where the post asked.
+#[cfg(desktop)]
+async fn record_input_requested_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    message_item_id: &ChatConversationItemId,
+    target: &ChatExecutionTarget,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let target_data = serde_json::to_string(target).map_err(serialization_error)?;
+    sqlx::query(
+        "INSERT INTO chat_assignment_input_requested_targets (input_id, target_data, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(input_id) DO UPDATE SET
+            target_data = excluded.target_data, created_at = excluded.created_at",
+    )
+    .bind(assignment_input_id(message_item_id.as_str())?)
+    .bind(target_data)
+    .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// The execution target this device keeps for the pending reply `input_id`, if its post chose
+/// one.
+#[cfg(desktop)]
+pub(super) async fn read_input_requested_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    input_id: &str,
+) -> ChatResult<Option<ChatExecutionTarget>> {
+    let target_data: Option<String> = sqlx::query_scalar(
+        "SELECT target_data FROM chat_assignment_input_requested_targets WHERE input_id = ?",
+    )
+    .bind(input_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    target_data
+        .map(|data| serde_json::from_str(&data).map_err(serialization_error))
+        .transpose()
+}
+
+/// Drops the execution targets this device keeps for the inputs of `assignment_id`, which only
+/// serve replies still waiting on work awaiting review.
+pub(super) async fn drop_input_requested_targets(
+    connection: &mut sqlx::SqliteConnection,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<()> {
+    sqlx::query(
+        "DELETE FROM chat_assignment_input_requested_targets
+         WHERE input_id IN (
+           SELECT id FROM chat_work_assignment_inputs WHERE assignment_id = ?
+         )",
+    )
+    .bind(assignment_id.as_str())
+    .execute(&mut *connection)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
 }
 
 /// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,
@@ -1713,8 +1786,8 @@ pub(super) async fn set_assignment_state(
 
 /// Ends the local dispatch jobs still queued or claimed for `assignment_id`, which settled as
 /// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
-/// settled work. The execution target kept for its start goes with them, since it only served
-/// work that was still waiting to run.
+/// settled work. The execution targets kept for its start and for its pending replies go with
+/// them, since they only served work that was still waiting to run.
 #[cfg(desktop)]
 pub(super) async fn end_assignment_dispatch_jobs(
     connection: &mut sqlx::SqliteConnection,
@@ -1741,7 +1814,7 @@ pub(super) async fn end_assignment_dispatch_jobs(
         .execute(&mut *connection)
         .await
         .map_err(persistence_error)?;
-    Ok(())
+    drop_input_requested_targets(connection, assignment_id).await
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -80,12 +80,21 @@ impl Routes for AnchorRoutes {
                 .converse(stream, enrolled, &compatibility, &client_nonce)
                 .await;
         }
-        let (Some(admission), Some(certificate)) = (peer.admission, peer.certificate) else {
+        let (Some(admission), Some(recheck), Some(certificate)) =
+            (peer.admission, peer.admission_source, peer.certificate)
+        else {
             return Err("a snapshot copy needs an enrolled device".to_string());
         };
         let fingerprint = certificate_fingerprint(certificate.as_ref());
         self.bundles
-            .serve(stream, peer.manager, admission, &fingerprint, request)
+            .serve(
+                stream,
+                peer.manager,
+                admission,
+                recheck,
+                &fingerprint,
+                request,
+            )
             .await
     }
 }

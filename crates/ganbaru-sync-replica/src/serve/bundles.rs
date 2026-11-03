@@ -31,7 +31,9 @@ const MAX_BUNDLE_PREPARATIONS_PER_PEER: usize = 30;
 /// localized guidance.
 pub const BUNDLE_PREPARATION_LIMIT: &str =
     "this device requested the vault too often; wait before requesting another copy";
-/// How often a running copy rereads the sender's admission.
+/// How often a running copy rereads the sender's admission, so a device removed or held while
+/// it downloads stops receiving the archive. A time bound rather than a chunk count, since a
+/// slow receiver has the most time to be removed.
 pub const STREAM_RECHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// One answer of a [`StreamCheck`].
@@ -46,14 +48,47 @@ pub fn continue_stream<'a>() -> StreamCheck<'a> {
     Box::new(|| -> StreamCheckFuture<'a> { Box::pin(async { Ok(()) }) })
 }
 
-/// The check a member or server listener runs during a copy.
+/// The check a member or server listener runs during a copy: the device whose certificate has
+/// `fingerprint` must still pass [`MemberAdmission::bootstrap`] for `vault_id` and `device_id`
+/// in the selected log as it is now. A log that cannot be read, or sync that stopped, lets the
+/// copy continue, so a briefly locked database never ends an honest transfer and a copy does
+/// not depend on a running sync service.
 pub fn member_stream_check<'a>(
-    _source: &'a MemberAdmissionSource,
-    _fingerprint: &'a str,
-    _vault_id: &'a str,
-    _device_id: &'a str,
+    source: &'a MemberAdmissionSource,
+    fingerprint: &'a str,
+    vault_id: &'a str,
+    device_id: &'a str,
 ) -> StreamCheck<'a> {
-    continue_stream()
+    Box::new(move || -> StreamCheckFuture<'a> {
+        Box::pin(async move {
+            match source().await {
+                Ok(Some(admission)) => continue_unless_unavailable(admission.bootstrap(
+                    fingerprint,
+                    vault_id,
+                    device_id,
+                )),
+                Ok(None) => Ok(()),
+                Err(error) => {
+                    eprintln!("sync member listener: recheck a running copy: {error}");
+                    Ok(())
+                }
+            }
+        })
+    })
+}
+
+/// Lets a running copy continue when its admission is only unavailable, and passes every other
+/// answer on.
+pub(super) fn continue_unless_unavailable(
+    answer: Result<(), MemberRefusal>,
+) -> Result<(), MemberRefusal> {
+    match answer {
+        Err(MemberRefusal::Unavailable) => {
+            eprintln!("sync: admission of a running copy is unavailable; the copy continues");
+            Ok(())
+        }
+        answer => answer,
+    }
 }
 
 /// Drops events that left the sliding window ending at `now`.
@@ -88,11 +123,14 @@ impl BundlePreparationWindows {
     }
 }
 
-/// Streams a registered copy to a receiver from the offset it resumes at.
+/// Streams a registered copy to a receiver from the offset it resumes at. `check` runs every
+/// [`STREAM_RECHECK_INTERVAL`] while bytes flow; a refusal closes the connection, so the
+/// receiver sees a truncated transfer and gets the typed refusal on its next request.
 pub async fn serve_download(
     stream: &mut ServerStream,
     manager: &PairingManager,
     requested: BundleMetadata,
+    check: &StreamCheck<'_>,
 ) -> Result<(), String> {
     let registered = manager.outgoing_bundle(&requested.transfer_id)?;
     if registered.metadata != requested {
@@ -131,7 +169,7 @@ pub async fn serve_download(
         &registered.path,
         offset,
         registered.metadata.archive_bytes,
-        &continue_stream(),
+        check,
     )
     .await?;
     match timeout_control(read_control(stream)).await? {
@@ -149,11 +187,13 @@ async fn stream_file<W>(
     path: &Path,
     offset: u64,
     total_bytes: u64,
-    _check: &StreamCheck<'_>,
+    check: &StreamCheck<'_>,
 ) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
+    // The stream is raw bytes after `ResumeAt`, so a refusal cannot be framed mid-stream.
+    let mut last_check = tokio::time::Instant::now();
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|error| format!("open transfer bundle: {error}"))?;
@@ -169,6 +209,12 @@ where
             .await
             .map_err(|_| "reading the transfer bundle timed out".to_string())?
             .map_err(|error| format!("read transfer bundle: {error}"))?;
+        if last_check.elapsed() >= STREAM_RECHECK_INTERVAL {
+            check()
+                .await
+                .map_err(|refusal| format!("stream stopped: {}", refusal.code()))?;
+            last_check = tokio::time::Instant::now();
+        }
         tokio::time::timeout(CHUNK_TIMEOUT, writer.write_all(&buffer[..chunk_bytes]))
             .await
             .map_err(|_| "sending the transfer bundle timed out".to_string())?
@@ -249,11 +295,13 @@ impl MemberBundles {
     }
 
     /// Answers one snapshot copy request from the peer whose certificate has `fingerprint`.
+    /// `admission` decides at the start, and `recheck` is read again while a copy streams.
     pub async fn serve(
         &self,
         stream: &mut ServerStream,
         manager: &PairingManager,
         admission: &MemberAdmission,
+        recheck: &MemberAdmissionSource,
         fingerprint: &str,
         request: ControlMessage,
     ) -> Result<(), String> {
@@ -295,7 +343,9 @@ impl MemberBundles {
                     )
                     .await;
                 }
-                serve_download(stream, manager, metadata).await
+                let (vault_id, device_id) = (metadata.vault_id.clone(), metadata.device_id.clone());
+                let check = member_stream_check(recheck, fingerprint, &vault_id, &device_id);
+                serve_download(stream, manager, metadata, &check).await
             }
             ControlMessage::ActivationComplete {
                 vault_id,
@@ -449,11 +499,22 @@ impl Routes for MemberBundles {
         peer: Peer<'_>,
         request: ControlMessage,
     ) -> Result<(), String> {
-        let (Some(admission), Some(certificate)) = (peer.admission, peer.certificate) else {
+        let (Some(admission), Some(recheck), Some(certificate)) =
+            (peer.admission, peer.admission_source, peer.certificate)
+        else {
             return Err("a snapshot copy needs an admitted peer".to_string());
         };
         let fingerprint = certificate_fingerprint(certificate.as_ref());
-        MemberBundles::serve(self, stream, peer.manager, admission, &fingerprint, request).await
+        MemberBundles::serve(
+            self,
+            stream,
+            peer.manager,
+            admission,
+            recheck,
+            &fingerprint,
+            request,
+        )
+        .await
     }
 }
 

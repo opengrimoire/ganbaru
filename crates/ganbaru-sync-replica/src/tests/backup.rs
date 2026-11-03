@@ -2,8 +2,8 @@ use super::{TestDirectory, acquire, add_note, block_on, context, create_vault};
 use crate::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, DATABASE_FILE, VAULT_MANIFEST_FILE,
     create_backup_archive, create_encrypted_backup, create_snapshot_archive, decrypt_backup,
-    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive, sweep_backup_staging,
-    vacuum_database, validate_vault_database,
+    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive,
+    sweep_backup_staging, vacuum_database, validate_vault_database,
 };
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync_contracts::backup::{BACKUP_CHUNK_BYTES, BackupError};

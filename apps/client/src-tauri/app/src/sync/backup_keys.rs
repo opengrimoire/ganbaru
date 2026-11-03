@@ -1,6 +1,6 @@
 //! What encrypted vault backups read from sync state: the keys a backup is sealed to, the
 //! epoch key that opens a backup of the active space, and how many other devices a space log
-//! enrolled, which decides how a backup restores.
+//! enrolled and which recovery key and charter it names, which decide how a backup restores.
 
 use ganbaru_sync_contracts::{Digest32, EncryptionPublicKey, SpaceId, SpaceKey};
 use ganbaru_sync_replica::backup::BackupSealKeys;
@@ -28,6 +28,18 @@ pub(crate) struct RestoreKeys {
     pub(crate) recovery: Option<EncryptionPublicKey>,
     /// The charter hash of the selected log, `None` without one.
     pub(crate) charter: Option<Digest32>,
+}
+
+/// The authority the vault `vault_id` whose database `conn` opens names.
+pub(crate) async fn restore_keys(
+    conn: &mut SqliteConnection,
+    vault_id: &str,
+) -> Result<RestoreKeys, String> {
+    let charter = space_state(conn, vault_id)
+        .await?
+        .map(|(_, view)| view.charter);
+    let recovery = seal_keys::selected_recovery_key(conn, vault_id).await?;
+    Ok(RestoreKeys { recovery, charter })
 }
 
 /// The link summary of the vault `vault_id` whose database `conn` opens, seen from the device

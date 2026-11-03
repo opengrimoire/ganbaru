@@ -572,3 +572,97 @@ fn encrypted_backup_carries_the_snapshot_archive_of_the_vault() {
         assert_eq!(captured, 0, "the backup holds no local capture queue");
     });
 }
+
+#[test]
+fn selected_recovery_key_prefers_the_log() {
+    use super::{DEVICE_ID, NOW_MS, VAULT_ID, anchor_keys, device};
+    use crate::authority;
+    use crate::backup::seal_keys::selected_recovery_key;
+    use crate::keys::SpaceKeys;
+    use crate::outbox::Outbox;
+    use crate::writer::{MemoryKeyStore, SuccessorPlan, create_writer};
+    use ganbaru_sync::{Engine, local};
+    use ganbaru_sync_contracts::RecoverySeed;
+    use std::sync::Arc;
+
+    block_on(async {
+        let directory = TestDirectory::new("selected-recovery-key");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let store = MemoryKeyStore::default();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn).await;
+        assert_eq!(
+            selected_recovery_key(&mut conn, VAULT_ID)
+                .await
+                .expect("read"),
+            None,
+            "no published key and no stored kit"
+        );
+        let stored = RecoverySeed::from_bytes([0x77; 32])
+            .public_keys()
+            .expect("stored kit");
+        local::store_recovery_kit_keys(&mut conn, &stored, NOW_MS)
+            .await
+            .expect("store kit");
+        assert_eq!(
+            selected_recovery_key(&mut conn, VAULT_ID)
+                .await
+                .expect("read"),
+            Some(stored.encryption),
+            "a log that published no recovery key falls back to the stored one"
+        );
+
+        let mut writer = create_writer(
+            &files,
+            &store,
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        let keys = Arc::new(SpaceKeys::new(
+            device(),
+            EncryptionKeyPair::generate().expect("encryption key"),
+        ));
+        writer.attach_keys(keys.clone());
+        let mut outbox = Outbox::load(&files.outbox_path()).expect("load outbox");
+        authority::publish_device_key(
+            &engine,
+            &mut conn,
+            &ctx,
+            &mut writer.local(),
+            keys.as_ref(),
+            &mut outbox,
+            NOW_MS,
+        )
+        .await
+        .expect("publish");
+        let kit = anchor_keys().recovery;
+        authority::start_key_epochs(
+            &engine,
+            &mut conn,
+            &ctx,
+            &anchor_keys().admin,
+            &mut writer.local(),
+            &kit,
+            NOW_MS,
+        )
+        .await
+        .expect("start key epochs")
+        .expect("started");
+        assert_ne!(kit.encryption, stored.encryption);
+        assert_eq!(
+            selected_recovery_key(&mut conn, VAULT_ID)
+                .await
+                .expect("read"),
+            Some(kit.encryption),
+            "the key the selected log published wins over the stored row"
+        );
+        drop(conn);
+        registry.close_all().await.expect("close pools");
+    });
+}

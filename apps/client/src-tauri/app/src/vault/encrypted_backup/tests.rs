@@ -71,12 +71,208 @@ fn a_forged_backup_with_another_recovery_key_is_never_in_place() {
         charter: None,
     };
     let trusted = same_authority(&active, &staged, Some(&victim));
-    assert!(!trusted, "a staged key other than the opener is not trusted");
+    assert!(
+        !trusted,
+        "a staged key other than the opener is not trusted"
+    );
     let alone = summary("vault-a", 0);
     assert_eq!(
         plan_restore(Some(&alone), &alone, trusted),
         RestorePlacement::IndependentCopy
     );
+}
+
+#[test]
+fn an_honest_backup_of_the_current_kit_restores_in_place() {
+    let kit = kit_key(0x42);
+    let alone = summary("vault-a", 0);
+    for charter in [None, Some([7; 32])] {
+        let keys = RestoreKeys {
+            recovery: Some(kit),
+            charter,
+        };
+        for opener in [Some(&kit), None] {
+            let trusted = same_authority(&keys, &keys, opener);
+            assert!(trusted, "{charter:?} {opener:?}");
+            assert_eq!(
+                plan_restore(Some(&alone), &alone, trusted),
+                RestorePlacement::InPlace
+            );
+        }
+    }
+    // A fresh install with no kit row trusts a backup the kit itself opened.
+    let fresh = RestoreKeys {
+        recovery: None,
+        charter: None,
+    };
+    let staged = RestoreKeys {
+        recovery: Some(kit),
+        charter: None,
+    };
+    assert!(same_authority(&fresh, &staged, Some(&kit)));
+}
+
+#[test]
+fn an_epoch_opened_backup_needs_a_known_active_key() {
+    // A removed device still holds old epoch keys, so a file only an epoch key opened needs
+    // a recovery key this device already knows.
+    let forged = RestoreKeys {
+        recovery: Some(kit_key(0x66)),
+        charter: None,
+    };
+    let unknown = RestoreKeys {
+        recovery: None,
+        charter: None,
+    };
+    assert!(!same_authority(&unknown, &forged, None));
+    assert!(!same_authority(&unknown, &unknown, None));
+    assert!(!same_authority(&unknown, &unknown, Some(&kit_key(0x42))));
+}
+
+#[test]
+fn a_backup_older_than_a_kit_change_is_an_independent_copy() {
+    let old = kit_key(0x42);
+    let current = kit_key(0x43);
+    let active = RestoreKeys {
+        recovery: Some(current),
+        charter: None,
+    };
+    let staged = RestoreKeys {
+        recovery: Some(old),
+        charter: None,
+    };
+    let alone = summary("vault-a", 0);
+    for opener in [Some(&old), Some(&current), None] {
+        let trusted = same_authority(&active, &staged, opener);
+        assert!(!trusted, "{opener:?}");
+        assert_eq!(
+            plan_restore(Some(&alone), &alone, trusted),
+            RestorePlacement::IndependentCopy
+        );
+    }
+    // A backup whose charter differs from the active one, such as a kit-only backup restored
+    // after the first link, is a copy too.
+    let linked = RestoreKeys {
+        recovery: Some(current),
+        charter: Some([7; 32]),
+    };
+    let unlinked = RestoreKeys {
+        recovery: Some(current),
+        charter: None,
+    };
+    assert!(!same_authority(&linked, &unlinked, Some(&current)));
+}
+
+#[test]
+fn a_private_archive_keeps_its_authority_and_a_backup_file_needs_an_active_vault() {
+    let keys = RestoreKeys {
+        recovery: Some(kit_key(0x42)),
+        charter: None,
+    };
+    assert!(ArchiveOrigin::PrivateArchive.trusts(None, &keys));
+    let file = ArchiveOrigin::BackupFile {
+        space: SpaceId::personal("vault-a"),
+        opened_by: Some(kit_key(0x42)),
+    };
+    assert!(file.trusts(Some(&keys), &keys));
+    assert!(!file.trusts(None, &keys));
+}
+
+/// Counts the rows of `table` in the database of the vault at `root`.
+async fn count_rows(root: &Path, table: &str) -> i64 {
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = registry.connect_path(database_path(root)).await.unwrap();
+    let rows: i64 =
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    registry.close_all().await.unwrap();
+    rows
+}
+
+#[tokio::test]
+async fn staging_a_backup_file_clears_forged_local_rows() {
+    use super::super::replaced_vaults::{replaced_vault_backup_path, write_replaced_vault_backup};
+    let root = unique_test_path("forged-local");
+    let vault = root.join("Ganbaru");
+    fs::create_dir_all(&vault).unwrap();
+    let original = crate::vault::initialize_vault(&vault).unwrap();
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = registry.connect_path(database_path(&vault)).await.unwrap();
+    {
+        let mut conn = pool.acquire().await.unwrap();
+        ganbaru_sync::Engine::vault()
+            .init_space(&mut conn, &original.vault_id, 1_000)
+            .await
+            .unwrap();
+        let recovery = RecoverySeed::from_bytes([0x66; 32]).public_keys().unwrap();
+        ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &recovery, 1_000)
+            .await
+            .unwrap();
+    }
+    // A forged space key row, which a device would otherwise read as its own.
+    sqlx::query(
+        "INSERT INTO sync_space_keys (space_id, epoch, wrapped_previous, own_envelope, sequenced_revision)
+         SELECT space_id, 1, NULL, NULL, 1 FROM sync_spaces",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    registry.close_all().await.unwrap();
+    assert_eq!(count_rows(&vault, "sync_space_keys").await, 1);
+    let kept = root.join("replaced-vaults");
+    let backup = write_replaced_vault_backup(&kept, &vault, 1_000)
+        .await
+        .unwrap();
+    let archive = replaced_vault_backup_path(&kept, &backup.id).unwrap();
+
+    let from_file = root.join("from-file");
+    let origin = ArchiveOrigin::BackupFile {
+        space: SpaceId::personal(&original.vault_id),
+        opened_by: Some(kit_key(0x42)),
+    };
+    stage_restored_vault(&archive, &from_file, origin)
+        .await
+        .unwrap();
+    assert_eq!(count_rows(&from_file, "sync_space_keys").await, 0);
+    assert_eq!(
+        count_rows(&from_file, "sync_recovery_kit").await,
+        1,
+        "the recovery key row stays for the authority comparison"
+    );
+    let (_, staged) = read_staged_state(&from_file, &original.vault_id, "device-a")
+        .await
+        .unwrap();
+    assert_eq!(staged.recovery, Some(kit_key(0x66)));
+    assert!(!same_authority(
+        &RestoreKeys {
+            recovery: Some(kit_key(0x42)),
+            charter: staged.charter,
+        },
+        &staged,
+        Some(&kit_key(0x42)),
+    ));
+
+    let private = root.join("private");
+    stage_restored_vault(&archive, &private, ArchiveOrigin::PrivateArchive)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_rows(&private, "sync_space_keys").await,
+        1,
+        "this device's own archive keeps its device rows"
+    );
+
+    let elsewhere = ArchiveOrigin::BackupFile {
+        space: SpaceId::personal("another-vault"),
+        opened_by: None,
+    };
+    assert!(matches!(
+        stage_restored_vault(&archive, &root.join("elsewhere"), elsewhere).await,
+        Err(RestoreError::Refused(BackupRefusal::Damaged))
+    ));
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -306,7 +502,7 @@ async fn a_replaced_vault_copy_stages_as_the_vault_it_was_and_detaches_into_a_ne
 
     let archive = replaced_vault_backup_path(&kept, &backup.id).unwrap();
     let staging = root.join(RESTORE_STAGING_NAME);
-    let info = stage_restored_vault(&archive, &staging, None)
+    let info = stage_restored_vault(&archive, &staging, ArchiveOrigin::PrivateArchive)
         .await
         .unwrap();
     assert_eq!(info.vault_id, original.vault_id);

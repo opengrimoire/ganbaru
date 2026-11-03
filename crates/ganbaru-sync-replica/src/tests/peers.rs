@@ -186,6 +186,101 @@ fn held_device_is_refused_a_snapshot_copy() {
     assert_eq!(admission.bootstrap(&live, VAULT, "device-1"), Ok(()));
 }
 
+/// A stand-in certificate for device `index`, and the enrolled device whose TLS fingerprint
+/// matches it.
+fn certified_device(
+    index: u8,
+    held: bool,
+) -> (rustls::pki_types::CertificateDer<'static>, EnrolledDevice) {
+    let certificate = rustls::pki_types::CertificateDer::from(vec![index; 48]);
+    let fingerprint = ganbaru_handoff::pairing::certificate_fingerprint(certificate.as_ref());
+    let device = EnrolledDevice {
+        tls_fingerprint: ganbaru_handoff::protocol::decode_certificate_fingerprint(&fingerprint)
+            .expect("fingerprint"),
+        held,
+        ..device(index, false)
+    };
+    (certificate, device)
+}
+
+/// The requests that hand out vault content or the person key, from `device_id`.
+fn vault_material_requests(device_id: &str) -> Vec<ControlMessage> {
+    let compatibility = ganbaru_handoff::protocol::test_compatibility();
+    vec![
+        ControlMessage::RequestBundle {
+            protocol_version: PROTOCOL_VERSION,
+            compatibility: compatibility.clone(),
+            vault_id: VAULT.to_string(),
+            device_id: device_id.to_string(),
+        },
+        ControlMessage::DownloadBundle {
+            metadata: ganbaru_handoff::protocol::BundleMetadata {
+                protocol_version: PROTOCOL_VERSION,
+                compatibility,
+                vault_id: VAULT.to_string(),
+                device_id: device_id.to_string(),
+                transfer_id: "transfer-held".to_string(),
+                archive_bytes: 64,
+                archive_sha256: "a".repeat(64),
+                derived_state_stale: false,
+            },
+        },
+        ControlMessage::PersonKeyRequest {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT.to_string(),
+            device_id: device_id.to_string(),
+        },
+    ]
+}
+
+#[test]
+fn coordinator_refuses_held_device_vault_material() {
+    use crate::serve::coordinator::log_refusal;
+
+    // A frozen contest holds device 2, still paired with the coordinator.
+    let (live_certificate, live) = certified_device(1, false);
+    let (held_certificate, held) = certified_device(2, true);
+    let (unknown_certificate, _) = certified_device(3, false);
+    let admission = MemberAdmission::new(VAULT, &view(vec![live, held]), &BTreeSet::new());
+    let refusal = |certificate: &rustls::pki_types::CertificateDer<'static>,
+                   request: &ControlMessage| {
+        log_refusal(Ok(Some(admission.clone())), certificate, request)
+    };
+
+    for request in vault_material_requests("device-2") {
+        assert_eq!(
+            refusal(&held_certificate, &request),
+            Some(MemberRefusal::Held),
+            "{request:?}"
+        );
+    }
+    // Sync stays open, since record exchange is how the contest reaches the device.
+    assert_eq!(
+        refusal(&held_certificate, &sync_hello(VAULT, "device-2")),
+        None
+    );
+
+    // A device that is not held keeps its copy and person key.
+    for request in vault_material_requests("device-1") {
+        assert_eq!(refusal(&live_certificate, &request), None, "{request:?}");
+    }
+    // A device linked before its enrollment was sequenced is unknown to the log and keeps its
+    // first copy and person key, and so does every device of a coordinator without a log.
+    for request in vault_material_requests("device-3") {
+        assert_eq!(refusal(&unknown_certificate, &request), None, "{request:?}");
+        assert_eq!(
+            log_refusal(Ok(None), &unknown_certificate, &request),
+            None,
+            "{request:?}"
+        );
+        assert_eq!(
+            log_refusal(Ok(None), &held_certificate, &request),
+            None,
+            "{request:?}"
+        );
+    }
+}
+
 #[test]
 fn member_refusals_are_retryable_only_when_they_clear_on_their_own() {
     for refusal in [

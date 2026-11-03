@@ -466,7 +466,7 @@ impl AuthState {
         }
         // The anchor orders each proposal once, so a replayed one, such as an old recovery key
         // or admin role after a later entry replaced it, is refused. This covers the walked
-        // chain; the anchor's superseded set covers entries a stored abandoned branch reversed.
+        // chain; the anchor refuses an entry a stored abandoned branch reversed when it sequences.
         if self.proposals.contains(&record.proposal.hash()) {
             return Err(ProposalRejection::Malformed);
         }
@@ -873,9 +873,6 @@ pub(crate) struct Selection {
     pub(crate) handed_over: bool,
     /// The key epochs of the chain in epoch order.
     pub(crate) key_epochs: Vec<EpochKeys>,
-    /// Proposals of stored branches off the selected chain that a later entry of the same branch
-    /// reversed. The anchor refuses to sequence them.
-    pub(crate) superseded: BTreeSet<Digest32>,
 }
 
 impl Selection {
@@ -1628,7 +1625,6 @@ impl<'a> Walk<'a> {
             held: BTreeSet::new(),
             handed_over: false,
             key_epochs: Vec::new(),
-            superseded: BTreeSet::new(),
         };
         for node in path.iter().filter_map(|index| self.visits[*index].node) {
             selection = selection.extended(&self.stored.nodes[node]);
@@ -1873,13 +1869,15 @@ impl<'a> Resolution<'a> {
             .get(&self.walk.visits[self.best].instance)
             .is_some_and(|candidates| !candidates.is_empty());
         selection.reachable = self.reachable;
-        selection.superseded = self.superseded();
         selection
     }
 
-    /// Proposals of visits off the selected path that a later visit of the same branch reverses.
-    /// Only check-valid visits count, so a record outside the tree supersedes nothing.
-    fn superseded(&self) -> BTreeSet<Digest32> {
+    /// Whether a visit off the selected path proposes `proposal` and a later visit of the same
+    /// branch reverses it. Only check-valid visits count, so a record outside the tree reverses
+    /// nothing. One pass over the subtrees off the path, each visit once.
+    fn reversed_off_path(&self, proposal: &SignedProposal) -> bool {
+        let target = proposal.hash();
+        let entry = &proposal.proposal.entry;
         let visits = &self.walk.visits;
         let mut on_path = vec![false; visits.len()];
         let mut at = Some(self.best);
@@ -1887,30 +1885,25 @@ impl<'a> Resolution<'a> {
             on_path[index] = true;
             at = visits[index].parent;
         }
-        let proposal = |visit: &Visit| {
-            visit
-                .node
-                .map(|node| &self.walk.stored.nodes[node].record.proposal)
-        };
-        let mut superseded = BTreeSet::new();
-        for (index, visit) in visits.iter().enumerate() {
-            if on_path[index] {
-                continue;
-            }
-            let Some(later) = proposal(visit) else {
+        // Each pending visit carries whether an off-path ancestor proposes `proposal`.
+        let mut stack: Vec<(usize, bool)> = (0..visits.len())
+            .filter(|index| on_path[*index])
+            .flat_map(|index| self.walk.children[index].iter().copied())
+            .filter(|child| !on_path[*child])
+            .map(|child| (child, false))
+            .collect();
+        while let Some((at, below)) = stack.pop() {
+            let Some(node) = visits[at].node else {
                 continue;
             };
-            let mut at = visit.parent.filter(|parent| !on_path[*parent]);
-            while let Some(ancestor) = at {
-                if let Some(earlier) = proposal(&visits[ancestor])
-                    && reverses(&later.proposal.entry, &earlier.proposal.entry)
-                {
-                    superseded.insert(earlier.hash());
-                }
-                at = visits[ancestor].parent.filter(|parent| !on_path[*parent]);
+            let later = &self.walk.stored.nodes[node].record.proposal;
+            if below && reverses(&later.proposal.entry, entry) {
+                return true;
             }
+            let below = below || later.hash() == target;
+            stack.extend(self.walk.children[at].iter().map(|child| (*child, below)));
         }
-        superseded
+        false
     }
 
     /// The highest ranked visit in the subtree of `start` where `signer` is the kit key and
@@ -1996,6 +1989,22 @@ pub(crate) async fn select(
         return Ok(None);
     };
     Ok(Some(Resolution::new(&stored).selected()))
+}
+
+/// [`select`] for an anchor about to sequence `proposal`, with whether a stored branch off the
+/// selected chain proposed it and a later entry of that branch reversed it, `false` without a
+/// proposal to check.
+async fn select_for_sequencing(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    proposal: Option<&SignedProposal>,
+) -> SyncResult<Option<(Selection, bool)>> {
+    let Some(stored) = Stored::load(conn, space).await? else {
+        return Ok(None);
+    };
+    let resolution = Resolution::new(&stored);
+    let reversed = proposal.is_some_and(|proposal| resolution.reversed_off_path(proposal));
+    Ok(Some((resolution.selected(), reversed)))
 }
 
 /// Whether any check-valid stored chain enrolls `device_id` with `device_key`, selected or not.
@@ -2188,6 +2197,73 @@ pub(crate) fn select_records(
     certificates: Option<BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>>,
     records: &[(WriterId, Seq, AuthorizationRecord)],
 ) -> SelectedHead {
+    let stored = stored_records(charter, forks, certificates, records);
+    let selection = Resolution::new(&stored).selected();
+    let state = &selection.state;
+    SelectedHead {
+        head: state.entry_hash,
+        reachable: selection.reachable,
+        frozen_at: state.frozen_at,
+        anchor: state.anchor_device_id.clone(),
+        devices: state
+            .devices
+            .iter()
+            .map(|(id, device)| (id.clone(), device.removed))
+            .collect(),
+        admins: state
+            .devices
+            .iter()
+            .filter(|(_, device)| {
+                device.removed.is_none() && matches!(device.role, DeviceRole::Admin(_))
+            })
+            .map(|(id, _)| id.clone())
+            .collect(),
+        held: selection.held.clone(),
+        kit_handovers: state.kit_handovers,
+        recovery_admin_key: state.recovery_admin_key,
+    }
+}
+
+/// How the anchor's reversal check answers for `proposal` over the stored `records`, carried as
+/// in [`select_records`] with every carrier bound and no fork.
+#[cfg(test)]
+pub(crate) struct ReversalCheck {
+    /// Whether a stored branch off the selected chain proposed it and later reversed it.
+    pub(crate) reversed: bool,
+    /// Time spent resolving the tree.
+    pub(crate) resolve: std::time::Duration,
+    /// Time spent on the reversal check alone.
+    pub(crate) check: std::time::Duration,
+}
+
+/// The anchor's reversal check of `proposal` over `records`, see [`ReversalCheck`].
+#[cfg(test)]
+pub(crate) fn reversal_in_records(
+    charter: &SignedCharter,
+    records: &[(WriterId, Seq, AuthorizationRecord)],
+    proposal: &SignedProposal,
+) -> ReversalCheck {
+    let stored = stored_records(charter, BTreeMap::new(), None, records);
+    let started = std::time::Instant::now();
+    let resolution = Resolution::new(&stored);
+    let resolve = started.elapsed();
+    let started = std::time::Instant::now();
+    let reversed = resolution.reversed_off_path(proposal);
+    ReversalCheck {
+        reversed,
+        resolve,
+        check: started.elapsed(),
+    }
+}
+
+/// The stored tree of `records`, see [`select_records`].
+#[cfg(test)]
+fn stored_records(
+    charter: &SignedCharter,
+    forks: BTreeMap<WriterId, Seq>,
+    certificates: Option<BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>>,
+    records: &[(WriterId, Seq, AuthorizationRecord)],
+) -> Stored {
     let mut bodies: BTreeMap<Digest32, Node> = BTreeMap::new();
     for (writer, seq, record) in records {
         let hash = record.hash();
@@ -2239,37 +2315,13 @@ pub(crate) fn select_records(
         .filter(|node| included.contains(&node.hash))
         .collect();
     nodes.sort_by_key(|node| (node.record.revision, node.hash));
-    let stored = Stored {
+    Stored {
         charter: charter.clone(),
         nodes,
         check_binding: certificates.is_some(),
         certificates: certificates.unwrap_or_default(),
         provable: forks,
         others: Vec::new(),
-    };
-    let selection = Resolution::new(&stored).selected();
-    let state = &selection.state;
-    SelectedHead {
-        head: state.entry_hash,
-        reachable: selection.reachable,
-        frozen_at: state.frozen_at,
-        anchor: state.anchor_device_id.clone(),
-        devices: state
-            .devices
-            .iter()
-            .map(|(id, device)| (id.clone(), device.removed))
-            .collect(),
-        admins: state
-            .devices
-            .iter()
-            .filter(|(_, device)| {
-                device.removed.is_none() && matches!(device.role, DeviceRole::Admin(_))
-            })
-            .map(|(id, _)| id.clone())
-            .collect(),
-        held: selection.held.clone(),
-        kit_handovers: state.kit_handovers,
-        recovery_admin_key: state.recovery_admin_key,
     }
 }
 
@@ -2936,7 +2988,10 @@ impl Engine {
         {
             return Ok(Ok(revision));
         }
-        let Some(selection) = select(&mut tx, ctx.space).await? else {
+        let anchor_ordering = matches!(ordering, Ordering::Anchor { .. });
+        let Some((selection, reversed)) =
+            select_for_sequencing(&mut tx, ctx.space, anchor_ordering.then_some(proposal)).await?
+        else {
             return Err(SyncError::ResetRequired("the space has no charter"));
         };
         let handed_over = selection.handed_over;
@@ -2944,14 +2999,9 @@ impl Engine {
         let mut state = selection.state;
         let holder = writer.keys;
         let local_device = &writer.certificate.certificate.device_id;
-        let anchor_ordering = matches!(ordering, Ordering::Anchor { .. });
         // Replaying one entry of a stored branch that lost must not restore what a later entry
         // of that branch reversed, whether or not the reversal reached this chain.
-        if anchor_ordering
-            && *local_device == state.anchor_device_id
-            && !handed_over
-            && selection.superseded.contains(&proposal.hash())
-        {
+        if anchor_ordering && *local_device == state.anchor_device_id && !handed_over && reversed {
             return Ok(Err(ProposalRejection::Malformed));
         }
         // Records sealed before the proposal's: the key epoch a handover left pending.

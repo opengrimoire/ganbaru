@@ -8,9 +8,10 @@ use super::context::{GrantedAccess, freeze_context_package, read_granted_access}
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
-    NewAssignment, PostingDevice, create_assignment, end_assignment_dispatch_jobs,
-    move_pending_inputs, pending_thread_inputs, read_assignment_executing_device,
-    require_participating_teammate, set_assignment_state, take_requested_target,
+    NewAssignment, PostingDevice, create_assignment, drop_input_requested_targets,
+    end_assignment_dispatch_jobs, move_pending_inputs, pending_thread_inputs,
+    read_assignment_executing_device, read_input_requested_target, require_participating_teammate,
+    set_assignment_state, take_requested_target,
 };
 use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error, timestamp};
 use crate::chat::device_state::{
@@ -422,7 +423,9 @@ pub(super) async fn recover_stranded_follow_up_assignments(
 /// Moves the pending replies of `assignment_id` that belong to its reply thread onto a
 /// follow-up assignment `device` runs, when `scope` accepted the current subject, and returns
 /// the follow-up. An input whose message lies outside the thread stays with the settled
-/// assignment.
+/// assignment. The follow-up runs on the execution target this device kept for its first
+/// reply, if that reply's post chose one; when the follow-up cannot be created there, the kept
+/// targets go, so the next start resolves the target again.
 async fn recover_follow_up(
     pool: &SqlitePool,
     assignment_id: &ChatWorkAssignmentId,
@@ -449,8 +452,9 @@ async fn recover_follow_up(
     };
     let first_message_id =
         ChatConversationItemId::new(first.message_item_id).map_err(identifier_error)?;
+    let requested_target = read_input_requested_target(&mut transaction, &first.id).await?;
     let teammate_id = previous.teammate.id.clone();
-    let recovered_assignment_id = create_assignment(
+    let created = create_assignment(
         &mut transaction,
         NewAssignment {
             reply_thread_id: &reply_thread_id,
@@ -458,14 +462,28 @@ async fn recover_follow_up(
             teammate_id: &teammate_id,
             latest_assignment: Some(&previous),
             executing_device_id: device.id,
-            execution_target: None,
+            execution_target: requested_target.as_ref(),
         },
         device,
         now,
     )
-    .await?;
-    transaction.commit().await.map_err(persistence_error)?;
-    Ok(Some(recovered_assignment_id))
+    .await;
+    match created {
+        Ok(recovered_assignment_id) => {
+            transaction.commit().await.map_err(persistence_error)?;
+            Ok(Some(recovered_assignment_id))
+        }
+        Err(error) => {
+            transaction.rollback().await.map_err(persistence_error)?;
+            if requested_target.is_some() && error.code != ChatErrorCode::Persistence {
+                // A chosen target that no longer resolves would refuse every later start, so
+                // the next one resolves the target again from the current grants.
+                let mut connection = pool.acquire().await.map_err(persistence_error)?;
+                drop_input_requested_targets(&mut connection, assignment_id).await?;
+            }
+            Err(error)
+        }
+    }
 }
 
 pub(super) async fn cancel_assignment(

@@ -1802,6 +1802,55 @@ fn follow_up_of_an_unattended_review_reply_keeps_its_chosen_target() {
             Some("folder:second"),
             "the follow-up dropped the execution target its reply chose"
         );
+        let kept: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_assignment_input_requested_targets")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, 0, "the target outlived the reply it was kept for");
+    });
+}
+
+#[test]
+fn follow_up_resolves_the_target_again_when_the_chosen_one_no_longer_resolves() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = post_unattended_review_reply_on_second_folder(&now).await;
+        sqlx::query(
+            "DELETE FROM chat_teammate_working_folder_grants WHERE working_folder_id = 'folder:second'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let accepted = scope_accepting(&pool, "assignment:review").await;
+
+        let refused =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+        assert_eq!(
+            refused, 0,
+            "the follow-up started on a target without a grant"
+        );
+        assert_eq!(review_follow_up_id(&pool).await, None);
+
+        let started =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+        assert_eq!(
+            started, 1,
+            "the reply stayed stuck on its unresolvable target"
+        );
+        let follow_up_id = review_follow_up_id(&pool).await.unwrap();
+        assert_eq!(
+            frozen_execution_folder(&pool, &follow_up_id)
+                .await
+                .as_deref(),
+            Some("folder:review")
+        );
     });
 }
 

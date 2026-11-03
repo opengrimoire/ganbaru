@@ -140,6 +140,31 @@ impl Shared {
     }
 }
 
+/// Counts entries in a running server's per-space maps.
+#[cfg(test)]
+pub(crate) struct ServerProbe(Arc<Shared>);
+
+#[cfg(test)]
+impl ServerProbe {
+    /// Spaces with a generation entry.
+    pub(crate) fn generations(&self) -> usize {
+        self.0
+            .generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    /// Spaces with a wait notifier.
+    pub(crate) fn waits(&self) -> usize {
+        self.0
+            .waits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+}
+
 /// A bound relay listener.
 pub struct RelayServer {
     listener: TcpListener,
@@ -178,6 +203,12 @@ impl RelayServer {
         self.listener
             .local_addr()
             .map_err(|error| format!("read relay listener address: {error}"))
+    }
+
+    /// A view of the per-space maps that stays valid while the server runs.
+    #[cfg(test)]
+    pub(crate) fn probe(&self) -> ServerProbe {
+        ServerProbe(Arc::clone(&self.shared))
     }
 
     /// Accepts connections until the task is dropped, and trims storage periodically.

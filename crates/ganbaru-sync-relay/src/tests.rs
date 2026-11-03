@@ -1,5 +1,5 @@
 use crate::identity::RelayIdentity;
-use crate::server::{ConnectionLimits, RelayServer, unix_time_ms};
+use crate::server::{ConnectionLimits, RelayServer, ServerProbe, unix_time_ms};
 use crate::store::{AdminChange, ClaimRequest, RelayStore, RetentionPolicy, StoreError};
 use ganbaru_handoff::pairing::certificate_fingerprint;
 use ganbaru_handoff::protocol::relay::{
@@ -871,6 +871,7 @@ struct Relay {
     address: SocketAddr,
     fingerprint: String,
     store: RelayStore,
+    probe: ServerProbe,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -899,12 +900,14 @@ async fn start_relay(limits: ConnectionLimits) -> Relay {
         limits,
     );
     let address = server.local_addr().unwrap();
+    let probe = server.probe();
     let task = tokio::spawn(server.run());
     Relay {
         _dir: dir,
         address,
         fingerprint: identity.fingerprint(),
         store,
+        probe,
         task,
     }
 }
@@ -1889,4 +1892,138 @@ async fn operators_list_and_remove_spaces_and_revoke_setup_tokens() {
         code_of(store.state(&space).await),
         RelayRefusalCode::UnknownSpace
     );
+}
+
+impl Client {
+    async fn remove_space(
+        &mut self,
+        space: SpaceId,
+        signer: &AdminKeyPair,
+        counter: u64,
+    ) -> RelayResponse {
+        let payload = self
+            .binding(space)
+            .admin_payload(counter, &RelayAdminCommand::RemoveSpace);
+        self.send(&RelayRequest::Admin {
+            action: RelayAdminAction::RemoveSpace,
+            counter,
+            signer: encode_relay_bytes(signer.public_key().as_bytes()),
+            signature: encode_relay_bytes(&signer.sign(RELAY_ADMIN_DOMAIN, &payload)),
+        })
+        .await
+    }
+}
+
+#[tokio::test]
+async fn unknown_space_leaves_no_generation_entry() {
+    const PROBES: u16 = 1000;
+    // Each probe holds its connection open, so the budget must fit all of them at once.
+    let open = usize::from(PROBES) + 1;
+    let relay = start_relay(ConnectionLimits {
+        pending: open,
+        pending_per_source: open,
+        ..ConnectionLimits::default()
+    })
+    .await;
+    let signer = admin();
+    let mut clients = Vec::new();
+    for probe in 0..PROBES {
+        let mut bytes = [0xA5; 16];
+        bytes[..2].copy_from_slice(&probe.to_le_bytes());
+        let space = SpaceId::from_bytes(bytes);
+        let mut client = Client::connect(&relay).await;
+        client.hello(space).await;
+        if probe % 2 == 0 {
+            let response = client.auth(space, 1, &access(&space, 1)).await;
+            assert_eq!(refusal(&response), Some(RelayRefusalCode::UnknownSpace));
+        } else {
+            // Both admin paths answer like an unknown signer on a hosted space.
+            let response = if probe % 4 == 1 {
+                client
+                    .admin(space, &signer, 1, &signer.public_key(), true)
+                    .await
+            } else {
+                client.remove_space(space, &signer, 1).await
+            };
+            assert_eq!(refusal(&response), Some(RelayRefusalCode::AdminSignature));
+        }
+        assert_eq!(relay.probe.generations(), 0, "probe {probe}");
+        clients.push(client);
+    }
+    assert_eq!(relay.probe.waits(), 0);
+}
+
+#[tokio::test]
+async fn a_recreated_space_never_repeats_a_generation() {
+    let relay = start_relay(ConnectionLimits::default()).await;
+    let space = space_id(1);
+    let owner = admin();
+    let key = access(&space, 1);
+    let token = issue_token(&relay).await;
+    let mut operator = Client::connect(&relay).await;
+    operator.hello(space).await;
+    assert_eq!(
+        operator.claim(space, &token, &key, &owner).await,
+        RelayResponse::Claimed { epoch: 1 }
+    );
+    // A repair advances the generation before the session below verifies.
+    assert_eq!(
+        operator.repair(space, &owner, 2, 1, &key).await,
+        RelayResponse::AdminApplied { counter: 2 }
+    );
+    let mut old = Client::connect(&relay).await;
+    old.hello(space).await;
+    assert!(matches!(
+        old.auth(space, 1, &key).await,
+        RelayResponse::Authenticated { .. }
+    ));
+    let mut pusher = Client::connect(&relay).await;
+    pusher.hello(space).await;
+    pusher.auth(space, 1, &key).await;
+    write_frame(&mut old.stream, &RelayRequest::Wait { have: Vec::new() })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    pusher.push(&record(space, writer_id(2), 1, 1, 0, 40)).await;
+    let woke: RelayResponse = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_frame(&mut old.stream, MAX_CONTROL_BYTES),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(woke, RelayResponse::Waited { ready: true });
+    assert_eq!(relay.probe.generations(), 1);
+    assert_eq!(relay.probe.waits(), 1);
+
+    assert_eq!(
+        operator.remove_space(space, &owner, 3).await,
+        RelayResponse::AdminApplied { counter: 3 }
+    );
+    assert_eq!(relay.probe.generations(), 0);
+    assert_eq!(relay.probe.waits(), 0);
+
+    let token = issue_token(&relay).await;
+    let mut claimer = Client::connect(&relay).await;
+    claimer.hello(space).await;
+    assert_eq!(
+        claimer.claim(space, &token, &key, &owner).await,
+        RelayResponse::Claimed { epoch: 1 }
+    );
+    let mut fresh = Client::connect(&relay).await;
+    fresh.hello(space).await;
+    assert!(matches!(
+        fresh.auth(space, 1, &key).await,
+        RelayResponse::Authenticated { .. }
+    ));
+    assert!(matches!(
+        fresh.send(&RelayRequest::State).await,
+        RelayResponse::State { .. }
+    ));
+    // The session from before the removal verified against the removed space.
+    assert_eq!(
+        refusal(&old.send(&RelayRequest::State).await),
+        Some(RelayRefusalCode::Authentication)
+    );
+    assert_eq!(relay.probe.generations(), 1);
 }

@@ -162,6 +162,8 @@ An anchor serves one vault. The desktop that adds it must be an admin.
 
 Every linked device learns the server from the log and dials it from any network. Two dials happen before that: the desktop adding the server dials the endpoints in the setup code, which may be public, and recovery with the kit through an anchor server dials them from a new device, which may be off the LAN. Every other new device links to a desktop first, on the LAN.
 
+An anchor accepts at most 256 connections that have not yet authenticated, 4 from one address (an IPv4 address or an IPv6 /64), and closes any that does not authenticate or prove a setup code within 30 seconds. It keeps 64 of those slots for addresses your devices used recently, so a flood from unknown addresses does not lock your devices out, though it can delay a device connecting from a new address, or a new setup, until it stops. A device turned away for a full budget retries on its next pass.
+
 Two limits apply today. A server takes the anchor only as part of being added, so once a desktop takes the anchor from it, or you kept the anchor on a desktop, the anchor cannot go to that server: it keeps running its vault and refuses a second upload with "this server already runs a vault". To return to a server anchor, [remove the server](#removing-a-server) and add it again with a fresh setup on an empty data directory. The recovery kit also cannot be regenerated while a server anchors, so take the anchor to a desktop, regenerate the kit there, and return the same way.
 
 ## Upgrades and stopped commands

@@ -3,6 +3,9 @@
 //! theirs, anchor marks release retained versions, and the late changes they leave are derived
 //! the same way on every replica and decided once.
 
+use std::collections::BTreeSet;
+
+use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 use ganbaru_sync_contracts::hlc::MAX_ADOPTION_AHEAD_MS;
 use ganbaru_sync_contracts::{
     Change, ChangeAction, Entry, Envelope, Field, GroupValue, Hlc, LateResolution, LateRow,
@@ -2172,5 +2175,85 @@ fn context_past_a_surplus_genesis_becomes_ready() {
             );
             replica.check_invariants().await;
         }
+    });
+}
+
+#[test]
+fn a_lower_genesis_displaces_the_highest_surplus_genesis_at_the_device_writer_limit() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(233).await;
+        let mut ascending = Replica::new(3, 233).await;
+        let mut descending = Replica::new(4, 233).await;
+        // The anchor never stores the device's writers, so its removal names none of them, and
+        // the device mints one writer more than a replica stores for it.
+        let mut writers = Vec::new();
+        for position in 0..=MAX_WRITERS_PER_DEVICE {
+            if position > 0 {
+                removed.rotate();
+            }
+            edit(&mut removed, &note(&format!("note-{position}"), "Late", 0)).await;
+            writers.push((removed.writer(), removed.own_ops().await));
+        }
+        writers.sort_by_key(|(writer, _)| *writer);
+        let (lowest, lowest_ops) = writers[0].clone();
+        let (highest, _) = writers[MAX_WRITERS_PER_DEVICE].clone();
+
+        // The honest device sees the lowest writer before the removal and edits past it.
+        take(&mut honest, &lowest_ops).await;
+        edit(&mut honest, &note("note-honest", "Honest", 1)).await;
+        let dependent = honest.own_ops().await;
+        anchor.remove(&removed.device_id).await.unwrap();
+
+        // Both peers learn of the removal first. The descending one fills the device's writer
+        // limit before the lowest writer arrives.
+        deliver(&mut ascending, &mut anchor).await;
+        deliver(&mut descending, &mut anchor).await;
+        for (_, ops) in &writers {
+            take(&mut ascending, ops).await;
+        }
+        for (_, ops) in writers.iter().rev() {
+            take(&mut descending, ops).await;
+        }
+        for replica in [&mut ascending, &mut descending] {
+            take(replica, &dependent).await;
+        }
+
+        let kept: BTreeSet<_> = writers[..MAX_WRITERS_PER_DEVICE]
+            .iter()
+            .map(|(writer, _)| *writer)
+            .collect();
+        for replica in [&mut ascending, &mut descending] {
+            let stored = replica.stored_vector().await;
+            let device: BTreeSet<_> = writers
+                .iter()
+                .map(|(writer, _)| *writer)
+                .filter(|writer| stored.get(writer) > 0)
+                .collect();
+            assert_eq!(device, kept, "every replica keeps the lowest writers");
+            assert_eq!(stored.get(&highest), 0, "the highest writer is not stored");
+            assert_eq!(
+                stored.get(&lowest),
+                lowest_ops.len() as u64,
+                "the lowest writer keeps its excluded operations"
+            );
+            assert_eq!(
+                replica.applied_vector().await.get(&honest.writer()),
+                honest.stored_vector().await.get(&honest.writer()),
+                "the honest change leaves the hold"
+            );
+            assert_eq!(
+                title(replica, "note-honest").await.as_deref(),
+                Some("Honest")
+            );
+            replica.check_invariants().await;
+        }
+        assert_eq!(
+            late_changes(&mut ascending).await,
+            late_changes(&mut descending).await
+        );
+        assert_eq!(
+            ascending.domain_dump().await,
+            descending.domain_dump().await
+        );
     });
 }

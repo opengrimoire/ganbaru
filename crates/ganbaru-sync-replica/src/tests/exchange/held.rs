@@ -626,22 +626,24 @@ fn held_device_pull_hides_the_compacted_vector() {
             .compacted_vector(&mut *acquire(&hub_replica.pool).await, &hub_replica.ctx)
             .await
             .expect("compacted vector");
-        let (hub_writer, through) = compacted.iter().next().expect("a compacted writer");
-        assert!(through > 1);
+        assert!(compacted.iter().any(|(_, through)| through > 1));
+        let stored = hub_replica.stored().await;
         hold(&hub_replica, TABLET_DEVICE).await;
 
-        // Every claim at or below the compacted sequence gets the same answer, so varying it
-        // reveals nothing about where compaction stands.
+        // Every claim of a compacted writer, below, at, or past its compacted sequence, gets
+        // the same answer, so varying it reveals nothing about where compaction stands.
         let mut answers = Vec::new();
-        for seq in 0..=through {
-            let known: VersionVector = [(hub_writer, seq)].into_iter().collect();
-            match transport
-                .request(pull(TABLET_DEVICE, &known))
-                .await
-                .expect("pull")
-            {
-                ControlMessage::SyncOps { ops, more } => answers.push((ops, more)),
-                other => panic!("a held pull from {seq} answered {other:?}"),
+        for (writer, _) in compacted.iter() {
+            for seq in 0..=stored.get(&writer) {
+                let known: VersionVector = [(writer, seq)].into_iter().collect();
+                match transport
+                    .request(pull(TABLET_DEVICE, &known))
+                    .await
+                    .expect("pull")
+                {
+                    ControlMessage::SyncOps { ops, more } => answers.push((ops, more)),
+                    other => panic!("a held pull from {seq} answered {other:?}"),
+                }
             }
         }
         assert!(answers.windows(2).all(|pair| pair[0] == pair[1]));

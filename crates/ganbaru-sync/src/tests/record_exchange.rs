@@ -1351,12 +1351,7 @@ fn a_certificate_pairing_a_live_id_with_another_key_stays_in_the_rest_class() {
             &device_id(21),
             None,
         );
-        let successor = Identity::new(
-            [97; 32],
-            &device_key(&person(), 22),
-            &device_id(22),
-            None,
-        );
+        let successor = Identity::new([97; 32], &device_key(&person(), 22), &device_id(22), None);
         for identity in [&unknown, &borrowed, &successor] {
             let admission = admit_bytes(&mut hub, &carried_by(identity, &genesis, &record)).await;
             assert_eq!(admission.admitted, 2);

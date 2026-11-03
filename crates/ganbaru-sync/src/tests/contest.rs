@@ -811,7 +811,10 @@ fn a_promotion_its_branch_kept_still_reaches_the_new_anchor() {
             mut anchor, signed, ..
         } = losing_branch(
             93,
-            vec![enroll_entry(&person(), 30, DeviceRole::Member), promotion(30)],
+            vec![
+                enroll_entry(&person(), 30, DeviceRole::Member),
+                promotion(30),
+            ],
         )
         .await;
         let enrolled = anchor.sequence_signed(&signed[0]).await.unwrap().unwrap();
@@ -833,19 +836,14 @@ fn a_forged_reversal_outside_the_walk_supersedes_nothing() {
             signed,
             tip: (epoch, revision, previous_entry_hash),
         } = losing_branch(94, vec![promotion(5)]).await;
-        // A demotion signed by a key that is no admin, carried on the losing branch past the
-        // promotion, fails the check and is no visit of the walk.
+        // A demotion signed by a key that is admin on no branch, carried on the losing branch
+        // past the promotion, fails the check and is no visit of the walk.
         let forged = AuthorizationRecord {
             epoch,
             revision: revision + 1,
             previous_entry_hash,
             anchor_device_id: device_id(21),
-            proposal: proposal(
-                loser.ctx.space,
-                &device_admin(5),
-                loser.now_ms,
-                demotion(5),
-            ),
+            proposal: proposal(loser.ctx.space, &device_admin(6), loser.now_ms, demotion(5)),
             sequencing: Sequencing::Empty,
         };
         let bytes = forge(

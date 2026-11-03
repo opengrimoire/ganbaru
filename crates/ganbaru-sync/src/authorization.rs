@@ -465,7 +465,8 @@ impl AuthState {
             return Err(ProposalRejection::Malformed);
         }
         // The anchor orders each proposal once, so a replayed one, such as an old recovery key
-        // or admin role after a later entry replaced it, is refused.
+        // or admin role after a later entry replaced it, is refused. This covers the walked
+        // chain; the anchor's superseded set covers entries a stored abandoned branch reversed.
         if self.proposals.contains(&record.proposal.hash()) {
             return Err(ProposalRejection::Malformed);
         }
@@ -872,6 +873,9 @@ pub(crate) struct Selection {
     pub(crate) handed_over: bool,
     /// The key epochs of the chain in epoch order.
     pub(crate) key_epochs: Vec<EpochKeys>,
+    /// Proposals of stored branches off the selected chain that a later entry of the same branch
+    /// reversed. The anchor refuses to sequence them.
+    pub(crate) superseded: BTreeSet<Digest32>,
 }
 
 impl Selection {
@@ -907,6 +911,34 @@ impl Selection {
     /// Device id of the selected anchor.
     pub(crate) fn anchor(&self) -> &str {
         &self.state.anchor_device_id
+    }
+}
+
+/// Whether `later`, a later entry of the same branch, reverses `earlier`: it sets the role of or
+/// removes the device `earlier` set the role of, removes the device `earlier` enrolled or gives
+/// another role to a device `earlier` enrolled as admin, or replaces the recovery admin key or
+/// recovery key `earlier` set. An enrollment of a member followed by a promotion is no reversal.
+fn reverses(later: &Entry, earlier: &Entry) -> bool {
+    match (earlier, later) {
+        (
+            Entry::SetRole(SetRole::Device { device_id, .. }),
+            Entry::SetRole(SetRole::Device {
+                device_id: later_device,
+                ..
+            }),
+        ) => device_id == later_device,
+        (Entry::SetRole(SetRole::Device { device_id, .. }), Entry::Remove(remove)) => {
+            *device_id == remove.device_id
+        }
+        (Entry::Enroll(enroll), Entry::Remove(remove)) => enroll.device_id == remove.device_id,
+        (Entry::Enroll(enroll), Entry::SetRole(SetRole::Device { device_id, role })) => {
+            matches!(enroll.role, DeviceRole::Admin(_))
+                && enroll.device_id == *device_id
+                && enroll.role != *role
+        }
+        (Entry::SetRole(SetRole::Recovery { .. }), Entry::SetRole(SetRole::Recovery { .. }))
+        | (Entry::RecoveryKey(_), Entry::RecoveryKey(_)) => true,
+        _ => false,
     }
 }
 
@@ -1596,6 +1628,7 @@ impl<'a> Walk<'a> {
             held: BTreeSet::new(),
             handed_over: false,
             key_epochs: Vec::new(),
+            superseded: BTreeSet::new(),
         };
         for node in path.iter().filter_map(|index| self.visits[*index].node) {
             selection = selection.extended(&self.stored.nodes[node]);
@@ -1840,7 +1873,44 @@ impl<'a> Resolution<'a> {
             .get(&self.walk.visits[self.best].instance)
             .is_some_and(|candidates| !candidates.is_empty());
         selection.reachable = self.reachable;
+        selection.superseded = self.superseded();
         selection
+    }
+
+    /// Proposals of visits off the selected path that a later visit of the same branch reverses.
+    /// Only check-valid visits count, so a record outside the tree supersedes nothing.
+    fn superseded(&self) -> BTreeSet<Digest32> {
+        let visits = &self.walk.visits;
+        let mut on_path = vec![false; visits.len()];
+        let mut at = Some(self.best);
+        while let Some(index) = at {
+            on_path[index] = true;
+            at = visits[index].parent;
+        }
+        let proposal = |visit: &Visit| {
+            visit
+                .node
+                .map(|node| &self.walk.stored.nodes[node].record.proposal)
+        };
+        let mut superseded = BTreeSet::new();
+        for (index, visit) in visits.iter().enumerate() {
+            if on_path[index] {
+                continue;
+            }
+            let Some(later) = proposal(visit) else {
+                continue;
+            };
+            let mut at = visit.parent.filter(|parent| !on_path[*parent]);
+            while let Some(ancestor) = at {
+                if let Some(earlier) = proposal(&visits[ancestor])
+                    && reverses(&later.proposal.entry, &earlier.proposal.entry)
+                {
+                    superseded.insert(earlier.hash());
+                }
+                at = visits[ancestor].parent.filter(|parent| !on_path[*parent]);
+            }
+        }
+        superseded
     }
 
     /// The highest ranked visit in the subtree of `start` where `signer` is the kit key and
@@ -2875,6 +2945,15 @@ impl Engine {
         let holder = writer.keys;
         let local_device = &writer.certificate.certificate.device_id;
         let anchor_ordering = matches!(ordering, Ordering::Anchor { .. });
+        // Replaying one entry of a stored branch that lost must not restore what a later entry
+        // of that branch reversed, whether or not the reversal reached this chain.
+        if anchor_ordering
+            && *local_device == state.anchor_device_id
+            && !handed_over
+            && selection.superseded.contains(&proposal.hash())
+        {
+            return Ok(Err(ProposalRejection::Malformed));
+        }
         // Records sealed before the proposal's: the key epoch a handover left pending.
         let mut records = Vec::new();
         // The key of the current key epoch, once opened or sealed here.

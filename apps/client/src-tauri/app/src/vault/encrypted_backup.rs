@@ -2,9 +2,13 @@
 //!
 //! A backup is the snapshot another installation starts from, encrypted to the vault's recovery
 //! kit and, once the vault is linked, to its current key epoch. A restore lands in one of two
-//! ways. It replaces the vault in place only when the backup belongs to the active space and
+//! ways. It replaces the vault in place only when the backup belongs to the active space,
 //! neither log enrolled another device, so no linked device holds acknowledgements the restore
-//! could rewind. Every other restore is an independent copy: a new vault id and space with no
+//! could rewind, and the backup names the full recovery keys (admin and encryption) and
+//! charter of the active vault and of the kit that opened it. A backup file has no origin authentication, since anyone holding the
+//! recovery public key can write one the kit opens, so restore treats it as content: its
+//! device-local rows are reset, and its sync state never grants authority. Every other restore
+//! is an independent copy: a new vault id and space with no
 //! sync state, recovery identity, or person identity, so it never reappears in the space it
 //! came from. A desktop opens the copy from a folder the user chooses; Android replaces the
 //! active vault and keeps the replaced one restorable from Settings > Data.
@@ -22,10 +26,12 @@ use super::{
     FileAccess, VaultInfo, VaultManifest, database_path, manifest_path, new_vault_id, now_utc,
     read_vault_manifest, vault_info_from_path, write_text_file_atomically,
 };
-use crate::sync::backup_keys::{self, LinkSummary};
+use crate::sync::backup_keys::{self, LinkSummary, RestoreKeys};
 use chrono::SecondsFormat;
 use ganbaru_sync_contracts::backup::{BackupError, BackupHeader, FileKey};
-use ganbaru_sync_contracts::{EncryptionKeyPair, RecoverySeed, SpaceId, SpaceKey};
+use ganbaru_sync_contracts::{
+    EncryptionKeyPair, RecoveryPublicKeys, RecoverySeed, SpaceId, SpaceKey,
+};
 use ganbaru_sync_replica::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, create_encrypted_backup, decrypt_backup,
     read_backup_header,
@@ -197,11 +203,17 @@ pub(super) fn refuse_other_vault_while_linked(
 /// Chooses how a backup whose staged vault is summarized by `backup` restores over the active
 /// vault `active`, or `None` when nothing is active. Any device a log ever enrolled, removed
 /// ones included, makes an independent copy, so a restore never rewinds a space another device
-/// may have acknowledged. A device that is linked now is refused before this.
-fn plan_restore(active: Option<&LinkSummary>, backup: &LinkSummary) -> RestorePlacement {
+/// may have acknowledged. Only a `trusted` staged vault, one whose authority restore may keep,
+/// restores in place. A device that is linked now is refused before this.
+fn plan_restore(
+    active: Option<&LinkSummary>,
+    backup: &LinkSummary,
+    trusted: bool,
+) -> RestorePlacement {
     match active {
         Some(active)
-            if active.space == backup.space
+            if trusted
+                && active.space == backup.space
                 && active.other_devices == 0
                 && backup.other_devices == 0 =>
         {
@@ -209,6 +221,75 @@ fn plan_restore(active: Option<&LinkSummary>, backup: &LinkSummary) -> RestorePl
         }
         _ => RestorePlacement::IndependentCopy,
     }
+}
+
+/// Where a staged archive came from, which decides what restore may trust in it.
+#[derive(Clone, Copy, Debug)]
+enum ArchiveOrigin {
+    /// A sealed backup file; `opened_by` is the public keys of the kit that opened it, or
+    /// `None` when this installation's epoch key did. Anyone holding the recovery public key
+    /// can write a file the kit opens, so its sync state is content, never authority.
+    BackupFile {
+        space: SpaceId,
+        opened_by: Option<RecoveryPublicKeys>,
+    },
+    /// This device's own replaced-vault archive, which keeps its device rows on purpose.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    PrivateArchive,
+}
+
+impl ArchiveOrigin {
+    /// The space a backup file declares, `None` for a private archive.
+    fn space(&self) -> Option<&SpaceId> {
+        match self {
+            Self::BackupFile { space, .. } => Some(space),
+            Self::PrivateArchive => None,
+        }
+    }
+
+    /// Whether restore may keep the authority the staged vault names, given the `active` and
+    /// `staged` keys. This device wrote a private archive, so its authority is not in question.
+    fn trusts(&self, active: Option<&RestoreKeys>, staged: &RestoreKeys) -> bool {
+        match self {
+            Self::BackupFile { opened_by, .. } => {
+                active.is_some_and(|active| same_authority(active, staged, opened_by.as_ref()))
+            }
+            Self::PrivateArchive => true,
+        }
+    }
+}
+
+/// Whether a staged backup names the same authority as the active vault. Its stored kit row
+/// must hold every public key, admin and encryption, of the kit that opened it, when a kit
+/// did, and of the active vault's row, since a later founding names that admin key as the
+/// space's kit admin. Its log must name the opener's kit admin and match the active log,
+/// charter and recovery admin keys included. A file opened with an epoch key needs the
+/// active vault's whole kit row, since a removed device still holds old epoch keys.
+fn same_authority(
+    active: &RestoreKeys,
+    staged: &RestoreKeys,
+    opener: Option<&RecoveryPublicKeys>,
+) -> bool {
+    let (Some(key), Some(stored)) = (staged.recovery, staged.stored) else {
+        return false;
+    };
+    if let Some(opener) = opener {
+        if opener.encryption != key || stored != *opener {
+            return false;
+        }
+        if staged.log.is_some_and(|log| log.kit_admin != opener.admin) {
+            return false;
+        }
+    }
+    match active.stored {
+        Some(active_stored) if active_stored != stored => return false,
+        None if opener.is_none() => return false,
+        _ => {}
+    }
+    if active.recovery.is_some_and(|active_key| active_key != key) {
+        return false;
+    }
+    active.log == staged.log
 }
 
 /// The refusal a format error means, `None` for a local failure such as the random source.
@@ -266,8 +347,9 @@ impl RestoreError {
 enum Unlock {
     /// The active space's key of the backup's epoch.
     Epoch(SpaceKey),
-    /// The recovery encryption key of the kit the user entered.
-    Kit(EncryptionKeyPair),
+    /// The recovery encryption key of the kit the user entered, with every public key the kit
+    /// derives.
+    Kit(EncryptionKeyPair, RecoveryPublicKeys),
 }
 
 impl Unlock {
@@ -276,22 +358,31 @@ impl Unlock {
         if let Some(code) = kit {
             let seed =
                 RecoverySeed::parse_owned_kit_code(code).map_err(|_| BackupRefusal::InvalidKit)?;
-            return seed
+            let pair = seed
                 .recovery_encryption_key()
-                .map(Self::Kit)
-                .map_err(|_| BackupRefusal::InvalidKit);
+                .map_err(|_| BackupRefusal::InvalidKit)?;
+            let public = seed.public_keys().map_err(|_| BackupRefusal::InvalidKit)?;
+            return Ok(Self::Kit(pair, public));
         }
         epoch_key.map(Self::Epoch).ok_or(BackupRefusal::KitRequired)
     }
 
     fn with_kit(&self) -> bool {
-        matches!(self, Self::Kit(_))
+        matches!(self, Self::Kit(..))
+    }
+
+    /// The public keys of the kit, `None` for an epoch key.
+    fn opener(&self) -> Option<RecoveryPublicKeys> {
+        match self {
+            Self::Epoch(_) => None,
+            Self::Kit(_, public) => Some(*public),
+        }
     }
 
     fn open(&self, header: &BackupHeader) -> Result<FileKey, BackupError> {
         match self {
             Self::Epoch(key) => header.open_with_epoch_key(key),
-            Self::Kit(pair) => header.open_with_recovery(pair),
+            Self::Kit(pair, _) => header.open_with_recovery(pair),
         }
     }
 }
@@ -426,6 +517,8 @@ async fn blocking<T: Send + 'static>(
 struct ActiveVault {
     root: PathBuf,
     summary: LinkSummary,
+    /// The recovery key and charter its sync state names.
+    keys: RestoreKeys,
     /// Whether this device is linked now, as the link status reports it.
     linked: bool,
     /// The active space's key of the backup's epoch, when this installation holds it.
@@ -458,6 +551,7 @@ async fn active_vault_with(
         .await
         .map_err(|error| format!("open the vault database: {error}"))?;
     let summary = backup_keys::link_summary(&mut conn, &vault_id, &device_id).await?;
+    let keys = backup_keys::restore_keys(&mut conn, &vault_id).await?;
     let epoch_key = match header {
         Some(header) => {
             backup_keys::active_epoch_key(app, &mut conn, &vault_id, &header.space, header.epoch)
@@ -468,6 +562,7 @@ async fn active_vault_with(
     Ok(Some(ActiveVault {
         root,
         summary,
+        keys,
         linked: device_linked(app)?,
         epoch_key,
     }))
@@ -765,7 +860,14 @@ pub async fn vault_restore_replaced_backup(
     let result = async {
         let active = active_vault_with(&app, None).await?;
         refuse_linked_active(active.as_ref())?;
-        place_restored_backup(&app, transition, &archive, None, active.as_ref()).await
+        place_restored_backup(
+            &app,
+            transition,
+            &archive,
+            ArchiveOrigin::PrivateArchive,
+            active.as_ref(),
+        )
+        .await
     }
     .await;
     restore_outcome(result)
@@ -795,6 +897,7 @@ async fn restore_pending(
     let epoch_key = active.as_ref().and_then(|active| active.epoch_key.clone());
     let unlock = Unlock::choose(kit, epoch_key)?;
     let with_kit = unlock.with_kit();
+    let opener = unlock.opener();
     let archive = pending.transfer.join(RESTORED_ARCHIVE_FILE);
     let source = pending.source.clone();
     let decrypt_archive = archive.clone();
@@ -821,22 +924,20 @@ async fn restore_pending(
     })
     .await?
     .map_err(|error| RestoreError::from_file(error, with_kit))?;
-    place_restored_backup(
-        app,
-        transition,
-        &archive,
-        Some(&header.space),
-        active.as_ref(),
-    )
-    .await
+    let origin = ArchiveOrigin::BackupFile {
+        space: header.space,
+        opened_by: opener,
+    };
+    place_restored_backup(app, transition, &archive, origin, active.as_ref()).await
 }
 
-/// Extracts the archive into the new folder `staging` and checks that it is a whole vault and,
-/// when `expected_space` is given, a vault of that space.
+/// Extracts the archive into the new folder `staging` and checks that it is a whole vault. A
+/// backup file must be a vault of the space it declares, and its device-local rows are reset,
+/// since the file proves only that the kit or an epoch key opens it.
 async fn stage_restored_vault(
     archive: &Path,
     staging: &Path,
-    expected_space: Option<&SpaceId>,
+    origin: ArchiveOrigin,
 ) -> Result<VaultInfo, RestoreError> {
     let extract_archive = archive.to_path_buf();
     let extract_staging = staging.to_path_buf();
@@ -850,8 +951,11 @@ async fn stage_restored_vault(
     .await??;
     skipped.report("Backup restore", "outside the vault layout");
     let info = validate_restored_vault(staging).await?;
-    if expected_space.is_some_and(|space| SpaceId::personal(&info.vault_id) != *space) {
-        return Err(RestoreError::Refused(BackupRefusal::Damaged));
+    if let Some(space) = origin.space() {
+        if SpaceId::personal(&info.vault_id) != *space {
+            return Err(RestoreError::Refused(BackupRefusal::Damaged));
+        }
+        ganbaru_sync_replica::backup::prepare_snapshot_copy(&database_path(staging)).await?;
     }
     // A backup does not say whether a server wrote it, and rebuilding repeats what a desktop
     // already computed.
@@ -859,29 +963,42 @@ async fn stage_restored_vault(
     Ok(info)
 }
 
-/// The link summary of the staged vault at `staging`, as this device sees it.
+/// The link summary of the staged vault at `staging`, as this device sees it, and the
+/// authority it names.
 async fn staged_summary(
     app: &tauri::AppHandle,
     staging: &Path,
     vault_id: &str,
-) -> Result<LinkSummary, String> {
+) -> Result<(LinkSummary, RestoreKeys), String> {
     let device_id = super::ensure_device_id(app)?;
+    read_staged_state(staging, vault_id, &device_id).await
+}
+
+/// The link summary of the staged vault at `staging` seen from the device `device_id`, and
+/// the authority it names.
+async fn read_staged_state(
+    staging: &Path,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<(LinkSummary, RestoreKeys), String> {
     let registry = ganbaru_db::DatabasePoolRegistry::default();
     let pool = registry
         .connect_path_read_only(database_path(staging))
         .await?;
-    let summary = async {
+    let state = async {
         let mut conn = pool
             .acquire()
             .await
             .map_err(|error| format!("open the restored database: {error}"))?;
-        backup_keys::link_summary(&mut conn, vault_id, &device_id).await
+        let summary = backup_keys::link_summary(&mut conn, vault_id, device_id).await?;
+        let keys = backup_keys::restore_keys(&mut conn, vault_id).await?;
+        Ok::<_, String>((summary, keys))
     }
     .await;
     let closed = registry.close_all().await;
-    let summary = summary?;
+    let state = state?;
     closed?;
-    Ok(summary)
+    Ok(state)
 }
 
 /// Turns the staged vault at `staging` into an independent copy: a new vault id, so a new
@@ -1028,18 +1145,18 @@ async fn replace_active_vault(
     .await?
 }
 
-/// Places the vault archive at `archive` as this platform restores it. `expected_space` is the
-/// space a decrypted backup declares, and `None` for a replaced-vault copy kept on this device.
+/// Places the vault archive at `archive`, which came from `origin`, as this platform restores
+/// it. A staged vault whose authority restore may not keep becomes an independent copy.
 #[cfg(desktop)]
 async fn place_restored_backup(
     app: &tauri::AppHandle,
     transition: VaultTransition,
     archive: &Path,
-    expected_space: Option<&SpaceId>,
+    origin: ArchiveOrigin,
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     if let Some(active) = active
-        && expected_space == Some(&active.summary.space)
+        && origin.space() == Some(&active.summary.space)
         && active.summary.other_devices == 0
     {
         let target = &active.root;
@@ -1048,9 +1165,10 @@ async fn place_restored_backup(
         let recover_rollback = rollback.clone();
         blocking(move || recover_interrupted_restore(&recover_target, &recover_rollback)).await??;
         let staged = StagedFolder::new(&staging);
-        let info = stage_restored_vault(archive, &staging, expected_space).await?;
-        let backup = staged_summary(app, &staging, &info.vault_id).await?;
-        if plan_restore(Some(&active.summary), &backup) == RestorePlacement::InPlace {
+        let info = stage_restored_vault(archive, &staging, origin).await?;
+        let (backup, staged_keys) = staged_summary(app, &staging, &info.vault_id).await?;
+        let trusted = origin.trusts(Some(&active.keys), &staged_keys);
+        if plan_restore(Some(&active.summary), &backup, trusted) == RestorePlacement::InPlace {
             let restored = replace_active_vault(
                 app,
                 transition,
@@ -1063,7 +1181,7 @@ async fn place_restored_backup(
             return Ok((restored, RestorePlacement::InPlace));
         }
     }
-    let restored = restore_in_new_folder(app, transition, archive, expected_space).await?;
+    let restored = restore_in_new_folder(app, transition, archive, origin).await?;
     Ok((restored, RestorePlacement::IndependentCopy))
 }
 
@@ -1073,7 +1191,7 @@ async fn restore_in_new_folder(
     app: &tauri::AppHandle,
     transition: VaultTransition,
     archive: &Path,
-    expected_space: Option<&SpaceId>,
+    origin: ArchiveOrigin,
 ) -> Result<VaultInfo, RestoreError> {
     use super::backup::{is_free_folder, resolve_link_folder, vault_folder_name};
     let start_directory = super::existing_documents_directory(app);
@@ -1100,7 +1218,7 @@ async fn restore_in_new_folder(
             .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);
     let staging = staging_parent.join("vault");
-    stage_restored_vault(archive, &staging, expected_space).await?;
+    stage_restored_vault(archive, &staging, origin).await?;
     detach_restored_copy(&staging).await?;
     let (move_staging, move_target) = (staging.clone(), target.clone());
     blocking(move || {
@@ -1119,7 +1237,7 @@ async fn place_restored_backup(
     app: &tauri::AppHandle,
     transition: VaultTransition,
     archive: &Path,
-    expected_space: Option<&SpaceId>,
+    origin: ArchiveOrigin,
     active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     let target = super::default_vault_path(app)?;
@@ -1135,9 +1253,10 @@ async fn place_restored_backup(
     })
     .await??;
     let staged = StagedFolder::new(&staging);
-    let info = stage_restored_vault(archive, &staging, expected_space).await?;
-    let backup = staged_summary(app, &staging, &info.vault_id).await?;
-    let placement = plan_restore(active.map(|active| &active.summary), &backup);
+    let info = stage_restored_vault(archive, &staging, origin).await?;
+    let (backup, staged_keys) = staged_summary(app, &staging, &info.vault_id).await?;
+    let trusted = origin.trusts(active.map(|active| &active.keys), &staged_keys);
+    let placement = plan_restore(active.map(|active| &active.summary), &backup, trusted);
     let other_vault = placement == RestorePlacement::IndependentCopy;
     if other_vault {
         detach_restored_copy(&staging).await?;
@@ -1171,7 +1290,7 @@ async fn place_restored_backup(
     _app: &tauri::AppHandle,
     _transition: VaultTransition,
     _archive: &Path,
-    _expected_space: Option<&SpaceId>,
+    _origin: ArchiveOrigin,
     _active: Option<&ActiveVault>,
 ) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
     Err(RestoreError::Failed(

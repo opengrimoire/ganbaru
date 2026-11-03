@@ -215,8 +215,8 @@ async fn write_snapshot_archive(
 }
 
 /// Clears installation-local sync state and device-local rows from a snapshot copy before it
-/// leaves this device.
-async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
+/// leaves this device, or from a restored copy that arrived from elsewhere.
+pub async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
     let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
     let mut conn = SqliteConnection::connect_with(&options)
         .await

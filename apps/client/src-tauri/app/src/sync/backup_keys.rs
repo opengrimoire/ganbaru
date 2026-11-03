@@ -1,8 +1,11 @@
 //! What encrypted vault backups read from sync state: the keys a backup is sealed to, the
 //! epoch key that opens a backup of the active space, and how many other devices a space log
-//! enrolled, which decides how a backup restores.
+//! enrolled and which recovery keys and charter it names, which decide how a backup restores.
 
-use ganbaru_sync_contracts::{SpaceId, SpaceKey};
+use ganbaru_sync::local;
+use ganbaru_sync_contracts::{
+    AdminPublicKey, Digest32, EncryptionPublicKey, RecoveryPublicKeys, SpaceId, SpaceKey,
+};
 use ganbaru_sync_replica::backup::BackupSealKeys;
 use ganbaru_sync_replica::backup::seal_keys::{self, opened_space_keys, space_state};
 use sqlx::SqliteConnection;
@@ -18,6 +21,53 @@ pub(crate) struct LinkSummary {
     /// Devices other than this one that the selected log enrolled, removed ones included,
     /// since a removed device may still hold acknowledgements of the space.
     pub(crate) other_devices: usize,
+}
+
+/// The authority a vault's sync state names, which a restore compares before it places a
+/// backup in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RestoreKeys {
+    /// The recovery encryption key the selected log published, or else the vault's stored one.
+    pub(crate) recovery: Option<EncryptionPublicKey>,
+    /// The recovery kit public keys the vault stores, which a later founding names as the kit
+    /// admin, `None` without a stored kit.
+    pub(crate) stored: Option<RecoveryPublicKeys>,
+    /// The selected log's charter and recovery admin keys, `None` without a log.
+    pub(crate) log: Option<LogAuthority>,
+}
+
+/// The recovery authority a selected space log names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LogAuthority {
+    /// Hash of the charter the selected chain starts from.
+    pub(crate) charter: Digest32,
+    /// The admin key the printed recovery kit derives.
+    pub(crate) kit_admin: AdminPublicKey,
+    /// The recovery admin key the selected chain names.
+    pub(crate) recovery_admin: AdminPublicKey,
+}
+
+/// The authority the vault `vault_id` whose database `conn` opens names.
+pub(crate) async fn restore_keys(
+    conn: &mut SqliteConnection,
+    vault_id: &str,
+) -> Result<RestoreKeys, String> {
+    let log = space_state(conn, vault_id)
+        .await?
+        .map(|(_, view)| LogAuthority {
+            charter: view.charter,
+            kit_admin: view.kit_admin_key,
+            recovery_admin: view.recovery_admin_key,
+        });
+    let recovery = seal_keys::selected_recovery_key(conn, vault_id).await?;
+    let stored = local::recovery_kit_keys(conn)
+        .await
+        .map_err(|error| format!("read the recovery kit keys: {error}"))?;
+    Ok(RestoreKeys {
+        recovery,
+        stored,
+        log,
+    })
 }
 
 /// The link summary of the vault `vault_id` whose database `conn` opens, seen from the device

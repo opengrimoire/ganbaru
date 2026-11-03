@@ -30,6 +30,7 @@ use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::provenance::row_creating_devices;
 use crate::{HoldReason, LateChange, LateKind, StoreOutcome, SyncError};
+use crate::{hydrate, log};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
 const EDITED_AT: &str = "2027-01-02T00:00:00.000Z";
@@ -987,8 +988,8 @@ fn a_late_create_of_an_honestly_created_never_deleted_row_keeps_it() {
             assert_eq!(
                 late_rows(replica).await,
                 vec![
-                    (SETTINGS_KEY.to_owned(), LateKind::Created),
-                    (PARTICIPANT.to_owned(), LateKind::Created),
+                    (SETTINGS_KEY.to_owned(), LateKind::Values),
+                    (PARTICIPANT.to_owned(), LateKind::Values),
                 ]
             );
         }
@@ -1039,6 +1040,292 @@ fn a_late_create_of_an_honestly_created_never_deleted_row_keeps_it() {
         deliver(&mut honest, &mut anchor).await;
         for replica in [&mut anchor, &mut honest] {
             survives(replica).await;
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// The color a late create writes, unlike the default.
+const LATE_COLOR: i64 = 5;
+/// A note only the removed device creates.
+const LATE_CREATED: &str = "note-late";
+
+/// The anchor, a device removed after its first operation, and an honest member that created
+/// `note-kept`, which every replica knows, with the removal revision.
+async fn removed_after_honest_row(salt: u64) -> (Replica, Replica, Replica, u64) {
+    let (mut anchor, mut removed, mut honest) = trio(salt).await;
+    edit(&mut honest, &note("note-kept", "Draft", 0)).await;
+    spread(&mut anchor, &mut honest).await;
+    deliver(&mut removed, &mut honest).await;
+    edit(&mut removed, &note("note-early", "Early", 1)).await;
+    deliver(&mut anchor, &mut removed).await;
+    deliver(&mut honest, &mut anchor).await;
+    let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
+    deliver(&mut honest, &mut anchor).await;
+    (anchor, removed, honest, removal)
+}
+
+/// A Create of `row` past the removed device's cutoff, built from the honest create of
+/// `note-kept`, with the title `Late` and another color.
+async fn late_create(removed: &mut Replica, honest: &mut Replica, row: &str) -> Vec<u8> {
+    let mut create = sealed_create(honest, NOTES_TABLE, "note-kept").await;
+    create.row = RowKey::new(row).unwrap();
+    let create = with_group(create, note_group::TITLE, vec![text_field("Late")]);
+    let create = with_group(create, note_group::COLOR, vec![Field::Integer(LATE_COLOR)]);
+    forge_change(removed, create).await
+}
+
+/// Stores `forged` on every replica in `replicas` and applies it.
+async fn take_late(replicas: [&mut Replica; 2], forged: &[u8]) {
+    for replica in replicas {
+        replica.receive(&[forged.to_vec()]).await;
+        replica.apply_all().await.unwrap();
+    }
+}
+
+/// Sequences `resolution` of the late change of `row` from the anchor and spreads it.
+async fn decide(
+    anchor: &mut Replica,
+    honest: &mut Replica,
+    removal: u64,
+    row: &str,
+    resolution: LateResolution,
+) {
+    if resolution == LateResolution::Restore {
+        let late = late_changes(anchor)
+            .await
+            .into_iter()
+            .find(|late| late.row_key == row)
+            .expect("the late change is listed");
+        anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &late,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap();
+    }
+    anchor
+        .sequence(Entry::ResolveLate(ResolveLate {
+            removal_revision: removal,
+            rows: vec![LateRow {
+                table: NOTES_TABLE,
+                row: RowKey::new(row).unwrap(),
+                resolution,
+            }],
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+    anchor.apply_all().await.unwrap();
+    deliver(honest, anchor).await;
+}
+
+/// The color a replica shows for a note.
+async fn color(replica: &mut Replica, id: &str) -> Option<String> {
+    replica
+        .scalar_text(&format!(
+            "SELECT CAST(color AS TEXT) FROM quick_notes WHERE id = {}",
+            quoted(id)
+        ))
+        .await
+}
+
+/// A removed device signs a Create of a row an honest member created, past its cutoff: the
+/// honest row stays on every replica and the late change lists as values.
+#[test]
+fn excluded_create_leaves_an_honest_row_visible() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest, _) = removed_after_honest_row(240).await;
+        let forged = late_create(&mut removed, &mut honest, "note-kept").await;
+        take_late([&mut anchor, &mut honest], &forged).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                title(replica, "note-kept").await.as_deref(),
+                Some("Draft"),
+                "replica {} hid the honest row",
+                replica.index
+            );
+            assert_eq!(
+                late_rows(replica).await,
+                vec![("note-kept".to_owned(), LateKind::Values)]
+            );
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// Discarding a late Create of an honestly created row keeps the row, also after a later
+/// honest edit.
+#[test]
+fn discarding_an_excluded_create_keeps_the_honest_row() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest, removal) = removed_after_honest_row(241).await;
+        let forged = late_create(&mut removed, &mut honest, "note-kept").await;
+        take_late([&mut anchor, &mut honest], &forged).await;
+        decide(
+            &mut anchor,
+            &mut honest,
+            removal,
+            "note-kept",
+            LateResolution::Discard,
+        )
+        .await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                title(replica, "note-kept").await.as_deref(),
+                Some("Draft"),
+                "replica {} lost the honest row",
+                replica.index
+            );
+            assert!(late_changes(replica).await.is_empty());
+        }
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Edited' WHERE id = 'note-kept';",
+        )
+        .await;
+        spread(&mut anchor, &mut honest).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Edited"));
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// Restoring a late Create of an honestly created row writes it as values: a group an honest
+/// edit wrote later keeps the honest value, and a group it did not touch takes the late value.
+#[test]
+fn excluded_create_restores_as_values_below_honest_edits() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest, removal) = removed_after_honest_row(242).await;
+        let forged = late_create(&mut removed, &mut honest, "note-kept").await;
+        honest.now_ms += 10_000;
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Edited' WHERE id = 'note-kept';",
+        )
+        .await;
+        spread(&mut anchor, &mut honest).await;
+        take_late([&mut anchor, &mut honest], &forged).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                title(replica, "note-kept").await.as_deref(),
+                Some("Edited"),
+                "replica {} hid the honest row before the decision",
+                replica.index
+            );
+        }
+        anchor.now_ms += 20_000;
+        decide(
+            &mut anchor,
+            &mut honest,
+            removal,
+            "note-kept",
+            LateResolution::Restore,
+        )
+        .await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                title(replica, "note-kept").await.as_deref(),
+                Some("Edited"),
+                "replica {} lost the honest title",
+                replica.index
+            );
+            assert_eq!(
+                color(replica, "note-kept").await,
+                Some(LATE_COLOR.to_string()),
+                "replica {} left out the late color",
+                replica.index
+            );
+            assert!(late_changes(replica).await.is_empty());
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// A row only the removed device created stays hidden as a late create: Restore brings it back
+/// and Discard keeps it gone.
+#[test]
+fn late_row_without_honest_creation_stays_hidden() {
+    block_on(async {
+        for (salt, resolution, shown) in [
+            (243, LateResolution::Restore, Some("Late")),
+            (244, LateResolution::Discard, None),
+        ] {
+            let (mut anchor, mut removed, mut honest, removal) =
+                removed_after_honest_row(salt).await;
+            let forged = late_create(&mut removed, &mut honest, LATE_CREATED).await;
+            take_late([&mut anchor, &mut honest], &forged).await;
+            for replica in [&mut anchor, &mut honest] {
+                assert_eq!(title(replica, LATE_CREATED).await, None);
+                assert_eq!(
+                    late_rows(replica).await,
+                    vec![(LATE_CREATED.to_owned(), LateKind::Created)]
+                );
+            }
+            decide(&mut anchor, &mut honest, removal, LATE_CREATED, resolution).await;
+            for replica in [&mut anchor, &mut honest] {
+                assert_eq!(
+                    title(replica, LATE_CREATED).await.as_deref(),
+                    shown,
+                    "{resolution:?} on replica {}",
+                    replica.index
+                );
+                assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Draft"));
+                replica.check_invariants().await;
+            }
+        }
+    });
+}
+
+/// A late value whose clock runs far ahead of the removal does not beat an honest edit sealed
+/// after the removal entry by a device that had not seen it yet.
+#[test]
+fn restore_caps_a_forged_late_clock_at_the_removal() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(245).await;
+        edit(&mut honest, &note("note-kept", "Draft", 0)).await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        edit(&mut removed, &note("note-early", "Early", 1)).await;
+        deliver(&mut anchor, &mut removed).await;
+        deliver(&mut honest, &mut anchor).await;
+        let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
+
+        honest.now_ms += 10_000;
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Honest' WHERE id = 'note-kept';",
+        )
+        .await;
+        removed.now_ms += 24 * 3_600_000;
+        let forged = forge_change(&mut removed, title_write("note-kept", text_field("Late"))).await;
+        spread(&mut anchor, &mut honest).await;
+        take_late([&mut anchor, &mut honest], &forged).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Honest"));
+        }
+        anchor.now_ms += 20_000;
+        decide(
+            &mut anchor,
+            &mut honest,
+            removal,
+            "note-kept",
+            LateResolution::Restore,
+        )
+        .await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(
+                title(replica, "note-kept").await.as_deref(),
+                Some("Honest"),
+                "replica {} let a forged late clock win",
+                replica.index
+            );
             replica.check_invariants().await;
         }
     });
@@ -1608,10 +1895,12 @@ async fn take(replica: &mut Replica, operations: &[Vec<u8>]) {
 }
 
 /// The creation times of the versions `replica` holds for [`HELD_NOTE`], sorted. They come from
-/// the merge state, since a row a late create started stays hidden until an admin restores it.
+/// the merge state, so they include versions of a hidden row and versions a visible row elides
+/// in favor of its domain row.
 async fn held_versions(replica: &mut Replica) -> Vec<String> {
-    let values: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT value FROM sync_register_versions
+    type StoredVersion = (Vec<u8>, i64, Vec<u8>, Option<Vec<u8>>);
+    let versions: Vec<StoredVersion> = sqlx::query_as(
+        "SELECT writer_id, seq, value_hash, value FROM sync_register_versions
          WHERE table_id = ? AND row_key = ? AND group_id = ?",
     )
     .bind(i64::from(NOTES_TABLE.0))
@@ -1620,13 +1909,29 @@ async fn held_versions(replica: &mut Replica) -> Vec<String> {
     .fetch_all(&mut replica.conn)
     .await
     .unwrap();
-    let mut times: Vec<String> = values
-        .iter()
-        .map(|value| match Value::decode(value).unwrap().fields() {
-            [Field::Text(text)] => text.clone(),
+    let table = replica.engine.manifest().table(NOTES_TABLE).unwrap();
+    let mut times = Vec::new();
+    for (writer, seq, hash, value) in versions {
+        let value = match value {
+            Some(value) => Value::decode(&value).unwrap(),
+            None => hydrate::elided_value(
+                &replica.engine,
+                &mut replica.conn,
+                table,
+                HELD_NOTE,
+                note_group::CREATED,
+                log::writer_id(&writer).unwrap(),
+                u64::try_from(seq).unwrap(),
+                &log::digest(&hash).unwrap(),
+            )
+            .await
+            .unwrap(),
+        };
+        match value.fields() {
+            [Field::Text(text)] => times.push(text.clone()),
             fields => panic!("a creation value holds one text field, not {fields:?}"),
-        })
-        .collect();
+        }
+    }
     times.sort();
     times
 }

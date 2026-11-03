@@ -15,8 +15,8 @@ use super::{
 };
 #[cfg(desktop)]
 use crate::chat::device_state::{
-    ChatDeviceScope, assignment_is_accepted, forget_assignment_acceptance,
-    read_active_device_scope, record_assignment_acceptance, update_active_device_scope,
+    ChatDeviceScope, forget_scheduled_message_consent, read_active_device_scope,
+    record_scheduled_message_consent, scheduled_message_is_consented, update_active_device_scope,
 };
 #[cfg(desktop)]
 use crate::chat::settings::device_state_error;
@@ -151,10 +151,11 @@ pub(super) async fn schedule_message(
         )
         .await?;
     }
-    // Recorded before the commit makes the message due, so its dispatch sees the consent.
+    transaction.commit().await.map_err(persistence_error)?;
+    // Recorded once the row exists, so a sweep of consents without a message cannot drop it. The
+    // message is due no sooner than the minimum lead, so its dispatch sees the consent.
     #[cfg(desktop)]
     record_scheduled_consent(&app, &request.scheduled_message_id, &serialized);
-    transaction.commit().await.map_err(persistence_error)?;
     read_scheduled_message(&pool, &request.scheduled_message_id).await
 }
 
@@ -169,7 +170,12 @@ fn record_scheduled_consent(
     let digest = scheduled_consent_digest(scheduled_message_id.as_str(), request_data);
     let recorded = now_timestamp().and_then(|now| {
         update_active_device_scope(app, |scope| {
-            record_assignment_acceptance(scope, digest, now);
+            record_scheduled_message_consent(
+                scope,
+                scheduled_message_id.as_str().to_owned(),
+                digest,
+                now,
+            );
             Ok(())
         })
         .map_err(device_state_error)
@@ -182,8 +188,8 @@ fn record_scheduled_consent(
     }
 }
 
-/// Drops the consent to `request_data` once `scheduled_message_id` posted it. A consent that
-/// outlives its message matches nothing, so a failure leaves only an unused entry.
+/// Drops the consent to `request_data` once `scheduled_message_id` posted or was cancelled here.
+/// A failure leaves an entry that the next sweep of consents without a message drops.
 #[cfg(desktop)]
 fn forget_scheduled_consent(
     app: &tauri::AppHandle,
@@ -192,7 +198,7 @@ fn forget_scheduled_consent(
 ) {
     let digest = scheduled_consent_digest(scheduled_message_id.as_str(), request_data);
     let forgotten = update_active_device_scope(app, |scope| {
-        forget_assignment_acceptance(scope, &digest);
+        forget_scheduled_message_consent(scope, scheduled_message_id.as_str(), &digest);
         Ok(())
     });
     if let Err(error) = forgotten {
@@ -212,7 +218,7 @@ pub(super) fn scheduled_consent_in(
     request_data: &str,
 ) -> ScheduledConsent {
     let digest = scheduled_consent_digest(scheduled_message_id.as_str(), request_data);
-    if assignment_is_accepted(scope, &digest) {
+    if scheduled_message_is_consented(scope, scheduled_message_id.as_str(), &digest) {
         ScheduledConsent::Local
     } else {
         ScheduledConsent::Unattended
@@ -235,6 +241,62 @@ fn read_scheduled_consent(
             );
             ScheduledConsent::Unattended
         }
+    }
+}
+
+/// The scheduled messages `scope` holds consent for that no longer exist here, with the digest
+/// each consent was given for.
+#[cfg(desktop)]
+pub(super) async fn scheduled_consents_without_a_row(
+    pool: &SqlitePool,
+    scope: &ChatDeviceScope,
+) -> ChatResult<Vec<(String, String)>> {
+    if scope.scheduled_message_consents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids = serde_json::to_string(&scope.scheduled_message_consents.keys().collect::<Vec<_>>())
+        .map_err(serialization_error)?;
+    let missing = sqlx::query_scalar::<_, String>(
+        "SELECT consent.value FROM json_each(?) consent
+         WHERE NOT EXISTS (
+           SELECT 1 FROM chat_scheduled_messages scheduled WHERE scheduled.id = consent.value
+         )",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(missing
+        .into_iter()
+        .filter_map(|id| {
+            let digest = scope.scheduled_message_consents.get(&id)?.digest.clone();
+            Some((id, digest))
+        })
+        .collect())
+}
+
+/// Drops this device's consents to scheduled messages that were posted, cancelled, or deleted
+/// elsewhere, so consent never outlives its message. A failure keeps the consents until the next
+/// sweep; each still covers only its own message and request.
+#[cfg(desktop)]
+async fn sweep_scheduled_consents(app: &tauri::AppHandle, pool: &SqlitePool) {
+    let swept = async {
+        let scope = read_active_device_scope(app).map_err(device_state_error)?;
+        let stale = scheduled_consents_without_a_row(pool, &scope).await?;
+        if stale.is_empty() {
+            return Ok(());
+        }
+        update_active_device_scope(app, |scope| {
+            for (scheduled_message_id, digest) in &stale {
+                forget_scheduled_message_consent(scope, scheduled_message_id, digest);
+            }
+            Ok(())
+        })
+        .map_err(device_state_error)
+    }
+    .await;
+    if let Err(error) = swept {
+        eprintln!("Consents to removed scheduled messages were not swept: {error}");
     }
 }
 
@@ -462,7 +524,7 @@ pub(super) async fn cancel_scheduled_message(
     db_url: String,
     scheduled_message_id: ChatScheduledMessageId,
 ) -> ChatResult<()> {
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url).await?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let attachment_ids = sqlx::query_scalar::<_, String>(
@@ -473,18 +535,19 @@ pub(super) async fn cancel_scheduled_message(
     .fetch_all(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    let deleted = sqlx::query(
+    let deleted_request = sqlx::query_scalar::<_, String>(
         "DELETE FROM chat_scheduled_messages
          WHERE id = ?1 AND NOT EXISTS (
            SELECT 1 FROM chat_scheduled_message_dispatch dispatch
            WHERE dispatch.scheduled_message_id = ?1 AND dispatch.claim_token IS NOT NULL
-         )",
+         )
+         RETURNING request_data",
     )
     .bind(scheduled_message_id.as_str())
-    .execute(&mut *transaction)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(persistence_error)?;
-    if deleted.rows_affected() != 1 {
+    let Some(deleted_request) = deleted_request else {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_scheduled_messages WHERE id = ?)")
                 .bind(scheduled_message_id.as_str())
@@ -496,11 +559,16 @@ pub(super) async fn cancel_scheduled_message(
         } else {
             scheduled_not_found()
         });
-    }
+    };
     for attachment_id in attachment_ids {
         mark_attachment_unreferenced_if_unused(&mut transaction, &attachment_id, &now).await?;
     }
-    transaction.commit().await.map_err(persistence_error)
+    transaction.commit().await.map_err(persistence_error)?;
+    #[cfg(desktop)]
+    forget_scheduled_consent(&app, &scheduled_message_id, &deleted_request);
+    #[cfg(mobile)]
+    let _ = (app, deleted_request);
+    Ok(())
 }
 
 /// Refuses work on the scheduled message `scheduled_message_id` unless the device `device_id`
@@ -822,6 +890,8 @@ pub(super) async fn dispatch_due_scheduled_messages(
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
     prepare_scheduled_dispatch(&pool, &device_id, &now).await?;
+    #[cfg(desktop)]
+    sweep_scheduled_consents(&app, &pool).await;
     let ids = sqlx::query_scalar::<_, String>(
         "SELECT scheduled.id
          FROM chat_scheduled_message_dispatch dispatch

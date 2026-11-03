@@ -6,13 +6,14 @@ use super::common::{
 use super::scheduling::{
     SCHEDULED_REQUEST_MISMATCH_REASON, ScheduledRowBinding,
     claim_scheduled_message_for_immediate_send, insert_scheduled_reference,
-    refuse_mismatched_request, scheduled_consent_in, scheduled_reference_target,
-    scheduled_request_mismatch, validate_scheduled_for,
+    refuse_mismatched_request, scheduled_consent_in, scheduled_consents_without_a_row,
+    scheduled_reference_target, scheduled_request_mismatch, validate_scheduled_for,
 };
 use super::workflow::{has_authority_bearing_references, require_continuation_scope_is_unchanged};
 use super::*;
 use crate::chat::device_state::{
-    ChatDeviceScope, forget_assignment_acceptance, record_assignment_acceptance,
+    ChatDeviceScope, forget_scheduled_message_consent, record_assignment_acceptance,
+    record_scheduled_message_consent,
 };
 use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
 use serde_json::json;
@@ -1030,8 +1031,9 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         ScheduledConsent::Unattended
     );
 
-    record_assignment_acceptance(
+    record_scheduled_message_consent(
         &mut scope,
+        id.as_str().to_owned(),
         scheduled_consent_digest(id.as_str(), "request"),
         now,
     );
@@ -1039,6 +1041,10 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
     assert_eq!(
         scheduled_consent_in(&scope, &id, "request"),
         ScheduledConsent::Local
+    );
+    assert!(
+        scope.assignment_acceptances.is_empty(),
+        "a scheduled consent took an assignment acceptance slot"
     );
     assert_eq!(
         scheduled_consent_in(&scope, &id, "rewritten request"),
@@ -1051,8 +1057,19 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         "the consent reached another message"
     );
 
-    forget_assignment_acceptance(
+    forget_scheduled_message_consent(
         &mut scope,
+        id.as_str(),
+        &scheduled_consent_digest(id.as_str(), "rewritten request"),
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Local,
+        "forgetting another request dropped the consent"
+    );
+    forget_scheduled_message_consent(
+        &mut scope,
+        id.as_str(),
         &scheduled_consent_digest(id.as_str(), "request"),
     );
 
@@ -1060,6 +1077,38 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         scheduled_consent_in(&scope, &id, "request"),
         ScheduledConsent::Unattended
     );
+}
+
+#[test]
+fn scheduled_consent_to_a_message_that_is_gone_is_swept() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, pending) = claim_scheduled_mention(&pool, &now).await;
+        let request_data = serde_json::to_string(&request).unwrap();
+        let mut scope = ChatDeviceScope::default();
+        for id in [pending.as_str(), "scheduled:cancelled"] {
+            record_scheduled_message_consent(
+                &mut scope,
+                id.to_owned(),
+                scheduled_consent_digest(id, &request_data),
+                now.clone(),
+            );
+        }
+
+        let stale = scheduled_consents_without_a_row(&pool, &scope)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stale,
+            vec![(
+                "scheduled:cancelled".to_owned(),
+                scheduled_consent_digest("scheduled:cancelled", &request_data)
+            )],
+            "consent to a message that no longer exists was kept"
+        );
+    });
 }
 
 #[test]

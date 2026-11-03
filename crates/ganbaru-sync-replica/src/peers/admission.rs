@@ -78,8 +78,10 @@ impl MemberRefusal {
     }
 
     /// Whether the refused peer may ask again later and be answered.
+    /// That holds for a hold, which ends with its contest, and for an unreadable admission;
+    /// every other refusal stands until the log or the request changes.
     pub fn retryable(self) -> bool {
-        false
+        matches!(self, Self::Held | Self::Unavailable)
     }
 }
 
@@ -188,9 +190,9 @@ impl MemberAdmission {
     }
 
     /// Whether a connection whose certificate has `fingerprint` may receive a snapshot copy of
-    /// `vault_id` for `device_id`: only a device the selected log enrolled and did not remove,
-    /// that this installation did not quarantine, asking for itself in this vault. A removed
-    /// device gets no copy, unlike record exchange.
+    /// `vault_id` for `device_id`: only a device the selected log enrolled, did not remove, and
+    /// does not hold, that this installation did not quarantine, asking for itself in this vault.
+    /// A removed or held device gets no copy, unlike record exchange.
     pub fn bootstrap(
         &self,
         fingerprint: &str,
@@ -203,6 +205,9 @@ impl MemberAdmission {
         }
         if device_id != enrolled {
             return Err(MemberRefusal::DeviceMismatch);
+        }
+        if self.is_held(fingerprint) {
+            return Err(MemberRefusal::Held);
         }
         Ok(())
     }

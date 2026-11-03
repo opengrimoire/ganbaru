@@ -1,8 +1,8 @@
 //! Snapshot copies a member desktop or anchor server serves on its sync listener: the first copy
 //! of a device that links, or a fresh copy for a device that fell behind compaction.
 //!
-//! Only a device the selected log enrolled and did not remove, and that this installation did
-//! not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
+//! Only a device the selected log enrolled, did not remove, and does not hold, and that this
+//! installation did not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
 
 use super::{Peer, Routes, ServerStream, send_error, timeout_control};
 use crate::peers::admission::{MemberAdmission, MemberRefusal};
@@ -451,7 +451,13 @@ async fn refuse<W>(stream: &mut W, refusal: MemberRefusal) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    send_error(stream, refusal.code(), refusal.describe(), false).await?;
+    send_error(
+        stream,
+        refusal.code(),
+        refusal.describe(),
+        refusal.retryable(),
+    )
+    .await?;
     Err(format!("refused: {}", refusal.code()))
 }
 
@@ -497,10 +503,7 @@ mod tests {
     async fn held_refusal_reaches_the_receiver_as_retryable() {
         // A contest that resolves in the device's favor lifts the hold, so the copy is asked
         // again then; a removal is final.
-        for (refusal, expected) in [
-            (MemberRefusal::Held, true),
-            (MemberRefusal::Removed, false),
-        ] {
+        for (refusal, expected) in [(MemberRefusal::Held, true), (MemberRefusal::Removed, false)] {
             match refused_reply(refusal).await {
                 ControlMessage::Error {
                     code, retryable, ..

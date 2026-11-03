@@ -151,11 +151,8 @@ fn held_device_is_refused_a_snapshot_copy() {
         held: true,
         ..device(2, false)
     };
-    let admission = MemberAdmission::new(
-        VAULT,
-        &view(vec![device(1, false), held]),
-        &BTreeSet::new(),
-    );
+    let admission =
+        MemberAdmission::new(VAULT, &view(vec![device(1, false), held]), &BTreeSet::new());
     let fingerprint = fingerprint_hex(&[2; 32]);
 
     assert!(admission.is_held(&fingerprint));

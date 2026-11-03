@@ -1732,6 +1732,41 @@ fn rotate_recovery_kit_refuses_a_code_that_is_not_the_lineage_key() {
 }
 
 #[test]
+fn log_names_kit_follows_a_rotation() {
+    block_on(async {
+        let (mut hub_replica, laptop) = linked_space("names-kit-rotation").await;
+        let old_code = hub_recovery_seed().kit_code();
+        let old_kit = authority::kit_public_keys(&old_code).expect("old kit keys");
+        assert!(authority::log_names_kit(
+            &view_of(&hub_replica).await,
+            &old_kit
+        ));
+
+        let (seed, proposals) =
+            rotate_with(&laptop, &view_of(&laptop).await, &old_code).expect("rotate");
+        for proposal in &proposals {
+            sequence_here(&mut hub_replica, proposal).await;
+        }
+        let view = view_of(&hub_replica).await;
+        let new_kit = authority::kit_public_keys(&seed.kit_code()).expect("new kit keys");
+        assert!(
+            authority::log_names_kit(&view, &new_kit),
+            "the rotated log names the new kit"
+        );
+        assert!(
+            !authority::log_names_kit(&view, &old_kit),
+            "a rotation retires the old kit"
+        );
+        let stranger = RecoverySeed::from_bytes([72; 32])
+            .public_keys()
+            .expect("stranger keys");
+        assert!(!authority::log_names_kit(&view, &stranger));
+        hub_replica.close().await;
+        laptop.close().await;
+    });
+}
+
+#[test]
 fn rotate_recovery_kit_racing_rotations_never_mix_two_kits() {
     block_on(async {
         let (mut hub_replica, laptop) = linked_space("rotate-race").await;

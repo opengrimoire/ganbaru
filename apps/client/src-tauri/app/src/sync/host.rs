@@ -20,6 +20,8 @@ use ganbaru_handoff::pairing::{CoordinatorPin, PinnedCharter};
 use ganbaru_handoff::protocol::decode_sync_charter;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks, SpaceContext};
+#[cfg(desktop)]
+use ganbaru_sync_contracts::{AdminPublicKey, RecoveryPublicKeys};
 use ganbaru_sync_contracts::{SignedCharter, SpaceId};
 use ganbaru_sync_replica::assets::AssetStore;
 use ganbaru_sync_replica::recovery::RecoveryRestorers;
@@ -204,6 +206,121 @@ pub(crate) async fn prepare_staged_copy<R: Runtime>(
     verify_staged_copy(app, staging, vault_id, pinned).await?;
     if derived_state_stale {
         rebuild_staged_vault(staging).await?;
+    }
+    Ok(())
+}
+
+/// Refusal of a recovery kit that does not belong to the vault a server runs. The webview maps
+/// it to a localized message, so the text is stable.
+#[cfg(desktop)]
+pub(crate) const RECOVERY_KIT_MISMATCH: &str =
+    "this recovery kit does not belong to the vault on this server";
+
+/// The two admin keys the server answered before the kit's public key left this device.
+#[cfg(desktop)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AnsweredKitKeys {
+    pub kit_admin_key: AdminPublicKey,
+    pub recovery_admin_key: AdminPublicKey,
+}
+
+/// What a recovered copy must prove before it activates.
+#[cfg(desktop)]
+#[derive(Clone, Debug)]
+pub(crate) struct RecoveryBinding {
+    pub charter: SignedCharter,
+    pub person_key: PersonPublicKey,
+    pub kit: RecoveryPublicKeys,
+    pub answered: AnsweredKitKeys,
+}
+
+/// Why a recovered copy did not prove it belongs to the kit.
+#[cfg(desktop)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RecoveredCopyError {
+    /// The staged charter differs, no authorization log survives verification, or the log does
+    /// not name the kit through a key the server answered.
+    Mismatch,
+    /// I/O and SQLite errors, which say nothing about the kit.
+    Failed(String),
+}
+
+/// Verifies the recovered copy of `vault_id` staged at `staging` against `binding`: its log must
+/// verify under the charter the recovery enrolled under and name the kit through a key the
+/// server answered, the kit key as the kit key or the recovery key as the recovery key. A server
+/// that learned the kit's admin key from the enrollment cannot move it into the other slot of
+/// a log it forged.
+#[cfg(desktop)]
+pub(crate) async fn verify_recovered_copy(
+    staging: &std::path::Path,
+    vault_id: &str,
+    binding: &RecoveryBinding,
+) -> Result<(), RecoveredCopyError> {
+    use sqlx::Connection;
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(staging.join(crate::vault::APP_SQLITE_FILE))
+        .foreign_keys(true);
+    let mut conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|error| RecoveredCopyError::Failed(format!("open the recovered copy: {error}")))?;
+    let verified = verify_recovered_log(&mut conn, vault_id, binding).await;
+    let closed = conn
+        .close()
+        .await
+        .map_err(|error| RecoveredCopyError::Failed(format!("close the recovered copy: {error}")));
+    verified?;
+    closed
+}
+
+/// Checks the open recovered copy `conn` of `vault_id`, see [`verify_recovered_copy`].
+#[cfg(desktop)]
+async fn verify_recovered_log(
+    conn: &mut sqlx::SqliteConnection,
+    vault_id: &str,
+    binding: &RecoveryBinding,
+) -> Result<(), RecoveredCopyError> {
+    // A file that does not read as SQLite says nothing about the kit, and the engine would
+    // report it as a charter mismatch.
+    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sqlite_master")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|error| RecoveredCopyError::Failed(format!("read the recovered copy: {error}")))?;
+    let ctx = SpaceContext {
+        space: SpaceId::personal(vault_id),
+        person_key: binding.person_key,
+    };
+    let now_ms = super::now_ms().map_err(RecoveredCopyError::Failed)?;
+    let engine = Engine::vault();
+    match engine
+        .reverify_staged_authorization(conn, None, &ctx, &binding.charter, now_ms)
+        .await
+    {
+        Ok(_) => {}
+        Err(ganbaru_sync::SyncError::InvalidCharter | ganbaru_sync::SyncError::SnapshotCharter) => {
+            return Err(RecoveredCopyError::Mismatch);
+        }
+        Err(error) => {
+            return Err(RecoveredCopyError::Failed(format!(
+                "verify the recovered copy's sync log: {error}"
+            )));
+        }
+    }
+    let view = engine
+        .authorization(conn, &ctx)
+        .await
+        .map_err(|error| {
+            RecoveredCopyError::Failed(format!("read the recovered copy's sync log: {error}"))
+        })?
+        .ok_or(RecoveredCopyError::Mismatch)?;
+    let kit = binding.kit.admin;
+    let answered = &binding.answered;
+    let paired = (view.kit_admin_key == kit && answered.kit_admin_key == kit)
+        || (view.recovery_admin_key == kit && answered.recovery_admin_key == kit);
+    if view.charter != binding.charter.hash()
+        || !ganbaru_sync_replica::authority::log_names_kit(&view, &binding.kit)
+        || !paired
+    {
+        return Err(RecoveredCopyError::Mismatch);
     }
     Ok(())
 }

@@ -89,6 +89,10 @@ pub struct AnchorSpace {
     pub charter: String,
     /// Base64url person public key.
     pub person_key: String,
+    /// Base64url admin key of the kit that holds the lineage, which only a rotation replaces.
+    pub kit_admin_key: String,
+    /// Base64url recovery admin key the anchor admits.
+    pub recovery_admin_key: String,
 }
 
 impl AnchorSpace {
@@ -96,7 +100,9 @@ impl AnchorSpace {
     /// vault with [`crate::pairing::PinnedCharter::verify`].
     pub fn validate(&self) -> Result<(), String> {
         super::validate_identifier("vault id", &self.vault_id)?;
-        super::decode_sync_charter(&self.charter, &self.person_key).map(drop)
+        super::decode_sync_charter(&self.charter, &self.person_key)?;
+        super::decode_sync_admin_key(&self.kit_admin_key)?;
+        super::decode_sync_admin_key(&self.recovery_admin_key).map(drop)
     }
 }
 
@@ -226,5 +232,54 @@ mod tests {
         assert!(!verify_anchor_setup_proof(
             &secret, &[2; 32], &[3; 32], &[6; 32], &proof
         ));
+    }
+
+    fn space(kit_admin_key: String, recovery_admin_key: String) -> AnchorSpace {
+        let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).unwrap();
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).unwrap();
+        let charter = ganbaru_sync_contracts::sign_charter(
+            &ganbaru_sync_contracts::Charter {
+                space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+                anchor_device_id: "device-server".to_string(),
+                anchor_device_key: ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32]),
+                anchor_tls_fingerprint: [6; 32],
+                anchor_admin_key: admin.public_key(),
+                recovery_admin_key: admin.public_key(),
+                discovery_key: [7; 32],
+                created_at_ms: 1,
+            },
+            &person,
+        )
+        .unwrap();
+        AnchorSpace {
+            vault_id: "vault-1".to_string(),
+            charter: super::super::encode_sync_charter(&charter),
+            person_key: person.public_key().to_text(),
+            kit_admin_key,
+            recovery_admin_key,
+        }
+    }
+
+    #[test]
+    fn anchor_space_decodes_the_kit_keys() {
+        let kit = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[11; 32]).unwrap();
+        let recovery = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[12; 32]).unwrap();
+        let kit = super::super::encode_sync_admin_key(&kit.public_key());
+        let recovery = super::super::encode_sync_admin_key(&recovery.public_key());
+        assert_eq!(space(kit.clone(), recovery.clone()).validate(), Ok(()));
+        for malformed in ["", "not base64!", "AAAA"] {
+            assert!(
+                space(malformed.to_string(), recovery.clone())
+                    .validate()
+                    .is_err(),
+                "a malformed kit admin key {malformed:?} is refused"
+            );
+            assert!(
+                space(kit.clone(), malformed.to_string())
+                    .validate()
+                    .is_err(),
+                "a malformed recovery admin key {malformed:?} is refused"
+            );
+        }
     }
 }

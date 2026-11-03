@@ -420,14 +420,14 @@ async fn receive(
 /// Copies the vault a new desktop just recovered through its server into a new folder and opens
 /// it. The recovery enrolled this desktop, so the server admits it without a coordinator pin. A
 /// copy is settled once it opens, so an unanswered acknowledgement only leaves the server to
-/// release its reservation when it expires. The copy is verified against `trust`, the charter
-/// the recovery enrolled under.
+/// release its reservation when it expires. The copy is verified against `binding`: the charter
+/// the recovery enrolled under and the kit keys the server answered.
 #[cfg(desktop)]
 pub(crate) async fn receive_recovered(
     app: tauri::AppHandle,
     target: ganbaru_sync_replica::anchor_link::ServerTarget,
     vault_id: String,
-    trust: crate::sync::CharterTrust,
+    binding: crate::sync::RecoveryBinding,
 ) -> Result<ReceiveOutcome, String> {
     let lifecycle = app.state::<ReceiverLifecycle>();
     let Ok(_operation) = lifecycle.operation.try_lock() else {
@@ -439,7 +439,7 @@ pub(crate) async fn receive_recovered(
     };
     let cancellation = lifecycle.begin()?;
     let source = BundleSource::Recovery { target, vault_id };
-    let result = receive_recovered_copy(&app, source, trust, &cancellation).await;
+    let result = receive_recovered_copy(&app, source, &binding, &cancellation).await;
     lifecycle.finish();
     result
 }
@@ -448,7 +448,7 @@ pub(crate) async fn receive_recovered(
 async fn receive_recovered_copy(
     app: &tauri::AppHandle,
     source: BundleSource,
-    trust: crate::sync::CharterTrust,
+    binding: &crate::sync::RecoveryBinding,
     cancellation: &TransferCancellation,
 ) -> Result<ReceiveOutcome, String> {
     let pairing = app.state::<PairingManager>().inner().clone();
@@ -466,7 +466,24 @@ async fn receive_recovered_copy(
     .await?;
     let staging =
         crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id);
-    stage_fetched_copy(app, &pairing, &archive, &staging, &metadata, Some(trust)).await?;
+    let marker = crate::sync::sync_files(app, &metadata.vault_id)?.server_recovery_path();
+    let staged = async {
+        crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
+        settle_recovered_copy(&staging, &marker, &metadata.vault_id, binding).await?;
+        crate::sync::prepare_staged_copy(
+            app,
+            &staging,
+            &metadata.vault_id,
+            metadata.derived_state_stale,
+            Some((binding.charter.clone(), binding.person_key)),
+        )
+        .await
+    }
+    .await;
+    if staged.is_err() {
+        discard_refused_copy(&pairing, &staging, &metadata.transfer_id);
+    }
+    staged?;
     let target = resolve_staged_link_folder(&folder, &staging)?;
     crate::vault::backup::activate_handoff_in_new_folder(
         app,
@@ -500,6 +517,39 @@ async fn receive_recovered_copy(
     })
 }
 
+/// Holds the recovered copy of `vault_id` staged at `staging` to the kit `binding` names. A copy
+/// that fails is removed. A copy that does not belong to the kit also removes the recovery
+/// marker at `marker`, so the next attempt asks the server again before it signs anything; a
+/// copy that only failed to read keeps it, so a retry skips the enrollment it already sent.
+#[cfg(desktop)]
+async fn settle_recovered_copy(
+    staging: &std::path::Path,
+    marker: &std::path::Path,
+    vault_id: &str,
+    binding: &crate::sync::RecoveryBinding,
+) -> Result<(), String> {
+    let verified = crate::sync::verify_recovered_copy(staging, vault_id, binding).await;
+    let Err(refusal) = verified else {
+        return Ok(());
+    };
+    if let Err(error) = std::fs::remove_dir_all(staging)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("failed to remove a refused recovered copy: {error}");
+    }
+    match refusal {
+        crate::sync::RecoveredCopyError::Mismatch => {
+            if let Err(error) = std::fs::remove_file(marker)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("failed to remove the server recovery marker: {error}");
+            }
+            Err(crate::sync::RECOVERY_KIT_MISMATCH.to_string())
+        }
+        crate::sync::RecoveredCopyError::Failed(error) => Err(error),
+    }
+}
+
 /// Why a linked device fetches no vault copy at all.
 const NO_TRUSTED_SOURCE_ERROR: &str =
     "no linked device can provide a vault copy this device trusts; link it again";
@@ -527,16 +577,22 @@ async fn stage_fetched_copy(
     }
     .await;
     if staged.is_err() {
-        if let Err(error) = std::fs::remove_dir_all(staging)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            eprintln!("failed to remove a refused vault copy: {error}");
-        }
-        if let Err(error) = pairing.remove_staging(&metadata.transfer_id) {
-            eprintln!("failed to clean a refused vault transfer: {error}");
-        }
+        discard_refused_copy(pairing, staging, &metadata.transfer_id);
     }
     staged
+}
+
+/// Removes a refused copy staged at `staging` with the download of `transfer_id`, so the next
+/// source starts clean.
+fn discard_refused_copy(pairing: &PairingManager, staging: &std::path::Path, transfer_id: &str) {
+    if let Err(error) = std::fs::remove_dir_all(staging)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("failed to remove a refused vault copy: {error}");
+    }
+    if let Err(error) = pairing.remove_staging(transfer_id) {
+        eprintln!("failed to clean a refused vault transfer: {error}");
+    }
 }
 
 /// The sources after `failed` in `sources`, or none when it is not among them.
@@ -887,3 +943,6 @@ mod tests {
         assert!(!lifecycle.is_running());
     }
 }
+
+#[cfg(all(test, desktop))]
+mod recovery_tests;

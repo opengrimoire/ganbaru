@@ -19,5 +19,8 @@ export function serverRecoveryError(cause: unknown, t: Translate): string {
   }
   if (message.includes("runs no vault")) return t("vaultHandoff.serverRecovery.errors.noVault");
   if (message.includes("already open")) return t("vaultHandoff.serverRecovery.errors.alreadyOpen");
+  if (message.includes("does not belong to the vault")) {
+    return t("vaultHandoff.serverRecovery.errors.wrongKit");
+  }
   return t("vaultHandoff.serverRecovery.errors.failed");
 }

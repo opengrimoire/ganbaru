@@ -13,6 +13,8 @@ use super::backup::holds_vault;
 use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, active_writable_vault_path};
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
 use ganbaru_atomic_files::FileAccess;
+use ganbaru_sync::AuthorizationView;
+use ganbaru_sync_contracts::Digest32;
 use ganbaru_sync_replica::backup::BUNDLE_DIRECTORIES;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -650,6 +652,49 @@ fn refuse_other_vault_rollback(
     super::encrypted_backup::refuse_other_vault_while_linked(platform, linked)
 }
 
+/// The head of a vault's selected authorization log, seen from one device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LogHead {
+    /// Entry hash of the selected head.
+    entry_hash: Digest32,
+    /// Whether the seeing device anchors the log.
+    anchored_here: bool,
+    /// Devices other than the seeing one that the log enrolled and has not removed.
+    other_live_devices: usize,
+}
+
+/// The head of `view` seen from the device `device_id`.
+fn log_head_of(view: &AuthorizationView, device_id: &str) -> LogHead {
+    LogHead {
+        entry_hash: view.entry_hash,
+        anchored_here: view.anchor_device_id == device_id,
+        other_live_devices: view
+            .devices
+            .iter()
+            .filter(|device| device.device_id != device_id)
+            .count(),
+    }
+}
+
+/// Whether a rollback would rewind authorization a live anchor already sequenced.
+fn rewinds_live_anchor(_live: Option<&LogHead>, _copy: Option<&LogHead>) -> bool {
+    false
+}
+
+/// The log head of the database at `path`, or `None` when it has no log.
+async fn readable_log_head(_path: &Path, _vault_id: &str, _device_id: &str) -> Option<LogHead> {
+    None
+}
+
+/// Refuses a rollback to the database in `copy_dir` that would rewind a live anchor.
+async fn refuse_anchor_rewind(
+    _vault: &Path,
+    _copy_dir: &Path,
+    _device_id: &str,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Restores a database rollback of the active vault under the shared vault
 /// transition guard. The caller reloads the app afterwards so every runtime
 /// reopens the restored data from a clean state.
@@ -1074,5 +1119,134 @@ mod tests {
         assert!(database_file(&missing, "").exists());
         let _ = fs::remove_dir_all(vault);
         let _ = fs::remove_dir_all(missing);
+    }
+
+    fn enrolled(device_id: &str, removed_revision: Option<u64>) -> ganbaru_sync::EnrolledDevice {
+        ganbaru_sync::EnrolledDevice {
+            device_id: device_id.to_string(),
+            device_key: ganbaru_sync_contracts::DevicePublicKey::from_bytes([7; 32]),
+            tls_fingerprint: [0; 32],
+            label: None,
+            kind: ganbaru_sync_contracts::DeviceKind::Desktop,
+            role: ganbaru_sync_contracts::DeviceRole::Member,
+            enrolled_revision: 1,
+            removed_revision,
+            encryption_key: None,
+        }
+    }
+
+    fn authorization_view(
+        anchor: &str,
+        devices: Vec<ganbaru_sync::EnrolledDevice>,
+    ) -> AuthorizationView {
+        let admin = ganbaru_sync_contracts::AdminPublicKey::from_bytes([3; 32]);
+        AuthorizationView {
+            epoch: 1,
+            revision: 4,
+            entry_hash: [1; 32],
+            anchor_device_id: anchor.to_string(),
+            frozen_at: None,
+            catch_up: None,
+            charter: [2; 32],
+            recovery_admin_key: admin,
+            kit_admin_key: admin,
+            devices,
+            discovery_key: [4; 32],
+            previous_discovery_key: None,
+            key_epoch: 0,
+            recovery_encryption_key: None,
+            pending_removal: None,
+            server: None,
+        }
+    }
+
+    #[test]
+    fn log_head_counts_only_live_other_devices() {
+        let view = authorization_view(
+            "device-a",
+            vec![
+                enrolled("device-a", None),
+                enrolled("device-b", None),
+                enrolled("device-c", Some(3)),
+            ],
+        );
+        let head = log_head_of(&view, "device-a");
+        assert_eq!(
+            head,
+            LogHead {
+                entry_hash: [1; 32],
+                anchored_here: true,
+                other_live_devices: 1,
+            },
+            "a removed device does not count as live"
+        );
+        let member = log_head_of(&view, "device-b");
+        assert!(!member.anchored_here);
+        assert_eq!(member.other_live_devices, 1);
+    }
+
+    fn head(entry_hash: u8, anchored_here: bool, other_live_devices: usize) -> LogHead {
+        LogHead {
+            entry_hash: [entry_hash; 32],
+            anchored_here,
+            other_live_devices,
+        }
+    }
+
+    #[test]
+    fn rewinds_live_anchor_refuses_only_a_different_head_with_live_devices() {
+        let live = head(1, true, 2);
+        assert!(
+            rewinds_live_anchor(Some(&live), Some(&head(9, true, 2))),
+            "a copy behind a live anchor's head rewinds it"
+        );
+        assert!(
+            rewinds_live_anchor(Some(&live), None),
+            "a copy with no log does not show it holds the anchor's head"
+        );
+        assert!(
+            !rewinds_live_anchor(Some(&live), Some(&head(1, true, 2))),
+            "an equal head rewinds nothing"
+        );
+        assert!(
+            !rewinds_live_anchor(Some(&head(1, true, 0)), Some(&head(9, true, 0))),
+            "a sole device has nobody following its head"
+        );
+        assert!(
+            !rewinds_live_anchor(Some(&head(1, false, 2)), Some(&head(9, false, 2))),
+            "a member is repaired by its outbox and the restored writer rules"
+        );
+        assert!(
+            !rewinds_live_anchor(None, Some(&head(9, true, 2))),
+            "a live vault with no readable log has no head to protect"
+        );
+        assert!(!rewinds_live_anchor(None, None));
+    }
+
+    #[tokio::test]
+    async fn rewinds_live_anchor_lets_an_unreadable_live_database_roll_back() {
+        let vault = test_vault("anchor-rewind-unreadable");
+        write_manifest(&vault, "vault-a");
+        create_database(&vault, BEFORE_RESET).await;
+        let copy = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
+        let copy_dir = rollback_root(&vault).join(&copy);
+        assert_eq!(
+            readable_log_head(&database_file(&copy_dir, ""), "vault-a", "device-a").await,
+            None,
+            "a database with no log has no head"
+        );
+        fs::write(database_file(&vault, ""), b"not a database").unwrap();
+
+        assert_eq!(
+            readable_log_head(&database_file(&vault, ""), "vault-a", "device-a").await,
+            None
+        );
+        assert_eq!(
+            refuse_anchor_rewind(&vault, &copy_dir, "device-a").await,
+            Ok(())
+        );
+        restore_rollback(&vault, &copy, at(2)).await.unwrap();
+        assert_eq!(marker(&vault).await, 1);
+        let _ = fs::remove_dir_all(vault);
     }
 }

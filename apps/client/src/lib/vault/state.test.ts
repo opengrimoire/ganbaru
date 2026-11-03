@@ -279,6 +279,18 @@ describe("replaced vault backups", () => {
       ),
     ).toBe("This phone is linked to other devices. Unlink this phone first, then restore.");
   });
+
+  it("asks an anchor to hand over before a rollback that would undo what others follow", async () => {
+    const { formatVaultError } = await loadModule();
+    expect(
+      formatVaultError(
+        "this device anchors other live devices and the rollback copy is behind its authorization head; hand the anchor over or remove those devices first",
+        "restore",
+      ),
+    ).toBe(
+      "This computer anchors your linked devices and this copy would undo changes they already follow. Hand the anchor over or remove those devices, then restore.",
+    );
+  });
 });
 
 describe("encrypted backups", () => {

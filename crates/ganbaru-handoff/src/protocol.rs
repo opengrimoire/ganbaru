@@ -538,6 +538,17 @@ pub enum ControlMessage {
 }
 
 impl ControlMessage {
+    /// Whether the request hands out vault content or the person key, which a device held by
+    /// an anchor handover contest does not receive until the contest resolves.
+    pub fn is_vault_material(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestBundle { .. }
+                | Self::DownloadBundle { .. }
+                | Self::PersonKeyRequest { .. }
+        )
+    }
+
     /// Whether this is a record exchange request, which every paired peer is served whatever
     /// the authorization log says of its device.
     pub fn is_record_exchange(&self) -> bool {

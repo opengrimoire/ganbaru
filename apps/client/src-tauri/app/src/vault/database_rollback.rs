@@ -1196,6 +1196,7 @@ mod tests {
             role: ganbaru_sync_contracts::DeviceRole::Member,
             enrolled_revision: 1,
             removed_revision,
+            held: false,
             encryption_key: None,
         }
     }

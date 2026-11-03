@@ -320,6 +320,217 @@ async fn staging_a_backup_file_clears_forged_local_rows() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Creates a vault at `vault` with a founded space that stores the kit of `seed`, and returns
+/// its id.
+async fn founded_vault(vault: &Path, seed: u8) -> String {
+    fs::create_dir_all(vault).unwrap();
+    let info = crate::vault::initialize_vault(vault).unwrap();
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = registry.connect_path(database_path(vault)).await.unwrap();
+    {
+        let mut conn = pool.acquire().await.unwrap();
+        ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &kit(seed), 1_000)
+            .await
+            .unwrap();
+        ganbaru_sync::Engine::vault()
+            .init_space(&mut conn, &info.vault_id, 1_000)
+            .await
+            .unwrap();
+    }
+    registry.close_all().await.unwrap();
+    info.vault_id
+}
+
+/// Archives the vault at `vault` to `archive` as a decrypted backup holds it. `forge` runs on
+/// its database first, as a forger is free to do, and `undo` runs after, so the vault stays
+/// one this app opens.
+async fn archive_vault_with(vault: &Path, archive: &Path, forge: &str, undo: &str) {
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = registry.connect_path(database_path(vault)).await.unwrap();
+    let run = async |statements: &str| {
+        if !statements.is_empty() {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(statements.to_string()))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    run(forge).await;
+    let snapshot = archive.with_extension("sqlite");
+    ganbaru_sync_replica::backup::create_backup_archive(
+        &ArchiveGate::process(),
+        &pool,
+        vault,
+        &snapshot,
+        archive,
+    )
+    .await
+    .unwrap();
+    fs::remove_file(snapshot).unwrap();
+    run(undo).await;
+    registry.close_all().await.unwrap();
+}
+
+/// The vault at `vault` as a restore on the device `device_id` sees it when it is active.
+async fn active_vault(vault: &Path, vault_id: &str, device_id: &str) -> ActiveVault {
+    let (summary, keys) = read_staged_state(vault, vault_id, device_id).await.unwrap();
+    ActiveVault {
+        root: vault.to_path_buf(),
+        summary,
+        keys,
+        linked: false,
+        epoch_key: None,
+    }
+}
+
+#[tokio::test]
+async fn placement_restores_an_honest_backup_in_place_and_a_forged_one_as_a_copy() {
+    let root = unique_test_path("placement");
+    let vault = root.join("Ganbaru");
+    let device = "device-a";
+    let vault_id = founded_vault(&vault, 0x42).await;
+    let active = active_vault(&vault, &vault_id, device).await;
+    let honest = root.join("honest.zip");
+    archive_vault_with(&vault, &honest, "", "").await;
+    // The forger knows only the victim's recovery public key: the file opens with the
+    // victim's kit, but the vault inside stores the attacker's kit.
+    let forged = root.join("forged.zip");
+    {
+        let registry = ganbaru_db::DatabasePoolRegistry::default();
+        let pool = registry.connect_path(database_path(&vault)).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &kit(0x66), 2_000)
+            .await
+            .unwrap();
+        drop(conn);
+        registry.close_all().await.unwrap();
+    }
+    archive_vault_with(&vault, &forged, "", "").await;
+    let space = SpaceId::personal(&vault_id);
+    let opened_by_kit = ArchiveOrigin::BackupFile {
+        space,
+        opened_by: Some(kit(0x42)),
+    };
+    let opened_by_epoch = ArchiveOrigin::BackupFile {
+        space,
+        opened_by: None,
+    };
+    let cases = [
+        (
+            "honest, kit",
+            &honest,
+            opened_by_kit,
+            Some(&active),
+            RestorePlacement::InPlace,
+        ),
+        (
+            "honest, epoch",
+            &honest,
+            opened_by_epoch,
+            Some(&active),
+            RestorePlacement::InPlace,
+        ),
+        (
+            "honest, nothing active",
+            &honest,
+            opened_by_kit,
+            None,
+            RestorePlacement::IndependentCopy,
+        ),
+        (
+            "forged, kit",
+            &forged,
+            opened_by_kit,
+            Some(&active),
+            RestorePlacement::IndependentCopy,
+        ),
+        (
+            "forged, epoch",
+            &forged,
+            opened_by_epoch,
+            Some(&active),
+            RestorePlacement::IndependentCopy,
+        ),
+    ];
+    for (index, (name, archive, origin, active, expected)) in cases.into_iter().enumerate() {
+        let staging = root.join(format!("staging-{index}"));
+        let (info, placement) = stage_and_plan(device, archive, &staging, origin, active)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert_eq!(info.vault_id, vault_id, "{name}");
+        assert_eq!(placement, expected, "{name}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_backup_whose_database_carries_extra_schema_objects_is_refused() {
+    let root = unique_test_path("forged-schema");
+    let vault = root.join("Ganbaru");
+    let device = "device-a";
+    let vault_id = founded_vault(&vault, 0x42).await;
+    let active = active_vault(&vault, &vault_id, device).await;
+    let origin = ArchiveOrigin::BackupFile {
+        space: SpaceId::personal(&vault_id),
+        opened_by: Some(kit(0x42)),
+    };
+    // Each forged object survives row checks: the trigger plants the attacker's admin key
+    // when the user later saves a kit, and the others reshape what restore reads.
+    let forged_objects = [
+        (
+            "CREATE TRIGGER plant_admin AFTER UPDATE ON sync_recovery_kit BEGIN \
+             UPDATE sync_recovery_kit SET recovery_admin_key = zeroblob(32); END",
+            "DROP TRIGGER plant_admin",
+        ),
+        (
+            "CREATE TRIGGER refill_keys AFTER DELETE ON sync_space_keys BEGIN \
+             INSERT INTO sync_space_keys VALUES (old.space_id, old.epoch, \
+             old.wrapped_previous, old.own_envelope, old.sequenced_revision); END",
+            "DROP TRIGGER refill_keys",
+        ),
+        (
+            "CREATE VIEW forged_view AS SELECT * FROM sync_recovery_kit",
+            "DROP VIEW forged_view",
+        ),
+        (
+            "CREATE INDEX forged_index ON sync_recovery_kit (created_at_ms)",
+            "DROP INDEX forged_index",
+        ),
+        (
+            "CREATE TABLE forged_table (value TEXT)",
+            "DROP TABLE forged_table",
+        ),
+    ];
+    for (index, (forge, undo)) in forged_objects.into_iter().enumerate() {
+        let archive = root.join(format!("forged-{index}.zip"));
+        archive_vault_with(&vault, &archive, forge, undo).await;
+        let staging = root.join(format!("staging-{index}"));
+        let staged = stage_and_plan(device, &archive, &staging, origin, Some(&active)).await;
+        match staged {
+            Err(RestoreError::Failed(error)) => assert!(
+                error.contains("schema differs"),
+                "{forge}: refused for another reason: {error}"
+            ),
+            Err(error) => panic!("{forge}: refused for another reason: {error:?}"),
+            Ok((_, placement)) => panic!("{forge}: staged as {placement:?}"),
+        }
+    }
+    // The same vault without forged objects still restores in place.
+    let honest = root.join("honest.zip");
+    archive_vault_with(&vault, &honest, "", "").await;
+    let (_, placement) = stage_and_plan(
+        device,
+        &honest,
+        &root.join("staging-honest"),
+        origin,
+        Some(&active),
+    )
+    .await
+    .unwrap();
+    assert_eq!(placement, RestorePlacement::InPlace);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn format_errors_map_to_refusals_the_user_can_act_on() {
     assert_eq!(

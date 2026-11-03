@@ -1705,24 +1705,23 @@ pub(super) async fn set_assignment_state(
         ));
     }
     if !state.is_active() {
-        end_assignment_dispatch_jobs(pool, assignment_id, state, &now).await?;
+        let mut connection = pool.acquire().await.map_err(persistence_error)?;
+        end_assignment_dispatch_jobs(&mut connection, assignment_id, state, &now).await?;
     }
     read_assignment(pool, assignment_id).await
 }
 
 /// Ends the local dispatch jobs still queued or claimed for `assignment_id`, which settled as
 /// `state`: they become cancelled when it was cancelled and failed otherwise, so no worker runs
-/// settled work.
+/// settled work. The execution target kept for its start goes with them, since it only served
+/// work that was still waiting to run.
 #[cfg(desktop)]
-pub(super) async fn end_assignment_dispatch_jobs<'e, E>(
-    executor: E,
+pub(super) async fn end_assignment_dispatch_jobs(
+    connection: &mut sqlx::SqliteConnection,
     assignment_id: &ChatWorkAssignmentId,
     state: ChatWorkAssignmentState,
     now: &UtcTimestamp,
-) -> ChatResult<()>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
+) -> ChatResult<()> {
     sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs SET state = ?, updated_at = ?
          WHERE assignment_id = ? AND state IN ('queued', 'claimed')",
@@ -1734,9 +1733,14 @@ where
     })
     .bind(now.as_str())
     .bind(assignment_id.as_str())
-    .execute(executor)
+    .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
+    sqlx::query("DELETE FROM chat_assignment_requested_targets WHERE assignment_id = ?")
+        .bind(assignment_id.as_str())
+        .execute(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
     Ok(())
 }
 

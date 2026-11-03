@@ -270,7 +270,7 @@ async fn settle_stranded_assignment(
     if settled.rows_affected() != 1 {
         return Ok(false);
     }
-    end_assignment_dispatch_jobs(&mut **transaction, &assignment.id, state, now).await?;
+    end_assignment_dispatch_jobs(transaction, &assignment.id, state, now).await?;
     Ok(true)
 }
 
@@ -639,6 +639,9 @@ pub(super) async fn persist_retry(
             true,
         ));
     }
+    // A target kept from before the work settled may no longer resolve, and keeping it would
+    // fail every Retry, so Retry resolves the target again from the current grants.
+    take_requested_target(&mut transaction, assignment_id).await?;
     queue_dispatch_here(&mut transaction, assignment_id, now).await?;
     transaction.commit().await.map_err(persistence_error)?;
     Ok(assignment_id.clone())

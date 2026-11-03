@@ -74,6 +74,9 @@ pub struct EnrolledDevice {
     pub enrolled_revision: u64,
     /// Revision that removed it.
     pub removed_revision: Option<u64>,
+    /// Whether a frozen contest holds the device: a stored branch that is not effective removes
+    /// it, so it stays enrolled and is served authorization records only.
+    pub held: bool,
     /// The encryption key its latest device key entry published.
     pub encryption_key: Option<EncryptionPublicKey>,
 }
@@ -817,6 +820,7 @@ impl AuthState {
                     role: device.role,
                     enrolled_revision: device.enrolled,
                     removed_revision: device.removed,
+                    held: false,
                     encryption_key: device.encryption_key,
                 })
                 .collect(),

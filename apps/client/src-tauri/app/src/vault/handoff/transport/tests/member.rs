@@ -204,6 +204,7 @@ fn enrolling_view(fingerprint: &str, removed: bool) -> AuthorizationView {
             role: ganbaru_sync_contracts::DeviceRole::Member,
             enrolled_revision: 2,
             removed_revision: removed.then_some(3),
+            held: false,
             encryption_key: None,
         }],
         discovery_key: [5; 32],

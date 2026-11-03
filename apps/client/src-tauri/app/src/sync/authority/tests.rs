@@ -28,6 +28,7 @@ fn device(id: &str, kind: DeviceKind, role: DeviceRole, removed: Option<u64>) ->
         role,
         enrolled_revision: 1,
         removed_revision: removed,
+        held: false,
         encryption_key: None,
     }
 }

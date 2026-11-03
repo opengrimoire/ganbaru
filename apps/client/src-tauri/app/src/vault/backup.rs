@@ -20,6 +20,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Runtime;
 
+/// Folder beside the vault that holds the replaced vault while a restore swaps folders.
+const RESTORE_ROLLBACK_NAME: &str = ".ganbaru.rollback";
+
+/// Folder beside the vault that holds the replaced vault while a fresh copy of the same vault
+/// swaps folders.
+pub(super) const HANDOFF_REFRESH_ROLLBACK_NAME: &str = ".ganbaru.handoff-refresh-rollback";
+
+/// Refusal of a handoff whose rollback folder is still taken by a swap that recovery cannot
+/// finish here.
+const HANDOFF_RECOVERY_PENDING: &str = "a previous handoff copy still requires recovery";
+
 #[cfg(target_os = "android")]
 const BACKUP_EXTENSION: &str = "ganbaru-backup";
 #[cfg(target_os = "android")]
@@ -744,10 +755,10 @@ fn plan_swap(
     let rollback = if preserve {
         preserved_handoff_path(parent, target, transfer_id)
     } else {
-        parent.join(".ganbaru.handoff-refresh-rollback")
+        parent.join(HANDOFF_REFRESH_ROLLBACK_NAME)
     };
-    if rollback.exists() && staging.exists() {
-        return Err("a previous handoff copy still requires recovery".to_string());
+    if preserve && rollback.exists() && staging.exists() {
+        return Err(HANDOFF_RECOVERY_PENDING.to_string());
     }
     let discard_preserved = replaces_other
         && match previous {
@@ -770,6 +781,10 @@ fn run_swap(swap: &Swap, staging: &Path, target: &Path, flagged: bool) -> Result
             ..
         } => replace_vault_preserving_previous(staging, target, rollback),
         Swap::Replace { rollback, .. } => {
+            recover_interrupted_replacements(target)?;
+            if rollback.exists() {
+                return Err(HANDOFF_RECOVERY_PENDING.to_string());
+            }
             replace_vault_flagging(staging, target, rollback, flagged)
         }
     }
@@ -968,13 +983,61 @@ pub(super) fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Res
     }
 }
 
+/// Repairs swaps a crash interrupted, for both rollback names beside `target`.
+pub(crate) fn recover_interrupted_replacements(target: &Path) -> Result<(), String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    let restore_rollback = parent.join(RESTORE_ROLLBACK_NAME);
+    // Android restores an independent copy in place, so its restore rollback can hold another
+    // vault. A desktop restore rollback beside the vault only ever holds the same vault, and
+    // another vault's one belongs to a sibling, such as the other build's vault.
+    #[cfg(target_os = "android")]
+    recover_interrupted_restore(target, &restore_rollback)?;
+    #[cfg(not(target_os = "android"))]
+    recover_same_vault_swap(target, &restore_rollback)?;
+    recover_same_vault_swap(target, &parent.join(HANDOFF_REFRESH_ROLLBACK_NAME))
+}
+
+/// Repairs interrupted swaps beside the selected vault at startup. Reads the selected path
+/// without validating it, since an interrupted swap can leave that folder missing.
+#[cfg(desktop)]
+pub(crate) fn recover_interrupted_replacements_for_app<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let _transition = super::quiescence::reserve_vault_transition()?;
+    let Some(target) = super::read_app_state(app)?.active_vault_path.clone() else {
+        return Ok(());
+    };
+    recover_interrupted_replacements(Path::new(&target))
+}
+
+/// Finishes a swap of the same vault an exit interrupted. A missing `target` gets `rollback`
+/// back, and a `target` that holds the same vault keeps it as a rollback copy. Any other
+/// `rollback` belongs to another vault sharing the parent folder, so it is left alone.
+fn recover_same_vault_swap(target: &Path, rollback: &Path) -> Result<(), String> {
+    if !rollback.exists() {
+        return Ok(());
+    }
+    if !target.exists() {
+        return fs::rename(rollback, target)
+            .map_err(|error| format!("recover interrupted vault replacement: {error}"));
+    }
+    match (vault_info_from_path(target), vault_info_from_path(rollback)) {
+        (Ok(current), Ok(replaced)) if current.vault_id == replaced.vault_id => {
+            finish_retained_replacement(target, rollback, false)
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(target_os = "android")]
 pub(crate) fn recover_interrupted_restore_for_app(app: &tauri::AppHandle) -> Result<(), String> {
     let target = default_vault_path(app)?;
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))?;
+    recover_interrupted_replacements(&target)?;
     let backups = super::replaced_vaults::replaced_vaults_root(app)?;
     for leftover in superseded_handoff_leftovers(parent, &target, &backups) {
         if let Err(error) = fs::remove_dir_all(&leftover) {
@@ -2215,6 +2278,144 @@ mod retention_tests {
 
         replace_vault_flagging(&staging, &target, &parent.join("rollback"), false).unwrap();
 
+        assert!(list_rollbacks(&target).unwrap().is_empty());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    /// Writes a leftover fresh copy rollback beside `target` that holds the vault of `manifest`.
+    async fn leftover_refresh_rollback(parent: &Path, manifest: &Path) -> PathBuf {
+        leftover_rollback(parent, HANDOFF_REFRESH_ROLLBACK_NAME, manifest).await
+    }
+
+    /// Writes a leftover rollback folder `name` in `parent` that holds the vault of `manifest`.
+    async fn leftover_rollback(parent: &Path, name: &str, manifest: &Path) -> PathBuf {
+        let rollback = parent.join(name);
+        fs::create_dir_all(&rollback).unwrap();
+        fs::copy(manifest, rollback.join(VAULT_MANIFEST_FILE)).unwrap();
+        write_marker(&rollback, PREVIOUS_MARKER).await;
+        rollback
+    }
+
+    #[tokio::test]
+    async fn a_refresh_rollback_with_a_missing_target_is_renamed_back() {
+        let parent = unique_parent("refresh-missing-target");
+        let target = parent.join("Ganbaru");
+        fs::create_dir_all(&target).unwrap();
+        crate::vault::initialize_vault(&target).unwrap();
+        write_marker(&target, PREVIOUS_MARKER).await;
+        fs::write(target.join("README.md"), b"device file").unwrap();
+        let rollback = parent.join(HANDOFF_REFRESH_ROLLBACK_NAME);
+        fs::rename(&target, &rollback).unwrap();
+
+        recover_interrupted_replacements(&target).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        assert_eq!(fs::read(target.join("README.md")).unwrap(), b"device file");
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn a_finished_refresh_leaves_no_rollback_behind() {
+        let parent = unique_parent("refresh-finished");
+        let (target, staging) = same_vault_pair(&parent).await;
+        fs::remove_dir_all(&target).unwrap();
+        fs::rename(&staging, &target).unwrap();
+        let rollback = leftover_refresh_rollback(&parent, &target.join(VAULT_MANIFEST_FILE)).await;
+
+        recover_interrupted_replacements(&target).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(read_marker(&target).await, REPLACEMENT_MARKER);
+        let rollbacks = list_rollbacks(&target).unwrap();
+        assert_eq!(rollbacks.len(), 1);
+        assert_eq!(rollbacks[0].origin, RollbackOrigin::Replacement);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn a_foreign_rollback_is_left_alone() {
+        let parent = unique_parent("refresh-foreign");
+        let (target, _staging) = same_vault_pair(&parent).await;
+        let sibling = parent.join("Sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        crate::vault::initialize_vault(&sibling).unwrap();
+        let rollback = leftover_refresh_rollback(&parent, &sibling.join(VAULT_MANIFEST_FILE)).await;
+
+        recover_interrupted_replacements(&target).unwrap();
+
+        assert!(rollback.join(VAULT_MANIFEST_FILE).exists());
+        assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        assert!(list_rollbacks(&target).unwrap().is_empty());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn plan_swap_succeeds_after_a_leftover_refresh_rollback() {
+        let parent = unique_parent("refresh-retry");
+        let (target, staging) = same_vault_pair(&parent).await;
+        let vault_id = vault_info_from_path(&target).unwrap().vault_id;
+        let rollback = leftover_refresh_rollback(&parent, &target.join(VAULT_MANIFEST_FILE)).await;
+        let placement = HandoffPlacement::Replace {
+            target: target.clone(),
+            previous: ReplacedVault::KeepOther,
+        };
+
+        let swap = plan_swap(&placement, &parent, &staging, "retry", &vault_id);
+        assert!(swap.is_ok(), "fresh copy retry was refused: {swap:?}");
+        run_swap(&swap.unwrap(), &staging, &target, false).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(read_marker(&target).await, REPLACEMENT_MARKER);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_copy_refuses_another_vaults_leftover_rollback() {
+        let parent = unique_parent("refresh-foreign-retry");
+        let (target, staging) = same_vault_pair(&parent).await;
+        let vault_id = vault_info_from_path(&target).unwrap().vault_id;
+        let sibling = parent.join("Sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        crate::vault::initialize_vault(&sibling).unwrap();
+        let rollback = leftover_refresh_rollback(&parent, &sibling.join(VAULT_MANIFEST_FILE)).await;
+        let placement = HandoffPlacement::Replace {
+            target: target.clone(),
+            previous: ReplacedVault::KeepOther,
+        };
+
+        let swap = plan_swap(&placement, &parent, &staging, "retry", &vault_id).unwrap();
+        let swapped = run_swap(&swap, &staging, &target, false);
+
+        assert_eq!(swapped, Err(HANDOFF_RECOVERY_PENDING.to_string()));
+        assert!(staging.exists());
+        assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        assert!(list_rollbacks(&target).unwrap().is_empty());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn desktop_recovery_leaves_another_vaults_restore_rollback_alone() {
+        let parent = unique_parent("restore-foreign");
+        let (target, _staging) = same_vault_pair(&parent).await;
+        let sibling = parent.join("Sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        crate::vault::initialize_vault(&sibling).unwrap();
+        let rollback = leftover_rollback(
+            &parent,
+            RESTORE_ROLLBACK_NAME,
+            &sibling.join(VAULT_MANIFEST_FILE),
+        )
+        .await;
+
+        recover_interrupted_replacements(&target).unwrap();
+
+        assert!(rollback.join(VAULT_MANIFEST_FILE).exists());
+        assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
         assert!(list_rollbacks(&target).unwrap().is_empty());
         let _ = fs::remove_dir_all(parent);
     }

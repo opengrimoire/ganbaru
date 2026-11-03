@@ -6,10 +6,12 @@ use super::{
     block_on, contact_source, done, hub, member_hub, open_hub, phone_ids, tablet_ids, test_contact,
 };
 use crate::client::SyncTransport;
-use crate::hub::{HubStability, SyncHub};
+use crate::hub::{BOOTSTRAP_REQUIRED, HubStability, SyncHub};
 use crate::tests::{VAULT_ID, acquire};
 use crate::wire::{forked_from_wire, hash_to_wire, ops_to_wire, vector_from_wire, vector_to_wire};
-use ganbaru_handoff::protocol::{ControlMessage, PROTOCOL_VERSION, SyncProbe};
+use ganbaru_handoff::protocol::{
+    ControlMessage, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal, SyncRefusalCode,
+};
 use ganbaru_sync::Engine;
 use ganbaru_sync_contracts::{VersionVector, WriterId};
 use tokio::sync::watch;
@@ -477,6 +479,182 @@ fn held_device_records_no_anchor_marks() {
                 .expect("read anchor marks");
         assert_eq!(marked, None);
         drop(conn);
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+fn push(device_id: &str, ops: &[Vec<u8>]) -> ControlMessage {
+    ControlMessage::SyncPush {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT_ID.to_string(),
+        device_id: device_id.to_string(),
+        ops: ops_to_wire(ops),
+    }
+}
+
+fn push_result(response: ControlMessage) -> (VersionVector, Option<SyncRefusal>) {
+    match response {
+        ControlMessage::SyncPushResult { stored, refusal } => {
+            (vector_from_wire(&stored).expect("stored vector"), refusal)
+        }
+        other => panic!("expected a push result, got {other:?}"),
+    }
+}
+
+fn pull(device_id: &str, known: &VersionVector) -> ControlMessage {
+    ControlMessage::SyncPull {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT_ID.to_string(),
+        device_id: device_id.to_string(),
+        known: vector_to_wire(known),
+        max_bytes: u32::try_from(SYNC_PAGE_BYTES).expect("page size fits"),
+    }
+}
+
+#[test]
+fn held_device_push_refusal_hides_foreign_progress() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-held-gap", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-held-gap", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-held-gap", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let reached = phone.seal_note("note-1").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        phone.seal_note("note-2").await;
+        let phone_head = phone.seal_note("note-3").await;
+        done(
+            phone
+                .exchange(&member_hub(&tablet), &phone_ids())
+                .await
+                .expect("exchange with the tablet"),
+        );
+        let phone_writer = phone.writer.id();
+        let past_gap = Engine::vault()
+            .operation_at(
+                &mut *acquire(&tablet.pool).await,
+                &tablet.ctx,
+                phone_writer,
+                phone_head,
+            )
+            .await
+            .expect("read operation")
+            .expect("phone operation");
+        assert!(phone_head > reached + 1);
+        hold(&hub_replica, TABLET_DEVICE).await;
+
+        // A crafted push past the hub's stored sequence reads back the page alone.
+        let (stored, refusal) = push_result(
+            transport
+                .request(push(TABLET_DEVICE, std::slice::from_ref(&past_gap)))
+                .await
+                .expect("push"),
+        );
+        assert_eq!(refusal, None, "no refusal names the hub's expected sequence");
+        assert_eq!(stored.get(&phone_writer), phone_head);
+        assert_eq!(hub_replica.stored().await.get(&phone_writer), reached);
+
+        // The phone that owns the writer is not held and is told where the gap starts.
+        let (_, refusal) = push_result(
+            transport
+                .request(push(PHONE_DEVICE, &[past_gap]))
+                .await
+                .expect("push"),
+        );
+        assert_eq!(
+            refusal,
+            Some(SyncRefusal {
+                code: SyncRefusalCode::Gap,
+                writer: Some(phone_writer.to_hex()),
+                seq: Some(reached + 1),
+            })
+        );
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn held_device_push_of_a_foreign_fork_reads_back_the_echo() {
+    block_on(async {
+        let vault = ForkedVault::new("held-fork-push").await;
+        hold(&vault.hub, TABLET_DEVICE).await;
+        let (stored, refusal) = push_result(
+            vault
+                .transport
+                .request(push(TABLET_DEVICE, &vault.pair[1..]))
+                .await
+                .expect("push"),
+        );
+        assert_eq!(refusal, None, "no fork refusal names the hub's sequence");
+        assert_eq!(stored.get(&vault.writer), vault.fork_seq);
+        vault.close().await;
+    });
+}
+
+#[test]
+fn held_device_pull_hides_the_compacted_vector() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-held-compacted", HUB_DEVICE).await;
+        let phone = Replica::new("phone-held-compacted", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-held-compacted", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.seal_note("note-1").await;
+        hub_replica.seal_note("note-2").await;
+        hub_replica.seal_note("note-3").await;
+        assert!(hub_replica.compact().await > 0);
+        let compacted = Engine::vault()
+            .compacted_vector(&mut *acquire(&hub_replica.pool).await, &hub_replica.ctx)
+            .await
+            .expect("compacted vector");
+        let (hub_writer, through) = compacted.iter().next().expect("a compacted writer");
+        assert!(through > 1);
+        hold(&hub_replica, TABLET_DEVICE).await;
+
+        // Every claim at or below the compacted sequence gets the same answer, so varying it
+        // reveals nothing about where compaction stands.
+        let mut answers = Vec::new();
+        for seq in 0..=through {
+            let known: VersionVector = [(hub_writer, seq)].into_iter().collect();
+            match transport
+                .request(pull(TABLET_DEVICE, &known))
+                .await
+                .expect("pull")
+            {
+                ControlMessage::SyncOps { ops, more } => answers.push((ops, more)),
+                other => panic!("a held pull from {seq} answered {other:?}"),
+            }
+        }
+        assert!(answers.windows(2).all(|pair| pair[0] == pair[1]));
+
+        // The phone is not held and still learns that it needs a fresh copy.
+        match transport
+            .request(pull(PHONE_DEVICE, &VersionVector::new()))
+            .await
+            .expect("pull")
+        {
+            ControlMessage::Error { code, .. } => assert_eq!(code, BOOTSTRAP_REQUIRED),
+            other => panic!("expected a bootstrap refusal, got {other:?}"),
+        }
         hub_replica.close().await;
         phone.close().await;
         tablet.close().await;

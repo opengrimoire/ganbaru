@@ -111,6 +111,11 @@ describe("sync device actions", () => {
     expect(syncDeviceActions(context({ statusRole: "hub", mobileLayout: true }), memberDesktop).promote).toBe(false);
   });
 
+  it("does not offer promotion for an anchor left a member, which the anchor refuses", () => {
+    const memberAnchor = device("anchor", { anchor: true });
+    expect(syncDeviceActions(context({ statusRole: "hub" }), memberAnchor).promote).toBe(false);
+  });
+
   it("lets any device quarantine other live devices except the anchor, and lift it later", () => {
     const member = context({ mobileLayout: true }, { ownIsAdmin: false });
     expect(syncDeviceActions(member, memberDesktop)).toMatchObject({ quarantine: true, lift: false });

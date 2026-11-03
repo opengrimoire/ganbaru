@@ -788,27 +788,12 @@ impl Engine {
         .await?)
     }
 
-    /// Whether `bytes`, a key epoch record some untrusted source such as a relay serves for
-    /// `epoch`, authenticates against this replica's stored verified envelope set and charter
-    /// alone, without reading the selected chain. A record a device without the anchor's device
-    /// and writer keys made never passes, so a relay holding one for an epoch the selected chain
-    /// does not name yet means this replica lags behind a real rotation.
-    pub async fn authenticates_key_epoch(
-        &self,
-        conn: &mut SqliteConnection,
-        ctx: &SpaceContext,
-        bytes: &[u8],
-        epoch: u32,
-    ) -> SyncResult<bool> {
-        log::ensure_space(conn, ctx.space).await?;
-        let Some(charter) = authorization::load_charter(conn, ctx.space).await? else {
-            return Ok(false);
-        };
-        records::authentic_key_epoch(conn, ctx.space, &charter, bytes, epoch).await
-    }
-
-    /// How `bytes`, a key epoch record some untrusted source serves for `epoch`, stands against
-    /// the stored records.
+    /// How `bytes`, a key epoch record some untrusted source such as a relay serves for `epoch`,
+    /// stands against the authorization records this replica stores, judged by the rules the
+    /// walk applies rather than the selected chain alone. A record a device signed without
+    /// holding the anchor's device key, or one that leans on an admin role no check-valid chain
+    /// grants, is forged; a record whose chain this replica has not stored is undecided, since
+    /// the replica may lag behind a real rotation. Without a charter every record is forged.
     pub async fn key_epoch_standing(
         &self,
         conn: &mut SqliteConnection,
@@ -816,16 +801,8 @@ impl Engine {
         bytes: &[u8],
         epoch: u32,
     ) -> SyncResult<authorization::KeyEpochStanding> {
-        Ok(
-            if self
-                .authenticates_key_epoch(conn, ctx, bytes, epoch)
-                .await?
-            {
-                authorization::KeyEpochStanding::Authentic
-            } else {
-                authorization::KeyEpochStanding::Forged
-            },
-        )
+        log::ensure_space(conn, ctx.space).await?;
+        authorization::key_epoch_standing(conn, ctx.space, bytes, epoch).await
     }
 
     async fn store_page(

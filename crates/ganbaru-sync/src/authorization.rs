@@ -56,6 +56,7 @@ pub use exchange::{
     RecordClass, RecordCursor, RecordEnvelope, RecordPage, RecordRole, RecordWants,
 };
 pub use key_epoch::KeyEpochStanding;
+pub(crate) use key_epoch::key_epoch_standing;
 
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]

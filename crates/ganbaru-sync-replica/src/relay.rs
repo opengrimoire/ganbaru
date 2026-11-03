@@ -23,8 +23,8 @@ use ganbaru_handoff::protocol::relay::{
 use ganbaru_handoff::protocol::{MAX_CONTROL_BYTES, SyncSeq, read_frame, write_frame};
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::{
-    AuthorizationView, Engine, RelayKeys, SpaceContext, SpaceKeyHolder, StoreOutcome, StoreRefusal,
-    SyncError,
+    AuthorizationView, Engine, KeyEpochStanding, RelayKeys, SpaceContext, SpaceKeyHolder,
+    StoreOutcome, StoreRefusal, SyncError,
 };
 use ganbaru_sync_contracts::bounds::{MAX_RELAY_ASSET_BYTES, RELAY_ASSET_CHUNK_BYTES};
 use ganbaru_sync_contracts::ids::parse_hex;
@@ -490,10 +490,10 @@ impl RelaySession<'_> {
     /// a connection authenticated at `held` whose pull just drained the relay. Fails closed:
     /// the caller asks only after a drained pull, this device must be a live admin, the chain
     /// it selected after that pull still names no key epoch past `held`, and the record the
-    /// relay serves for `held + 1` must fail to authenticate as that epoch's key epoch record
-    /// against the stored verified envelope set. Only the anchor's device and writer keys make
-    /// one that authenticates, so a record that does means this device lags behind a real
-    /// rotation and repairing would roll the relay back below it.
+    /// relay serves for `held + 1` must be provably forged against the check-valid chains this
+    /// device stores. A record those chains admit, or one whose chain this device has not
+    /// stored, may be a real rotation this device lags behind, and repairing would roll the
+    /// relay back below it, so neither is repaired.
     async fn repairs_squat(
         &self,
         connection: &mut Connection,
@@ -509,12 +509,12 @@ impl RelaySession<'_> {
             return Ok(true);
         };
         let mut conn = acquire(self.pool).await?;
-        let authentic = self
+        let standing = self
             .engine
-            .authenticates_key_epoch(&mut conn, self.ctx, &entry, next)
+            .key_epoch_standing(&mut conn, self.ctx, &entry, next)
             .await
             .map_err(|error| format!("check the relay's key epoch record: {error}"))?;
-        Ok(!authentic)
+        Ok(standing == KeyEpochStanding::Forged)
     }
 
     /// The record the relay serves for `epoch`, bounded before it is decoded.
@@ -837,7 +837,8 @@ impl RelaySession<'_> {
     }
 
     /// Offers the key epoch records the relay holds past `epoch` to the record store, which
-    /// keeps only what verifies against the chain this replica selected.
+    /// stores what admission accepts; the authority walk then decides which of them a
+    /// check-valid chain admits.
     async fn admit_epochs(
         &self,
         connection: &mut Connection,

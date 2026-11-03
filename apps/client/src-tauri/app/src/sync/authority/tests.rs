@@ -77,6 +77,8 @@ fn entry(change: Entry, created_ms: u64) -> OutboxEntry {
         .expect("proposal"),
         rejection: None,
         held: None,
+        after: None,
+        released_from: None,
     }
 }
 

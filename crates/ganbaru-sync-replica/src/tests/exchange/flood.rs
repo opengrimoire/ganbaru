@@ -17,6 +17,7 @@ use super::{
 use crate::authority::{self, Enrollment, ForcedHandover};
 use crate::client::{ClientSession, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport};
 use crate::hub::SyncHub;
+use crate::outbox::Outbox;
 use crate::records::{
     self, BackstopState, RecordBudget, RecordClock, RecordExchange, RecordLimits, RecordSession,
     RecordsExchanged,
@@ -248,6 +249,8 @@ async fn forced_away_removing(label: &str, others: &[&str]) -> (Replica, Replica
         &laptop.ctx,
         &forced,
         &mut laptop.writer.local(),
+        &mut Outbox::load(&laptop.directory.files().outbox_path()).expect("outbox"),
+        &Default::default(),
         NOW_MS,
     )
     .await

@@ -20,6 +20,8 @@ use ganbaru_sync_contracts::ids::parse_hex;
 use ganbaru_sync_contracts::{Digest32, KitCode, LateResolution};
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
+#[cfg(desktop)]
+use serde::Serialize;
 use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Runtime, State, Webview};
@@ -369,7 +371,8 @@ pub struct EntryTarget {
 /// `point`, a kit point the contest view offers, or by default from the point the engine
 /// chooses, and then removes the old anchor and every device in `remove_devices`. With
 /// `quarantine_anchor`, it then quarantines the lost anchor and proposes its removal, which it
-/// sequences itself. Returns the authorization revision of the last entry it sealed.
+/// sequences itself. Returns the authorization revision of the last entry it sealed and how
+/// many entries after the handover have not landed yet.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_force_anchor<R: Runtime>(
@@ -379,15 +382,22 @@ pub async fn sync_force_anchor<R: Runtime>(
     point: Option<EntryTarget>,
     remove_devices: Vec<String>,
     quarantine_anchor: bool,
-) -> Result<u64, String> {
+) -> Result<ForceAnchorOutcome, String> {
     let kit_code = kit_code.map(KitCode::new);
     let request = force_request(kit_code, point, remove_devices)?;
-    let (revision, old_anchor) =
+    let (outcome, old_anchor) =
         match run_authority(&runtime, AuthorityAction::ForceAnchor(request)).await? {
             AuthorityAnswer::ForcedAnchor {
                 revision,
                 old_anchor,
-            } => (revision, old_anchor),
+                incomplete,
+            } => (
+                ForceAnchorOutcome {
+                    revision,
+                    incomplete,
+                },
+                old_anchor,
+            ),
             _ => return Err("sync answered forcing the anchor with something else".to_string()),
         };
     if quarantine_anchor && old_anchor != AppHost::of(&app).device_id()? {
@@ -400,7 +410,19 @@ pub async fn sync_force_anchor<R: Runtime>(
         runtime.request_authority_detached(AuthorityAction::ProposeRemoval(old_anchor))?;
     }
     runtime.sync_now();
-    Ok(revision)
+    Ok(outcome)
+}
+
+/// What a forced anchor handover sealed.
+#[cfg(desktop)]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForceAnchorOutcome {
+    /// The authorization revision of the last entry sealed.
+    revision: u64,
+    /// How many entries after the handover still wait or were refused; the waiting ones finish
+    /// in the service loop.
+    incomplete: usize,
 }
 
 /// The anchor handover contests of the active vault's sync space, with the actions this

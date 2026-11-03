@@ -793,17 +793,21 @@ fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor(
             ],
             recovery: None,
         };
+        let mut outbox = Outbox::load(&laptop.directory.files().outbox_path()).expect("outbox");
         let revision = authority::force_handover_here(
             &laptop.engine,
             &mut conn,
             &laptop.ctx,
             &forced,
             &mut laptop.writer.local(),
+            &mut outbox,
+            &Default::default(),
             NOW_MS,
         )
         .await
         .expect("force handover")
-        .expect("the recovery key hands the anchor to a member desktop");
+        .expect("the recovery key hands the anchor to a member desktop")
+        .revision;
         let view = laptop
             .engine
             .authorization(&mut conn, &laptop.ctx)
@@ -915,6 +919,7 @@ fn a_crash_after_the_forced_seal_finishes_the_follow_ups() {
         };
         let outbox_path = laptop.directory.files().outbox_path();
         {
+            let mut outbox = Outbox::load(&outbox_path).expect("outbox");
             let mut conn = acquire(&laptop.pool).await;
             authority::CRASH_AFTER_FORCED_SEAL.with(|crash| crash.set(true));
             let crashed = authority::force_handover_here(
@@ -923,6 +928,8 @@ fn a_crash_after_the_forced_seal_finishes_the_follow_ups() {
                 &laptop.ctx,
                 &forced,
                 &mut laptop.writer.local(),
+                &mut outbox,
+                &Default::default(),
                 NOW_MS,
             )
             .await;
@@ -930,7 +937,10 @@ fn a_crash_after_the_forced_seal_finishes_the_follow_ups() {
             assert!(crashed.is_err(), "the forced handover stops after its seal");
         }
         let sealed = view_of(&laptop).await;
-        assert_eq!(sealed.anchor_device_id, LAPTOP_DEVICE, "the handover is durable");
+        assert_eq!(
+            sealed.anchor_device_id, LAPTOP_DEVICE,
+            "the handover is durable"
+        );
 
         // The restarted service loop sequences what the outbox on disk holds.
         let mut outbox = Outbox::load(&outbox_path).expect("outbox");
@@ -951,10 +961,9 @@ fn a_crash_after_the_forced_seal_finishes_the_follow_ups() {
         let view = view_of(&laptop).await;
         for device_id in [HUB_DEVICE, "device-watch"] {
             assert!(
-                view.devices
-                    .iter()
-                    .any(|device| device.device_id == device_id
-                        && device.removed_revision.is_some()),
+                view.devices.iter().any(
+                    |device| device.device_id == device_id && device.removed_revision.is_some()
+                ),
                 "{device_id} is removed after the restart"
             );
         }
@@ -963,6 +972,101 @@ fn a_crash_after_the_forced_seal_finishes_the_follow_ups() {
             LAPTOP_DEVICE,
             &laptop_admin.public_key()
         ));
+        laptop.close().await;
+    });
+}
+
+#[test]
+fn a_rejected_review_entry_does_not_stop_the_rest() {
+    block_on(async {
+        let mut laptop = lost_hub_space(
+            "forced-review",
+            &[("device-gone", true), ("device-watch", false)],
+        )
+        .await;
+        let laptop_admin = AdminKeyPair::from_seed(&[32; 32]).expect("admin seed");
+        let view = view_of(&laptop).await;
+        let recovery =
+            authority::recovery_admin(&view, &hub_recovery_seed().kit_code()).expect("kit");
+        // The review names a device the lost hub removed already, ahead of a live one.
+        let forced = authority::ForcedHandover {
+            signer: &recovery,
+            promote: Some(laptop_admin.public_key()),
+            point: None,
+            removals: vec!["device-gone".to_string(), "device-watch".to_string()],
+            recovery: None,
+        };
+        let mut outbox = Outbox::load(&laptop.directory.files().outbox_path()).expect("outbox");
+        let mut conn = acquire(&laptop.pool).await;
+        let forced = authority::force_handover_here(
+            &laptop.engine,
+            &mut conn,
+            &laptop.ctx,
+            &forced,
+            &mut laptop.writer.local(),
+            &mut outbox,
+            &Default::default(),
+            NOW_MS,
+        )
+        .await
+        .expect("force handover")
+        .expect("the kit hands the anchor to the laptop");
+        drop(conn);
+        assert_eq!(forced.incomplete, 0, "a device gone already is no failure");
+        let view = view_of(&laptop).await;
+        assert_eq!(view.revision, forced.revision);
+        for device_id in [HUB_DEVICE, "device-watch"] {
+            assert!(
+                view.devices.iter().any(
+                    |device| device.device_id == device_id && device.removed_revision.is_some()
+                ),
+                "{device_id} is removed"
+            );
+        }
+        assert!(authority::is_admin(
+            &view,
+            LAPTOP_DEVICE,
+            &laptop_admin.public_key()
+        ));
+        laptop.close().await;
+    });
+}
+
+#[test]
+fn a_lost_forced_handover_withdraws_its_gated_entries() {
+    block_on(async {
+        let mut laptop = lost_hub_space("forced-lost", &[("device-watch", false)]).await;
+        let before = view_of(&laptop).await;
+        // A key the log does not name signs the handover, so the engine refuses it.
+        let stranger = AdminKeyPair::from_seed(&[77; 32]).expect("admin seed");
+        let forced = authority::ForcedHandover {
+            signer: &stranger,
+            promote: Some(stranger.public_key()),
+            point: None,
+            removals: Vec::new(),
+            recovery: None,
+        };
+        let outbox_path = laptop.directory.files().outbox_path();
+        let mut outbox = Outbox::load(&outbox_path).expect("outbox");
+        let mut conn = acquire(&laptop.pool).await;
+        let refused = authority::force_handover_here(
+            &laptop.engine,
+            &mut conn,
+            &laptop.ctx,
+            &forced,
+            &mut laptop.writer.local(),
+            &mut outbox,
+            &Default::default(),
+            NOW_MS,
+        )
+        .await
+        .expect("force handover");
+        drop(conn);
+        assert!(refused.is_err(), "the engine refuses the handover");
+        assert_eq!(view_of(&laptop).await, before);
+        assert!(outbox.entries().is_empty(), "nothing waits in memory");
+        let reloaded = Outbox::load(&outbox_path).expect("outbox");
+        assert!(reloaded.entries().is_empty(), "nothing waits on disk");
         laptop.close().await;
     });
 }
@@ -1105,6 +1209,7 @@ async fn force_with_kit(
         removals: Vec::new(),
         recovery: Some(&recovery),
     };
+    let mut outbox = Outbox::load(&laptop.directory.files().outbox_path()).expect("outbox");
     let mut conn = acquire(&laptop.pool).await;
     authority::force_handover_here(
         &laptop.engine,
@@ -1112,9 +1217,12 @@ async fn force_with_kit(
         &laptop.ctx,
         &forced,
         &mut laptop.writer.local(),
+        &mut outbox,
+        &Default::default(),
         NOW_MS,
     )
     .await
+    .map(|forced| forced.map(|forced| forced.revision))
 }
 
 #[test]

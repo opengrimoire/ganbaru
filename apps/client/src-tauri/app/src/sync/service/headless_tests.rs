@@ -694,8 +694,12 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
     let recovery =
         authority::recovery_admin(&view, &RecoverySeed::from_bytes(RECOVERY_SEED).kit_code())
             .expect("the kit recovers the vault");
+    let laptop_files =
+        SyncFiles::new(laptop_directory.path().join("sync"), VAULT_ID).expect("laptop files");
+    let mut laptop_outbox = ganbaru_sync_replica::outbox::Outbox::load(&laptop_files.outbox_path())
+        .expect("laptop outbox");
     let mut laptop_writer = create_writer(
-        &SyncFiles::new(laptop_directory.path().join("sync"), VAULT_ID).expect("laptop files"),
+        &laptop_files,
         &FileKeyStore::new(
             laptop_directory.path().join("keys"),
             crate::sync::key_protection::test_wrapper(),
@@ -718,6 +722,8 @@ async fn a_member_gives_a_coordinator_its_log_removed_record_exchange_only() {
             recovery: None,
         },
         &mut laptop_writer.local(),
+        &mut laptop_outbox,
+        &Default::default(),
         now_ms().expect("clock"),
     )
     .await

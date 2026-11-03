@@ -866,7 +866,17 @@ async fn claim_scheduled_mention(
     pool: &SqlitePool,
     now: &UtcTimestamp,
 ) -> (PostChatMessageCommand, ChatScheduledMessageId) {
+    claim_scheduled_mention_on(pool, now, None).await
+}
+
+/// Like `claim_scheduled_mention`, with the request choosing `execution_target`.
+async fn claim_scheduled_mention_on(
+    pool: &SqlitePool,
+    now: &UtcTimestamp,
+    execution_target: Option<ChatExecutionTarget>,
+) -> (PostChatMessageCommand, ChatScheduledMessageId) {
     let mut request = message("@Review agent check this");
+    request.execution_target = execution_target;
     request.client_command_id = ChatCommandId::new("command:test").unwrap();
     request.channel_id = ChatChannelId::new("channel:review").unwrap();
     request.references = vec![participant_reference(
@@ -1194,6 +1204,245 @@ fn unattended_scheduled_post_leaves_assignment_queued() {
             "an accepted teammate runs through the adoption gate"
         );
         assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+    });
+}
+
+#[test]
+fn recovery_after_a_stop_starts_accepted_unattended_work_and_leaves_the_rest_at_start_here() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let (request, scheduled_message_id) = claim_scheduled_mention(&pool, &now).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        // The post commits and the app stops before the unattended start runs.
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+
+        let unaccepted = ChatDeviceScope::default();
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &unaccepted)
+            .await
+            .unwrap();
+        assert!(adopted.is_empty(), "recovery started unaccepted work");
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+        assert!(
+            assignments::assignment_awaits_local_acceptance(
+                &pool,
+                &assignment_id,
+                device,
+                &unaccepted,
+            )
+            .await
+            .unwrap(),
+            "unaccepted work still waits for Start here after recovery"
+        );
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &accepted)
+            .await
+            .unwrap();
+        assert_eq!(
+            adopted,
+            [assignment_id.clone()],
+            "recovery starts work whose teammate this device accepted"
+        );
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 1);
+    });
+}
+
+/// Grants the review agent a second, non-default folder `folder:second` of the review project.
+async fn seed_second_review_folder(pool: &SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path)
+         VALUES ('folder:second', 'project:review', 'Second', 'managed', 'projects/second');
+         INSERT INTO chat_teammate_working_folder_grants
+             (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+              capability, capability_inherits_profile, is_default, created_at)
+         VALUES (
+             'conversation:review', 'participant:review-agent', 'project:review',
+             'folder:second', 'grant:second', 'execute', 1, 0, '2026-08-04T17:00:00.000Z'
+         );",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The working folder the frozen authorization of `assignment_id` runs in.
+async fn frozen_execution_folder(
+    pool: &SqlitePool,
+    assignment_id: &ChatWorkAssignmentId,
+) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT folder.working_folder_id
+         FROM chat_assignment_authorized_folder_sources folder
+         JOIN chat_assignment_authorization_revisions authorization
+           ON authorization.id = folder.authorization_revision_id
+         WHERE authorization.assignment_id = ? AND folder.is_execution_target = 1",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn unattended_work_keeps_the_execution_target_its_request_chose() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        seed_second_review_folder(&pool).await;
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let target = ChatExecutionTarget::WorkingFolder {
+            working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+            execution_environment_id: ChatExecutionEnvironmentId::new(
+                ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+            )
+            .unwrap(),
+        };
+        let (request, scheduled_message_id) =
+            claim_scheduled_mention_on(&pool, &now, Some(target)).await;
+        let send = ScheduledSend {
+            scheduled_message_id: &scheduled_message_id,
+            claim_token: "claim:a",
+            consent: ScheduledConsent::Unattended,
+        };
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let posted = persist_post(&pool, &request, Some(send), device)
+            .await
+            .unwrap();
+        let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+        assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
+
+        let accepted = scope_accepting(&pool, assignment_id.as_str()).await;
+        assert!(
+            assignments::adopt_synced_assignment(&pool, &assignment_id, "device:desk", &accepted)
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(
+            frozen_execution_folder(&pool, &assignment_id)
+                .await
+                .as_deref(),
+            Some("folder:second"),
+            "the accepted work dropped the execution target its request chose"
+        );
+    });
+}
+
+/// Posts an unattended reply on `device:desk` whose request chose `folder:second`, returning
+/// the queued assignment that waits for Start here.
+async fn post_unattended_work_on_second_folder(pool: &SqlitePool) -> ChatWorkAssignmentRead {
+    seed_second_review_folder(pool).await;
+    let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+    let target = ChatExecutionTarget::WorkingFolder {
+        working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+        execution_environment_id: ChatExecutionEnvironmentId::new(
+            ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+        )
+        .unwrap(),
+    };
+    let (request, scheduled_message_id) =
+        claim_scheduled_mention_on(pool, &now, Some(target)).await;
+    let send = ScheduledSend {
+        scheduled_message_id: &scheduled_message_id,
+        claim_token: "claim:a",
+        consent: ScheduledConsent::Unattended,
+    };
+    let writers = chat_writers_of(&["device:desk"]);
+    let device = PostingDevice::this_device("device:desk", &writers);
+    let posted = persist_post(pool, &request, Some(send), device)
+        .await
+        .unwrap();
+    let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
+    read_assignment(pool, &assignment_id).await.unwrap()
+}
+
+/// How many execution targets this device keeps for `assignment_id`.
+async fn requested_target_count(pool: &SqlitePool, assignment_id: &ChatWorkAssignmentId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_assignment_requested_targets WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn retry_of_cancelled_unattended_work_resolves_its_target_again() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let queued = post_unattended_work_on_second_folder(&pool).await;
+        // A cancel synced from another device settles the work without this device's cancel path.
+        sqlx::query(
+            "UPDATE chat_work_assignments
+             SET state = 'cancelled', settled_at = updated_at, revision = revision + 1
+             WHERE id = ?",
+        )
+        .bind(queued.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "DELETE FROM chat_teammate_working_folder_grants WHERE working_folder_id = 'folder:second'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let cancelled = read_assignment(&pool, &queued.id).await.unwrap();
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let now = UtcTimestamp::new("2026-08-04T17:04:00.000Z").unwrap();
+
+        let retried =
+            assignments::persist_retry(&pool, &cancelled.id, cancelled.revision, device, &now)
+                .await;
+
+        assert!(
+            retried.is_ok(),
+            "retry kept the target whose grant was removed: {retried:?}"
+        );
+        assert_eq!(
+            frozen_execution_folder(&pool, &cancelled.id)
+                .await
+                .as_deref(),
+            Some("folder:review")
+        );
+    });
+}
+
+#[test]
+fn cancelling_unattended_work_drops_its_kept_target() {
+    tauri::async_runtime::block_on(async {
+        let pool = review_thread_without_assignment().await;
+        let queued = post_unattended_work_on_second_folder(&pool).await;
+        assert_eq!(requested_target_count(&pool, &queued.id).await, 1);
+
+        super::workflow::set_assignment_state(
+            &pool,
+            &queued.id,
+            queued.revision,
+            ChatWorkAssignmentState::Cancelled,
+            Some("Cancelled by the user"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            requested_target_count(&pool, &queued.id).await,
+            0,
+            "the target outlived the work it was kept for"
+        );
     });
 }
 

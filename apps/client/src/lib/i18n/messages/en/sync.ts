@@ -121,6 +121,7 @@ export const sync = {
       notSyncing: "Link a device first. A server only serves a vault that syncs.",
       notAdmin: "Only an admin computer can add or remove the server.",
       serverExists: "This vault already uses a server. Remove it first.",
+      serverRunsAnotherVault: "This server already runs another vault, so nothing was changed. Delete the server's data directory and print a new setup code to use it for this vault.",
       noServer: "This vault uses no server.",
       noKeys: "This device does not hold the vault's encryption keys yet. Sync with the anchor and try again.",
       failed: "The server could not be changed. Try again.",

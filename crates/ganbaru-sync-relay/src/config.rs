@@ -35,7 +35,7 @@ spaces        lists the claimed spaces with their epoch and stored bytes.
 remove-space  deletes a space and everything stored for it. Stop the relay first.
 revoke-setup  revokes one unused setup code, or every unused one when --code is omitted.
 anchor        runs an always-on replica of one vault in a data directory of its own.
-anchor setup  prints a fresh one-time secret that lets one desktop enroll, or recover through, this server.
+anchor setup  prints a fresh setup code, bound to the first vault it is proven for, that lets one desktop enroll, or recover through, this server.
 anchor backup writes an encrypted backup that opens with the recovery kit. Stop the anchor first.";
 
 /// Settings of the `serve` subcommand.

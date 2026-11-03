@@ -72,6 +72,8 @@ pub enum SyncServerError {
     NotAdmin,
     /// The space already names a server; remove it first.
     ServerExists,
+    /// The anchor server already runs another vault.
+    ServerRunsAnotherVault,
     /// The space names no server.
     NoServer,
     /// This device holds no key epoch of the space yet.

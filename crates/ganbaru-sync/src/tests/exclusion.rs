@@ -29,7 +29,7 @@ use crate::manifest::vault::distractions::{
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::provenance::row_creating_devices;
-use crate::{HoldReason, LateChange, LateKind, StoreOutcome, SyncError};
+use crate::{HoldReason, LateChange, LateKind, MAX_EXCLUDED_PER_WRITER, StoreOutcome, SyncError};
 use crate::{hydrate, log};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
@@ -1067,7 +1067,7 @@ async fn removed_after_honest_row(salt: u64) -> (Replica, Replica, Replica, u64)
 
 /// A Create of `row` past the removed device's cutoff, built from the honest create of
 /// `note-kept`, with the title `Late` and another color.
-async fn late_create(removed: &mut Replica, honest: &mut Replica, row: &str) -> Vec<u8> {
+pub(super) async fn late_create(removed: &mut Replica, honest: &mut Replica, row: &str) -> Vec<u8> {
     let mut create = sealed_create(honest, NOTES_TABLE, "note-kept").await;
     create.row = RowKey::new(row).unwrap();
     let create = with_group(create, note_group::TITLE, vec![text_field("Late")]);
@@ -2643,5 +2643,228 @@ fn a_lower_unnamed_genesis_displaces_an_unnamed_writer_when_the_removal_names_th
             late_lowest.domain_dump().await,
             late_highest.domain_dump().await
         );
+    });
+}
+
+/// The anchor, a removed device that sealed `note-early` before its removal, an honest member
+/// that created `note-kept`, a peer that stores what the removed device seals past its cutoff
+/// before it learns of the removal, and a peer that learns of the removal first, with the
+/// removed writer's cutoff. Every replica knows both notes.
+async fn removed_before_a_burst(salt: u64) -> ([Replica; 5], u64) {
+    let (mut anchor, mut removed, mut honest) = trio(salt).await;
+    let mut early = Replica::new(3, salt).await;
+    let mut never = Replica::new(4, salt).await;
+    edit(&mut honest, &note("note-kept", "Draft", 0)).await;
+    spread(&mut anchor, &mut honest).await;
+    deliver(&mut removed, &mut anchor).await;
+    edit(&mut removed, &note("note-early", "Early", 1)).await;
+    deliver(&mut anchor, &mut removed).await;
+    for replica in [&mut honest, &mut early, &mut never] {
+        deliver(replica, &mut anchor).await;
+    }
+    let cutoff = anchor.stored_vector().await.get(&removed.writer());
+    anchor.remove(&removed.device_id.clone()).await.unwrap();
+    deliver(&mut honest, &mut anchor).await;
+    deliver(&mut never, &mut anchor).await;
+    ([anchor, removed, honest, early, never], cutoff)
+}
+
+/// Seals [`MAX_EXCLUDED_PER_WRITER`] edits of `note-early` on `removed`, which fill its
+/// excluded bound past `cutoff`.
+async fn fill_excluded_bound(removed: &mut Replica, cutoff: u64) {
+    for index in 0..MAX_EXCLUDED_PER_WRITER {
+        edit(
+            removed,
+            &format!("UPDATE quick_notes SET title = 'Early {index}' WHERE id = 'note-early'"),
+        )
+        .await;
+    }
+    assert_eq!(
+        removed.stored_vector().await.get(&removed.writer()),
+        cutoff + MAX_EXCLUDED_PER_WRITER
+    );
+}
+
+/// The removed writer's operations past `cutoff`.
+async fn past_cutoff(removed: &mut Replica, cutoff: u64) -> Vec<Vec<u8>> {
+    removed.own_ops().await[usize::try_from(cutoff).unwrap()..].to_vec()
+}
+
+/// The replicated merge state a replica holds for a note: its row, versions, tombstones, and
+/// creations. Displaced versions are left out, since the anchor releases them where a member
+/// keeps them until the anchor confirms.
+async fn note_merge_state(replica: &mut Replica, id: &str) -> Vec<String> {
+    let key = quoted(id);
+    let table = NOTES_TABLE.0;
+    let mut state = Vec::new();
+    for (name, sql) in [
+        (
+            "row",
+            format!(
+                "SELECT state || ':' || creation_pending FROM sync_rows
+                 WHERE table_id = {table} AND row_key = {key}"
+            ),
+        ),
+        (
+            "version",
+            format!(
+                "SELECT group_id || ':' || hex(writer_id) || ':' || seq || ':' || hex(value_hash)
+                 FROM sync_register_versions WHERE table_id = {table} AND row_key = {key}
+                 ORDER BY 1"
+            ),
+        ),
+        (
+            "tombstone",
+            format!(
+                "SELECT hex(writer_id) || ':' || seq FROM sync_tombstones
+                 WHERE table_id = {table} AND row_key = {key} ORDER BY 1"
+            ),
+        ),
+        (
+            "creation",
+            format!(
+                "SELECT hex(writer_id) || ':' || seq FROM sync_row_creations
+                 WHERE table_id = {table} AND row_key = {key} ORDER BY 1"
+            ),
+        ),
+    ] {
+        let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .fetch_all(&mut replica.conn)
+            .await
+            .unwrap();
+        state.extend(rows.into_iter().map(|row| format!("{name} {row}")));
+    }
+    state
+}
+
+/// A removed device fills its excluded bound and then signs a Create of a row an honest member
+/// created. A peer that stored and applied all of it before learning of the removal keeps the
+/// honest row with its merge state, applies a later honest edit, and ends where a peer that
+/// never stored the operations ends.
+#[test]
+fn dropping_past_the_bound_keeps_an_honest_row() {
+    block_on(async {
+        let ([mut anchor, mut removed, mut honest, mut early, mut never], cutoff) =
+            removed_before_a_burst(270).await;
+        fill_excluded_bound(&mut removed, cutoff).await;
+        let forged = late_create(&mut removed, &mut honest, "note-kept").await;
+        let mut past = past_cutoff(&mut removed, cutoff).await;
+        past.push(forged);
+        assert_eq!(past.len() as u64, MAX_EXCLUDED_PER_WRITER + 1);
+
+        take(&mut early, &past).await;
+        deliver(&mut early, &mut anchor).await;
+        assert_eq!(
+            early.stored_vector().await.get(&removed.writer()),
+            cutoff + MAX_EXCLUDED_PER_WRITER,
+            "the operation past the bound is dropped"
+        );
+        assert_eq!(
+            title(&mut early, "note-kept").await.as_deref(),
+            Some("Draft"),
+            "the honest row stays"
+        );
+        assert_eq!(
+            note_merge_state(&mut early, "note-kept").await,
+            note_merge_state(&mut never, "note-kept").await,
+            "the honest row keeps its merge state"
+        );
+
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Edited' WHERE id = 'note-kept'",
+        )
+        .await;
+        deliver(&mut anchor, &mut honest).await;
+        deliver(&mut early, &mut anchor).await;
+        deliver(&mut never, &mut anchor).await;
+        let expected = never.domain_dump().await;
+        let merged = note_merge_state(&mut never, "note-kept").await;
+        for replica in [&mut anchor, &mut early, &mut never] {
+            assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Edited"));
+            assert_eq!(replica.domain_dump().await, expected);
+            assert_eq!(note_merge_state(replica, "note-kept").await, merged);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// A row only an operation past the bound created leaves the merge state and the domain table
+/// on a peer that applied it before learning of the removal, as on a peer that never stored it.
+#[test]
+fn dropping_past_the_bound_purges_a_row_only_it_created() {
+    block_on(async {
+        let ([mut anchor, mut removed, _, mut early, mut never], cutoff) =
+            removed_before_a_burst(271).await;
+        fill_excluded_bound(&mut removed, cutoff).await;
+        edit(&mut removed, &note("note-only", "Only", 2)).await;
+        let past = past_cutoff(&mut removed, cutoff).await;
+        assert_eq!(past.len() as u64, MAX_EXCLUDED_PER_WRITER + 1);
+
+        take(&mut early, &past).await;
+        assert_eq!(
+            title(&mut early, "note-only").await.as_deref(),
+            Some("Only")
+        );
+        deliver(&mut early, &mut anchor).await;
+        let expected = never.domain_dump().await;
+        for replica in [&mut anchor, &mut early, &mut never] {
+            assert_eq!(title(replica, "note-only").await, None);
+            assert!(
+                note_merge_state(replica, "note-only").await.is_empty(),
+                "replica {} keeps merge state of the purged row",
+                replica.index
+            );
+            assert_eq!(replica.domain_dump().await, expected);
+            replica.check_invariants().await;
+        }
+    });
+}
+
+/// The creation of a row past the bound is found when compaction dropped its body before the
+/// removal arrived, so the row leaves as it does with the body kept.
+#[test]
+fn dropping_past_the_bound_finds_creations_of_compacted_bodies() {
+    block_on(async {
+        let ([mut anchor, mut removed, _, mut early, mut never], cutoff) =
+            removed_before_a_burst(272).await;
+        fill_excluded_bound(&mut removed, cutoff).await;
+        edit(&mut removed, &note("note-only", "Only", 2)).await;
+        edit(
+            &mut removed,
+            "UPDATE quick_notes SET title = 'Early last' WHERE id = 'note-early'",
+        )
+        .await;
+        let past = past_cutoff(&mut removed, cutoff).await;
+        assert_eq!(past.len() as u64, MAX_EXCLUDED_PER_WRITER + 2);
+
+        take(&mut early, &past).await;
+        let limit = early.stored_vector().await;
+        early
+            .compact(&limit, crate::COMPACTION_BATCH_OPS)
+            .await
+            .unwrap();
+        let bodiless = early
+            .count(&format!(
+                "SELECT count(*) FROM sync_ops WHERE writer_id = x'{}' AND seq = {}
+                    AND length(envelope) = 0",
+                removed.writer().to_hex(),
+                cutoff + MAX_EXCLUDED_PER_WRITER + 1
+            ))
+            .await;
+        assert_eq!(bodiless, 1, "the creation past the bound is compacted");
+
+        deliver(&mut early, &mut anchor).await;
+        let expected = never.domain_dump().await;
+        for replica in [&mut anchor, &mut early, &mut never] {
+            assert_eq!(title(replica, "note-only").await, None);
+            assert!(
+                note_merge_state(replica, "note-only").await.is_empty(),
+                "replica {} keeps merge state of the purged row",
+                replica.index
+            );
+            assert_eq!(replica.domain_dump().await, expected);
+            replica.check_invariants().await;
+        }
     });
 }

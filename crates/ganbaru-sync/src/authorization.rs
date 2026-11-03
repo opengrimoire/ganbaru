@@ -111,6 +111,10 @@ pub struct AuthorizationView {
     pub kit_admin_key: AdminPublicKey,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
+    /// Admin keys the selected chain took away without removing a device: a device's admin key
+    /// a role change replaced, and recovery and kit keys a rotation or kit handover replaced. A
+    /// key stays here when a later entry names it again, so readers subtract the live set.
+    pub retired_admin_keys: BTreeSet<AdminPublicKey>,
     /// The discovery key devices advertise under now: the charter's, replaced by each removal.
     pub discovery_key: [u8; DISCOVERY_KEY_BYTES],
     /// The key the latest removal replaced, which devices that have not applied it yet still
@@ -227,6 +231,9 @@ pub(crate) struct AuthState {
     /// Handovers on the chain that the kit key signed and no rotation vetoed.
     kit_handovers: u32,
     devices: BTreeMap<String, DeviceState>,
+    /// Admin keys the chain took away without removing a device, see
+    /// [`AuthorizationView::retired_admin_keys`].
+    retired_admin_keys: Arc<BTreeSet<AdminPublicKey>>,
     /// Revision past which the selected epoch is frozen. Only a selected head carries it, so
     /// the walk never reads it.
     frozen_at: Option<u64>,
@@ -323,6 +330,7 @@ impl AuthState {
             recovery_opened: None,
             kit_handovers: 0,
             devices: BTreeMap::from([(body.anchor_device_id.clone(), anchor)]),
+            retired_admin_keys: Arc::default(),
             frozen_at: None,
             vetoes,
             catch_up: None,
@@ -663,11 +671,16 @@ impl AuthState {
                 // A kit or recovery handover leaves no admin but its target, so no other
                 // device, planted or former anchor, can take the new instance from it.
                 if matches!(signer, Some(Signer::Kit | Signer::Recovery)) {
+                    let mut demoted = Vec::new();
                     for (device_id, device) in &mut self.devices {
                         if *device_id != handover.new_anchor_device_id && device.removed.is_none() {
+                            if let DeviceRole::Admin(key) = device.role {
+                                demoted.push(key);
+                            }
                             device.role = DeviceRole::Member;
                         }
                     }
+                    self.retire(demoted);
                 }
                 match signer {
                     Some(Signer::Kit) => self.reset_recovery(),
@@ -698,14 +711,23 @@ impl AuthState {
             }
             Entry::SetRole(SetRole::Device { device_id, role }) => {
                 if let Some(device) = self.devices.get_mut(device_id) {
+                    let replaced = match device.role {
+                        DeviceRole::Admin(key) if device.role != *role => Some(key),
+                        _ => None,
+                    };
                     device.role = *role;
+                    self.retire(replaced);
                 }
             }
             Entry::SetRole(SetRole::Recovery { recovery_admin_key }) => {
                 if author == self.kit_key {
+                    let replaced = self.kit_key;
                     self.kit_key = *recovery_admin_key;
                     self.reset_recovery();
+                    self.retire((replaced != self.kit_key).then_some(replaced));
                 } else {
+                    let replaced = self.recovery_admin_key;
+                    self.retire((replaced != *recovery_admin_key).then_some(replaced));
                     self.recovery_admin_key = *recovery_admin_key;
                     self.installer = (*recovery_admin_key != self.kit_key)
                         .then(|| self.anchor_device_id.clone());
@@ -735,9 +757,19 @@ impl AuthState {
 
     /// Makes the kit key the recovery key again, dropping an installed one.
     fn reset_recovery(&mut self) {
+        let replaced = self.recovery_admin_key;
         self.recovery_admin_key = self.kit_key;
         self.installer = None;
         self.recovery_opened = None;
+        self.retire((replaced != self.kit_key).then_some(replaced));
+    }
+
+    /// Records admin keys the chain took away without removing a device.
+    fn retire(&mut self, keys: impl IntoIterator<Item = AdminPublicKey>) {
+        let mut keys = keys.into_iter().peekable();
+        if keys.peek().is_some() {
+            Arc::make_mut(&mut self.retired_admin_keys).extend(keys);
+        }
     }
 
     /// The revocations `record`, which this state admits, carries: removed and demoted devices,
@@ -814,6 +846,7 @@ impl AuthState {
             charter: self.charter,
             recovery_admin_key: self.recovery_admin_key,
             kit_admin_key: self.kit_key,
+            retired_admin_keys: (*self.retired_admin_keys).clone(),
             devices: self
                 .devices
                 .iter()

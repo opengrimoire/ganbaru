@@ -1,6 +1,7 @@
 //! Full relay passes against an in-process relay server: devices converge only through the
 //! relay, a removed device opens nothing sealed after its removal, an admin repairs a wrong epoch
 //! registration, an admin that lags behind a rotation or a demotion leaves the relay alone, a
+//! removed admin's key leaves the relay although a planted floor keeps pulls from draining, a
 //! stalled flush registers nothing, a rotation during a pass ends it without failure, asset
 //! chunks round trip and a tampered chunk is refused, and an access proof bound to another
 //! connection is refused.
@@ -23,8 +24,8 @@ use crate::relay::{
 use crate::tests::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note};
 use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_handoff::protocol::relay::{
-    RELAY_AUTH_DOMAIN, RELAY_EPOCH_DOMAIN, RELAY_SETUP_TOKEN_LIFETIME, RelayRefusalCode,
-    RelayRequest, RelayResponse, RelaySetupToken, encode_relay_bytes,
+    RELAY_AUTH_DOMAIN, RELAY_EPOCH_DOMAIN, RELAY_SETUP_TOKEN_LIFETIME, RelayAdminCommand,
+    RelayRefusalCode, RelayRequest, RelayResponse, RelaySetupToken, encode_relay_bytes,
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::{AuthorizationView, RelayKeys};
@@ -32,8 +33,8 @@ use ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES;
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, AuthorizationRecord, ChainLink, Content, DeviceKeyPair,
     DeviceKind, DeviceRole, EncryptionKeyPair, Enroll, Entry, KeyEnvelope, KeyEpoch, Proposal,
-    RelayAccessKeyPair, Sequencing, SetRole, SignedProposal, SpaceKey, sign_device_proposal,
-    sign_proposal,
+    RelayAccessKeyPair, Sequencing, SetRole, SignedProposal, SpaceKey, WriterId,
+    sign_device_proposal, sign_proposal,
 };
 use ganbaru_sync_relay::identity::RelayIdentity;
 use ganbaru_sync_relay::server::{ConnectionLimits, RelayServer, unix_time_ms};
@@ -1111,6 +1112,84 @@ fn a_lagging_admin_does_not_restore_a_demoted_admin_key() {
         assert_eq!(drained.problem, None, "{drained:?}");
         assert!(!relay_holds_admin(&pool, &second_admin).await);
         assert!(relay_holds_admin(&pool, &hub_keys().admin).await);
+        pool.close().await;
+        hub_device.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn removed_admin_key_leaves_the_relay_without_a_drained_pull() {
+    block_on(async {
+        let relay = start_relay("relay-removed-admin").await;
+        let (mut hub_device, members) = keyed_space("removed-admin", &[PHONE_DEVICE]).await;
+        let phone = members.into_iter().next().expect("phone");
+        hub_device.claim(&relay).await;
+        assert_eq!(hub_device.pass(&relay).await.problem, None);
+        assert_eq!(phone.pass(&relay).await.problem, None);
+
+        let second_admin = AdminKeyPair::from_seed(&[62; 32]).expect("admin seed");
+        let space = hub_device.replica.ctx.space;
+        let charter = hub_device.replica.charter().await;
+        for entry in [
+            authority::enroll_entry(Enrollment {
+                device_id: SECOND_ADMIN_DEVICE.to_string(),
+                device_key: device_key(SECOND_ADMIN_DEVICE).public_key(),
+                tls_fingerprint: [62; 32],
+                label: SECOND_ADMIN_DEVICE.to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            authority::promote_entry(SECOND_ADMIN_DEVICE, second_admin.public_key()),
+        ] {
+            let proposal = authority::propose(space, charter, &hub_keys().admin, entry, NOW_MS)
+                .expect("sign proposal");
+            sequence_here(&mut hub_device.replica, &proposal).await;
+        }
+        assert_eq!(hub_device.pass(&relay).await.problem, None);
+        let pool = relay_database(&relay).await;
+        assert!(relay_holds_admin(&pool, &second_admin).await);
+
+        // While still an admin, the device pushed the first record of a fresh writer at
+        // sequence 2, so every pull meets a floor no member can reach below.
+        let planted = WriterId::from_bytes([95; 16]);
+        sqlx::query(
+            "INSERT INTO relay_floors (space_id, writer_id, floor, next_seq) \
+             SELECT space_id, ?, 2, 2 FROM relay_spaces",
+        )
+        .bind(planted.as_bytes().as_slice())
+        .execute(&pool)
+        .await
+        .expect("plant a floor");
+
+        // The chain removes the device, and the next pass of a live admin drops its key.
+        remove_and_rotate(&mut hub_device, SECOND_ADMIN_DEVICE).await;
+        let removing = hub_device.pass(&relay).await;
+        assert_eq!(removing.registered, vec![2], "{removing:?}");
+        assert!(
+            !relay_holds_admin(&pool, &second_admin).await,
+            "{removing:?}"
+        );
+        assert!(relay_holds_admin(&pool, &hub_keys().admin).await);
+
+        // The removed key can no longer roll the relay back to the epoch it holds.
+        let access = phone.access(1).await;
+        let mut removed = Connection::open(&relay.target, space, LoopbackPolicy::Allow)
+            .await
+            .expect("connect");
+        removed.hello().await.expect("hello");
+        let refused = removed
+            .admin(
+                &second_admin,
+                1,
+                &RelayAdminCommand::RelayEpochRepair {
+                    epoch: 1,
+                    access_key: &access.public_key(),
+                },
+            )
+            .await
+            .expect_err("a removed admin's repair is refused");
+        assert_eq!(refused.problem, RelayProblem::AdminRefused, "{refused:?}");
+        assert_eq!(relay_epoch(&pool).await, 2);
         pool.close().await;
         hub_device.close().await;
         phone.close().await;

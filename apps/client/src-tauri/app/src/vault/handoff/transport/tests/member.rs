@@ -195,6 +195,7 @@ fn enrolling_view(fingerprint: &str, removed: bool) -> AuthorizationView {
         charter: [8; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
         kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+        retired_admin_keys: std::collections::BTreeSet::new(),
         devices: vec![EnrolledDevice {
             device_id: PHONE.to_string(),
             device_key: DevicePublicKey::from_bytes([3; 32]),

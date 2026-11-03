@@ -1,7 +1,7 @@
 //! The authorization log: enrollment gating at store, entries the anchor sequences, chain
 //! selection, readiness against the selected revision, and the derived device table.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
@@ -1790,6 +1790,79 @@ fn a_chain_never_orders_one_proposal_twice() {
                 AdminKeyPair::from_seed(&[91; 32]).unwrap().public_key()
             );
         }
+    });
+}
+
+#[test]
+fn demoted_and_replaced_keys_fold_into_the_retired_set() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 66).await;
+        let space = hub.ctx.space;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        assert!(view(&mut hub).await.retired_admin_keys.is_empty());
+
+        // A demotion retires the device's admin key, which the device table no longer shows.
+        let admin = device_admin(20).public_key();
+        let set_role = |role: DeviceRole| {
+            Entry::SetRole(SetRole::Device {
+                device_id: device_id(20),
+                role,
+            })
+        };
+        hub.sequence(set_role(DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            view(&mut hub).await.retired_admin_keys,
+            BTreeSet::from([admin])
+        );
+
+        // A promotion back keeps the key retired; readers subtract the live admins.
+        hub.sequence(set_role(DeviceRole::Admin(admin)))
+            .await
+            .unwrap()
+            .unwrap();
+        let promoted = view(&mut hub).await;
+        assert_eq!(promoted.retired_admin_keys, BTreeSet::from([admin]));
+        assert!(promoted.devices.iter().any(|device| {
+            device.device_id == device_id(20) && device.role == DeviceRole::Admin(admin)
+        }));
+
+        // An installed recovery key retires the kit key it replaced as the recovery key.
+        let kit = recovery_admin(&person());
+        let installed = AdminKeyPair::from_seed(&[93; 32]).unwrap().public_key();
+        hub.sequence(Entry::SetRole(SetRole::Recovery {
+            recovery_admin_key: installed,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            view(&mut hub).await.retired_admin_keys,
+            BTreeSet::from([admin, kit.public_key()])
+        );
+
+        // A rotation the kit signs retires the installed key it resets.
+        let rotated = AdminKeyPair::from_seed(&[94; 32]).unwrap().public_key();
+        let rotation = proposal(
+            space,
+            &kit,
+            hub.now_ms,
+            Entry::SetRole(SetRole::Recovery {
+                recovery_admin_key: rotated,
+            }),
+        );
+        hub.sequence_signed(&rotation).await.unwrap().unwrap();
+        let after = view(&mut hub).await;
+        assert_eq!(
+            (after.kit_admin_key, after.recovery_admin_key),
+            (rotated, rotated)
+        );
+        assert_eq!(
+            after.retired_admin_keys,
+            BTreeSet::from([admin, kit.public_key(), installed])
+        );
     });
 }
 

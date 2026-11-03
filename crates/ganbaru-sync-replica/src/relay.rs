@@ -1146,11 +1146,9 @@ impl RelaySession<'_> {
     /// lacks, and stores the operations they carry through the verified operation path.
     ///
     /// Returns whether the pull drained the relay: the relay reported nothing more to pull,
-    /// never reported operations of a writer this replica knows trimmed below its floor, and
-    /// this replica refused no record. A stop at the byte bound, a refusal, or a trimmed range
-    /// of a known writer means this replica cannot know what the relay still holds for it. A
-    /// floor of a writer this replica holds no certificate for is noted but does not block the
-    /// drain, since a relay or a removed admin could plant one to hold the admin set back.
+    /// never reported operations trimmed below its floor, and this replica refused no record.
+    /// A stop at the byte bound, a refusal, or a trimmed range means this replica cannot know
+    /// what the relay still holds for it, even for a writer it never met.
     async fn pull(
         &self,
         connection: &mut Connection,
@@ -1175,7 +1173,7 @@ impl RelaySession<'_> {
                 other => return Err(unexpected("Records", &other)),
             };
             if !behind_floor.is_empty() {
-                trimmed |= self.knows_a_writer(&behind_floor).await?;
+                trimmed = true;
                 pass.note(
                     RelayProblem::Trimmed,
                     "the relay trimmed operations this device lacks; link directly with a \
@@ -1271,26 +1269,6 @@ impl RelaySession<'_> {
                 return Ok(false);
             }
         }
-    }
-
-    /// Whether this replica holds the certificate of a writer among `behind_floor`. A name
-    /// that is not a writer id counts as unknown.
-    async fn knows_a_writer(&self, behind_floor: &[SyncSeq]) -> Result<bool, RelayError> {
-        let mut conn = acquire(self.pool).await?;
-        for entry in behind_floor {
-            let Some(writer) = WriterId::from_hex(&entry.writer) else {
-                continue;
-            };
-            let certificate = self
-                .engine
-                .writer_certificate(&mut conn, self.ctx, writer)
-                .await
-                .map_err(|error| format!("read writer certificate: {error}"))?;
-            if certificate.is_some() {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     async fn referenced(&self) -> Result<Vec<AssetRef>, RelayError> {

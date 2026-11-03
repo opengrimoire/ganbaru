@@ -247,14 +247,32 @@ pub async fn sync_promote_device(
         .map(|_| ())
 }
 
-/// Replaces the vault's recovery kit on an admin desktop. The new kit waits for the user to
-/// save it, as [`sync_recovery_kit_state`] shows; the old kit stops signing once the anchor
-/// sequences the change and opens no data encrypted after it.
+/// Installs a new recovery key from the anchor desktop. The new kit waits for the user to save
+/// it, as [`sync_recovery_kit_state`] shows. The printed kit keeps its lineage and still signs a
+/// forced handover or an enrollment, but opens no data encrypted after the change; only
+/// [`sync_rotate_recovery_kit`] retires it.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn sync_regenerate_recovery_kit(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
     let _kit = KIT_LOCK.lock().await;
     match run_authority(&runtime, AuthorityAction::RegenerateRecoveryKit).await? {
+        AuthorityAnswer::RecoveryKit => Ok(()),
+        _ => Err("sync answered the recovery kit request with something else".to_string()),
+    }
+}
+
+/// Replaces the printed recovery kit with a new one that the current kit, `kit_code`, signs,
+/// on any enrolled desktop. Once the anchor sequences the change, the old code signs nothing
+/// and opens no data encrypted after it. The new kit waits for the user to save it, as
+/// [`sync_recovery_kit_state`] shows. The derived key is never stored.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_rotate_recovery_kit(
+    runtime: State<'_, SyncRuntime>,
+    kit_code: String,
+) -> Result<(), String> {
+    let _kit = KIT_LOCK.lock().await;
+    match run_authority(&runtime, AuthorityAction::RotateRecoveryKit(kit_code)).await? {
         AuthorityAnswer::RecoveryKit => Ok(()),
         _ => Err("sync answered the recovery kit request with something else".to_string()),
     }

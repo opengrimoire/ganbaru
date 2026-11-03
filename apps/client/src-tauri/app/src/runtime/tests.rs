@@ -146,6 +146,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "crate::sync::commands::sync_take_anchor",
         "crate::sync::commands::sync_promote_device",
         "crate::sync::commands::sync_regenerate_recovery_kit",
+        "crate::sync::commands::sync_rotate_recovery_kit",
         "crate::sync::commands::sync_use_recovery_kit",
         "crate::sync::commands::sync_force_anchor",
         "crate::sync::commands::sync_contest_yield",

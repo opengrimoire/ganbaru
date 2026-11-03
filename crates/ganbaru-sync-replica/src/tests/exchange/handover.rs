@@ -1063,7 +1063,7 @@ fn a_printed_kit_forces_the_anchor_to_a_desktop_whose_key_the_log_names() {
 /// pulled the log yet, the hub's encryption public key, and the laptop's space keys.
 async fn founded_space(label: &str) -> (Replica, Replica, EncryptionPublicKey, Arc<SpaceKeys>) {
     let mut hub_replica = Replica::new(&format!("hub-{label}"), HUB_DEVICE).await;
-    let mut laptop = Replica::new(&format!("laptop-{label}"), LAPTOP_DEVICE).await;
+    let laptop = Replica::new(&format!("laptop-{label}"), LAPTOP_DEVICE).await;
     let charter = hub_replica.charter().await;
     let space = hub_replica.ctx.space;
     let admin = hub_keys().admin;

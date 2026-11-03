@@ -533,8 +533,18 @@ impl AuthState {
             }
             Entry::SetRole(SetRole::Device { device_id, role }) => {
                 let device = self.live_device(device_id)?;
-                if *device_id == self.anchor_device_id && *role == DeviceRole::Member {
-                    return Err(ProposalRejection::NamesAnchor);
+                // The anchor is never demoted, and only its own key, the kit, or an admitted
+                // recovery key names its admin key: another admin naming a key it holds would
+                // take the anchor's objection, recovery key installation, and removal. The kit
+                // and recovery cases promote the device a forced handover made anchor.
+                if *device_id == self.anchor_device_id {
+                    let author = proposal.author;
+                    let keeps_authority = self.anchor_admin_key() == Some(author)
+                        || author == self.kit_key
+                        || self.recovery_admits(&author);
+                    if *role == DeviceRole::Member || !keeps_authority {
+                        return Err(ProposalRejection::NamesAnchor);
+                    }
                 }
                 if matches!(role, DeviceRole::Admin(_)) && !device.kind.may_be_admin() {
                     return Err(ProposalRejection::AdminNotDesktop);

@@ -2690,8 +2690,9 @@ async fn past_cutoff(removed: &mut Replica, cutoff: u64) -> Vec<Vec<u8>> {
     removed.own_ops().await[usize::try_from(cutoff).unwrap()..].to_vec()
 }
 
-/// The merge state a replica holds for a note: its row, versions, tombstones, displaced
-/// versions, and creations.
+/// The replicated merge state a replica holds for a note: its row, versions, tombstones, and
+/// creations. Displaced versions are left out, since the anchor releases them where a member
+/// keeps them until the anchor confirms.
 async fn note_merge_state(replica: &mut Replica, id: &str) -> Vec<String> {
     let key = quoted(id);
     let table = NOTES_TABLE.0;
@@ -2717,14 +2718,6 @@ async fn note_merge_state(replica: &mut Replica, id: &str) -> Vec<String> {
             format!(
                 "SELECT hex(writer_id) || ':' || seq FROM sync_tombstones
                  WHERE table_id = {table} AND row_key = {key} ORDER BY 1"
-            ),
-        ),
-        (
-            "displaced",
-            format!(
-                "SELECT group_id || ':' || hex(writer_id) || ':' || seq
-                 FROM sync_displaced_versions WHERE table_id = {table} AND row_key = {key}
-                 ORDER BY 1"
             ),
         ),
         (

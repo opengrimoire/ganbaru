@@ -35,7 +35,7 @@ use crate::apply::{Constrained, finish_sealed};
 use crate::authorization::{self, Selection};
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, seq_i64, stored_u64};
-use crate::manifest::MergeKind;
+use crate::manifest::{MergeKind, TableSpec};
 use crate::merge::{self, Batch, RowState, group_id, mask_param, table_param};
 use crate::seal::{SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, records, reseal, sql, store, validate};
@@ -813,11 +813,12 @@ pub(crate) async fn settle(
 /// not know the removal or the lower writers yet: a replica that learned them first refuses
 /// them, so dropping them leaves what never storing them leaves. Authorization entries
 /// contiguous past that bound stay up to their own bound, as a replica that knew the removal
-/// stores them too; the
-/// entries of what is dropped go with it. Rows a dropped operation created
-/// lose their whole merge state, honest changes included, since a replica that never stored
-/// the creation skips those changes (see [`beyond_bound`]). The local device keeps its own
-/// operations. Returns whether a dropped operation carried an entry.
+/// stores them too; the entries of what is dropped go with it. A row loses its whole merge
+/// state only when no kept operation created it, honest changes included, since a replica that
+/// never stored the creation skips those changes (see [`beyond_bound`]). A row a kept operation
+/// also created keeps its merge state, and excluding the dropped operations' applied effects
+/// removes what they wrote to it. The local device keeps its own operations. Returns whether a
+/// dropped operation carried an entry.
 async fn drop_beyond_bound(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -885,14 +886,16 @@ async fn drop_beyond_bound(
         // the cutoff and removes the effects of every applied one.
         crate::fork::drop_branch(conn, space, writer, bound, stored_u64(applied, "applied")?)
             .await?;
-        for (table, key) in created {
+        for (table, key) in uncreated_after_drop(conn, writer, bound, created).await? {
             purge_row(conn, batch, table, key).await?;
         }
     }
     Ok(entries)
 }
 
-/// Rows created by the applied operations of `writer` past `bound`.
+/// Rows created by the applied operations of `writer` past `bound`, read from the recorded
+/// creations so that operations whose bodies were compacted count too. Only rows of tables that
+/// track their creation count, see [`tracks_creation`].
 pub(crate) async fn created_past(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -900,9 +903,10 @@ pub(crate) async fn created_past(
     writer: WriterId,
     bound: Seq,
 ) -> SyncResult<BTreeSet<(TableId, String)>> {
-    let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT envelope FROM sync_ops
-         WHERE space_id = ? AND writer_id = ? AND seq > ? AND state = 'applied'",
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT c.table_id, c.row_key FROM sync_row_creations c
+         JOIN sync_ops o ON o.writer_id = c.writer_id AND o.seq = c.seq
+         WHERE o.space_id = ? AND c.writer_id = ? AND c.seq > ?",
     )
     .bind(space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -910,21 +914,37 @@ pub(crate) async fn created_past(
     .fetch_all(&mut *conn)
     .await?;
     let mut created = BTreeSet::new();
-    for envelope in envelopes {
-        let Some(Content::Changes(changes)) = Envelope::decode(&envelope)
-            .ok()
-            .and_then(|envelope| envelope.operation().ok())
-            .map(|operation| operation.content)
-        else {
-            continue;
-        };
-        for change in &changes {
-            if late_kind(engine, change) == Some(LateKind::Created) {
-                created.insert((change.table, change.row.as_str().to_string()));
-            }
+    for (table, key) in rows {
+        let table = u16::try_from(table)
+            .map(TableId)
+            .map_err(|_| corrupt("row creation of a table id out of range"))?;
+        if engine.manifest().table(table).is_some_and(tracks_creation) {
+            created.insert((table, key));
         }
     }
     Ok(created)
+}
+
+/// Forgets the creations of `writer` past `bound`, and keeps of `rows` those no other
+/// creation holds, which are the rows only dropped operations created.
+async fn uncreated_after_drop(
+    conn: &mut SqliteConnection,
+    writer: WriterId,
+    bound: Seq,
+    rows: BTreeSet<(TableId, String)>,
+) -> SyncResult<BTreeSet<(TableId, String)>> {
+    sqlx::query("DELETE FROM sync_row_creations WHERE writer_id = ? AND seq > ?")
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(bound)?)
+        .execute(&mut *conn)
+        .await?;
+    let mut uncreated = BTreeSet::new();
+    for (table, key) in rows {
+        if !has_creation(conn, table, &key).await? {
+            uncreated.insert((table, key));
+        }
+    }
+    Ok(uncreated)
 }
 
 /// Removes every version, tombstone, and displaced version of a row with its merge row, and
@@ -1222,13 +1242,19 @@ pub(crate) fn decode_groups(mut bytes: &[u8]) -> SyncResult<LateGroups> {
     Ok(groups)
 }
 
+/// Whether a create of a row of `spec` creates it for exclusion: a row with its own key does,
+/// and a derived-key row does not, since any replica may create that row on its own.
+fn tracks_creation(spec: &TableSpec) -> bool {
+    spec.derived_key.is_none()
+}
+
 /// What one change of an excluded operation leaves: a create of a row with its own key
 /// creates it, and a create of a derived-key row only writes values, since any replica may
 /// create that row on its own.
 fn late_kind(engine: &Engine, change: &Change) -> Option<LateKind> {
     let spec = engine.manifest().table(change.table)?;
     Some(match change.action {
-        ChangeAction::Create if spec.derived_key.is_none() => LateKind::Created,
+        ChangeAction::Create if tracks_creation(spec) => LateKind::Created,
         ChangeAction::Create | ChangeAction::Write => LateKind::Values,
         ChangeAction::Tombstone => LateKind::Tombstone,
     })

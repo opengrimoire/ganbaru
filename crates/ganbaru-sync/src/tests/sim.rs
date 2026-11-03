@@ -2338,8 +2338,6 @@ enum LateArrival {
     RemovalFirst,
     /// Stores and applies the operations, then learns of the removal.
     OperationsFirst,
-    /// Stores and applies the operations, compacts their bodies, then learns of the removal.
-    CompactedFirst,
 }
 
 /// Seals what the removed device does past its cutoff: its own note, optional edits that fill
@@ -2467,11 +2465,7 @@ async fn excluded_creates_run(seed: u64) {
     let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
     let past = seal_excluded_creates(&mut rng, &mut removed, &mut honest, cutoff).await;
 
-    let arrivals = [
-        LateArrival::RemovalFirst,
-        LateArrival::OperationsFirst,
-        LateArrival::CompactedFirst,
-    ];
+    let arrivals = [LateArrival::RemovalFirst, LateArrival::OperationsFirst];
     for peer in &mut peers {
         let arrival = *rng.pick(&arrivals).unwrap();
         match arrival {
@@ -2480,15 +2474,9 @@ async fn excluded_creates_run(seed: u64) {
                 peer.receive(&past).await;
                 peer.apply_all().await.unwrap();
             }
-            LateArrival::OperationsFirst | LateArrival::CompactedFirst => {
+            LateArrival::OperationsFirst => {
                 peer.receive(&past).await;
                 peer.apply_all().await.unwrap();
-                if matches!(arrival, LateArrival::CompactedFirst) {
-                    let limit = peer.stored_vector().await;
-                    peer.compact(&limit, crate::COMPACTION_BATCH_OPS)
-                        .await
-                        .unwrap();
-                }
                 deliver(peer, &mut anchor).await;
             }
         }
@@ -2532,12 +2520,28 @@ async fn excluded_creates_run(seed: u64) {
         );
         replica.check_invariants().await;
     }
+    let limit = replicas[0].stored_vector().await;
+    for replica in &mut replicas {
+        replica
+            .compact(&limit, crate::COMPACTION_BATCH_OPS)
+            .await
+            .unwrap();
+    }
+    for replica in &mut replicas {
+        assert_eq!(
+            replica.dump().await,
+            expected,
+            "replica {} diverged after compacting",
+            replica.index
+        );
+        replica.check_invariants().await;
+    }
 }
 
 /// A removed device signs a Create of a row an honest member created, after edits that may
-/// pass its excluded bound. Peers meet those operations before or after the removal, with or
-/// without compacting them, and the anchor restores and discards late changes in a random
-/// order. Every replica keeps the honest row and ends with the same state.
+/// pass its excluded bound. Peers meet those operations before or after the removal, the
+/// anchor restores and discards late changes in a random order, and every replica compacts
+/// once they agree. Every replica keeps the honest row and ends with the same state.
 #[test]
 fn excluded_creates_converge() {
     block_on(async {

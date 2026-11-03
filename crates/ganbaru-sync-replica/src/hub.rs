@@ -518,6 +518,10 @@ impl SyncHub {
                 let writer = writer_from_wire(&writer).map_err(invalid)?;
                 hub.hashes(writer, from_seq, limit).await
             }
+            ControlMessage::SyncWriterHead { writer, .. } => {
+                let writer = writer_from_wire(&writer).map_err(invalid)?;
+                hub.writer_head(writer).await
+            }
             ControlMessage::SyncPropose { proposal, .. } => {
                 let proposal = decode_sync_proposal(&proposal).map_err(invalid)?;
                 let outcome = match self.proposals.as_ref() {
@@ -1167,6 +1171,27 @@ impl HubSession {
             .collect();
         Ok(ControlMessage::SyncHashList {
             hashes: consecutive,
+        })
+    }
+
+    /// The signed operation of `writer` at the hub's stored head, none for a held peer asking
+    /// about a writer of another device or when compaction dropped its body.
+    async fn writer_head(&self, writer: WriterId) -> Result<ControlMessage, HubError> {
+        if self.hidden(&writer) {
+            return Ok(ControlMessage::SyncWriterHeadOp { op: None });
+        }
+        let head = self.stored().await?.get(&writer);
+        if head == 0 {
+            return Ok(ControlMessage::SyncWriterHeadOp { op: None });
+        }
+        let mut conn = acquire(&self.pool).await?;
+        let op = self
+            .engine
+            .operation_at(&mut conn, &self.ctx, writer, head)
+            .await
+            .map_err(|error| HubError::failed(format!("read sync log: {error}")))?;
+        Ok(ControlMessage::SyncWriterHeadOp {
+            op: op.as_deref().map(bytes_to_wire),
         })
     }
 }

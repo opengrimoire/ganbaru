@@ -2219,7 +2219,29 @@ impl ServiceState {
                     wait.known.merge(&skipped);
                     return Ok(Next::Online(Box::new(wait)));
                 }
-                Ok(Exchange::Fork(fork) | Exchange::UnprovenFork(fork)) => {
+                Ok(Exchange::UnprovenFork(fork)) => {
+                    // A claim without signed proof retires nothing: the writer stays, the
+                    // coordinator is treated as away, and members still exchange.
+                    let error = format!(
+                        "the coordinator claims writer {} forked and shows no signed operation \
+                         for it",
+                        fork.writer.to_hex()
+                    );
+                    let next = self
+                        .coordinator_away(
+                            session,
+                            wait,
+                            quarantine.devices(),
+                            &listening,
+                            view,
+                            error,
+                        )
+                        .await;
+                    view.state = SyncState::Error;
+                    view.last_error_code = Some(SyncErrorCode::ForkClaimUnproven);
+                    return Ok(next);
+                }
+                Ok(Exchange::Fork(fork)) => {
                     if !session.recover_fork(&mut self.writer, fork).await? {
                         view.state = SyncState::WaitingForIdentity;
                         return Ok(Next::Idle);
@@ -3172,12 +3194,20 @@ impl<'a, H: SyncHost> Session<'a, H> {
 
     /// Recovers from a fork of one of this installation's chains: the hub holds other
     /// operations at the same sequences. The local copy above the fork point moves to a fresh
-    /// writer, so both histories survive. Returns false while the person key is unavailable.
+    /// writer, so both histories survive. Returns false while the person key is unavailable. A
+    /// re-seal the old chain refuses fails before the rotation, so it consumes no writer.
     async fn recover_fork(
         &self,
         writer: &mut Option<ActiveWriter>,
         fork: ForkPoint,
     ) -> Result<bool, String> {
+        {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .check_reseal_fork(&mut conn, &self.ctx, fork.writer, fork.keep_through)
+                .await
+                .map_err(|error| format!("re-seal forked sync operations: {error}"))?;
+        }
         let current = writer.as_ref().map(ActiveWriter::id);
         if (current == Some(fork.writer) || current.is_none()) && !self.rotate(writer).await? {
             return Ok(false);

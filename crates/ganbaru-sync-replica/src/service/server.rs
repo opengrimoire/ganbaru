@@ -149,9 +149,17 @@ impl ServiceState {
         };
         let done = match client.exchange().await? {
             Exchange::Done(done) => done,
-            Exchange::Fork(fork) | Exchange::UnprovenFork(fork) => {
+            Exchange::Fork(fork) => {
                 return Err(format!(
                     "the server holds writer {} past this device at {}",
+                    fork.writer.to_hex(),
+                    fork.keep_through
+                ));
+            }
+            Exchange::UnprovenFork(fork) => {
+                return Err(format!(
+                    "the server claims writer {} forked at {} and shows no signed operation \
+                     for it",
                     fork.writer.to_hex(),
                     fork.keep_through
                 ));

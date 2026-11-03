@@ -34,6 +34,7 @@ export const sync = {
   pauseFailed: "The sync setting could not be changed",
   errorDetail: (message: string) => `Last error: ${message}`,
   writerLimit: "This device created more sync identities than a device may have, so the coordinator refuses its new changes. They stay on this device.",
+  forkClaimUnproven: "The computer this device is linked to says this device's changes conflict with another copy, but it shows no proof. This device keeps its changes and still syncs with your other devices. If this keeps happening, check that computer.",
   clockAhead: (device: string) =>
     `The clock on ${device} is ahead of this device. Its edits win conflicting changes until the clocks agree, so check its date and time.`,
   clockAheadOwn: "Some edits from this device were made while its clock was ahead. They win conflicting changes until that time passes.",

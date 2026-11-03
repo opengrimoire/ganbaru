@@ -202,6 +202,11 @@ describe("sync API boundary", () => {
       .toBe("coordinatorRemoved");
   });
 
+  it("accepts the fork claim unproven error code", () => {
+    expect(mapSyncStatus({ ...validStatus(), state: "error", lastErrorCode: "forkClaimUnproven" }).lastErrorCode)
+      .toBe("forkClaimUnproven");
+  });
+
   it("maps an unknown relay delivery count and rejects a malformed one", () => {
     const withUndelivered = (undelivered: unknown) => ({ ...validStatus(), relay: { ...validRelay(), undelivered } });
     expect(mapSyncStatus(withUndelivered(null)).relay?.undelivered).toBeNull();

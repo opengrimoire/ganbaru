@@ -261,6 +261,8 @@
       {/each}
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />
+      {:else if status.state === "error" && status.lastErrorCode === "forkClaimUnproven"}
+        <Notice tone="warning" role="status" copy={false} message={t("sync.forkClaimUnproven")} />
       {:else if status.state === "error" && status.lastErrorCode === "bootstrapRequired"}
         <Notice tone="warning" role="status" copy={false} message={t("sync.bootstrapRequired")}>
           {#snippet actions()}

@@ -228,7 +228,7 @@ async fn refused_reseal_consumes_no_writer() {
     let writer_id = recorded_writer(&linked.config_dir);
     let (registry, pool) = linked.open_phone().await;
     let ctx = local::space_context(
-        &mut *pool.acquire().await.expect("phone connection"),
+        &mut pool.acquire().await.expect("phone connection"),
         VAULT_ID,
     )
     .await
@@ -257,7 +257,7 @@ async fn refused_reseal_consumes_no_writer() {
     );
     let clone_op = Engine::vault()
         .operation_at(
-            &mut *clone_pool.acquire().await.expect("copy connection"),
+            &mut clone_pool.acquire().await.expect("copy connection"),
             &ctx,
             writer.id(),
             fork_seq,
@@ -269,7 +269,7 @@ async fn refused_reseal_consumes_no_writer() {
     clone_registry.close_all().await.expect("close the copy");
     Engine::vault()
         .store(
-            &mut *linked.hub_pool.acquire().await.expect("hub connection"),
+            &mut linked.hub_pool.acquire().await.expect("hub connection"),
             &linked.hub_space.ctx,
             &clone_op,
             now_ms().expect("clock"),

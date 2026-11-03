@@ -1,8 +1,10 @@
 use super::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, create_vault, person};
 use crate::assets::{
-    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetTransfer, ContentAddressedStore,
-    INVALID_ASSET, MAX_ASSET_PASS_BYTES,
+    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetSweep, AssetTransfer,
+    ContentAddressedStore, INVALID_ASSET, InFlightAssets, MAX_ASSET_PASS_BYTES,
+    UNREFERENCED_ASSET_GRACE, collect_unreferenced_assets,
 };
+use crate::backup::ArchiveGate;
 use crate::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
 use crate::client::{
     self, ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
@@ -16,7 +18,7 @@ use crate::quarantine::PullSkips;
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
-use crate::wire::{asset_to_wire, bytes_to_wire};
+use crate::wire::{asset_key, asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::{
@@ -40,7 +42,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::watch;
 
 const HUB_DEVICE: &str = "device-hub";
@@ -507,8 +509,16 @@ fn open_hub(replica: &Replica) -> OpenHubVault {
 
 /// Opens the replica's vault as a hub that quarantined `quarantined`.
 fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
+    open_hub_serving(replica, quarantined, Arc::clone(&replica.assets))
+}
+
+/// Opens the replica's vault as a hub that quarantined `quarantined` and serves `assets`.
+fn open_hub_serving(
+    replica: &Replica,
+    quarantined: BTreeSet<String>,
+    assets: Arc<dyn AssetStore>,
+) -> OpenHubVault {
     let pool = replica.pool.clone();
-    let assets = Arc::clone(&replica.assets);
     let device_id = replica.device_id.clone();
     Arc::new(move || {
         let pool = pool.clone();
@@ -2950,6 +2960,62 @@ fn a_replica_refuses_damaged_assets_from_the_hub() {
         assert_eq!(skipped, AssetTransfer::default());
         hub_replica.close().await;
         tablet.close().await;
+    });
+}
+
+#[test]
+fn asset_query_does_not_renew_collection_grace() {
+    block_on(async {
+        let hub_replica = Replica::new("grace-hub", HUB_DEVICE).await;
+        let bytes = png(64, 6);
+        images::import_image(hub_replica.directory.path(), &bytes).expect("store image");
+        let image = reference(&bytes);
+        let in_flight = Arc::new(InFlightAssets::default());
+        let store: Arc<dyn AssetStore> = Arc::new(
+            ContentAddressedStore::new(hub_replica.directory.path().to_path_buf())
+                .with_in_flight(Arc::clone(&in_flight)),
+        );
+        let transport = DirectTransport(
+            SyncHub::new(
+                open_hub_serving(&hub_replica, BTreeSet::new(), store),
+                watch::Sender::new(0),
+            )
+            .with_contact(contact_source(test_contact())),
+        );
+
+        // A peer keeps asking about an unreferenced file to keep it on disk.
+        for _ in 0..3 {
+            let query = ControlMessage::SyncAssetQuery {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: PHONE_DEVICE.to_string(),
+                assets: vec![asset_to_wire(&image)],
+            };
+            match transport.request(query).await.expect("query") {
+                ControlMessage::SyncAssetPresence { held } => {
+                    assert_eq!(held, vec![asset_key(&image)]);
+                }
+                other => panic!("expected the presence answer, got {other:?}"),
+            }
+        }
+
+        let engine = Engine::vault();
+        let swept = collect_unreferenced_assets(
+            &ArchiveGate::default(),
+            AssetSweep {
+                engine: &engine,
+                pool: &hub_replica.pool,
+                vault_root: hub_replica.directory.path(),
+                in_flight: &in_flight,
+                grace: UNREFERENCED_ASSET_GRACE,
+                now: SystemTime::now() + UNREFERENCED_ASSET_GRACE * 2,
+            },
+            |_| Some(()),
+        )
+        .await;
+        assert_eq!(swept, Ok(1), "a question keeps no file alive");
+        assert_eq!(hub_replica.asset_bytes(&image), None);
+        hub_replica.close().await;
     });
 }
 

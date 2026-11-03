@@ -461,6 +461,9 @@ pub struct AssetTransfer {
     pub more: bool,
     /// An asset the hub or this device refused.
     pub problem: Option<String>,
+    /// The hub holds this device for data during an anchor handover contest, so asset moves
+    /// wait until the contest resolves. This is no problem to report.
+    pub held: bool,
 }
 
 enum Upload {

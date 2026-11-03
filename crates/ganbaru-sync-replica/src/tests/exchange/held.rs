@@ -3,16 +3,23 @@
 
 use super::{
     DirectTransport, Exchange, ForkedVault, HUB_DEVICE, PHONE_DEVICE, Replica, TABLET_DEVICE,
-    block_on, contact_source, done, hub, member_hub, open_hub, phone_ids, tablet_ids, test_contact,
+    block_on, contact_source, done, hub, member_hub, open_hub, phone_ids, png, reference,
+    tablet_ids, test_contact,
 };
+use crate::assets::{AssetMemory, AssetTransfer, MAX_ASSET_PASS_BYTES};
 use crate::client::SyncTransport;
 use crate::hub::{BOOTSTRAP_REQUIRED, HubStability, SyncHub};
-use crate::tests::{VAULT_ID, acquire};
-use crate::wire::{forked_from_wire, hash_to_wire, ops_to_wire, vector_from_wire, vector_to_wire};
+use crate::tests::{VAULT_ID, acquire, add_note};
+use crate::wire::{
+    DEVICE_HELD, asset_key, asset_to_wire, forked_from_wire, hash_to_wire, ops_to_wire,
+    vector_from_wire, vector_to_wire,
+};
 use ganbaru_handoff::protocol::{
     ControlMessage, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal, SyncRefusalCode,
 };
+use ganbaru_quick_notes::images;
 use ganbaru_sync::Engine;
+use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync_contracts::{VersionVector, WriterId};
 use tokio::sync::watch;
 
@@ -662,6 +669,84 @@ fn held_device_pull_hides_the_compacted_vector() {
         }
         hub_replica.close().await;
         phone.close().await;
+        tablet.close().await;
+    });
+}
+
+fn asset_query(device_id: &str, assets: &[AssetRef]) -> ControlMessage {
+    ControlMessage::SyncAssetQuery {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT_ID.to_string(),
+        device_id: device_id.to_string(),
+        assets: assets.iter().map(asset_to_wire).collect(),
+    }
+}
+
+#[test]
+fn held_device_cannot_query_asset_presence() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-held-query", HUB_DEVICE).await;
+        let bytes = png(64, 7);
+        images::import_image(hub_replica.directory.path(), &bytes).expect("store image");
+        let image = reference(&bytes);
+        let (transport, _changes) = hub(&hub_replica);
+        hold(&hub_replica, TABLET_DEVICE).await;
+
+        match transport
+            .request(asset_query(TABLET_DEVICE, std::slice::from_ref(&image)))
+            .await
+            .expect("query")
+        {
+            ControlMessage::Error {
+                code, retryable, ..
+            } => assert_eq!((code.as_str(), retryable), (DEVICE_HELD, false)),
+            other => panic!("expected a held refusal, got {other:?}"),
+        }
+        match transport
+            .request(asset_query(PHONE_DEVICE, std::slice::from_ref(&image)))
+            .await
+            .expect("query")
+        {
+            ControlMessage::SyncAssetPresence { held } => {
+                assert_eq!(held, vec![asset_key(&image)], "a member still asks");
+            }
+            other => panic!("expected the presence answer, got {other:?}"),
+        }
+        hub_replica.close().await;
+    });
+}
+
+#[test]
+fn held_client_skips_the_asset_pass_quietly() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-held-pass", HUB_DEVICE).await;
+        let tablet = Replica::new("tablet-held-pass", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hold(&hub_replica, TABLET_DEVICE).await;
+        add_note(&mut *acquire(&tablet.pool).await, "note-images").await;
+        let kept = tablet.add_image("note-images", 0, &png(64, 8)).await;
+        let lacking_bytes = png(64, 9);
+        let lacking = tablet.add_image("note-images", 1, &lacking_bytes).await;
+        std::fs::remove_file(lacking.path(tablet.directory.path())).expect("remove image");
+        images::import_image(hub_replica.directory.path(), &lacking_bytes).expect("store image");
+        let ids = tablet_ids();
+        let session = tablet.assets(&transport, &ids, MAX_ASSET_PASS_BYTES);
+        let quiet = AssetTransfer {
+            held: true,
+            ..AssetTransfer::default()
+        };
+
+        let mut memory = AssetMemory::default();
+        let mut upload = AssetTransfer::default();
+        let uploaded = session.upload(&mut memory, &mut upload).await;
+        assert_eq!((uploaded, upload), (Ok(()), quiet.clone()));
+        let mut download = AssetTransfer::default();
+        let downloaded = session.download(&mut memory, &mut download).await;
+        assert_eq!((downloaded, download), (Ok(()), quiet));
+        assert_eq!(hub_replica.asset_bytes(&kept), None, "nothing went up");
+        assert_eq!(tablet.asset_bytes(&lacking), None, "nothing came down");
+        assert_eq!(tablet.class_entries(), vec![kept.file_name()]);
+        hub_replica.close().await;
         tablet.close().await;
     });
 }

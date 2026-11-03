@@ -1198,7 +1198,6 @@ mod tests {
             removed_revision,
             held: false,
             encryption_key: None,
-            held: false,
         }
     }
 

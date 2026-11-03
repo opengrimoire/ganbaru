@@ -1074,6 +1074,7 @@ export const SYNC_SERVER_ERROR_CODES = [
   "notSyncing",
   "notAdmin",
   "serverExists",
+  "serverRunsAnotherVault",
   "noServer",
   "noKeys",
   "relay",

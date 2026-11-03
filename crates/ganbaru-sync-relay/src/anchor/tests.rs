@@ -493,18 +493,28 @@ fn a_setup_code_binds_to_the_first_proven_vault() {
             open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
                 .await
                 .expect("the first proof binds the code to its vault");
-            let refused = open_setup(&code, APP_VERSION, Some(OTHER_VAULT_ID), LoopbackPolicy::Allow)
-                .await
-                .err()
-                .expect("a proof naming another vault should be refused");
+            let refused = open_setup(
+                &code,
+                APP_VERSION,
+                Some(OTHER_VAULT_ID),
+                LoopbackPolicy::Allow,
+            )
+            .await
+            .err()
+            .expect("a proof naming another vault should be refused");
             assert!(is_refused(&refused), "{refused}");
             open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
                 .await
                 .expect("a retry for the bound vault still works");
             let newer = printed_code(root, &endpoint);
-            open_setup(&newer, APP_VERSION, Some(OTHER_VAULT_ID), LoopbackPolicy::Allow)
-                .await
-                .expect("a newly printed code is not bound yet");
+            open_setup(
+                &newer,
+                APP_VERSION,
+                Some(OTHER_VAULT_ID),
+                LoopbackPolicy::Allow,
+            )
+            .await
+            .expect("a newly printed code is not bound yet");
         })
         .await;
     });

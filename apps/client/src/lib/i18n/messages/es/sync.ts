@@ -127,6 +127,7 @@ export const sync = {
       notSyncing: "Primero vincula un dispositivo. Un servidor solo atiende a una bóveda que se sincroniza.",
       notAdmin: "Solo una computadora administradora puede agregar o quitar el servidor.",
       serverExists: "Esta bóveda ya usa un servidor. Quítalo primero.",
+      serverRunsAnotherVault: "Este servidor ya ejecuta otra bóveda, así que no se cambió nada. Borra el directorio de datos del servidor e imprime un nuevo código de configuración para usarlo con esta bóveda.",
       noServer: "Esta bóveda no usa servidor.",
       noKeys: "Este dispositivo aún no tiene las claves de cifrado de la bóveda. Sincroniza con el ancla e inténtalo de nuevo.",
       failed: "No se pudo cambiar el servidor. Inténtalo de nuevo.",

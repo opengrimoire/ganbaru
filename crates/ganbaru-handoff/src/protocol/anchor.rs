@@ -1,7 +1,7 @@
 //! Reversed enrollment of an always-on anchor server.
 //!
 //! A server cannot scan a code or dial members, so an admin device dials it. The setup code names
-//! the server's endpoints, pins its certificate, and carries a one-time secret. The device proves
+//! the server's endpoints, pins its certificate, and carries a setup secret. The device proves
 //! the secret over a connection pinned to that certificate, without a client certificate, and
 //! the secret itself never crosses the wire.
 

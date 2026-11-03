@@ -156,7 +156,7 @@ The relay keeps at most 2 GiB per vault for 90 days. Change that with `--quota-m
 
 An anchor serves one vault. The desktop that adds it must be an admin.
 
-1. Print a setup code on the server, as shown above, naming each address your devices can reach; a phone away from home needs a public or VPN address. The code works once, for 15 minutes. A newer code replaces an older one, so run it again whenever a code expires.
+1. Print a setup code on the server, as shown above, naming each address your devices can reach; a phone away from home needs a public or VPN address. The code stays valid for 15 minutes and for one vault: the first vault a desktop proves it for binds it, and the server refuses it for any other. A retry for the same vault works, and a newer code replaces an older one, so run it again whenever a code expires or another vault took it. If the desktop reports that the server already runs another vault, delete the server's data directory and print a new code.
 2. Enter the code in Settings > Data, in the server section of an admin desktop, and confirm that this server can read your whole vault. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
 3. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; once it has run, enter the same code again, or a new one if it expired.
 

@@ -1,5 +1,5 @@
 //! What an anchor keeps in its data directory: the layout, the activation record that commits a
-//! vault, the one-time setup secret, the published certificate fingerprint, and the key files.
+//! vault, the setup secret and the vault it is bound to, the published certificate fingerprint, and the key files.
 
 use ganbaru_atomic_files::{
     FileAccess, FinalSymlink, read_regular_file_capped, write_file_atomically,
@@ -142,21 +142,65 @@ impl Activation {
 struct StoredSecret {
     token: String,
     expires_at_ms: i64,
+    /// The vault the first proof of this code named, `None` until one did.
+    bound_vault: Option<String>,
 }
 
-/// Replaces the setup secret with `token`, so only the newest printed code works.
+/// Replaces the setup secret with `token`, so only the newest printed code works. The new code
+/// is bound to no vault yet.
 pub fn store_setup_secret(
     paths: &DataPaths,
     token: &RelaySetupToken,
     expires_at_ms: i64,
 ) -> Result<(), String> {
-    let stored = StoredSecret {
-        token: token.to_text(),
-        expires_at_ms,
-    };
+    write_secret(
+        paths,
+        &StoredSecret {
+            token: token.to_text(),
+            expires_at_ms,
+            bound_vault: None,
+        },
+    )
+}
+
+fn write_secret(paths: &DataPaths, stored: &StoredSecret) -> Result<(), String> {
     let bytes =
-        serde_json::to_vec(&stored).map_err(|_| "encode the setup secret failed".to_string())?;
+        serde_json::to_vec(stored).map_err(|_| "encode the setup secret failed".to_string())?;
     write_private(&paths.setup_secret(), &bytes)
+}
+
+fn read_secret(paths: &DataPaths) -> Result<Option<StoredSecret>, String> {
+    let Some(bytes) = read_small(&paths.setup_secret())? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| "the stored setup secret is damaged".to_string())
+}
+
+/// Binds the stored setup secret `token` to `vault_id` on its first proof, and answers whether
+/// the secret serves that vault: a bound secret serves only the vault it was bound to, and a
+/// secret replaced since the proof serves none. Callers serialize calls, since the check and the
+/// write are separate file operations.
+pub fn bind_setup_vault(
+    paths: &DataPaths,
+    token: &RelaySetupToken,
+    vault_id: &str,
+) -> Result<bool, String> {
+    let Some(mut stored) = read_secret(paths)? else {
+        return Ok(false);
+    };
+    if stored.token != token.to_text() {
+        return Ok(false);
+    }
+    match stored.bound_vault.as_deref() {
+        Some(bound) => Ok(bound == vault_id),
+        None => {
+            stored.bound_vault = Some(vault_id.to_string());
+            write_secret(paths, &stored)?;
+            Ok(true)
+        }
+    }
 }
 
 /// The setup secret when one is stored and it has not expired.
@@ -164,11 +208,9 @@ pub fn live_setup_secret(
     paths: &DataPaths,
     now_ms: i64,
 ) -> Result<Option<RelaySetupToken>, String> {
-    let Some(bytes) = read_small(&paths.setup_secret())? else {
+    let Some(stored) = read_secret(paths)? else {
         return Ok(None);
     };
-    let stored: StoredSecret =
-        serde_json::from_slice(&bytes).map_err(|_| "the stored setup secret is damaged")?;
     if stored.expires_at_ms <= now_ms {
         return Ok(None);
     }

@@ -163,6 +163,7 @@ async fn serve_with(
         commits,
         version: VERSION,
         upload: tokio::sync::Mutex::new(()),
+        binding: std::sync::Mutex::new(()),
     };
     let bundles = MemberBundles::new(activation::snapshot_preparer(
         host.clone(),
@@ -230,7 +231,7 @@ fn describe_setup(code: &AnchorSetupCode) -> Result<String, String> {
     let _ = writeln!(text, "Setup code: {}", code.to_text()?);
     let _ = writeln!(
         text,
-        "The code works once, for {minutes} minutes, and the newest code replaces older ones. Keep it private until it is used."
+        "The code works for {minutes} minutes and for one vault, the first one a device proves it for, and the newest code replaces older ones. Keep it private until the server is set up."
     );
     Ok(text)
 }

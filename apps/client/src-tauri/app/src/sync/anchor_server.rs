@@ -172,9 +172,11 @@ async fn upload_snapshot<R: Runtime>(
 
 /// Adds the server behind `code` to the active vault: proves the code, proposes the server's
 /// enrollment as an admin and its configuration, and uploads a snapshot it activates. With
-/// `take_anchor`, the server takes the anchor once it can. The code stays valid until the server
-/// activates or it expires, so a caller answered `WaitingForAnchor` repeats the call with it or a
-/// new one.
+/// `take_anchor`, the server takes the anchor once it can. A server that already runs another
+/// vault is refused before anything is written to the log. The code stays valid until it
+/// expires, the server activates, or a newer code replaces it, and only for the first vault a
+/// device proves it for, so a caller answered `WaitingForAnchor` repeats the call with it or a new
+/// one.
 pub(super) async fn add_anchor_server<R: Runtime>(
     app: &AppHandle<R>,
     runtime: &SyncRuntime,
@@ -184,8 +186,11 @@ pub(super) async fn add_anchor_server<R: Runtime>(
     let (view, _) = admin_context(app).await?;
     let vault_id = AppHost::of(app).active_vault_id()?;
     let connection = open(app, code, Some(&vault_id)).await?;
-    let enrollment = connection.identity().enrollment.clone();
+    let identity = connection.identity().clone();
     drop(connection);
+    let local = pinned_charter(app, &vault_id).await?;
+    ensure_same_space(identity.space.as_ref(), &vault_id, &local)?;
+    let enrollment = identity.enrollment;
     if view
         .server
         .as_ref()
@@ -285,8 +290,16 @@ fn ensure_same_space(
     vault_id: &str,
     local: &PinnedCharter,
 ) -> Result<(), SyncServerError> {
-    let _ = (space, vault_id, local);
-    Ok(())
+    match space {
+        Some(space)
+            if space.vault_id != vault_id
+                || space.charter != local.charter
+                || space.person_key != local.person_key =>
+        {
+            Err(SyncServerError::ServerRunsAnotherVault)
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

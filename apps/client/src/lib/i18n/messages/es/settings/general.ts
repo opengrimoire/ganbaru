@@ -285,7 +285,7 @@ export const general = {
     rollbackRestoreTitle: "¿Restaurar esta copia?",
     rollbackRestoreMessage: "Ganbaru reemplazará los datos locales actuales con esta copia y se reiniciará. Los datos actuales se guardan como otra copia.",
     replacedVaultsHeading: "Bóvedas reemplazadas",
-    replacedVaultsDescription: "Cuando una bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda aquí una copia de la reemplazada para que puedas restaurarla. Se conservan las dos más recientes.",
+    replacedVaultsDescription: "Cuando una bóveda vinculada reemplaza la bóveda de este teléfono, Ganbaru guarda aquí una copia de la reemplazada para que puedas restaurarla. Se conservan las dos más recientes. Exportar guarda en Descargas una copia cifrada que se abre con el kit de recuperación de la bóveda en uso.",
     replacedVaultUnnamed: "Bóveda sin nombre",
     replacedVaultExport: "Exportar",
     replacedVaultRestore: "Restaurar",

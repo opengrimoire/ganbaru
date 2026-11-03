@@ -207,6 +207,20 @@ export function canInstallSyncRecoveryKey(context: SyncAuthorityContext): boolea
 }
 
 /**
+ * Whether this desktop may replace the printed recovery kit with its code. The old kit signs
+ * the replacement, so any live enrolled desktop offers it, admin or not, while the space is not
+ * frozen.
+ */
+export function canRotateSyncRecoveryKit(context: SyncAuthorityContext): boolean {
+  const own = syncOwnDevice(context.authority);
+  return !context.mobileLayout
+    && !context.authority.frozen
+    && own !== null
+    && own.kind === "desktop"
+    && own.removedRevision === null;
+}
+
+/**
  * How this desktop may use a recovery kit, or null when it may not. An enrolled desktop that is
  * not an admin yet proposes its promotion while its last exchange reached the anchor; a linked
  * one forces the handover to itself once the anchor stopped answering. A desktop that is not

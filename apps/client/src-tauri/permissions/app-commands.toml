@@ -679,6 +679,7 @@ commands.allow = [
   "sync_remove_device",
   "sync_remove_server",
   "sync_reset_state",
+  "sync_rotate_recovery_kit",
   "sync_server_status",
   "sync_set_foreground",
   "sync_set_paused",

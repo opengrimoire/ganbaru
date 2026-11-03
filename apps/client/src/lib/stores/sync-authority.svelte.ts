@@ -18,6 +18,7 @@ import {
   resetSyncState,
   restoreSyncLateChange,
   resumeSyncRecords,
+  rotateSyncRecoveryKit,
   takeSyncAnchor,
   useSyncRecoveryKit,
   yieldSyncContest,
@@ -175,6 +176,8 @@ export function getSyncAuthorityState() {
     restoreLateChange: (change: SyncLateChange) => thenRefresh(() => restoreSyncLateChange(lateTarget(change))),
     discardLateChange: (change: SyncLateChange) => thenRefresh(() => discardSyncLateChange(lateTarget(change))),
     regenerateKit: () => thenRefresh(regenerateSyncRecoveryKit),
+    /** Replaces the printed kit with a new one its current code signs. */
+    rotateKit: (code: string) => thenRefresh(() => rotateSyncRecoveryKit(code)),
     /** Confirms the waiting kit was saved with the last group of its code; false when it does not match. */
     confirmKitSaved: (lastGroup: string) => thenRefresh(() => confirmSyncRecoveryKitSaved(lastGroup)),
     useKit: (code: string) => thenRefresh(() => useSyncRecoveryKit(code)),

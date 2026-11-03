@@ -491,15 +491,13 @@ pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
     }))
 }
 
-/// Replaces the vault's recovery kit and returns the new seed. Two proposals enter the outbox:
-/// the recovery key entry naming the new recovery encryption key, then the `set role` naming the
-/// new recovery admin key. The recovery key goes first, so the key epoch it opens and every
-/// later one seal no envelope to the old kit. The seed is stored after both, so a full outbox
-/// changes nothing and a failed store withdraws them: the log never names a key whose seed is
-/// gone. The key store keeps the new seed until the user saves the kit. A kit that still waits
-/// is never overwritten while it may still sign: one the log names must be saved first, and one
-/// whose proposal still waits must be sequenced or rejected first. Key stores may block, so
-/// callers run this off the async runtime.
+/// Installs a new recovery key from the anchor's admin key and returns its seed. Two proposals
+/// enter the outbox: the recovery key entry naming the new recovery encryption key, then the
+/// `set role` naming the new recovery admin key. The recovery key goes first, so the key epoch
+/// it opens and every later one seal no envelope to the old key. The kit lineage stays with the
+/// printed kit, which still signs a forced handover and an enrollment; only
+/// [`rotate_recovery_kit`] retires it. The seed is handled as [`queue_new_kit`] describes. Key
+/// stores may block, so callers run this off the async runtime.
 pub fn regenerate_recovery_kit(
     keys: &dyn SyncKeyStore,
     vault_id: &str,
@@ -514,6 +512,74 @@ pub fn regenerate_recovery_kit(
     if !is_admin(view, &view.anchor_device_id, &admin.public_key()) {
         return Err("only the anchor computer replaces the recovery kit".to_string());
     }
+    queue_new_kit(keys, vault_id, outbox, view, |seed| {
+        let public = recovery_public_keys(seed)?;
+        Ok(vec![
+            propose(
+                space,
+                view.charter,
+                admin,
+                recovery_key_entry(public.encryption),
+                now_ms,
+            )?,
+            propose(space, view.charter, admin, recovery_entry(seed)?, now_ms)?,
+        ])
+    })
+}
+
+/// Replaces the vault's recovery kit with a new one, signed by `old_kit`, the admin key of the
+/// kit that holds the lineage, and returns the new seed. Any enrolled desktop that holds the
+/// printed kit may run it. Two proposals enter the outbox: the `set role` the old kit signs,
+/// which moves the lineage to the new kit's admin key, then the recovery key entry naming the
+/// new recovery encryption key, signed by the new kit. Once the anchor sequences both, the old
+/// code signs nothing and opens no later key epoch. The new kit signs its own encryption key,
+/// so two rotations racing with copies of the same code never mix: the anchor accepts the
+/// first `set role` it sequences, and every proposal of the other rotation is then signed by a
+/// key the log does not name. One key epoch between the two entries is still sealed to the old
+/// kit, which already opened every earlier one. The seed is handled as [`queue_new_kit`]
+/// describes. Key stores may block, so callers run this off the async runtime.
+pub fn rotate_recovery_kit(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    outbox: &mut Outbox,
+    view: &AuthorizationView,
+    space: SpaceId,
+    old_kit: &AdminKeyPair,
+    now_ms: u64,
+) -> Result<RecoverySeed, String> {
+    if old_kit.public_key() != view.kit_admin_key {
+        return Err("this code is not the vault's current recovery kit".to_string());
+    }
+    queue_new_kit(keys, vault_id, outbox, view, |seed| {
+        let public = recovery_public_keys(seed)?;
+        let new_kit = seed
+            .recovery_admin_key()
+            .map_err(|error| format!("derive the recovery admin key: {error}"))?;
+        Ok(vec![
+            propose(space, view.charter, old_kit, recovery_entry(seed)?, now_ms)?,
+            propose(
+                space,
+                view.charter,
+                &new_kit,
+                recovery_key_entry(public.encryption),
+                now_ms,
+            )?,
+        ])
+    })
+}
+
+/// Generates a recovery seed, queues the proposals `sign` makes for it in order, and stores the
+/// seed until the user saves its kit. The seed is stored after every proposal, so a full outbox
+/// changes nothing and a failed store withdraws them: the log never names a key whose seed is
+/// gone. A kit that still waits is never overwritten while it may still sign: one the log names
+/// must be saved first, and one whose proposal still waits must be sequenced or rejected first.
+fn queue_new_kit(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    outbox: &mut Outbox,
+    view: &AuthorizationView,
+    sign: impl FnOnce(&RecoverySeed) -> Result<Vec<SignedProposal>, String>,
+) -> Result<RecoverySeed, String> {
     if let Some(waiting) = pending_recovery_seed(keys, vault_id)? {
         let key = recovery_public_key(&waiting)?;
         if key == view.recovery_admin_key {
@@ -533,13 +599,8 @@ pub fn regenerate_recovery_kit(
     }
     let seed =
         RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
-    let public = recovery_public_keys(&seed)?;
     let mut added = Vec::new();
-    for entry in [
-        recovery_key_entry(public.encryption),
-        recovery_entry(&seed)?,
-    ] {
-        let proposal = propose(space, view.charter, admin, entry, now_ms)?;
+    for proposal in sign(&seed)? {
         let hash = proposal.hash();
         if let Err(error) = outbox.add(proposal) {
             withdraw_all(outbox, &added)?;
@@ -678,7 +739,8 @@ pub fn recovery_promotion(
 
 /// Signs, with the recovery admin key `kit_code` derives, the proposal that enrolls a new desktop
 /// as an admin after every device of the space is lost. The derived key lives only inside this
-/// call, and the anchor refuses a kit its selected log no longer names.
+/// call. The anchor accepts the kit that holds the lineage even after a recovery key replaced
+/// it, and refuses a kit a rotation retired.
 pub fn recovery_enrollment(
     space: SpaceId,
     charter: Digest32,

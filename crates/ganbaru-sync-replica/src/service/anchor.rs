@@ -18,8 +18,8 @@ use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, DeviceKind, DevicePublicKey, DeviceRole, Digest32, Enroll, Entry,
-    LateResolution, LateRow, ProposalRejection, ResolveLate, RowKey, Server, ServerConfig,
-    SignedProposal, TableId, VersionVector,
+    LateResolution, LateRow, ProposalRejection, RecoverySeed, ResolveLate, RowKey, Server,
+    ServerConfig, SignedProposal, TableId, VersionVector,
 };
 use std::collections::BTreeSet;
 use tokio::sync::oneshot;
@@ -32,8 +32,12 @@ pub enum AuthorityAction {
     TakeAnchor,
     /// Propose making a linked desktop an admin with the admin key it sent at pairing.
     Promote(String),
-    /// Replace the recovery kit and propose its recovery encryption key and recovery admin key.
+    /// Install a new recovery key from the anchor and propose its recovery encryption key and
+    /// recovery admin key. The printed kit keeps the lineage.
     RegenerateRecoveryKit,
+    /// Replace the printed kit with a new one, signed with the recovery admin key the code of
+    /// the current kit derives, from any enrolled desktop.
+    RotateRecoveryKit(String),
     /// Propose, signed with the recovery admin key the kit code derives, making this enrolled
     /// desktop an admin with its own admin key.
     UseRecoveryKit(String),
@@ -130,6 +134,7 @@ impl std::fmt::Debug for AuthorityAction {
             Self::Promote(device_id) => formatter.debug_tuple("Promote").field(device_id).finish(),
             Self::RegenerateRecoveryKit => formatter.write_str("RegenerateRecoveryKit"),
             Self::UseRecoveryKit(_) => formatter.write_str("UseRecoveryKit(<redacted>)"),
+            Self::RotateRecoveryKit(_) => formatter.write_str("RotateRecoveryKit(<redacted>)"),
             Self::ProposeRemoval(device_id) => formatter
                 .debug_tuple("ProposeRemoval")
                 .field(device_id)
@@ -400,6 +405,9 @@ impl<H: SyncHost> Session<'_, H> {
             AuthorityAction::UseRecoveryKit(code) => {
                 return self.use_recovery_kit(&admin, code).await;
             }
+            AuthorityAction::RotateRecoveryKit(code) => {
+                return self.rotate_recovery_kit(admin, code).await;
+            }
             // A quarantine on a device that is not an admin stays local.
             AuthorityAction::ProposeRemoval(_) if !admin.is_admin() => {
                 return Ok(AuthorityAnswer::Proposed);
@@ -474,6 +482,9 @@ impl<H: SyncHost> Session<'_, H> {
                     .await?;
                 Ok(AuthorityAnswer::Proposed)
             }
+            AuthorityAction::RotateRecoveryKit(_) => {
+                Err("the recovery kit action ran on the admin path".to_string())
+            }
             AuthorityAction::RegenerateRecoveryKit => {
                 let keys = self.keys.clone();
                 let vault_id = self.files.vault_id.clone();
@@ -493,11 +504,7 @@ impl<H: SyncHost> Session<'_, H> {
                     )
                 })
                 .await?;
-                let public = authority::recovery_public_keys(&seed)?;
-                let mut conn = acquire(&self.pool).await?;
-                ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &public, now)
-                    .await
-                    .map_err(|error| format!("store the recovery kit keys: {error}"))?;
+                self.store_kit_keys(&seed, now).await?;
                 Ok(AuthorityAnswer::RecoveryKit)
             }
             AuthorityAction::ProposeRemoval(device_id) => {
@@ -546,6 +553,55 @@ impl<H: SyncHost> Session<'_, H> {
         )?;
         self.place_proposal(proposal).await?;
         Ok(AuthorityAnswer::Proposed)
+    }
+
+    /// Replaces the printed recovery kit on this enrolled desktop, admin or not, with a new kit
+    /// that the kit `code` derives the signer for. The derived key lives only inside this call;
+    /// the new seed waits in the key store until the user saves its kit.
+    async fn rotate_recovery_kit(
+        &self,
+        admin: AdminContext,
+        code: &str,
+    ) -> Result<AuthorityAnswer, String> {
+        let live_desktop = admin.view.devices.iter().any(|device| {
+            device.device_id == admin.device_id
+                && device.removed_revision.is_none()
+                && device.kind == DeviceKind::Desktop
+        });
+        if !live_desktop {
+            return Err("only an enrolled desktop can replace the recovery kit".to_string());
+        }
+        let old_kit = authority::kit_admin(code)?;
+        let keys = self.keys.clone();
+        let vault_id = self.files.vault_id.clone();
+        let path = self.files.outbox_path();
+        let space = self.ctx.space;
+        let now = now_ms()?;
+        let seed = blocking(move || {
+            let mut outbox = Outbox::load(&path)?;
+            authority::rotate_recovery_kit(
+                keys.as_ref(),
+                &vault_id,
+                &mut outbox,
+                &admin.view,
+                space,
+                &old_kit,
+                now,
+            )
+        })
+        .await?;
+        self.store_kit_keys(&seed, now).await?;
+        Ok(AuthorityAnswer::RecoveryKit)
+    }
+
+    /// Records the public keys of a new kit in the vault database, which keeps the keys of the
+    /// latest kit this device made.
+    async fn store_kit_keys(&self, seed: &RecoverySeed, now: u64) -> Result<(), String> {
+        let public = authority::recovery_public_keys(seed)?;
+        let mut conn = acquire(&self.pool).await?;
+        ganbaru_sync::local::store_recovery_kit_keys(&mut conn, &public, now)
+            .await
+            .map_err(|error| format!("store the recovery kit keys: {error}"))
     }
 
     /// Seals a handover that makes this desktop the anchor. Runs only after an exchange that

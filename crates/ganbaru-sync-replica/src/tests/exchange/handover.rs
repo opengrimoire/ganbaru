@@ -1058,16 +1058,12 @@ fn a_printed_kit_forces_the_anchor_to_a_desktop_whose_key_the_log_names() {
     });
 }
 
-/// A laptop desktop holding the log of a lost hub that started the key epochs with the founding
-/// kit, enrolled the laptop, and sequenced its device key. With `planted`, the hub, stolen,
-/// then named that recovery encryption key and sealed a key epoch to it. Returns the laptop and
-/// the hub's encryption public key.
-async fn kit_space(
-    label: &str,
-    planted: Option<EncryptionPublicKey>,
-) -> (Replica, EncryptionPublicKey) {
+/// A hub, holding its space keys, that started the key epochs with the founding kit, enrolled
+/// the laptop desktop, and sequenced its device key. Returns the hub, the laptop, which has not
+/// pulled the log yet, the hub's encryption public key, and the laptop's space keys.
+async fn founded_space(label: &str) -> (Replica, Replica, EncryptionPublicKey, Arc<SpaceKeys>) {
     let mut hub_replica = Replica::new(&format!("hub-{label}"), HUB_DEVICE).await;
-    let mut laptop = Replica::new(&format!("laptop-{label}"), LAPTOP_DEVICE).await;
+    let laptop = Replica::new(&format!("laptop-{label}"), LAPTOP_DEVICE).await;
     let charter = hub_replica.charter().await;
     let space = hub_replica.ctx.space;
     let admin = hub_keys().admin;
@@ -1130,6 +1126,20 @@ async fn kit_space(
         authority::device_key_proposal(space, charter, LAPTOP_DEVICE, laptop_keys.as_ref(), NOW_MS)
             .expect("sign the laptop's device key");
     sequence_here(&mut hub_replica, &published).await;
+    (hub_replica, laptop, hub_encryption, laptop_keys)
+}
+
+/// A laptop desktop holding the log of a lost hub built by [`founded_space`]. With `planted`,
+/// the hub, stolen, then named that recovery encryption key and sealed a key epoch to it.
+/// Returns the laptop and the hub's encryption public key.
+async fn kit_space(
+    label: &str,
+    planted: Option<EncryptionPublicKey>,
+) -> (Replica, EncryptionPublicKey) {
+    let (mut hub_replica, mut laptop, hub_encryption, laptop_keys) = founded_space(label).await;
+    let charter = hub_replica.charter().await;
+    let space = hub_replica.ctx.space;
+    let admin = hub_keys().admin;
     if let Some(thief) = planted {
         let plant = authority::propose(
             space,
@@ -1296,6 +1306,242 @@ fn a_kit_takeover_keeps_a_recovery_key_it_already_names() {
                     .encryption
             )
         );
+        laptop.close().await;
+    });
+}
+
+/// Sequences `proposal` through the writer of `replica`, which must anchor, and records the
+/// commit when the anchor accepts it.
+async fn try_sequence(
+    replica: &mut Replica,
+    proposal: &SignedProposal,
+) -> Result<u64, ProposalRejection> {
+    let mut conn = acquire(&replica.pool).await;
+    let sequenced = authority::sequence(
+        &replica.engine,
+        &mut conn,
+        &replica.ctx,
+        &mut replica.writer.local(),
+        proposal,
+        NOW_MS,
+    )
+    .await
+    .expect("sequence");
+    drop(conn);
+    if sequenced.is_ok() {
+        commit_sequenced(replica).await;
+    }
+    sequenced
+}
+
+/// Rotates the recovery kit with the kit `code` through the key store and outbox of `replica`,
+/// as its own view sees the log. Returns the new seed and the proposals the outbox then holds.
+fn rotate_with(
+    replica: &Replica,
+    view: &ganbaru_sync::AuthorizationView,
+    code: &str,
+) -> Result<(RecoverySeed, Vec<SignedProposal>), String> {
+    let outbox_path = replica.directory.files().outbox_path();
+    let mut outbox = Outbox::load(&outbox_path).expect("outbox");
+    let old_kit = authority::kit_admin(code).expect("kit admin key");
+    let seed = authority::rotate_recovery_kit(
+        &replica.directory.keys(),
+        VAULT_ID,
+        &mut outbox,
+        view,
+        replica.ctx.space,
+        &old_kit,
+        NOW_MS,
+    )?;
+    Ok((seed, outbox.pending()))
+}
+
+/// A hub and a laptop desktop that pulled its log, as [`founded_space`] builds them.
+async fn linked_space(label: &str) -> (Replica, Replica) {
+    let (hub_replica, mut laptop, _hub_encryption, laptop_keys) = founded_space(label).await;
+    laptop
+        .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
+        .await
+        .expect("pull the log");
+    laptop.apply().await;
+    laptop.writer.attach_keys(laptop_keys);
+    (hub_replica, laptop)
+}
+
+#[test]
+fn rotate_recovery_kit_retires_the_old_code() {
+    block_on(async {
+        let (mut hub_replica, mut laptop) = linked_space("rotate-kit").await;
+        let old_code = hub_recovery_seed().kit_code();
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+
+        // A desktop that is no admin rotates the kit with the printed code.
+        let rotated = rotate_with(&laptop, &view_of(&laptop).await, &old_code);
+        let Ok((seed, proposals)) = rotated else {
+            panic!("the current kit rotates to a new kit: {:?}", rotated.err());
+        };
+        assert_eq!(
+            pending_code(&laptop.directory.keys()),
+            Some(seed.kit_code()),
+            "the key store keeps the new kit until the user saves it"
+        );
+        for proposal in &proposals {
+            sequence_here(&mut hub_replica, proposal).await;
+        }
+        let fresh = seed.public_keys().expect("new kit keys");
+        let view = view_of(&hub_replica).await;
+        assert_eq!(
+            view.kit_admin_key, fresh.admin,
+            "the new kit holds the lineage"
+        );
+        assert_eq!(view.recovery_admin_key, fresh.admin);
+        assert_eq!(view.recovery_encryption_key, Some(fresh.encryption));
+        let latest = key_epoch_of(&hub_replica, view.key_epoch).await;
+        let old_encryption = hub_recovery_seed()
+            .public_keys()
+            .expect("old kit keys")
+            .encryption;
+        assert!(latest.envelope_for(&fresh.encryption).is_some());
+        assert!(
+            latest.envelope_for(&old_encryption).is_none(),
+            "the old kit opens no later key epoch"
+        );
+
+        // The old code enrolls nothing at the anchor.
+        let enrollment = authority::recovery_enrollment(
+            space,
+            charter,
+            &old_code,
+            Enrollment {
+                device_id: "device-intruder".to_string(),
+                device_key: device_key("device-intruder").public_key(),
+                tls_fingerprint: [70; 32],
+                label: "Intruder".to_string(),
+                device_kind: DeviceKind::Desktop,
+            },
+            AdminKeyPair::from_seed(&[71; 32])
+                .expect("admin seed")
+                .public_key(),
+            NOW_MS,
+        )
+        .expect("sign the enrollment");
+        assert!(
+            try_sequence(&mut hub_replica, &enrollment).await.is_err(),
+            "the anchor refuses an enrollment the old kit signs"
+        );
+
+        // Once the anchor is lost, the old code forces no handover and the new one does.
+        laptop
+            .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
+            .await
+            .expect("pull the log");
+        laptop.apply().await;
+        hub_replica.close().await;
+        let before = view_of(&laptop).await;
+        assert!(!matches!(
+            force_with_kit(&mut laptop, &old_code).await,
+            Ok(Ok(_))
+        ));
+        assert_eq!(view_of(&laptop).await, before);
+        force_with_kit(&mut laptop, &seed.kit_code())
+            .await
+            .expect("force handover")
+            .expect("the new kit hands the anchor to the laptop");
+        assert_eq!(view_of(&laptop).await.anchor_device_id, LAPTOP_DEVICE);
+        laptop.close().await;
+    });
+}
+
+#[test]
+fn rotate_recovery_kit_refuses_a_code_that_is_not_the_lineage_key() {
+    block_on(async {
+        let (mut hub_replica, laptop) = linked_space("rotate-installed").await;
+        let space = hub_replica.ctx.space;
+
+        // The anchor installs a recovery key, which never takes the kit lineage.
+        let installed = {
+            let keys = hub_replica.directory.keys();
+            let mut outbox =
+                Outbox::load(&hub_replica.directory.files().outbox_path()).expect("outbox");
+            let seed = authority::regenerate_recovery_kit(
+                &keys,
+                VAULT_ID,
+                &mut outbox,
+                &view_of(&hub_replica).await,
+                space,
+                &hub_keys().admin,
+                NOW_MS,
+            )
+            .expect("regenerate");
+            for proposal in outbox.pending() {
+                sequence_here(&mut hub_replica, &proposal).await;
+            }
+            seed
+        };
+        let view = view_of(&hub_replica).await;
+        assert_eq!(
+            view.recovery_admin_key,
+            installed.public_keys().expect("installed keys").admin
+        );
+        assert_eq!(
+            view.kit_admin_key,
+            hub_recovery_seed().public_keys().expect("kit keys").admin
+        );
+
+        assert!(rotate_with(&laptop, &view, &installed.kit_code()).is_err());
+        let outbox = Outbox::load(&laptop.directory.files().outbox_path()).expect("outbox");
+        assert!(
+            outbox.entries().is_empty(),
+            "a refused rotation proposes nothing"
+        );
+        assert_eq!(pending_code(&laptop.directory.keys()), None);
+        hub_replica.close().await;
+        laptop.close().await;
+    });
+}
+
+#[test]
+fn rotate_recovery_kit_racing_rotations_never_mix_two_kits() {
+    block_on(async {
+        let (mut hub_replica, laptop) = linked_space("rotate-race").await;
+        let old_code = hub_recovery_seed().kit_code();
+        let view = view_of(&hub_replica).await;
+
+        // The owner and a thief holding a copy of the printed kit rotate at the same time, and
+        // the anchor receives their proposals interleaved.
+        let (owner, owner_proposals) = rotate_with(&laptop, &view, &old_code).expect("rotate");
+        let (thief, thief_proposals) = rotate_with(&hub_replica, &view, &old_code).expect("rotate");
+        let mut interleaved = Vec::new();
+        for (ours, theirs) in owner_proposals.iter().zip(&thief_proposals) {
+            interleaved.extend([ours, theirs]);
+        }
+        let mut refused = 0;
+        for proposal in interleaved {
+            if try_sequence(&mut hub_replica, proposal).await.is_err() {
+                refused += 1;
+            }
+        }
+        assert_eq!(
+            refused,
+            thief_proposals.len(),
+            "the losing rotation lands no entry"
+        );
+
+        let view = view_of(&hub_replica).await;
+        let owner = owner.public_keys().expect("owner keys");
+        let thief = thief.public_keys().expect("thief keys");
+        let winner = [owner, thief]
+            .into_iter()
+            .find(|keys| keys.admin == view.kit_admin_key)
+            .expect("one rotation wins the lineage");
+        assert_eq!(view.recovery_admin_key, winner.admin);
+        assert_eq!(
+            view.recovery_encryption_key,
+            Some(winner.encryption),
+            "the winning kit's encryption key is the one the log names"
+        );
+        hub_replica.close().await;
         laptop.close().await;
     });
 }

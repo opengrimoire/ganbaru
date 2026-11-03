@@ -22,7 +22,7 @@ use ganbaru_sync::{
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, Charter, DeviceKey, DeviceKeyPair, DeviceKind, DevicePublicKey,
-    DeviceRole, Digest32, EncryptionKeyPair, EncryptionPublicKey, Enroll, Entry, Handover,
+    DeviceRole, Digest32, EncryptionKeyPair, EncryptionPublicKey, Enroll, Entry, Handover, KitCode,
     Proposal, ProposalRejection, RecoveryKey, RecoveryPublicKeys, RecoverySeed, Remove, SetRole,
     SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_device_proposal,
     sign_proposal,
@@ -687,8 +687,8 @@ pub fn forget_unlinked_recovery_seed(
 /// that does not parse. A forced handover uses it unchecked, because a stolen anchor may have
 /// replaced the recovery key on the selected chain, and the engine admits the handover only
 /// where the key is of kit lineage. Callers keep the key only as long as they sign with it.
-pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
+pub fn kit_admin(kit_code: &KitCode) -> Result<AdminKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code.as_str())
         .map_err(|error| format!("read the recovery kit: {error}"))?;
     seed.recovery_admin_key()
         .map_err(|error| format!("derive the recovery admin key: {error}"))
@@ -697,8 +697,8 @@ pub fn kit_admin(kit_code: &str) -> Result<AdminKeyPair, String> {
 /// The recovery encryption key `kit_code` derives, which opens every key epoch sealed while the
 /// log names it. Refuses a code that does not parse. Callers keep the key only while the kit
 /// flow runs.
-pub fn kit_encryption(kit_code: &str) -> Result<EncryptionKeyPair, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
+pub fn kit_encryption(kit_code: &KitCode) -> Result<EncryptionKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code.as_str())
         .map_err(|error| format!("read the recovery kit: {error}"))?;
     seed.recovery_encryption_key()
         .map_err(|error| format!("derive the recovery encryption key: {error}"))
@@ -707,7 +707,10 @@ pub fn kit_encryption(kit_code: &str) -> Result<EncryptionKeyPair, String> {
 /// The recovery admin key `kit_code` derives. Refuses a code that does not parse or a kit
 /// whose key the selected log does not name. Callers keep the key only as long as they sign
 /// with it.
-pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminKeyPair, String> {
+pub fn recovery_admin(
+    view: &AuthorizationView,
+    kit_code: &KitCode,
+) -> Result<AdminKeyPair, String> {
     let recovery = kit_admin(kit_code)?;
     if recovery.public_key() != view.recovery_admin_key {
         return Err("this recovery kit does not belong to the vault's current log".to_string());
@@ -722,7 +725,7 @@ pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminK
 pub fn recovery_promotion(
     view: &AuthorizationView,
     space: SpaceId,
-    kit_code: &str,
+    kit_code: &KitCode,
     device_id: &str,
     admin_key: AdminPublicKey,
     now_ms: u64,
@@ -744,7 +747,7 @@ pub fn recovery_promotion(
 pub fn recovery_enrollment(
     space: SpaceId,
     charter: Digest32,
-    kit_code: &str,
+    kit_code: &KitCode,
     enrollment: Enrollment,
     admin_key: AdminPublicKey,
     now_ms: u64,

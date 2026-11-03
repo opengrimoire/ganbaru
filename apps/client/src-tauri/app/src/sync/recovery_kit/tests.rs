@@ -47,10 +47,10 @@ async fn an_unlinked_recovery_kit_is_kept_for_the_first_charter_once_confirmed()
     assert!(kit.qr.width > 0);
     assert_eq!(kit.qr.modules.len(), kit.qr.width * kit.qr.width);
     assert!(
-        !format!("{kit:?}").contains(&kit.code),
+        !format!("{kit:?}").contains(kit.code.as_str()),
         "debug never shows the code"
     );
-    let seed = RecoverySeed::parse_kit_code(&kit.code).expect("parse");
+    let seed = RecoverySeed::parse_kit_code(kit.code.as_str()).expect("parse");
     assert_eq!(
         local::recovery_kit_keys(&mut conn).await.expect("read"),
         Some(seed.public_keys().expect("kit keys")),
@@ -66,14 +66,14 @@ async fn an_unlinked_recovery_kit_is_kept_for_the_first_charter_once_confirmed()
         .pending
         .expect("replaced kit");
     assert_ne!(replaced.code, kit.code, "creating again replaces the kit");
-    let seed = RecoverySeed::parse_kit_code(&replaced.code).expect("parse");
+    let seed = RecoverySeed::parse_kit_code(replaced.code.as_str()).expect("parse");
     assert_eq!(
         local::recovery_kit_keys(&mut conn).await.expect("read"),
         Some(seed.public_keys().expect("kit keys"))
     );
 
     assert!(
-        !confirm_saved(&mut conn, &keys, VAULT_ID, last_group(&kit.code))
+        !confirm_saved(&mut conn, &keys, VAULT_ID, last_group(kit.code.as_str()))
             .await
             .expect("confirm"),
         "the replaced kit's last group does not confirm"
@@ -97,7 +97,7 @@ async fn an_unlinked_recovery_kit_is_kept_for_the_first_charter_once_confirmed()
             .is_some(),
         "a failed confirmation keeps the kit"
     );
-    let typed = last_group(&replaced.code).to_ascii_lowercase();
+    let typed = last_group(replaced.code.as_str()).to_ascii_lowercase();
     assert!(
         confirm_saved(&mut conn, &keys, VAULT_ID, &format!(" {typed} "))
             .await

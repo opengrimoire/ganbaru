@@ -17,7 +17,7 @@ use ganbaru_sync_contracts::bounds::{MAX_DEVICE_ID_BYTES, MAX_WRITERS_PER_SPACE}
 #[cfg(desktop)]
 use ganbaru_sync_contracts::ids::parse_hex;
 #[cfg(desktop)]
-use ganbaru_sync_contracts::{Digest32, LateResolution};
+use ganbaru_sync_contracts::{Digest32, KitCode, LateResolution};
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
 use std::time::Duration;
@@ -271,6 +271,7 @@ pub async fn sync_rotate_recovery_kit(
     runtime: State<'_, SyncRuntime>,
     kit_code: String,
 ) -> Result<(), String> {
+    let kit_code = KitCode::new(kit_code);
     let _kit = KIT_LOCK.lock().await;
     match run_authority(&runtime, AuthorityAction::RotateRecoveryKit(kit_code)).await? {
         AuthorityAnswer::RecoveryKit => Ok(()),
@@ -348,6 +349,7 @@ pub async fn sync_use_recovery_kit(
     runtime: State<'_, SyncRuntime>,
     code: String,
 ) -> Result<(), String> {
+    let code = KitCode::new(code);
     run_authority(&runtime, AuthorityAction::UseRecoveryKit(code))
         .await
         .map(|_| ())
@@ -378,6 +380,7 @@ pub async fn sync_force_anchor<R: Runtime>(
     remove_devices: Vec<String>,
     quarantine_anchor: bool,
 ) -> Result<u64, String> {
+    let kit_code = kit_code.map(KitCode::new);
     let request = force_request(kit_code, point, remove_devices)?;
     let (revision, old_anchor) =
         match run_authority(&runtime, AuthorityAction::ForceAnchor(request)).await? {
@@ -562,7 +565,7 @@ async fn contest_step(runtime: &SyncRuntime, action: AuthorityAction) -> Result<
 /// The forced handover the frontend asks for, with a bounded device review.
 #[cfg(desktop)]
 fn force_request(
-    kit: Option<String>,
+    kit: Option<KitCode>,
     point: Option<EntryTarget>,
     remove_devices: Vec<String>,
 ) -> Result<ForceRequest, String> {

@@ -16,11 +16,11 @@ use crate::writer::{
     read_stored_writer,
 };
 use ganbaru_sync::{Engine, SpaceKeyHolder};
-use ganbaru_sync_contracts::RecoverySeed;
 use ganbaru_sync_contracts::{
     AdminKeyPair, Content, DeviceKind, Digest32, EncryptionKeyPair, EncryptionPublicKey, Entry,
     Envelope, KeyEpoch, ProposalRejection, SignedProposal, SpaceId, VersionVector,
 };
+use ganbaru_sync_contracts::{KitCode, RecoverySeed};
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -35,7 +35,7 @@ pub(super) fn laptop_ids() -> PeerIds {
 
 /// The code of the recovery kit waiting in `keys`, which tests compare because seeds have no
 /// equality.
-fn pending_code(keys: &dyn crate::writer::SyncKeyStore) -> Option<String> {
+fn pending_code(keys: &dyn crate::writer::SyncKeyStore) -> Option<KitCode> {
     authority::pending_recovery_seed(keys, VAULT_ID)
         .expect("pending seed")
         .map(|seed| seed.kit_code())
@@ -443,7 +443,7 @@ fn a_regenerated_recovery_key_recovers_beside_the_printed_kit() {
             "the key store keeps the kit the user was shown"
         );
         assert!(
-            RecoverySeed::parse_kit_code(&seed.kit_code())
+            RecoverySeed::parse_kit_code(seed.kit_code().as_str())
                 .expect("parse kit code")
                 .ct_eq(&seed)
         );
@@ -673,7 +673,7 @@ fn a_recovery_kit_promotes_a_member_desktop_that_then_takes_the_anchor() {
             authority::recovery_promotion(
                 &view,
                 space,
-                &format!("{code}0"),
+                &KitCode::new(format!("{}0", code.as_str())),
                 LAPTOP_DEVICE,
                 laptop_admin.public_key(),
                 NOW_MS,
@@ -973,7 +973,7 @@ async fn regenerated_space(label: &str, publish_laptop_key: bool) -> (Replica, R
 /// Forces the anchor to `laptop` with the recovery kit `code`, promoting it to admin.
 async fn force_with_kit(
     laptop: &mut Replica,
-    code: &str,
+    code: &KitCode,
 ) -> Result<Result<u64, ProposalRejection>, String> {
     let signer = authority::kit_admin(code).expect("kit admin key");
     let recovery = authority::kit_encryption(code).expect("kit encryption key");
@@ -1339,7 +1339,7 @@ async fn try_sequence(
 fn rotate_with(
     replica: &Replica,
     view: &ganbaru_sync::AuthorizationView,
-    code: &str,
+    code: &KitCode,
 ) -> Result<(RecoverySeed, Vec<SignedProposal>), String> {
     let outbox_path = replica.directory.files().outbox_path();
     let mut outbox = Outbox::load(&outbox_path).expect("outbox");

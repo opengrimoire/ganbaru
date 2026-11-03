@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use ganbaru_handoff::protocol::{QrMatrix, qr_matrix_for_bytes};
 use ganbaru_sync::{AuthorizationView, Engine, local};
-use ganbaru_sync_contracts::{RecoveryPublicKeys, RecoverySeed};
+use ganbaru_sync_contracts::{KitCode, RecoveryPublicKeys, RecoverySeed};
 use ganbaru_sync_replica::authority;
 use ganbaru_sync_replica::writer::SyncKeyStore;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use sqlx::SqliteConnection;
 
 use super::service::blocking;
@@ -39,14 +39,21 @@ pub(crate) struct RecoveryKitState {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingRecoveryKit {
-    /// The grouped kit code with its checksum.
-    pub(crate) code: String,
+    /// The grouped kit code with its checksum, serialized as its text. The serialized copy goes
+    /// to the IPC layer, which cannot wipe it.
+    #[serde(serialize_with = "serialize_kit_code")]
+    pub(crate) code: KitCode,
     /// The kit code as a QR module matrix, for the printable page.
     pub(crate) qr: QrMatrix,
     /// Whether the kit protects the vault: the selected log names its recovery admin key, or,
     /// without a sync space, the vault database keeps its keys for the first charter. A
     /// regenerated kit is inactive until the anchor sequences it.
     pub(crate) active: bool,
+}
+
+/// Writes the kit code as its text, the shape the frontend reads.
+fn serialize_kit_code<S: Serializer>(code: &KitCode, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(code.as_str())
 }
 
 impl std::fmt::Debug for RecoveryKitState {
@@ -120,7 +127,7 @@ async fn pending_seed(
 /// The kit of `seed` as the frontend shows it.
 fn pending_kit(seed: &RecoverySeed, active: bool) -> Result<PendingRecoveryKit, String> {
     let code = seed.kit_code();
-    let qr = qr_matrix_for_bytes(code.as_bytes())?;
+    let qr = qr_matrix_for_bytes(code.as_str().as_bytes())?;
     Ok(PendingRecoveryKit { code, qr, active })
 }
 

@@ -82,7 +82,7 @@ pub struct RecoverySeed(Zeroizing<[u8; SEED_BYTES]>);
 /// Kit code text, as a person types it or as [`RecoverySeed::kit_code`] writes it, that is
 /// wiped when dropped. Every clone wipes its own buffer. Its debug form never shows the code,
 /// and it has no serde form, so it is never logged by accident.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KitCode(Zeroizing<String>);
 
 impl KitCode {
@@ -94,6 +94,12 @@ impl KitCode {
     /// The code text, borrowed for parsing or for a serialized copy the caller hands on.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Debug for KitCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KitCode(<redacted>)")
     }
 }
 
@@ -175,7 +181,7 @@ impl RecoverySeed {
 
     /// The grouped kit code, written into a buffer sized for it, so it never reallocates and
     /// leaves no unwiped copy.
-    pub fn kit_code(&self) -> String {
+    pub fn kit_code(&self) -> KitCode {
         let characters = self.code_characters();
         let mut code = String::with_capacity(KIT_CODE_CHARS + KIT_CODE_CHARS / KIT_GROUP_CHARS);
         for (index, character) in characters.iter().enumerate() {
@@ -184,7 +190,7 @@ impl RecoverySeed {
             }
             code.push(char::from(*character));
         }
-        code
+        KitCode::new(code)
     }
 
     /// Whether `typed` is the last group of the kit code, read as [`Self::parse_kit_code`] reads

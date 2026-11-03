@@ -26,7 +26,10 @@ fn recovery_derivation_and_kit_code_match_their_vectors() {
     let seed = recovery_seed();
     let admin = seed.recovery_admin_key().unwrap();
     assert_vector("recovery-admin-key", &hex(admin.public_key().as_bytes()));
-    assert_vector("recovery-kit-code", &hex(seed.kit_code().as_bytes()));
+    assert_vector(
+        "recovery-kit-code",
+        &hex(seed.kit_code().as_str().as_bytes()),
+    );
 }
 
 #[test]
@@ -57,7 +60,8 @@ fn derivation_is_hkdf_sha256_with_a_terminated_label() {
 #[test]
 fn kit_codes_are_grouped_and_round_trip() {
     let seed = recovery_seed();
-    let code = seed.kit_code();
+    let kit = seed.kit_code();
+    let code = kit.as_str();
     let groups: Vec<&str> = code.split(KIT_GROUP_SEPARATOR).collect();
     assert_eq!(groups.len(), KIT_CODE_CHARS.div_ceil(KIT_GROUP_CHARS));
     assert!(groups.iter().all(|group| group.len() == KIT_GROUP_CHARS));
@@ -69,14 +73,18 @@ fn kit_codes_are_grouped_and_round_trip() {
     assert_eq!(parsed(&code).unwrap(), *seed.as_bytes());
     for _ in 0..32 {
         let fresh = RecoverySeed::generate().unwrap();
-        assert_eq!(parsed(&fresh.kit_code()).unwrap(), *fresh.as_bytes());
+        assert_eq!(
+            parsed(fresh.kit_code().as_str()).unwrap(),
+            *fresh.as_bytes()
+        );
     }
 }
 
 #[test]
 fn kit_code_parsing_tolerates_how_people_type() {
     let seed = recovery_seed();
-    let code = seed.kit_code();
+    let kit = seed.kit_code();
+    let code = kit.as_str();
     let compact: String = code
         .chars()
         .filter(|character| *character != KIT_GROUP_SEPARATOR)
@@ -103,7 +111,8 @@ fn kit_code_parsing_tolerates_how_people_type() {
 
 #[test]
 fn kit_code_parsing_refuses_damaged_codes() {
-    let code = recovery_seed().kit_code();
+    let kit = recovery_seed().kit_code();
+    let code = kit.as_str();
     let with_u = format!("U{}", &code[1..]);
     assert_eq!(parsed(&with_u), Err(RecoveryError::Character));
     assert_eq!(parsed(&format!("{code}!")), Err(RecoveryError::Character));
@@ -206,7 +215,8 @@ fn seeds_compare_by_value() {
 #[test]
 fn only_the_last_group_confirms_a_saved_kit() {
     let seed = recovery_seed();
-    let code = seed.kit_code();
+    let kit = seed.kit_code();
+    let code = kit.as_str();
     let last = code.rsplit(KIT_GROUP_SEPARATOR).next().unwrap();
     assert!(seed.last_group_matches(last));
     assert!(seed.last_group_matches(&format!(" {} ", last.to_lowercase())));
@@ -220,7 +230,7 @@ fn only_the_last_group_confirms_a_saved_kit() {
     assert!(!seed.last_group_matches(&code));
     assert!(!seed.last_group_matches("!!!!"));
     let other = RecoverySeed::from_bytes([0x67; 32]).kit_code();
-    let other_last = other.rsplit(KIT_GROUP_SEPARATOR).next().unwrap();
+    let other_last = other.as_str().rsplit(KIT_GROUP_SEPARATOR).next().unwrap();
     if other_last != last {
         assert!(!seed.last_group_matches(other_last));
     }

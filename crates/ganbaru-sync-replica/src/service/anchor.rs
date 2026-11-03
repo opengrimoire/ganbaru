@@ -18,7 +18,7 @@ use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::{AuthorizationView, ContestEntry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, AdminPublicKey, DeviceKind, DevicePublicKey, DeviceRole, Digest32, Enroll, Entry,
-    LateResolution, LateRow, ProposalRejection, RecoverySeed, ResolveLate, RowKey, Server,
+    KitCode, LateResolution, LateRow, ProposalRejection, RecoverySeed, ResolveLate, RowKey, Server,
     ServerConfig, SignedProposal, TableId, VersionVector,
 };
 use std::collections::BTreeSet;
@@ -37,10 +37,10 @@ pub enum AuthorityAction {
     RegenerateRecoveryKit,
     /// Replace the printed kit with a new one, signed with the recovery admin key the code of
     /// the current kit derives, from any enrolled desktop.
-    RotateRecoveryKit(String),
+    RotateRecoveryKit(KitCode),
     /// Propose, signed with the recovery admin key the kit code derives, making this enrolled
     /// desktop an admin with its own admin key.
-    UseRecoveryKit(String),
+    UseRecoveryKit(KitCode),
     /// Propose removing a device this desktop quarantined.
     ProposeRemoval(String),
     /// Propose removing a device from the vault, refusing what the anchor would reject.
@@ -79,7 +79,7 @@ pub struct ServerEnrollment {
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct ForceRequest {
     /// The kit code whose recovery admin key signs, or `None` for this desktop's admin key.
-    pub kit: Option<String>,
+    pub kit: Option<KitCode>,
     /// The kit point to continue from, `None` for the default one.
     pub point: Option<ContestEntry>,
     /// Devices the person marked in the device review of a kit recovery.
@@ -529,7 +529,7 @@ impl<H: SyncHost> Session<'_, H> {
     async fn use_recovery_kit(
         &self,
         admin: &AdminContext,
-        code: &str,
+        code: &KitCode,
     ) -> Result<AuthorityAnswer, String> {
         if admin.is_admin() {
             return Err("this desktop is already an admin".to_string());
@@ -561,7 +561,7 @@ impl<H: SyncHost> Session<'_, H> {
     async fn rotate_recovery_kit(
         &self,
         admin: AdminContext,
-        code: &str,
+        code: &KitCode,
     ) -> Result<AuthorityAnswer, String> {
         let live_desktop = admin.view.devices.iter().any(|device| {
             device.device_id == admin.device_id
@@ -667,7 +667,7 @@ impl<H: SyncHost> Session<'_, H> {
         writer: &mut Option<ActiveWriter>,
         request: &ForceRequest,
     ) -> Result<AuthorityAnswer, String> {
-        let kit = request.kit.as_deref();
+        let kit = request.kit.as_ref();
         if kit.is_none() && (request.point.is_some() || !request.removals.is_empty()) {
             return Err(
                 "only the recovery kit chooses a point or removes reviewed devices".to_string(),
@@ -1000,7 +1000,10 @@ mod tests {
         };
         let shown = [
             format!("{:?}", AuthorityAction::UseRecoveryKit(text.clone().into())),
-            format!("{:?}", AuthorityAction::RotateRecoveryKit(text.clone().into())),
+            format!(
+                "{:?}",
+                AuthorityAction::RotateRecoveryKit(text.clone().into())
+            ),
             format!("{force:?}"),
             format!("{:?}", AuthorityAction::ForceAnchor(force.clone())),
         ];

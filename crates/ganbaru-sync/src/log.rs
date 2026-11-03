@@ -433,6 +433,24 @@ impl Engine {
         .await?;
         Ok(held == Some(1))
     }
+
+    /// The writers certified to `device_id` in `ctx`'s space.
+    pub async fn device_writers(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        device_id: &str,
+    ) -> SyncResult<BTreeSet<WriterId>> {
+        ensure_space(conn, ctx.space).await?;
+        let ids: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT writer_id FROM sync_writers WHERE space_id = ? AND device_id = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(device_id)
+        .fetch_all(&mut *conn)
+        .await?;
+        ids.iter().map(|id| writer_id(id)).collect()
+    }
 }
 
 /// The page of [`Engine::ops_after`], with every lane ending before its first row change when

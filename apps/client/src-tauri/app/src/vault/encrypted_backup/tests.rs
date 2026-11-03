@@ -408,7 +408,7 @@ async fn placement_restores_an_honest_backup_in_place_and_a_forged_one_as_a_copy
     archive_vault_with(&vault, &forged, "", "").await;
     let space = SpaceId::personal(&vault_id);
     let opened_by_kit = ArchiveOrigin::BackupFile {
-        space: space.clone(),
+        space,
         opened_by: Some(kit(0x42)),
     };
     let opened_by_epoch = ArchiveOrigin::BackupFile {

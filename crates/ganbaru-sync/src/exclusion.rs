@@ -1611,6 +1611,9 @@ pub struct LateChange {
     pub values: Vec<(GroupId, Value)>,
     /// Clock of the newest late value, or `None` when the change only deleted the row.
     pub clock: Option<Hlc>,
+    /// Whether restoring the change can write it back. A row the removed device owns only that
+    /// device may write, so restoring it records the decision and writes nothing.
+    pub restorable: bool,
 }
 
 /// The change restoring a late change seals: the late values no current version is newer than,
@@ -1774,6 +1777,7 @@ impl Engine {
                 presentation,
                 clock: record.groups.values().map(|late| late.clock).max(),
                 values,
+                restorable: true,
             });
         }
         Ok(changes)

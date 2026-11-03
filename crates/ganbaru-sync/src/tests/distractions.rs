@@ -848,6 +848,10 @@ fn restoring_a_removed_devices_usage_total_seals_nothing() {
             .find(|late| late.row_key == key)
             .expect("the total is a late change")
             .clone();
+        assert!(
+            !late.restorable,
+            "the listing says restoring writes nothing back"
+        );
         let before = anchor.stored_vector().await;
         let report = anchor
             .engine
@@ -881,6 +885,101 @@ fn restoring_a_removed_devices_usage_total_seals_nothing() {
         for replica in [&mut anchor, &mut honest] {
             assert!(late_changes(replica).await.is_empty());
             assert_eq!(stored_elapsed(replica, &key).await, None);
+        }
+    });
+}
+
+/// Offers `to` every operation `from` sealed, including those at sequences `to` already stores
+/// from another branch, so it stores the fork evidence, then delivers the rest.
+async fn cross(to: &mut Replica, from: &mut Replica) {
+    let own = from.own_ops().await;
+    to.receive(&own).await;
+    deliver(to, from).await;
+}
+
+/// No writer but the owner's can seal a total again, so after a fork the anchor keeps the
+/// excluded branch total with no version while a member that retained restores the total it
+/// displaced. The owner's re-seal of its own branch writes the total again and settles both.
+#[test]
+fn a_forked_total_the_anchor_cannot_seal_again_settles_on_the_owners_reseal() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 91).await;
+        let mut original = Replica::new(1, 91).await;
+        let mut member = Replica::new(2, 91).await;
+        let device = original.device_id.clone();
+        let key = usage_key(&device, HOST);
+        original.exec(&flush_sql(&device, HOST, 60)).await;
+        original.seal().await.unwrap();
+        deliver(&mut anchor, &mut original).await;
+        deliver(&mut member, &mut original).await;
+        let mut clone = original.clone_device().await;
+        original.exec(&flush_sql(&device, HOST, 100)).await;
+        original.seal().await.unwrap();
+        clone.exec(&flush_sql(&device, HOST, 300)).await;
+        clone.seal().await.unwrap();
+        deliver(&mut anchor, &mut clone).await;
+        deliver(&mut member, &mut clone).await;
+        assert_eq!(stored_elapsed(&mut anchor, &key).await, Some(300));
+
+        cross(&mut anchor, &mut original).await;
+        deliver(&mut member, &mut anchor).await;
+        assert_eq!(anchor.evidence().await.len(), 1);
+        assert_eq!(member.evidence().await.len(), 1);
+        let report = anchor.seal().await.unwrap();
+        assert!(report.foreign_owned_rows > 0, "the anchor skips the total");
+        assert_eq!(stored_elapsed(&mut anchor, &key).await, Some(300));
+        assert_eq!(stored_elapsed(&mut member, &key).await, Some(60));
+
+        drop(clone);
+        original.take_evidence(&mut anchor).await;
+        let forked = original.writer();
+        original.apply_all().await.unwrap();
+        assert_ne!(original.writer(), forked, "the original re-seals its branch");
+        let mut replicas = vec![anchor, member, original];
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_elapsed(replica, &key).await, Some(100));
+        }
+    });
+}
+
+/// A replica can hold another device's total with no sync state, as one does after a new space
+/// is founded over a vault that already held it. The owner's Create of that row applies over it,
+/// with the owner's value, on every replica.
+#[test]
+fn an_owners_create_over_a_total_without_sync_state_applies_everywhere() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let owner = device_id(1);
+        let key = usage_key(&owner, HOST);
+        for (index, elapsed) in [(0, 300), (2, 40)] {
+            replicas[index]
+                .exec(&flush_sql(&owner, HOST, elapsed))
+                .await;
+            let report = replicas[index].seal().await.unwrap();
+            assert_eq!(report.foreign_owned_rows, 1);
+        }
+        replicas[1].exec(&flush_sql(&owner, HOST, 100)).await;
+        replicas[1].seal().await.unwrap();
+        sealed_change(&mut replicas[1], USAGE_TOTALS_TABLE, &key, ChangeAction::Create).await;
+
+        let ops = replicas[1].own_ops().await;
+        for index in [0, 2] {
+            let outcomes = replicas[index].receive(&ops).await;
+            assert!(
+                outcomes.iter().all(|outcome| !matches!(
+                    outcome,
+                    StoreOutcome::Refused(_) | StoreOutcome::Stored { held: Some(_) }
+                )),
+                "{outcomes:?}"
+            );
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(stored_elapsed(replica, &key).await, Some(100));
+            replica.check_invariants().await;
         }
     });
 }

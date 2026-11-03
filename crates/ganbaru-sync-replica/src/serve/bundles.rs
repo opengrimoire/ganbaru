@@ -4,6 +4,7 @@
 //! Only a device the selected log enrolled, did not remove, and does not hold, and that this
 //! installation did not quarantine, gets a copy, and only of itself in this vault. One copy is held at a time.
 
+use super::member::MemberAdmissionSource;
 use super::{Peer, Routes, ServerStream, send_error, timeout_control};
 use crate::peers::admission::{MemberAdmission, MemberRefusal};
 use ganbaru_handoff::pairing::{PairingManager, certificate_fingerprint};
@@ -30,6 +31,30 @@ const MAX_BUNDLE_PREPARATIONS_PER_PEER: usize = 30;
 /// localized guidance.
 pub const BUNDLE_PREPARATION_LIMIT: &str =
     "this device requested the vault too often; wait before requesting another copy";
+/// How often a running copy rereads the sender's admission.
+pub const STREAM_RECHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+/// One answer of a [`StreamCheck`].
+pub type StreamCheckFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), MemberRefusal>> + Send + 'a>>;
+
+/// Asks whether a running copy may continue. `Err` ends it with the refusal.
+pub type StreamCheck<'a> = Box<dyn Fn() -> StreamCheckFuture<'a> + Send + Sync + 'a>;
+
+/// A check that lets every copy continue, for a sender without an authorization log.
+pub fn continue_stream<'a>() -> StreamCheck<'a> {
+    Box::new(|| -> StreamCheckFuture<'a> { Box::pin(async { Ok(()) }) })
+}
+
+/// The check a member or server listener runs during a copy.
+pub fn member_stream_check<'a>(
+    _source: &'a MemberAdmissionSource,
+    _fingerprint: &'a str,
+    _vault_id: &'a str,
+    _device_id: &'a str,
+) -> StreamCheck<'a> {
+    continue_stream()
+}
 
 /// Drops events that left the sliding window ending at `now`.
 fn forget_expired(events: &mut VecDeque<Instant>, now: Instant, window: Duration) {
@@ -106,6 +131,7 @@ pub async fn serve_download(
         &registered.path,
         offset,
         registered.metadata.archive_bytes,
+        &continue_stream(),
     )
     .await?;
     match timeout_control(read_control(stream)).await? {
@@ -123,6 +149,7 @@ async fn stream_file<W>(
     path: &Path,
     offset: u64,
     total_bytes: u64,
+    _check: &StreamCheck<'_>,
 ) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -514,5 +541,115 @@ mod tests {
                 other => panic!("unexpected reply {other:?}"),
             }
         }
+    }
+
+    /// A receiver that takes one recheck interval to accept each chunk.
+    #[derive(Default)]
+    struct SlowReceiver {
+        received: Vec<u8>,
+        delay: Option<Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    impl tokio::io::AsyncWrite for SlowReceiver {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            buffer: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let delay = self
+                .delay
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep(STREAM_RECHECK_INTERVAL)));
+            std::task::ready!(delay.as_mut().poll(context));
+            self.delay = None;
+            self.received.extend_from_slice(buffer);
+            std::task::Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A prepared archive of `chunks` full chunks, removed when dropped.
+    struct TestArchive(PathBuf);
+
+    impl TestArchive {
+        fn new(label: &str, chunks: usize) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "ganbaru-sync-stream-{label}-{}.zip",
+                std::process::id()
+            ));
+            std::fs::write(&path, vec![7_u8; chunks * TRANSFER_CHUNK_BYTES])
+                .expect("write test archive");
+            Self(path)
+        }
+
+        fn bytes(&self) -> u64 {
+            std::fs::metadata(&self.0).expect("archive size").len()
+        }
+    }
+
+    impl Drop for TestArchive {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_stops_when_the_recheck_refuses() {
+        // The device is removed while a slow receiver is still reading the copy.
+        let archive = TestArchive::new("removed", 4);
+        let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = checks.clone();
+        let check: StreamCheck<'_> = Box::new(move || {
+            let call = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if call == 0 {
+                    Ok(())
+                } else {
+                    Err(MemberRefusal::Removed)
+                }
+            })
+        });
+        let mut receiver = SlowReceiver::default();
+
+        let result = stream_file(&mut receiver, &archive.0, 0, archive.bytes(), &check).await;
+
+        let error = result.expect_err("a removed device must not finish its copy");
+        assert!(error.contains(MemberRefusal::Removed.code()), "{error}");
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(receiver.received.len(), 2 * TRANSFER_CHUNK_BYTES);
+        assert!((receiver.received.len() as u64) < archive.bytes());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_continues_when_admission_is_unreadable() {
+        // A briefly locked database never ends an honest copy.
+        let archive = TestArchive::new("unreadable", 3);
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let source: MemberAdmissionSource = Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Err("database is locked".to_string()) })
+        });
+        let check = member_stream_check(&source, "fingerprint", "vault", "device");
+        let mut receiver = SlowReceiver::default();
+
+        stream_file(&mut receiver, &archive.0, 0, archive.bytes(), &check)
+            .await
+            .expect("an unreadable log lets the copy continue");
+
+        assert_eq!(receiver.received.len() as u64, archive.bytes());
+        assert!(reads.load(std::sync::atomic::Ordering::SeqCst) >= 1);
     }
 }

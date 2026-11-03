@@ -1,6 +1,7 @@
 //! The desktop coordinator listener: TLS pinned to linked devices, quarantine and log admission,
 //! and sync dispatch. Pairing, handoff, and contact requests go to the caller's routes.
 
+use super::bundles::{StreamCheck, continue_stream};
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::{
     COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, MEMBERSHIP_REVOKED_CODE,
@@ -313,6 +314,15 @@ pub fn log_refusal(
         Err(refusal) if request.sync_peer().is_some() => Some(refusal),
         Err(_) => None,
     }
+}
+
+/// The check the coordinator runs during a copy.
+pub fn log_stream_check<'a>(
+    _source: Option<&'a MemberAdmissionSource>,
+    _certificate: Option<&'a CertificateDer<'static>>,
+    _request: ControlMessage,
+) -> StreamCheck<'a> {
+    continue_stream()
 }
 
 /// Whether the listener turns a linked device away as quarantined. A quarantine list that

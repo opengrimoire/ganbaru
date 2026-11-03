@@ -281,6 +281,67 @@ fn coordinator_refuses_held_device_vault_material() {
     }
 }
 
+#[tokio::test]
+async fn recheck_turns_a_removed_member_into_a_refusal() {
+    use crate::serve::MemberAdmissionSource;
+    use crate::serve::bundles::member_stream_check;
+    use crate::serve::coordinator::log_stream_check;
+    use std::sync::{Arc, Mutex};
+
+    // Device 2 starts a copy while admitted; the selected log then removes or holds it.
+    let (certificate, admitted) = certified_device(2, false);
+    let fingerprint = ganbaru_handoff::pairing::certificate_fingerprint(certificate.as_ref());
+    let current = Arc::new(Mutex::new(view(vec![device(1, false), admitted.clone()])));
+    let read = current.clone();
+    let source: MemberAdmissionSource = Arc::new(move || {
+        let view = read.lock().expect("view").clone();
+        Box::pin(async move { Ok(Some(MemberAdmission::new(VAULT, &view, &BTreeSet::new()))) })
+    });
+    let member = member_stream_check(&source, &fingerprint, VAULT, "device-2");
+    let download = || {
+        vault_material_requests("device-2")
+            .into_iter()
+            .find(|request| matches!(request, ControlMessage::DownloadBundle { .. }))
+            .expect("download request")
+    };
+    let coordinator = log_stream_check(Some(&source), Some(&certificate), download());
+    let set_device = |changed: EnrolledDevice| {
+        *current.lock().expect("view") = view(vec![device(1, false), changed]);
+    };
+
+    assert_eq!(member().await, Ok(()));
+    assert_eq!(coordinator().await, Ok(()));
+
+    set_device(EnrolledDevice {
+        removed_revision: Some(20),
+        ..admitted.clone()
+    });
+    assert_eq!(member().await, Err(MemberRefusal::Removed));
+    assert_eq!(coordinator().await, Err(MemberRefusal::Removed));
+
+    set_device(EnrolledDevice {
+        held: true,
+        ..admitted.clone()
+    });
+    assert_eq!(member().await, Err(MemberRefusal::Held));
+    assert_eq!(coordinator().await, Err(MemberRefusal::Held));
+
+    // A log that cannot be read, or sync that stopped, lets the copy continue.
+    let unreadable: MemberAdmissionSource =
+        Arc::new(|| Box::pin(async { Err("database is locked".to_string()) }));
+    let stopped: MemberAdmissionSource = Arc::new(|| Box::pin(async { Ok(None) }));
+    for source in [&unreadable, &stopped] {
+        assert_eq!(
+            member_stream_check(source, &fingerprint, VAULT, "device-2")().await,
+            Ok(())
+        );
+        assert_eq!(
+            log_stream_check(Some(source), Some(&certificate), download())().await,
+            Ok(())
+        );
+    }
+}
+
 #[test]
 fn member_refusals_are_retryable_only_when_they_clear_on_their_own() {
     for refusal in [

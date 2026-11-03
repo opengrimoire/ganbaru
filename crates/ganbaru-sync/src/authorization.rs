@@ -111,6 +111,10 @@ pub struct AuthorizationView {
     pub kit_admin_key: AdminPublicKey,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
+    /// Admin keys the selected chain took away without removing a device: a device's admin key
+    /// a role change replaced, and recovery and kit keys a rotation or kit handover replaced. A
+    /// key stays here when a later entry names it again, so readers subtract the live set.
+    pub retired_admin_keys: BTreeSet<AdminPublicKey>,
     /// The discovery key devices advertise under now: the charter's, replaced by each removal.
     pub discovery_key: [u8; DISCOVERY_KEY_BYTES],
     /// The key the latest removal replaced, which devices that have not applied it yet still
@@ -814,6 +818,7 @@ impl AuthState {
             charter: self.charter,
             recovery_admin_key: self.recovery_admin_key,
             kit_admin_key: self.kit_key,
+            retired_admin_keys: BTreeSet::new(),
             devices: self
                 .devices
                 .iter()

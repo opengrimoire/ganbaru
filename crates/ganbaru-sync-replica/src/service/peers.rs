@@ -835,6 +835,7 @@ mod tests {
             charter: [8; 32],
             recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
             kit_admin_key: AdminPublicKey::from_bytes([9; 32]),
+            retired_admin_keys: BTreeSet::new(),
             devices: vec![
                 enrolled("device-coordinator", 1, DeviceKind::Desktop, false),
                 enrolled("device-self", 2, DeviceKind::Mobile, false),

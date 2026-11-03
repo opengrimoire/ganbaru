@@ -1216,6 +1216,7 @@ mod tests {
             charter: [2; 32],
             recovery_admin_key: admin,
             kit_admin_key: admin,
+            retired_admin_keys: std::collections::BTreeSet::new(),
             devices,
             discovery_key: [4; 32],
             previous_discovery_key: None,

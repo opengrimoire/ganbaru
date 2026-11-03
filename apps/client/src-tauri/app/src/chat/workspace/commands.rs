@@ -780,6 +780,18 @@ pub fn projects_last_working_folder(
         .cloned())
 }
 
+/// Refuses archiving a managed working folder. Restoring stays allowed for every kind, so a
+/// managed folder archived by an older replica can still be recovered.
+fn validate_archive_change(kind: WorkingFolderKind, archived: bool) -> ChatResult<()> {
+    if archived && kind == WorkingFolderKind::Managed {
+        return Err(ChatError::validation(
+            "workingFolderId",
+            "Managed project working folders cannot be archived",
+        ));
+    }
+    Ok(())
+}
+
 async fn set_workspace_archived(
     app: tauri::AppHandle,
     db_url: String,
@@ -789,12 +801,7 @@ async fn set_workspace_archived(
 ) -> ChatResult<ProjectWorkingFolderRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
     let existing = repository::read_workspace(&pool, &working_folder_id).await?;
-    if archived && existing.kind == WorkingFolderKind::Managed {
-        return Err(ChatError::validation(
-            "workingFolderId",
-            "Managed project working folders cannot be archived",
-        ));
-    }
+    validate_archive_change(existing.kind, archived)?;
     let workspace = repository::set_workspace_archived(
         &pool,
         &working_folder_id,
@@ -1205,8 +1212,9 @@ mod tests {
     use super::{
         FolderSelectionReceipt, MAX_PENDING_FOLDER_SELECTIONS, MessageDialogResult,
         ProjectWorkingFolderSelections, TrustAnswer, UndecidedProjectConfiguration,
-        WorkingFolderDeviceScope, WorkingFolderTrustPrompt, preferred_workspace_picker_directory,
-        resolve_loaded_project_configuration, resolve_project_configuration, trust_answer,
+        WorkingFolderDeviceScope, WorkingFolderKind, WorkingFolderTrustPrompt,
+        preferred_workspace_picker_directory, resolve_loaded_project_configuration,
+        resolve_project_configuration, trust_answer, validate_archive_change,
         validate_trust_prompt,
     };
     use ganbaru_chat::git::hardened::{
@@ -1820,5 +1828,22 @@ mod tests {
             archived_branch.contains(".shutdown_workspace(&working_folder_id)?;"),
             "archiving a folder must stop the terminals started in it"
         );
+    }
+
+    #[test]
+    fn managed_folders_refuse_archive_but_allow_restore() {
+        let refused = validate_archive_change(WorkingFolderKind::Managed, true)
+            .expect_err("archiving a managed folder is refused");
+        assert_eq!(refused.code, ChatErrorCode::Validation);
+        assert!(
+            validate_archive_change(WorkingFolderKind::Managed, false).is_ok(),
+            "restoring an archived managed folder must stay allowed"
+        );
+    }
+
+    #[test]
+    fn external_folders_allow_archive_and_restore() {
+        assert!(validate_archive_change(WorkingFolderKind::External, true).is_ok());
+        assert!(validate_archive_change(WorkingFolderKind::External, false).is_ok());
     }
 }

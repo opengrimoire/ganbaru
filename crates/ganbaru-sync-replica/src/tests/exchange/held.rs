@@ -392,3 +392,88 @@ fn held_device_does_not_resend_foreign_operations() {
         tablet.close().await;
     });
 }
+
+#[test]
+fn held_device_records_no_anchor_marks() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-held-marks", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-held-marks", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-held-marks", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let reached = phone.seal_note("note-1").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+
+        // The tablet takes later phone operations from the phone directly, past what the
+        // anchor stores.
+        phone.seal_note("note-2").await;
+        let phone_head = phone.seal_note("note-3").await;
+        done(
+            phone
+                .exchange(&member_hub(&tablet), &phone_ids())
+                .await
+                .expect("exchange with the tablet"),
+        );
+        let phone_writer = phone.writer.id();
+        assert_eq!(tablet.stored().await.get(&phone_writer), phone_head);
+        hold(&hub_replica, TABLET_DEVICE).await;
+        hold(&tablet, TABLET_DEVICE).await;
+
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        let echoed = done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(hub_replica.stored().await.get(&phone_writer), reached);
+        assert_eq!(
+            echoed.hub.get(&phone_writer),
+            phone_head,
+            "the anchor echoes the held tablet's own claim"
+        );
+
+        let mut conn = acquire(&tablet.pool).await;
+        let view = tablet
+            .engine
+            .authorization(&mut conn, &tablet.ctx)
+            .await
+            .expect("read authorization")
+            .expect("authorization view");
+        assert_eq!(view.anchor_device_id, HUB_DEVICE);
+        assert!(
+            !tablet
+                .engine
+                .record_anchor_marks(&mut conn, &tablet.ctx, HUB_DEVICE, &echoed.hub)
+                .await
+                .expect("record anchor marks"),
+            "a held device records no anchor marks from an echo"
+        );
+        let marked: Option<i64> =
+            sqlx::query_scalar("SELECT seq FROM sync_anchor_marks WHERE writer_id = ?")
+                .bind(phone_writer.as_bytes().as_slice())
+                .fetch_optional(&mut *conn)
+                .await
+                .expect("read anchor marks");
+        assert_eq!(marked, None);
+        drop(conn);
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}

@@ -12,7 +12,7 @@ Import uses the system directory-tree picker and streams the selected folder int
 
 ## Portable backup and restore
 
-Backup writes an encrypted backup (see [backups](../../data/sync.md#bootstrap-assets-backup-and-compaction)) of a consistent SQLite snapshot to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded. The vault needs a recovery kit first, which Settings > Data creates; Android shows its code to copy by hand and offers no printable page or text file.
+Backup writes an encrypted backup (see [backups](../../data/sync.md#bootstrap-assets-backup-and-compaction)) of a consistent SQLite snapshot to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded. The vault needs a recovery kit first, which Settings > Data creates; Android shows its code under a secure window that screenshots and recordings cannot capture, to copy by hand or save as a text file through the system document picker, and offers no printable page.
 
 Restore uses the system document picker without a file type filter, because providers report backup files under arbitrary types, and relies on the format's magic and authentication instead. The kit opens a backup on a fresh install. Restore decrypts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure. It replaces the active vault, keeping the replaced database in `.database-rollbacks/`; a phone linked to other devices refuses and asks the user to restore on a computer or unlink first.
 

@@ -419,6 +419,7 @@ export const sync = {
         ? "Queda 1 cambio más. Decide los de arriba para ver el resto."
         : `Quedan ${count} cambios más. Decide los de arriba para ver el resto.`,
     decisionPending: "Decisión en espera del ancla",
+    notRestorable: "Solo el dispositivo quitado podía escribir este cambio, así que solo se puede descartar.",
   },
   reset: {
     action: "Restablecer sincronización",

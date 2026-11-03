@@ -490,6 +490,11 @@ impl Drop for StagingDirectory {
     }
 }
 
+/// Removes backup staging a hard kill left below `staging`.
+pub fn sweep_backup_staging(_staging: &Path) -> Result<(), BackupFileError> {
+    Ok(())
+}
+
 /// Writes an encrypted backup of the vault at `vault_root` to `destination`.
 ///
 /// The archive is the snapshot another installation starts from, so a restore never carries

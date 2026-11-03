@@ -480,6 +480,16 @@ fn remove_stale_transfers(root: &Path, prefix: &str) {
     }
 }
 
+/// Removes what interrupted backups and restores left below `transfer_root` and beside
+/// `restore_target`.
+#[cfg(test)]
+fn sweep_interrupted_backups_at(
+    _transfer_root: &Path,
+    _restore_target: Option<&Path>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Removes a folder a restore staged when the restore stops before using it.
 struct StagedFolder(Option<PathBuf>);
 

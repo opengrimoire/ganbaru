@@ -317,6 +317,18 @@
           "type": "string",
           "const": "deny-connectivityStatus",
           "markdownDescription": "Denies the connectivityStatus command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the setSecureWindow command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-setSecureWindow",
+          "markdownDescription": "Enables the setSecureWindow command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the setSecureWindow command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-setSecureWindow",
+          "markdownDescription": "Denies the setSecureWindow command without any pre-configured scope."
         }
       ]
     }

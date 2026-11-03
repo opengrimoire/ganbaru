@@ -1285,6 +1285,11 @@ export async function saveSyncRecoveryKitFile(defaultName: string, contents: str
   );
 }
 
+/** Keeps the Android window out of screenshots, recents, and screen capture while `secure`. Android only. */
+export async function setSyncSecureWindow(secure: boolean): Promise<void> {
+  await invoke("sync_set_secure_window", { secure });
+}
+
 type SyncNoticeListener = (notice: SyncNotice) => void;
 
 const noticeListeners = new Set<SyncNoticeListener>();

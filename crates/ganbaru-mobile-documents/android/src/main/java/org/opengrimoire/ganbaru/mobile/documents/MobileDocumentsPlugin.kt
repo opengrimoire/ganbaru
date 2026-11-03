@@ -168,6 +168,10 @@ private data class PendingVaultTreeCopy(
   val limits: VaultTreeCopyLimits,
 )
 
+private class PendingDocumentSave(
+  val bytes: ByteArray,
+)
+
 private data class PendingDocumentCopy(
   val destination: File,
   val maxBytes: Long,
@@ -223,6 +227,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
   private var pendingReadDocumentKind = "document"
   private var pendingVaultTreeCopy: PendingVaultTreeCopy? = null
   private var pendingDocumentCopy: PendingDocumentCopy? = null
+  private var pendingDocumentSave: PendingDocumentSave? = null
 
   @Command
   fun pickVaultTreeToPath(invoke: Invoke) {
@@ -603,6 +608,77 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
       } catch (error: Exception) {
         uri?.let { activity.contentResolver.delete(it, null, null) }
         invoke.reject(error.message ?: "Failed to save download")
+      }
+    }.start()
+  }
+
+  /**
+   * Saves bounded UTF-8 text where the person chooses in the system picker, so the text never
+   * lands in a shared collection without that choice.
+   */
+  @Command
+  fun saveUtf8Document(invoke: Invoke) {
+    try {
+      require(pendingDocumentSave == null) { "A document save is already active" }
+      val args = invoke.parseArgs(SaveUtf8DownloadArgs::class.java)
+      val bytes = args.contents.toByteArray(Charsets.UTF_8)
+      require(args.maxBytes > 0) { "Document size limit must be positive" }
+      require(bytes.size.toLong() <= args.maxBytes) { "${args.documentKind} export exceeds the size limit" }
+      validateDownloadMetadata(
+        args.fileName,
+        args.acceptedExtensions,
+        args.mimeType,
+        args.documentKind,
+      )
+      pendingDocumentSave = PendingDocumentSave(bytes)
+      val pickerIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = args.mimeType
+        putExtra(Intent.EXTRA_TITLE, args.fileName)
+        putExtra(DocumentsContract.EXTRA_INITIAL_URI, downloadsDirectoryUri())
+      }
+      startActivityForResult(invoke, pickerIntent, "saveUtf8DocumentResult")
+    } catch (error: Exception) {
+      pendingDocumentSave = null
+      invoke.reject(error.message ?: "Failed to open document picker")
+    }
+  }
+
+  @ActivityCallback
+  fun saveUtf8DocumentResult(invoke: Invoke, result: ActivityResult) {
+    val pending = pendingDocumentSave
+    pendingDocumentSave = null
+    if (result.resultCode == Activity.RESULT_CANCELED) {
+      invoke.resolve(JSObject().apply { put("saved", false) })
+      return
+    }
+    if (result.resultCode != Activity.RESULT_OK || pending == null) {
+      invoke.reject("Failed to save document")
+      return
+    }
+    val uri = result.data?.data
+    if (uri == null) {
+      invoke.reject("The selected document is unavailable")
+      return
+    }
+
+    Thread {
+      try {
+        requireForeignPickerResult(uri)
+        activity.contentResolver.openOutputStream(uri, "wt").use { output ->
+          requireNotNull(output) { "Android could not open the document" }
+          output.write(pending.bytes)
+          output.flush()
+        }
+        invoke.resolve(JSObject().apply { put("saved", true) })
+      } catch (error: Exception) {
+        try {
+          DocumentsContract.deleteDocument(activity.contentResolver, uri)
+        } catch (cleanup: Exception) {
+          // A partial document Android cannot delete stays where the person chose it, and the
+          // rejection below still reports the failed save.
+        }
+        invoke.reject(error.message ?: "Failed to save document")
       }
     }.start()
   }

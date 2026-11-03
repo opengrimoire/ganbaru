@@ -9,6 +9,7 @@ import android.net.LinkProperties
 import android.net.Network
 import android.os.Build
 import android.util.Log
+import android.view.WindowManager
 import android.webkit.WebView
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -34,6 +35,11 @@ internal class ConfigureArgs {
   var pending: Boolean = false
   var relay: Boolean = false
   lateinit var configDir: String
+}
+
+@InvokeArg
+internal class SecureWindowArgs {
+  var secure: Boolean = false
 }
 
 /**
@@ -147,6 +153,27 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
       put("backgroundRestricted", activities?.isBackgroundRestricted == true)
       put("standbyRestricted", standbyRestricted)
     })
+  }
+
+  /**
+   * Keeps the window out of screenshots, recents previews, and screen capture while a secret
+   * shows, through `FLAG_SECURE`. Accessibility services still read the window.
+   */
+  @Command
+  fun setSecureWindow(invoke: Invoke) {
+    val args = invoke.parseArgs(SecureWindowArgs::class.java)
+    activity.runOnUiThread {
+      try {
+        if (args.secure) {
+          activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+          activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "Failed to set the secure window")
+      }
+    }
   }
 
   private fun connected(): Constraints = Constraints.Builder()

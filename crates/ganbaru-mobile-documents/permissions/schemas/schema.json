@@ -343,6 +343,18 @@
           "markdownDescription": "Denies the saveFileDownload command without any pre-configured scope."
         },
         {
+          "description": "Enables the saveUtf8Document command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-saveUtf8Document",
+          "markdownDescription": "Enables the saveUtf8Document command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the saveUtf8Document command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-saveUtf8Document",
+          "markdownDescription": "Denies the saveUtf8Document command without any pre-configured scope."
+        },
+        {
           "description": "Enables the saveUtf8Download command without any pre-configured scope.",
           "type": "string",
           "const": "allow-saveUtf8Download",

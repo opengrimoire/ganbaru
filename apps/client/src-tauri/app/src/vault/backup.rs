@@ -2277,7 +2277,12 @@ mod retention_tests {
 
     /// Writes a leftover fresh copy rollback beside `target` that holds the vault of `manifest`.
     async fn leftover_refresh_rollback(parent: &Path, manifest: &Path) -> PathBuf {
-        let rollback = parent.join(HANDOFF_REFRESH_ROLLBACK_NAME);
+        leftover_rollback(parent, HANDOFF_REFRESH_ROLLBACK_NAME, manifest).await
+    }
+
+    /// Writes a leftover rollback folder `name` in `parent` that holds the vault of `manifest`.
+    async fn leftover_rollback(parent: &Path, name: &str, manifest: &Path) -> PathBuf {
+        let rollback = parent.join(name);
         fs::create_dir_all(&rollback).unwrap();
         fs::copy(manifest, rollback.join(VAULT_MANIFEST_FILE)).unwrap();
         write_marker(&rollback, PREVIOUS_MARKER).await;
@@ -2356,6 +2361,55 @@ mod retention_tests {
 
         assert!(!rollback.exists());
         assert_eq!(read_marker(&target).await, REPLACEMENT_MARKER);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_copy_refuses_another_vaults_leftover_rollback() {
+        let parent = unique_parent("refresh-foreign-retry");
+        let (target, staging) = same_vault_pair(&parent).await;
+        let vault_id = vault_info_from_path(&target).unwrap().vault_id;
+        let sibling = parent.join("Sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        crate::vault::initialize_vault(&sibling).unwrap();
+        let rollback = leftover_refresh_rollback(&parent, &sibling.join(VAULT_MANIFEST_FILE)).await;
+        let placement = HandoffPlacement::Replace {
+            target: target.clone(),
+            previous: ReplacedVault::KeepOther,
+        };
+
+        let swap = plan_swap(&placement, &parent, &staging, "retry", &vault_id).unwrap();
+        let swapped = run_swap(&swap, &staging, &target, false);
+
+        assert_eq!(swapped, Err(HANDOFF_RECOVERY_PENDING.to_string()));
+        assert!(staging.exists());
+        assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        assert!(list_rollbacks(&target).unwrap().is_empty());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn desktop_recovery_leaves_another_vaults_restore_rollback_alone() {
+        let parent = unique_parent("restore-foreign");
+        let (target, _staging) = same_vault_pair(&parent).await;
+        let sibling = parent.join("Sibling");
+        fs::create_dir_all(&sibling).unwrap();
+        crate::vault::initialize_vault(&sibling).unwrap();
+        let rollback = leftover_rollback(
+            &parent,
+            RESTORE_ROLLBACK_NAME,
+            &sibling.join(VAULT_MANIFEST_FILE),
+        )
+        .await;
+
+        recover_interrupted_replacements(&target).unwrap();
+
+        assert!(rollback.join(VAULT_MANIFEST_FILE).exists());
+        assert_eq!(read_marker(&rollback).await, PREVIOUS_MARKER);
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        assert!(list_rollbacks(&target).unwrap().is_empty());
         let _ = fs::remove_dir_all(parent);
     }
 }

@@ -122,6 +122,9 @@ pub async fn serve_on(
     let pools = DatabasePoolRegistry::default();
     pools.set_connection_hook(Some(vault_connection_hook(commits.clone())));
     let host = AnchorHost::new(paths, device_id, pairing.clone(), pools);
+    if host.activation()?.is_some() {
+        host.remove_stale_staging();
+    }
     let runtime = SyncRuntime::default();
     service::setup(
         &host,

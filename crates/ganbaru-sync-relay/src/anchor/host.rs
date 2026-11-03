@@ -7,7 +7,9 @@ use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::ControlMessage;
 use ganbaru_sync::Engine;
-use ganbaru_sync_replica::assets::{AssetStore, ContentAddressedStore, InFlightAssets};
+use ganbaru_sync_replica::assets::{
+    AssetStore, ContentAddressedStore, InFlightAssets, STALE_STAGING_AGE,
+};
 use ganbaru_sync_replica::recovery::RecoveryRestorers;
 use ganbaru_sync_replica::service::SyncHost;
 use ganbaru_sync_replica::service::status::SyncStatusView;
@@ -90,6 +92,19 @@ impl AnchorHost {
 
     pub fn activation(&self) -> Result<Option<Activation>, String> {
         Activation::load(&self.0.paths)
+    }
+
+    /// Removes the temporary files that asset uploads left in the vault when the process stopped
+    /// mid-transfer, once they are older than any transfer could still be writing. A failure is
+    /// reported and leaves the anchor running, since the files only use disk.
+    pub fn remove_stale_staging(&self) {
+        let files = ContentAddressedStore::new(self.0.paths.vault());
+        let engine = Engine::vault();
+        if let Err(error) =
+            files.remove_stale_staging(engine.manifest().asset_classes(), STALE_STAGING_AGE)
+        {
+            eprintln!("remove stale staged asset files: {}", error.describe());
+        }
     }
 
     fn active(&self) -> Result<Activation, String> {

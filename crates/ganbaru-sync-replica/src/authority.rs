@@ -329,7 +329,9 @@ pub async fn sequence_covering(
 }
 
 /// Sequences every waiting proposal of the anchor's outbox in order, records final rejections,
-/// and drops the proposals the selected chain now holds. Removal cutoffs cover at least
+/// and drops the proposals the selected chain now holds. Proposals gated on a handover the
+/// selected chain holds are released first, so the follow-ups of a forced handover interrupted
+/// after its seal run here. Removal cutoffs cover at least
 /// `covered`, and device key entries of devices in `quarantined` are refused, as in
 /// [`sequence_covering`]. Returns how many proposals were sequenced or replayed.
 #[allow(clippy::too_many_arguments)]
@@ -343,6 +345,7 @@ pub async fn sequence_outbox(
     quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> Result<usize, String> {
+    outbox.prune(engine, conn, ctx).await?;
     let mut sequenced = 0;
     for proposal in outbox.pending() {
         let outcome = sequence_covering(
@@ -1064,17 +1067,38 @@ fn forced_opens_epoch(
 /// anything is sealed, a desktop that would open no key epoch at the point it continues from is
 /// refused with [`KeylessAnchor`]: the point needs no key epoch, names this desktop's encryption
 /// key, or, with the kit, names the kit's recovery encryption key, which a regeneration
-/// replaces. Returns the revision of the last entry, or why the engine rejected one.
+/// replaces.
+///
+/// The entries after the handover enter `outbox` gated on it before it seals, so a crash after
+/// the seal leaves them for the service loop, which sequences them once its replica holds the
+/// handover; a refused handover withdraws them. Follow-ups still gated on an earlier forced
+/// handover the selected chain does not hold are withdrawn first. Each follow-up is sequenced
+/// in order and a rejected one does not stop the rest; device key entries of devices in
+/// `quarantined` are refused, as in [`sequence_covering`]. Returns the revision and how many
+/// follow-ups did not land, or why the engine rejected the handover.
+#[allow(clippy::too_many_arguments)]
 pub async fn force_handover_here(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     forced: &ForcedHandover<'_>,
     writer: &mut LocalWriter<'_>,
+    outbox: &mut Outbox,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
-) -> Result<Result<u64, ProposalRejection>, String> {
+) -> Result<Result<ForcedHandoverResult, ProposalRejection>, String> {
     let Some(recovery) = forced.recovery else {
-        return force_handover_with(engine, conn, ctx, forced, writer, now_ms).await;
+        return force_handover_with(
+            engine,
+            conn,
+            ctx,
+            forced,
+            writer,
+            outbox,
+            quarantined,
+            now_ms,
+        )
+        .await;
     };
     let base = writer
         .keys
@@ -1086,17 +1110,47 @@ pub async fn force_handover_here(
         reservation: &mut *writer.reservation,
         keys: Some(&kit),
     };
-    force_handover_with(engine, conn, ctx, forced, &mut with_kit, now_ms).await
+    force_handover_with(
+        engine,
+        conn,
+        ctx,
+        forced,
+        &mut with_kit,
+        outbox,
+        quarantined,
+        now_ms,
+    )
+    .await
 }
 
+/// What a forced handover sealed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForcedHandoverResult {
+    /// The revision of the last entry sealed.
+    pub revision: u64,
+    /// How many follow-ups have not landed yet: they wait in the outbox, or the anchor
+    /// refused them for a reason other than the device being gone already.
+    pub incomplete: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes a forced handover stop right after its seal commits, as a crash there would.
+    pub(crate) static CRASH_AFTER_FORCED_SEAL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn force_handover_with(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     forced: &ForcedHandover<'_>,
     writer: &mut LocalWriter<'_>,
+    outbox: &mut Outbox,
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
-) -> Result<Result<u64, ProposalRejection>, String> {
+) -> Result<Result<ForcedHandoverResult, ProposalRejection>, String> {
     let signer = forced.signer;
     let device_id = writer.certificate.certificate.device_id.clone();
     let point = match &forced.point {
@@ -1141,38 +1195,17 @@ async fn force_handover_with(
         }),
         now_ms,
     )?;
-    let mut revision = match engine
-        .seal_handover(conn, ctx, &handover, None, writer, now_ms)
-        .await
-        .map_err(|error| format!("seal sync handover: {error}"))?
-    {
-        Ok(revision) => revision,
-        Err(rejection) => return Ok(Err(rejection)),
-    };
-    if forced.recovery.is_some() {
-        match sequence_own_device_key(engine, conn, ctx, writer, now_ms).await? {
-            Ok(Some(sealed)) => revision = revision.max(sealed),
-            Ok(None) => {}
-            Err(rejection) => return Ok(Err(rejection)),
-        }
-    }
     let mut follow_up = Vec::new();
     if point.by_kit
         && let Some(kit_encryption) = forced.recovery.map(EncryptionKeyPair::public_key)
+        && point
+            .view
+            .recovery_encryption_key
+            .is_some_and(|named| named != kit_encryption)
     {
         // A stolen anchor may have named its own recovery encryption key. The kit names its
         // own again before the removals, so the rotations they require do not seal to it.
-        let view = engine
-            .authorization(conn, ctx)
-            .await
-            .map_err(|error| format!("read sync authorization: {error}"))?
-            .ok_or_else(|| "the sync space has no charter".to_string())?;
-        if view
-            .recovery_encryption_key
-            .is_some_and(|named| named != kit_encryption)
-        {
-            follow_up.push(recovery_key_entry(kit_encryption));
-        }
+        follow_up.push(recovery_key_entry(kit_encryption));
     }
     if point.by_kit {
         let mut removed = BTreeSet::from([device_id.clone()]);
@@ -1186,14 +1219,66 @@ async fn force_handover_with(
     if let Some(admin_key) = forced.promote {
         follow_up.push(promote_entry(&device_id, admin_key));
     }
-    for entry in follow_up {
-        let proposal = propose(ctx.space, charter, signer, entry, now_ms)?;
-        match sequence(engine, conn, ctx, writer, &proposal, now_ms).await? {
-            Ok(sealed) => revision = revision.max(sealed),
-            Err(rejection) => return Ok(Err(rejection)),
+    let follow_up = follow_up
+        .into_iter()
+        .map(|entry| propose(ctx.space, charter, signer, entry, now_ms))
+        .collect::<Result<Vec<_>, _>>()?;
+    let gate = handover.hash();
+    // Follow-ups this desktop gated on an earlier forced handover that the selected chain
+    // does not hold can never run; the new handover replaces them.
+    outbox.prune(engine, conn, ctx).await?;
+    outbox.withdraw_gated()?;
+    outbox.add_gated(follow_up, gate)?;
+    let mut revision = match engine
+        .seal_handover(conn, ctx, &handover, None, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync handover: {error}"))?
+    {
+        Ok(revision) => revision,
+        Err(rejection) => {
+            outbox.withdraw_gated()?;
+            return Ok(Err(rejection));
+        }
+    };
+    #[cfg(test)]
+    if CRASH_AFTER_FORCED_SEAL.with(std::cell::Cell::get) {
+        return Err("the test stopped the forced handover after its seal".to_string());
+    }
+    let mut incomplete = 0;
+    if forced.recovery.is_some() {
+        match sequence_own_device_key(engine, conn, ctx, writer, now_ms).await? {
+            Ok(Some(sealed)) => revision = revision.max(sealed),
+            Ok(None) => {}
+            Err(rejection) => {
+                eprintln!(
+                    "sync: the forced anchor could not publish its device key yet: {rejection}"
+                );
+                incomplete += 1;
+            }
         }
     }
-    Ok(Ok(revision))
+    sequence_outbox(
+        engine,
+        conn,
+        ctx,
+        writer,
+        outbox,
+        &VersionVector::new(),
+        quarantined,
+        now_ms,
+    )
+    .await?;
+    if let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+    {
+        revision = revision.max(view.revision);
+    }
+    Ok(Ok(ForcedHandoverResult {
+        revision,
+        incomplete: incomplete + outbox.forced_incomplete(&gate),
+    }))
 }
 
 /// The proposal that publishes the device encryption key of `keys` for the device `device_id`,

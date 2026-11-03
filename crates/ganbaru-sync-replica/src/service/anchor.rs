@@ -169,8 +169,13 @@ pub enum AuthorityAnswer {
     /// The authorization revision of the handover this desktop sealed.
     Anchored(u64),
     /// The authorization revision of the forced handover, and its promotion when the kit
-    /// signed it, with the device id of the anchor it replaced.
-    ForcedAnchor { revision: u64, old_anchor: String },
+    /// signed it, with the device id of the anchor it replaced and how many entries after the
+    /// handover have not landed yet; those that wait finish in the service loop.
+    ForcedAnchor {
+        revision: u64,
+        old_anchor: String,
+        incomplete: usize,
+    },
     /// The authorization revision of the yield or objection this desktop sealed.
     Contested(u64),
     /// The regenerated recovery kit, which waits in the key store until the user saves it.
@@ -185,10 +190,12 @@ impl std::fmt::Debug for AuthorityAnswer {
             Self::ForcedAnchor {
                 revision,
                 old_anchor,
+                incomplete,
             } => formatter
                 .debug_struct("ForcedAnchor")
                 .field("revision", revision)
                 .field("old_anchor", old_anchor)
+                .field("incomplete", incomplete)
                 .finish(),
             Self::Contested(revision) => {
                 formatter.debug_tuple("Contested").field(revision).finish()
@@ -719,25 +726,34 @@ impl<H: SyncHost> Session<'_, H> {
             removals: request.removals.clone(),
             recovery: kit_keys.as_ref(),
         };
+        let path = self.files.outbox_path();
+        let mut outbox = blocking(move || Outbox::load(&path)).await?;
+        let quarantined = self.quarantined().await?;
         let mut conn = acquire(&self.pool).await?;
-        let revision = authority::force_handover_here(
+        let forced = authority::force_handover_here(
             &self.engine,
             &mut conn,
             &self.ctx,
             &forced,
             &mut active.local(),
+            &mut outbox,
+            &quarantined,
             now_ms()?,
         )
-        .await?
-        .map_err(|rejection| format!("take the anchor: {rejection}"))?;
+        .await;
         drop(conn);
+        // The seal may have committed before a later step failed, so the writer record follows
+        // what was sealed either way.
         self.record_commit(active).await?;
+        let forced = forced?.map_err(|rejection| format!("take the anchor: {rejection}"))?;
         eprintln!(
-            "sync: this desktop forced the anchor at authorization revision {revision} without the lost anchor"
+            "sync: this desktop forced the anchor at authorization revision {} without the lost anchor, with {} follow-ups still to land",
+            forced.revision, forced.incomplete
         );
         Ok(AuthorityAnswer::ForcedAnchor {
-            revision,
+            revision: forced.revision,
             old_anchor: admin.view.anchor_device_id.clone(),
+            incomplete: forced.incomplete,
         })
     }
 
@@ -909,7 +925,11 @@ impl<H: SyncHost> Session<'_, H> {
     ) -> Result<bool, String> {
         let path = self.files.outbox_path();
         let mut outbox = blocking(move || Outbox::load(&path)).await?;
-        if !outbox.entries().iter().any(|entry| entry.pending()) {
+        if !outbox
+            .entries()
+            .iter()
+            .any(|entry| entry.pending() || entry.after.is_some())
+        {
             return Ok(false);
         }
         let before = self.stored_head(active).await?;

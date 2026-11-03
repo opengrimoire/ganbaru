@@ -75,14 +75,18 @@
       : `${t("sync.authority.forceAnchorMessage")} ${t("sync.kit.forceRecoveryKeyNote")}`,
   );
 
-  async function run(action: () => Promise<unknown>, success: string, failure: string): Promise<void> {
+  /**
+   * Runs a kit action and shows `success`, or the message it derives from the action's result,
+   * or `failure` when the action throws.
+   */
+  async function run<T>(action: () => Promise<T>, success: string | ((result: T) => string), failure: string): Promise<void> {
     if (busy) return;
     busy = true;
     message = "";
     failed = false;
     try {
-      await action();
-      message = success;
+      const result = await action();
+      message = typeof success === "function" ? success(result) : success;
     } catch (cause: unknown) {
       console.warn("recovery kit action failed", cause);
       failed = true;
@@ -117,7 +121,11 @@
       .filter((entry) => reviewMarked(entry.device.deviceId, entry.preselected))
       .map((entry) => entry.device.deviceId);
     const request = { kitCode: entered, point, removeDevices, quarantineAnchor: quarantineAnchor && anchor !== null };
-    await run(() => authorityState.forceAnchor(request), t("sync.kit.forceDone"), t("sync.kit.useFailed"));
+    await run(
+      () => authorityState.forceAnchor(request),
+      (outcome) => (outcome.incomplete > 0 ? t("sync.kit.forcePartial") : t("sync.kit.forceDone")),
+      t("sync.kit.useFailed"),
+    );
     if (!failed) {
       code = "";
       quarantineAnchor = false;

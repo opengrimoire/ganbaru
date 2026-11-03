@@ -185,6 +185,134 @@ fn the_outbox_is_bounded() {
 }
 
 #[test]
+fn a_gated_proposal_is_neither_pending_nor_evictable() {
+    let directory = TestDirectory::new("outbox-gated-bound");
+    let path = directory.files().outbox_path();
+    let mut outbox = Outbox::load(&path).expect("load");
+    for index in 0..MAX_OUTBOX_PROPOSALS - 1 {
+        let now = NOW_MS + u64::try_from(index).expect("index");
+        outbox
+            .add(enroll_proposal("device-phone", 30, now))
+            .expect("add within bound");
+    }
+    let handover: Digest32 = [9; 32];
+    let gated = enroll_proposal("device-watch", 32, NOW_MS + 10_000);
+    outbox
+        .add_gated(vec![gated.clone()], handover)
+        .expect("add gated");
+    assert!(!outbox.pending().contains(&gated), "a gated proposal waits");
+    assert_eq!(outbox.forced_incomplete(&handover), 1);
+    assert_eq!(outbox.forced_incomplete(&[8; 32]), 0);
+    assert!(!outbox.has_room(), "a gated proposal makes no room");
+
+    // A full outbox refuses the whole batch and keeps what it held.
+    let before = outbox.entries().to_vec();
+    let refused = outbox.add_gated(
+        vec![
+            enroll_proposal("device-tablet", 31, NOW_MS + 20_000),
+            enroll_proposal("device-tv", 33, NOW_MS + 20_000),
+        ],
+        handover,
+    );
+    assert!(refused.is_err());
+    assert_eq!(outbox.entries(), before.as_slice());
+    let reloaded = Outbox::load(&path).expect("reload");
+    assert_eq!(reloaded.entries(), before.as_slice());
+    assert_eq!(
+        reloaded.get(&gated.hash()).and_then(|entry| entry.after),
+        Some(handover),
+        "the gate survives a reload"
+    );
+
+    outbox.withdraw_gated().expect("withdraw");
+    assert!(outbox.get(&gated.hash()).is_none());
+    assert_eq!(outbox.entries().len(), MAX_OUTBOX_PROPOSALS - 1);
+}
+
+#[test]
+fn a_gated_proposal_runs_once_the_chain_holds_its_handover() {
+    block_on(async {
+        let directory = TestDirectory::new("outbox-gated-release");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let keys = MemoryKeyStore::default();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn).await;
+        let mut writer = create_writer(
+            &files,
+            &keys,
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        let charter = authority::charter_hash(&engine, &mut conn, &ctx)
+            .await
+            .expect("charter");
+        let first = enroll_proposal_under(charter, "device-phone", 30, NOW_MS);
+        let gated = enroll_proposal_under(charter, "device-watch", 32, NOW_MS);
+        let mut outbox = Outbox::load(&files.outbox_path()).expect("load");
+        outbox
+            .add_gated(vec![gated.clone()], first.hash())
+            .expect("add gated");
+
+        // Until the chain holds the proposal it waits for, nothing is sequenced.
+        let sequenced = authority::sequence_outbox(
+            &engine,
+            &mut conn,
+            &ctx,
+            &mut writer.local(),
+            &mut outbox,
+            &Default::default(),
+            &Default::default(),
+            NOW_MS,
+        )
+        .await
+        .expect("sequence outbox");
+        assert_eq!(sequenced, 0);
+        assert_eq!(
+            outbox.get(&gated.hash()).and_then(|entry| entry.after),
+            Some(first.hash())
+        );
+
+        outbox.add(first.clone()).expect("add first");
+        for _ in 0..2 {
+            authority::sequence_outbox(
+                &engine,
+                &mut conn,
+                &ctx,
+                &mut writer.local(),
+                &mut outbox,
+                &Default::default(),
+                &Default::default(),
+                NOW_MS,
+            )
+            .await
+            .expect("sequence outbox");
+        }
+        assert!(
+            engine
+                .proposal_revision(&mut conn, &ctx, &gated.hash())
+                .await
+                .expect("read revision")
+                .is_some(),
+            "the released proposal is sequenced"
+        );
+        let released = outbox.get(&gated.hash()).expect("held entry");
+        assert_eq!(
+            (released.after, released.released_from),
+            (None, Some(first.hash()))
+        );
+        assert_eq!(outbox.forced_incomplete(&first.hash()), 0);
+        drop(conn);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
 fn only_a_moved_chain_ends_a_waiting_proposal() {
     let waiting = [
         ProposalRejection::NotAnchor,

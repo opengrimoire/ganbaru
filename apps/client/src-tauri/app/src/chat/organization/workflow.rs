@@ -42,7 +42,8 @@ pub(super) struct AssignmentWrite {
     /// desktop executes assignments.
     #[cfg_attr(mobile, allow(dead_code))]
     pub(super) executes_here: bool,
-    /// Whether the post created work on this device that starts only through local acceptance.
+    /// Whether the post created work, or a pending reply of reviewed work, that starts only
+    /// through local acceptance.
     #[cfg_attr(mobile, allow(dead_code))]
     pub(super) awaits_acceptance: bool,
 }
@@ -230,6 +231,14 @@ impl<'a> PostingDevice<'a> {
     pub(super) fn runs_new_work(&self) -> bool {
         self.can_execute && self.chat_writers.includes(self.id)
     }
+
+    /// Whether the post must leave existing work as it is: no one on this executing device
+    /// consented to it, so it steers no active work and settles no reviewed work. Android
+    /// neither records consent nor executes work, so its scheduled sends route as its user's
+    /// posts and the executing desktop applies its own gates.
+    pub(super) fn leaves_existing_work(&self) -> bool {
+        self.unattended && self.can_execute
+    }
 }
 
 /// The device an assignment of `teammate_id` runs on when `device` creates it: the teammate's
@@ -271,10 +280,49 @@ where
     Ok(executing_device_id.flatten())
 }
 
+/// Appends the post `message_item_id` to `assignment_id` as its next pending input.
+async fn append_assignment_input(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    message_item_id: &ChatConversationItemId,
+    routing_kind: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let ordinal: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(ordinal), 0) + 1
+         FROM chat_work_assignment_inputs WHERE assignment_id = ?",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "INSERT INTO chat_work_assignment_inputs
+            (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(assignment_input_id(message_item_id.as_str())?)
+    .bind(assignment_id.as_str())
+    .bind(message_item_id.as_str())
+    .bind(ordinal)
+    .bind(routing_kind)
+    .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
 /// Routes the post `message_item_id` to the assignment of the teammate it invokes: an input of
 /// the active assignment, else a new assignment that runs on the teammate's home device or the
 /// posting desktop. A post from a device that cannot execute, for a teammate without a home
 /// device, records the mention only.
+///
+/// A post no one on this executing device consented to leaves existing work as it is. It
+/// records only the mention when the thread has active work. A reply to work that asked for
+/// review becomes a pending reply of that work, which waits for Start here or for a local
+/// acceptance of the teammate before a follow-up settles the review; a mention of another
+/// teammate there records only the mention.
 pub(super) async fn persist_assignment_routing(
     transaction: &mut Transaction<'_, Sqlite>,
     reply_thread_id: &ChatReplyThreadId,
@@ -288,33 +336,16 @@ pub(super) async fn persist_assignment_routing(
         return Ok(AssignmentWrite::NONE);
     };
     if let Some(active) = &invocation.active_assignment {
-        let ordinal: i64 = sqlx::query_scalar(
-            "SELECT coalesce(max(ordinal), 0) + 1
-             FROM chat_work_assignment_inputs WHERE assignment_id = ?",
-        )
-        .bind(active.id.as_str())
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
+        if device.leaves_existing_work() {
+            return Ok(AssignmentWrite::NONE);
+        }
         let routing_kind = if active.state == ChatWorkAssignmentState::Working {
             "steer"
         } else {
             "queued_continuation"
         };
-        sqlx::query(
-            "INSERT INTO chat_work_assignment_inputs
-                (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(assignment_input_id(message_item_id.as_str())?)
-        .bind(active.id.as_str())
-        .bind(message_item_id.as_str())
-        .bind(ordinal)
-        .bind(routing_kind)
-        .bind(now.as_str())
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
+        append_assignment_input(transaction, &active.id, message_item_id, routing_kind, now)
+            .await?;
         let executing_device_id =
             read_assignment_executing_device(&mut **transaction, active.id.as_str()).await?;
         return Ok(AssignmentWrite {
@@ -322,6 +353,32 @@ pub(super) async fn persist_assignment_routing(
             input_queued: true,
             executes_here: device.executes(executing_device_id.as_deref()),
             awaits_acceptance: false,
+        });
+    }
+    let reviewed = invocation
+        .latest_assignment
+        .as_ref()
+        .filter(|latest| latest.state == ChatWorkAssignmentState::ReadyForReview);
+    if let Some(reviewed) = reviewed.filter(|_| device.leaves_existing_work()) {
+        if reviewed.teammate.id != invocation.teammate_id {
+            return Ok(AssignmentWrite::NONE);
+        }
+        append_assignment_input(
+            transaction,
+            &reviewed.id,
+            message_item_id,
+            "queued_continuation",
+            now,
+        )
+        .await?;
+        let executing_device_id =
+            read_assignment_executing_device(&mut **transaction, reviewed.id.as_str()).await?;
+        let executes_here = device.executes(executing_device_id.as_deref());
+        return Ok(AssignmentWrite {
+            assignment_id: Some(reviewed.id.clone()),
+            input_queued: true,
+            executes_here,
+            awaits_acceptance: executes_here,
         });
     }
     let Some(executing_device_id) =

@@ -323,7 +323,18 @@ pub(super) async fn post_message(
                 assignment_id.as_str()
             ),
         }
-        if posted.assignment_write.input_queued {
+        if posted.assignment_write.awaits_acceptance && posted.assignment_write.input_queued {
+            // A pending reply of reviewed work continues through follow-up recovery, which
+            // starts it only when the teammate holds a local acceptance.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    assignments::recover_assignment_dispatch_jobs(dispatch_app, dispatch_db_url)
+                        .await
+                {
+                    eprintln!("Chat follow-up of an unattended reply did not start: {error}");
+                }
+            });
+        } else if posted.assignment_write.input_queued {
             let input_message_id = posted.item_id.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = deliver_assignment_input(
@@ -391,7 +402,8 @@ const DELETE_CLAIMED_SCHEDULED_MESSAGE: &str = "DELETE FROM chat_scheduled_messa
 /// Writes the post of `request` from `device` in one transaction. A scheduled send posts under
 /// ids derived from the scheduled message, copies its stored attachment values, and deletes the
 /// scheduled message in the same transaction, so it posts once even when the device stops
-/// between steps. An unattended send still posts, but queues no dispatch for the work it creates.
+/// between steps. An unattended send still posts, but queues no dispatch for the work it creates
+/// and leaves existing work as it is.
 async fn persist_post(
     pool: &SqlitePool,
     request: &PostChatMessageCommand,

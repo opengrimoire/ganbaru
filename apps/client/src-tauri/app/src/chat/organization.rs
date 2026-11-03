@@ -262,7 +262,19 @@ pub async fn chat_post_message(
     db_url: String,
     request: PostChatMessageCommand,
 ) -> ChatResult<PostChatMessageResult> {
-    post_message(app, db_url, &request, None).await
+    match post_message(app, db_url, &request, None).await? {
+        PostOutcome::Posted(result) => Ok(result),
+        PostOutcome::Refused(refusal) => Err(refusal),
+    }
+}
+
+/// What the step that writes a post did.
+pub(super) enum PostOutcome<T> {
+    /// The post was written.
+    Posted(T),
+    /// The scheduled request did not match its stored row. The refusal is already recorded as
+    /// the failure of the scheduled message, and nothing was posted.
+    Refused(ChatError),
 }
 
 /// Whether the send of a scheduled message carries consent given on this device.
@@ -286,14 +298,14 @@ pub(super) struct ScheduledSend<'a> {
 }
 
 /// Posts `request`, or sends the scheduled message `scheduled` with it, and starts the work the
-/// post routes to.
+/// post routes to. A scheduled send whose request does not match its stored row is refused
+/// and starts nothing.
 pub(super) async fn post_message(
     app: tauri::AppHandle,
     db_url: String,
     request: &PostChatMessageCommand,
     scheduled: Option<ScheduledSend<'_>>,
-) -> ChatResult<PostChatMessageResult> {
-    validate_message_request(request)?;
+) -> ChatResult<PostOutcome<PostChatMessageResult>> {
     #[cfg(desktop)]
     let dispatch_app = app.clone();
     #[cfg(desktop)]
@@ -301,13 +313,17 @@ pub(super) async fn post_message(
     let device_id = this_device_id(&app)?;
     let pool = chat_pool(app.clone(), db_url).await?;
     let writers = chat_writers(&app, &pool).await?;
-    let posted = persist_post(
+    let posted = match write_post(
         &pool,
         request,
         scheduled,
         PostingDevice::this_device(&device_id, &writers),
     )
-    .await?;
+    .await?
+    {
+        PostOutcome::Posted(posted) => posted,
+        PostOutcome::Refused(refusal) => return Ok(PostOutcome::Refused(refusal)),
+    };
     #[cfg(desktop)]
     if let Some(assignment_id) = posted
         .assignment_write
@@ -353,7 +369,27 @@ pub(super) async fn post_message(
             });
         }
     }
-    Ok(posted.result)
+    Ok(PostOutcome::Posted(posted.result))
+}
+
+/// Writes the post of `request` from `device`, the step every user post and scheduled send
+/// runs before any work starts. A scheduled send first refuses a request that does not match
+/// its stored row, so a peer that rewrote the request cannot redirect the post.
+async fn write_post(
+    pool: &SqlitePool,
+    request: &PostChatMessageCommand,
+    scheduled: Option<ScheduledSend<'_>>,
+    device: PostingDevice<'_>,
+) -> ChatResult<PostOutcome<PersistedPost>> {
+    if let Some(send) = scheduled
+        && let Some(refusal) = scheduling::refuse_mismatched_request(pool, send, request).await?
+    {
+        return Ok(PostOutcome::Refused(refusal));
+    }
+    validate_message_request(request)?;
+    persist_post(pool, request, scheduled, device)
+        .await
+        .map(PostOutcome::Posted)
 }
 
 /// The acceptance digest the post that wrote `write` gives on this device, or `None` when it

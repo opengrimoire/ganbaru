@@ -1227,10 +1227,9 @@ fn recovery_after_a_stop_starts_accepted_unattended_work_and_leaves_the_rest_at_
         let assignment_id = posted.assignment_write.assignment_id.clone().unwrap();
 
         let unaccepted = ChatDeviceScope::default();
-        let adopted =
-            assignments::adopt_accepted_queued_assignments(&pool, device, &unaccepted)
-                .await
-                .unwrap();
+        let adopted = assignments::adopt_accepted_queued_assignments(&pool, device, &unaccepted)
+            .await
+            .unwrap();
         assert!(adopted.is_empty(), "recovery started unaccepted work");
         assert_eq!(dispatch_job_count(&pool, &assignment_id).await, 0);
         assert!(

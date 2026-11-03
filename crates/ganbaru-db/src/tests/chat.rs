@@ -193,6 +193,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_context_sources",
             "chat_agent_runs",
             "chat_assignment_dispatch_jobs",
+            "chat_assignment_requested_targets",
             "chat_scheduled_messages",
             "chat_scheduled_message_attachment_references",
             "chat_scheduled_message_references",

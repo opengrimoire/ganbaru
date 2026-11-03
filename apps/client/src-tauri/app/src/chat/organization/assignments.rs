@@ -10,7 +10,7 @@ use super::reads::{read_active_or_latest_assignment, read_assignment};
 use super::workflow::{
     NewAssignment, PostingDevice, create_assignment, end_assignment_dispatch_jobs,
     move_pending_inputs, pending_thread_inputs, read_assignment_executing_device,
-    require_participating_teammate, set_assignment_state,
+    require_participating_teammate, set_assignment_state, take_requested_target,
 };
 use super::{chat_pool, i64_value, identifier_error, now_timestamp, persistence_error, timestamp};
 use crate::chat::device_state::{
@@ -645,13 +645,16 @@ pub(super) async fn persist_retry(
 }
 
 /// Queues the dispatch of `assignment_id` on this device, first freezing its context when the
-/// assignment arrived from the device that created it. The job consents to the subject read
-/// here, so a later change returns the work to Start here at claim.
+/// assignment arrived from the device that created it or an unattended post created it here.
+/// The context runs on the execution target the creating post chose here, if it kept one. The
+/// job consents to the subject read here, so a later change returns the work to Start here at
+/// claim.
 async fn queue_dispatch_here(
     transaction: &mut Transaction<'_, Sqlite>,
     assignment_id: &ChatWorkAssignmentId,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
+    let requested_target = take_requested_target(transaction, assignment_id).await?;
     let row = sqlx::query(
         "SELECT assignment.reply_thread_id, assignment.teammate_id,
                 assignment.triggering_message_item_id,
@@ -690,7 +693,7 @@ async fn queue_dispatch_here(
             &reply_thread_id,
             &message_item_id,
             &teammate_id,
-            None,
+            requested_target.as_ref(),
             now,
         )
         .await?;
@@ -1432,6 +1435,7 @@ pub(super) async fn adopt_synced_assignment(
                 "Synced Chat assignment {} could not start: {error}",
                 assignment_id.as_str()
             );
+            let mut transaction = pool.begin().await.map_err(persistence_error)?;
             sqlx::query(
                 "UPDATE chat_work_assignments
                  SET state = 'failed', state_reason = ?, settled_at = ?,
@@ -1442,9 +1446,13 @@ pub(super) async fn adopt_synced_assignment(
             .bind(now.as_str())
             .bind(now.as_str())
             .bind(assignment_id.as_str())
-            .execute(pool)
+            .execute(&mut *transaction)
             .await
             .map_err(persistence_error)?;
+            // A chosen target that no longer resolves would fail every Retry, so Retry
+            // resolves the target again from the current grants.
+            take_requested_target(&mut transaction, assignment_id).await?;
+            transaction.commit().await.map_err(persistence_error)?;
             Ok(false)
         }
     }

@@ -514,17 +514,23 @@ pub(super) async fn create_assignment(
         move_pending_inputs(transaction, &carried, &assignment_id).await?;
     }
     #[cfg(desktop)]
-    if device.executes(Some(assignment.executing_device_id)) && !device.unattended {
-        queue_assignment_dispatch(
-            transaction,
-            &assignment_id,
-            assignment.reply_thread_id,
-            assignment.message_item_id,
-            assignment.teammate_id,
-            assignment.execution_target,
-            now,
-        )
-        .await?;
+    if device.executes(Some(assignment.executing_device_id)) {
+        if device.unattended {
+            if let Some(target) = assignment.execution_target {
+                record_requested_target(transaction, &assignment_id, target, now).await?;
+            }
+        } else {
+            queue_assignment_dispatch(
+                transaction,
+                &assignment_id,
+                assignment.reply_thread_id,
+                assignment.message_item_id,
+                assignment.teammate_id,
+                assignment.execution_target,
+                now,
+            )
+            .await?;
+        }
     }
     #[cfg(mobile)]
     let _ = (device, assignment.execution_target);
@@ -615,6 +621,51 @@ pub(super) async fn move_pending_inputs(
         .map_err(persistence_error)?;
     }
     Ok(())
+}
+
+/// Keeps on this device the execution target `target` that the post creating `assignment_id`
+/// chose, so the dispatch that a later acceptance queues runs where the request asked.
+#[cfg(desktop)]
+async fn record_requested_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+    target: &ChatExecutionTarget,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let target_data = serde_json::to_string(target).map_err(serialization_error)?;
+    sqlx::query(
+        "INSERT INTO chat_assignment_requested_targets (assignment_id, target_data, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(assignment_id) DO UPDATE SET
+            target_data = excluded.target_data, created_at = excluded.created_at",
+    )
+    .bind(assignment_id.as_str())
+    .bind(target_data)
+    .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// Removes and returns the execution target the post creating `assignment_id` chose on this
+/// device, if it kept one.
+#[cfg(desktop)]
+pub(super) async fn take_requested_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    assignment_id: &ChatWorkAssignmentId,
+) -> ChatResult<Option<ChatExecutionTarget>> {
+    let target_data: Option<String> = sqlx::query_scalar(
+        "DELETE FROM chat_assignment_requested_targets WHERE assignment_id = ?
+         RETURNING target_data",
+    )
+    .bind(assignment_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    target_data
+        .map(|data| serde_json::from_str(&data).map_err(serialization_error))
+        .transpose()
 }
 
 /// Freezes the context of assignment `assignment_id` and queues its dispatch on this device,

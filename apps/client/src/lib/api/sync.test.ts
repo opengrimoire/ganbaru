@@ -34,6 +34,7 @@ import {
   removeSyncServer,
   restoreSyncLateChange,
   restoreSyncRecovery,
+  rotateSyncRecoveryKit,
   resumeSyncRecords,
   saveSyncRecoveryKitFile,
   takeSyncAnchor,
@@ -561,6 +562,9 @@ describe("sync authority API boundary", () => {
     vi.mocked(invoke).mockResolvedValueOnce(null);
     await expect(regenerateSyncRecoveryKit()).resolves.toBeUndefined();
     expect(invoke).toHaveBeenLastCalledWith("sync_regenerate_recovery_kit");
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(rotateSyncRecoveryKit("ABCD-WXYZ")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("sync_rotate_recovery_kit", { kitCode: "ABCD-WXYZ" });
     vi.mocked(invoke).mockResolvedValueOnce(false);
     await expect(confirmSyncRecoveryKitSaved("WXYZ")).resolves.toBe(false);
     expect(invoke).toHaveBeenLastCalledWith("sync_recovery_kit_saved", { lastGroup: "WXYZ" });

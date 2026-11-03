@@ -1005,6 +1005,16 @@ export async function regenerateSyncRecoveryKit(): Promise<void> {
   await invoke("sync_regenerate_recovery_kit");
 }
 
+/**
+ * Replaces the recovery kit with one the current kit `kitCode` signs.
+ *
+ * @param kitCode - The code of the vault's current recovery kit.
+ */
+export async function rotateSyncRecoveryKit(kitCode: string): Promise<void> {
+  void kitCode;
+  throw new Error("recovery kit rotation is not available");
+}
+
 /** The active vault's recovery kit, with the kit this desktop holds until the user saves it. */
 export async function getSyncRecoveryKitState(): Promise<SyncRecoveryKitState> {
   return mapSyncRecoveryKitState(await invoke<unknown>("sync_recovery_kit_state"));

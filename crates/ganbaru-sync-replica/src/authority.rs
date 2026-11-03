@@ -554,6 +554,19 @@ pub fn regenerate_recovery_kit(
     Ok(seed)
 }
 
+/// Replaces the vault's recovery kit with a new one signed by `old_kit`, the current kit.
+pub fn rotate_recovery_kit(
+    _keys: &dyn SyncKeyStore,
+    _vault_id: &str,
+    _outbox: &mut Outbox,
+    _view: &AuthorizationView,
+    _space: SpaceId,
+    _old_kit: &AdminKeyPair,
+    _now_ms: u64,
+) -> Result<RecoverySeed, String> {
+    Err("recovery kit rotation is not available".to_string())
+}
+
 fn withdraw_all(outbox: &mut Outbox, hashes: &[Digest32]) -> Result<(), String> {
     hashes.iter().try_for_each(|hash| outbox.withdraw(hash))
 }

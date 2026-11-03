@@ -156,6 +156,14 @@ impl ServiceState {
                     fork.keep_through
                 ));
             }
+            Exchange::UnprovenFork(fork) => {
+                return Err(format!(
+                    "the server claims writer {} forked at {} and shows no signed operation \
+                     for it",
+                    fork.writer.to_hex(),
+                    fork.keep_through
+                ));
+            }
         };
         if let Some(problem) = &done.problem {
             eprintln!("sync: the anchor server refused part of an exchange: {problem}");

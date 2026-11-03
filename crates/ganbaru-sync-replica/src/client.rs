@@ -90,7 +90,10 @@ pub struct Exchanged {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Exchange {
     Done(Exchanged),
+    /// A fork of this installation's writer that the hub showed signed proof of.
     Fork(ForkPoint),
+    /// The hub claims a fork of this device's writer and shows no signed operation for it.
+    UnprovenFork(ForkPoint),
 }
 
 /// One replica's view for an exchange.
@@ -174,7 +177,13 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         }
         let mut exchanged = match self.exchange_ops().await? {
             Exchange::Done(exchanged) => exchanged,
-            fork => return Ok(fork),
+            Exchange::Fork(fork) => {
+                return Ok(match self.prove_own_fork(fork.writer).await? {
+                    OwnFork::Proven => Exchange::Fork(fork),
+                    OwnFork::Unproven => Exchange::UnprovenFork(fork),
+                });
+            }
+            unproven @ Exchange::UnprovenFork(_) => return Ok(unproven),
         };
         exchanged.records = records;
         Ok(Exchange::Done(exchanged))
@@ -653,6 +662,71 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         Ok(())
     }
 
+    /// Whether a fork of this installation's `writer` that the hub claims carries signed proof:
+    /// a stored evidence pair, or an operation at the hub's head of the writer, signed with the
+    /// writer's key, that lies past what this replica stored or differs from its copy there.
+    /// A claim without one would retire a writer on the hub's word alone.
+    async fn prove_own_fork(&self, writer: WriterId) -> Result<OwnFork, String> {
+        let evidence = {
+            let mut conn = acquire(self.pool).await?;
+            self.engine
+                .fork_evidence(&mut conn, self.ctx, writer)
+                .await
+                .map_err(|error| format!("read fork evidence: {error}"))?
+        };
+        if evidence.is_some() {
+            return Ok(OwnFork::Proven);
+        }
+        let request = ControlMessage::SyncWriterHead {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: self.ids.vault_id.clone(),
+            device_id: self.ids.device_id.clone(),
+            writer: writer.to_hex(),
+        };
+        let op = answer(
+            self.transport.request(request).await?,
+            "SyncWriterHeadOp",
+            |response| match response {
+                ControlMessage::SyncWriterHeadOp { op } => Some(op),
+                _ => None,
+            },
+        )?;
+        let Some(op) = op else {
+            return Ok(OwnFork::Unproven);
+        };
+        let Some(op) = ops_from_wire(std::slice::from_ref(&op))?.pop() else {
+            return Ok(OwnFork::Unproven);
+        };
+        let mut conn = acquire(self.pool).await?;
+        let Some((seq, hash)) = self
+            .engine
+            .verify_own_head(&mut conn, self.ctx, writer, &op)
+            .await
+            .map_err(|error| format!("verify the hub's writer head: {error}"))?
+        else {
+            return Ok(OwnFork::Unproven);
+        };
+        let local = self
+            .engine
+            .stored_vector(&mut conn, self.ctx)
+            .await
+            .map_err(|error| format!("read sync log: {error}"))?;
+        if seq > local.get(&writer) {
+            return Ok(OwnFork::Proven);
+        }
+        let ours = self
+            .engine
+            .op_hashes(&mut conn, self.ctx, writer, seq, 1)
+            .await
+            .map_err(|error| format!("read sync log: {error}"))?;
+        Ok(match ours.first().filter(|(found, _)| *found == seq) {
+            Some((_, ours)) if *ours != hash => OwnFork::Proven,
+            // The same operation proves nothing, and one this replica compacted cannot be
+            // compared.
+            _ => OwnFork::Unproven,
+        })
+    }
+
     /// Sends fork evidence of `writer`, possibly none, and returns the pair the hub holds.
     async fn request_evidence(
         &self,
@@ -723,6 +797,12 @@ impl<T: SyncTransport> ClientSession<'_, T> {
     }
 }
 
+/// Whether a claimed fork of this installation's writer carries signed proof.
+enum OwnFork {
+    Proven,
+    Unproven,
+}
+
 /// The fork at the first differing sequence. A genesis that differs cannot be re-sealed.
 fn fork_at(writer: WriterId, first_difference: Seq) -> Result<Exchange, String> {
     if first_difference <= 1 {
@@ -740,7 +820,7 @@ fn fork_at(writer: WriterId, first_difference: Seq) -> Result<Exchange, String> 
 fn fork_only(exchange: Exchange) -> Option<ForkPoint> {
     match exchange {
         Exchange::Fork(fork) => Some(fork),
-        Exchange::Done(_) => None,
+        Exchange::Done(_) | Exchange::UnprovenFork(_) => None,
     }
 }
 

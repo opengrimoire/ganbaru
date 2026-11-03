@@ -304,6 +304,7 @@ fn held_device_recovers_its_own_fork() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the held device missed its own fork: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!(fork.writer, vault.writer);
         assert_eq!(fork.keep_through, vault.fork_seq - 1);

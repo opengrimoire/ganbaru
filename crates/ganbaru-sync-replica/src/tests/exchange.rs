@@ -572,7 +572,7 @@ fn contact_source(contact: HubContact) -> HubContactSource {
 fn done(exchange: Exchange) -> Exchanged {
     match exchange {
         Exchange::Done(done) => done,
-        Exchange::Fork(fork) => panic!("unexpected fork: {fork:?}"),
+        Exchange::Fork(fork) | Exchange::UnprovenFork(fork) => panic!("unexpected fork: {fork:?}"),
     }
 }
 
@@ -1476,6 +1476,7 @@ fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the fork went unnoticed: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!(fork.writer, forked_writer);
         assert_eq!(fork.keep_through, shared);
@@ -1526,6 +1527,7 @@ fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!(fork.writer, forked_writer);
         assert_eq!(fork.keep_through, shared);
@@ -1710,6 +1712,7 @@ fn fork_evidence_travels_between_members_through_the_hub() {
         {
             Exchange::Fork(fork) => fork,
             Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+            Exchange::UnprovenFork(fork) => panic!("the fork went unproven: {fork:?}"),
         };
         assert_eq!((fork.writer, fork.keep_through), (writer, shared));
         hub_replica.close().await;
@@ -3774,6 +3777,7 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
 mod calendar_conflicts;
 mod calendar_recovery;
 mod flood;
+mod forged_forks;
 mod handover;
 mod held;
 mod notes_conflicts;

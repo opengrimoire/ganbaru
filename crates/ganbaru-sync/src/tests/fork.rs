@@ -1525,3 +1525,49 @@ fn a_removed_old_anchors_fork_does_not_freeze_its_epoch_below_the_handover_out_o
         assert_eq!(view(&mut successor).await, before);
     });
 }
+
+async fn changed_rows(replica: &mut Replica) -> i64 {
+    sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn check_reseal_fork_writes_nothing() {
+    block_on(async {
+        let (mut original, _clone) = installation(331).await;
+        let writer = original.writer();
+        let applied = original.applied_vector().await.get(&writer);
+        assert!(
+            applied >= 2,
+            "the shared prefix holds operations past genesis"
+        );
+        let stranger = Replica::new(2, 331).await.writer();
+        let stored = original.stored_vector().await;
+        let dump = original.domain_dump().await;
+        let changes = changed_rows(&mut original).await;
+
+        let mut check = async |old, keep_through| {
+            original
+                .engine
+                .check_reseal_fork(&mut original.conn, &original.ctx, old, keep_through)
+                .await
+        };
+        assert!(check(writer, applied - 1).await.is_ok());
+        assert!(check(writer, applied).await.is_ok());
+        for (old, keep_through) in [(writer, applied + 1), (writer, 0), (stranger, 1)] {
+            assert!(
+                matches!(
+                    check(old, keep_through).await,
+                    Err(crate::SyncError::InvalidReseal(_))
+                ),
+                "{keep_through}"
+            );
+        }
+
+        assert_eq!(changed_rows(&mut original).await, changes);
+        assert_eq!(original.stored_vector().await, stored);
+        assert_eq!(original.domain_dump().await, dump);
+    });
+}

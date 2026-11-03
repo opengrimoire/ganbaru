@@ -396,6 +396,12 @@ pub async fn exchange_with_members<H: SyncHost>(
                 fork.writer.to_hex(),
                 fork.keep_through
             ),
+            Ok(Exchange::UnprovenFork(fork)) => eprintln!(
+                "sync: member {device_id} claims a fork of writer {} at {} and shows no signed \
+                 operation for it; the writer stays",
+                fork.writer.to_hex(),
+                fork.keep_through
+            ),
             Err(error) => eprintln!("sync: exchange with member {device_id}: {error}"),
         }
     }

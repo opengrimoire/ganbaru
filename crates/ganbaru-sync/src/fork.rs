@@ -923,4 +923,29 @@ impl Engine {
         .await?;
         Ok(envelope.filter(|envelope| !envelope.is_empty()))
     }
+
+    /// The sequence and hash of `envelope` when it is an operation of `writer` in this space,
+    /// signed by the key this replica stores for `writer`; `None` for anything else, so a peer
+    /// cannot pass off an unsigned or foreign operation as the writer's head. Writes nothing.
+    pub async fn verify_own_head(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: WriterId,
+        envelope: &[u8],
+    ) -> SyncResult<Option<(Seq, Digest32)>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let Ok(operation) = Envelope::decode(envelope) else {
+            return Ok(None);
+        };
+        if operation.space != ctx.space || operation.writer != writer || operation.seq == 0 {
+            return Ok(None);
+        }
+        let Some(stored) = log::writer(conn, ctx.space, writer).await? else {
+            return Ok(None);
+        };
+        Ok(operation
+            .verify(&stored.public_key)
+            .then(|| (operation.seq, operation.hash())))
+    }
 }

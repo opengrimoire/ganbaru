@@ -1220,3 +1220,5 @@ async fn unsealed_keys_on_a_linked_phone_unlink_it_and_are_removed() {
         Some(crate::vault::handoff::pairing::UnlinkReason::KeyProtectionLost)
     );
 }
+
+mod forks;

@@ -17,6 +17,7 @@ import {
   listSyncRecovery,
   mapSyncAuthority,
   mapSyncContests,
+  mapSyncForceAnchorOutcome,
   mapSyncLateChange,
   mapSyncLateChanges,
   mapSyncNotice,
@@ -719,16 +720,31 @@ describe("sync contest API boundary", () => {
     vi.mocked(invoke).mockResolvedValueOnce(undefined);
     await resumeSyncRecords();
     expect(invoke).toHaveBeenLastCalledWith("sync_records_resume");
-    vi.mocked(invoke).mockResolvedValueOnce(14);
+    vi.mocked(invoke).mockResolvedValueOnce({ revision: 14, incomplete: 0 });
     const point = { hash: HASH_A, revision: 7 };
     await expect(
       forceSyncAnchor({ kitCode: "CODE", point, removeDevices: ["intruder"], quarantineAnchor: false }),
-    ).resolves.toBe(14);
+    ).resolves.toEqual({ revision: 14, incomplete: 0 });
     expect(invoke).toHaveBeenLastCalledWith("sync_force_anchor", {
       kitCode: "CODE",
       point,
       removeDevices: ["intruder"],
       quarantineAnchor: false,
     });
+  });
+
+  it("force anchor reads the outcome", () => {
+    expect(mapSyncForceAnchorOutcome({ revision: 21, incomplete: 2 })).toEqual({ revision: 21, incomplete: 2 });
+    for (const invalid of [
+      14,
+      null,
+      { revision: 21 },
+      { revision: 21, incomplete: -1 },
+      { revision: 21, incomplete: 1.5 },
+      { revision: "21", incomplete: 0 },
+      { revision: Number.MAX_SAFE_INTEGER + 1, incomplete: 0 },
+    ]) {
+      expect(() => mapSyncForceAnchorOutcome(invalid)).toThrow();
+    }
   });
 });

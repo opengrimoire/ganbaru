@@ -294,6 +294,7 @@ export const sync = {
     forceDescription: "El ancla no responde. Escribe un código de kit para hacer que esta computadora sea administradora y el ancla sin ella. El ancla anterior se quita de la bóveda y hay que vincularla de nuevo.",
     forceSubmit: "Usar el kit y tomar el ancla",
     forceDone: "Esta computadora ahora es administradora y el ancla.",
+    forcePartial: "Esta computadora ahora es el ancla. Algunos cambios de dispositivos siguen pendientes y terminarán solos. Revisa la lista de dispositivos.",
     forceRecoveryKeyNote: "Las siguientes claves del espacio y copias de seguridad cifradas se sellarán para este kit impreso. Una clave de recuperación creada en Ajustes dejará de abrirlas, así que crea una nueva después si la quieres.",
     useSent: "Se envió al ancla. Esta computadora será administradora cuando el ancla lo confirme.",
     useFailed: "No se pudo usar el código. Revísalo e inténtalo de nuevo.",

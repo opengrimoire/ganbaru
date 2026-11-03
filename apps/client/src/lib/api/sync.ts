@@ -1196,20 +1196,38 @@ export interface SyncForceAnchorRequest {
   quarantineAnchor: boolean;
 }
 
+/** What a forced anchor handover sealed. */
+export interface SyncForceAnchorOutcome {
+  /** The revision of the last entry it sealed. */
+  revision: number;
+  /** How many device changes after the handover have not landed yet; they finish on later passes. */
+  incomplete: number;
+}
+
+/** Validates the outcome of a forced anchor handover from the native command. */
+export function mapSyncForceAnchorOutcome(value: unknown): SyncForceAnchorOutcome {
+  const label = "forced handover";
+  const row = readRecord(value, label);
+  return {
+    revision: readNonNegativeSafeInteger(row.revision, `${label}.revision`),
+    incomplete: readNonNegativeSafeInteger(row.incomplete, `${label}.incomplete`),
+  };
+}
+
 /**
  * On a linked desktop whose anchor stopped answering or whose vault is contested, makes this
  * desktop the anchor without it, signed with its admin key or, with a kit code, with the
- * recovery key, which also makes it an admin. Returns the revision of the last entry it sealed.
+ * recovery key, which also makes it an admin. Returns the revision of the last entry it sealed
+ * and how many of the device changes after the handover are still waiting.
  */
-export async function forceSyncAnchor(request: SyncForceAnchorRequest): Promise<number> {
-  return readNonNegativeSafeInteger(
+export async function forceSyncAnchor(request: SyncForceAnchorRequest): Promise<SyncForceAnchorOutcome> {
+  return mapSyncForceAnchorOutcome(
     await invoke<unknown>("sync_force_anchor", {
       kitCode: request.kitCode,
       point: request.point,
       removeDevices: request.removeDevices,
       quarantineAnchor: request.quarantineAnchor,
     }),
-    "forced handover revision",
   );
 }
 

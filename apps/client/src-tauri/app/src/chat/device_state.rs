@@ -52,6 +52,16 @@ impl Default for ChatDiagnosticPreferences {
     }
 }
 
+/// This device's consent to send one scheduled message with exactly one request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledMessageConsent {
+    /// Hex consent digest of the scheduled message ID and its stored request.
+    pub digest: String,
+    /// When the consent was given.
+    pub recorded_at: UtcTimestamp,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatDeviceScope {
@@ -61,6 +71,9 @@ pub struct ChatDeviceScope {
     /// Local acceptances of synced Chat work, keyed by hex acceptance digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assignment_acceptances: BTreeMap<String, UtcTimestamp>,
+    /// Consents to send pending scheduled messages, keyed by scheduled message ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scheduled_message_consents: BTreeMap<String, ScheduledMessageConsent>,
     pub preferences: ChatMachinePreferences,
     pub diagnostics: ChatDiagnosticPreferences,
     pub execution_environment_paths: BTreeMap<String, String>,
@@ -176,32 +189,68 @@ pub fn record_assignment_acceptance(
     }
 }
 
-/// Drops the local acceptance of `digest`, once what it covered is used up.
+/// Most scheduled message consents one device scope keeps, apart from assignment acceptances; a
+/// dropped consent at worst makes the message's work ask for local acceptance.
 #[cfg(desktop)]
-pub fn forget_assignment_acceptance(scope: &mut ChatDeviceScope, digest: &str) {
-    scope.assignment_acceptances.remove(digest);
-}
+pub const MAX_SCHEDULED_MESSAGE_CONSENTS: usize = 4096;
 
 /// Records this device's consent to send the scheduled message `scheduled_message_id` with the
-/// request whose consent digest is `digest`.
+/// request whose consent digest is `digest`, replacing an earlier consent to that message and
+/// dropping the oldest consent past [`MAX_SCHEDULED_MESSAGE_CONSENTS`].
 #[cfg(desktop)]
 pub fn record_scheduled_message_consent(
     scope: &mut ChatDeviceScope,
-    _scheduled_message_id: String,
+    scheduled_message_id: String,
     digest: String,
     now: UtcTimestamp,
 ) {
-    record_assignment_acceptance(scope, digest, now);
+    scope.scheduled_message_consents.insert(
+        scheduled_message_id.clone(),
+        ScheduledMessageConsent {
+            digest,
+            recorded_at: now,
+        },
+    );
+    if scope.scheduled_message_consents.len() <= MAX_SCHEDULED_MESSAGE_CONSENTS {
+        return;
+    }
+    let oldest = scope
+        .scheduled_message_consents
+        .iter()
+        .filter(|(kept, _)| **kept != scheduled_message_id)
+        .min_by_key(|(_, consent)| consent.recorded_at.as_str())
+        .map(|(id, _)| id.clone());
+    if let Some(oldest) = oldest {
+        scope.scheduled_message_consents.remove(&oldest);
+    }
 }
 
 /// Whether this device consented to send `scheduled_message_id` with the request of `digest`.
 #[cfg(desktop)]
 pub fn scheduled_message_is_consented(
     scope: &ChatDeviceScope,
-    _scheduled_message_id: &str,
+    scheduled_message_id: &str,
     digest: &str,
 ) -> bool {
-    assignment_is_accepted(scope, digest)
+    scope
+        .scheduled_message_consents
+        .get(scheduled_message_id)
+        .is_some_and(|consent| consent.digest == digest)
+}
+
+/// Drops the consent to `scheduled_message_id` when it still covers the request of `digest`, so
+/// a consent recorded again for a changed request stays.
+#[cfg(desktop)]
+pub fn forget_scheduled_message_consent(
+    scope: &mut ChatDeviceScope,
+    scheduled_message_id: &str,
+    digest: &str,
+) {
+    if scheduled_message_is_consented(scope, scheduled_message_id, digest) {
+        scope
+            .scheduled_message_consents
+            .remove(scheduled_message_id);
+    }
 }
 
 #[cfg(desktop)]
@@ -308,15 +357,58 @@ mod tests {
     }
 
     #[test]
-    fn a_forgotten_acceptance_leaves_the_others_in_place() {
+    fn a_forgotten_scheduled_consent_leaves_the_others_in_place() {
         let mut scope = ChatDeviceScope::default();
-        record_assignment_acceptance(&mut scope, "digest:used".to_owned(), at(1));
-        record_assignment_acceptance(&mut scope, "digest:kept".to_owned(), at(2));
+        for (id, digest, second) in [("used", "digest:used", 1), ("kept", "digest:kept", 2)] {
+            record_scheduled_message_consent(
+                &mut scope,
+                id.to_owned(),
+                digest.to_owned(),
+                at(second),
+            );
+        }
 
-        forget_assignment_acceptance(&mut scope, "digest:used");
-        forget_assignment_acceptance(&mut scope, "digest:unknown");
+        forget_scheduled_message_consent(&mut scope, "used", "digest:used");
+        forget_scheduled_message_consent(&mut scope, "kept", "digest:other");
+        forget_scheduled_message_consent(&mut scope, "unknown", "digest:unknown");
 
-        assert!(!assignment_is_accepted(&scope, "digest:used"));
-        assert!(assignment_is_accepted(&scope, "digest:kept"));
+        assert!(!scheduled_message_is_consented(
+            &scope,
+            "used",
+            "digest:used"
+        ));
+        assert!(scheduled_message_is_consented(
+            &scope,
+            "kept",
+            "digest:kept"
+        ));
+    }
+
+    #[test]
+    fn scheduled_consents_past_their_cap_drop_the_oldest_and_keep_the_newest() {
+        let mut scope = ChatDeviceScope::default();
+        for index in 0..=MAX_SCHEDULED_MESSAGE_CONSENTS {
+            record_scheduled_message_consent(
+                &mut scope,
+                format!("scheduled:{index}"),
+                format!("digest:{index}"),
+                at(index + 1),
+            );
+        }
+
+        assert_eq!(
+            scope.scheduled_message_consents.len(),
+            MAX_SCHEDULED_MESSAGE_CONSENTS
+        );
+        assert!(!scheduled_message_is_consented(
+            &scope,
+            "scheduled:0",
+            "digest:0"
+        ));
+        assert!(scheduled_message_is_consented(
+            &scope,
+            &format!("scheduled:{MAX_SCHEDULED_MESSAGE_CONSENTS}"),
+            &format!("digest:{MAX_SCHEDULED_MESSAGE_CONSENTS}")
+        ));
     }
 }

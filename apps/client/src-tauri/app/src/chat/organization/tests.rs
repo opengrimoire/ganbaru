@@ -12,7 +12,7 @@ use super::scheduling::{
 use super::workflow::{has_authority_bearing_references, require_continuation_scope_is_unchanged};
 use super::*;
 use crate::chat::device_state::{
-    ChatDeviceScope, forget_assignment_acceptance, record_assignment_acceptance,
+    ChatDeviceScope, forget_scheduled_message_consent, record_assignment_acceptance,
     record_scheduled_message_consent,
 };
 use ganbaru_chat::coordination::acceptance::scheduled_consent_digest;
@@ -1031,8 +1031,9 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         ScheduledConsent::Unattended
     );
 
-    record_assignment_acceptance(
+    record_scheduled_message_consent(
         &mut scope,
+        id.as_str().to_owned(),
         scheduled_consent_digest(id.as_str(), "request"),
         now,
     );
@@ -1040,6 +1041,10 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
     assert_eq!(
         scheduled_consent_in(&scope, &id, "request"),
         ScheduledConsent::Local
+    );
+    assert!(
+        scope.assignment_acceptances.is_empty(),
+        "a scheduled consent took an assignment acceptance slot"
     );
     assert_eq!(
         scheduled_consent_in(&scope, &id, "rewritten request"),
@@ -1052,8 +1057,19 @@ fn scheduled_consent_covers_only_the_request_it_was_given_for() {
         "the consent reached another message"
     );
 
-    forget_assignment_acceptance(
+    forget_scheduled_message_consent(
         &mut scope,
+        id.as_str(),
+        &scheduled_consent_digest(id.as_str(), "rewritten request"),
+    );
+    assert_eq!(
+        scheduled_consent_in(&scope, &id, "request"),
+        ScheduledConsent::Local,
+        "forgetting another request dropped the consent"
+    );
+    forget_scheduled_message_consent(
+        &mut scope,
+        id.as_str(),
         &scheduled_consent_digest(id.as_str(), "request"),
     );
 

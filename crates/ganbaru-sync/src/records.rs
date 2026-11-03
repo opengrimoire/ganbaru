@@ -35,7 +35,8 @@ enum Role {
     Record,
     /// A writer certificate, carried by its genesis operation.
     Certificate,
-    /// Any other envelope stored as fork evidence or as the prefix a fork continues from.
+    /// Any other envelope stored as fork evidence or as the prefix a fork continues from, kept
+    /// without its body.
     Evidence,
 }
 
@@ -214,7 +215,7 @@ fn classify(envelope: &Envelope<'_>, evidence: bool) -> Option<Admission> {
             })
         }
         _ if evidence => Some(Admission {
-            stamp: envelope.operation().ok()?.header.authorization_revision,
+            stamp: envelope.header_fields().ok()?.authorization_revision,
             ..base(Role::Evidence)
         }),
         _ => None,
@@ -223,7 +224,8 @@ fn classify(envelope: &Envelope<'_>, evidence: bool) -> Option<Admission> {
 
 /// Stores one admitted envelope, verifying it with a stored certificate of its writer or keeping
 /// it pending, and verifies or purges the writer's pending envelopes when it is the writer's
-/// first certificate.
+/// first certificate. Evidence is stored as its proof bytes, without the body, so no store holds
+/// or serves the values of a forked operation, whatever copy a peer sent.
 async fn store(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -245,6 +247,13 @@ async fn store(
     };
     let (entry_hash, previous_entry_hash) = admission.entry.unzip();
     let (device_id, device_key) = admission.device.unzip();
+    let proof;
+    let bytes = if admission.role == Role::Evidence {
+        proof = envelope.proof_bytes();
+        proof.as_slice()
+    } else {
+        bytes
+    };
     let inserted = sqlx::query(
         "INSERT INTO sync_auth_envelopes
             (space_id, role, envelope_hash, writer_id, seq, previous_hash, stamp, entry_hash,

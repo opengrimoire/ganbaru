@@ -12,11 +12,15 @@ use super::authorization::{
     admin_entry, genesis_of, head, held, remove_entry, seal_after, tag, view,
 };
 use super::block_on;
+use super::exclusion::{edit, note};
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, anchor_device_key, device_admin, device_id,
     device_key, enroll_entry, person, proposal,
 };
-use crate::{AuthorizationView, RecordClass, RecordCursor, RecordEnvelope, RecordRole};
+use crate::{
+    AuthorizationView, EvidenceOutcome, RecordClass, RecordCursor, RecordEnvelope, RecordRole,
+    StoreOutcome, StoreRefusal,
+};
 
 use std::collections::BTreeSet;
 
@@ -1566,5 +1570,116 @@ fn storage_totals_match_the_breakdown_through_pending_and_forked_records() {
                 device_id: None,
             }]
         );
+    });
+}
+
+/// Whether `needle` occurs in `haystack`.
+fn holds(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle.as_bytes())
+}
+
+/// A member's writer forks with data operations, and its evidence is served through record pages
+/// to a peer the vault never enrolled. Evidence carries only the signed parts of the forked
+/// operations and the shared prefix: the stored rows and every served envelope hold no body and
+/// no value text, while the fork still verifies and blocks both branches on every receiver.
+#[test]
+fn fork_evidence_is_stored_without_bodies() {
+    block_on(async {
+        let salt = 96;
+        let secrets = ["PrefixSecret", "OriginalSecret", "CloneSecret"];
+        let mut original = Replica::new(1, salt).await;
+        edit(&mut original, &note("note-1", secrets[0], 0)).await;
+        let mut clone = original.clone_device().await;
+        edit(
+            &mut original,
+            &format!("UPDATE quick_notes SET title = '{}'", secrets[1]),
+        )
+        .await;
+        edit(
+            &mut clone,
+            &format!("UPDATE quick_notes SET title = '{}'", secrets[2]),
+        )
+        .await;
+        let ours = original.own_ops().await;
+        let theirs = clone.own_ops().await;
+        assert_eq!(ours[..2], theirs[..2]);
+        assert!(holds(&ours[1], secrets[0]) && holds(&ours[2], secrets[1]));
+        assert!(holds(&theirs[2], secrets[2]));
+        let forked = Envelope::decode(&ours[2]).unwrap().seq;
+
+        let mut member = Replica::new(2, salt).await;
+        member.receive(&ours).await;
+        member.apply_all().await.unwrap();
+        assert_eq!(
+            member.receive(&theirs[2..]).await,
+            vec![StoreOutcome::Refused(StoreRefusal::Fork { seq: forked })]
+        );
+        let evidence = member.evidence().await;
+        assert_eq!(evidence.len(), 1);
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT envelope FROM sync_auth_envelopes WHERE role = 'evidence'")
+                .fetch_all(&mut member.conn)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 3, "both branches and the shared prefix");
+        let stored = rows
+            .iter()
+            .map(Vec::as_slice)
+            .chain([evidence[0].first.as_slice(), evidence[0].second.as_slice()]);
+        for bytes in stored {
+            assert!(
+                Envelope::decode(bytes).unwrap().body.is_empty(),
+                "stored fork evidence keeps a body"
+            );
+            assert!(secrets.iter().all(|secret| !holds(bytes, secret)));
+        }
+
+        let (served, _) = all_pages(&mut member, PAGE_ENVELOPES).await;
+        let served_evidence = served
+            .iter()
+            .filter(|envelope| envelope.role == RecordRole::Evidence)
+            .count();
+        assert_eq!(served_evidence, 3);
+        for envelope in &served {
+            assert!(
+                secrets.iter().all(|secret| !holds(&envelope.bytes, secret)),
+                "a record page serves value text as {:?}",
+                envelope.role
+            );
+            if envelope.role == RecordRole::Evidence {
+                assert!(Envelope::decode(&envelope.bytes).unwrap().body.is_empty());
+            }
+        }
+
+        let mut stranger = Replica::new(9, salt).await;
+        admit(&mut stranger, &served).await;
+        assert!(
+            storage_of(&mut stranger)
+                .await
+                .forked_writers
+                .iter()
+                .any(|fork| fork.writer == original.writer())
+        );
+        assert_eq!(
+            store_set(&mut stranger)
+                .await
+                .iter()
+                .filter(|(role, _, verified)| role == "evidence" && *verified == 1)
+                .count(),
+            3
+        );
+
+        let mut peer = Replica::new(3, salt).await;
+        peer.receive(&ours[..2]).await;
+        peer.apply_all().await.unwrap();
+        assert_eq!(
+            peer.take_evidence(&mut member).await,
+            vec![EvidenceOutcome::Stored]
+        );
+        let revoked = vec![StoreOutcome::Refused(StoreRefusal::Revoked)];
+        assert_eq!(peer.receive(&ours[2..]).await, revoked);
+        assert_eq!(peer.receive(&theirs[2..]).await, revoked);
     });
 }

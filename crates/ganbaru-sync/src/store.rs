@@ -518,7 +518,7 @@ async fn store_next(
                         ctx.space,
                         writer.id,
                         envelope.seq,
-                        [(&stored, log::digest(&hash)?), (bytes, envelope.hash())],
+                        [&previous, envelope],
                         now_ms,
                     )
                     .await?;

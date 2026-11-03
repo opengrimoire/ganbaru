@@ -807,6 +807,27 @@ impl Engine {
         records::authentic_key_epoch(conn, ctx.space, &charter, bytes, epoch).await
     }
 
+    /// How `bytes`, a key epoch record some untrusted source serves for `epoch`, stands against
+    /// the stored records.
+    pub async fn key_epoch_standing(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        bytes: &[u8],
+        epoch: u32,
+    ) -> SyncResult<authorization::KeyEpochStanding> {
+        Ok(
+            if self
+                .authenticates_key_epoch(conn, ctx, bytes, epoch)
+                .await?
+            {
+                authorization::KeyEpochStanding::Authentic
+            } else {
+                authorization::KeyEpochStanding::Forged
+            },
+        )
+    }
+
     async fn store_page(
         &self,
         conn: &mut SqliteConnection,

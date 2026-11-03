@@ -5,20 +5,22 @@
 use std::sync::Arc;
 
 use ganbaru_sync_contracts::{
-    AdminPublicKey, DeviceKey, DeviceKeyPair, EncryptionKeyPair, EncryptionPublicKey, Entry,
-    KeyEnvelope, KeyEpoch, Proposal, ProposalRejection, RecoveryKey, RecoverySeed, SignedProposal,
-    SpaceId, SpaceKey, sign_device_proposal,
+    AdminKeyPair, AdminPublicKey, AuthorizationRecord, ChainLink, Content, DeviceKey,
+    DeviceKeyPair, DeviceRole, Digest32, EncryptionKeyPair, EncryptionPublicKey, Entry, Envelope,
+    KeyEnvelope, KeyEpoch, Proposal, ProposalRejection, RecoveryKey, RecoverySeed, Sequencing,
+    SetRole, SignedProposal, SpaceId, SpaceKey, sign_device_proposal,
 };
 
-use super::authorization::{remove_entry, view};
+use super::authorization::{genesis_of, head, remove_entry, seal_after, view};
 use super::block_on;
 use super::replica::{
-    ANCHOR_DEVICE_ID, Replica, anchor_device_key, connection_from, device_id, device_key, person,
-    person_proposal, recovery_admin, recovery_seed, test_charter,
+    ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, anchor_device_key, connection_from,
+    device_id, device_key, person, person_proposal, proposal, recovery_admin, recovery_seed,
+    test_charter,
 };
 use crate::error::failpoints;
 use crate::local::prepare_snapshot_copy;
-use crate::{SpaceKeyHolder, StoredSpaceKey, SyncError};
+use crate::{KeyEpochStanding, SpaceKeyHolder, StoredSpaceKey, SyncError};
 
 /// The keys of one test installation: its device signing key, a device encryption key, and
 /// optionally the recovery key a kit derives.
@@ -710,5 +712,296 @@ fn a_replaced_recovery_key_opens_no_later_epoch() {
         recovered.identity.keys = Some(new_kit.clone());
         recovered.sequence_signed(&signed).await.unwrap().unwrap();
         assert!(own_key(&mut recovered, &new_kit, 2).await.is_some());
+    });
+}
+
+/// A key epoch proposal for `epoch`, past the first, signed by `signer` and sealed to
+/// `recipients`.
+fn key_epoch_proposal(
+    space: SpaceId,
+    signer: &DeviceKeyPair,
+    created_at_ms: u64,
+    epoch: u32,
+    recipients: &[EncryptionPublicKey],
+) -> SignedProposal {
+    let key = SpaceKey::generate(epoch).unwrap();
+    let mut envelopes: Vec<KeyEnvelope> = recipients
+        .iter()
+        .map(|recipient| KeyEnvelope::seal(&space, &key, recipient).unwrap())
+        .collect();
+    envelopes.sort_by_key(|envelope| envelope.recipient);
+    let proposal = Proposal {
+        space,
+        charter: test_charter(&person(), space).hash(),
+        author: AdminPublicKey::from_bytes(*signer.public_key().as_bytes()),
+        created_at_ms: i64::try_from(created_at_ms).unwrap(),
+        entry: Entry::KeyEpoch(KeyEpoch {
+            key_epoch: epoch,
+            wrapped_previous: Some(
+                ChainLink::seal(&space, &key, &SpaceKey::generate(epoch - 1).unwrap()).unwrap(),
+            ),
+            envelopes,
+            relay_access_key: key.relay_access_public_key(&space).unwrap(),
+        }),
+    };
+    sign_device_proposal(&proposal, signer).unwrap()
+}
+
+/// Where a test record goes: its anchor device, revision, and parent.
+struct Place<'a> {
+    anchor_device_id: &'a str,
+    revision: u64,
+    previous_entry_hash: Digest32,
+}
+
+/// The place at `revision` on `previous_entry_hash` under `anchor_device_id`.
+fn at(anchor_device_id: &str, revision: u64, previous_entry_hash: Digest32) -> Place<'_> {
+    Place {
+        anchor_device_id,
+        revision,
+        previous_entry_hash,
+    }
+}
+
+/// The record `signed` at `place`, carried by `writer` right after `previous`.
+fn carried(
+    previous: &[u8],
+    writer: &Identity,
+    place: Place<'_>,
+    signed: SignedProposal,
+    sequencing: Sequencing,
+    now_ms: u64,
+) -> Vec<u8> {
+    let record = AuthorizationRecord {
+        epoch: 0,
+        revision: place.revision,
+        previous_entry_hash: place.previous_entry_hash,
+        anchor_device_id: place.anchor_device_id.to_owned(),
+        proposal: signed,
+        sequencing,
+    };
+    seal_after(
+        previous,
+        &writer.key,
+        Content::Authorization(Box::new(record)),
+        place.revision - 1,
+        now_ms,
+    )
+}
+
+/// The hash of the authorization record `bytes` carries.
+fn record_hash(bytes: &[u8]) -> Digest32 {
+    match Envelope::decode(bytes)
+        .unwrap()
+        .operation()
+        .unwrap()
+        .content
+    {
+        Content::Authorization(record) => record.hash(),
+        _ => unreachable!("the test carries records"),
+    }
+}
+
+/// A key epoch record decides as authentic only when a stored check-valid chain admits it, and
+/// as forged only when the stored records prove it invalid: a record whose parent is missing or
+/// lacks a bound carrier stays undecided, and a record standing on a forged admin record is
+/// forged however its own signature reads.
+#[test]
+fn a_key_epoch_with_an_unknown_parent_is_undecided() {
+    block_on(async {
+        let anchor_keys = TestKeys::new(anchor_device_key(&person()));
+        let mut anchor = keyed_anchor(14, anchor_keys.clone()).await;
+        let member_keys = TestKeys::new(device_key(&person(), 1));
+        let kept_keys = TestKeys::new(device_key(&person(), 2));
+        publish_member(&mut anchor, 1, &member_keys).await;
+        publish_member(&mut anchor, 2, &kept_keys).await;
+        let recovery = EncryptionKeyPair::generate().unwrap();
+        start_epochs(&mut anchor, &recovery).await;
+        let (_, fork_revision, fork_hash) = head(&mut anchor).await;
+        anchor.remove(&device_id(2)).await.unwrap();
+        let (_, head_revision, head_hash) = head(&mut anchor).await;
+        let real = anchor
+            .engine
+            .key_epoch_entry(&mut anchor.conn, &anchor.ctx, 2)
+            .await
+            .unwrap()
+            .unwrap();
+        let (space, now_ms) = (anchor.ctx.space, anchor.now_ms);
+        let genesis = anchor.own_ops().await[0].clone();
+
+        // A second anchor writer carries a removal of device 1 on a branch the walk does not
+        // select, and a member writer carries a forged admin role and an anchor removal it
+        // holds no bound certificate for.
+        let anchor_writer = Identity::new(
+            [77; 32],
+            &anchor_device_key(&person()),
+            ANCHOR_DEVICE_ID,
+            None,
+        );
+        let anchor_genesis = genesis_of(&genesis, &anchor_writer);
+        let losing = carried(
+            &anchor_genesis,
+            &anchor_writer,
+            at(ANCHOR_DEVICE_ID, fork_revision + 1, fork_hash),
+            proposal(
+                space,
+                &anchor_admin(&person()),
+                now_ms,
+                remove_entry(&device_id(1)),
+            ),
+            Sequencing::Removal {
+                cutoffs: Vec::new(),
+                discovery_key: [9; 32],
+            },
+            now_ms,
+        );
+        let member_writer = Identity::new([78; 32], &device_key(&person(), 2), &device_id(2), None);
+        let member_genesis = genesis_of(&genesis, &member_writer);
+        let stranger = AdminKeyPair::from_seed(&[79; 32]).unwrap();
+        let forged_role = carried(
+            &member_genesis,
+            &member_writer,
+            at(ANCHOR_DEVICE_ID, head_revision + 1, head_hash),
+            proposal(
+                space,
+                &stranger,
+                now_ms,
+                Entry::SetRole(SetRole::Device {
+                    device_id: device_id(2),
+                    role: DeviceRole::Admin(stranger.public_key()),
+                }),
+            ),
+            Sequencing::Empty,
+            now_ms,
+        );
+        let unbound = carried(
+            &forged_role,
+            &member_writer,
+            at(ANCHOR_DEVICE_ID, head_revision + 1, head_hash),
+            proposal(
+                space,
+                &anchor_admin(&person()),
+                now_ms + 1,
+                remove_entry(&device_id(1)),
+            ),
+            Sequencing::Removal {
+                cutoffs: Vec::new(),
+                discovery_key: [10; 32],
+            },
+            now_ms,
+        );
+        let (losing_hash, role_hash, unbound_hash) = (
+            record_hash(&losing),
+            record_hash(&forged_role),
+            record_hash(&unbound),
+        );
+        let admission = anchor
+            .engine
+            .admit_records(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &[
+                    anchor_genesis,
+                    losing.clone(),
+                    member_genesis,
+                    forged_role,
+                    unbound.clone(),
+                ],
+                now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(admission.admitted, 5, "every record is stored");
+
+        let rotated = [
+            anchor_keys.encryption.public_key(),
+            kept_keys.encryption.public_key(),
+            recovery.public_key(),
+        ];
+        let anchor_signed = |epoch| {
+            key_epoch_proposal(
+                space,
+                &anchor_device_key(&person()),
+                now_ms,
+                epoch,
+                &rotated,
+            )
+        };
+        let genuine = carried(
+            &losing,
+            &anchor_writer,
+            at(ANCHOR_DEVICE_ID, fork_revision + 2, losing_hash),
+            anchor_signed(2),
+            Sequencing::Empty,
+            now_ms,
+        );
+        let unknown = carried(
+            &losing,
+            &anchor_writer,
+            at(ANCHOR_DEVICE_ID, fork_revision + 2, [0xab; 32]),
+            anchor_signed(2),
+            Sequencing::Empty,
+            now_ms,
+        );
+        let self_named = carried(
+            &unbound,
+            &member_writer,
+            at(&device_id(2), fork_revision + 2, losing_hash),
+            key_epoch_proposal(space, &device_key(&person(), 2), now_ms, 2, &rotated),
+            Sequencing::Empty,
+            now_ms,
+        );
+        let on_role = carried(
+            &unbound,
+            &member_writer,
+            at(ANCHOR_DEVICE_ID, head_revision + 2, role_hash),
+            anchor_signed(3),
+            Sequencing::Empty,
+            now_ms,
+        );
+        let on_unbound = carried(
+            &unbound,
+            &member_writer,
+            at(ANCHOR_DEVICE_ID, head_revision + 2, unbound_hash),
+            anchor_signed(3),
+            Sequencing::Empty,
+            now_ms,
+        );
+
+        let mut standings = Vec::new();
+        for (bytes, epoch) in [
+            (genuine, 2),
+            (unknown, 2),
+            (self_named, 2),
+            (on_role, 3),
+            (on_unbound, 3),
+            (vec![0xde; 64], 2),
+            (real.clone(), 2),
+            (real, 3),
+        ] {
+            standings.push(
+                anchor
+                    .engine
+                    .key_epoch_standing(&mut anchor.conn, &anchor.ctx, &bytes, epoch)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            standings,
+            [
+                KeyEpochStanding::Authentic,
+                KeyEpochStanding::Undecided,
+                KeyEpochStanding::Forged,
+                KeyEpochStanding::Forged,
+                KeyEpochStanding::Undecided,
+                KeyEpochStanding::Forged,
+                KeyEpochStanding::Authentic,
+                KeyEpochStanding::Forged,
+            ],
+            "a key epoch on a losing branch, on an unknown parent, naming its own signer as \
+             anchor, on a forged admin role, on an unbound removal, garbage, the selected one, \
+             and the selected one asked for the wrong epoch"
+        );
     });
 }

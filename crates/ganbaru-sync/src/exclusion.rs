@@ -1106,11 +1106,13 @@ pub(crate) async fn record_marks(
 /// What a removed device's late operations did to a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LateKind {
-    /// Wrote values of an existing row.
+    /// Wrote values of an existing row, or created a row an operation that still counts also
+    /// created.
     Values,
     /// Deleted the row.
     Tombstone,
-    /// Created the row, which stays hidden until an admin restores it.
+    /// Created a row no operation that still counts created, which stays hidden until an admin
+    /// restores it.
     Created,
 }
 
@@ -1535,9 +1537,11 @@ pub(crate) async fn any_late(conn: &mut SqliteConnection) -> SyncResult<bool> {
     )
 }
 
-/// Whether a live row is hidden as a late change: a removed device created it past its cutoff
-/// and no admin restored it, or excluding a removed device's operations left it without a
-/// value for a group.
+/// Whether a live row is hidden as a late change: a removed device created it past its cutoff,
+/// no operation that still counts created it, and no admin restored it, or excluding a removed
+/// device's operations left it without a value for a group. A late create of a row an honest
+/// operation created never hides it, since the removed device could otherwise hide any row
+/// whose key it knew.
 pub(crate) async fn hides(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1554,10 +1558,10 @@ pub(crate) async fn hides(
     if rows.is_empty() {
         return Ok(false);
     }
-    if rows
-        .iter()
-        .any(|(change, resolution)| change == "created" && resolution.as_deref() != Some("restore"))
-    {
+    let created = rows.iter().any(|(change, resolution)| {
+        change == "created" && resolution.as_deref() != Some("restore")
+    });
+    if created && !has_creation(conn, table, key).await? {
         return Ok(true);
     }
     let Some(spec) = engine.manifest().table(table) else {
@@ -1609,6 +1613,44 @@ pub(crate) async fn has_creation(
     .bind(key)
     .fetch_one(&mut *conn)
     .await?)
+}
+
+/// The kind a late change has now: a late create of a row an operation that still counts also
+/// created acts as late values. The stored kind stays as folded, so it does not depend on
+/// arrival order, and this answer follows the replica's creations as they change.
+async fn effective_kind(conn: &mut SqliteConnection, record: &LateRecord) -> SyncResult<LateKind> {
+    if record.kind == LateKind::Created && has_creation(conn, record.table, &record.key).await? {
+        return Ok(LateKind::Values);
+    }
+    Ok(record.kind)
+}
+
+/// The clock of the operation carrying the selected entry of `revision`, read from the record
+/// store, which holds it on every replica that selected it. `None` when this replica selected
+/// no such entry or its envelope does not decode.
+pub(crate) async fn entry_clock(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    revision: u64,
+) -> SyncResult<Option<Hlc>> {
+    let envelope: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT e.envelope FROM sync_auth_selected s
+         JOIN sync_auth_envelopes e
+            ON e.space_id = s.space_id AND e.envelope_hash = s.envelope_hash AND e.role = 'record'
+         WHERE s.space_id = ? AND s.revision = ?
+         LIMIT 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(seq_i64(revision)?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(envelope.and_then(|bytes| {
+        Envelope::decode(&bytes)
+            .ok()?
+            .header_fields()
+            .ok()
+            .map(|header| header.clock)
+    }))
 }
 
 /// One stored late change.
@@ -1683,7 +1725,8 @@ pub struct LateChange {
     pub table: TableId,
     /// Row key.
     pub row_key: String,
-    /// What the excluded operations did to the row.
+    /// What the excluded operations did to the row, with a late create of a row an operation
+    /// that still counts created listed as values.
     pub kind: LateKind,
     /// Title and preview from the late values.
     pub presentation: Presentation,
@@ -1698,15 +1741,18 @@ pub struct LateChange {
 }
 
 /// The change restoring a late change seals: the late values no current version is newer than,
-/// as a create of every group when the removed device created the row or no published state
-/// knows it, or a deletion of a live row. A write of only some groups leaves out Immutable
-/// groups, which a derived-key re-add repeats and the row already holds. A row another device
-/// owns seals nothing, since only its owner can write it: the restore decision is all that is
-/// recorded. [`admit_restoring_change`] judges the result, since values that were valid in
-/// separate operations can compose into a change that is not.
+/// as a create of every group when only the removed device created the row or no published
+/// state knows it, or a deletion of a live row. A write leaves out Immutable groups, which the
+/// row already holds, unless it is a derived-key re-add of every group. A late value counts at
+/// most at the clock of the removal entry, since the removed device signed it alone: a forged
+/// clock ahead of the removal cannot beat an honest edit from before the removal was seen. A
+/// row another device owns seals nothing, since only its owner can write it: the restore
+/// decision is all that is recorded. [`admit_restoring_change`] judges the result, since values
+/// that were valid in separate operations can compose into a change that is not.
 async fn restoring_change(
     engine: &Engine,
     conn: &mut SqliteConnection,
+    space: SpaceId,
     record: &LateRecord,
     sealing_device: &str,
 ) -> SyncResult<Option<Change>> {
@@ -1718,7 +1764,8 @@ async fn restoring_change(
     }
     let row = RowKey::new(record.key.clone()).map_err(|_| corrupt("stored row key"))?;
     let state = merge::row_state(conn, record.table, &record.key).await?;
-    if record.kind == LateKind::Tombstone {
+    let kind = effective_kind(conn, record).await?;
+    if kind == LateKind::Tombstone {
         return Ok((state == Some(RowState::Live)).then(|| Change {
             table: record.table,
             row,
@@ -1730,19 +1777,23 @@ async fn restoring_change(
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
     let restated = crate::fork::restated(conn, record.table, &record.key).await?;
+    // Without the removal entry no late clock is trusted, so every honest version wins.
+    let removal_clock = entry_clock(conn, space, record.removal)
+        .await?
+        .unwrap_or(Hlc::from_u64(0));
     // A version restating an older value this replica sealed again is no newer edit. Only the
     // replica that sealed a restatement, the anchor or a former anchor, records it, so on another
     // admin a restatement still counts as newer and the group keeps the restated value.
     let newer = |group: GroupId, late: &LateValue| {
         versions.iter().any(|version| {
             version.group == group
-                && version.clock > late.clock
+                && version.clock > late.clock.min(removal_clock)
                 && restated.get(&group) != Some(&version.hash)
         })
     };
     // A late create comes back as a create, which writes every group: a group an honest
     // operation wrote after the late value keeps that honest value.
-    if record.kind == LateKind::Created {
+    if kind == LateKind::Created {
         let winners = merge::winners(engine, spec, &versions);
         let mut groups = Vec::with_capacity(spec.groups.len());
         for group in spec.groups {
@@ -1773,7 +1824,8 @@ async fn restoring_change(
         None => ChangeAction::Create,
         Some(_) => ChangeAction::Write,
     };
-    if action == ChangeAction::Write && groups.len() < spec.groups.len() {
+    let readd = spec.derived_key.is_some() && groups.len() == spec.groups.len();
+    if action == ChangeAction::Write && !readd {
         groups.retain(|value| {
             spec.group(value.group)
                 .is_some_and(|group| group.kind != MergeKind::Immutable)
@@ -1846,6 +1898,7 @@ impl Engine {
                 .adapter(spec)
                 .map(|adapter| adapter.presentation(spec.id, &values))
                 .unwrap_or_default();
+            let kind = effective_kind(conn, &record).await?;
             changes.push(LateChange {
                 removal_revision: record.removal,
                 device_id: removed
@@ -1854,7 +1907,7 @@ impl Engine {
                     .ok_or_else(|| corrupt("late change of an unknown removal"))?,
                 table: record.table,
                 row_key: record.key,
-                kind: record.kind,
+                kind,
                 presentation,
                 clock: record.groups.values().map(|late| late.clock).max(),
                 values,
@@ -1908,6 +1961,7 @@ impl Engine {
         let change = restoring_change(
             self,
             &mut tx,
+            ctx.space,
             &record,
             &writer.certificate.certificate.device_id,
         )

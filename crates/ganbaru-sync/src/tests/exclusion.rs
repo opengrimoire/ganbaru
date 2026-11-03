@@ -30,6 +30,7 @@ use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::provenance::row_creating_devices;
 use crate::{HoldReason, LateChange, LateKind, StoreOutcome, SyncError};
+use crate::{hydrate, log};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
 const EDITED_AT: &str = "2027-01-02T00:00:00.000Z";
@@ -987,8 +988,8 @@ fn a_late_create_of_an_honestly_created_never_deleted_row_keeps_it() {
             assert_eq!(
                 late_rows(replica).await,
                 vec![
-                    (SETTINGS_KEY.to_owned(), LateKind::Created),
-                    (PARTICIPANT.to_owned(), LateKind::Created),
+                    (SETTINGS_KEY.to_owned(), LateKind::Values),
+                    (PARTICIPANT.to_owned(), LateKind::Values),
                 ]
             );
         }
@@ -1894,10 +1895,12 @@ async fn take(replica: &mut Replica, operations: &[Vec<u8>]) {
 }
 
 /// The creation times of the versions `replica` holds for [`HELD_NOTE`], sorted. They come from
-/// the merge state, since a row a late create started stays hidden until an admin restores it.
+/// the merge state, so they include versions of a hidden row and versions a visible row elides
+/// in favor of its domain row.
 async fn held_versions(replica: &mut Replica) -> Vec<String> {
-    let values: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT value FROM sync_register_versions
+    type StoredVersion = (Vec<u8>, i64, Vec<u8>, Option<Vec<u8>>);
+    let versions: Vec<StoredVersion> = sqlx::query_as(
+        "SELECT writer_id, seq, value_hash, value FROM sync_register_versions
          WHERE table_id = ? AND row_key = ? AND group_id = ?",
     )
     .bind(i64::from(NOTES_TABLE.0))
@@ -1906,13 +1909,29 @@ async fn held_versions(replica: &mut Replica) -> Vec<String> {
     .fetch_all(&mut replica.conn)
     .await
     .unwrap();
-    let mut times: Vec<String> = values
-        .iter()
-        .map(|value| match Value::decode(value).unwrap().fields() {
-            [Field::Text(text)] => text.clone(),
+    let table = replica.engine.manifest().table(NOTES_TABLE).unwrap();
+    let mut times = Vec::new();
+    for (writer, seq, hash, value) in versions {
+        let value = match value {
+            Some(value) => Value::decode(&value).unwrap(),
+            None => hydrate::elided_value(
+                &replica.engine,
+                &mut replica.conn,
+                table,
+                HELD_NOTE,
+                note_group::CREATED,
+                log::writer_id(&writer).unwrap(),
+                u64::try_from(seq).unwrap(),
+                &log::digest(&hash).unwrap(),
+            )
+            .await
+            .unwrap(),
+        };
+        match value.fields() {
+            [Field::Text(text)] => times.push(text.clone()),
             fields => panic!("a creation value holds one text field, not {fields:?}"),
-        })
-        .collect();
+        }
+    }
     times.sort();
     times
 }

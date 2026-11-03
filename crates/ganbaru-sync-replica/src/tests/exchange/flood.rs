@@ -513,7 +513,7 @@ fn the_backstop_stops_sync_and_its_kit_reserve_still_takes_a_kit_removal() {
 
 impl Replica {
     /// Admits `envelopes` into the record store directly, as a relay that holds them would.
-    async fn hold_records(&self, envelopes: &[Vec<u8>]) {
+    pub(super) async fn hold_records(&self, envelopes: &[Vec<u8>]) {
         let mut conn = acquire(&self.pool).await;
         Engine::vault()
             .admit_records(&mut conn, &self.ctx, envelopes, NOW_MS)
@@ -696,7 +696,7 @@ impl Replica {
     }
 
     /// The certificate of `writer` and its records in sequence order.
-    async fn own_records(&self, writer: WriterId) -> (Vec<u8>, Vec<Vec<u8>>) {
+    pub(super) async fn own_records(&self, writer: WriterId) -> (Vec<u8>, Vec<Vec<u8>>) {
         let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
             "SELECT role, envelope FROM sync_auth_envelopes WHERE writer_id = ? ORDER BY seq",
         )
@@ -933,7 +933,7 @@ const PLANT_BATCH: usize = 8192;
 
 /// A writer key from `seed` and its genesis, re-sealed from the genesis `template` with a
 /// certificate naming `device_id` that `device` signs.
-fn throwaway_writer(
+pub(super) fn throwaway_writer(
     template: &[u8],
     seed: u8,
     device_id: &str,
@@ -957,7 +957,7 @@ fn throwaway_writer(
 
 /// `operation` sealed by `key` right after the envelope `previous` of the same writer. An
 /// authorization record is sealed against the revision before its own.
-fn seal_next(previous: &[u8], key: &WriterKeyPair, mut operation: Operation) -> Vec<u8> {
+pub(super) fn seal_next(previous: &[u8], key: &WriterKeyPair, mut operation: Operation) -> Vec<u8> {
     let previous = Envelope::decode(previous).expect("decode");
     operation.writer = previous.writer;
     operation.seq = previous.seq + 1;
@@ -969,7 +969,7 @@ fn seal_next(previous: &[u8], key: &WriterKeyPair, mut operation: Operation) -> 
 }
 
 /// The operation an envelope carries.
-fn operation_of(envelope: &[u8]) -> Operation {
+pub(super) fn operation_of(envelope: &[u8]) -> Operation {
     Envelope::decode(envelope)
         .expect("decode")
         .operation()
@@ -977,7 +977,7 @@ fn operation_of(envelope: &[u8]) -> Operation {
 }
 
 /// The authorization record an envelope carries, if it carries one.
-fn authorization_record(envelope: &[u8]) -> Option<AuthorizationRecord> {
+pub(super) fn authorization_record(envelope: &[u8]) -> Option<AuthorizationRecord> {
     match operation_of(envelope).content {
         Content::Authorization(record) => Some(*record),
         _ => None,

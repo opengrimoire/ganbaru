@@ -43,6 +43,7 @@ use crate::{Engine, LocalWriter, SpaceContext, SpaceKeyHolder, exclusion, sql};
 mod contest;
 mod contest_view;
 mod exchange;
+mod key_epoch;
 
 pub use contest::ContestRejection;
 pub use contest_view::{
@@ -54,6 +55,8 @@ pub use exchange::{
     AuthorizationStorage, AuthorizationTotals, ForkedWriter, RECORD_CLASSES, RecordAdmission,
     RecordClass, RecordCursor, RecordEnvelope, RecordPage, RecordRole, RecordWants,
 };
+pub use key_epoch::KeyEpochStanding;
+pub(crate) use key_epoch::key_epoch_standing;
 
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]

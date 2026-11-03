@@ -4,6 +4,7 @@
 //! stalled flush registers nothing, asset chunks round trip and a tampered chunk is refused, and
 //! an access proof bound to another connection is refused.
 
+use super::flood::{authorization_record, operation_of, seal_next, throwaway_writer};
 use super::handover::{commit_sequenced, sequence_here};
 use super::{
     HUB_DEVICE, PHONE_DEVICE, Replica, TABLET_DEVICE, block_on, device_key, done, hub, hub_keys,
@@ -26,8 +27,10 @@ use ganbaru_handoff::protocol::relay::{
 use ganbaru_sync::{AuthorizationView, RelayKeys};
 use ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, DeviceKind, DeviceRole, EncryptionKeyPair, Entry, RelayAccessKeyPair, SetRole,
-    SpaceKey,
+    AdminKeyPair, AdminPublicKey, AuthorizationRecord, ChainLink, Content, DeviceKeyPair,
+    DeviceKind, DeviceRole, EncryptionKeyPair, Enroll, Entry, KeyEnvelope, KeyEpoch, Proposal,
+    RelayAccessKeyPair, Sequencing, SetRole, SignedProposal, SpaceKey, sign_device_proposal,
+    sign_proposal,
 };
 use ganbaru_sync_relay::identity::RelayIdentity;
 use ganbaru_sync_relay::server::{ConnectionLimits, RelayServer, unix_time_ms};
@@ -445,12 +448,168 @@ fn an_admin_pass_repairs_an_epoch_registered_with_a_replayed_key_epoch_record() 
     ));
 }
 
+#[test]
+fn a_member_forged_admin_role_does_not_block_squat_repair() {
+    block_on(hijacked_epoch_is_repaired(
+        "hijack-role",
+        Hijack::ForgedAdminRole,
+    ));
+}
+
+#[test]
+fn a_made_up_admin_enrollment_does_not_block_squat_repair() {
+    block_on(hijacked_epoch_is_repaired(
+        "hijack-enroll",
+        Hijack::MadeUpAdmin,
+    ));
+}
+
 /// The record a hijacker registers its epoch 2 with.
 enum Hijack {
     Garbage,
     /// The genuine, anchor-signed key epoch record of epoch 1, which any holder of the epoch 1
     /// key has.
     ReplayedEpochOne,
+    /// A key epoch the phone signs and names itself anchor in, on a role record that makes the
+    /// phone an admin under a key no admin holds, both stored on the hub.
+    ForgedAdminRole,
+    /// A key epoch a made-up device signs and names itself anchor in, on an enrollment of that
+    /// device as an admin under a key no admin holds, both stored on the hub.
+    MadeUpAdmin,
+}
+
+/// An admin device id the chain never enrolls.
+const MADE_UP_DEVICE: &str = "device-made-up";
+
+/// A writer key seed no replica of these tests uses.
+const FORGER_WRITER_SEED: u8 = 90;
+
+/// An admin key no device of these tests holds.
+fn stranger_admin() -> AdminKeyPair {
+    AdminKeyPair::from_seed(&[91; 32]).expect("admin seed")
+}
+
+/// `entry` signed by `admin` under `charter`.
+fn signed_entry(
+    hub: &Keyed,
+    charter: ganbaru_sync_contracts::Digest32,
+    admin: &AdminKeyPair,
+    entry: Entry,
+) -> SignedProposal {
+    sign_proposal(
+        &Proposal {
+            space: hub.replica.ctx.space,
+            charter,
+            author: admin.public_key(),
+            created_at_ms: i64::try_from(NOW_MS).expect("a small time"),
+            entry,
+        },
+        admin,
+    )
+    .expect("sign the proposal")
+}
+
+/// The genesis of a throwaway writer that `device` certifies as `device_id`, followed by
+/// `records` it carries, each sealed in the shape of the hub's last record operation.
+async fn carried_by(
+    hub: &Keyed,
+    device_id: &str,
+    device: &DeviceKeyPair,
+    records: Vec<AuthorizationRecord>,
+) -> Vec<Vec<u8>> {
+    let (genesis, mut own) = hub.replica.own_records(hub.replica.writer.id()).await;
+    let template = own.pop().expect("a hub record");
+    let (key, genesis) = throwaway_writer(&genesis, FORGER_WRITER_SEED, device_id, device);
+    let mut sealed = vec![genesis];
+    for record in records {
+        let mut operation = operation_of(&template);
+        operation.content = Content::Authorization(Box::new(record));
+        let next = seal_next(sealed.last().expect("a genesis"), &key, operation);
+        sealed.push(next);
+    }
+    sealed
+}
+
+/// A key epoch record of epoch 2 for `forged`, which a device signs and names itself anchor
+/// in, on a record that makes that device an admin under a key no admin holds. Both are
+/// carried by a writer the device certifies and stored on the hub, as a relay serving them
+/// would leave them.
+async fn self_made_admin_epoch(
+    hub: &Keyed,
+    epoch_one: &SpaceKey,
+    forged: &SpaceKey,
+    made_up: bool,
+) -> Vec<u8> {
+    let space = hub.replica.ctx.space;
+    let charter = hub.replica.charter().await;
+    let (_, own) = hub.replica.own_records(hub.replica.writer.id()).await;
+    let head =
+        authorization_record(own.last().expect("a hub record")).expect("an authorization record");
+    let stranger = stranger_admin();
+    let role = DeviceRole::Admin(stranger.public_key());
+    let (device_id, device) = if made_up {
+        (
+            MADE_UP_DEVICE,
+            DeviceKeyPair::from_seed(&[93; 32]).expect("device seed"),
+        )
+    } else {
+        (PHONE_DEVICE, device_key(PHONE_DEVICE))
+    };
+    let entry = if made_up {
+        Entry::Enroll(Enroll {
+            device_id: device_id.to_string(),
+            device_key: device.public_key(),
+            tls_fingerprint: [94; 32],
+            label: "Made up".to_string(),
+            device_kind: DeviceKind::Desktop,
+            role,
+        })
+    } else {
+        Entry::SetRole(SetRole::Device {
+            device_id: device_id.to_string(),
+            role,
+        })
+    };
+    let admin_record = AuthorizationRecord {
+        epoch: head.epoch,
+        revision: head.revision + 1,
+        previous_entry_hash: head.hash(),
+        anchor_device_id: head.anchor_device_id.clone(),
+        proposal: signed_entry(hub, charter, &stranger, entry),
+        sequencing: Sequencing::Empty,
+    };
+    let recipient = EncryptionKeyPair::generate()
+        .expect("encryption key")
+        .public_key();
+    let key_epoch = Proposal {
+        space,
+        charter,
+        author: AdminPublicKey::from_bytes(*device.public_key().as_bytes()),
+        created_at_ms: i64::try_from(NOW_MS).expect("a small time"),
+        entry: Entry::KeyEpoch(KeyEpoch {
+            key_epoch: 2,
+            wrapped_previous: Some(ChainLink::seal(&space, forged, epoch_one).expect("link")),
+            envelopes: vec![KeyEnvelope::seal(&space, forged, &recipient).expect("envelope")],
+            relay_access_key: forged.relay_access_public_key(&space).expect("access key"),
+        }),
+    };
+    let key_epoch_record = AuthorizationRecord {
+        epoch: head.epoch,
+        revision: head.revision + 2,
+        previous_entry_hash: admin_record.hash(),
+        anchor_device_id: device_id.to_string(),
+        proposal: sign_device_proposal(&key_epoch, &device).expect("sign the key epoch"),
+        sequencing: Sequencing::Empty,
+    };
+    let mut sealed = carried_by(
+        hub,
+        device_id,
+        &device,
+        vec![admin_record, key_epoch_record],
+    )
+    .await;
+    hub.replica.hold_records(&sealed).await;
+    sealed.pop().expect("the key epoch record")
 }
 
 async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
@@ -460,6 +619,10 @@ async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
     hub_device.claim(&relay).await;
     assert_eq!(hub_device.pass(&relay).await.problem, None);
     assert_eq!(phone.pass(&relay).await.problem, None);
+    let space = hub_device.replica.ctx.space;
+    let forged_key = SpaceKey::generate(2).expect("forged key");
+    let epoch_one = phone.relay_keys().await;
+    let epoch_one = epoch_one.key(1).expect("epoch 1 key");
     let entry = match hijack {
         Hijack::Garbage => vec![7; 64],
         Hijack::ReplayedEpochOne => {
@@ -472,10 +635,15 @@ async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
                 .expect("read the key epoch record")
                 .expect("the record of epoch 1")
         }
+        Hijack::ForgedAdminRole => {
+            self_made_admin_epoch(&hub_device, epoch_one, &forged_key, false).await
+        }
+        Hijack::MadeUpAdmin => {
+            self_made_admin_epoch(&hub_device, epoch_one, &forged_key, true).await
+        }
     };
 
     // A holder of the epoch 1 key registers an epoch 2 the chain never sealed.
-    let space = hub_device.replica.ctx.space;
     let access = phone.access(1).await;
     let mut hijacker = Connection::open(&relay.target, space, LoopbackPolicy::Allow)
         .await
@@ -490,10 +658,7 @@ async fn hijacked_epoch_is_repaired(label: &str, hijack: Hijack) {
         .await
         .expect("auth");
     assert!(matches!(response, RelayResponse::Authenticated { .. }));
-    let forged = SpaceKey::generate(2)
-        .expect("forged key")
-        .relay_access_key(&space)
-        .expect("forged access");
+    let forged = forged_key.relay_access_key(&space).expect("forged access");
     let signature = forged.sign(RELAY_EPOCH_DOMAIN, &hijacker.binding().epoch_payload(2));
     let response = hijacker
         .request(&RelayRequest::RegisterEpoch {

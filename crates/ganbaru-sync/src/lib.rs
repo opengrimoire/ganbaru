@@ -73,9 +73,9 @@ pub use authorization::{
     AuthorizationStorage, AuthorizationTotals, AuthorizationView, CandidateKind, ContestAction,
     ContestCandidate, ContestCause, ContestEntry, ContestInstance, ContestObjection,
     ContestRejection, ContestRole, ContestView, ContestYield, ContestsView, EnrolledDevice,
-    ForkedWriter, HandoverPoint, KitPoint, KitPointPlace, LosingRemoval, RECORD_CLASSES,
-    RecordAdmission, RecordClass, RecordCursor, RecordEnvelope, RecordPage, RecordRole,
-    RecordWants, StoredSpaceKey,
+    ForkedWriter, HandoverPoint, KeyEpochStanding, KitPoint, KitPointPlace, LosingRemoval,
+    RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor, RecordEnvelope, RecordPage,
+    RecordRole, RecordWants, StoredSpaceKey,
 };
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,

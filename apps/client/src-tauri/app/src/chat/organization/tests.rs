@@ -1731,6 +1731,80 @@ fn unattended_scheduled_reply_settles_no_reviewed_work() {
     });
 }
 
+/// The execution target that runs work in the review agent's second folder `folder:second`.
+fn second_review_folder_target() -> ChatExecutionTarget {
+    ChatExecutionTarget::WorkingFolder {
+        working_folder_id: ProjectWorkingFolderId::new("folder:second").unwrap(),
+        execution_environment_id: ChatExecutionEnvironmentId::new(
+            ganbaru_chat::project_defaults::current_folder_environment_id("folder:second"),
+        )
+        .unwrap(),
+    }
+}
+
+/// Sends on `device:desk`, unattended, a scheduled reply to `assignment:review` awaiting review
+/// whose request chose `folder:second`, returning the pool once the reply waits as a pending
+/// input of the reviewed work.
+async fn post_unattended_review_reply_on_second_folder(now: &UtcTimestamp) -> SqlitePool {
+    let (pool, mut request, scheduled_message_id) =
+        claim_scheduled_review_reply("ready_for_review", now).await;
+    seed_second_review_folder(&pool).await;
+    request.execution_target = Some(second_review_folder_target());
+    sqlx::query("UPDATE chat_scheduled_messages SET request_data = ? WHERE id = ?")
+        .bind(serde_json::to_string(&request).unwrap())
+        .bind(scheduled_message_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let posted = send_scheduled_review_reply(
+        &pool,
+        &request,
+        &scheduled_message_id,
+        ScheduledConsent::Unattended,
+    )
+    .await;
+    assert!(posted.assignment_write.input_queued);
+    assert!(posted.assignment_write.awaits_acceptance);
+    pool
+}
+
+/// The follow-up assignment that settled `assignment:review`, if one exists.
+async fn review_follow_up_id(pool: &SqlitePool) -> Option<ChatWorkAssignmentId> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM chat_work_assignments WHERE previous_assignment_id = 'assignment:review'",
+    )
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|id| ChatWorkAssignmentId::new(id).unwrap())
+}
+
+#[test]
+fn follow_up_of_an_unattended_review_reply_keeps_its_chosen_target() {
+    tauri::async_runtime::block_on(async {
+        let now = UtcTimestamp::new("2026-08-04T17:03:00.000Z").unwrap();
+        let pool = post_unattended_review_reply_on_second_folder(&now).await;
+        let writers = chat_writers_of(&["device:desk"]);
+        let device = PostingDevice::this_device("device:desk", &writers);
+        let accepted = scope_accepting(&pool, "assignment:review").await;
+
+        let started =
+            assignments::recover_stranded_follow_up_assignments(&pool, device, &accepted, &now)
+                .await
+                .unwrap();
+
+        assert_eq!(started, 1, "accepting the work did not start the follow-up");
+        let follow_up_id = review_follow_up_id(&pool).await.unwrap();
+        assert_eq!(
+            frozen_execution_folder(&pool, &follow_up_id)
+                .await
+                .as_deref(),
+            Some("folder:second"),
+            "the follow-up dropped the execution target its reply chose"
+        );
+    });
+}
+
 #[test]
 fn consented_scheduled_replies_still_route_to_their_work() {
     tauri::async_runtime::block_on(async {

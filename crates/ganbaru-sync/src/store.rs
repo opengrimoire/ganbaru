@@ -98,7 +98,8 @@ pub enum StoreRefusal {
     /// lowest writer ids of its device and the operation is neither its genesis nor an
     /// authorization entry contiguous from it.
     Revoked,
-    /// The genesis would exceed the writers its device or the space may have.
+    /// The genesis would exceed the writers its device or the space may have, and, for a removed
+    /// device, no higher surplus unnamed writer of it can make room.
     WriterLimit,
     /// Earlier operations of the writer are missing.
     Gap {
@@ -394,7 +395,17 @@ async fn store_genesis(
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
     if !within_writer_limits(conn, ctx, &cert.device_id, selected).await? {
-        return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
+        // A removed device's writers all count toward the space's named writers, so displacing
+        // one of them frees a slot under both bounds.
+        let displaced = match removal {
+            Some((_, cutoff)) => {
+                displace_surplus(conn, ctx, &cert.device_id, envelope.writer, cutoff).await?
+            }
+            None => false,
+        };
+        if !displaced {
+            return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
+        }
     }
     sqlx::query(
         "INSERT INTO sync_writers
@@ -913,6 +924,61 @@ async fn within_writer_limits(
         below(total - named, MAX_UNSELECTED_WRITERS_PER_SPACE)
     };
     Ok(below(device, MAX_WRITERS_PER_DEVICE) && space)
+}
+
+/// Forgets the highest surplus unnamed writer of the removed device `device_id` so that the
+/// genesis of `writer`, whose removal cutoff is `cutoff`, fits the writer limits. Every replica
+/// then keeps the writers the removal names and the device's unnamed writers with the lowest ids,
+/// whatever order their geneses arrived in. A surplus writer keeps nothing past its genesis but
+/// authorization entries, whose records the record store keeps, so forgetting it loses no change.
+///
+/// An unnamed `writer` displaces only a higher writer. A writer whose operations are still
+/// applied, before the removal settles them, or one of the local device, is never forgotten, and
+/// the genesis is refused instead; the next exchange offers it again. Returns whether a writer
+/// was forgotten.
+async fn displace_surplus(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    device_id: &str,
+    writer: WriterId,
+    cutoff: Seq,
+) -> SyncResult<bool> {
+    let highest: Option<(Vec<u8>, i64, Option<String>)> =
+        sqlx::query_as(exclusion::surplus_unnamed_query!(
+            "SELECT w.writer_id, w.applied_seq, s.local_device_id
+             FROM sync_writers w JOIN sync_spaces s ON s.space_id = w.space_id
+             WHERE w.space_id = ?1 AND w.device_id = ?2 AND ",
+            3,
+            " ORDER BY w.writer_id DESC LIMIT 1"
+        ))
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(device_id)
+        .bind(exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some((highest, applied, local)) = highest else {
+        return Ok(false);
+    };
+    let highest = log::writer_id(&highest)?;
+    if applied != 0 || local.as_deref() == Some(device_id) || (cutoff == 0 && writer >= highest) {
+        return Ok(false);
+    }
+    for table in [
+        "sync_ops",
+        "sync_stable",
+        "sync_anchor_marks",
+        "sync_released_marks",
+        "sync_writers",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE space_id = ? AND writer_id = ?"
+        )))
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(highest.as_bytes().as_slice())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(true)
 }
 
 /// Whether the selected chain names the device of `writer`, enrolled or removed, with the device

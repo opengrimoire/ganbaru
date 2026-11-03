@@ -72,6 +72,7 @@ macro_rules! surplus_unnamed_query {
         )
     };
 }
+pub(crate) use surplus_unnamed_query;
 
 /// Whether `writer` is a surplus unnamed writer of a removed device, see
 /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`].

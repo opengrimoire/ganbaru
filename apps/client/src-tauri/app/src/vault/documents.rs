@@ -178,7 +178,7 @@ const ICS_PLAIN_MAX_BYTES: u64 = 25 * 1024 * 1024;
 const THEME_JSON_MAX_BYTES: u64 = 1024 * 1024;
 
 /// A recovery kit text file holds one code and a short localized explanation.
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "android"))]
 const RECOVERY_KIT_TEXT_MAX_BYTES: u64 = 16 * 1024;
 
 #[cfg(target_os = "ios")]
@@ -586,6 +586,42 @@ pub async fn vault_pick_and_write_recovery_kit(
     require_extension(&path, &["txt"], "recovery kit")?;
     write_text_file_atomically(&path, &contents, FileAccess::OwnerOnly)?;
     Ok(true)
+}
+
+/// Ask Android's system picker where to save the vault's recovery kit as a plain text file, and
+/// write it there. Returns whether the user picked a place.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn vault_pick_and_write_recovery_kit(
+    app: tauri::AppHandle,
+    default_name: String,
+    contents: String,
+) -> Result<bool, String> {
+    require_text_within_limit(&contents, RECOVERY_KIT_TEXT_MAX_BYTES, "recovery kit")?;
+    let default_name = default_file_name(&default_name, "recovery-kit", "txt");
+    let documents = app.mobile_documents().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        documents.save_utf8_document(
+            &default_name,
+            &contents,
+            RECOVERY_KIT_TEXT_MAX_BYTES,
+            &["txt"],
+            "text/plain",
+            "recovery kit",
+        )
+    })
+    .await
+    .map_err(|error| format!("save recovery kit: {error}"))?
+}
+
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn vault_pick_and_write_recovery_kit(
+    _app: tauri::AppHandle,
+    _default_name: String,
+    _contents: String,
+) -> Result<bool, String> {
+    Err("recovery kit export is not available on iOS yet".to_string())
 }
 
 #[cfg(target_os = "ios")]

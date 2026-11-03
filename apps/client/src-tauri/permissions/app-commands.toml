@@ -683,6 +683,7 @@ commands.allow = [
   "sync_server_status",
   "sync_set_foreground",
   "sync_set_paused",
+  "sync_set_secure_window",
   "sync_status",
   "sync_subscribe",
   "sync_take_anchor",

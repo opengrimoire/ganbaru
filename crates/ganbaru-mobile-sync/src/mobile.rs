@@ -78,6 +78,19 @@ impl<R: Runtime> MobileSync<R> {
             .run_mobile_plugin("connectivityStatus", ())
             .map_err(|error| format!("read background sync connectivity status: {error}"))
     }
+
+    /// Keeps the app window out of screenshots, recents previews, and screen capture while
+    /// `secure`, and lets the system capture it again otherwise.
+    pub fn set_secure_window(&self, secure: bool) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct SecureWindowRequest {
+            secure: bool,
+        }
+
+        self.0
+            .run_mobile_plugin::<()>("setSecureWindow", SecureWindowRequest { secure })
+            .map_err(|error| format!("set the secure window: {error}"))
+    }
 }
 
 /// Access to the background sync plugin from any Tauri manager.

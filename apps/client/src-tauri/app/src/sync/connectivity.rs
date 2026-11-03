@@ -168,6 +168,35 @@ pub(crate) async fn note_android<R: tauri::Runtime>(
     }
 }
 
+/// Keeps the Android window out of screenshots, recents, and screen capture while `secure`. The
+/// frontend holds it while a recovery kit code shows or is typed.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn sync_set_secure_window<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    secure: bool,
+) -> Result<(), String> {
+    use ganbaru_mobile_sync::MobileSyncExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.mobile_sync()
+            .ok_or_else(|| "the background sync plugin is not registered".to_string())?
+            .set_secure_window(secure)
+    })
+    .await
+    .map_err(|error| format!("set the secure window: {error}"))?
+}
+
+/// Other platforms have no secure window adapter. Desktop test builds compile this so the mobile
+/// root's handler paths stay type-checked.
+#[cfg(any(target_os = "ios", all(test, desktop)))]
+#[tauri::command]
+pub async fn sync_set_secure_window<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    _secure: bool,
+) -> Result<(), String> {
+    Err("the secure window is not available on this platform".to_string())
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;

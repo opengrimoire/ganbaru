@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-saveUtf8Document"
+description = "Enables the saveUtf8Document command without any pre-configured scope."
+commands.allow = ["saveUtf8Document"]
+
+[[permission]]
+identifier = "deny-saveUtf8Document"
+description = "Denies the saveUtf8Document command without any pre-configured scope."
+commands.deny = ["saveUtf8Document"]

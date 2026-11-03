@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { acquireSecureWindow, type SecureWindowRelease } from "$lib/mobile/secure-window";
   import {
     activateModalFocus,
     activateModalKeyboardLayer,
@@ -14,7 +15,8 @@
 
   /**
    * Asks for the recovery kit code that opens a backup. The code stays in this dialog until it is
-   * submitted and is cleared when the dialog closes.
+   * submitted and is cleared when the dialog closes. On Android the window stays out of
+   * screenshots, recents, and screen capture while the dialog is open.
    */
   let {
     refusal,
@@ -73,6 +75,12 @@
   }
 
   onMount(() => {
+    let mounted = true;
+    let releaseSecureWindow: SecureWindowRelease | null = null;
+    void acquireSecureWindow().then((release) => {
+      if (mounted) releaseSecureWindow = release;
+      else void release();
+    });
     const deactivateMobileBack = androidSystemBackAvailable
       ? mobileBackStack.activate({ handle: () => cancel() })
       : () => undefined;
@@ -83,6 +91,8 @@
     });
     return () => {
       code = "";
+      mounted = false;
+      if (releaseSecureWindow) void releaseSecureWindow();
       deactivateMobileBack();
       deactivateKeyboard();
       deactivateModalFocus();

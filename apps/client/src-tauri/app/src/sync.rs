@@ -11,7 +11,7 @@ mod authority;
 mod background_changes;
 pub(crate) mod backup_keys;
 pub(crate) mod commands;
-mod connectivity;
+pub(crate) mod connectivity;
 mod contests;
 pub(crate) mod devices;
 #[cfg(any(target_os = "android", test))]

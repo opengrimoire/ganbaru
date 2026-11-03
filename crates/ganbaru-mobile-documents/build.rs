@@ -3,6 +3,7 @@ fn main() {
         "pickUtf8Document",
         "pickDocumentToPath",
         "saveUtf8Download",
+        "saveUtf8Document",
         "saveFileDownload",
         "pickVaultTreeToPath",
     ])

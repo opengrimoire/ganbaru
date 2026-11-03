@@ -15,7 +15,7 @@ use crate::manifest::vault::VAULT_MANIFEST;
 use crate::{COMPACTION_BATCH_OPS, StoreRefusal, SyncError};
 use ganbaru_sync_contracts::{RecoverySeed, VersionVector, WriterId};
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 async fn add_note(replica: &mut Replica, id: &str, title: &str) {
     replica
@@ -201,6 +201,7 @@ fn carry_forward_moves_local_operations_into_a_replacement() {
                     &device.ctx,
                     VAULT_ID,
                     &device.device_id,
+                    &BTreeSet::new(),
                     &decoded,
                     device.now_ms,
                 )
@@ -411,6 +412,7 @@ fn restore_copies_device_state_onto_carried_rows_and_drops_orphans() {
                 &device.ctx,
                 VAULT_ID,
                 &device.device_id,
+                &BTreeSet::new(),
                 &ops,
                 device.now_ms,
             )
@@ -1129,6 +1131,7 @@ fn foreign_fork_in_a_carried_chunk_loses_nothing_behind_it() {
                 &device.ctx,
                 VAULT_ID,
                 &device.device_id,
+                &BTreeSet::new(),
                 &ops,
                 device.now_ms,
             )
@@ -1143,6 +1146,82 @@ fn foreign_fork_in_a_carried_chunk_loses_nothing_behind_it() {
         .await
         .unwrap();
         assert_eq!(titles, ["Device one", "Device two"]);
+    });
+}
+
+#[test]
+fn relabeled_own_writer_in_the_copy_is_refused() {
+    block_on(async {
+        let mut hub = Replica::new(0, 45).await;
+        let mut device = Replica::new(1, 45).await;
+        let mut other = Replica::new(2, 45).await;
+        add_note(&mut other, "other-1", "Other").await;
+        other.seal().await.unwrap();
+        let other_key: Vec<u8> =
+            sqlx::query_scalar("SELECT public_key FROM sync_writers WHERE writer_id = ?")
+                .bind(other.writer().as_bytes().as_slice())
+                .fetch_one(&mut other.conn)
+                .await
+                .unwrap();
+        add_note(&mut device, "note-sent", "Sent").await;
+        let sent = device.seal().await.unwrap().last_seq.unwrap();
+        hub.pull(&mut device).await;
+        add_note(&mut device, "note-unsent", "Unsent").await;
+        device.seal().await.unwrap();
+        let writer = device.writer();
+
+        // The copy keeps the genuine head of this device's writer but names another device and
+        // key for it.
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        sqlx::query(
+            "UPDATE sync_writers SET device_id = 'other-device', public_key = ? WHERE writer_id = ?",
+        )
+        .bind(&other_key)
+        .bind(writer.as_bytes().as_slice())
+        .execute(&mut staged)
+        .await
+        .unwrap();
+        let result = verified_replacement_vector(
+            &mut device.conn,
+            &mut staged,
+            device.ctx.space,
+            &device.device_id,
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(SyncError::StagedHead { writer: refused, seq })
+                    if refused == writer && seq == sent
+            ),
+            "{result:?}"
+        );
+
+        // The writers the live log certifies to this device stay its own in the import, so a
+        // refusal of the unsent operations fails it.
+        let mut vector = VersionVector::default();
+        vector.set(writer, sent);
+        let ops = carried(&mut device, &vector).await;
+        assert!(!ops.is_empty());
+        let result = device
+            .engine
+            .import_carried(
+                &mut staged,
+                &device.ctx,
+                VAULT_ID,
+                &device.device_id,
+                &BTreeSet::from([writer]),
+                &ops,
+                device.now_ms,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(SyncError::CarriedOwnRefused { writer: refused, .. }) if refused == writer
+            ),
+            "{result:?}"
+        );
     });
 }
 
@@ -1184,6 +1263,7 @@ fn rotated_own_writer_counts_as_own_without_a_target_row() {
                 &device.ctx,
                 VAULT_ID,
                 &device.device_id,
+                &BTreeSet::new(),
                 &ops,
                 device.now_ms,
             )

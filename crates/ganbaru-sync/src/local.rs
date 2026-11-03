@@ -358,15 +358,21 @@ impl Engine {
 
     /// Stores and applies carried operations in the replacement database. Operations already
     /// stored with the same hash are skipped, so a repeated import is harmless. A refused
-    /// operation of a writer of `own_device_id` fails the import with
+    /// operation of this device's writer fails the import with
     /// [`SyncError::CarriedOwnRefused`], because no other device holds it; refusals of other
     /// writers are counted, and a refusal never drops the operations after it.
+    ///
+    /// This device's writers are `known_own`, which the caller reads from a database it trusts
+    /// such as the live vault, together with the writers `conn` certifies to `own_device_id` and
+    /// those whose carried genesis certifies them to it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_carried(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         vault_id: &str,
         own_device_id: &str,
+        known_own: &BTreeSet<WriterId>,
         ops: &[Vec<u8>],
         now_ms: u64,
     ) -> SyncResult<CarryReport> {
@@ -376,6 +382,7 @@ impl Engine {
         }
         self.init_space(conn, vault_id, now_ms).await?;
         let mut own = self.device_writers(conn, ctx, own_device_id).await?;
+        own.extend(known_own.iter().copied());
         own.extend(carried_writers_of(ops, own_device_id));
         for chunk in ops.chunks(IMPORT_CHUNK) {
             let mut rest = chunk;
@@ -478,6 +485,8 @@ async fn space_exists(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult
 ///
 /// - A writer the copy does not hold stays at zero, and writers `live` does not know are left
 ///   out, since `live` has nothing of theirs to carry.
+/// - The staged row must name the key and device of the live row, which the writer's genesis
+///   certificate fixes; a copy that changes either is [`SyncError::StagedHead`].
 /// - A head at or below the live head must hash as the live operation at that sequence. A
 ///   different hash on a writer of `own_device_id` is [`SyncError::StagedHead`], because the
 ///   copy would hide operations only this device holds; on another writer it stands, since a
@@ -500,7 +509,11 @@ pub async fn verified_replacement_vector(
             continue;
         };
         let seq = claimed.stored;
-        let confirmed = if seq <= row.stored {
+        let certified_alike =
+            claimed.public_key == row.public_key && claimed.device_id == row.device_id;
+        let confirmed = if !certified_alike {
+            false
+        } else if seq <= row.stored {
             let own = row.device_id == own_device_id;
             !own || stored_hash(live, space, row.id, seq).await? == Some(claimed.head_hash)
         } else {

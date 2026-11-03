@@ -18,9 +18,10 @@ use ganbaru_sync::local::{
 };
 use ganbaru_sync::manifest::Manifest;
 use ganbaru_sync::{CarryReport, Engine, LocalRestoreReport, ReverifyReport, SpaceContext};
-use ganbaru_sync_contracts::SignedCharter;
+use ganbaru_sync_contracts::{SignedCharter, WriterId};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Connection as _, SqliteConnection};
+use std::collections::BTreeSet;
 use std::io::Read as _;
 use std::path::Path;
 
@@ -42,8 +43,19 @@ pub async fn export(
     Ok(
         export_space(engine, current, replacement, files, own_device_id)
             .await?
-            .map_or(0, |(_, count)| count),
+            .map_or(0, |exported| exported.count),
     )
+}
+
+/// A carry bundle written for a replacement.
+struct Exported {
+    /// The sync space of the current database.
+    ctx: SpaceContext,
+    /// Operations the bundle holds.
+    count: usize,
+    /// The writers the current database certifies to this device, which the replacement
+    /// cannot relabel.
+    own_writers: BTreeSet<WriterId>,
 }
 
 /// Carries the operations of `current` that the staged `replacement` lacks into it: exports
@@ -58,12 +70,21 @@ pub async fn carry_into_replacement(
     own_device_id: &str,
     now_ms: u64,
 ) -> Result<Option<CarryReport>, String> {
-    let Some((ctx, _)) = export_space(engine, current, replacement, files, own_device_id).await?
+    let Some(exported) = export_space(engine, current, replacement, files, own_device_id).await?
     else {
         return Ok(None);
     };
     let mut conn = open_staged(replacement).await?;
-    let imported = import_pending(engine, &mut conn, &ctx, files, own_device_id, now_ms).await;
+    let imported = import_bundle(
+        engine,
+        &mut conn,
+        &exported.ctx,
+        files,
+        own_device_id,
+        &exported.own_writers,
+        now_ms,
+    )
+    .await;
     close_staged(conn, imported).await
 }
 
@@ -122,16 +143,15 @@ async fn close_staged<T>(conn: SqliteConnection, result: Result<T, String>) -> R
     Ok(value)
 }
 
-/// Exports the carry bundle and returns the space of `current` with how many operations the
-/// bundle holds, or `None` when `current` has no sync space or `replacement` holds another
-/// charter.
+/// Exports the carry bundle, or returns `None` when `current` has no sync space or
+/// `replacement` holds another charter.
 async fn export_space(
     engine: &Engine,
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
     own_device_id: &str,
-) -> Result<Option<(SpaceContext, usize)>, String> {
+) -> Result<Option<Exported>, String> {
     let registry = DatabasePoolRegistry::default();
     let result = export_with(
         engine,
@@ -155,7 +175,7 @@ async fn export_with(
     replacement: &Path,
     files: &SyncFiles,
     own_device_id: &str,
-) -> Result<Option<(SpaceContext, usize)>, String> {
+) -> Result<Option<Exported>, String> {
     let current_pool = registry.connect_path_read_only(current).await?;
     let mut current_conn = acquire(&current_pool).await?;
     let Some(ctx) = local::space_context(&mut current_conn, &files.vault_id)
@@ -170,6 +190,10 @@ async fn export_with(
     {
         return Err("local synced changes are not sealed yet".to_string());
     }
+    let own_writers = engine
+        .device_writers(&mut current_conn, &ctx, own_device_id)
+        .await
+        .map_err(|error| format!("read this device's sync writers: {error}"))?;
     let replacement_pool = registry.connect_path_read_only(replacement).await?;
     let mut replacement_conn = acquire(&replacement_pool).await?;
     if !local::same_log(&mut current_conn, &mut replacement_conn, ctx.space)
@@ -197,21 +221,27 @@ async fn export_with(
             .await
             .map_err(|error| format!("collect local sync operations: {error}"))?,
     );
+    let count = ops.len();
+    let exported = Exported {
+        ctx,
+        count,
+        own_writers,
+    };
     if ops.is_empty() {
-        return Ok(Some((ctx, 0)));
+        return Ok(Some(exported));
     }
-    let bytes = encode_bundle(ctx.space, &ops);
+    let bytes = encode_bundle(exported.ctx.space, &ops);
     if bytes.len() > MAX_BUNDLE_BYTES {
         return Err("local sync operations exceed the carry-forward limit".to_string());
     }
     std::fs::create_dir_all(&files.directory)
         .map_err(|error| format!("create sync directory: {error}"))?;
     ganbaru_handoff::pairing::write_private_file_atomically(&files.carry_path(), &bytes)?;
-    Ok(Some((ctx, ops.len())))
+    Ok(Some(exported))
 }
 
-/// Imports a pending carry bundle into the vault database and deletes it. Returns `None` when
-/// no bundle is pending.
+/// Imports a pending carry bundle into the open vault database and deletes it. Returns `None`
+/// when no bundle is pending.
 pub async fn import_pending(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -220,11 +250,43 @@ pub async fn import_pending(
     own_device_id: &str,
     now_ms: u64,
 ) -> Result<Option<CarryReport>, String> {
+    import_bundle(
+        engine,
+        conn,
+        ctx,
+        files,
+        own_device_id,
+        &BTreeSet::new(),
+        now_ms,
+    )
+    .await
+}
+
+/// Imports a pending carry bundle into `conn` and deletes it, treating `own_writers` as this
+/// device's writers besides those `conn` and the bundle certify to it. Returns `None` when no
+/// bundle is pending.
+async fn import_bundle(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    files: &SyncFiles,
+    own_device_id: &str,
+    own_writers: &BTreeSet<WriterId>,
+    now_ms: u64,
+) -> Result<Option<CarryReport>, String> {
     let Some(ops) = read_bundle(files, ctx)? else {
         return Ok(None);
     };
     let report = engine
-        .import_carried(conn, ctx, &files.vault_id, own_device_id, &ops, now_ms)
+        .import_carried(
+            conn,
+            ctx,
+            &files.vault_id,
+            own_device_id,
+            own_writers,
+            &ops,
+            now_ms,
+        )
         .await
         .map_err(|error| format!("import carried sync operations: {error}"))?;
     if report.refused_foreign > 0 {

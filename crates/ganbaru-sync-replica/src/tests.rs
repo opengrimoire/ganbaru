@@ -671,6 +671,100 @@ fn own_refusal_keeps_the_carry_bundle_and_fails() {
 }
 
 #[test]
+fn relabeled_own_writer_fails_the_carry_and_keeps_the_bundle() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-relabeled");
+        let other = TestDirectory::new("carry-relabeled-other");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let replacement_path = directory.path().join("replacement.sqlite");
+        let other_path = other.path().join("other.sqlite");
+        sealed_vault(&registry, &other, &other_path).await;
+        let other_pool = registry
+            .connect_path(&other_path)
+            .await
+            .expect("open other");
+        let mut other_conn = acquire(&other_pool).await;
+        let other_key: Vec<u8> = sqlx::query_scalar("SELECT public_key FROM sync_writers")
+            .fetch_one(&mut *other_conn)
+            .await
+            .expect("read another writer key");
+        drop(other_conn);
+        drop(other_pool);
+
+        let current = create_vault(&registry, &current_path).await;
+        let mut conn = acquire(&current).await;
+        let ctx = context(&mut conn).await;
+        let mut writer = create_writer(
+            &files,
+            &directory.keys(),
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        add_note(&mut conn, "note-sent").await;
+        engine
+            .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+            .await
+            .expect("seal");
+        sqlx::query("VACUUM INTO ?")
+            .bind(replacement_path.to_string_lossy().into_owned())
+            .execute(&mut *conn)
+            .await
+            .expect("copy the replacement at a genuine head");
+        add_note(&mut conn, "note-unsent").await;
+        engine
+            .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+            .await
+            .expect("seal");
+        drop(conn);
+        drop(current);
+        registry.close_all().await.expect("close pools");
+        carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+            .await
+            .expect("export");
+        let bundle = std::fs::read(files.carry_path()).expect("read bundle");
+
+        // The copy keeps the genuine head of this device's writer but names another device and
+        // key for it, so the replacement would refuse the unsent operations as foreign.
+        let replacement = registry
+            .connect_path(&replacement_path)
+            .await
+            .expect("open replacement");
+        let mut conn = acquire(&replacement).await;
+        sqlx::query("UPDATE sync_writers SET device_id = 'other-device', public_key = ?")
+            .bind(&other_key)
+            .execute(&mut *conn)
+            .await
+            .expect("relabel the writer");
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+
+        let error = carry_forward::carry_into_replacement(
+            &engine,
+            &current_path,
+            &replacement_path,
+            &files,
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .await
+        .expect_err("a relabeled writer fails the carry");
+        assert!(error.contains("cannot confirm"), "{error}");
+        assert_eq!(
+            std::fs::read(files.carry_path()).expect("the bundle stays"),
+            bundle
+        );
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
 fn carry_across_a_charter_change_exports_nothing_and_drops_the_bundle() {
     block_on(async {
         let directory = TestDirectory::new("carry-charter");

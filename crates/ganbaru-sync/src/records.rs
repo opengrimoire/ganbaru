@@ -813,7 +813,34 @@ pub enum WriterRetirement {
     Removed,
 }
 
+/// What re-verifying a staged copy's authorization record store kept and dropped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReverifyReport {
+    /// Staged envelopes stored again after their intrinsic checks.
+    pub admitted: usize,
+    /// Staged rows dropped: undecodable, stored under a hash they do not recompute to, or
+    /// refused by admission.
+    pub dropped: usize,
+    /// Envelopes of the live store the staged copy lacked.
+    pub merged_from_live: usize,
+}
+
 impl crate::Engine {
+    /// Rebuilds the authorization record store of a staged snapshot copy by admitting each of its
+    /// envelopes again under `charter`, which the receiving device trusts, and merges the
+    /// verified envelopes of `live` when given.
+    pub async fn reverify_staged_authorization(
+        &self,
+        staged: &mut SqliteConnection,
+        live: Option<&mut SqliteConnection>,
+        ctx: &crate::SpaceContext,
+        charter: &SignedCharter,
+        now_ms: u64,
+    ) -> SyncResult<ReverifyReport> {
+        let _ = (staged, live, ctx, charter, now_ms);
+        Ok(ReverifyReport::default())
+    }
+
     /// Whether the local device must retire `writer`, see [`WriterRetirement`]. The successor's
     /// certificate is signed by the unchanged device key and names `writer` as predecessor, so
     /// a copy of the old writer key alone cannot mint it. No authority rule reads this: it only

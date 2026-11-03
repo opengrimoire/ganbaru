@@ -993,6 +993,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
                 eprintln!("app config directory permissions are unchanged: {error}");
             }
             vault::handoff::initialize(app.handle());
+            if let Err(error) =
+                vault::backup::recover_interrupted_replacements_for_app(app.handle())
+            {
+                eprintln!("interrupted vault replacement is not recovered: {error}");
+            }
             crate::sync::setup(app.handle());
             if let Err(error) = vault::handoff::start_desktop(app.handle()) {
                 eprintln!("vault handoff coordinator is unavailable: {error}");

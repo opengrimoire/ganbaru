@@ -288,6 +288,7 @@ export const sync = {
     forceDescription: "El ancla no responde. Escribe un código de kit para hacer que esta computadora sea administradora y el ancla sin ella. El ancla anterior se quita de la bóveda y hay que vincularla de nuevo.",
     forceSubmit: "Usar el kit y tomar el ancla",
     forceDone: "Esta computadora ahora es administradora y el ancla.",
+    forceRecoveryKeyNote: "Las siguientes claves del espacio se sellarán para este kit impreso. Una clave de recuperación creada en Ajustes dejará de abrirlas, así que crea una nueva después si la quieres.",
     useSent: "Se envió al ancla. Esta computadora será administradora cuando el ancla lo confirme.",
     useFailed: "No se pudo usar el código. Revísalo e inténtalo de nuevo.",
     fileName: "kit-de-recuperacion-ganbaru",

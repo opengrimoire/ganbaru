@@ -275,6 +275,7 @@ export const sync = {
     forceDescription: "The anchor is not answering. Enter a kit code to make this computer an admin and the anchor without it. The old anchor is removed from the vault and must be linked again.",
     forceSubmit: "Use kit and take over the anchor",
     forceDone: "This computer is now an admin and the anchor.",
+    forceRecoveryKeyNote: "Later space keys will seal to this printed kit. A recovery key made in Settings stops opening them, so make a new one afterward if you want one.",
     useSent: "Sent to the anchor. This computer becomes an admin once the anchor confirms it.",
     useFailed: "The code could not be used. Check it and try again.",
     fileName: "ganbaru-recovery-kit",

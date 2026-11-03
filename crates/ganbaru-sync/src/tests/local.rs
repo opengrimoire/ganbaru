@@ -7,8 +7,7 @@ use super::replica::{Replica, VAULT_ID, connection_from, person};
 use super::{block_on, migrated_pool};
 use crate::local::{
     self, LocalWriterHead, decode_bundle, encode_bundle, has_pending_captures,
-    prepare_snapshot_copy, replacement_vector, restore_local_state, space_context,
-    verified_replacement_vector,
+    prepare_snapshot_copy, restore_local_state, space_context, verified_replacement_vector,
 };
 use crate::log::WriterState;
 use crate::manifest::Manifest;
@@ -175,9 +174,14 @@ fn carry_forward_moves_local_operations_into_a_replacement() {
 
         // The replacement is the hub's newer snapshot, which lacks the device's operations.
         let mut replacement = connection_from(&hub.snapshot().await).await;
-        let staged = replacement_vector(&mut replacement, device.ctx.space)
-            .await
-            .unwrap();
+        let staged = verified_replacement_vector(
+            &mut device.conn,
+            &mut replacement,
+            device.ctx.space,
+            &device.device_id,
+        )
+        .await
+        .unwrap();
         let ops = device
             .engine
             .carry_forward_ops(&mut device.conn, &device.ctx, &staged)
@@ -240,7 +244,7 @@ fn carry_forward_from_a_database_without_a_space_is_empty() {
     block_on(async {
         let pool = migrated_pool().await;
         let mut fresh = pool.acquire().await.unwrap();
-        let replica = Replica::new(1, 5).await;
+        let mut replica = Replica::new(1, 5).await;
         let ops = replica
             .engine
             .carry_forward_ops(&mut fresh, &replica.ctx, &Default::default())
@@ -248,12 +252,17 @@ fn carry_forward_from_a_database_without_a_space_is_empty() {
             .unwrap();
         assert!(ops.is_empty());
         assert!(
-            replacement_vector(&mut fresh, replica.ctx.space)
-                .await
-                .unwrap()
-                .iter()
-                .next()
-                .is_none()
+            verified_replacement_vector(
+                &mut replica.conn,
+                &mut fresh,
+                replica.ctx.space,
+                &replica.device_id
+            )
+            .await
+            .unwrap()
+            .iter()
+            .next()
+            .is_none()
         );
     });
 }
@@ -382,9 +391,14 @@ fn restore_copies_device_state_onto_carried_rows_and_drops_orphans() {
         let mut staged = connection_from(&hub.snapshot().await).await;
         let manifest = device.engine.manifest();
         prepare_snapshot_copy(&mut staged, manifest).await.unwrap();
-        let vector = replacement_vector(&mut staged, device.ctx.space)
-            .await
-            .unwrap();
+        let vector = verified_replacement_vector(
+            &mut device.conn,
+            &mut staged,
+            device.ctx.space,
+            &device.device_id,
+        )
+        .await
+        .unwrap();
         let ops = device
             .engine
             .carry_forward_ops(&mut device.conn, &device.ctx, &vector)

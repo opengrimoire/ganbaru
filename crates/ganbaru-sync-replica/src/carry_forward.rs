@@ -48,7 +48,8 @@ pub async fn export(
 
 /// Carries the operations of `current` that the staged `replacement` lacks into it: exports
 /// them into the carry bundle, stores and applies the bundle in the replacement, and deletes
-/// the bundle. Returns `None` when `current` has no sync space or nothing was pending.
+/// the bundle. Returns `None` when `current` has no sync space, `replacement` holds another
+/// charter, or nothing was pending.
 pub async fn carry_into_replacement(
     engine: &Engine,
     current: &Path,
@@ -122,7 +123,8 @@ async fn close_staged<T>(conn: SqliteConnection, result: Result<T, String>) -> R
 }
 
 /// Exports the carry bundle and returns the space of `current` with how many operations the
-/// bundle holds, or `None` when `current` has no sync space.
+/// bundle holds, or `None` when `current` has no sync space or `replacement` holds another
+/// charter.
 async fn export_space(
     engine: &Engine,
     current: &Path,
@@ -170,6 +172,15 @@ async fn export_with(
     }
     let replacement_pool = registry.connect_path_read_only(replacement).await?;
     let mut replacement_conn = acquire(&replacement_pool).await?;
+    if !local::same_log(&mut current_conn, &mut replacement_conn, ctx.space)
+        .await
+        .map_err(|error| format!("read replacement charter: {error}"))?
+    {
+        // Operations of another log cannot apply under this charter, so nothing carries and a
+        // bundle left from the old log is dropped.
+        remove_bundle(files)?;
+        return Ok(None);
+    }
     let staged = verified_replacement_vector(
         &mut current_conn,
         &mut replacement_conn,
@@ -216,6 +227,12 @@ pub async fn import_pending(
         .import_carried(conn, ctx, &files.vault_id, own_device_id, &ops, now_ms)
         .await
         .map_err(|error| format!("import carried sync operations: {error}"))?;
+    if report.refused_foreign > 0 {
+        eprintln!(
+            "sync carry-forward: the replacement refused {} operations of other devices",
+            report.refused_foreign
+        );
+    }
     remove_bundle(files)?;
     Ok(Some(report))
 }

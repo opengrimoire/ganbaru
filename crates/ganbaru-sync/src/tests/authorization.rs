@@ -1553,6 +1553,66 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
 }
 
 #[test]
+fn an_admin_cannot_rekey_the_anchor_role() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 61).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let space = hub.ctx.space;
+        let rekey = |key: &AdminKeyPair| {
+            Entry::SetRole(SetRole::Device {
+                device_id: ANCHOR_DEVICE_ID.to_owned(),
+                role: DeviceRole::Admin(key.public_key()),
+            })
+        };
+        let anchor_role = |view: &AuthorizationView| {
+            view.devices
+                .iter()
+                .find(|device| device.device_id == ANCHOR_DEVICE_ID)
+                .unwrap()
+                .role
+        };
+
+        // Another admin names a key it holds, or its own, for the anchor: both are refused and
+        // the anchor keeps its key.
+        let planted = AdminKeyPair::from_seed(&[78; 32]).unwrap();
+        for key in [&planted, &device_admin(20)] {
+            let attack = proposal(space, &device_admin(20), hub.now_ms, rekey(key));
+            assert_eq!(
+                hub.sequence_signed(&attack).await.unwrap(),
+                Err(ProposalRejection::NamesAnchor)
+            );
+        }
+        let anchor = anchor_admin(&person());
+        assert_eq!(
+            anchor_role(&view(&mut hub).await),
+            DeviceRole::Admin(anchor.public_key())
+        );
+
+        // The anchor rotates its own key, and the kit sets it back.
+        let rotated = AdminKeyPair::from_seed(&[79; 32]).unwrap();
+        let own = proposal(space, &anchor, hub.now_ms, rekey(&rotated));
+        hub.sequence_signed(&own).await.unwrap().unwrap();
+        assert_eq!(
+            anchor_role(&view(&mut hub).await),
+            DeviceRole::Admin(rotated.public_key())
+        );
+        let kit = proposal(space, &recovery_admin(&person()), hub.now_ms, rekey(&anchor));
+        hub.sequence_signed(&kit).await.unwrap().unwrap();
+        assert_eq!(
+            anchor_role(&view(&mut hub).await),
+            DeviceRole::Admin(anchor.public_key())
+        );
+
+        // The anchor still removes the admin that tried.
+        hub.sequence(remove_entry(&device_id(20)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_devices_replay_the_selected_chain(&mut hub).await;
+    });
+}
+
+#[test]
 fn a_chain_never_orders_one_proposal_twice() {
     block_on(async {
         let mut hub = Replica::anchor(0, 64).await;

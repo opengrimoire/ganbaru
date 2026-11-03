@@ -16,6 +16,7 @@ use ganbaru_atomic_files::FileAccess;
 use ganbaru_sync::AuthorizationView;
 use ganbaru_sync_contracts::Digest32;
 use ganbaru_sync_replica::backup::BUNDLE_DIRECTORIES;
+use ganbaru_sync_replica::backup::seal_keys::space_state;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::fs;
@@ -671,27 +672,85 @@ fn log_head_of(view: &AuthorizationView, device_id: &str) -> LogHead {
         other_live_devices: view
             .devices
             .iter()
-            .filter(|device| device.device_id != device_id)
+            .filter(|device| device.device_id != device_id && device.removed_revision.is_none())
             .count(),
     }
 }
 
-/// Whether a rollback would rewind authorization a live anchor already sequenced.
-fn rewinds_live_anchor(_live: Option<&LogHead>, _copy: Option<&LogHead>) -> bool {
-    false
+/// The head of the selected log of the vault `vault_id` whose database `conn` opens, seen
+/// from `device_id`, or `None` when the database holds no log.
+async fn log_head(
+    conn: &mut sqlx::SqliteConnection,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<Option<LogHead>, String> {
+    Ok(space_state(conn, vault_id)
+        .await?
+        .map(|(_, view)| log_head_of(&view, device_id)))
 }
 
-/// The log head of the database at `path`, or `None` when it has no log.
-async fn readable_log_head(_path: &Path, _vault_id: &str, _device_id: &str) -> Option<LogHead> {
-    None
+/// Whether a rollback would rewind authorization a live anchor already sequenced: this
+/// device anchors a log other live devices follow, and nothing shows the copy holds its head.
+fn rewinds_live_anchor(live: Option<&LogHead>, copy: Option<&LogHead>) -> bool {
+    live.is_some_and(|live| {
+        live.anchored_here
+            && live.other_live_devices > 0
+            && copy.is_none_or(|copy| copy.entry_hash != live.entry_hash)
+    })
 }
 
-/// Refuses a rollback to the database in `copy_dir` that would rewind a live anchor.
+/// The log head of the database at `path`, or `None` when it has no log. A database that
+/// cannot be opened or read also answers `None`, with the cause logged.
+async fn readable_log_head(path: &Path, vault_id: &str, device_id: &str) -> Option<LogHead> {
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let head = async {
+        let pool = registry.connect_path_read_only(path).await?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|error| format!("open database: {error}"))?;
+        log_head(&mut conn, vault_id, device_id).await
+    }
+    .await;
+    if let Err(error) = registry.close_all().await {
+        eprintln!(
+            "close {} after reading its log head: {error}",
+            path.display()
+        );
+    }
+    head.unwrap_or_else(|error| {
+        eprintln!("read the log head of {}: {error}", path.display());
+        None
+    })
+}
+
+/// Error of a rollback that would rewind the authorization head of an anchor other live
+/// devices follow. The Settings error formatter recognizes it and asks the user to hand the
+/// anchor over or remove those devices first.
+pub(super) const ANCHOR_ROLLBACK_ERROR: &str = "this device anchors other live devices and the rollback copy is behind its authorization head; hand the anchor over or remove those devices first";
+
+/// Refuses a rollback to the database in `copy_dir` that would rewind a live anchor. A live
+/// vault whose id or head cannot be read has no head to protect, so the rollback proceeds.
 async fn refuse_anchor_rewind(
-    _vault: &Path,
-    _copy_dir: &Path,
-    _device_id: &str,
+    vault: &Path,
+    copy_dir: &Path,
+    device_id: &str,
 ) -> Result<(), String> {
+    let vault_id = match vault_id_at(vault) {
+        Ok(vault_id) => vault_id,
+        Err(error) => {
+            eprintln!("read the vault id before a rollback: {error}");
+            return Ok(());
+        }
+    };
+    let live = readable_log_head(&database_file(vault, ""), &vault_id, device_id).await;
+    if live.is_none() {
+        return Ok(());
+    }
+    let copy = readable_log_head(&database_file(copy_dir, ""), &vault_id, device_id).await;
+    if rewinds_live_anchor(live.as_ref(), copy.as_ref()) {
+        return Err(ANCHOR_ROLLBACK_ERROR.to_string());
+    }
     Ok(())
 }
 
@@ -705,7 +764,7 @@ pub async fn vault_restore_database_rollback(
 ) -> Result<(), String> {
     let transition = super::quiescence::reserve_vault_transition()?;
     let writable_vault = active_writable_vault_path(&app)?;
-    let (_, retention) = validate_rollback(writable_vault.as_ref(), &id).await?;
+    let (copy_dir, retention) = validate_rollback(writable_vault.as_ref(), &id).await?;
     if retention.other_vault {
         refuse_other_vault_rollback(
             super::encrypted_backup::PLATFORM,
@@ -713,6 +772,7 @@ pub async fn vault_restore_database_rollback(
             super::encrypted_backup::device_linked(&app)?,
         )?;
     }
+    let device_id = super::ensure_device_id(&app)?;
     let quiescence = super::quiescence::begin_reserved_quiescence(
         &app,
         transition,
@@ -720,13 +780,18 @@ pub async fn vault_restore_database_rollback(
     )
     .await?;
     let vault: &Path = writable_vault.as_ref();
-    let restored = restore_rollback(vault, &id, super::now_utc())
-        .await
-        .and_then(|other_vault| match other_vault {
-            true => super::vault_info_from_path(vault)
-                .and_then(|info| super::select_quiesced_vault(&app, &info, &quiescence)),
-            false => Ok(()),
-        });
+    let restored = async {
+        if !retention.other_vault {
+            refuse_anchor_rewind(vault, &copy_dir, &device_id).await?;
+        }
+        restore_rollback(vault, &id, super::now_utc()).await
+    }
+    .await
+    .and_then(|other_vault| match other_vault {
+        true => super::vault_info_from_path(vault)
+            .and_then(|info| super::select_quiesced_vault(&app, &info, &quiescence)),
+        false => Ok(()),
+    });
     let resumed = tauri::async_runtime::spawn_blocking(move || quiescence.finish())
         .await
         .map_err(|error| format!("database rollback resume worker failed: {error}"))

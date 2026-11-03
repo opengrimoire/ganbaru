@@ -36,6 +36,9 @@ const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app"
 /** Lowercase text of the native error raised when a linked phone restores another vault. */
 const LINKED_ANDROID_RESTORE_MESSAGE = "unlink it before restoring another vault";
 
+/** Lowercase text of the native error raised when a rollback would rewind a live anchor. */
+const ANCHOR_ROLLBACK_MESSAGE = "the rollback copy is behind its authorization head";
+
 /**
  * Validates the native vault lock status.
  *
@@ -165,6 +168,10 @@ export function formatVaultError(
 
   if (lower.includes(LINKED_ANDROID_RESTORE_MESSAGE)) {
     return t("dataFolderError.linkedAndroid");
+  }
+
+  if (lower.includes(ANCHOR_ROLLBACK_MESSAGE)) {
+    return t("dataFolderError.anchorRollback");
   }
 
   if (

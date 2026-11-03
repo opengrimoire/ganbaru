@@ -53,6 +53,8 @@ export const dataFolderError = {
     "This folder is open in another Ganbaru app. Close that app or choose another folder.",
   linkedAndroid:
     "This phone is linked to other devices. Unlink this phone first, then restore.",
+  anchorRollback:
+    "This computer anchors your linked devices and this copy would undo changes they already follow. Hand the anchor over or remove those devices, then restore.",
 } as const;
 
 export const language = {

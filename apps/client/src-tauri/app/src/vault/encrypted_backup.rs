@@ -963,15 +963,21 @@ async fn stage_restored_vault(
     Ok(info)
 }
 
-/// The link summary of the staged vault at `staging`, as this device sees it, and the
-/// authority it names.
-async fn staged_summary(
-    app: &tauri::AppHandle,
+/// Stages the archive at `archive`, which came from `origin`, into `staging` and chooses how
+/// it lands over the `active` vault, as the device `device_id` sees both. Every platform
+/// places a backup through this, so the origin check and the restore plan stay wired together.
+async fn stage_and_plan(
+    device_id: &str,
+    archive: &Path,
     staging: &Path,
-    vault_id: &str,
-) -> Result<(LinkSummary, RestoreKeys), String> {
-    let device_id = super::ensure_device_id(app)?;
-    read_staged_state(staging, vault_id, &device_id).await
+    origin: ArchiveOrigin,
+    active: Option<&ActiveVault>,
+) -> Result<(VaultInfo, RestorePlacement), RestoreError> {
+    let info = stage_restored_vault(archive, staging, origin).await?;
+    let (backup, staged_keys) = read_staged_state(staging, &info.vault_id, device_id).await?;
+    let trusted = origin.trusts(active.map(|active| &active.keys), &staged_keys);
+    let placement = plan_restore(active.map(|active| &active.summary), &backup, trusted);
+    Ok((info, placement))
 }
 
 /// The link summary of the staged vault at `staging` seen from the device `device_id`, and
@@ -1165,10 +1171,10 @@ async fn place_restored_backup(
         let recover_rollback = rollback.clone();
         blocking(move || recover_interrupted_restore(&recover_target, &recover_rollback)).await??;
         let staged = StagedFolder::new(&staging);
-        let info = stage_restored_vault(archive, &staging, origin).await?;
-        let (backup, staged_keys) = staged_summary(app, &staging, &info.vault_id).await?;
-        let trusted = origin.trusts(Some(&active.keys), &staged_keys);
-        if plan_restore(Some(&active.summary), &backup, trusted) == RestorePlacement::InPlace {
+        let device_id = super::ensure_device_id(app)?;
+        let (_, placement) =
+            stage_and_plan(&device_id, archive, &staging, origin, Some(active)).await?;
+        if placement == RestorePlacement::InPlace {
             let restored = replace_active_vault(
                 app,
                 transition,
@@ -1253,10 +1259,8 @@ async fn place_restored_backup(
     })
     .await??;
     let staged = StagedFolder::new(&staging);
-    let info = stage_restored_vault(archive, &staging, origin).await?;
-    let (backup, staged_keys) = staged_summary(app, &staging, &info.vault_id).await?;
-    let trusted = origin.trusts(active.map(|active| &active.keys), &staged_keys);
-    let placement = plan_restore(active.map(|active| &active.summary), &backup, trusted);
+    let device_id = super::ensure_device_id(app)?;
+    let (_, placement) = stage_and_plan(&device_id, archive, &staging, origin, active).await?;
     let other_vault = placement == RestorePlacement::IndependentCopy;
     if other_vault {
         detach_restored_copy(&staging).await?;

@@ -562,7 +562,10 @@ fn held_device_push_refusal_hides_foreign_progress() {
                 .await
                 .expect("push"),
         );
-        assert_eq!(refusal, None, "no refusal names the hub's expected sequence");
+        assert_eq!(
+            refusal, None,
+            "no refusal names the hub's expected sequence"
+        );
         assert_eq!(stored.get(&phone_writer), phone_head);
         assert_eq!(hub_replica.stored().await.get(&phone_writer), reached);
 

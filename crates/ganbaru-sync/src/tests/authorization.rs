@@ -1596,7 +1596,12 @@ fn an_admin_cannot_rekey_the_anchor_role() {
             anchor_role(&view(&mut hub).await),
             DeviceRole::Admin(rotated.public_key())
         );
-        let kit = proposal(space, &recovery_admin(&person()), hub.now_ms, rekey(&anchor));
+        let kit = proposal(
+            space,
+            &recovery_admin(&person()),
+            hub.now_ms,
+            rekey(&anchor),
+        );
         hub.sequence_signed(&kit).await.unwrap().unwrap();
         assert_eq!(
             anchor_role(&view(&mut hub).await),

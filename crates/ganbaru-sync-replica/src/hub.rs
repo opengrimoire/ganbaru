@@ -439,10 +439,8 @@ impl SyncHub {
                 ControlMessage::SyncAssetGet { .. } | ControlMessage::SyncAssetPut { .. }
             )
         {
-            return Err(HubError::rejected(
-                "device_held",
-                "an anchor handover contest holds this device's data until it is resolved",
-            ));
+            let held = super::peers::admission::MemberRefusal::Held;
+            return Err(HubError::rejected(held.code(), held.describe()));
         }
         let assets = vault.assets;
         let hub = HubSession {

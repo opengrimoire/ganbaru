@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_handoff::protocol::ControlMessage;
 use ganbaru_sync::AuthorizationView;
 
+use crate::wire::DEVICE_HELD;
+
 /// Why a member listener turned a connection or request away. Each code names the reason
 /// without echoing keys or certificates, so it can be logged and sent as is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +20,10 @@ pub enum MemberRefusal {
     Unknown,
     /// The selected log removed the device.
     Removed,
+    /// A frozen anchor handover contest holds the device: a branch that is not effective
+    /// removes it, so it keeps record exchange and gets no vault data until the contest
+    /// resolves.
+    Held,
     /// This installation quarantined the device.
     Quarantined,
     /// The request names a different device than the certificate's enrollment.
@@ -42,6 +48,7 @@ impl MemberRefusal {
         match self {
             Self::Unknown => "member_unknown",
             Self::Removed => "member_removed",
+            Self::Held => DEVICE_HELD,
             Self::Quarantined => "member_quarantined",
             Self::DeviceMismatch => "member_device_mismatch",
             Self::VaultMismatch => "vault_mismatch",
@@ -57,6 +64,9 @@ impl MemberRefusal {
         match self {
             Self::Unknown => "the certificate belongs to no enrolled device",
             Self::Removed => "the device was removed from the vault",
+            Self::Held => {
+                "an anchor handover contest holds this device's data until it is resolved"
+            }
             Self::Quarantined => "this device quarantined the peer",
             Self::DeviceMismatch => "the request names another device than its certificate",
             Self::VaultMismatch => "this listener serves a different vault",
@@ -66,6 +76,13 @@ impl MemberRefusal {
             Self::Unavailable => "this listener cannot read its admission now",
         }
     }
+
+    /// Whether the refused peer may ask again later and be answered.
+    /// That holds for a hold, which ends with its contest, and for an unreadable admission;
+    /// every other refusal stands until the log or the request changes.
+    pub fn retryable(self) -> bool {
+        matches!(self, Self::Held | Self::Unavailable)
+    }
 }
 
 /// A device the selected log enrolled, by certificate fingerprint.
@@ -73,6 +90,7 @@ impl MemberRefusal {
 struct Enrolled {
     device_id: String,
     removed: bool,
+    held: bool,
 }
 
 /// The admission decisions of one listener for one vault, built from the selected log and the
@@ -101,6 +119,7 @@ impl MemberAdmission {
                     Enrolled {
                         device_id: device.device_id.clone(),
                         removed: device.removed_revision.is_some(),
+                        held: device.held,
                     },
                 )
             })
@@ -162,10 +181,18 @@ impl MemberAdmission {
         Ok(&enrolled.device_id)
     }
 
+    /// Whether the selected log holds the device a certificate with `fingerprint` belongs to,
+    /// because a frozen anchor handover contest removes it on a branch that is not effective.
+    pub fn is_held(&self, fingerprint: &str) -> bool {
+        self.by_fingerprint
+            .get(fingerprint)
+            .is_some_and(|enrolled| enrolled.held)
+    }
+
     /// Whether a connection whose certificate has `fingerprint` may receive a snapshot copy of
-    /// `vault_id` for `device_id`: only a device the selected log enrolled and did not remove,
-    /// that this installation did not quarantine, asking for itself in this vault. A removed
-    /// device gets no copy, unlike record exchange.
+    /// `vault_id` for `device_id`: only a device the selected log enrolled, did not remove, and
+    /// does not hold, that this installation did not quarantine, asking for itself in this vault.
+    /// A removed or held device gets no copy, unlike record exchange.
     pub fn bootstrap(
         &self,
         fingerprint: &str,
@@ -178,6 +205,9 @@ impl MemberAdmission {
         }
         if device_id != enrolled {
             return Err(MemberRefusal::DeviceMismatch);
+        }
+        if self.is_held(fingerprint) {
+            return Err(MemberRefusal::Held);
         }
         Ok(())
     }

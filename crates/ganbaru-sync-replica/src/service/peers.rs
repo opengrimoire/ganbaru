@@ -767,6 +767,7 @@ mod tests {
             role: DeviceRole::Member,
             enrolled_revision: 2,
             removed_revision: removed.then_some(3),
+            held: false,
             encryption_key: None,
         }
     }

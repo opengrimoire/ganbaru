@@ -74,6 +74,9 @@ pub struct EnrolledDevice {
     pub enrolled_revision: u64,
     /// Revision that removed it.
     pub removed_revision: Option<u64>,
+    /// Whether a frozen contest holds the device: a stored branch that is not effective removes
+    /// it, so it stays enrolled and is served authorization records only.
+    pub held: bool,
     /// The encryption key its latest device key entry published.
     pub encryption_key: Option<EncryptionPublicKey>,
 }
@@ -794,6 +797,8 @@ impl AuthState {
         &self.anchor_device_id
     }
 
+    /// The view of this state. A state alone does not know the holds of a contest, so every
+    /// device is unheld here; [`Selection::view`] marks them.
     pub(crate) fn view(&self) -> AuthorizationView {
         AuthorizationView {
             epoch: self.epoch,
@@ -817,6 +822,7 @@ impl AuthState {
                     role: device.role,
                     enrolled_revision: device.enrolled,
                     removed_revision: device.removed,
+                    held: false,
                     encryption_key: device.encryption_key,
                 })
                 .collect(),
@@ -884,6 +890,15 @@ impl Selection {
                 .push((node.record.revision, resolve.clone()));
         }
         self
+    }
+
+    /// The view of the selected chain with the devices it holds marked.
+    pub(crate) fn view(&self) -> AuthorizationView {
+        let mut view = self.state.view();
+        for device in &mut view.devices {
+            device.held = self.held.contains(&device.device_id);
+        }
+        view
     }
 
     /// Device id of the selected anchor.
@@ -2607,7 +2622,7 @@ impl Engine {
         log::ensure_space(conn, ctx.space).await?;
         Ok(select(conn, ctx.space)
             .await?
-            .map(|selection| selection.state.view()))
+            .map(|selection| selection.view()))
     }
 
     /// The key epochs of the selected chain for the local device, in epoch order, after

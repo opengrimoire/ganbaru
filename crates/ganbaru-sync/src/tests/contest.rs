@@ -654,3 +654,44 @@ fn a_removal_on_a_contested_branch_is_listed_with_its_remover_for_the_kit_review
         );
     });
 }
+
+#[test]
+fn authorization_view_marks_a_held_device() {
+    block_on(async {
+        let (mut hub, mut first, mut second, mut third) = admins(80).await;
+        take(&mut first, 20).await;
+        take(&mut second, 21).await;
+        let removal = proposal(
+            first.ctx.space,
+            &device_admin(20),
+            first.now_ms,
+            remove_entry(&device_id(22)),
+        );
+        first.sequence_signed(&removal).await.unwrap().unwrap();
+        for from in [&mut first, &mut second] {
+            hub.pull(from).await;
+        }
+        third.pull(&mut hub).await;
+
+        // Only the branch that is not effective removes device 22, so it stays enrolled.
+        for replica in [&mut hub, &mut third] {
+            let selected = view(replica).await;
+            assert!(selected.frozen_at.is_some());
+            for device in &selected.devices {
+                let held = device.device_id == device_id(22);
+                assert_eq!(device.held, held, "{} held", device.device_id);
+                assert_eq!(device.removed_revision, None, "{}", device.device_id);
+                assert_eq!(
+                    replica
+                        .engine
+                        .device_held(&mut replica.conn, &replica.ctx, &device.device_id)
+                        .await
+                        .unwrap(),
+                    held,
+                    "the view agrees with the stored hold of {}",
+                    device.device_id
+                );
+            }
+        }
+    });
+}

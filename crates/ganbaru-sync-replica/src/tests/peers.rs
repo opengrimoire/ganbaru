@@ -32,6 +32,7 @@ fn device(index: u8, removed: bool) -> EnrolledDevice {
         role: DeviceRole::Member,
         enrolled_revision: u64::from(index),
         removed_revision: removed.then_some(u64::from(index) + 10),
+        held: false,
         encryption_key: None,
     }
 }
@@ -140,6 +141,68 @@ fn member_admission_gives_a_snapshot_copy_only_to_live_enrolled_devices_asking_f
         admission.bootstrap(&enrolled, VAULT, "device-3"),
         Err(MemberRefusal::DeviceMismatch)
     );
+}
+
+#[test]
+fn held_device_is_refused_a_snapshot_copy() {
+    // A frozen contest holds device 2: a branch that is not effective removes it, so the
+    // selected log keeps it enrolled with no removal revision.
+    let held = EnrolledDevice {
+        held: true,
+        ..device(2, false)
+    };
+    let admission =
+        MemberAdmission::new(VAULT, &view(vec![device(1, false), held]), &BTreeSet::new());
+    let fingerprint = fingerprint_hex(&[2; 32]);
+
+    assert!(admission.is_held(&fingerprint));
+    let refusal = admission
+        .bootstrap(&fingerprint, VAULT, "device-2")
+        .unwrap_err();
+    assert_eq!(refusal, MemberRefusal::Held);
+    assert_eq!(refusal.code(), "device_held");
+    assert!(refusal.retryable(), "the hold ends when the contest does");
+    // A mismatch keeps its own code.
+    assert_eq!(
+        admission.bootstrap(&fingerprint, "vault-other", "device-2"),
+        Err(MemberRefusal::VaultMismatch)
+    );
+    assert_eq!(
+        admission.bootstrap(&fingerprint, VAULT, "device-1"),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+
+    // Record exchange stays open, since it is how the contest reaches the device and ends.
+    assert_eq!(admission.certificate(&fingerprint), Ok("device-2"));
+    assert!(admission.admitted_fingerprints().contains(&fingerprint));
+    assert_eq!(
+        admission.request(&fingerprint, &sync_hello(VAULT, "device-2")),
+        Ok(())
+    );
+
+    // A device that is not held still gets its copy.
+    let live = fingerprint_hex(&[1; 32]);
+    assert!(!admission.is_held(&live));
+    assert_eq!(admission.bootstrap(&live, VAULT, "device-1"), Ok(()));
+}
+
+#[test]
+fn member_refusals_are_retryable_only_when_they_clear_on_their_own() {
+    for refusal in [
+        MemberRefusal::Unknown,
+        MemberRefusal::Removed,
+        MemberRefusal::Held,
+        MemberRefusal::Quarantined,
+        MemberRefusal::DeviceMismatch,
+        MemberRefusal::VaultMismatch,
+        MemberRefusal::NotSync,
+        MemberRefusal::Proposal,
+        MemberRefusal::Forward,
+        MemberRefusal::Unavailable,
+    ] {
+        let expected = matches!(refusal, MemberRefusal::Held | MemberRefusal::Unavailable);
+        assert_eq!(refusal.retryable(), expected, "{refusal:?}");
+    }
 }
 
 fn record_get(vault_id: &str, device_id: &str) -> ControlMessage {

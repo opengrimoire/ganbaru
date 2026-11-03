@@ -3,6 +3,7 @@ use crate::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, DATABASE_FILE, VAULT_MANIFEST_FILE,
     create_backup_archive, create_encrypted_backup, create_snapshot_archive, decrypt_backup,
     is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive, vacuum_database,
+    validate_vault_database,
 };
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync_contracts::backup::{BACKUP_CHUNK_BYTES, BackupError};
@@ -227,6 +228,78 @@ fn backup_snapshot_archive_leaves_installation_sync_state_behind() {
             .expect("count captured changes");
         pool.close().await;
         assert_eq!(captured, 0, "the snapshot holds no local capture queue");
+    });
+}
+
+/// Text repeated from `marker` until it reaches `bytes`, so it spans several database pages.
+fn spanning_text(marker: &str, bytes: usize) -> String {
+    marker.repeat(bytes.div_ceil(marker.len()))
+}
+
+#[test]
+fn a_snapshot_archive_keeps_no_page_of_a_cleared_row() {
+    const ACTIVITY_MARKER: &str = "cleared-chat-activity-detail-marker;";
+    const LOCAL_COLUMN_MARKER: &str = "cleared-calendar-last-synced-marker;";
+    block_on(async {
+        let directory = TestDirectory::new("backup-free-pages");
+        let root = directory.path().join("vault");
+        std::fs::create_dir_all(&root).expect("create vault root");
+        let registry = DatabasePoolRegistry::default();
+        let pool = create_vault(&registry, &root.join(DATABASE_FILE)).await;
+        let mut conn = acquire(&pool).await;
+        // The activity row stands alone, so its thread and turn references stay unchecked.
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await
+            .expect("relax foreign keys");
+        sqlx::query(
+            "INSERT INTO chat_activities
+                (id, thread_id, sequence_anchor, item_kind, status, title, detail,
+                 source_event_type, created_at, updated_at)
+             VALUES ('activity', 'thread', 0, 'command', 'completed', 'Activity', ?,
+                 'item', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+        )
+        .bind(spanning_text(ACTIVITY_MARKER, 256 * 1024))
+        .execute(&mut *conn)
+        .await
+        .expect("insert chat activity");
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await
+            .expect("restore foreign keys");
+        sqlx::query("INSERT INTO calendars (id, name, last_synced) VALUES ('calendar', 'Work', ?)")
+            .bind(spanning_text(LOCAL_COLUMN_MARKER, 64 * 1024))
+            .execute(&mut *conn)
+            .await
+            .expect("insert calendar");
+        drop(conn);
+        registry.close_all().await.expect("close vault");
+        write_layout(&root);
+        let archive = directory.path().join("handoff.ganbaru-backup");
+
+        create_snapshot_archive(
+            &ArchiveGate::default(),
+            &root,
+            &directory.path().join("snapshot.sqlite"),
+            &archive,
+        )
+        .await
+        .expect("create snapshot archive");
+
+        let extracted = directory.path().join("extracted.sqlite");
+        extract_database(&archive, &extracted);
+        let bytes = std::fs::read(&extracted).expect("read extracted database");
+        for marker in [ACTIVITY_MARKER, LOCAL_COLUMN_MARKER] {
+            assert!(
+                !bytes
+                    .windows(marker.len())
+                    .any(|window| window == marker.as_bytes()),
+                "the archived database still holds {marker}"
+            );
+        }
+        validate_vault_database(&extracted)
+            .await
+            .expect("the archived database matches the current schema");
     });
 }
 

@@ -60,7 +60,7 @@ Activated Notes hyperlinks use a feature-owned native command on desktop and And
 
 ## Local data encryption
 
-The vault and SQLite database are not application-encrypted. Ganbaru relies on operating-system account isolation and full-disk encryption such as LUKS, BitLocker, or FileVault. Backup files leave that protection, so they are encrypted and open only with the space key or the recovery kit (see [backups](../sync.md#bootstrap-assets-backup-and-compaction)). An always-on anchor stores the same unencrypted vault on its server, so whoever controls that machine can read it.
+The vault and SQLite database are not application-encrypted. Ganbaru relies on operating-system account isolation and full-disk encryption such as LUKS, BitLocker, or FileVault. Backup files leave that protection, so they are encrypted and open only with the space key or the recovery kit (see [backups](../sync.md#bootstrap-assets-backup-and-compaction)). Encryption gives confidentiality, not origin: the recovery public key is not secret, so a file the kit opens may have been written by anyone. Restore grants a backup file content, never authority, and places it in place only when its charter and recovery key match the active vault; anything else becomes an independent copy that cannot act on the live space. An always-on anchor stores the same unencrypted vault on its server, so whoever controls that machine can read it.
 
 Why: this keeps user files accessible to ordinary backup and editing tools and avoids a second fragile key-recovery system. The cost is that malware running as the same user can read the vault, and documentation must state that limitation honestly.
 

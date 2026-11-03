@@ -1,8 +1,11 @@
 //! Yields and objections the local device seals into a contested epoch instance.
 
-use ganbaru_sync_contracts::{AdminKeyPair, DeviceKeyPair, DeviceRole, Digest32, WriterId};
+use ganbaru_sync_contracts::{
+    AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceRole, Digest32, Entry,
+    ProposalRejection, Sequencing, SetRole, SignedProposal, WriterId,
+};
 
-use super::authorization::{admin_entry, genesis_of, head, remove_entry, tag, view};
+use super::authorization::{admin_entry, forge, genesis_of, head, remove_entry, tag, view};
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, enroll_entry,
@@ -693,5 +696,172 @@ fn authorization_view_marks_a_held_device() {
                 );
             }
         }
+    });
+}
+
+/// The promotion of replica device `index` to admin with its own admin key.
+fn promotion(index: usize) -> Entry {
+    Entry::SetRole(SetRole::Device {
+        device_id: device_id(index),
+        role: DeviceRole::Admin(device_admin(index).public_key()),
+    })
+}
+
+/// The demotion of replica device `index` to member.
+fn demotion(index: usize) -> Entry {
+    Entry::SetRole(SetRole::Device {
+        device_id: device_id(index),
+        role: DeviceRole::Member,
+    })
+}
+
+/// A branch that loses its contest, see [`losing_branch`].
+struct LosingBranch {
+    /// The winning anchor, which stores the losing branch.
+    anchor: Replica,
+    /// The losing contestant, admin 21.
+    loser: Replica,
+    /// The signed proposals the losing branch sequenced, in branch order.
+    signed: Vec<SignedProposal>,
+    /// Epoch, revision, and entry hash of the last of them.
+    tip: (u32, u64, Digest32),
+}
+
+/// Two takes from one point, where admin 21 sequences `entries` on its own branch before it
+/// yields to admin 20.
+async fn losing_branch(seed: u64, entries: Vec<Entry>) -> LosingBranch {
+    let (mut hub, mut anchor, mut loser, _) = admins(seed).await;
+    let to_first = take(&mut anchor, 20).await;
+    take(&mut loser, 21).await;
+    let mut signed = Vec::new();
+    for entry in entries {
+        let branch_entry = proposal(loser.ctx.space, &device_admin(21), loser.now_ms, entry);
+        loser.sequence_signed(&branch_entry).await.unwrap().unwrap();
+        signed.push(branch_entry);
+    }
+    let tip = head(&mut loser).await;
+    hub.pull(&mut anchor).await;
+    hub.pull(&mut loser).await;
+    loser.pull(&mut hub).await;
+    loser
+        .seal_yield(&device_admin(21), &to_first)
+        .await
+        .unwrap()
+        .unwrap();
+    hub.pull(&mut loser).await;
+    anchor.pull(&mut hub).await;
+    let resolved = view(&mut anchor).await;
+    assert_eq!(
+        (resolved.anchor_device_id.as_str(), resolved.frozen_at),
+        (device_id(20).as_str(), None)
+    );
+    LosingBranch {
+        anchor,
+        loser,
+        signed,
+        tip,
+    }
+}
+
+/// The role replica device `index` holds on `replica`'s selected chain.
+async fn role_of(replica: &mut Replica, index: usize) -> DeviceRole {
+    view(replica)
+        .await
+        .devices
+        .into_iter()
+        .find(|device| device.device_id == device_id(index))
+        .expect("the device is enrolled")
+        .role
+}
+
+#[test]
+fn a_member_cannot_replay_a_promotion_its_abandoned_branch_demoted() {
+    block_on(async {
+        for (seed, demotion_first) in [(90, false), (91, true)] {
+            let LosingBranch {
+                mut anchor, signed, ..
+            } = losing_branch(seed, vec![promotion(5), demotion(5)]).await;
+            if demotion_first {
+                anchor.sequence_signed(&signed[1]).await.unwrap().unwrap();
+            }
+            assert_eq!(
+                anchor.sequence_signed(&signed[0]).await.unwrap(),
+                Err(ProposalRejection::Malformed),
+                "the reversed promotion is refused, demotion first: {demotion_first}"
+            );
+            assert_eq!(role_of(&mut anchor, 5).await, DeviceRole::Member);
+        }
+    });
+}
+
+#[test]
+fn a_promotion_its_branch_kept_still_reaches_the_new_anchor() {
+    block_on(async {
+        let LosingBranch {
+            mut anchor, signed, ..
+        } = losing_branch(92, vec![promotion(5)]).await;
+        anchor.sequence_signed(&signed[0]).await.unwrap().unwrap();
+        assert_eq!(
+            role_of(&mut anchor, 5).await,
+            DeviceRole::Admin(device_admin(5).public_key())
+        );
+
+        // An enrollment of a member followed by its promotion is no reversal.
+        let LosingBranch {
+            mut anchor, signed, ..
+        } = losing_branch(
+            93,
+            vec![enroll_entry(&person(), 30, DeviceRole::Member), promotion(30)],
+        )
+        .await;
+        let enrolled = anchor.sequence_signed(&signed[0]).await.unwrap().unwrap();
+        let promoted = anchor.sequence_signed(&signed[1]).await.unwrap().unwrap();
+        assert!(enrolled < promoted);
+        assert_eq!(
+            role_of(&mut anchor, 30).await,
+            DeviceRole::Admin(device_admin(30).public_key())
+        );
+    });
+}
+
+#[test]
+fn a_forged_reversal_outside_the_walk_supersedes_nothing() {
+    block_on(async {
+        let LosingBranch {
+            mut anchor,
+            mut loser,
+            signed,
+            tip: (epoch, revision, previous_entry_hash),
+        } = losing_branch(94, vec![promotion(5)]).await;
+        // A demotion signed by a key that is no admin, carried on the losing branch past the
+        // promotion, fails the check and is no visit of the walk.
+        let forged = AuthorizationRecord {
+            epoch,
+            revision: revision + 1,
+            previous_entry_hash,
+            anchor_device_id: device_id(21),
+            proposal: proposal(
+                loser.ctx.space,
+                &device_admin(5),
+                loser.now_ms,
+                demotion(5),
+            ),
+            sequencing: Sequencing::Empty,
+        };
+        let bytes = forge(
+            &mut loser,
+            Content::Authorization(Box::new(forged)),
+            revision,
+        )
+        .await;
+        assert_eq!(
+            anchor.receive(&[bytes]).await,
+            vec![StoreOutcome::Stored { held: None }]
+        );
+        anchor.sequence_signed(&signed[0]).await.unwrap().unwrap();
+        assert_eq!(
+            role_of(&mut anchor, 5).await,
+            DeviceRole::Admin(device_admin(5).public_key())
+        );
     });
 }

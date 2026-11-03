@@ -70,11 +70,12 @@ mod tests;
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
 pub use authorization::{
-    AuthorizationStorage, AuthorizationView, CandidateKind, ContestAction, ContestCandidate,
-    ContestCause, ContestEntry, ContestInstance, ContestObjection, ContestRejection, ContestRole,
-    ContestView, ContestYield, ContestsView, EnrolledDevice, ForkedWriter, HandoverPoint, KitPoint,
-    KitPointPlace, LosingRemoval, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
-    RecordEnvelope, RecordPage, RecordRole, RecordWants, StoredSpaceKey,
+    AuthorizationStorage, AuthorizationTotals, AuthorizationView, CandidateKind, ContestAction,
+    ContestCandidate, ContestCause, ContestEntry, ContestInstance, ContestObjection,
+    ContestRejection, ContestRole, ContestView, ContestYield, ContestsView, EnrolledDevice,
+    ForkedWriter, HandoverPoint, KitPoint, KitPointPlace, LosingRemoval, RECORD_CLASSES,
+    RecordAdmission, RecordClass, RecordCursor, RecordEnvelope, RecordPage, RecordRole,
+    RecordWants, StoredSpaceKey,
 };
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,

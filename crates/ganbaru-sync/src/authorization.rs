@@ -51,8 +51,8 @@ pub use contest_view::{
     KitPointPlace, LosingRemoval,
 };
 pub use exchange::{
-    AuthorizationStorage, ForkedWriter, RECORD_CLASSES, RecordAdmission, RecordClass, RecordCursor,
-    RecordEnvelope, RecordPage, RecordRole, RecordWants,
+    AuthorizationStorage, AuthorizationTotals, ForkedWriter, RECORD_CLASSES, RecordAdmission,
+    RecordClass, RecordCursor, RecordEnvelope, RecordPage, RecordRole, RecordWants,
 };
 
 /// An enrolled device as the selected chain leaves it.

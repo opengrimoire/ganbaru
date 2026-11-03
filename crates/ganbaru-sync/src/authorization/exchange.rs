@@ -148,6 +148,15 @@ pub struct RecordAdmission {
     pub unpaired: Vec<usize>,
 }
 
+/// Stored envelope bytes and envelope count of the record store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AuthorizationTotals {
+    /// Bytes of every stored envelope and refetch hash.
+    pub bytes: u64,
+    /// Stored envelopes and refetch hashes, each refetch hash counted as one envelope.
+    pub envelopes: u64,
+}
+
 /// Stored envelope bytes and envelope count of the record store, in total and by the device
 /// whose enrolled key certified each writer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -922,6 +931,20 @@ impl Engine {
             out.push(class);
         }
         Ok(out)
+    }
+
+    /// Stored bytes and envelopes of the record store, for the storage backstop and the apply
+    /// trigger.
+    pub async fn authorization_totals(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<AuthorizationTotals> {
+        let storage = self.authorization_storage(conn, ctx).await?;
+        Ok(AuthorizationTotals {
+            bytes: storage.bytes,
+            envelopes: storage.envelopes,
+        })
     }
 
     /// Stored bytes and envelopes of the record store, for the storage backstop and growth

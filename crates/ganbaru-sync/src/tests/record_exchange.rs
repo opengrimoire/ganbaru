@@ -1498,3 +1498,73 @@ fn two_verified_certificates_at_one_sequence_stay_a_fork_alert() {
         );
     });
 }
+
+async fn totals_of(replica: &mut Replica) -> crate::AuthorizationTotals {
+    replica
+        .engine
+        .authorization_totals(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+}
+
+/// The totals the backstop and the apply trigger read agree with the totals of the full
+/// breakdown, and grow by exactly the admitted envelopes, pending and forked ones included,
+/// while the breakdown keeps its device and fork attribution.
+#[test]
+fn storage_totals_match_the_breakdown_through_pending_and_forked_records() {
+    block_on(async {
+        let mut hub = anchor_with_admins(104).await;
+        let honest = totals_of(&mut hub).await;
+        let storage = storage_of(&mut hub).await;
+        assert_eq!(
+            (honest.bytes, honest.envelopes),
+            (storage.bytes, storage.envelopes)
+        );
+        assert!(storage.forked_writers.is_empty());
+
+        let (genesis, first, second) = hub_records(&mut hub).await;
+        let stranger = DeviceKeyPair::from_seed(&[105; 32]).unwrap();
+        let unknown = Identity::new([106; 32], &stranger, &device_id(20), None);
+        let [_, pending] = carried_by(&unknown, &genesis, &first);
+        let [_, pending_twin] = carried_by(&unknown, &genesis, &second);
+        let forger = Identity::new([107; 32], &stranger, &device_id(20), None);
+        let [certificate, carried] = carried_by(&forger, &genesis, &first);
+        let [_, twin] = carried_by(&forger, &genesis, &second);
+        let added = [pending, pending_twin, certificate, carried, twin];
+        let admission = admit_bytes(&mut hub, &added).await;
+        assert_eq!(admission.admitted, added.len());
+
+        let grown = totals_of(&mut hub).await;
+        assert_eq!(
+            grown,
+            crate::AuthorizationTotals {
+                bytes: honest.bytes + added.iter().map(|bytes| bytes.len() as u64).sum::<u64>(),
+                envelopes: honest.envelopes + added.len() as u64,
+            }
+        );
+        let storage = storage_of(&mut hub).await;
+        assert_eq!(
+            (grown.bytes, grown.envelopes),
+            (storage.bytes, storage.envelopes)
+        );
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .any(|(device, bytes)| device == ANCHOR_DEVICE_ID && *bytes > 0)
+        );
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .all(|(device, _)| *device != device_id(20))
+        );
+        assert_eq!(
+            storage.forked_writers,
+            [crate::ForkedWriter {
+                writer: forger.id(),
+                device_id: None,
+            }]
+        );
+    });
+}

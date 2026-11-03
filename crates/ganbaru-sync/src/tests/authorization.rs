@@ -4,9 +4,9 @@
 use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
-    AdminKeyPair, AuthorizationRecord, Content, DeviceKind, DeviceRole, Digest32, Enroll, Entry,
-    Envelope, Handover, Header, Hlc, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
-    SetRole, SignedProposal, WriterKeyPair, Yield,
+    AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
+    Enroll, Entry, Envelope, Handover, Header, Hlc, HlcClock, Operation, ProposalRejection, Remove,
+    Sequencing, SetRole, SignedProposal, WriterKeyPair, Yield,
 };
 
 use super::block_on;
@@ -20,7 +20,7 @@ use crate::store::MAX_UNSELECTED_WRITERS_PER_SPACE;
 use crate::{
     AuthorizationView, HoldReason, LateChange, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
 };
-use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
+use ganbaru_sync_contracts::bounds::{MAX_LOG_POSITION, MAX_WRITERS_PER_DEVICE};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -1392,6 +1392,139 @@ fn operations_wait_for_the_revision_they_were_sealed_against_but_entries_never_w
         observer.pull(&mut hub).await;
         assert_eq!(view(&mut observer).await.revision, revision);
         assert_eq!(observer.applied_vector().await.get(&member.writer()), 3);
+    });
+}
+
+/// `record` carried right after `previous` by `key`'s writer, encoded and signed without the
+/// format's checks, as a writer that skips them would send it.
+fn seal_unchecked(
+    previous: &[u8],
+    key: &WriterKeyPair,
+    record: &AuthorizationRecord,
+    now_ms: u64,
+) -> Vec<u8> {
+    let mut template = record.clone();
+    template.revision = MAX_LOG_POSITION;
+    let template = seal_after(
+        previous,
+        key,
+        Content::Authorization(Box::new(template)),
+        MAX_LOG_POSITION - 1,
+        now_ms,
+    );
+    let envelope = Envelope::decode(&template).unwrap();
+    let mut signed = envelope.signed.to_vec();
+    // The header opens with the clock and manifest version, then the authorization revision,
+    // and ends with the record hash.
+    let header = signed.len() - envelope.header.len();
+    signed[header + 12..header + 20].copy_from_slice(&(record.revision - 1).to_be_bytes());
+    let end = signed.len();
+    signed[end - 32..].copy_from_slice(&record.hash());
+    let body = record.encode();
+    let mut bytes = signed.clone();
+    bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(&key.sign_operation(&signed));
+    bytes
+}
+
+/// The reachable revision `replica` last derived.
+async fn reachable_revision(replica: &mut Replica) -> i64 {
+    sqlx::query_scalar("SELECT reachable_revision FROM sync_spaces WHERE space_id = ?")
+        .bind(replica.ctx.space.as_bytes().as_slice())
+        .fetch_one(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+/// A self-minted writer's records on a parent no chain reaches are stored and exchanged, but
+/// raise neither the reachable revision nor the apply gate, and a revision past the store range
+/// is refused before it is stored.
+#[test]
+fn an_unwalked_record_does_not_raise_the_reachable_revision() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 61).await;
+        let mut member = Replica::new(1, 61).await;
+        tag(&mut member, "tag-1").await;
+        let chain_head = hub
+            .sequence(enroll_entry(&person(), 20, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        let genesis = hub.own_ops().await[0].clone();
+
+        let stranger = DeviceKeyPair::from_seed(&[61; 32]).unwrap();
+        let forger = Identity::new([62; 32], &stranger, &device_id(30), None);
+        let certificate = genesis_of(&genesis, &forger);
+        let forged = chain_head + 1_000;
+        let (space, now_ms) = (hub.ctx.space, hub.now_ms);
+        let record = |revision| AuthorizationRecord {
+            epoch: 0,
+            revision,
+            previous_entry_hash: [0xf0; 32],
+            anchor_device_id: ANCHOR_DEVICE_ID.to_owned(),
+            proposal: proposal(space, &device_admin(30), now_ms, admin_entry(31)),
+            sequencing: Sequencing::Empty,
+        };
+        let unwalked = seal_after(
+            &certificate,
+            &forger.key,
+            Content::Authorization(Box::new(record(forged))),
+            forged - 1,
+            now_ms,
+        );
+        let admission = hub
+            .engine
+            .admit_records(
+                &mut hub.conn,
+                &hub.ctx,
+                &[certificate, unwalked.clone()],
+                now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(admission.admitted, 2, "records stay stored and exchanged");
+        hub.apply_all().await.unwrap();
+        let reachable = reachable_revision(&mut hub).await;
+
+        // A member operation sealed against the unwalked revision waits for it.
+        let mut ops = member.own_ops().await;
+        ops.push(forge(&mut member, Content::Acknowledgement, forged).await);
+        hub.receive(&ops).await;
+        hub.apply_all().await.unwrap();
+        let member_applied = hub.applied_vector().await.get(&member.writer());
+
+        // One past the store range would fail every later selection if it were stored.
+        let past = seal_unchecked(
+            &unwalked,
+            &forger.key,
+            &record(MAX_LOG_POSITION + 1),
+            now_ms,
+        );
+        let past_admitted = hub
+            .engine
+            .admit_records(&mut hub.conn, &hub.ctx, &[past], now_ms)
+            .await
+            .unwrap()
+            .admitted;
+        let selects = hub.apply_all().await.is_ok()
+            && hub
+                .sequence(enroll_entry(&person(), 21, DeviceRole::Member))
+                .await
+                .is_ok_and(|revision| revision == Ok(chain_head + 1));
+
+        assert_eq!(
+            (reachable, member_applied, past_admitted, selects),
+            (
+                i64::try_from(chain_head).unwrap(),
+                u64::try_from(ops.len() - 1).unwrap(),
+                0,
+                true
+            ),
+            "reachable revision, applied member operations, stored past-range records, and \
+             whether selection still runs"
+        );
+        assert_eq!(view(&mut hub).await.revision, chain_head + 1);
     });
 }
 

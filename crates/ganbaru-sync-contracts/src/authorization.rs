@@ -54,8 +54,8 @@
 
 use crate::bounds::{
     DISCOVERY_KEY_BYTES, MAX_DEVICE_LABEL_BYTES, MAX_KEY_RECIPIENTS, MAX_LATE_RESOLUTIONS,
-    MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS, MAX_ROW_KEY_BYTES, MAX_SERVER_ENDPOINT_BYTES,
-    MAX_SERVER_ENDPOINTS, MAX_WRITERS_PER_SPACE, TLS_FINGERPRINT_BYTES,
+    MAX_LOG_POSITION, MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS, MAX_ROW_KEY_BYTES,
+    MAX_SERVER_ENDPOINT_BYTES, MAX_SERVER_ENDPOINTS, MAX_WRITERS_PER_SPACE, TLS_FINGERPRINT_BYTES,
 };
 use crate::certificate::{CertificateError, read_device_id, validate_device_id};
 use crate::codec::{CodecError, Reader, Writer};
@@ -1161,7 +1161,7 @@ impl AuthorizationRecord {
     /// Checks the record's internal rules: the revision, the anchor device id, the sequencing
     /// shape, and for a handover its continuity with the record.
     pub fn validate(&self) -> Result<(), AuthorizationError> {
-        if self.revision == 0 {
+        if self.revision == 0 || self.revision > MAX_LOG_POSITION {
             return Err(CodecError::Malformed("authorization revision").into());
         }
         validate_device_id(&self.anchor_device_id)?;

@@ -38,8 +38,8 @@
 use crate::authorization::{AuthorizationError, AuthorizationRecord, entry_hash};
 use crate::bounds::{
     MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_FIELDS_PER_VALUE, MAX_GROUP_BYTES,
-    MAX_HEADER_BYTES, MAX_OPERATION_BYTES, MAX_OPERATIONS_PER_GROUP, MAX_ROW_KEY_BYTES,
-    MAX_TEXT_FIELD_BYTES,
+    MAX_HEADER_BYTES, MAX_LOG_POSITION, MAX_OPERATION_BYTES, MAX_OPERATIONS_PER_GROUP,
+    MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
 };
 use crate::certificate::{CertificateError, SignedCertificate};
 use crate::codec::{CodecError, Reader, Writer};
@@ -526,8 +526,11 @@ impl Operation {
     /// Checks every rule of the format that does not depend on the manifest.
     pub fn validate(&self) -> Result<(), OperationError> {
         let genesis = self.kind() == OperationKind::Genesis;
-        if self.seq == 0 || genesis != (self.seq == 1) {
+        if self.seq == 0 || self.seq > MAX_LOG_POSITION || genesis != (self.seq == 1) {
             return Err(CodecError::Malformed("sequence").into());
+        }
+        if self.header.authorization_revision > MAX_LOG_POSITION {
+            return Err(CodecError::Malformed("authorization revision").into());
         }
         if (self.previous_hash == GENESIS_PREVIOUS_HASH) != genesis {
             return Err(CodecError::Malformed("previous hash").into());
@@ -791,7 +794,7 @@ impl<'a> Envelope<'a> {
         let space = SpaceId::from_bytes(reader.array()?);
         let writer = WriterId::from_bytes(reader.array()?);
         let seq = reader.u64()?;
-        if seq == 0 {
+        if seq == 0 || seq > MAX_LOG_POSITION {
             return Err(CodecError::Malformed("sequence"));
         }
         let previous_hash = reader.array()?;

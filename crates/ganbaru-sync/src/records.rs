@@ -81,8 +81,6 @@ pub(crate) struct Loaded {
     pub(crate) certificates: BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>,
     /// Lowest sequence of each writer with provable fork evidence.
     pub(crate) provable: BTreeMap<WriterId, Seq>,
-    /// Highest revision of any verified record.
-    pub(crate) max_revision: u64,
     /// Verified record bodies that are not nodes, by revision and entry hash: those above every
     /// carrier's horizon or without a complete chain. The walk never reads them.
     pub(crate) others: Vec<Node>,
@@ -663,7 +661,6 @@ pub(crate) async fn load(
                 let envelope: Vec<u8> = row.try_get(8)?;
                 let record = crate::authorization::record_of(&envelope)
                     .ok_or_else(|| corrupt("a stored authorization record does not decode"))?;
-                loaded.max_revision = loaded.max_revision.max(record.revision);
                 let carrier = Carrier {
                     writer,
                     seq,

@@ -1136,8 +1136,6 @@ struct Stored {
     certificates: BTreeMap<WriterId, Vec<(String, DevicePublicKey)>>,
     /// Lowest sequence of each writer with provable fork evidence.
     provable: BTreeMap<WriterId, Seq>,
-    /// Highest revision of any verified stored record.
-    max_revision: u64,
     /// Verified record bodies that are not nodes, see [`records::Loaded::others`]. The walk
     /// never reads them; only the record exchange does.
     others: Vec<Node>,
@@ -1175,7 +1173,6 @@ impl Stored {
             nodes: loaded.nodes,
             certificates: loaded.certificates,
             provable: loaded.provable,
-            max_revision: loaded.max_revision,
             others: loaded.others,
             check_binding: true,
         }))
@@ -1639,14 +1636,22 @@ struct Resolution<'a> {
     effective: Vec<bool>,
     /// The effective visit of highest rank.
     best: usize,
-    /// Highest revision of any verified stored record, or every revision once a writer fork
-    /// freezes an instance.
+    /// Highest revision the walk without vetoes reaches from the charter, or every revision once
+    /// a writer fork freezes an instance.
     reachable: u64,
 }
 
 impl<'a> Resolution<'a> {
     fn new(stored: &'a Stored) -> Self {
         let first = Walk::new(stored, Arc::default());
+        // Vetoes only refuse entries, so the walk without them reaches every revision an
+        // operation can be sealed against, superseded chains included.
+        let walked = first
+            .visits
+            .iter()
+            .map(|visit| visit.revision)
+            .max()
+            .unwrap_or(0);
         let vetoes = first.vetoes();
         let walk = if vetoes == Vetoes::default() {
             first
@@ -1680,7 +1685,7 @@ impl<'a> Resolution<'a> {
         // it, so a writer fork makes every revision reachable. Each operation's device is still
         // checked against the selected chain when it applies.
         let reachable = if forks.is_empty() {
-            stored.max_revision
+            walked
         } else {
             UNBOUNDED_REVISION
         };
@@ -2141,11 +2146,6 @@ pub(crate) fn select_records(
         }
         included.extend(path);
     }
-    let max_revision = bodies
-        .values()
-        .map(|node| node.record.revision)
-        .max()
-        .unwrap_or(0);
     let mut nodes: Vec<Node> = bodies
         .into_values()
         .filter(|node| included.contains(&node.hash))
@@ -2157,7 +2157,6 @@ pub(crate) fn select_records(
         check_binding: certificates.is_some(),
         certificates: certificates.unwrap_or_default(),
         provable: forks,
-        max_revision,
         others: Vec::new(),
     };
     let selection = Resolution::new(&stored).selected();

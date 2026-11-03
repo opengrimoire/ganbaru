@@ -762,19 +762,19 @@ mod tests {
     use super::*;
 
     const NOW: &str = "2026-09-18T12:00:00.000Z";
-    const GENERATION: &str = "generation:reuse";
+    pub(super) const GENERATION: &str = "generation:reuse";
     const AUTHORIZATION: &str = "authorization:reuse";
-    const TEAMMATE: &str = "participant:scratch-agent";
+    pub(super) const TEAMMATE: &str = "participant:scratch-agent";
 
     /// Returns the default channel conversation of the test project, whose id is derived.
-    fn destination_conversation() -> String {
+    pub(super) fn destination_conversation() -> String {
         ganbaru_chat::project_defaults::default_channel_ids("project-chat")
             .unwrap()
             .0
     }
 
     /// Builds a real-schema scratch assignment that froze the `ask` approval.
-    async fn pool_with_scratch_assignment(scope_owner: &str) -> SqlitePool {
+    pub(super) async fn pool_with_scratch_assignment(scope_owner: &str) -> SqlitePool {
         pool_with_frozen_scratch_assignment(scope_owner, "ask").await
     }
 

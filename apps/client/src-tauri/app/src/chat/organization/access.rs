@@ -456,55 +456,16 @@ pub async fn chat_replace_teammate_access(
         .await
         .map_err(persistence_error)?;
 
-        sqlx::query(
-            "UPDATE chat_teammate_working_folder_grants
-             SET revoked_at = ?, is_default = 0, revision = revision + 1
-             WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+        replace_folder_grants(
+            &mut transaction,
+            &channel.conversation_id,
+            &request.teammate_id,
+            &channel.project_id,
+            &channel.folder_grants,
+            channel.profile_maximum_folder_capability,
+            &now,
         )
-        .bind(now.as_str())
-        .bind(channel.conversation_id.as_str())
-        .bind(request.teammate_id.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
-        for grant in &channel.folder_grants {
-            sqlx::query(
-                "INSERT INTO chat_teammate_working_folder_grants
-                    (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
-                     capability, capability_inherits_profile,
-                     is_default, runtime_approval_policy,
-                     revision, created_at, revoked_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
-                 ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
-                    capability = excluded.capability,
-                    capability_inherits_profile = excluded.capability_inherits_profile,
-                    is_default = excluded.is_default,
-                    runtime_approval_policy = excluded.runtime_approval_policy,
-                    revision = chat_teammate_working_folder_grants.revision + 1,
-                    revoked_at = NULL",
-            )
-            .bind(channel.conversation_id.as_str())
-            .bind(request.teammate_id.as_str())
-            .bind(&channel.project_id)
-            .bind(grant.working_folder_id.as_str())
-            .bind(sync_key(folder_grant_key(
-                channel.conversation_id.as_str(),
-                request.teammate_id.as_str(),
-                grant.working_folder_id.as_str(),
-            ))?)
-            .bind(wire_folder_capability(grant.capability))
-            .bind(grant.capability == channel.profile_maximum_folder_capability)
-            .bind(grant.is_default)
-            .bind(
-                grant
-                    .runtime_approval_override
-                    .map(wire_runtime_approval_policy),
-            )
-            .bind(now.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-        }
+        .await?;
     }
 
     if has_reduction {
@@ -521,6 +482,69 @@ pub async fn chat_replace_teammate_access(
         super::super::revocation::drain_access_revocation_jobs(&app, &pool).await?;
     }
     read_teammate_access(&pool, &request.teammate_id).await
+}
+
+/// Replaces the active folder grants of one AI channel membership: revokes every active grant,
+/// then creates or reactivates one row per requested grant under `project_id`.
+pub(super) async fn replace_folder_grants(
+    transaction: &mut Transaction<'_, Sqlite>,
+    conversation_id: &ChatConversationId,
+    teammate_id: &ChatParticipantId,
+    project_id: &str,
+    grants: &[ChatFolderGrantInput],
+    profile_maximum_folder_capability: ChatFolderCapability,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "UPDATE chat_teammate_working_folder_grants
+         SET revoked_at = ?, is_default = 0, revision = revision + 1
+         WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+    )
+    .bind(now.as_str())
+    .bind(conversation_id.as_str())
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    for grant in grants {
+        sqlx::query(
+            "INSERT INTO chat_teammate_working_folder_grants
+                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
+                 capability, capability_inherits_profile,
+                 is_default, runtime_approval_policy,
+                 revision, created_at, revoked_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
+             ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
+                capability = excluded.capability,
+                capability_inherits_profile = excluded.capability_inherits_profile,
+                is_default = excluded.is_default,
+                runtime_approval_policy = excluded.runtime_approval_policy,
+                revision = chat_teammate_working_folder_grants.revision + 1,
+                revoked_at = NULL",
+        )
+        .bind(conversation_id.as_str())
+        .bind(teammate_id.as_str())
+        .bind(project_id)
+        .bind(grant.working_folder_id.as_str())
+        .bind(sync_key(folder_grant_key(
+            conversation_id.as_str(),
+            teammate_id.as_str(),
+            grant.working_folder_id.as_str(),
+        ))?)
+        .bind(wire_folder_capability(grant.capability))
+        .bind(grant.capability == profile_maximum_folder_capability)
+        .bind(grant.is_default)
+        .bind(
+            grant
+                .runtime_approval_override
+                .map(wire_runtime_approval_policy),
+        )
+        .bind(now.as_str())
+        .execute(&mut **transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    Ok(())
 }
 
 async fn preview_teammate_access(

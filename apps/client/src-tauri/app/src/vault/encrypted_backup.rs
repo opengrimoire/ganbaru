@@ -4,8 +4,8 @@
 //! kit and, once the vault is linked, to its current key epoch. A restore lands in one of two
 //! ways. It replaces the vault in place only when the backup belongs to the active space,
 //! neither log enrolled another device, so no linked device holds acknowledgements the restore
-//! could rewind, and the backup names the recovery key and charter of the active vault and of
-//! the kit that opened it. A backup file has no origin authentication, since anyone holding the
+//! could rewind, and the backup names the full recovery keys (admin and encryption) and
+//! charter of the active vault and of the kit that opened it. A backup file has no origin authentication, since anyone holding the
 //! recovery public key can write one the kit opens, so restore treats it as content: its
 //! device-local rows are reset, and its sync state never grants authority. Every other restore
 //! is an independent copy: a new vault id and space with no
@@ -259,27 +259,37 @@ impl ArchiveOrigin {
     }
 }
 
-/// Whether a staged backup names the same authority as the active vault: the recovery key the
-/// kit that opened it derives, when a kit did, the active vault's recovery key, and the same
-/// charter. A file opened with an epoch key needs a recovery key the active vault knows, since
-/// a removed device still holds old epoch keys.
+/// Whether a staged backup names the same authority as the active vault. Its stored kit row
+/// must hold every public key, admin and encryption, of the kit that opened it, when a kit
+/// did, and of the active vault's row, since a later founding names that admin key as the
+/// space's kit admin. Its log must name the opener's kit admin and match the active log,
+/// charter and recovery admin keys included. A file opened with an epoch key needs the
+/// active vault's whole kit row, since a removed device still holds old epoch keys.
 fn same_authority(
     active: &RestoreKeys,
     staged: &RestoreKeys,
     opener: Option<&RecoveryPublicKeys>,
 ) -> bool {
-    let Some(key) = staged.recovery else {
+    let (Some(key), Some(stored)) = (staged.recovery, staged.stored) else {
         return false;
     };
-    if opener.is_some_and(|opener| opener.encryption != key) {
-        return false;
+    if let Some(opener) = opener {
+        if opener.encryption != key || stored != *opener {
+            return false;
+        }
+        if staged.log.is_some_and(|log| log.kit_admin != opener.admin) {
+            return false;
+        }
     }
-    match active.recovery {
-        Some(active_key) if active_key != key => return false,
+    match active.stored {
+        Some(active_stored) if active_stored != stored => return false,
         None if opener.is_none() => return false,
         _ => {}
     }
-    active.log.map(|log| log.charter) == staged.log.map(|log| log.charter)
+    if active.recovery.is_some_and(|active_key| active_key != key) {
+        return false;
+    }
+    active.log == staged.log
 }
 
 /// The refusal a format error means, `None` for a local failure such as the random source.

@@ -911,6 +911,17 @@ impl Selection {
     }
 }
 
+/// Work done by the anchor's reversal check. The unit tally counts nothing, so production pays
+/// no counting.
+trait ReversalTally {
+    /// One visit taken from the pending stack.
+    fn popped(&mut self) {}
+    /// One comparison of a later entry with the proposal.
+    fn compared(&mut self) {}
+}
+
+impl ReversalTally for () {}
+
 /// Whether `later`, a later entry of the same branch, reverses `earlier`: it sets the role of or
 /// removes the device `earlier` set the role of, removes the device `earlier` enrolled or gives
 /// another role to a device `earlier` enrolled as admin, or replaces the recovery admin key or
@@ -1876,6 +1887,11 @@ impl<'a> Resolution<'a> {
     /// branch reverses it. Only check-valid visits count, so a record outside the tree reverses
     /// nothing. One pass over the subtrees off the path, each visit once.
     fn reversed_off_path(&self, proposal: &SignedProposal) -> bool {
+        self.reversal_walk(proposal, &mut ())
+    }
+
+    /// [`Self::reversed_off_path`], reporting its work to `tally`.
+    fn reversal_walk(&self, proposal: &SignedProposal, tally: &mut impl ReversalTally) -> bool {
         let target = proposal.hash();
         let entry = &proposal.proposal.entry;
         let visits = &self.walk.visits;
@@ -1893,12 +1909,16 @@ impl<'a> Resolution<'a> {
             .map(|child| (child, false))
             .collect();
         while let Some((at, below)) = stack.pop() {
+            tally.popped();
             let Some(node) = visits[at].node else {
                 continue;
             };
             let later = &self.walk.stored.nodes[node].record.proposal;
-            if below && reverses(&later.proposal.entry, entry) {
-                return true;
+            if below {
+                tally.compared();
+                if reverses(&later.proposal.entry, entry) {
+                    return true;
+                }
             }
             let below = below || later.hash() == target;
             stack.extend(self.walk.children[at].iter().map(|child| (*child, below)));
@@ -2230,10 +2250,23 @@ pub(crate) fn select_records(
 pub(crate) struct ReversalCheck {
     /// Whether a stored branch off the selected chain proposed it and later reversed it.
     pub(crate) reversed: bool,
-    /// Time spent resolving the tree.
-    pub(crate) resolve: std::time::Duration,
-    /// Time spent on the reversal check alone.
-    pub(crate) check: std::time::Duration,
+    /// Visits in the walked tree.
+    pub(crate) visits: usize,
+    /// Visits the check took from its pending stack.
+    pub(crate) popped: usize,
+    /// Later entries the check compared with the proposal.
+    pub(crate) compared: usize,
+}
+
+#[cfg(test)]
+impl ReversalTally for ReversalCheck {
+    fn popped(&mut self) {
+        self.popped += 1;
+    }
+
+    fn compared(&mut self) {
+        self.compared += 1;
+    }
 }
 
 /// The anchor's reversal check of `proposal` over `records`, see [`ReversalCheck`].
@@ -2244,16 +2277,15 @@ pub(crate) fn reversal_in_records(
     proposal: &SignedProposal,
 ) -> ReversalCheck {
     let stored = stored_records(charter, BTreeMap::new(), None, records);
-    let started = std::time::Instant::now();
     let resolution = Resolution::new(&stored);
-    let resolve = started.elapsed();
-    let started = std::time::Instant::now();
-    let reversed = resolution.reversed_off_path(proposal);
-    ReversalCheck {
-        reversed,
-        resolve,
-        check: started.elapsed(),
-    }
+    let mut check = ReversalCheck {
+        reversed: false,
+        visits: resolution.walk.visits.len(),
+        popped: 0,
+        compared: 0,
+    };
+    check.reversed = resolution.reversal_walk(proposal, &mut check);
+    check
 }
 
 /// The stored tree of `records`, see [`select_records`].

@@ -1468,13 +1468,15 @@ fn the_reversal_check_walks_a_long_abandoned_branch_once() {
     assert_eq!(log.select(&order).head, taken.hash);
     let reversed = log.reversal(&target);
     assert!(reversed.reversed);
-    // One pass over the branch costs less than resolving it; a pass per entry would not.
+    // One pass takes each visit once; a pass per entry would take about half of LONG_BRANCH
+    // squared.
     for check in [kept, reversed] {
+        assert!(check.popped > LONG_BRANCH, "{} popped", check.popped);
+        assert!(check.popped <= check.visits, "{} popped", check.popped);
         assert!(
-            check.check < check.resolve,
-            "check {:?}, resolve {:?}",
-            check.check,
-            check.resolve
+            check.compared <= check.popped,
+            "{} compared",
+            check.compared
         );
     }
 }

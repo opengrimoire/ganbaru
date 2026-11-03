@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::{
     AdminKeyPair, AuthorizationRecord, Content, DeviceKeyPair, DeviceKind, DeviceRole, Digest32,
-    Enroll, Entry,
-    Envelope, Handover, Header, Hlc, HlcClock, Operation, ProposalRejection, Remove, Sequencing,
-    SetRole, SignedProposal, WriterKeyPair, Yield,
+    Enroll, Entry, Envelope, Handover, Header, Hlc, HlcClock, Operation, ProposalRejection, Remove,
+    Sequencing, SetRole, SignedProposal, WriterKeyPair, Yield,
 };
 
 use super::block_on;

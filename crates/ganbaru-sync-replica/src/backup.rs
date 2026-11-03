@@ -571,8 +571,15 @@ pub async fn create_encrypted_backup(
     seal_archive(&archive, keys, destination)
 }
 
-/// Streams the archive at `archive` into an encrypted backup at `destination`.
-pub(crate) fn seal_archive(
+/// Streams the archive at `archive` into an encrypted backup at `destination`, written
+/// through a private staged file that replaces `destination` only once complete. Returns the
+/// bytes written.
+///
+/// # Errors
+///
+/// Returns an error when the keys cannot seal a header, or the archive cannot be read or the
+/// backup written.
+pub fn seal_archive(
     archive: &Path,
     keys: &BackupSealKeys,
     destination: &Path,

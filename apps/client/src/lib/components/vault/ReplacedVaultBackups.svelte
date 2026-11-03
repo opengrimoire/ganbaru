@@ -7,7 +7,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { replacedVaultRestoreError } from "$lib/vault/backup-restore";
+  import { backupSaveStatus, replacedVaultRestoreError } from "$lib/vault/backup-restore";
   import {
     deleteReplacedVaultBackup,
     exportReplacedVaultBackup,
@@ -68,8 +68,9 @@
     error = null;
     notice = null;
     try {
-      const outcome = await exportReplacedVaultBackup(backup.id);
-      notice = t("settings.data.backupSaved", outcome.fileName);
+      const status = backupSaveStatus(await exportReplacedVaultBackup(backup.id), "downloads", t);
+      if (status?.kind === "success") notice = status.message;
+      else if (status) error = status.message;
     } catch (cause: unknown) {
       error = formatVaultError(cause, "backup", t);
     } finally {

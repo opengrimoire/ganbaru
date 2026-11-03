@@ -1,17 +1,11 @@
-//! Whole-vault snapshots and activation, with portable Android backup commands.
+//! Whole-vault snapshots and activation.
 
+#[cfg(target_os = "android")]
+use super::default_vault_path;
 use super::select_quiesced_vault;
 use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, VaultInfo, database_path, vault_info_from_path};
-#[cfg(target_os = "android")]
-use super::{default_vault_path, path_to_string};
-#[cfg(target_os = "android")]
-use chrono::{SecondsFormat, Utc};
-#[cfg(target_os = "android")]
-use ganbaru_mobile_documents::MobileDocumentsExt;
 #[cfg(any(desktop, test))]
 use ganbaru_sync_replica::backup::ArchiveGate;
-#[cfg(target_os = "android")]
-use ganbaru_sync_replica::backup::BACKUP_MAX_BYTES;
 use ganbaru_sync_replica::backup::{
     BACKUP_MAX_ENTRIES, DIFFERENT_VAULT_ERROR, is_bundle_layout_entry, is_database_sidecar,
 };
@@ -30,30 +24,6 @@ pub(super) const HANDOFF_REFRESH_ROLLBACK_NAME: &str = ".ganbaru.handoff-refresh
 /// Refusal of a handoff whose rollback folder is still taken by a swap that recovery cannot
 /// finish here.
 const HANDOFF_RECOVERY_PENDING: &str = "a previous handoff copy still requires recovery";
-
-#[cfg(target_os = "android")]
-const BACKUP_EXTENSION: &str = "ganbaru-backup";
-#[cfg(target_os = "android")]
-const BACKUP_MIME_TYPE: &str = "application/zip";
-
-#[cfg(any(test, mobile))]
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultBackupOutcome {
-    /// Display name assigned by Android in shared Downloads.
-    pub file_name: String,
-    /// Stable frontend destination identifier.
-    pub destination: &'static str,
-}
-
-#[cfg(target_os = "android")]
-fn backup_file_name() -> String {
-    let timestamp: chrono::DateTime<Utc> = std::time::SystemTime::now().into();
-    let timestamp = timestamp
-        .to_rfc3339_opts(SecondsFormat::Secs, true)
-        .replace(':', "-");
-    format!("ganbaru-backup-{timestamp}.{BACKUP_EXTENSION}")
-}
 
 /// Creates one consistent whole-vault archive after the caller excludes vault writers.
 #[cfg(desktop)]
@@ -1110,29 +1080,6 @@ fn last_vault_change_ms(vault: &Path) -> Option<i64> {
     .filter_map(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
     .filter_map(|elapsed| i64::try_from(elapsed.as_millis()).ok())
     .max()
-}
-
-/// Saves the portable backup archive at `archive_path` to Android Downloads under a fresh
-/// backup file name.
-#[cfg(target_os = "android")]
-pub(crate) fn save_backup_to_downloads(
-    app: &tauri::AppHandle,
-    archive_path: &Path,
-) -> Result<VaultBackupOutcome, String> {
-    let file_name = backup_file_name();
-    let archive_path = path_to_string(archive_path, "backup archive")?;
-    let saved_name = app.mobile_documents().save_file_download(
-        &archive_path,
-        &file_name,
-        BACKUP_MAX_BYTES,
-        &[BACKUP_EXTENSION],
-        BACKUP_MIME_TYPE,
-        "Ganbaru backup",
-    )?;
-    Ok(VaultBackupOutcome {
-        file_name: saved_name,
-        destination: "downloads",
-    })
 }
 
 #[cfg(test)]

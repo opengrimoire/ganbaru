@@ -140,6 +140,15 @@ describe("backup messages", () => {
     );
   });
 
+  it("replaced export reports a refused outcome", () => {
+    expect(
+      backupSaveStatus({ kind: "refused", reason: "noRecoveryKit" }, "downloads", translate),
+    ).toEqual({
+      kind: "error",
+      message: "Create a recovery kit in Settings > Data first. Backups open with it.",
+    });
+  });
+
   it("asks a linked phone to unlink before restoring a replaced vault", () => {
     expect(replacedVaultRestoreError({ kind: "refused", reason: "linkedAndroid" }, translate)).toBe(
       "This phone is linked to other devices. Unlink this phone first, then restore.",

@@ -647,6 +647,57 @@ fn encrypted_backup_carries_the_snapshot_archive_of_the_vault() {
 }
 
 #[test]
+fn an_exported_replaced_backup_is_sealed() {
+    block_on(async {
+        let directory = TestDirectory::new("backup-replaced-export");
+        let root = directory.path().join("vault");
+        std::fs::create_dir_all(&root).expect("create vault root");
+        let registry = DatabasePoolRegistry::default();
+        let pool = create_vault(&registry, &root.join(DATABASE_FILE)).await;
+        add_note(&mut *acquire(&pool).await, "replaced").await;
+        write_layout(&root);
+        let archive = directory.path().join("replaced.ganbaru-backup");
+        create_backup_archive(
+            &ArchiveGate::default(),
+            &pool,
+            &root,
+            &directory.path().join("snapshot.sqlite"),
+            &archive,
+        )
+        .await
+        .expect("create backup archive");
+        registry.close_all().await.expect("close vault");
+        let exported = directory.path().join("exported.ganbaru-backup");
+        let keys = BackupSealKeys {
+            space: SpaceId::personal("replaced-vault"),
+            epoch_key: None,
+            recovery: kit().public_key(),
+        };
+
+        seal_archive(&archive, &keys, &exported).expect("seal the private archive");
+
+        let bytes = std::fs::read(&exported).expect("read export");
+        assert!(bytes.starts_with(b"GBBK"));
+        for plaintext in [&b"PK\x03\x04"[..], DATABASE_FILE.as_bytes()] {
+            assert!(
+                !bytes
+                    .windows(plaintext.len())
+                    .any(|window| window == plaintext),
+                "the export carries {:?} in the clear",
+                String::from_utf8_lossy(plaintext)
+            );
+        }
+        let header = read_backup_header(&exported).expect("read header");
+        assert_eq!(header.space, keys.space);
+        assert_eq!(header.epoch, 0);
+        assert_eq!(
+            open_with_kit(&directory, &bytes).expect("the kit opens the export"),
+            std::fs::read(&archive).expect("read archive")
+        );
+    });
+}
+
+#[test]
 fn selected_recovery_key_prefers_the_log() {
     use super::{DEVICE_ID, NOW_MS, VAULT_ID, anchor_keys, device};
     use crate::authority;

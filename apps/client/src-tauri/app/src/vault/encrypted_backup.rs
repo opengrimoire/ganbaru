@@ -682,10 +682,15 @@ async fn write_backup(
 
 /// A file name for a new backup, stamped with the current time.
 fn backup_file_name() -> String {
+    stamped_file_name("ganbaru-backup")
+}
+
+/// A backup file name that starts with `stem` and carries the current time.
+fn stamped_file_name(stem: &str) -> String {
     let timestamp = now_utc()
         .to_rfc3339_opts(SecondsFormat::Secs, true)
         .replace(':', "-");
-    format!("ganbaru-backup-{timestamp}.{BACKUP_EXTENSION}")
+    format!("{stem}-{timestamp}.{BACKUP_EXTENSION}")
 }
 
 /// Writes an encrypted backup of the active vault to a file the user chooses.
@@ -731,7 +736,6 @@ pub async fn vault_backup_to_file(app: tauri::AppHandle) -> Result<BackupSaveOut
 #[cfg(target_os = "android")]
 #[tauri::command]
 pub async fn vault_backup_to_downloads(app: tauri::AppHandle) -> Result<BackupSaveOutcome, String> {
-    use ganbaru_mobile_documents::MobileDocumentsExt;
     let transition = quiescence::reserve_vault_transition()?;
     let vault_root = super::active_vault_path(&app)?;
     let vault_id = super::active_vault_id(&app)?;
@@ -740,16 +744,65 @@ pub async fn vault_backup_to_downloads(app: tauri::AppHandle) -> Result<BackupSa
             reason: BackupRefusal::NoRecoveryKit,
         });
     };
-    let root = transfer_root(&app)?;
+    let save_app = app.clone();
+    save_sealed_to_downloads(&app, backup_file_name(), |destination| async move {
+        write_backup(&save_app, transition, &vault_root, &keys, &destination).await
+    })
+    .await
+}
+
+/// Saves the private backup of a replaced vault at `archive` to Android Downloads, sealed to
+/// the recovery kit of the vault in use. Refused while that vault has no kit; the plaintext
+/// archive never leaves app-private storage.
+#[cfg(target_os = "android")]
+pub(super) async fn export_replaced_backup(
+    app: &tauri::AppHandle,
+    archive: &Path,
+) -> Result<BackupSaveOutcome, String> {
+    use super::replaced_vaults::{
+        archived_vault_id, replaced_export_seal_keys, seal_replaced_backup,
+    };
+    let _transition = quiescence::reserve_vault_transition()?;
+    let vault_id = super::active_vault_id(app)?;
+    let active = active_seal_keys(app, &vault_id).await?;
+    let replaced_vault_id = archived_vault_id(archive)?;
+    let keys = match replaced_export_seal_keys(&replaced_vault_id, active) {
+        Ok(keys) => keys,
+        Err(reason) => return Ok(BackupSaveOutcome::Refused { reason }),
+    };
+    let archive = archive.to_path_buf();
+    save_sealed_to_downloads(
+        app,
+        stamped_file_name("ganbaru-replaced-backup"),
+        |destination| async move {
+            blocking(move || seal_replaced_backup(&archive, &keys, &destination)).await?
+        },
+    )
+    .await
+}
+
+/// Seals a backup with `seal` into a private transfer folder, then saves it to Android Downloads
+/// as `file_name` and removes the transfer folder.
+#[cfg(target_os = "android")]
+async fn save_sealed_to_downloads<F, Fut>(
+    app: &tauri::AppHandle,
+    file_name: String,
+    seal: F,
+) -> Result<BackupSaveOutcome, String>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<u64, String>>,
+{
+    use ganbaru_mobile_documents::MobileDocumentsExt;
+    let root = transfer_root(app)?;
     remove_stale_transfers(&root, SAVE_TRANSFER_PREFIX);
     let transfer =
         ganbaru_atomic_files::create_private_temporary_directory(&root, SAVE_TRANSFER_PREFIX)
             .map_err(|error| format!("create backup staging: {error}"))?;
     let destination = transfer.join(format!("backup.{BACKUP_EXTENSION}"));
     let result = async {
-        write_backup(&app, transition, &vault_root, &keys, &destination).await?;
+        seal(destination.clone()).await?;
         let source = super::path_to_string(&destination, "backup file")?;
-        let file_name = backup_file_name();
         let save_app = app.clone();
         let saved = blocking(move || {
             save_app.mobile_documents().save_file_download(

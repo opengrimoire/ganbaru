@@ -242,14 +242,25 @@ describe("replaced vault backups", () => {
 
   it("exports a backup by its ID and validates the saved file", async () => {
     const { exportReplacedVaultBackup } = await loadModule();
-    invokeMock.mockResolvedValueOnce({ fileName: "replaced.ganbaru-backup", destination: "downloads" });
+    invokeMock.mockResolvedValueOnce({ kind: "saved", fileName: "replaced.ganbaru-backup" });
     await expect(exportReplacedVaultBackup(backup.id)).resolves.toEqual({
+      kind: "saved",
       fileName: "replaced.ganbaru-backup",
-      destination: "downloads",
     });
     expect(invokeMock).toHaveBeenCalledWith("vault_export_replaced_backup", { id: backup.id });
-    invokeMock.mockResolvedValueOnce({ fileName: "x", destination: "elsewhere" });
+    invokeMock.mockResolvedValueOnce({ kind: "saved", fileName: " " });
     await expect(exportReplacedVaultBackup(backup.id)).rejects.toThrow("incomplete");
+  });
+
+  it("replaced export reports a refused outcome", async () => {
+    const { exportReplacedVaultBackup } = await loadModule();
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "noRecoveryKit" });
+    await expect(exportReplacedVaultBackup(backup.id)).resolves.toEqual({
+      kind: "refused",
+      reason: "noRecoveryKit",
+    });
+    invokeMock.mockResolvedValueOnce({ kind: "refused", reason: "other" });
+    await expect(exportReplacedVaultBackup(backup.id)).rejects.toThrow("unknown");
   });
 
   it("deletes a backup by its ID only", async () => {

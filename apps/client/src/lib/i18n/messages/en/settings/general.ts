@@ -280,7 +280,7 @@ export const general = {
     rollbackRestoreTitle: "Restore this copy?",
     rollbackRestoreMessage: "Ganbaru will replace the current local data with this copy and restart. The current data is kept as another copy.",
     replacedVaultsHeading: "Replaced vaults",
-    replacedVaultsDescription: "When a linked vault replaces this phone's vault, Ganbaru keeps a copy of the replaced one here so you can restore it. The two newest are kept.",
+    replacedVaultsDescription: "When a linked vault replaces this phone's vault, Ganbaru keeps a copy of the replaced one here so you can restore it. The two newest are kept. Export saves an encrypted backup to Downloads that opens with the recovery kit of the vault in use.",
     replacedVaultUnnamed: "Unnamed vault",
     replacedVaultExport: "Export",
     replacedVaultRestore: "Restore",

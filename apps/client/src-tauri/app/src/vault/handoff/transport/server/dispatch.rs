@@ -21,6 +21,7 @@ use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_sync_replica::serve::bundles::serve_download;
 pub(crate) use ganbaru_sync_replica::serve::coordinator::QuarantinedDevices;
+use ganbaru_sync_replica::serve::coordinator::log_stream_check;
 use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream, timeout_control};
 use std::future::Future;
 use std::net::IpAddr;
@@ -147,6 +148,7 @@ impl Routes for CoordinatorRoutes {
             source,
             certificate: peer_certificate,
             limits,
+            admission_source,
             ..
         } = peer;
         let CoordinatorRoutes {
@@ -310,7 +312,14 @@ impl Routes for CoordinatorRoutes {
                     peer_certificate,
                     &metadata.vault_id,
                 )?;
-                serve_download(stream, manager, metadata).await
+                let check = log_stream_check(
+                    admission_source,
+                    peer_certificate,
+                    ControlMessage::DownloadBundle {
+                        metadata: metadata.clone(),
+                    },
+                );
+                serve_download(stream, manager, metadata, &check).await
             }
             ControlMessage::RequestBundle {
                 compatibility,

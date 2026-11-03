@@ -1,6 +1,9 @@
 //! The desktop coordinator listener: TLS pinned to linked devices, quarantine and log admission,
 //! and sync dispatch. Pairing, handoff, and contact requests go to the caller's routes.
 
+use super::bundles::{
+    StreamCheck, StreamCheckFuture, continue_stream, continue_unless_unavailable,
+};
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::{
     COORDINATOR_BUSY_CODE, CoordinatorListener, LanAdmission, MEMBERSHIP_REVOKED_CODE,
@@ -247,6 +250,7 @@ async fn handle_connection<R: Routes>(
             certificate: peer_certificate.as_ref(),
             limits: &limits,
             admission: None,
+            admission_source: log_admission.as_ref(),
         };
         return routes.serve(&mut stream, peer, request).await;
     }
@@ -313,6 +317,29 @@ pub fn log_refusal(
         Err(refusal) if request.sync_peer().is_some() => Some(refusal),
         Err(_) => None,
     }
+}
+
+/// The check the coordinator runs during a copy: [`log_refusal`] for `request` from the device
+/// whose certificate is `certificate`, against the selected log as it is now. A coordinator
+/// without a log, a device the log does not know yet, and a log that cannot be read all let the
+/// copy continue, so a briefly locked database never ends an honest transfer.
+pub fn log_stream_check<'a>(
+    source: Option<&'a MemberAdmissionSource>,
+    certificate: Option<&'a CertificateDer<'static>>,
+    request: ControlMessage,
+) -> StreamCheck<'a> {
+    let (Some(source), Some(certificate)) = (source, certificate) else {
+        return continue_stream();
+    };
+    Box::new(move || -> StreamCheckFuture<'a> {
+        let request = request.clone();
+        Box::pin(async move {
+            match log_refusal(source().await, certificate, &request) {
+                Some(refusal) => continue_unless_unavailable(Err(refusal)),
+                None => Ok(()),
+            }
+        })
+    })
 }
 
 /// Whether the listener turns a linked device away as quarantined. A quarantine list that

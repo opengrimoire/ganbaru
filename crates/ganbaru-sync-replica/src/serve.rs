@@ -57,6 +57,9 @@ pub struct Peer<'a> {
     pub limits: &'a ConnectionLimits,
     /// On a member listener, the admission the request was authenticated against.
     pub admission: Option<&'a MemberAdmission>,
+    /// Where the listener reads admission from, so a long request such as a copy can check
+    /// again while it runs.
+    pub admission_source: Option<&'a MemberAdmissionSource>,
 }
 
 /// Requests a listener hands to its caller instead of answering itself.

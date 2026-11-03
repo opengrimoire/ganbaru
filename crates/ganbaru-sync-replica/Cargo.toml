@@ -51,3 +51,4 @@ ganbaru-projects = { workspace = true }
 ganbaru-quick-notes = { workspace = true }
 ganbaru-sync-relay = { workspace = true }
 ganbaru-themes = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

@@ -18,6 +18,7 @@ use ganbaru_sync_contracts::{
 };
 use ganbaru_sync_replica::anchor_link::local_compatibility;
 use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup};
+use ganbaru_sync_replica::assets::STALE_STAGING_AGE;
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Enrollment, Founding, charter_hash, ensure_charter,
 };
@@ -25,7 +26,7 @@ use ganbaru_sync_replica::backup::{ArchiveGate, DATABASE_FILE, create_snapshot_a
 use sqlx::SqlitePool;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -470,5 +471,74 @@ fn a_backup_needs_a_stopped_activated_server() {
         let refused = super::backup(config).await.unwrap_err();
         assert!(refused.contains("no vault"), "{refused}");
         assert!(!out.exists());
+    });
+}
+
+#[test]
+fn anchor_activation_record_damage_still_lets_the_anchor_start() {
+    block_on(async {
+        let data = TempDir::new();
+        let root = data.path();
+        std::fs::write(DataPaths::new(root.to_path_buf()).activation(), b"{damaged").unwrap();
+        with_anchor(root, |endpoint| async move {
+            tokio::net::TcpStream::connect(&endpoint).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        })
+        .await;
+    });
+}
+
+/// A staged temporary file name for `target`, as an interrupted transfer leaves it.
+fn staged_name(target: &str, nonce: char) -> String {
+    format!(".{target}.{}.tmp", nonce.to_string().repeat(32))
+}
+
+#[test]
+fn anchor_activation_removes_stale_staging() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            wait_for_anchor(root, &server).await;
+        })
+        .await;
+
+        let engine = Engine::vault();
+        let class = engine
+            .manifest()
+            .asset_classes()
+            .next()
+            .expect("the vault declares an asset class");
+        let directory = class.directory(&DataPaths::new(root.to_path_buf()).vault());
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = "a".repeat(64);
+        let abandoned = directory.join(staged_name(&target, 'b'));
+        let fresh = directory.join(staged_name(&target, 'c'));
+        for path in [&abandoned, &fresh] {
+            std::fs::write(path, b"partial").unwrap();
+        }
+        let old = SystemTime::now() - STALE_STAGING_AGE - Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&abandoned)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        with_anchor(root, |_endpoint| async {
+            let deadline = Instant::now() + WAIT;
+            while abandoned.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the anchor kept a stale staged file"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(fresh.exists(), "the anchor removed a fresh staged file");
+        })
+        .await;
     });
 }

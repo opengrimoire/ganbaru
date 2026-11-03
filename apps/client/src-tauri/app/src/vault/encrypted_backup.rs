@@ -30,7 +30,7 @@ use crate::sync::backup_keys::{self, LinkSummary, RestoreKeys};
 use chrono::SecondsFormat;
 use ganbaru_sync_contracts::backup::{BackupError, BackupHeader, FileKey};
 use ganbaru_sync_contracts::{
-    EncryptionKeyPair, EncryptionPublicKey, RecoverySeed, SpaceId, SpaceKey,
+    EncryptionKeyPair, RecoveryPublicKeys, RecoverySeed, SpaceId, SpaceKey,
 };
 use ganbaru_sync_replica::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, create_encrypted_backup, decrypt_backup,
@@ -226,12 +226,12 @@ fn plan_restore(
 /// Where a staged archive came from, which decides what restore may trust in it.
 #[derive(Clone, Copy, Debug)]
 enum ArchiveOrigin {
-    /// A sealed backup file; `opened_by` is the recovery key whose kit opened it, or `None`
-    /// when this installation's epoch key did. Anyone holding the recovery public key can
-    /// write a file the kit opens, so its sync state is content, never authority.
+    /// A sealed backup file; `opened_by` is the public keys of the kit that opened it, or
+    /// `None` when this installation's epoch key did. Anyone holding the recovery public key
+    /// can write a file the kit opens, so its sync state is content, never authority.
     BackupFile {
         space: SpaceId,
-        opened_by: Option<EncryptionPublicKey>,
+        opened_by: Option<RecoveryPublicKeys>,
     },
     /// This device's own replaced-vault archive, which keeps its device rows on purpose.
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -266,12 +266,12 @@ impl ArchiveOrigin {
 fn same_authority(
     active: &RestoreKeys,
     staged: &RestoreKeys,
-    opener: Option<&EncryptionPublicKey>,
+    opener: Option<&RecoveryPublicKeys>,
 ) -> bool {
     let Some(key) = staged.recovery else {
         return false;
     };
-    if opener.is_some_and(|opener| *opener != key) {
+    if opener.is_some_and(|opener| opener.encryption != key) {
         return false;
     }
     match active.recovery {
@@ -279,7 +279,7 @@ fn same_authority(
         None if opener.is_none() => return false,
         _ => {}
     }
-    active.charter == staged.charter
+    active.log.map(|log| log.charter) == staged.log.map(|log| log.charter)
 }
 
 /// The refusal a format error means, `None` for a local failure such as the random source.
@@ -337,8 +337,9 @@ impl RestoreError {
 enum Unlock {
     /// The active space's key of the backup's epoch.
     Epoch(SpaceKey),
-    /// The recovery encryption key of the kit the user entered.
-    Kit(EncryptionKeyPair),
+    /// The recovery encryption key of the kit the user entered, with every public key the kit
+    /// derives.
+    Kit(EncryptionKeyPair, RecoveryPublicKeys),
 }
 
 impl Unlock {
@@ -347,30 +348,31 @@ impl Unlock {
         if let Some(code) = kit {
             let seed =
                 RecoverySeed::parse_owned_kit_code(code).map_err(|_| BackupRefusal::InvalidKit)?;
-            return seed
+            let pair = seed
                 .recovery_encryption_key()
-                .map(Self::Kit)
-                .map_err(|_| BackupRefusal::InvalidKit);
+                .map_err(|_| BackupRefusal::InvalidKit)?;
+            let public = seed.public_keys().map_err(|_| BackupRefusal::InvalidKit)?;
+            return Ok(Self::Kit(pair, public));
         }
         epoch_key.map(Self::Epoch).ok_or(BackupRefusal::KitRequired)
     }
 
     fn with_kit(&self) -> bool {
-        matches!(self, Self::Kit(_))
+        matches!(self, Self::Kit(..))
     }
 
-    /// The recovery encryption key of the kit, `None` for an epoch key.
-    fn opener(&self) -> Option<EncryptionPublicKey> {
+    /// The public keys of the kit, `None` for an epoch key.
+    fn opener(&self) -> Option<RecoveryPublicKeys> {
         match self {
             Self::Epoch(_) => None,
-            Self::Kit(pair) => Some(pair.public_key()),
+            Self::Kit(_, public) => Some(*public),
         }
     }
 
     fn open(&self, header: &BackupHeader) -> Result<FileKey, BackupError> {
         match self {
             Self::Epoch(key) => header.open_with_epoch_key(key),
-            Self::Kit(pair) => header.open_with_recovery(pair),
+            Self::Kit(pair, _) => header.open_with_recovery(pair),
         }
     }
 }

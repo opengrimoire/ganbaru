@@ -216,8 +216,13 @@ async fn handle_connection<R: Routes>(
     if let (Some(source), Some(certificate)) = (log_admission.as_ref(), peer_certificate.as_ref())
         && let Some(refusal) = log_refusal(source().await, certificate, &request)
     {
-        let retryable = refusal == MemberRefusal::Unavailable;
-        return send_error(&mut stream, refusal.code(), refusal.describe(), retryable).await;
+        return send_error(
+            &mut stream,
+            refusal.code(),
+            refusal.describe(),
+            refusal.retryable(),
+        )
+        .await;
     }
 
     if let Some((vault_id, device_id)) = request.sync_peer() {
@@ -275,6 +280,8 @@ fn server_config(
 /// Why the selected log turns away `request` from the device whose certificate is
 /// `certificate`: a device the log removed reaches no coordinator service but record exchange,
 /// pairing still linking it or not, and any other sync request needs a device the log enrolled.
+/// A device a frozen anchor handover contest holds gets no copy and no person key until the
+/// contest resolves, and keeps sync, since record exchange is how the contest reaches it.
 /// Record exchange is served to every paired device, so an authorization branch the local log
 /// does not select still reaches it. A request from a certificate
 /// the log does not know, such as a device linked before its enrollment was sequenced, keeps
@@ -294,6 +301,9 @@ pub fn log_refusal(
         }
     };
     let fingerprint = certificate_fingerprint(certificate.as_ref());
+    if request.is_vault_material() && admission.is_held(&fingerprint) {
+        return Some(MemberRefusal::Held);
+    }
     match admission.certificate(&fingerprint) {
         Ok(_) | Err(MemberRefusal::Quarantined) => None,
         Err(MemberRefusal::Removed | MemberRefusal::Unknown) if request.is_record_exchange() => {

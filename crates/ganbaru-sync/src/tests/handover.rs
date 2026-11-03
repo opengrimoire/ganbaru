@@ -867,6 +867,36 @@ fn the_kit_recovers_a_clone_freeze_and_demotes_every_other_admin() {
 }
 
 #[test]
+fn a_kit_promotes_the_device_it_handed_the_anchor_to() {
+    // Another admin naming a key for the anchor is no entry any replica walks.
+    let (mut log, base) = Log::new();
+    log.append(
+        &base,
+        &device_admin(FIRST),
+        Entry::SetRole(SetRole::Device {
+            device_id: ANCHOR_DEVICE_ID.to_owned(),
+            role: DeviceRole::Admin(device_admin(FIRST).public_key()),
+        }),
+    );
+    log.assert_selects(&base);
+
+    let kit = log.kit(&base, &device_id(MEMBER));
+    let promoted = log.append(&kit, &recovery_admin(&person()), promote(MEMBER));
+    let selected = log.assert_selects(&promoted);
+    assert_eq!(selected.admins.len(), 1, "admins {:?}", selected.admins);
+    assert!(selected.admins.contains(&device_id(MEMBER)));
+
+    let installed = other_recovery(91);
+    let (mut log, base) = Log::new();
+    let install = log.append(&base, &anchor_admin(&person()), rotate_recovery(&installed));
+    let recovered = log.handover(&install, &installed, &device_id(MEMBER));
+    let promoted = log.append(&recovered, &installed, promote(MEMBER));
+    let selected = log.assert_selects(&promoted);
+    assert_eq!(selected.admins.len(), 1, "admins {:?}", selected.admins);
+    assert!(selected.admins.contains(&device_id(MEMBER)));
+}
+
+#[test]
 fn concurrent_kit_uses_converge_on_the_higher_ranked_one() {
     for same_point in [true, false] {
         let (mut log, base) = Log::new();

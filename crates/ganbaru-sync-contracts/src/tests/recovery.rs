@@ -70,7 +70,7 @@ fn kit_codes_are_grouped_and_round_trip() {
             .all(|character| character == KIT_GROUP_SEPARATOR
                 || "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(character))
     );
-    assert_eq!(parsed(&code).unwrap(), *seed.as_bytes());
+    assert_eq!(parsed(code).unwrap(), *seed.as_bytes());
     for _ in 0..32 {
         let fresh = RecoverySeed::generate().unwrap();
         assert_eq!(
@@ -126,7 +126,7 @@ fn kit_code_parsing_refuses_damaged_codes() {
     );
     assert_eq!(
         RecoverySeed::parse_owned_kit_code(code.to_string()).map(|seed| *seed.as_bytes()),
-        parsed(&code)
+        parsed(code)
     );
 
     let alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -227,7 +227,7 @@ fn only_the_last_group_confirms_a_saved_kit() {
     assert!(!seed.last_group_matches(""));
     assert!(!seed.last_group_matches(&last[..last.len() - 1]));
     assert!(!seed.last_group_matches(&format!("{last}0")));
-    assert!(!seed.last_group_matches(&code));
+    assert!(!seed.last_group_matches(code));
     assert!(!seed.last_group_matches("!!!!"));
     let other = RecoverySeed::from_bytes([0x67; 32]).kit_code();
     let other_last = other.as_str().rsplit(KIT_GROUP_SEPARATOR).next().unwrap();

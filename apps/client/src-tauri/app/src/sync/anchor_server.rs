@@ -312,6 +312,25 @@ fn server_names_kit(
     Ok(answered)
 }
 
+/// Refuses a server that already runs a vault other than the one this device pins as
+/// `vault_id` with `local`, before anything is written to the log.
+fn ensure_same_space(
+    space: Option<&AnchorSpace>,
+    vault_id: &str,
+    local: &PinnedCharter,
+) -> Result<(), SyncServerError> {
+    match space {
+        Some(space)
+            if space.vault_id != vault_id
+                || space.charter != local.charter
+                || space.person_key != local.person_key =>
+        {
+            Err(SyncServerError::ServerRunsAnotherVault)
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,30 +391,6 @@ mod tests {
         malformed.kit_admin_key = "not base64!".to_string();
         assert!(server_names_kit(&malformed, &kit()).is_err());
     }
-}
-
-/// Refuses a server that already runs a vault other than the one this device pins as
-/// `vault_id` with `local`, before anything is written to the log.
-fn ensure_same_space(
-    space: Option<&AnchorSpace>,
-    vault_id: &str,
-    local: &PinnedCharter,
-) -> Result<(), SyncServerError> {
-    match space {
-        Some(space)
-            if space.vault_id != vault_id
-                || space.charter != local.charter
-                || space.person_key != local.person_key =>
-        {
-            Err(SyncServerError::ServerRunsAnotherVault)
-        }
-        _ => Ok(()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     const VAULT_ID: &str = "vault-local";
 
@@ -411,6 +406,8 @@ mod tests {
             vault_id: vault_id.to_string(),
             charter: charter.to_string(),
             person_key: person_key.to_string(),
+            kit_admin_key: encode_sync_admin_key(&admin(32)),
+            recovery_admin_key: encode_sync_admin_key(&admin(33)),
         }
     }
 

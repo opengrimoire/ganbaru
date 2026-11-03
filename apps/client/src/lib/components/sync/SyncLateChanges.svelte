@@ -70,13 +70,17 @@
         <div class="text-[0.75rem] text-muted-foreground">{syncLateChangeOrigin(t, localization.locale, change, now)}</div>
         {#if change.decisionPending}
           <div class="text-[0.75rem] text-muted-foreground">{t("sync.late.decisionPending")}</div>
+        {:else if !change.restorable}
+          <div class="text-[0.75rem] text-muted-foreground">{t("sync.late.notRestorable")}</div>
         {/if}
       </div>
       {#if canResolve && !change.decisionPending}
         <div class="flex shrink-0 gap-2">
-          <button type="button" class={buttonClass} disabled={busyKey !== null} onclick={() => void act(change, true)}>
-            {t("sync.late.restore")}
-          </button>
+          {#if change.restorable}
+            <button type="button" class={buttonClass} disabled={busyKey !== null} onclick={() => void act(change, true)}>
+              {t("sync.late.restore")}
+            </button>
+          {/if}
           <button type="button" class={buttonClass} disabled={busyKey !== null} onclick={() => { pendingDiscard = change; }}>
             {t("sync.late.discard")}
           </button>

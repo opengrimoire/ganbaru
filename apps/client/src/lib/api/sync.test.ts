@@ -463,6 +463,7 @@ function validLateChange(overrides: Record<string, unknown> = {}): Record<string
     title: "Plan",
     preview: "Start",
     changedAtMs: 3_000,
+    restorable: true,
     decisionPending: false,
     ...overrides,
   };
@@ -521,19 +522,21 @@ describe("sync authority API boundary", () => {
 
   it("maps late changes, including a deletion without a time", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
-      changes: [validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, decisionPending: true })],
+      changes: [validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, restorable: false, decisionPending: true })],
       total: 5,
     });
     const { changes, total } = await listSyncLateChanges();
     expect(total).toBe(5);
     expect(changes[0]).toEqual({ ...validLateChange() });
-    expect(changes[1]).toMatchObject({ kind: "tombstone", changedAtMs: null, decisionPending: true });
+    expect(changes[1]).toMatchObject({ kind: "tombstone", changedAtMs: null, restorable: false, decisionPending: true });
     expect(() => mapSyncLateChanges({ changes: [validLateChange()], total: 0 })).toThrow();
     expect(() => mapSyncLateChanges({ changes: [validLateChange()] })).toThrow();
     expect(() => mapSyncLateChanges([validLateChange()])).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ kind: "moved" }), "late")).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ removalRevision: undefined }), "late")).toThrow();
     expect(() => mapSyncLateChange(validLateChange({ decisionPending: 1 }), "late")).toThrow();
+    expect(() => mapSyncLateChange(validLateChange({ restorable: "yes" }), "late")).toThrow();
+    expect(() => mapSyncLateChange(validLateChange({ restorable: undefined }), "late")).toThrow();
   });
 
   it("maps the recovery kit state and refuses an empty code or a malformed QR matrix", async () => {

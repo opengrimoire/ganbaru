@@ -327,6 +327,8 @@ export interface SyncLateChange {
   preview: string;
   /** When the newest late value was written; null for a deletion. */
   changedAtMs: number | null;
+  /** Whether keeping the change can write it back; a row only the removed device may write can only be discarded. */
+  restorable: boolean;
   /** Whether this device already proposed a decision the anchor has not sequenced yet. */
   decisionPending: boolean;
 }
@@ -661,6 +663,7 @@ export function mapSyncLateChange(value: unknown, label: string): SyncLateChange
     title: readString(row.title, `${label}.title`),
     preview: readString(row.preview, `${label}.preview`),
     changedAtMs: readNullable(row.changedAtMs, `${label}.changedAtMs`, readNonNegativeSafeInteger),
+    restorable: readBoolean(row.restorable, `${label}.restorable`),
     decisionPending: readBoolean(row.decisionPending, `${label}.decisionPending`),
   };
 }

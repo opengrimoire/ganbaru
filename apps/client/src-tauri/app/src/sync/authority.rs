@@ -121,6 +121,9 @@ pub(crate) struct LateChangeView {
     pub preview: String,
     /// When the newest late value was written, in Unix milliseconds; `None` for a deletion.
     pub changed_at_ms: Option<u64>,
+    /// Whether keeping the change can write it back; a row only the removed device may write
+    /// can only be discarded.
+    pub restorable: bool,
     /// Whether this device already proposed a decision the anchor has not sequenced yet.
     pub decision_pending: bool,
 }
@@ -413,6 +416,7 @@ fn late_views(
                 title: late.presentation.title,
                 preview: late.presentation.preview,
                 changed_at_ms: late.clock.map(|clock| clock.physical_ms()),
+                restorable: late.restorable,
                 decision_pending,
             }
         })

@@ -284,6 +284,7 @@ describe("sync late change presentation", () => {
     title: "Plan",
     preview: "",
     changedAtMs: NOW - 5 * 60_000,
+    restorable: true,
     decisionPending: false,
   };
 

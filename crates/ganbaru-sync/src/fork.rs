@@ -24,6 +24,9 @@
 //! with its own writer, the current value of every live group that the branch it stored wrote,
 //! once the exclusion materialized. Its operations cover every version the anchor holds, so
 //! every member converges to the anchor's state whether or not a copy of the branch re-seals.
+//! A row another device owns is the exception: the anchor cannot seal it, so the anchor keeps
+//! the branch value while members that retained restore the displaced one, until the owner
+//! writes the row again. A removed or destroyed owner never does.
 //!
 //! Authority does not read this table: the record store keeps both twins and the operation
 //! they continue from, and a provable fork of a writer that carries records freezes their epoch

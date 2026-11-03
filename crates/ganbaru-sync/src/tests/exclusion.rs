@@ -1076,6 +1076,7 @@ fn restoring_late_values_and_a_late_deletion_writes_them_as_the_admin() {
         deliver(&mut anchor, &mut removed).await;
         let listed = late_changes(&mut anchor).await;
         assert_eq!(listed.len(), 3);
+        assert!(listed.iter().all(|late| late.restorable));
         let mut rows = Vec::new();
         for late in &listed {
             anchor

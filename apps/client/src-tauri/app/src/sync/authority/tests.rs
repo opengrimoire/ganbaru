@@ -217,6 +217,7 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
         },
         values: Vec::new(),
         clock,
+        restorable: true,
     };
     let decided = entry(
         Entry::ResolveLate(ResolveLate {
@@ -242,7 +243,7 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     );
     sequenced.held = Some(2);
 
-    let changes = vec![
+    let mut changes = vec![
         late("note-decided", LateKind::Tombstone, None),
         late(
             "note-open",
@@ -250,6 +251,7 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
             Some(Hlc::new(AT_MS + 60_000, 3)),
         ),
     ];
+    changes[1].restorable = false;
     let listed = late_views(
         &engine,
         changes.clone(),
@@ -274,6 +276,11 @@ fn sync_late_views_mark_rows_a_pending_proposal_already_decides() {
     assert_eq!(wire["kind"], "values");
     assert_eq!(wire["removalRevision"], 5);
     assert_eq!(wire["device"]["deviceId"], "device-c");
+    assert!(views[0].restorable);
+    assert_eq!(
+        wire["restorable"], false,
+        "the view keeps whether keeping can write back"
+    );
 
     let bounded = late_views(&engine, changes, &[decided, sequenced], &names(), 1);
     assert_eq!(

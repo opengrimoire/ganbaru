@@ -404,6 +404,7 @@ export const sync = {
     more: (count: number) =>
       `${count} more ${count === 1 ? "change waits" : "changes wait"}. Decide the ones above to see the rest.`,
     decisionPending: "Decision waiting for the anchor",
+    notRestorable: "Only the removed device could write this change, so it can only be discarded.",
   },
   reset: {
     action: "Reset sync",

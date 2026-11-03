@@ -840,6 +840,7 @@ impl HubSession {
         if self.held.is_none() || known.dominates(stored) {
             return Ok(!known.dominates(stored));
         }
+        let known = &self.held_claim(known).await?;
         let mut conn = acquire(&self.pool).await?;
         let page = self
             .engine
@@ -1001,7 +1002,9 @@ impl HubSession {
     /// Stores pushed operations up to the first refusal. Unless `relay_geneses`, a genesis of a
     /// writer the hub does not hold is accepted only when its certificate names the pushing
     /// device. A held peer reads back every writer of another device at the highest sequence of
-    /// it in the page, so its next page moves on without learning what the hub stores.
+    /// it in the page, so its next page moves on without learning what the hub stores. A
+    /// refusal of such a writer's operation is answered the same way, without a refusal, since
+    /// its code and sequence would tell the peer where the hub's chain of that writer stands.
     async fn push(
         &self,
         device_id: &str,
@@ -1011,6 +1014,9 @@ impl HubSession {
         let known = self.stored().await?;
         let (accepted, mut refusal) =
             admit_geneses(ops, &known, (!relay_geneses).then_some(device_id));
+        if ops.get(accepted).is_some_and(|op| self.hides_refusal(op)) {
+            refusal = None;
+        }
         let outcomes = if accepted == 0 {
             Vec::new()
         } else {
@@ -1032,6 +1038,10 @@ impl HubSession {
                 StoreOutcome::Stored { .. } => stored_any = true,
                 // A writer of a quarantined device: the rest of the page still applies.
                 StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Quarantined) => {}
+                StoreOutcome::Refused(_) if self.hides_refusal(op) => {
+                    refusal = None;
+                    break;
+                }
                 StoreOutcome::Refused(store_refusal) => {
                     refusal = Some(match Envelope::decode(op) {
                         Ok(envelope) => {
@@ -1067,11 +1077,48 @@ impl HubSession {
         ))
     }
 
+    /// Whether a refusal of `op` is withheld from the peer: it is held and the operation
+    /// belongs to a writer of another device.
+    fn hides_refusal(&self, op: &[u8]) -> bool {
+        self.held.is_some()
+            && Envelope::decode(op).is_ok_and(|envelope| self.hidden(&envelope.writer))
+    }
+
+    /// The claim a pull of a held peer reads from. Every writer of another device that the hub
+    /// compacted reads as fully held, whatever the peer claimed, so the answer neither asks
+    /// for a fresh copy the peer would be refused nor changes with the claim at the compacted
+    /// sequence, which a peer could otherwise search for. Skipping only claims behind it would
+    /// still serve the authorization operations past it, and so mark where it stands. The
+    /// authorization records of those writers reach the peer through the record pages, and
+    /// their lanes resume once the peer is no longer held.
+    async fn held_claim(&self, known: &VersionVector) -> Result<VersionVector, HubError> {
+        let mut claim = known.clone();
+        if self.held.is_none() {
+            return Ok(claim);
+        }
+        let compacted: Vec<WriterId> = self
+            .compacted_vector()
+            .await?
+            .iter()
+            .map(|(writer, _)| writer)
+            .filter(|writer| self.hidden(writer))
+            .collect();
+        if compacted.is_empty() {
+            return Ok(claim);
+        }
+        let stored = self.stored().await?;
+        for writer in compacted {
+            claim.advance(writer, stored.get(&writer));
+        }
+        Ok(claim)
+    }
+
     async fn pull(
         &self,
         known: &VersionVector,
         max_bytes: usize,
     ) -> Result<ControlMessage, HubError> {
+        let known = &self.held_claim(known).await?;
         let mut conn = acquire(&self.pool).await?;
         let page = if self.held.is_some() {
             self.engine
@@ -1167,7 +1214,6 @@ fn invalid_refusal() -> SyncRefusal {
     }
 }
 
-/// The wire refusal of an engine store refusal of `(writer, seq)`.
 /// The wire refusal of a pushed operation. A fork inside the operations the hub compacted
 /// cannot be re-sealed against bodies the hub dropped, so the peer is told to bootstrap.
 pub(crate) fn refusal_to_wire(

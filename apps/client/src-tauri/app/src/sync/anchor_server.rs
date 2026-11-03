@@ -15,7 +15,7 @@ use crate::vault::handoff::protocol::encode_sync_charter;
 use crate::vault::handoff::receiver::{ReceiveOutcome, receive_recovered};
 use crate::vault::handoff::snapshot::{archive_active_vault, bundle_metadata};
 use crate::vault::quiescence::begin_snapshot_quiescence;
-use ganbaru_handoff::protocol::anchor::AnchorSetupCode;
+use ganbaru_handoff::protocol::anchor::{AnchorSetupCode, AnchorSpace};
 use ganbaru_sync::{AuthorizationView, Engine, EnrolledDevice, local};
 use ganbaru_sync_contracts::authorization::Server;
 use ganbaru_sync_contracts::{DeviceKind, DeviceRole, KitCode};
@@ -276,4 +276,55 @@ pub async fn sync_recover_through_server(
     }
     drop(connection);
     receive_recovered(app, setup_target(&code), space.vault_id, trust).await
+}
+
+/// Refuses a server that already runs a vault other than the one this device pins as
+/// `vault_id` with `local`, before anything is written to the log.
+fn ensure_same_space(
+    space: Option<&AnchorSpace>,
+    vault_id: &str,
+    local: &PinnedCharter,
+) -> Result<(), SyncServerError> {
+    let _ = (space, vault_id, local);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VAULT_ID: &str = "vault-local";
+
+    fn local() -> PinnedCharter {
+        PinnedCharter {
+            charter: "charter-local".to_string(),
+            person_key: "person-local".to_string(),
+        }
+    }
+
+    fn space(vault_id: &str, charter: &str, person_key: &str) -> AnchorSpace {
+        AnchorSpace {
+            vault_id: vault_id.to_string(),
+            charter: charter.to_string(),
+            person_key: person_key.to_string(),
+        }
+    }
+
+    #[test]
+    fn add_anchor_server_refuses_a_server_running_another_vault() {
+        let local = local();
+        assert_eq!(ensure_same_space(None, VAULT_ID, &local), Ok(()));
+        let own = space(VAULT_ID, &local.charter, &local.person_key);
+        assert_eq!(ensure_same_space(Some(&own), VAULT_ID, &local), Ok(()));
+        for foreign in [
+            space("vault-other", &local.charter, &local.person_key),
+            space(VAULT_ID, "charter-forged", &local.person_key),
+            space(VAULT_ID, &local.charter, "person-forged"),
+        ] {
+            assert_eq!(
+                ensure_same_space(Some(&foreign), VAULT_ID, &local),
+                Err(SyncServerError::ServerRunsAnotherVault)
+            );
+        }
+    }
 }

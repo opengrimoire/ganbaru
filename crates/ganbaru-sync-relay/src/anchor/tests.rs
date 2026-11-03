@@ -483,6 +483,34 @@ fn a_wrong_or_replaced_code_opens_nothing_and_keeps_the_newest_secret() {
 }
 
 #[test]
+fn a_setup_code_binds_to_the_first_proven_vault() {
+    const OTHER_VAULT_ID: &str = "vault-anchor-other";
+    block_on(async {
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("the first proof binds the code to its vault");
+            let refused = open_setup(&code, APP_VERSION, Some(OTHER_VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .err()
+                .expect("a proof naming another vault should be refused");
+            assert!(is_refused(&refused), "{refused}");
+            open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("a retry for the bound vault still works");
+            let newer = printed_code(root, &endpoint);
+            open_setup(&newer, APP_VERSION, Some(OTHER_VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("a newly printed code is not bound yet");
+        })
+        .await;
+    });
+}
+
+#[test]
 fn a_snapshot_that_does_not_enroll_the_server_is_refused() {
     block_on(async {
         let founder = Founder::new().await;

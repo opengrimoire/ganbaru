@@ -1376,3 +1376,125 @@ fn a_certificate_pairing_a_live_id_with_another_key_stays_in_the_rest_class() {
         );
     });
 }
+
+/// The stored genesis of the hub's own writer and two records that writer carries.
+async fn hub_records(hub: &mut Replica) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let hub_writer = hub.writer();
+    let genesis = genesis_of_writer(hub, hub_writer).await;
+    let (envelopes, _) = all_pages(hub, PAGE_ENVELOPES).await;
+    let mut records = envelopes.into_iter().filter(|envelope| {
+        envelope.role == RecordRole::Record
+            && Envelope::decode(&envelope.bytes).unwrap().writer == hub_writer
+    });
+    let first = records.next().expect("the hub carries records").bytes;
+    let second = records
+        .next()
+        .expect("the hub carries a second record")
+        .bytes;
+    (genesis, first, second)
+}
+
+async fn storage_of(replica: &mut Replica) -> crate::AuthorizationStorage {
+    replica
+        .engine
+        .authorization_storage(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+}
+
+/// A certificate that names a live device id with a key the chain does not enroll for it charges
+/// no bytes to that device, and its writer's fork names no device, while a writer certified by
+/// the enrolled key is still charged to its device.
+#[test]
+fn a_forged_certificate_charges_nothing_to_the_device_it_names() {
+    block_on(async {
+        let mut hub = anchor_with_admins(95).await;
+        let (genesis, first, second) = hub_records(&mut hub).await;
+        let stranger = DeviceKeyPair::from_seed(&[98; 32]).unwrap();
+        let forger = Identity::new([99; 32], &stranger, &device_id(20), None);
+        let [certificate, carried] = carried_by(&forger, &genesis, &first);
+        let [_, twin] = carried_by(&forger, &genesis, &second);
+        let admission = admit_bytes(&mut hub, &[certificate, carried, twin]).await;
+        assert_eq!(admission.admitted, 3);
+        let successor = Identity::new([100; 32], &device_key(&person(), 22), &device_id(22), None);
+        let admission = admit_bytes(&mut hub, &carried_by(&successor, &genesis, &first)).await;
+        assert_eq!(admission.admitted, 2);
+
+        let storage = storage_of(&mut hub).await;
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .all(|(device, _)| *device != device_id(20)),
+            "a forged certificate charges its junk to the device it names: {:?}",
+            storage.by_device
+        );
+        assert!(
+            storage
+                .by_device
+                .iter()
+                .any(|(device, bytes)| *device == device_id(22) && *bytes > 0)
+        );
+        assert_eq!(
+            storage.forked_writers,
+            [crate::ForkedWriter {
+                writer: forger.id(),
+                device_id: None,
+            }]
+        );
+    });
+}
+
+/// Two pending envelopes at one sequence of a writer the store holds no certificate for prove
+/// nothing and raise no fork alert.
+#[test]
+fn pending_envelopes_raise_no_fork_alert() {
+    block_on(async {
+        let mut hub = anchor_with_admins(96).await;
+        let (genesis, first, second) = hub_records(&mut hub).await;
+        let stranger = DeviceKeyPair::from_seed(&[101; 32]).unwrap();
+        let unknown = Identity::new([102; 32], &stranger, &device_id(20), None);
+        let [_, carried] = carried_by(&unknown, &genesis, &first);
+        let [_, twin] = carried_by(&unknown, &genesis, &second);
+        let admission = admit_bytes(&mut hub, &[carried, twin]).await;
+        assert_eq!(admission.admitted, 2);
+        assert!(
+            writer_rows(&mut hub, unknown.id())
+                .await
+                .iter()
+                .all(|(_, verified)| *verified == 0)
+        );
+
+        let storage = storage_of(&mut hub).await;
+        assert!(
+            storage.forked_writers.is_empty(),
+            "pending envelopes raise a fork alert: {:?}",
+            storage.forked_writers
+        );
+    });
+}
+
+/// Two verified certificates of one writer sit at one sequence and stay a fork alert that names
+/// the device whose enrolled key signed them.
+#[test]
+fn two_verified_certificates_at_one_sequence_stay_a_fork_alert() {
+    block_on(async {
+        let mut hub = anchor_with_admins(97).await;
+        let (genesis, _, _) = hub_records(&mut hub).await;
+        let device = device_key(&person(), 22);
+        let successor = Identity::new([103; 32], &device, &device_id(22), None);
+        let certificate = genesis_of(&genesis, &successor);
+        let second = resealed_genesis(&certificate, &successor.key, &device);
+        let admission = admit_bytes(&mut hub, &[certificate, second]).await;
+        assert_eq!(admission.admitted, 2);
+
+        let storage = storage_of(&mut hub).await;
+        assert_eq!(
+            storage.forked_writers,
+            [crate::ForkedWriter {
+                writer: successor.id(),
+                device_id: Some(device_id(22)),
+            }]
+        );
+    });
+}

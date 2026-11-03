@@ -20,8 +20,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    AuthorizationRecord, Content, DevicePublicKey, Digest32, Envelope, OperationKind, Seq, SpaceId,
-    WriterId, WriterPublicKey,
+    AuthorizationRecord, Content, DevicePublicKey, Digest32, Envelope, OperationKind, Seq,
+    SignedCharter, SpaceId, WriterId, WriterPublicKey,
 };
 use sqlx::{Connection, Row, SqliteConnection};
 

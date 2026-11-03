@@ -124,6 +124,12 @@ async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::Sql
 
 /// Initializes the test space, founded by [`DEVICE_ID`] as its anchor.
 async fn context(conn: &mut SqliteConnection) -> SpaceContext {
+    context_founded(conn, [11; 32]).await
+}
+
+/// Initializes the test space, founded by [`DEVICE_ID`] as its anchor listening with
+/// `tls_fingerprint`. Another fingerprint founds another charter for the same space.
+async fn context_founded(conn: &mut SqliteConnection, tls_fingerprint: [u8; 32]) -> SpaceContext {
     Engine::vault()
         .init_space(conn, VAULT_ID, NOW_MS)
         .await
@@ -134,7 +140,7 @@ async fn context(conn: &mut SqliteConnection) -> SpaceContext {
         .expect("space context");
     let founding = Founding {
         device_id: DEVICE_ID,
-        tls_fingerprint: [11; 32],
+        tls_fingerprint,
         discovery_key: [12; 32],
         person: &person(),
         now_ms: NOW_MS,
@@ -424,9 +430,10 @@ fn carried_operations_reach_the_replacement_once() {
         add_note(&mut conn, "note-unsealed").await;
         drop(conn);
         registry.close_all().await.expect("close pools");
-        let refused = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect_err("pending captures refuse the export");
+        let refused =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect_err("pending captures refuse the export");
         assert!(refused.contains("not sealed"));
 
         let current = registry.connect_path(&current_path).await.expect("reopen");
@@ -440,9 +447,10 @@ fn carried_operations_reach_the_replacement_once() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let exported = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect("export");
+        let exported =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect("export");
         assert_eq!(u64::try_from(exported).expect("count"), last);
         assert!(files.carry_path().exists());
 
@@ -452,12 +460,13 @@ fn carried_operations_reach_the_replacement_once() {
             .expect("open replacement");
         let mut conn = acquire(&replacement).await;
         context(&mut conn).await;
-        let report = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
-            .await
-            .expect("import")
-            .expect("a pending bundle");
+        let report =
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
+                .await
+                .expect("import")
+                .expect("a pending bundle");
         assert_eq!(report.stored, exported);
-        assert_eq!(report.refused, 0);
+        assert_eq!(report.refused_foreign, 0);
         assert!(!files.carry_path().exists());
         let title: String = sqlx::query_scalar("SELECT title FROM quick_notes WHERE id = ?")
             .bind("note-unsealed")
@@ -477,7 +486,7 @@ fn carried_operations_reach_the_replacement_once() {
             }
         );
         assert!(
-            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
                 .await
                 .expect("second import")
                 .is_none()
@@ -540,15 +549,17 @@ fn carry_forward_aborts_when_the_replacement_lacks_compacted_operations() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let refused = carry_forward::export(&engine, &current_path, &behind_path, &files)
-            .await
-            .expect_err("compacted operations cannot be carried");
+        let refused =
+            carry_forward::export(&engine, &current_path, &behind_path, &files, DEVICE_ID)
+                .await
+                .expect_err("compacted operations cannot be carried");
         assert!(refused.contains("compacted"), "{refused}");
         assert!(!files.carry_path().exists());
 
-        let exported = carry_forward::export(&engine, &current_path, &caught_up_path, &files)
-            .await
-            .expect("a replacement holding the compacted operations takes the rest");
+        let exported =
+            carry_forward::export(&engine, &current_path, &caught_up_path, &files, DEVICE_ID)
+                .await
+                .expect("a replacement holding the compacted operations takes the rest");
         assert_eq!(exported, 1);
         registry.close_all().await.expect("close pools");
     });
@@ -571,9 +582,10 @@ fn oversized_carry_bundles_are_refused_before_reading() {
             .expect("size bundle");
         drop(bundle);
 
-        let error = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
-            .await
-            .expect_err("an oversized bundle is refused");
+        let error =
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
+                .await
+                .expect_err("an oversized bundle is refused");
         assert_eq!(
             error,
             "carry-forward bundle is not a file within the size limit"
@@ -581,6 +593,133 @@ fn oversized_carry_bundles_are_refused_before_reading() {
         assert!(files.carry_path().exists());
         drop(conn);
         drop(pool);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+/// Creates a vault at `path` that holds one note sealed by a new writer of [`DEVICE_ID`], and
+/// returns its space.
+async fn sealed_vault(
+    registry: &DatabasePoolRegistry,
+    directory: &TestDirectory,
+    path: &Path,
+) -> SpaceContext {
+    let engine = Engine::vault();
+    let pool = create_vault(registry, path).await;
+    let mut conn = acquire(&pool).await;
+    let ctx = context(&mut conn).await;
+    let mut writer = create_writer(
+        &directory.files(),
+        &directory.keys(),
+        SuccessorPlan::default(),
+        &device(),
+        DEVICE_ID,
+        NOW_MS,
+    )
+    .expect("create writer");
+    add_note(&mut conn, "note-carried").await;
+    engine
+        .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+        .await
+        .expect("seal");
+    drop(conn);
+    registry.close_all().await.expect("close pools");
+    ctx
+}
+
+#[test]
+fn own_refusal_keeps_the_carry_bundle_and_fails() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-own-refused");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let replacement_path = directory.path().join("replacement.sqlite");
+        let ctx = sealed_vault(&registry, &directory, &current_path).await;
+        create_vault(&registry, &replacement_path).await;
+        carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+            .await
+            .expect("export");
+        let bundle = std::fs::read(files.carry_path()).expect("read bundle");
+
+        // The replacement holds another key for this device, so it refuses its writer.
+        let replacement = registry
+            .connect_path(&replacement_path)
+            .await
+            .expect("open replacement");
+        let mut conn = acquire(&replacement).await;
+        context(&mut conn).await;
+        sqlx::query("UPDATE sync_devices SET device_key = zeroblob(32) WHERE device_id = ?")
+            .bind(DEVICE_ID)
+            .execute(&mut *conn)
+            .await
+            .expect("replace the device key");
+        let error =
+            carry_forward::import_pending(&engine, &mut conn, &ctx, &files, DEVICE_ID, NOW_MS)
+                .await
+                .expect_err("a refused own operation fails the import");
+        assert!(error.contains("refused this device's operation"), "{error}");
+        assert_eq!(
+            std::fs::read(files.carry_path()).expect("the bundle stays"),
+            bundle
+        );
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn carry_across_a_charter_change_exports_nothing_and_drops_the_bundle() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-charter");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let replacement_path = directory.path().join("replacement.sqlite");
+        sealed_vault(&registry, &directory, &current_path).await;
+        let replacement = create_vault(&registry, &replacement_path).await;
+        let mut conn = acquire(&replacement).await;
+        context_founded(&mut conn, [13; 32]).await;
+        drop(conn);
+        drop(replacement);
+        registry.close_all().await.expect("close pools");
+
+        // A bundle of the old log cannot apply under another charter, whatever it holds.
+        std::fs::create_dir_all(&files.directory).expect("create sync directory");
+        let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
+        bundle
+            .set_len(ganbaru_sync::local::MAX_BUNDLE_BYTES as u64 + 1)
+            .expect("size bundle");
+        drop(bundle);
+
+        let report = carry_forward::carry_into_replacement(
+            &engine,
+            &current_path,
+            &replacement_path,
+            &files,
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .await
+        .expect("a copy of another log carries nothing");
+        assert!(report.is_none());
+        assert!(!files.carry_path().exists());
+        let replacement = registry
+            .connect_path(&replacement_path)
+            .await
+            .expect("open replacement");
+        let mut conn = acquire(&replacement).await;
+        let carried: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM quick_notes WHERE id = 'note-carried'")
+                .fetch_one(&mut *conn)
+                .await
+                .expect("count notes");
+        assert_eq!(carried, 0);
+        drop(conn);
+        drop(replacement);
         registry.close_all().await.expect("close pools");
     });
 }

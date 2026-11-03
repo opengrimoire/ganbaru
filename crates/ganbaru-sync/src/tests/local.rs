@@ -8,11 +8,13 @@ use super::{block_on, migrated_pool};
 use crate::local::{
     self, LocalWriterHead, decode_bundle, encode_bundle, has_pending_captures,
     prepare_snapshot_copy, replacement_vector, restore_local_state, space_context,
+    verified_replacement_vector,
 };
 use crate::log::WriterState;
 use crate::manifest::Manifest;
 use crate::manifest::vault::VAULT_MANIFEST;
-use ganbaru_sync_contracts::{RecoverySeed, VersionVector};
+use crate::{COMPACTION_BATCH_OPS, StoreRefusal, SyncError};
+use ganbaru_sync_contracts::{RecoverySeed, VersionVector, WriterId};
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use std::collections::BTreeMap;
 
@@ -194,12 +196,13 @@ fn carry_forward_moves_local_operations_into_a_replacement() {
                     &mut replacement,
                     &device.ctx,
                     VAULT_ID,
+                    &device.device_id,
                     &decoded,
                     device.now_ms,
                 )
                 .await
                 .unwrap();
-            assert_eq!(report.refused, 0);
+            assert_eq!(report.refused_foreign, 0);
             assert!(!report.pending_captures);
         }
         let titles: Vec<String> = sqlx::query_scalar("SELECT title FROM quick_notes ORDER BY id")
@@ -389,10 +392,17 @@ fn restore_copies_device_state_onto_carried_rows_and_drops_orphans() {
             .unwrap();
         let report = device
             .engine
-            .import_carried(&mut staged, &device.ctx, VAULT_ID, &ops, device.now_ms)
+            .import_carried(
+                &mut staged,
+                &device.ctx,
+                VAULT_ID,
+                &device.device_id,
+                &ops,
+                device.now_ms,
+            )
             .await
             .unwrap();
-        assert_eq!(report.refused, 0);
+        assert_eq!(report.refused_foreign, 0);
 
         let live = temporary_database("restore");
         std::fs::write(&live, device.snapshot().await).unwrap();
@@ -930,6 +940,250 @@ fn a_snapshot_copy_leaves_local_drafts_behind() {
             replica.count("SELECT count(*) FROM pomodoro_runs").await,
             1,
             "the source keeps its open run"
+        );
+    });
+}
+
+/// Makes the staged copy `staged` claim `seq` and `hash` as the stored head of `writer`.
+async fn claim_staged_head(staged: &mut SqliteConnection, writer: WriterId, seq: u64, hash: &[u8]) {
+    sqlx::query("UPDATE sync_writers SET stored_seq = ?, head_hash = ? WHERE writer_id = ?")
+        .bind(i64::try_from(seq).unwrap())
+        .bind(hash)
+        .bind(writer.as_bytes().as_slice())
+        .execute(&mut *staged)
+        .await
+        .unwrap();
+}
+
+/// The operations of `device` a replacement whose vector is `vector` lacks.
+async fn carried(device: &mut Replica, vector: &VersionVector) -> Vec<Vec<u8>> {
+    device
+        .engine
+        .carry_forward_ops(&mut device.conn, &device.ctx, vector)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn inflated_staged_head_is_refused() {
+    block_on(async {
+        let mut hub = Replica::new(0, 40).await;
+        let mut device = Replica::new(1, 40).await;
+        add_note(&mut device, "note-sent", "Sent").await;
+        let sent = device.seal().await.unwrap().last_seq.unwrap();
+        hub.pull(&mut device).await;
+        add_note(&mut device, "note-unsent", "Unsent").await;
+        let last = device.seal().await.unwrap().last_seq.unwrap();
+        assert!(last > sent);
+        let writer = device.writer();
+        let space = device.ctx.space;
+
+        // The sender claims this device's unsent head, or a head past it, so nothing carries.
+        for claimed in [last, last + 3] {
+            let mut staged = connection_from(&hub.snapshot().await).await;
+            claim_staged_head(&mut staged, writer, claimed, &[7; 32]).await;
+            let result = verified_replacement_vector(
+                &mut device.conn,
+                &mut staged,
+                space,
+                &device.device_id,
+            )
+            .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(SyncError::StagedHead { writer: refused, seq })
+                        if refused == writer && seq == claimed
+                ),
+                "claim {claimed}: {result:?}"
+            );
+        }
+
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        let vector =
+            verified_replacement_vector(&mut device.conn, &mut staged, space, &device.device_id)
+                .await
+                .unwrap();
+        assert_eq!(vector.get(&writer), sent);
+        let ops = carried(&mut device, &vector).await;
+        assert_eq!(u64::try_from(ops.len()).unwrap(), last - sent);
+    });
+}
+
+#[test]
+fn compacted_staged_log_with_real_heads_is_accepted() {
+    block_on(async {
+        let mut hub = Replica::new(0, 41).await;
+        let mut device = Replica::new(1, 41).await;
+        add_note(&mut hub, "hub-1", "One").await;
+        for title in ["Two", "Three"] {
+            hub.exec(&format!(
+                "UPDATE quick_notes SET title = '{title}' WHERE id = 'hub-1'"
+            ))
+            .await;
+            hub.seal().await.unwrap();
+        }
+        add_note(&mut device, "device-1", "Device").await;
+        device.seal().await.unwrap();
+        hub.pull(&mut device).await;
+        device.pull(&mut hub).await;
+        let stable = hub.stored_vector().await;
+        let report = hub.compact(&stable, COMPACTION_BATCH_OPS).await.unwrap();
+        assert!(report.compacted > 0);
+        let sent = device.stored_vector().await.get(&device.writer());
+
+        // The staged head of the hub's writer is past what this device holds, and this device
+        // has unsent work.
+        add_note(&mut hub, "hub-late", "Late").await;
+        hub.seal().await.unwrap();
+        add_note(&mut device, "device-late", "Late").await;
+        let last = device.seal().await.unwrap().last_seq.unwrap();
+
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        let vector = verified_replacement_vector(
+            &mut device.conn,
+            &mut staged,
+            device.ctx.space,
+            &device.device_id,
+        )
+        .await
+        .unwrap();
+        let hub_stored = hub.stored_vector().await;
+        assert_eq!(vector.get(&hub.writer()), hub_stored.get(&hub.writer()));
+        assert_eq!(vector.get(&device.writer()), sent);
+        let ops = carried(&mut device, &vector).await;
+        assert_eq!(u64::try_from(ops.len()).unwrap(), last - sent);
+    });
+}
+
+#[test]
+fn staged_foreign_fork_does_not_block_the_copy() {
+    block_on(async {
+        let mut hub = Replica::new(0, 42).await;
+        let mut device = Replica::new(1, 42).await;
+        add_note(&mut hub, "hub-1", "One").await;
+        hub.seal().await.unwrap();
+        add_note(&mut hub, "hub-2", "Two").await;
+        let head = hub.seal().await.unwrap().last_seq.unwrap();
+        device.pull(&mut hub).await;
+
+        // The staged log of the hub's writer holds another operation at a sequence this device
+        // also holds.
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        claim_staged_head(&mut staged, hub.writer(), head, &[9; 32]).await;
+        let vector = verified_replacement_vector(
+            &mut device.conn,
+            &mut staged,
+            device.ctx.space,
+            &device.device_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(vector.get(&hub.writer()), head);
+    });
+}
+
+#[test]
+fn foreign_fork_in_a_carried_chunk_loses_nothing_behind_it() {
+    block_on(async {
+        let mut hub = Replica::new(0, 43).await;
+        let mut device = Replica::new(1, 43).await;
+        add_note(&mut hub, "hub-1", "One").await;
+        hub.seal().await.unwrap();
+        let known = hub.stored_vector().await;
+        let mut clone = hub.clone_device().await;
+        add_note(&mut hub, "hub-2", "Kept").await;
+        hub.seal().await.unwrap();
+        add_note(&mut clone, "hub-2", "Forked").await;
+        clone.seal().await.unwrap();
+        let fork = clone.ops_since(&known).await;
+        assert_eq!(fork.len(), 1);
+
+        add_note(&mut device, "device-1", "Device one").await;
+        device.seal().await.unwrap();
+        add_note(&mut device, "device-2", "Device two").await;
+        device.seal().await.unwrap();
+        let own = device.own_ops().await;
+        assert!(own.len() >= 2);
+
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        let ops: Vec<Vec<u8>> = fork.iter().chain(&own).cloned().collect();
+        let report = device
+            .engine
+            .import_carried(
+                &mut staged,
+                &device.ctx,
+                VAULT_ID,
+                &device.device_id,
+                &ops,
+                device.now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.refused_foreign, 1);
+        assert_eq!(report.stored, own.len());
+        let titles: Vec<String> = sqlx::query_scalar(
+            "SELECT title FROM quick_notes WHERE id LIKE 'device-%' ORDER BY id",
+        )
+        .fetch_all(&mut staged)
+        .await
+        .unwrap();
+        assert_eq!(titles, ["Device one", "Device two"]);
+    });
+}
+
+#[test]
+fn rotated_own_writer_counts_as_own_without_a_target_row() {
+    block_on(async {
+        let mut hub = Replica::new(0, 44).await;
+        let mut device = Replica::new(1, 44).await;
+        add_note(&mut device, "device-1", "One").await;
+        device.seal().await.unwrap();
+        hub.pull(&mut device).await;
+        device.rotate();
+        add_note(&mut device, "device-2", "Two").await;
+        device.seal().await.unwrap();
+        let rotated = device.writer();
+
+        // The copy holds another key for this device, so it refuses the new writer's genesis.
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        sqlx::query("UPDATE sync_devices SET device_key = zeroblob(32) WHERE device_id = ?")
+            .bind(&device.device_id)
+            .execute(&mut staged)
+            .await
+            .unwrap();
+        let vector = verified_replacement_vector(
+            &mut device.conn,
+            &mut staged,
+            device.ctx.space,
+            &device.device_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(vector.get(&rotated), 0);
+        let ops = carried(&mut device, &vector).await;
+        assert!(!ops.is_empty());
+        let result = device
+            .engine
+            .import_carried(
+                &mut staged,
+                &device.ctx,
+                VAULT_ID,
+                &device.device_id,
+                &ops,
+                device.now_ms,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(SyncError::CarriedOwnRefused {
+                    writer,
+                    seq: 1,
+                    refusal: StoreRefusal::Untrusted,
+                }) if writer == rotated
+            ),
+            "{result:?}"
         );
     });
 }

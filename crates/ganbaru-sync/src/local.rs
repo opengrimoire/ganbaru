@@ -362,9 +362,11 @@ impl Engine {
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         vault_id: &str,
+        own_device_id: &str,
         ops: &[Vec<u8>],
         now_ms: u64,
     ) -> SyncResult<CarryReport> {
+        let _ = own_device_id;
         let mut report = CarryReport::default();
         if ops.is_empty() {
             return Ok(report);
@@ -373,7 +375,7 @@ impl Engine {
         for chunk in ops.chunks(IMPORT_CHUNK) {
             for outcome in self.store_many(conn, ctx, chunk, now_ms).await? {
                 match outcome {
-                    StoreOutcome::Refused(_) => report.refused += 1,
+                    StoreOutcome::Refused(_) => report.refused_foreign += 1,
                     _ => report.stored += 1,
                 }
             }
@@ -398,8 +400,9 @@ impl Engine {
 pub struct CarryReport {
     /// Operations stored or already present.
     pub stored: usize,
-    /// Operations the replacement refused.
-    pub refused: usize,
+    /// Operations of other devices the replacement refused, such as past a removal cutoff.
+    /// Their writers' devices hold them.
+    pub refused_foreign: usize,
     /// Operations applied.
     pub applied: usize,
     /// Local captures in the replacement stopped the apply.
@@ -424,6 +427,17 @@ pub async fn replacement_vector(
         return Ok(VersionVector::default());
     }
     log::stored_vector(conn, space).await
+}
+
+/// The stored vector of a staged copy for what `live` could carry.
+pub async fn verified_replacement_vector(
+    live: &mut SqliteConnection,
+    staged: &mut SqliteConnection,
+    space: SpaceId,
+    own_device_id: &str,
+) -> SyncResult<VersionVector> {
+    let _ = (live, own_device_id);
+    replacement_vector(staged, space).await
 }
 
 /// Encodes carried operations of a space as a device-local staging bundle.

@@ -14,7 +14,7 @@ use ganbaru_atomic_files::{FileAccess, StagedFile, create_directories_within};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::assets::{AssetClass, CONTENT_TYPE_EXTENSIONS, UNKNOWN_EXTENSION, is_sha256_hex};
 use ganbaru_sync::local::{
-    self, MAX_BUNDLE_BYTES, decode_bundle, encode_bundle, replacement_vector,
+    self, MAX_BUNDLE_BYTES, decode_bundle, encode_bundle, verified_replacement_vector,
 };
 use ganbaru_sync::manifest::Manifest;
 use ganbaru_sync::{CarryReport, Engine, LocalRestoreReport, ReverifyReport, SpaceContext};
@@ -37,10 +37,13 @@ pub async fn export(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
+    own_device_id: &str,
 ) -> Result<usize, String> {
-    Ok(export_space(engine, current, replacement, files)
-        .await?
-        .map_or(0, |(_, count)| count))
+    Ok(
+        export_space(engine, current, replacement, files, own_device_id)
+            .await?
+            .map_or(0, |(_, count)| count),
+    )
 }
 
 /// Carries the operations of `current` that the staged `replacement` lacks into it: exports
@@ -51,13 +54,15 @@ pub async fn carry_into_replacement(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
+    own_device_id: &str,
     now_ms: u64,
 ) -> Result<Option<CarryReport>, String> {
-    let Some((ctx, _)) = export_space(engine, current, replacement, files).await? else {
+    let Some((ctx, _)) = export_space(engine, current, replacement, files, own_device_id).await?
+    else {
         return Ok(None);
     };
     let mut conn = open_staged(replacement).await?;
-    let imported = import_pending(engine, &mut conn, &ctx, files, now_ms).await;
+    let imported = import_pending(engine, &mut conn, &ctx, files, own_device_id, now_ms).await;
     close_staged(conn, imported).await
 }
 
@@ -123,9 +128,18 @@ async fn export_space(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
+    own_device_id: &str,
 ) -> Result<Option<(SpaceContext, usize)>, String> {
     let registry = DatabasePoolRegistry::default();
-    let result = export_with(engine, &registry, current, replacement, files).await;
+    let result = export_with(
+        engine,
+        &registry,
+        current,
+        replacement,
+        files,
+        own_device_id,
+    )
+    .await;
     let closed = registry.close_all().await;
     let exported = result?;
     closed?;
@@ -138,6 +152,7 @@ async fn export_with(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
+    own_device_id: &str,
 ) -> Result<Option<(SpaceContext, usize)>, String> {
     let current_pool = registry.connect_path_read_only(current).await?;
     let mut current_conn = acquire(&current_pool).await?;
@@ -155,9 +170,14 @@ async fn export_with(
     }
     let replacement_pool = registry.connect_path_read_only(replacement).await?;
     let mut replacement_conn = acquire(&replacement_pool).await?;
-    let staged = replacement_vector(&mut replacement_conn, ctx.space)
-        .await
-        .map_err(|error| format!("read replacement sync state: {error}"))?;
+    let staged = verified_replacement_vector(
+        &mut current_conn,
+        &mut replacement_conn,
+        ctx.space,
+        own_device_id,
+    )
+    .await
+    .map_err(|error| format!("read replacement sync state: {error}"))?;
     drop(replacement_conn);
     let mut ops = read_bundle(files, &ctx)?.unwrap_or_default();
     ops.extend(
@@ -186,13 +206,14 @@ pub async fn import_pending(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     files: &SyncFiles,
+    own_device_id: &str,
     now_ms: u64,
 ) -> Result<Option<CarryReport>, String> {
     let Some(ops) = read_bundle(files, ctx)? else {
         return Ok(None);
     };
     let report = engine
-        .import_carried(conn, ctx, &files.vault_id, &ops, now_ms)
+        .import_carried(conn, ctx, &files.vault_id, own_device_id, &ops, now_ms)
         .await
         .map_err(|error| format!("import carried sync operations: {error}"))?;
     remove_bundle(files)?;

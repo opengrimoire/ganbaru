@@ -474,6 +474,20 @@ fn a_backup_needs_a_stopped_activated_server() {
     });
 }
 
+#[test]
+fn anchor_activation_record_damage_still_lets_the_anchor_start() {
+    block_on(async {
+        let data = TempDir::new();
+        let root = data.path();
+        std::fs::write(DataPaths::new(root.to_path_buf()).activation(), b"{damaged").unwrap();
+        with_anchor(root, |endpoint| async move {
+            tokio::net::TcpStream::connect(&endpoint).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        })
+        .await;
+    });
+}
+
 /// A staged temporary file name for `target`, as an interrupted transfer leaves it.
 fn staged_name(target: &str, nonce: char) -> String {
     format!(".{target}.{}.tmp", nonce.to_string().repeat(32))

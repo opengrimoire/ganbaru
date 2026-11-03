@@ -122,8 +122,11 @@ pub async fn serve_on(
     let pools = DatabasePoolRegistry::default();
     pools.set_connection_hook(Some(vault_connection_hook(commits.clone())));
     let host = AnchorHost::new(paths, device_id, pairing.clone(), pools);
-    if host.activation()?.is_some() {
-        host.remove_stale_staging();
+    // A damaged activation record fails only the routes that read it, so the anchor still starts.
+    match host.activation() {
+        Ok(Some(_)) => host.remove_stale_staging(),
+        Ok(None) => {}
+        Err(error) => eprintln!("read the activation record at startup: {error}"),
     }
     let runtime = SyncRuntime::default();
     service::setup(

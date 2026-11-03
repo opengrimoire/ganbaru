@@ -95,8 +95,8 @@ pub enum StoreRefusal {
     /// [`MAX_EXCLUDED_ENTRIES_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_ENTRIES_PER_WRITER)
     /// further, contiguous from it), or the writer is one the removal does not name outside the
     /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](crate::exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
-    /// lowest writer ids of its device: its genesis while that many lower ones are stored, and
-    /// its later operations other than contiguous entries once lower ones displaced it.
+    /// lowest writer ids of its device and the operation is neither its genesis nor an
+    /// authorization entry contiguous from it.
     Revoked,
     /// The genesis would exceed the writers its device or the space may have.
     WriterLimit,
@@ -358,8 +358,8 @@ async fn store_genesis(
     // A writer of a removed device that this replica never stored takes the cutoff the removal
     // lists for it, 0 when the removal does not name it. Its excluded operations are stored up
     // to the bound, so the late changes other replicas applied before the removal are derived
-    // here too, but only the few unnamed writers per removed device with the lowest ids keep
-    // operations past their genesis.
+    // here too. Every unnamed writer keeps its genesis, but only the few per removed device with
+    // the lowest ids keep operations past it.
     let enrollment =
         authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await?;
     let selected = !matches!(enrollment, Enrollment::Absent);
@@ -389,13 +389,6 @@ async fn store_genesis(
         }
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
     };
-    if matches!(removal, Some((_, 0)))
-        && highest_kept_unnamed(conn, ctx, &cert.device_id)
-            .await?
-            .is_some_and(|highest| envelope.writer.as_bytes().as_slice() > highest.as_slice())
-    {
-        return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
-    }
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
@@ -882,27 +875,6 @@ async fn carried_certificate_matches(
         }) => embedded == *carried,
         _ => true,
     })
-}
-
-/// The highest writer id among the stored writers of the removed device `device_id` its removal
-/// does not name that keep excluded operations, once there are
-/// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`](exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
-/// of them, `None` while there are fewer.
-async fn highest_kept_unnamed(
-    conn: &mut SqliteConnection,
-    ctx: &SpaceContext,
-    device_id: &str,
-) -> SyncResult<Option<Vec<u8>>> {
-    Ok(sqlx::query_scalar(
-        "SELECT writer_id FROM sync_writers
-         WHERE space_id = ? AND device_id = ? AND removal_cutoff_seq = 0
-         ORDER BY writer_id LIMIT 1 OFFSET ?",
-    )
-    .bind(ctx.space.as_bytes().as_slice())
-    .bind(device_id)
-    .bind(exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE - 1)
-    .fetch_optional(&mut *conn)
-    .await?)
 }
 
 /// Most stored writers of devices the selected chain does not enroll, which another stored chain

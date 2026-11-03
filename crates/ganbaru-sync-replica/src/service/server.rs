@@ -149,7 +149,7 @@ impl ServiceState {
         };
         let done = match client.exchange().await? {
             Exchange::Done(done) => done,
-            Exchange::Fork(fork) => {
+            Exchange::Fork(fork) | Exchange::UnprovenFork(fork) => {
                 return Err(format!(
                     "the server holds writer {} past this device at {}",
                     fork.writer.to_hex(),

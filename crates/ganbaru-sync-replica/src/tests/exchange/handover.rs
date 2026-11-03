@@ -315,7 +315,9 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             .expect("exchange with the new anchor")
         {
             client::Exchange::Done(done) => done,
-            client::Exchange::Fork(fork) => panic!("unexpected fork: {fork:?}"),
+            client::Exchange::Fork(fork) | client::Exchange::UnprovenFork(fork) => {
+                panic!("unexpected fork: {fork:?}")
+            }
         };
         phone.apply().await;
         let mut conn = acquire(&phone.pool).await;

@@ -390,7 +390,7 @@ pub async fn exchange_with_members<H: SyncHost>(
                 }
                 reported.extend(done.members);
             }
-            Ok(Exchange::Fork(fork)) => eprintln!(
+            Ok(Exchange::Fork(fork) | Exchange::UnprovenFork(fork)) => eprintln!(
                 "sync: member {device_id} reported a fork of writer {} at {}; the coordinator \
                  exchange recovers it",
                 fork.writer.to_hex(),

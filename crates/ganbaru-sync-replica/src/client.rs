@@ -90,7 +90,10 @@ pub struct Exchanged {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Exchange {
     Done(Exchanged),
+    /// A fork of this installation's writer that the hub showed signed proof of.
     Fork(ForkPoint),
+    /// The hub claims a fork of this device's writer and shows no signed operation for it.
+    UnprovenFork(ForkPoint),
 }
 
 /// One replica's view for an exchange.
@@ -740,7 +743,7 @@ fn fork_at(writer: WriterId, first_difference: Seq) -> Result<Exchange, String> 
 fn fork_only(exchange: Exchange) -> Option<ForkPoint> {
     match exchange {
         Exchange::Fork(fork) => Some(fork),
-        Exchange::Done(_) => None,
+        Exchange::Done(_) | Exchange::UnprovenFork(_) => None,
     }
 }
 

@@ -2219,7 +2219,7 @@ impl ServiceState {
                     wait.known.merge(&skipped);
                     return Ok(Next::Online(Box::new(wait)));
                 }
-                Ok(Exchange::Fork(fork)) => {
+                Ok(Exchange::Fork(fork) | Exchange::UnprovenFork(fork)) => {
                     if !session.recover_fork(&mut self.writer, fork).await? {
                         view.state = SyncState::WaitingForIdentity;
                         return Ok(Next::Idle);

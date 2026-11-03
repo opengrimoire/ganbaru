@@ -36,6 +36,9 @@ pub const MAX_WRITERS_PER_SPACE: usize = 4_096;
 /// successor only after a restore, a copied database, a lost key, or a clone, so this is far
 /// above honest use while it keeps one linked device from flooding the space.
 pub const MAX_WRITERS_PER_DEVICE: usize = 64;
+/// Highest authorization revision, log stamp, or writer sequence the store can hold, since
+/// SQLite integers are signed 64 bit.
+pub const MAX_LOG_POSITION: u64 = i64::MAX.unsigned_abs();
 /// Largest device label in an enrollment, matching the handoff device label rule.
 pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
 /// Length of a TLS certificate fingerprint: the SHA-256 of the DER certificate.

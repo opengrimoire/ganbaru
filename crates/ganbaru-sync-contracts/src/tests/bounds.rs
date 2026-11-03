@@ -1,11 +1,12 @@
 use super::fixtures::{
-    GOLDEN_DEVICE_ID, authorization_operation, golden_charter, group_value, header, person,
-    proposal, row, space, writer_id, writer_key,
+    GOLDEN_DEVICE_ID, acknowledgement_operation, authorization_operation, enroll_entry,
+    genesis_operation, golden_charter, group_value, header, person, proposal, row, space,
+    writer_id, writer_key,
 };
 use crate::bounds::{
     MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_CHARTER_BYTES, MAX_DEPENDENCIES,
     MAX_DEVICE_ID_BYTES, MAX_FIELDS_PER_VALUE, MAX_HEADER_BYTES, MAX_LATE_RESOLUTIONS,
-    MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
+    MAX_LOG_POSITION, MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
     MAX_WRITERS_PER_SPACE,
 };
 use crate::codec::CodecError;
@@ -346,5 +347,87 @@ fn the_charter_bound_fits_the_largest_charter_and_refuses_more() {
     assert_eq!(
         SignedCharter::decode(&oversized),
         Err(CharterError::Codec(CodecError::Bounds("space charter")))
+    );
+}
+
+/// An enrollment record at `revision`, carried by an operation whose header names the revision
+/// before it.
+fn record_at(revision: u64) -> Operation {
+    let mut record = authorization_record(enroll_entry(), Sequencing::Empty, 0);
+    record.revision = revision;
+    let mut operation_header = header(1_790_000_000_000, Vec::new());
+    operation_header.authorization_revision = revision - 1;
+    Operation {
+        space: space(),
+        writer: writer_id(),
+        seq: 2,
+        previous_hash: PREVIOUS_HASH,
+        header: operation_header,
+        content: Content::Authorization(Box::new(record)),
+    }
+}
+
+/// A certificate operation whose header stamps `stamp`.
+fn certificate_stamped(stamp: u64) -> Operation {
+    let mut operation = genesis_operation();
+    operation.header.authorization_revision = stamp;
+    operation
+}
+
+/// An acknowledgement at writer sequence `seq`.
+fn acknowledgement_at(seq: u64) -> Operation {
+    let mut operation = acknowledgement_operation(PREVIOUS_HASH);
+    operation.seq = seq;
+    operation
+}
+
+#[test]
+fn a_position_above_the_store_range_is_refused() {
+    let above = MAX_LOG_POSITION + 1;
+    assert_eq!(MAX_LOG_POSITION, i64::MAX.unsigned_abs());
+
+    let Content::Authorization(record) = record_at(above).content else {
+        unreachable!("record_at builds an authorization operation");
+    };
+    assert_eq!(
+        record.validate(),
+        Err(AuthorizationError::Codec(CodecError::Malformed(
+            "authorization revision"
+        )))
+    );
+    assert_eq!(
+        codec_error(record_at(above).seal(&writer_key())),
+        CodecError::Malformed("authorization revision")
+    );
+    assert_eq!(
+        codec_error(certificate_stamped(above).seal(&writer_key())),
+        CodecError::Malformed("authorization revision")
+    );
+    assert_eq!(
+        codec_error(acknowledgement_at(above).seal(&writer_key())),
+        CodecError::Malformed("sequence")
+    );
+
+    record_at(MAX_LOG_POSITION).seal(&writer_key()).unwrap();
+    certificate_stamped(MAX_LOG_POSITION)
+        .seal(&writer_key())
+        .unwrap();
+    let highest = acknowledgement_at(MAX_LOG_POSITION)
+        .seal(&writer_key())
+        .unwrap()
+        .into_bytes();
+    assert_eq!(Envelope::decode(&highest).unwrap().seq, MAX_LOG_POSITION);
+
+    // The same envelope with its sequence raised past the bound, never decoded into an
+    // operation.
+    let position = highest
+        .windows(8)
+        .position(|window| window == MAX_LOG_POSITION.to_be_bytes())
+        .unwrap();
+    let mut raised = highest;
+    raised[position..position + 8].copy_from_slice(&above.to_be_bytes());
+    assert_eq!(
+        Envelope::decode(&raised).err(),
+        Some(CodecError::Malformed("sequence"))
     );
 }

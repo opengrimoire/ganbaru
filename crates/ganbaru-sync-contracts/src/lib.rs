@@ -58,7 +58,7 @@ pub use op::{
 };
 pub use order_key::{OrderKey, OrderKeyError};
 pub use order_placement::{OrderPlacementError, OrderedRow};
-pub use recovery::{RecoveryError, RecoveryPublicKeys, RecoverySeed};
+pub use recovery::{KitCode, RecoveryError, RecoveryPublicKeys, RecoverySeed};
 pub use relay::{
     OpenedRecord, RelayAssetChunk, RelayAssetHeader, RelayAssetId, RelayAssetOpener, RelayError,
     RelayRecord, RelayRecordHeader, relay_asset_chunk_count, seal_relay_asset,

@@ -5,7 +5,7 @@ use crate::ids::hex;
 use crate::recovery::{
     KIT_CODE_CHARS, KIT_GROUP_CHARS, KIT_GROUP_SEPARATOR, RECOVERY_ADMIN_INFO, RECOVERY_HPKE_INFO,
 };
-use crate::{AdminKeyPair, RecoveryError, RecoverySeed, Subkey};
+use crate::{AdminKeyPair, KitCode, RecoveryError, RecoverySeed, Subkey};
 use ring::hmac;
 
 /// HKDF-SHA256 with an empty salt and one 32-byte output block, computed from HMAC directly.
@@ -224,4 +224,28 @@ fn only_the_last_group_confirms_a_saved_kit() {
     if other_last != last {
         assert!(!seed.last_group_matches(other_last));
     }
+}
+
+#[test]
+fn kit_code_debug_redacts() {
+    let text = recovery_seed().kit_code().as_str().to_string();
+    let shown = format!("{:?}", KitCode::new(text.clone()));
+    for group in text.split(KIT_GROUP_SEPARATOR) {
+        assert!(!shown.contains(group), "debug shows the group {group}");
+    }
+}
+
+#[test]
+fn kit_code_compares_and_reads_back() {
+    let text = recovery_seed().kit_code().as_str().to_string();
+    let code = KitCode::new(text.clone());
+    assert_eq!(code.as_str(), text);
+    assert_eq!(code.clone(), code);
+    assert_eq!(KitCode::from(text.clone()), code);
+    let other = RecoverySeed::from_bytes([0x67; 32]).kit_code();
+    assert_ne!(KitCode::new(other.as_str().to_string()), code);
+    assert_eq!(
+        RecoverySeed::parse_kit_code(code.as_str()).map(|seed| *seed.as_bytes()),
+        Ok(RECOVERY_SEED)
+    );
 }

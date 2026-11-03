@@ -185,3 +185,14 @@ async fn a_recovery_kit_is_created_only_before_the_vault_has_a_sync_space() {
     drop(conn);
     registry.close_all().await.expect("close pools");
 }
+
+#[test]
+fn pending_recovery_kit_serializes_the_code() {
+    let seed = RecoverySeed::from_bytes([0x52; 32]);
+    let text = seed.kit_code().as_str().to_string();
+    let kit = pending_kit(&seed, true).expect("pending kit");
+    let json = serde_json::to_value(&kit).expect("serialize");
+    assert_eq!(json["code"], serde_json::Value::String(text));
+    assert_eq!(json["active"], serde_json::Value::Bool(true));
+    assert!(json["qr"].is_object());
+}

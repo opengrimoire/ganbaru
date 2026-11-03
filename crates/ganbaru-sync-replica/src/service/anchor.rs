@@ -981,3 +981,33 @@ impl<H: SyncHost> Session<'_, H> {
         Ok(seq)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthorityAction, ForceRequest};
+    use ganbaru_sync_contracts::RecoverySeed;
+
+    #[test]
+    fn authority_action_debug_never_shows_the_kit() {
+        let text = RecoverySeed::from_bytes([0x51; 32])
+            .kit_code()
+            .as_str()
+            .to_string();
+        let force = ForceRequest {
+            kit: Some(text.clone().into()),
+            point: None,
+            removals: vec!["device-b".to_string()],
+        };
+        let shown = [
+            format!("{:?}", AuthorityAction::UseRecoveryKit(text.clone().into())),
+            format!("{:?}", AuthorityAction::RotateRecoveryKit(text.clone().into())),
+            format!("{force:?}"),
+            format!("{:?}", AuthorityAction::ForceAnchor(force.clone())),
+        ];
+        for shown in shown {
+            for group in text.split('-') {
+                assert!(!shown.contains(group), "{shown} shows the group {group}");
+            }
+        }
+    }
+}

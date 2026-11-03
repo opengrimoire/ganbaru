@@ -294,7 +294,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
 
     // The staged apply ran, the bundle is gone, and nothing is restored yet.
     failpoints::arm("replace.before_restore");
-    let error = carry_into_replacement(&engine, &staging, &target, &files, now)
+    let error = carry_into_replacement(&engine, &staging, &target, &files, RECEIVING_DEVICE, now)
         .await
         .unwrap_err();
     assert_eq!(error, "failpoint replace.before_restore");
@@ -317,7 +317,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
 
     // A retry finds the operations stored and restores device state.
     failpoints::arm("replace.before_rename");
-    let error = carry_into_replacement(&engine, &staging, &target, &files, now)
+    let error = carry_into_replacement(&engine, &staging, &target, &files, RECEIVING_DEVICE, now)
         .await
         .unwrap_err();
     assert_eq!(error, "failpoint replace.before_rename");
@@ -331,7 +331,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
     assert_eq!(notes(&target).await, live);
 
     failpoints::clear();
-    carry_into_replacement(&engine, &staging, &target, &files, now)
+    carry_into_replacement(&engine, &staging, &target, &files, RECEIVING_DEVICE, now)
         .await
         .unwrap();
     replace_vault(&staging, &target, &parent.join("newer-rollback")).unwrap();
@@ -431,7 +431,7 @@ async fn replacement_carries_the_anchors_unsent_authorization_entries() {
     drop(conn);
     registry.close_all().await.unwrap();
 
-    carry_into_replacement(&engine, &staging, &source, &owner_files, now)
+    carry_into_replacement(&engine, &staging, &source, &owner_files, OWNER_DEVICE, now)
         .await
         .unwrap();
     replace_vault(&staging, &source, &parent.join("older-rollback")).unwrap();
@@ -453,5 +453,131 @@ async fn replacement_carries_the_anchors_unsent_authorization_entries() {
     drop(conn);
     registry.close_all().await.unwrap();
     assert!(!owner_files.carry_path().exists());
+    fs::remove_dir_all(parent).unwrap();
+}
+
+#[tokio::test]
+async fn failed_carry_keeps_the_live_vault() {
+    let parent = crate::vault::tests::unique_path("carry-staged-head");
+    let source = parent.join("owner");
+    let target = parent.join("receiver");
+    let staging = parent.join("staging");
+    fs::create_dir_all(&source).unwrap();
+    let vault_id = crate::vault::initialize_vault(&source).unwrap().vault_id;
+    ganbaru_db::test_support::write_migrated_database(database_path(&source))
+        .await
+        .unwrap();
+    let engine = Engine::vault();
+    let keys = MemoryKeys::default();
+    let owner_files = SyncFiles::new(parent.join("owner-sync"), &vault_id).unwrap();
+    let files = SyncFiles::new(parent.join("receiver-sync"), &vault_id).unwrap();
+    let now = crate::sync::now_ms().unwrap();
+    let registry = DatabasePoolRegistry::default();
+
+    let pool = registry.connect_path(database_path(&source)).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let ctx = sync_context(&mut conn, &vault_id, now).await;
+    let mut owner = create_writer(
+        &owner_files,
+        &keys,
+        SuccessorPlan::default(),
+        &anchor_keys().device,
+        OWNER_DEVICE,
+        now,
+    )
+    .unwrap();
+    found_and_enroll(&mut conn, &ctx, &mut owner, now).await;
+    drop(conn);
+    registry.close_all().await.unwrap();
+    hand_off(
+        &source,
+        &parent.join("initial-staging"),
+        &parent,
+        "initial",
+        &vault_id,
+    )
+    .await;
+    replace_vault(
+        &parent.join("initial-staging"),
+        &target,
+        &parent.join("initial-rollback"),
+    )
+    .unwrap();
+
+    let pool = registry.connect_path(database_path(&target)).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    sync_context(&mut conn, &vault_id, now).await;
+    let mut receiver = create_writer(
+        &files,
+        &keys,
+        SuccessorPlan::default(),
+        &receiver_device(),
+        RECEIVING_DEVICE,
+        now,
+    )
+    .unwrap();
+    let receiver_key = receiver.local().key.public_key();
+    execute(
+        &mut conn,
+        "INSERT INTO quick_notes (id, title, order_key) VALUES ('note-unsent', 'Unsent', 'a1')",
+    )
+    .await;
+    let last = engine
+        .seal(&mut conn, &ctx, &mut receiver.local(), now)
+        .await
+        .unwrap()
+        .last_seq
+        .unwrap();
+    drop(conn);
+    registry.close_all().await.unwrap();
+    hand_off(&source, &staging, &parent, "newer", &vault_id).await;
+
+    // A bundle an interrupted attempt left holds the unsent operations.
+    ganbaru_sync_replica::carry_forward::export(
+        &engine,
+        &database_path(&target),
+        &database_path(&staging),
+        &files,
+        RECEIVING_DEVICE,
+    )
+    .await
+    .unwrap();
+    let bundle = fs::read(files.carry_path()).unwrap();
+
+    // The copy claims the receiver's head with a hash its log never held.
+    let pool = registry
+        .connect_path(database_path(&staging))
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("ATTACH DATABASE ? AS live")
+        .bind(database_path(&target).to_string_lossy().into_owned())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    execute(
+        &mut conn,
+        "INSERT INTO sync_writers SELECT * FROM live.sync_writers WHERE device_id = 'receiver';
+         UPDATE sync_writers SET head_hash = zeroblob(32) WHERE device_id = 'receiver';
+         DETACH DATABASE live;",
+    )
+    .await;
+    drop(conn);
+    registry.close_all().await.unwrap();
+
+    let live = notes(&target).await;
+    let error = carry_into_replacement(&engine, &staging, &target, &files, RECEIVING_DEVICE, now)
+        .await
+        .unwrap_err();
+    assert!(error.contains("cannot confirm"), "{error}");
+    assert_eq!(notes(&target).await, live);
+    assert_eq!(
+        writer_head(&target, &ctx, &receiver_key).await,
+        LocalWriterHead::Genuine {
+            stored: last,
+            state: WriterState::Active
+        }
+    );
+    assert_eq!(fs::read(files.carry_path()).unwrap(), bundle);
     fs::remove_dir_all(parent).unwrap();
 }

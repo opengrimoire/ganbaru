@@ -2680,6 +2680,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 &mut conn,
                 &self.ctx,
                 &self.files,
+                &self.host.device_id()?,
                 now_ms()?,
             )
             .await?

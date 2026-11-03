@@ -34,6 +34,25 @@ pub enum SyncError {
     /// A staged snapshot copy holds a charter other than the one this device trusts for the
     /// vault, or no sync space at all while a trusted charter exists.
     SnapshotCharter,
+    /// A staged snapshot copy claims a head of `writer` at `seq` that the live log cannot
+    /// confirm: a hash other than the live one at a sequence of this device's writer, or an
+    /// operation past the live head that the writer did not sign.
+    StagedHead {
+        /// The writer whose staged head is refused.
+        writer: WriterId,
+        /// The sequence the staged copy claims.
+        seq: u64,
+    },
+    /// A staged replacement refused a carried operation of one of this device's writers, which
+    /// the live log had admitted, so activating it would lose the operation.
+    CarriedOwnRefused {
+        /// The writer of the refused operation.
+        writer: WriterId,
+        /// Its sequence.
+        seq: u64,
+        /// Why the replacement refused it.
+        refusal: crate::StoreRefusal,
+    },
     /// The selected authorization chain removed the local device.
     DeviceRemoved,
     /// The selected authorization chain has not enrolled the local device yet, so its writer
@@ -96,6 +115,21 @@ impl fmt::Display for SyncError {
             Self::InvalidCharter => formatter.write_str("sync charter is invalid for this space"),
             Self::SnapshotCharter => formatter
                 .write_str("the vault copy holds a sync charter this device does not trust"),
+            Self::StagedHead { writer, seq } => write!(
+                formatter,
+                "the vault copy claims operations of writer {} through {seq} that this device \
+                 cannot confirm",
+                writer.to_hex()
+            ),
+            Self::CarriedOwnRefused {
+                writer,
+                seq,
+                refusal,
+            } => write!(
+                formatter,
+                "the vault copy refused this device's operation {seq} of writer {} ({refusal:?})",
+                writer.to_hex()
+            ),
             Self::DeviceRemoved => formatter.write_str("this device was removed from the space"),
             Self::NotEnrolled => {
                 formatter.write_str("this device is not enrolled in the space yet")

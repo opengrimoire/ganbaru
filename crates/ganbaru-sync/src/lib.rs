@@ -91,7 +91,7 @@ pub use exclusion::{
 pub use fork::{EvidenceOutcome, EvidenceRefusal, ForkEvidence};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
-pub use records::WriterRetirement;
+pub use records::{ReverifyReport, WriterRetirement};
 pub use recovery::{MAX_UNSEEN_PRESENTATIONS, RecoveryDescendant, RecoveryEntry};
 pub use relay::{RelayKeys, open_space_keys};
 pub use reseal::ResealReport;

@@ -2,6 +2,7 @@
 //! the link status of this device.
 
 use super::pairing::{PairingManager, PendingAcknowledgement};
+use super::protocol::BundleMetadata;
 use super::transport::{BundleSource, FetchedBundle, TransferCancellation};
 use crate::vault::backup::ReplacedVault;
 use serde::Serialize;
@@ -293,32 +294,52 @@ async fn receive(
         Destination::ActiveVault => None,
     };
 
-    let sources = bundle_sources(app, &coordinator.vault_id, &coordinator.device_id).await;
-    let FetchedBundle {
-        source,
-        metadata,
-        archive,
-    } = super::transport::fetch_bundle(
-        &pairing,
-        &sources,
-        super::current_compatibility(app),
-        cancellation,
+    let pinned = crate::sync::pinned_trust(Some(&coordinator), &coordinator.vault_id)?;
+    let sources = bundle_sources(
+        app,
+        &coordinator.vault_id,
+        &coordinator.device_id,
+        pinned.as_ref().map(|(charter, _)| charter.hash()),
     )
-    .await?;
-    let from_coordinator = source == BundleSource::Coordinator;
-    #[cfg(desktop)]
-    let staging = match &link_folder {
-        Some(folder) => {
-            crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id)
-        }
-        None => handoff_staging_path(app, &metadata.transfer_id)?,
-    };
-    #[cfg(not(desktop))]
-    let staging = handoff_staging_path(app, &metadata.transfer_id)?;
-    crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
-    if metadata.derived_state_stale {
-        crate::sync::rebuild_staged_vault(&staging).await?;
+    .await;
+    if sources.is_empty() {
+        return Err(NO_TRUSTED_SOURCE_ERROR.to_string());
     }
+    let mut remaining = sources.as_slice();
+    let (source, metadata, staging) = loop {
+        let FetchedBundle {
+            source,
+            metadata,
+            archive,
+        } = super::transport::fetch_bundle(
+            &pairing,
+            remaining,
+            super::current_compatibility(app),
+            cancellation,
+        )
+        .await?;
+        #[cfg(desktop)]
+        let staging = match &link_folder {
+            Some(folder) => {
+                crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id)
+            }
+            None => handoff_staging_path(app, &metadata.transfer_id)?,
+        };
+        #[cfg(not(desktop))]
+        let staging = handoff_staging_path(app, &metadata.transfer_id)?;
+        match stage_fetched_copy(app, &pairing, &archive, &staging, &metadata, pinned.clone()).await
+        {
+            Ok(()) => break (source, metadata, staging),
+            Err(error) => {
+                remaining = after_source(remaining, &source);
+                if remaining.is_empty() {
+                    return Err(error);
+                }
+                eprintln!("vault copy from {} refused: {error}", source.describe());
+            }
+        }
+    };
+    let from_coordinator = source == BundleSource::Coordinator;
     #[cfg(desktop)]
     let new_folder = match &link_folder {
         Some(folder) => Some(resolve_staged_link_folder(folder, &staging)?),
@@ -399,12 +420,14 @@ async fn receive(
 /// Copies the vault a new desktop just recovered through its server into a new folder and opens
 /// it. The recovery enrolled this desktop, so the server admits it without a coordinator pin. A
 /// copy is settled once it opens, so an unanswered acknowledgement only leaves the server to
-/// release its reservation when it expires.
+/// release its reservation when it expires. The copy is verified against `trust`, the charter
+/// the recovery enrolled under.
 #[cfg(desktop)]
 pub(crate) async fn receive_recovered(
     app: tauri::AppHandle,
     target: ganbaru_sync_replica::anchor_link::ServerTarget,
     vault_id: String,
+    trust: crate::sync::CharterTrust,
 ) -> Result<ReceiveOutcome, String> {
     let lifecycle = app.state::<ReceiverLifecycle>();
     let Ok(_operation) = lifecycle.operation.try_lock() else {
@@ -416,7 +439,7 @@ pub(crate) async fn receive_recovered(
     };
     let cancellation = lifecycle.begin()?;
     let source = BundleSource::Recovery { target, vault_id };
-    let result = receive_recovered_copy(&app, source, &cancellation).await;
+    let result = receive_recovered_copy(&app, source, trust, &cancellation).await;
     lifecycle.finish();
     result
 }
@@ -425,6 +448,7 @@ pub(crate) async fn receive_recovered(
 async fn receive_recovered_copy(
     app: &tauri::AppHandle,
     source: BundleSource,
+    trust: crate::sync::CharterTrust,
     cancellation: &TransferCancellation,
 ) -> Result<ReceiveOutcome, String> {
     let pairing = app.state::<PairingManager>().inner().clone();
@@ -442,10 +466,7 @@ async fn receive_recovered_copy(
     .await?;
     let staging =
         crate::vault::backup::handoff_staging_path_in(&folder.parent, &metadata.transfer_id);
-    crate::vault::backup::stage_handoff_archive(&archive, &staging, &metadata.vault_id).await?;
-    if metadata.derived_state_stale {
-        crate::sync::rebuild_staged_vault(&staging).await?;
-    }
+    stage_fetched_copy(app, &pairing, &archive, &staging, &metadata, Some(trust)).await?;
     let target = resolve_staged_link_folder(&folder, &staging)?;
     crate::vault::backup::activate_handoff_in_new_folder(
         app,
@@ -479,15 +500,79 @@ async fn receive_recovered_copy(
     })
 }
 
-/// Where a vault copy is asked for, in order: the coordinator this device enrolled with, then
-/// the member desktops the local selected log shows as live. A first copy comes from the
+/// Why a linked device fetches no vault copy at all.
+const NO_TRUSTED_SOURCE_ERROR: &str =
+    "no linked device can provide a vault copy this device trusts; link it again";
+
+/// Stages the copy fetched in `archive` at `staging` and verifies it against `pinned`. A copy
+/// that fails is removed with its download, so the next source starts clean.
+async fn stage_fetched_copy(
+    app: &tauri::AppHandle,
+    pairing: &PairingManager,
+    archive: &std::path::Path,
+    staging: &std::path::Path,
+    metadata: &BundleMetadata,
+    pinned: Option<crate::sync::CharterTrust>,
+) -> Result<(), String> {
+    let staged = async {
+        crate::vault::backup::stage_handoff_archive(archive, staging, &metadata.vault_id).await?;
+        crate::sync::prepare_staged_copy(
+            app,
+            staging,
+            &metadata.vault_id,
+            metadata.derived_state_stale,
+            pinned,
+        )
+        .await
+    }
+    .await;
+    if staged.is_err() {
+        if let Err(error) = std::fs::remove_dir_all(staging)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("failed to remove a refused vault copy: {error}");
+        }
+        if let Err(error) = pairing.remove_staging(&metadata.transfer_id) {
+            eprintln!("failed to clean a refused vault transfer: {error}");
+        }
+    }
+    staged
+}
+
+/// The sources after `failed` in `sources`, or none when it is not among them.
+fn after_source<'a>(sources: &'a [BundleSource], failed: &BundleSource) -> &'a [BundleSource] {
+    sources
+        .iter()
+        .position(|source| source == failed)
+        .map_or(&[], |index| &sources[index + 1..])
+}
+
+/// Where a vault copy is asked for, in order: the coordinator this device enrolled with, unless
+/// the local selected log under `pinned_charter` removed it or this installation quarantined it,
+/// then the member desktops the local selected log shows as live. A first copy comes from the
 /// coordinator alone, since the log that names the other members arrives with it.
 async fn bundle_sources(
     app: &tauri::AppHandle,
     vault_id: &str,
     coordinator_device_id: &str,
+    pinned_charter: Option<[u8; 32]>,
 ) -> Vec<BundleSource> {
-    let mut sources = vec![BundleSource::Coordinator];
+    let mut sources = Vec::new();
+    match crate::sync::bootstrap_coordinator_allowed(
+        app,
+        vault_id,
+        coordinator_device_id,
+        pinned_charter,
+    )
+    .await
+    {
+        Ok(false) => eprintln!("vault copy: the linked log removed or quarantined the coordinator"),
+        Ok(true) => sources.push(BundleSource::Coordinator),
+        Err(error) => {
+            eprintln!("vault copy: coordinator standing is unavailable: {error}");
+            sources.push(BundleSource::Coordinator);
+        }
+    }
     match crate::sync::bootstrap_members(app, vault_id, coordinator_device_id).await {
         Ok(members) => sources.extend(members),
         Err(error) => eprintln!("vault copy: member sources are unavailable: {error}"),

@@ -31,6 +31,9 @@ pub enum SyncError {
     /// A charter does not verify with the space person key, names another space, or differs
     /// from the installed one.
     InvalidCharter,
+    /// A staged snapshot copy holds a charter other than the one this device trusts for the
+    /// vault, or no sync space at all while a trusted charter exists.
+    SnapshotCharter,
     /// The selected authorization chain removed the local device.
     DeviceRemoved,
     /// The selected authorization chain has not enrolled the local device yet, so its writer
@@ -91,6 +94,8 @@ impl fmt::Display for SyncError {
                 write!(formatter, "reset sync state: {detail}")
             }
             Self::InvalidCharter => formatter.write_str("sync charter is invalid for this space"),
+            Self::SnapshotCharter => formatter
+                .write_str("the vault copy holds a sync charter this device does not trust"),
             Self::DeviceRemoved => formatter.write_str("this device was removed from the space"),
             Self::NotEnrolled => {
                 formatter.write_str("this device is not enrolled in the space yet")

@@ -37,6 +37,7 @@ mod settle;
 mod sim;
 mod space_keys;
 mod stability;
+mod staged_copy;
 mod trigger_policies;
 mod values;
 

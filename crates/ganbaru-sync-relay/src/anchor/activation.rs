@@ -11,8 +11,8 @@ use super::state::{Activation, DataPaths};
 use crate::server::unix_time_ms;
 use ganbaru_handoff::pairing::{PairingManager, PinnedCharter, random_token};
 use ganbaru_handoff::protocol::{self, BundleMetadata};
-use ganbaru_sync::{AuthorizationView, Engine, local};
-use ganbaru_sync_contracts::{DeviceKind, DeviceRole};
+use ganbaru_sync::{AuthorizationView, Engine, SpaceContext};
+use ganbaru_sync_contracts::{DeviceKind, DeviceRole, SpaceId};
 use ganbaru_sync_replica::anchor_link::local_compatibility;
 use ganbaru_sync_replica::authority::read_admin_key;
 use ganbaru_sync_replica::backup::{
@@ -67,8 +67,9 @@ fn remove_vault(paths: &DataPaths) -> Result<(), String> {
     }
 }
 
-/// Installs the pinned charter, or checks it against the one the vault holds, and refuses a log
-/// that does not enroll this device as an admin.
+/// Rebuilds the snapshot's authorization record store under the pinned charter, refusing a
+/// snapshot that holds another charter, and refuses a log that does not enroll this device as an
+/// admin.
 async fn pin_and_check(host: &AnchorHost, upload: &Upload<'_>) -> Result<(), String> {
     let charter = upload.charter.verify(upload.vault_id)?;
     let pool = host.connect_for_sync().await?;
@@ -82,22 +83,18 @@ async fn pin_and_check(host: &AnchorHost, upload: &Upload<'_>) -> Result<(), Str
         .init_space(&mut conn, upload.vault_id, now_ms)
         .await
         .map_err(|error| format!("open the sync space: {error}"))?;
-    let ctx = local::space_context(&mut conn, upload.vault_id)
+    // The uploader wrote the snapshot's local identity, so the person key comes from the charter
+    // pinned in the setup conversation.
+    let (_, person_key) =
+        protocol::decode_sync_charter(&upload.charter.charter, &upload.charter.person_key)?;
+    let ctx = SpaceContext {
+        space: SpaceId::personal(upload.vault_id),
+        person_key,
+    };
+    engine
+        .reverify_staged_authorization(&mut conn, None, &ctx, &charter, now_ms)
         .await
-        .map_err(|error| format!("read sync space: {error}"))?
-        .ok_or_else(|| "the snapshot has no sync space".to_string())?;
-    match engine
-        .charter(&mut conn, &ctx)
-        .await
-        .map_err(|error| format!("read sync charter: {error}"))?
-    {
-        Some(installed) if installed == charter => {}
-        Some(_) => return Err("the snapshot has a different charter".to_string()),
-        None => engine
-            .install_charter(&mut conn, &ctx, &charter)
-            .await
-            .map_err(|error| format!("install the charter: {error}"))?,
-    }
+        .map_err(|error| format!("verify the snapshot's sync log: {error}"))?;
     let view = selected_view(&engine, &mut conn, &ctx).await?;
     let keys = host.keys();
     let vault_id = upload.vault_id.to_string();
@@ -133,7 +130,7 @@ async fn pin_and_check(host: &AnchorHost, upload: &Upload<'_>) -> Result<(), Str
 async fn selected_view(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    ctx: &ganbaru_sync::SpaceContext,
+    ctx: &SpaceContext,
 ) -> Result<AuthorizationView, String> {
     engine
         .authorization(conn, ctx)

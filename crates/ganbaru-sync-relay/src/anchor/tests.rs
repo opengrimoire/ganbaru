@@ -14,7 +14,7 @@ use ganbaru_sync::{
 use ganbaru_sync_contracts::authorization::{Enroll, Entry};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKeyPair, DeviceKind, DeviceRole, RecoverySeed, SignedCertificate,
-    SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate,
+    SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate, sign_charter,
 };
 use ganbaru_sync_replica::anchor_link::local_compatibility;
 use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup};
@@ -262,6 +262,13 @@ fn is_refused(error: &AnchorSetupError) -> bool {
 
 /// Enrolls the server the code leads to and uploads the founder's vault.
 async fn enroll_and_upload(founder: &Founder, code: &AnchorSetupCode) -> String {
+    let server = enroll_server(founder, code).await;
+    upload(founder, code).await.unwrap();
+    server
+}
+
+/// Enrolls the server the code leads to as an admin of the founder's log.
+async fn enroll_server(founder: &Founder, code: &AnchorSetupCode) -> String {
     let identity = open_setup(code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
         .await
         .unwrap()
@@ -279,14 +286,17 @@ async fn enroll_and_upload(founder: &Founder, code: &AnchorSetupCode) -> String 
             role: DeviceRole::Admin(server.admin_key),
         }))
         .await;
+    server.device_id
+}
+
+/// Uploads the founder's vault to the server the code leads to.
+async fn upload(founder: &Founder, code: &AnchorSetupCode) -> Result<(), AnchorSetupError> {
     let (metadata, archive) = founder.snapshot().await;
     open_setup(code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
         .await
         .unwrap()
         .upload(metadata, &archive, founder.pinned(), true)
         .await
-        .unwrap();
-    server.device_id
 }
 
 /// The authorization view of the anchor's vault, read through a connection of its own.
@@ -392,8 +402,7 @@ fn a_snapshot_that_does_not_enroll_the_server_is_refused() {
                 .unwrap()
                 .upload(metadata, &archive, founder.pinned(), true)
                 .await
-                .err()
-                .expect("the upload should be refused");
+                .expect_err("the upload should be refused");
             assert!(refused.to_string().contains("does not enroll"), "{refused}");
             let paths = DataPaths::new(root.to_path_buf());
             assert!(!paths.activation().exists());
@@ -401,6 +410,90 @@ fn a_snapshot_that_does_not_enroll_the_server_is_refused() {
             open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
                 .await
                 .expect("a refused upload does not spend the secret");
+        })
+        .await;
+    });
+}
+
+/// Breaks the writer signature of the newest authorization record in the founder's store and
+/// keeps the row verified, as a sender that planted the record would.
+async fn forge_newest_record(founder: &Founder) {
+    let (hash, mut envelope): (Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT envelope_hash, envelope FROM sync_auth_envelopes WHERE role = 'record'
+         ORDER BY stored_order DESC LIMIT 1",
+    )
+    .fetch_one(&founder.pool)
+    .await
+    .unwrap();
+    let last = envelope
+        .last_mut()
+        .expect("an envelope ends with its signature");
+    *last ^= 0xff;
+    sqlx::query("UPDATE sync_auth_envelopes SET envelope = ? WHERE envelope_hash = ?")
+        .bind(envelope)
+        .bind(hash)
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+}
+
+/// Replaces the founder's charter and local person key with ones another person signed. The
+/// sender controls its database, so the trigger that keeps the identity fixed is lifted for the
+/// update and restored after it.
+async fn replace_person(founder: &Founder) {
+    let other = PersonKeyPair::from_seed(&[8; 32]).unwrap();
+    let charter = sign_charter(&founder.charter.charter, &other).unwrap();
+    sqlx::query("UPDATE sync_spaces SET charter = ?")
+        .bind(charter.encode())
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+    let trigger: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master
+         WHERE type = 'trigger' AND name = 'contacts_local_identity_immutable_update'",
+    )
+    .fetch_one(&founder.pool)
+    .await
+    .unwrap();
+    sqlx::query("DROP TRIGGER contacts_local_identity_immutable_update")
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE contacts_local_identity SET public_key = ?")
+        .bind(other.public_key().to_text())
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(trigger))
+        .execute(&founder.pool)
+        .await
+        .unwrap();
+}
+
+#[test]
+fn activation_reverifies_a_staged_authorization_store() {
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            enroll_server(&founder, &code).await;
+            forge_newest_record(&founder).await;
+            let refused = upload(&founder, &code)
+                .await
+                .expect_err("an enrollment with a broken signature should not activate");
+            assert!(refused.to_string().contains("does not enroll"), "{refused}");
+            let paths = DataPaths::new(root.to_path_buf());
+            assert!(!paths.activation().exists());
+            assert!(!paths.vault().exists());
+
+            replace_person(&founder).await;
+            let refused = upload(&founder, &code)
+                .await
+                .expect_err("a copy under another person's charter should not activate");
+            assert!(refused.to_string().contains("charter"), "{refused}");
+            assert!(!paths.vault().exists());
         })
         .await;
     });

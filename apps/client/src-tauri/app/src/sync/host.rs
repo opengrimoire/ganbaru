@@ -16,8 +16,11 @@ use crate::vault::handoff::transport::CoordinatorDialReport;
 use crate::vault::process_managers::ProcessManagers;
 use crate::vault::write_fence::VaultWriteFence;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
+use ganbaru_handoff::pairing::{CoordinatorPin, PinnedCharter};
+use ganbaru_handoff::protocol::decode_sync_charter;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
-use ganbaru_sync::{ChangeNotice, Engine, Hooks};
+use ganbaru_sync::{ChangeNotice, Engine, Hooks, SpaceContext};
+use ganbaru_sync_contracts::{SignedCharter, SpaceId};
 use ganbaru_sync_replica::assets::AssetStore;
 use ganbaru_sync_replica::recovery::RecoveryRestorers;
 use ganbaru_sync_replica::service::transport::SyncDialer;
@@ -72,6 +75,155 @@ pub(crate) async fn rebuild_staged_vault(staging: &std::path::Path) -> Result<()
     .await;
     let closed = pools.close_all().await;
     rebuilt.and(closed)
+}
+
+/// A space charter with the person key that signed it.
+pub(crate) type CharterTrust = (SignedCharter, PersonPublicKey);
+
+/// What a staged copy is verified against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StagedTrust {
+    pub charter: SignedCharter,
+    pub person_key: PersonPublicKey,
+    /// Whether the live database continues this charter's log, so its records can merge.
+    pub merge_live: bool,
+}
+
+/// The charter the coordinator pin holds for `vault_id`, verified against its person key and the
+/// vault. `None` for a pin of another vault or a pin without a charter.
+pub(crate) fn pinned_trust(
+    pin: Option<&CoordinatorPin>,
+    vault_id: &str,
+) -> Result<Option<CharterTrust>, String> {
+    match pin
+        .filter(|pin| pin.vault_id == vault_id)
+        .and_then(|pin| pin.charter.as_ref())
+    {
+        Some(pinned) => charter_trust(pinned, vault_id).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The charter and person key of `pinned`, verified against each other and the vault.
+pub(crate) fn charter_trust(
+    pinned: &PinnedCharter,
+    vault_id: &str,
+) -> Result<CharterTrust, String> {
+    let charter = pinned.verify(vault_id)?;
+    let (_, person_key) = decode_sync_charter(&pinned.charter, &pinned.person_key)?;
+    Ok((charter, person_key))
+}
+
+/// Prefers the pinned charter, because the pin is what the user last confirmed by linking. A
+/// live database with another charter belongs to a log the pinned coordinator reset, so its
+/// records stay out of the copy. `None` when neither exists, as before a space is founded.
+pub(crate) fn staged_trust(
+    pinned: Option<CharterTrust>,
+    live: Option<CharterTrust>,
+) -> Option<StagedTrust> {
+    match (pinned, live) {
+        (Some((charter, person_key)), live) => {
+            let merge_live = live.is_some_and(|(live, _)| live == charter);
+            Some(StagedTrust {
+                charter,
+                person_key,
+                merge_live,
+            })
+        }
+        (None, Some((charter, person_key))) => Some(StagedTrust {
+            charter,
+            person_key,
+            merge_live: true,
+        }),
+        (None, None) => None,
+    }
+}
+
+/// Rebuilds the authorization record store of the copy of `vault_id` staged at `staging` against
+/// a charter the sender does not control: `pinned`, or else the charter of the live vault when
+/// `vault_id` is active. The live vault's verified records merge in when it continues the same
+/// log. A copy that precedes any trusted charter is left as it is.
+async fn verify_staged_copy<R: Runtime>(
+    app: &AppHandle<R>,
+    staging: &std::path::Path,
+    vault_id: &str,
+    pinned: Option<CharterTrust>,
+) -> Result<(), String> {
+    let host = AppHost::of(app);
+    let live_pool = if host.active_vault_id()? == vault_id {
+        Some(host.connect_for_sync().await?)
+    } else {
+        None
+    };
+    let mut live_conn = match &live_pool {
+        Some(pool) => Some(
+            pool.acquire()
+                .await
+                .map_err(|error| format!("acquire sync connection: {error}"))?,
+        ),
+        None => None,
+    };
+    let live = match live_conn.as_deref_mut() {
+        Some(conn) => live_charter(conn, vault_id).await?,
+        None => None,
+    };
+    let Some(trust) = staged_trust(pinned, live) else {
+        return Ok(());
+    };
+    let ctx = SpaceContext {
+        space: SpaceId::personal(vault_id),
+        person_key: trust.person_key,
+    };
+    let live = if trust.merge_live {
+        live_conn.as_deref_mut()
+    } else {
+        None
+    };
+    ganbaru_sync_replica::carry_forward::reverify_replacement(
+        &Engine::vault(),
+        &staging.join(crate::vault::APP_SQLITE_FILE),
+        live,
+        &ctx,
+        &trust.charter,
+        super::now_ms()?,
+    )
+    .await
+    .map(drop)
+}
+
+/// Makes the copy of `vault_id` staged at `staging` safe to open: its authorization record store
+/// is verified against `pinned` or the live charter, and its derived state is rebuilt when the
+/// source sealed none.
+pub(crate) async fn prepare_staged_copy<R: Runtime>(
+    app: &AppHandle<R>,
+    staging: &std::path::Path,
+    vault_id: &str,
+    derived_state_stale: bool,
+    pinned: Option<CharterTrust>,
+) -> Result<(), String> {
+    verify_staged_copy(app, staging, vault_id, pinned).await?;
+    if derived_state_stale {
+        rebuild_staged_vault(staging).await?;
+    }
+    Ok(())
+}
+
+/// The installed charter of the live vault `vault_id` with its owner's person key.
+async fn live_charter(
+    conn: &mut sqlx::SqliteConnection,
+    vault_id: &str,
+) -> Result<Option<CharterTrust>, String> {
+    let Some(ctx) = ganbaru_sync::local::space_context(conn, vault_id)
+        .await
+        .map_err(|error| format!("read sync space: {error}"))?
+    else {
+        return Ok(None);
+    };
+    let charter = Engine::vault()
+        .charter(conn, &ctx)
+        .await
+        .map_err(|error| format!("read sync charter: {error}"))?;
+    Ok(charter.map(|charter| (charter, ctx.person_key)))
 }
 
 /// Opens the active vault of `config_dir` read-write for sync work through `pools`.

@@ -17,7 +17,8 @@ use ganbaru_sync::local::{
     self, MAX_BUNDLE_BYTES, decode_bundle, encode_bundle, replacement_vector,
 };
 use ganbaru_sync::manifest::Manifest;
-use ganbaru_sync::{CarryReport, Engine, LocalRestoreReport, SpaceContext};
+use ganbaru_sync::{CarryReport, Engine, LocalRestoreReport, ReverifyReport, SpaceContext};
+use ganbaru_sync_contracts::SignedCharter;
 use sha2::{Digest as _, Sha256};
 use sqlx::{Connection as _, SqliteConnection};
 use std::io::Read as _;
@@ -72,6 +73,25 @@ pub async fn restore_into_replacement(
         .await
         .map_err(|error| format!("restore device state: {error}"));
     close_staged(conn, restored).await
+}
+
+/// Rebuilds the authorization record store of the staged `replacement` under `charter`, which the
+/// receiving device trusts, and merges the verified envelopes of `live` when given. See
+/// [`Engine::reverify_staged_authorization`].
+pub async fn reverify_replacement(
+    engine: &Engine,
+    replacement: &Path,
+    live: Option<&mut SqliteConnection>,
+    ctx: &SpaceContext,
+    charter: &SignedCharter,
+    now_ms: u64,
+) -> Result<ReverifyReport, String> {
+    let mut conn = open_staged(replacement).await?;
+    let report = engine
+        .reverify_staged_authorization(&mut conn, live, ctx, charter, now_ms)
+        .await
+        .map_err(|error| format!("verify the copy's sync log: {error}"));
+    close_staged(conn, report).await
 }
 
 /// Opens a staged replacement database outside any pool registry, so it never shares a pool

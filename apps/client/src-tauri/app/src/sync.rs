@@ -34,12 +34,13 @@ use ganbaru_sync_replica::{assets, writer};
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-pub(crate) use host::rebuild_staged_vault;
+pub(crate) use host::{CharterTrust, pinned_trust, prepare_staged_copy, rebuild_staged_vault};
 pub(crate) use peers::reported_members;
 pub(crate) use service::{
-    SyncRuntime, bootstrap_members, ensure_device_key, member_admission_source, member_hub,
-    peer_hints, quiesced_sync, read_peer_book, release_runtime_handle, resume_after_vault_handoff,
-    seal_quiesced, setup, stop_for_vault_handoff, sync_files,
+    SyncRuntime, bootstrap_coordinator_allowed, bootstrap_members, ensure_device_key,
+    member_admission_source, member_hub, peer_hints, quiesced_sync, read_peer_book,
+    release_runtime_handle, resume_after_vault_handoff, seal_quiesced, setup,
+    stop_for_vault_handoff, sync_files,
 };
 #[cfg(desktop)]
 pub(crate) use service::{

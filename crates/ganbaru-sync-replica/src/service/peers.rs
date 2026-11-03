@@ -567,6 +567,50 @@ pub async fn bootstrap_members<H: SyncHost>(
     Ok(sources)
 }
 
+/// Whether a vault copy may come from the coordinator this device enrolled with, see
+/// [`coordinator_allowed`]. `pinned_charter` is the hash of the charter the coordinator pin
+/// holds. Without a selected log of `vault_id`, as on a first link, the coordinator stays a
+/// source.
+pub async fn bootstrap_coordinator_allowed<H: SyncHost>(
+    host: &H,
+    vault_id: &str,
+    coordinator_device_id: &str,
+    pinned_charter: Option<[u8; 32]>,
+) -> Result<bool, String> {
+    let path = host.sync_files(vault_id)?.quarantine_path();
+    let quarantined = blocking(move || Quarantine::load(&path)).await?;
+    let view = match selected_authorization(host).await? {
+        Some((active_vault_id, view)) if active_vault_id == vault_id => Some(view),
+        _ => None,
+    };
+    Ok(coordinator_allowed(
+        coordinator_device_id,
+        quarantined.devices(),
+        view.as_ref(),
+        pinned_charter,
+    ))
+}
+
+/// Whether the coordinator stays a copy source: not while this installation quarantined it, and
+/// not while the local selected log removed it, which counts only when that log starts from the
+/// pinned charter. A removal in a log the coordinator later reset says nothing about the charter
+/// it founded since.
+pub fn coordinator_allowed(
+    coordinator_device_id: &str,
+    quarantined: &BTreeSet<String>,
+    view: Option<&AuthorizationView>,
+    pinned_charter: Option<[u8; 32]>,
+) -> bool {
+    if quarantined.contains(coordinator_device_id) {
+        return false;
+    }
+    let removed = view.is_some_and(|view| {
+        pinned_charter == Some(view.charter)
+            && crate::hub::removes_device(view, coordinator_device_id)
+    });
+    !removed
+}
+
 /// The anchor server of `view` as a copy source, unless it is this device or quarantined here.
 fn server_source(
     view: &AuthorizationView,

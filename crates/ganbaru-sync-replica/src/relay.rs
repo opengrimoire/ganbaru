@@ -408,14 +408,19 @@ impl RelaySession<'_> {
         if pass.pulled > 0 && self.assets.is_some() {
             pass.more = true;
         }
-        // The admin set follows the chain only once this replica holds everything the relay
-        // holds for it, so an admin that lags behind a demotion never restores the demoted key.
-        if drained
-            && let Some(admin) = self.admin
+        // Taking a key away only narrows the set, so every live admin pass retires the keys
+        // its chain removed or demoted, drained or not. Adding keys waits until this replica
+        // holds everything the relay holds for it, so an admin that lags behind a demotion
+        // never restores the demoted key.
+        if let Some(admin) = self.admin
             && self.is_live_admin().await?
         {
-            self.keep_admin_set(&mut connection, admin, &mut pass)
+            self.retire_admin_keys(&mut connection, admin, &mut pass)
                 .await?;
+            if drained {
+                self.keep_admin_set(&mut connection, admin, &mut pass)
+                    .await?;
+            }
         }
         if let Some(store) = self.assets {
             self.download_assets(&mut connection, &keys, store, &mut pass)
@@ -894,6 +899,51 @@ impl RelaySession<'_> {
         }
     }
 
+    /// Removes from the relay's admin set every key the selected chain took away: the keys of
+    /// removed admin devices and the retired keys, less any key the chain names live again.
+    /// A refusal of the relay is noted and the pass goes on, since a lagging chain may hold a
+    /// counter or set the relay already moved past.
+    async fn retire_admin_keys(
+        &self,
+        connection: &mut Connection,
+        admin: &AdminKeyPair,
+        pass: &mut RelayPass,
+    ) -> Result<(), RelayError> {
+        let view = self.view().await?;
+        let Some((held, mut counter)) = relay_admins(connection, pass).await? else {
+            return Ok(());
+        };
+        let wanted = relay_admin_set(&view);
+        let taken = view
+            .devices
+            .iter()
+            .filter(|device| device.removed_revision.is_some())
+            .filter_map(|device| match device.role {
+                DeviceRole::Admin(key) => Some(key),
+                DeviceRole::Member => None,
+            })
+            .chain(view.retired_admin_keys.iter().copied())
+            .filter(|key| held.contains(key) && !wanted.contains(key))
+            .collect::<BTreeSet<_>>();
+        for key in &taken {
+            match connection
+                .admin(admin, counter + 1, &RelayAdminCommand::RemoveKey(key))
+                .await
+            {
+                Ok(next) => counter = next,
+                Err(error) if error.problem == RelayProblem::AdminRefused => {
+                    pass.note(
+                        RelayProblem::AdminRefused,
+                        format!("the relay refused to retire an admin key: {}", error.detail),
+                    );
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     /// Adds the keys of live admin devices and the recovery key to the relay's admin set and
     /// removes every other key, so a removed or demoted admin loses relay authority too.
     async fn keep_admin_set(
@@ -904,27 +954,8 @@ impl RelaySession<'_> {
     ) -> Result<(), RelayError> {
         let view = self.view().await?;
         let wanted = relay_admin_set(&view);
-        let (held, mut counter) = match connection.request(&RelayRequest::State).await? {
-            RelayResponse::State {
-                admins,
-                admin_counter,
-                ..
-            } => {
-                let held = admins
-                    .iter()
-                    .map(|key| decode_relay_admin_key(key))
-                    .collect::<Result<BTreeSet<_>, _>>()?;
-                (held, admin_counter)
-            }
-            // A rotation registered during this pass; the next pass keeps the set.
-            RelayResponse::Refused {
-                code: RelayRefusalCode::StaleEpoch,
-                ..
-            } => {
-                pass.more = true;
-                return Ok(());
-            }
-            other => return Err(unexpected("State", &other)),
+        let Some((held, mut counter)) = relay_admins(connection, pass).await? else {
+            return Ok(());
         };
         for key in wanted.difference(&held) {
             if held.len() + 1 > MAX_RELAY_ADMIN_KEYS {
@@ -1115,9 +1146,11 @@ impl RelaySession<'_> {
     /// lacks, and stores the operations they carry through the verified operation path.
     ///
     /// Returns whether the pull drained the relay: the relay reported nothing more to pull,
-    /// never reported operations trimmed below its floor, and this replica refused no record.
-    /// A stop at the byte bound, a refusal, or a trimmed range means this replica cannot know
-    /// what the relay still holds for it.
+    /// never reported operations of a writer this replica knows trimmed below its floor, and
+    /// this replica refused no record. A stop at the byte bound, a refusal, or a trimmed range
+    /// of a known writer means this replica cannot know what the relay still holds for it. A
+    /// floor of a writer this replica holds no certificate for is noted but does not block the
+    /// drain, since a relay or a removed admin could plant one to hold the admin set back.
     async fn pull(
         &self,
         connection: &mut Connection,
@@ -1142,7 +1175,7 @@ impl RelaySession<'_> {
                 other => return Err(unexpected("Records", &other)),
             };
             if !behind_floor.is_empty() {
-                trimmed = true;
+                trimmed |= self.knows_a_writer(&behind_floor).await?;
                 pass.note(
                     RelayProblem::Trimmed,
                     "the relay trimmed operations this device lacks; link directly with a \
@@ -1238,6 +1271,26 @@ impl RelaySession<'_> {
                 return Ok(false);
             }
         }
+    }
+
+    /// Whether this replica holds the certificate of a writer among `behind_floor`. A name
+    /// that is not a writer id counts as unknown.
+    async fn knows_a_writer(&self, behind_floor: &[SyncSeq]) -> Result<bool, RelayError> {
+        let mut conn = acquire(self.pool).await?;
+        for entry in behind_floor {
+            let Some(writer) = WriterId::from_hex(&entry.writer) else {
+                continue;
+            };
+            let certificate = self
+                .engine
+                .writer_certificate(&mut conn, self.ctx, writer)
+                .await
+                .map_err(|error| format!("read writer certificate: {error}"))?;
+            if certificate.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn referenced(&self) -> Result<Vec<AssetRef>, RelayError> {
@@ -1503,6 +1556,35 @@ impl RelaySession<'_> {
 #[derive(Default)]
 struct Sent {
     stalled: BTreeSet<WriterId>,
+}
+
+/// The relay's admin set and admin counter, or `None` when a rotation registered during this
+/// pass left the session stale, in which case the next pass keeps the set.
+async fn relay_admins(
+    connection: &mut Connection,
+    pass: &mut RelayPass,
+) -> Result<Option<(BTreeSet<AdminPublicKey>, u64)>, RelayError> {
+    match connection.request(&RelayRequest::State).await? {
+        RelayResponse::State {
+            admins,
+            admin_counter,
+            ..
+        } => {
+            let held = admins
+                .iter()
+                .map(|key| decode_relay_admin_key(key))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            Ok(Some((held, admin_counter)))
+        }
+        RelayResponse::Refused {
+            code: RelayRefusalCode::StaleEpoch,
+            ..
+        } => {
+            pass.more = true;
+            Ok(None)
+        }
+        other => Err(unexpected("State", &other)),
+    }
 }
 
 /// The admin set the relay keeps for the space: every live admin device's key and the recovery

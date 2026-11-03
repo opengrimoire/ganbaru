@@ -85,6 +85,8 @@ The relay never receives record content, asset content, or a key it can open. It
 
 Relay credentials of old epochs never expire, because a member offline across a rotation catches up through them. A removed device that kept one keeps pulling the records sealed under that epoch, including ones members push before they learn the rotation, and keeps seeing key epoch records and when traffic arrives through waits. The relay refuses such a session the space state, so it does not see writer ranges, usage, or the admin set.
 
+A removed or demoted admin keeps relay admin authority until a live admin device next completes a relay pass after learning the change, because only the devices hold the chain. That pass removes the key whether or not its pull drained the relay. Until then the key can still sign relay admin commands, such as an epoch repair, which can lock the space out of the relay until an admin repairs it again but never exposes content.
+
 An always-on anchor is outside this boundary, because it is a member that holds the keys and reads the whole vault. Revocation prevents future operations and key distribution but cannot erase plaintext already on an offline device or external provider. See [Synchronization](../sync.md).
 
 ## Sync security reviews

@@ -18,7 +18,7 @@ use crate::vault::quiescence::begin_snapshot_quiescence;
 use ganbaru_handoff::protocol::anchor::AnchorSetupCode;
 use ganbaru_sync::{AuthorizationView, Engine, EnrolledDevice, local};
 use ganbaru_sync_contracts::authorization::Server;
-use ganbaru_sync_contracts::{DeviceKind, DeviceRole};
+use ganbaru_sync_contracts::{DeviceKind, DeviceRole, KitCode};
 use ganbaru_sync_replica::anchor_setup::{
     AnchorSetupError, SetupConnection, open_setup, setup_target,
 };
@@ -213,6 +213,7 @@ pub async fn sync_recover_through_server(
     code: String,
     kit: String,
 ) -> Result<ReceiveOutcome, String> {
+    let kit = KitCode::new(kit);
     let code = AnchorSetupCode::from_text(code.trim())?;
     let mut connection = open(&app, &code, None)
         .await

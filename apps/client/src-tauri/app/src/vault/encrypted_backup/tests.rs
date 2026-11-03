@@ -571,7 +571,10 @@ fn only_kit_refusals_keep_the_picked_file() {
 
 #[test]
 fn the_kit_wins_over_the_epoch_key_and_a_mistyped_kit_is_refused() {
-    let code = RecoverySeed::from_bytes([0x42; 32]).kit_code();
+    let code = RecoverySeed::from_bytes([0x42; 32])
+        .kit_code()
+        .as_str()
+        .to_string();
     let epoch = || Some(SpaceKey::generate(1).unwrap());
     assert!(matches!(
         Unlock::choose(Some(code), epoch()),

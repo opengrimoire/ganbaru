@@ -4,8 +4,8 @@ use crate::assets::{
     ContentAddressedStore, INVALID_ASSET, InFlightAssets, MAX_ASSET_PASS_BYTES,
     UNREFERENCED_ASSET_GRACE, collect_unreferenced_assets,
 };
-use crate::backup::ArchiveGate;
 use crate::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
+use crate::backup::ArchiveGate;
 use crate::client::{
     self, ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };

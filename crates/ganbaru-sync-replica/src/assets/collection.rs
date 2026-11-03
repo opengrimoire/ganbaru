@@ -29,7 +29,7 @@ pub const UNREFERENCED_ASSET_GRACE: Duration = Duration::from_secs(24 * 60 * 60)
 type DigestKey = (&'static str, String);
 
 /// Assets that transfers of this process touched recently: received, kept as already held, or
-/// confirmed as held to a peer. The sweep spares them within its grace, since the operation
+/// confirmed as held for a transfer. A presence answer to a peer touches nothing. The sweep spares them within its grace, since the operation
 /// that references such an asset may not have arrived yet while its file is old.
 #[derive(Debug, Default)]
 pub struct InFlightAssets {

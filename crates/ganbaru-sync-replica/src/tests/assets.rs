@@ -682,7 +682,10 @@ fn asset_stage_and_commit_keep_their_grace() {
         // The operation that references the upload has not arrived when the sweep runs.
         let later = SystemTime::now() + SWEEP_GRACE * 2;
         assert_eq!(vault.sweep(&in_flight, later, admit_all).await, Ok(0));
-        assert_eq!(entries(vault.root(), &IMAGES_CLASS), vec![asset.file_name()]);
+        assert_eq!(
+            entries(vault.root(), &IMAGES_CLASS),
+            vec![asset.file_name()]
+        );
         let untouched = Arc::new(InFlightAssets::default());
         assert_eq!(vault.sweep(&untouched, later, admit_all).await, Ok(1));
         assert!(entries(vault.root(), &IMAGES_CLASS).is_empty());

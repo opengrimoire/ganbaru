@@ -122,12 +122,21 @@ impl ArchiveGate {
 
 /// Writes a consistent copy of the database `pool` serves to `destination`.
 pub async fn vacuum_database(pool: &SqlitePool, destination: &Path) -> Result<(), String> {
+    vacuum_into(pool, destination).await
+}
+
+/// Runs `VACUUM INTO` on `executor`, which writes a fresh copy to `destination` whose pages
+/// hold only live rows.
+async fn vacuum_into<'e, E>(executor: E, destination: &Path) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let destination = destination
         .to_str()
         .ok_or_else(|| "database snapshot path contains non-UTF-8 characters".to_string())?;
     sqlx::query("VACUUM INTO ?")
         .bind(destination)
-        .execute(pool)
+        .execute(executor)
         .await
         .map_err(|error| format!("create consistent database snapshot: {error}"))?;
     Ok(())
@@ -216,19 +225,47 @@ async fn write_snapshot_archive(
 
 /// Clears installation-local sync state and device-local rows from a snapshot copy before it
 /// leaves this device, or from a restored copy that arrived from elsewhere.
+///
+/// Clearing only frees the pages that held those rows, so the cleared copy is then rewritten
+/// and replaces `snapshot`: the result holds no page of a cleared row.
 pub async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
+    let compacted = snapshot.with_extension("compact");
+    remove_stale_compaction(&compacted)?;
     let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
     let mut conn = SqliteConnection::connect_with(&options)
         .await
         .map_err(|error| format!("open vault snapshot: {error}"))?;
-    let result = ganbaru_sync::local::prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
-        .await
-        .map_err(|error| format!("prepare vault snapshot: {error}"));
+    let result = async {
+        ganbaru_sync::local::prepare_snapshot_copy(&mut conn, &VAULT_MANIFEST)
+            .await
+            .map_err(|error| format!("prepare vault snapshot: {error}"))?;
+        vacuum_into(&mut conn, &compacted).await
+    }
+    .await;
     let closed = conn
         .close()
         .await
         .map_err(|error| format!("close vault snapshot: {error}"));
-    result.and(closed)
+    let outcome = result.and(closed).and_then(|()| {
+        fs::rename(&compacted, snapshot)
+            .map_err(|error| format!("replace vault snapshot with its compacted copy: {error}"))
+    });
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(error) => match remove_stale_compaction(&compacted) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}; {cleanup}")),
+        },
+    }
+}
+
+/// Removes the compacted copy at `compacted` that an interrupted preparation left behind.
+fn remove_stale_compaction(compacted: &Path) -> Result<(), String> {
+    match fs::remove_file(compacted) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove compacted vault snapshot: {error}")),
+    }
 }
 
 #[derive(Clone)]

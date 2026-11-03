@@ -1390,8 +1390,10 @@ mod tests {
         );
         let stale = fs::read(without_backup.join("vault.json")).unwrap();
         let stale_ms = last_vault_change_ms(&without_backup).unwrap();
+        // An hour earlier keeps this archive name apart from the backed-up vault's, whose
+        // change time can sit within milliseconds of this one.
         write_test_archive(
-            &backups.join(format!("replaced-{}.ganbaru-backup", stale_ms - 1)),
+            &backups.join(format!("replaced-{}.ganbaru-backup", stale_ms - 3_600_000)),
             &[("vault.json", stale.as_slice())],
         );
 

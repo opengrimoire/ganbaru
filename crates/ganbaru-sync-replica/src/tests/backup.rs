@@ -2,8 +2,8 @@ use super::{TestDirectory, acquire, add_note, block_on, context, create_vault};
 use crate::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, DATABASE_FILE, VAULT_MANIFEST_FILE,
     create_backup_archive, create_encrypted_backup, create_snapshot_archive, decrypt_backup,
-    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive, vacuum_database,
-    validate_vault_database,
+    is_bundle_layout_entry, is_database_sidecar, read_backup_header, seal_archive,
+    sweep_backup_staging, vacuum_database, validate_vault_database,
 };
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync_contracts::backup::{BACKUP_CHUNK_BYTES, BackupError};
@@ -737,5 +737,78 @@ fn selected_recovery_key_prefers_the_log() {
         );
         drop(conn);
         registry.close_all().await.expect("close pools");
+    });
+}
+
+/// Plants the plaintext staging an encrypted backup killed mid-run leaves below `staging`.
+fn plant_interrupted_staging(staging: &Path, name: &str) -> PathBuf {
+    let leftover = staging.join(name);
+    std::fs::create_dir_all(&leftover).expect("create leftover staging");
+    std::fs::write(leftover.join("snapshot.sqlite"), b"plaintext snapshot")
+        .expect("write leftover snapshot");
+    std::fs::write(leftover.join("archive.zip"), b"plaintext archive")
+        .expect("write leftover archive");
+    leftover
+}
+
+#[test]
+fn sweep_backup_staging_removes_only_interrupted_staging() {
+    let directory = TestDirectory::new("backup-sweep");
+    let staging = directory.path().join("staging");
+    let leftover = plant_interrupted_staging(&staging, ".ganbaru-backup-killed");
+    let unrelated = staging.join("restore-pending");
+    std::fs::create_dir_all(&unrelated).expect("create unrelated folder");
+    std::fs::write(unrelated.join("archive.zip"), b"kept").expect("write unrelated file");
+    #[cfg(unix)]
+    let outside = {
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("create symlink target");
+        std::fs::write(outside.join("kept"), b"kept").expect("write symlink target file");
+        std::os::unix::fs::symlink(&outside, staging.join(".ganbaru-backup-link"))
+            .expect("create symlink");
+        outside
+    };
+
+    sweep_backup_staging(&staging).expect("sweep staging");
+
+    assert!(!leftover.exists(), "the interrupted staging is removed");
+    assert!(unrelated.join("archive.zip").exists(), "other folders stay");
+    #[cfg(unix)]
+    {
+        assert!(
+            std::fs::symlink_metadata(staging.join(".ganbaru-backup-link")).is_ok(),
+            "a symlink is not followed or removed"
+        );
+        assert!(outside.join("kept").exists(), "the symlink target stays");
+    }
+    sweep_backup_staging(&directory.path().join("missing")).expect("a missing root is fine");
+}
+
+#[test]
+fn create_encrypted_backup_sweeps_a_killed_run() {
+    block_on(async {
+        let directory = TestDirectory::new("backup-sweep-killed");
+        let root = directory.path().join("vault");
+        std::fs::create_dir_all(&root).expect("create vault root");
+        let registry = DatabasePoolRegistry::default();
+        let pool = create_vault(&registry, &root.join(DATABASE_FILE)).await;
+        registry.close_all().await.expect("close vault");
+        drop(pool);
+        write_layout(&root);
+        let staging = directory.path().join("staging");
+        let leftover = plant_interrupted_staging(&staging, ".ganbaru-backup-x");
+
+        create_encrypted_backup(
+            &ArchiveGate::default(),
+            &root,
+            &staging,
+            &seal_keys(None),
+            &directory.path().join("vault.ganbaru-backup"),
+        )
+        .await
+        .expect("create encrypted backup");
+
+        assert!(!leftover.exists(), "the killed run's staging is removed");
+        assert_eq!(staged_entries(&staging), 0);
     });
 }

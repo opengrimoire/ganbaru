@@ -34,7 +34,7 @@ use ganbaru_sync_contracts::{
 };
 use ganbaru_sync_replica::backup::{
     ArchiveGate, BackupFileError, BackupSealKeys, create_encrypted_backup, decrypt_backup,
-    read_backup_header,
+    read_backup_header, sweep_backup_staging, sweep_staging_entries,
 };
 use serde::Serialize;
 use sqlx::Connection;
@@ -52,12 +52,13 @@ const TRANSFER_ROOT: &str = "vault-backups";
 /// Prefix of the private directory one inspected backup lives in; the rest is its token.
 const RESTORE_TRANSFER_PREFIX: &str = "restore-";
 /// Prefix of the private directory one Android backup is written to before it is saved.
-#[cfg(target_os = "android")]
 const SAVE_TRANSFER_PREFIX: &str = "save-";
 /// The decrypted archive inside a restore transfer directory.
 const RESTORED_ARCHIVE_FILE: &str = "archive.zip";
 /// Folder name that holds a restored vault before it replaces the vault beside it.
 const RESTORE_STAGING_NAME: &str = ".ganbaru.restore";
+/// Prefix of the private folder an independent copy is restored in beside its new folder.
+const RESTORE_COPY_STAGING_PREFIX: &str = ".ganbaru.restore-";
 /// Folder name the replaced vault waits in while a restore swaps folders.
 const RESTORE_ROLLBACK_NAME: &str = ".ganbaru.rollback";
 /// Trigger names that keep the person identity and contact card from being deleted. An
@@ -478,6 +479,66 @@ fn remove_stale_transfers(root: &Path, prefix: &str) {
             let _ = fs::remove_dir_all(entry.path());
         }
     }
+}
+
+/// Removes the plaintext an interrupted backup or restore left: picked backups, Android saves,
+/// and backup staging in the transfer root, and restore staging beside the vault a restore
+/// replaces. Startup calls it after interrupted swaps are recovered, so a staged vault a swap
+/// still needs is never swept, and before the sync service or any command runs.
+///
+/// Restore staging below a parent chosen for an earlier independent copy is not known here;
+/// the next restore into that parent sweeps it.
+pub(crate) fn sweep_interrupted_backups(app: &tauri::AppHandle) -> Result<(), String> {
+    let _transition = quiescence::reserve_vault_transition()?;
+    sweep_interrupted_backups_at(&transfer_root(app)?, restore_target(app)?.as_deref())
+}
+
+/// The vault folder an in-place restore replaces, beside which it stages: the selected vault
+/// on desktop, read without validating it, and the app-private vault on Android.
+fn restore_target(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+    #[cfg(target_os = "android")]
+    {
+        super::default_vault_path(app).map(Some)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(super::read_app_state(app)?
+            .active_vault_path
+            .as_ref()
+            .map(PathBuf::from))
+    }
+}
+
+/// Removes what interrupted backups and restores left below `transfer_root` and beside
+/// `restore_target`. The caller holds the vault transition, so none of it is in use.
+fn sweep_interrupted_backups_at(
+    transfer_root: &Path,
+    restore_target: Option<&Path>,
+) -> Result<(), String> {
+    remove_stale_transfers(transfer_root, RESTORE_TRANSFER_PREFIX);
+    remove_stale_transfers(transfer_root, SAVE_TRANSFER_PREFIX);
+    let mut failures = Vec::new();
+    if let Err(error) = sweep_backup_staging(transfer_root) {
+        failures.push(error.to_string());
+    }
+    if let Some(parent) = restore_target.and_then(Path::parent)
+        && let Err(error) = sweep_restore_staging(parent)
+    {
+        failures.push(error);
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+/// Removes in-place and independent-copy restore staging directly below `parent`.
+fn sweep_restore_staging(parent: &Path) -> Result<(), String> {
+    sweep_staging_entries(parent, |name| {
+        name == RESTORE_STAGING_NAME || name.starts_with(RESTORE_COPY_STAGING_PREFIX)
+    })
+    .map_err(|error| format!("sweep restore staging: {error}"))
 }
 
 /// Removes a folder a restore staged when the restore stops before using it.
@@ -1221,9 +1282,13 @@ async fn restore_in_new_folder(
     let parent = target
         .parent()
         .ok_or_else(|| "the chosen folder has no parent directory".to_string())?;
-    let staging_parent =
-        ganbaru_atomic_files::create_private_temporary_directory(parent, ".ganbaru.restore-")
-            .map_err(|error| format!("create restore staging: {error}"))?;
+    let sweep_parent = parent.to_path_buf();
+    blocking(move || sweep_restore_staging(&sweep_parent)).await??;
+    let staging_parent = ganbaru_atomic_files::create_private_temporary_directory(
+        parent,
+        RESTORE_COPY_STAGING_PREFIX,
+    )
+    .map_err(|error| format!("create restore staging: {error}"))?;
     let staged = StagedFolder::new(&staging_parent);
     let staging = staging_parent.join("vault");
     stage_restored_vault(archive, &staging, origin).await?;

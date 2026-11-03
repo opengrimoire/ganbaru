@@ -998,6 +998,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             {
                 eprintln!("interrupted vault replacement is not recovered: {error}");
             }
+            if let Err(error) = vault::encrypted_backup::sweep_interrupted_backups(app.handle()) {
+                eprintln!("interrupted backup staging is not swept: {error}");
+            }
             crate::sync::setup(app.handle());
             if let Err(error) = vault::handoff::start_desktop(app.handle()) {
                 eprintln!("vault handoff coordinator is unavailable: {error}");

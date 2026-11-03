@@ -484,17 +484,69 @@ impl StagingDirectory {
 
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
-        // A leftover private directory holds nothing the vault does not, and the next backup
-        // uses a fresh name, so a failed removal is not an error.
+        // Drop runs on errors and unwinding but not after a hard kill or power loss; the
+        // sweep at the next backup and at app startup removes what either case leaves.
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// Removes backup staging a hard kill left below `staging`. The caller holds the gate that
+/// keeps a second backup of this staging root from running, so no live staging is swept.
+///
+/// # Errors
+///
+/// Returns an error when `staging` cannot be listed or a leftover cannot be removed.
+pub fn sweep_backup_staging(staging: &Path) -> Result<(), BackupFileError> {
+    sweep_staging_entries(staging, |name| name.starts_with(BACKUP_STAGING_PREFIX))
+        .map_err(|error| BackupFileError::Io(format!("sweep backup staging: {error}")))
+}
+
+/// Removes the files and directories directly below `root` whose name `stale` accepts. A
+/// symlink is never followed or removed, so a planted link cannot point the sweep elsewhere,
+/// and a missing `root` has nothing to sweep. Every match is tried before the first failure
+/// is returned. The caller guarantees that no live staging matches.
+///
+/// # Errors
+///
+/// Returns an error when `root` cannot be listed or a match cannot be removed.
+pub fn sweep_staging_entries(root: &Path, stale: impl Fn(&str) -> bool) -> io::Result<()> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut first_error = None;
+    for entry in entries {
+        let removed = entry.and_then(|entry| {
+            if !entry.file_name().to_str().is_some_and(&stale) {
+                return Ok(());
+            }
+            // The entry's own type: a symlink reports as a symlink, not as its target.
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                fs::remove_dir_all(entry.path())
+            } else if kind.is_file() {
+                fs::remove_file(entry.path())
+            } else {
+                Ok(())
+            }
+        });
+        match removed {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                first_error.get_or_insert(error);
+            }
+            _ => {}
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Writes an encrypted backup of the vault at `vault_root` to `destination`.
 ///
 /// The archive is the snapshot another installation starts from, so a restore never carries
 /// installation-local sync state or device-local rows. It is assembled in a fresh private
-/// directory below `staging`, which is removed on every path. The gate stays held from the
+/// directory below `staging`, which is removed on every path, after staging an earlier run
+/// left by a hard kill is swept. The gate stays held from the
 /// database snapshot until the encrypted file is synced and renamed over `destination`, so
 /// the asset sweep never removes a file the archive references while it is written. The
 /// caller excludes vault writers first. Returns the bytes written.
@@ -506,6 +558,7 @@ pub async fn create_encrypted_backup(
     destination: &Path,
 ) -> Result<u64, BackupFileError> {
     let _gate = gate.lock().await;
+    sweep_backup_staging(staging)?;
     let directory = StagingDirectory::create(staging)?;
     let archive = directory.0.join(STAGED_ARCHIVE_FILE);
     write_snapshot_archive(

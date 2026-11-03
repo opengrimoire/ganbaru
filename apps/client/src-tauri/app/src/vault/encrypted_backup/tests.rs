@@ -646,6 +646,45 @@ fn stale_transfers_are_removed_by_prefix_only() {
 }
 
 #[test]
+fn startup_sweep_clears_transfers_and_restore_staging() {
+    let root = unique_test_path("startup-sweep");
+    let transfers = root.join("vault-backups");
+    let documents = root.join("documents");
+    let vault = documents.join("Ganbaru");
+    let sibling = documents.join("Other");
+    for folder in [
+        transfers.join("restore-picked"),
+        transfers.join("save-written"),
+        transfers.join(".ganbaru-backup-killed"),
+        transfers.join("unrelated"),
+        documents.join(RESTORE_STAGING_NAME),
+        documents.join(".ganbaru.restore-copy/vault"),
+        vault.clone(),
+        sibling.clone(),
+    ] {
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("data"), b"plaintext").unwrap();
+    }
+
+    sweep_interrupted_backups_at(&transfers, Some(&vault)).unwrap();
+
+    for removed in [
+        transfers.join("restore-picked"),
+        transfers.join("save-written"),
+        transfers.join(".ganbaru-backup-killed"),
+        documents.join(RESTORE_STAGING_NAME),
+        documents.join(".ganbaru.restore-copy"),
+    ] {
+        assert!(!removed.exists(), "{} is swept", removed.display());
+    }
+    for kept in [transfers.join("unrelated"), vault, sibling] {
+        assert!(kept.join("data").exists(), "{} stays", kept.display());
+    }
+    sweep_interrupted_backups_at(&root.join("missing"), None).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn a_staged_folder_is_removed_unless_kept() {
     let root = unique_test_path("staged");
     let dropped = root.join("dropped");

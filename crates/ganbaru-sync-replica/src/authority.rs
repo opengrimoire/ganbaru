@@ -993,7 +993,9 @@ fn forced_opens_epoch(
 /// selected head. With a promotion, the new anchor then sequences the promotion of its own
 /// device to admin with that key, signed by the same signer. With the kit's recovery key, the
 /// new anchor publishes its own device key right after the handover, which seals any rotation
-/// the handover point waits for, and signs every later entry with that key at hand. Before
+/// the handover point waits for, and signs every later entry with that key at hand; on a kit
+/// point it also names the kit's recovery encryption key again, ahead of the removals, when the
+/// log names another one, so a key a stolen anchor planted receives no later epoch. Before
 /// anything is sealed, a desktop that would open no key epoch at the point it continues from is
 /// refused with [`KeylessAnchor`]: the point needs no key epoch, names this desktop's encryption
 /// key, or, with the kit, names the kit's recovery encryption key, which a regeneration
@@ -1090,6 +1092,23 @@ async fn force_handover_with(
         }
     }
     let mut follow_up = Vec::new();
+    if point.by_kit
+        && let Some(kit_encryption) = forced.recovery.map(EncryptionKeyPair::public_key)
+    {
+        // A stolen anchor may have named its own recovery encryption key. The kit names its
+        // own again before the removals, so the rotations they require do not seal to it.
+        let view = engine
+            .authorization(conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .ok_or_else(|| "the sync space has no charter".to_string())?;
+        if view
+            .recovery_encryption_key
+            .is_some_and(|named| named != kit_encryption)
+        {
+            follow_up.push(recovery_key_entry(kit_encryption));
+        }
+    }
     if point.by_kit {
         let mut removed = BTreeSet::from([device_id.clone()]);
         let reviewed = forced.removals.iter().map(String::as_str);

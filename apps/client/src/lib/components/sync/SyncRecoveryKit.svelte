@@ -63,8 +63,8 @@
   const anchorName = $derived(anchor ? syncAuthorityDeviceName(t, anchor) : "");
   const forceMessage = $derived(
     quarantineAnchor && anchor
-      ? `${t("sync.authority.forceAnchorMessage")} ${t("sync.authority.forceAnchorQuarantineNote", anchorName)}`
-      : t("sync.authority.forceAnchorMessage"),
+      ? `${t("sync.authority.forceAnchorMessage")} ${t("sync.authority.forceAnchorQuarantineNote", anchorName)} ${t("sync.kit.forceRecoveryKeyNote")}`
+      : `${t("sync.authority.forceAnchorMessage")} ${t("sync.kit.forceRecoveryKeyNote")}`,
   );
 
   async function run(action: () => Promise<unknown>, success: string, failure: string): Promise<void> {

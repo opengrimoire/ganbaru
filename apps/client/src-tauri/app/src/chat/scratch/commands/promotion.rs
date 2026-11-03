@@ -260,8 +260,11 @@ async fn require_destination_channel(
     let storage_folder_id: String = sqlx::query_scalar(
         "SELECT folder.id
          FROM chat_channels channel
+         JOIN chat_conversations conversation
+           ON conversation.id = channel.conversation_id
+          AND conversation.project_id = channel.project_id
          JOIN project_working_folders folder
-           ON folder.project_id = channel.project_id
+           ON folder.project_id = conversation.project_id
           AND folder.kind = 'managed'
           AND folder.archived_at IS NULL
          WHERE channel.id = ? AND channel.conversation_id = ?
@@ -292,6 +295,7 @@ async fn require_edit_folder_grant(
         "SELECT grant_row.capability, revision.maximum_folder_capability,
                 grant_row.capability_inherits_profile
          FROM chat_channels channel
+         JOIN chat_conversations conversation ON conversation.id = channel.conversation_id
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = channel.conversation_id
           AND membership.participant_id = ?
@@ -310,7 +314,8 @@ async fn require_edit_folder_grant(
          WHERE channel.id = ? AND channel.conversation_id = ?
            AND channel.archived_at IS NULL AND membership.removed_at IS NULL
            AND grant_row.revoked_at IS NULL AND folder.archived_at IS NULL
-           AND folder.project_id = channel.project_id",
+           AND grant_row.project_id = conversation.project_id
+           AND folder.project_id = conversation.project_id",
     )
     .bind(identity.teammate_id.as_str())
     .bind(working_folder_id.as_str())

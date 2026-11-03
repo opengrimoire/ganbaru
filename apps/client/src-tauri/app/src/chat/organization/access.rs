@@ -486,6 +486,9 @@ pub async fn chat_replace_teammate_access(
 
 /// Replaces the active folder grants of one AI channel membership: revokes every active grant,
 /// then creates or reactivates one row per requested grant under `project_id`.
+///
+/// Reactivation also writes the project, so a synced row that claimed another project for a
+/// folder of this one carries authority again once the user saves it.
 pub(super) async fn replace_folder_grants(
     transaction: &mut Transaction<'_, Sqlite>,
     conversation_id: &ChatConversationId,
@@ -515,6 +518,7 @@ pub(super) async fn replace_folder_grants(
                  revision, created_at, revoked_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
              ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
+                project_id = excluded.project_id,
                 capability = excluded.capability,
                 capability_inherits_profile = excluded.capability_inherits_profile,
                 is_default = excluded.is_default,

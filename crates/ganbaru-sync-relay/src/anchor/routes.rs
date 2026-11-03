@@ -226,6 +226,8 @@ impl SetupRoute {
             vault_id: active.vault_id,
             charter: encode_sync_charter(&charter),
             person_key: ctx.person_key.to_text(),
+            kit_admin_key: String::new(),
+            recovery_admin_key: String::new(),
         }))
     }
 

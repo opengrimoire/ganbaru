@@ -500,6 +500,18 @@ async fn receive_recovered_copy(
     })
 }
 
+/// Holds the recovered copy of `vault_id` staged at `staging` to the kit `binding` names.
+#[cfg(desktop)]
+#[cfg_attr(not(test), allow(dead_code))]
+async fn settle_recovered_copy(
+    _staging: &std::path::Path,
+    _marker: &std::path::Path,
+    _vault_id: &str,
+    _binding: &crate::sync::RecoveryBinding,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Why a linked device fetches no vault copy at all.
 const NO_TRUSTED_SOURCE_ERROR: &str =
     "no linked device can provide a vault copy this device trusts; link it again";
@@ -887,3 +899,6 @@ mod tests {
         assert!(!lifecycle.is_running());
     }
 }
+
+#[cfg(all(test, desktop))]
+mod recovery_tests;

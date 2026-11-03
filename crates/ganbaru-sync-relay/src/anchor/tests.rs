@@ -6,12 +6,13 @@ use ganbaru_handoff::dial::LoopbackPolicy;
 use ganbaru_handoff::pairing::PinnedCharter;
 use ganbaru_handoff::protocol::anchor::AnchorSetupCode;
 use ganbaru_handoff::protocol::{
-    self, BundleMetadata, HandoffCompatibility, encode_sync_charter, sha256_file,
+    self, BundleMetadata, HandoffCompatibility, encode_sync_admin_key, encode_sync_charter,
+    sha256_file,
 };
 use ganbaru_sync::{
     AuthorizationView, Engine, LocalWriter, SequenceReservation, SpaceContext, local,
 };
-use ganbaru_sync_contracts::authorization::{Enroll, Entry};
+use ganbaru_sync_contracts::authorization::{Enroll, Entry, SetRole};
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKeyPair, DeviceKind, DeviceRole, RecoverySeed, SignedCertificate,
     SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate, sign_charter,
@@ -163,13 +164,12 @@ impl Founder {
         }
     }
 
-    /// Sequences `entry` as the founding anchor.
-    async fn sequence(&self, entry: Entry) {
+    /// Sequences `entry`, proposed by `signer`, as the founding anchor.
+    async fn sequence(&self, signer: &AdminKeyPair, entry: Entry) {
         let engine = Engine::vault();
         let mut conn = self.pool.acquire().await.unwrap();
         let charter = charter_hash(&engine, &mut conn, &self.ctx).await.unwrap();
-        let proposal =
-            authority::propose(self.ctx.space, charter, &self.admin, entry, NOW_MS).unwrap();
+        let proposal = authority::propose(self.ctx.space, charter, signer, entry, NOW_MS).unwrap();
         let mut reservation = Unreserved;
         let mut writer = LocalWriter {
             key: &self.writer,
@@ -277,14 +277,17 @@ async fn enroll_server(founder: &Founder, code: &AnchorSetupCode) -> String {
     let server = identity.enrollment;
     assert!(identity.space.is_none());
     founder
-        .sequence(Entry::Enroll(Enroll {
-            device_id: server.device_id.clone(),
-            device_key: server.device_key,
-            tls_fingerprint: server.server.certificate_fingerprint,
-            label: server.label.clone(),
-            device_kind: DeviceKind::Server,
-            role: DeviceRole::Admin(server.admin_key),
-        }))
+        .sequence(
+            &founder.admin,
+            Entry::Enroll(Enroll {
+                device_id: server.device_id.clone(),
+                device_key: server.device_key,
+                tls_fingerprint: server.server.certificate_fingerprint,
+                label: server.label.clone(),
+                device_kind: DeviceKind::Server,
+                role: DeviceRole::Admin(server.admin_key),
+            }),
+        )
         .await;
     server.device_id
 }
@@ -546,6 +549,61 @@ fn a_recovery_kit_enrolls_a_new_desktop_through_the_server_as_anchor() {
                 device.device_id == "device-recovered"
                     && device.role == DeviceRole::Admin(admin.public_key())
             }));
+        })
+        .await;
+    });
+}
+
+#[test]
+fn active_space_names_the_kit_keys() {
+    block_on(async {
+        let founder = Founder::new().await;
+        // The printed kit rotates the lineage to a new kit, then the founding anchor installs a
+        // recovery key of its own, so the log holds two different keys.
+        let rotated = AdminKeyPair::from_seed(&[43; 32]).unwrap();
+        let installed = AdminKeyPair::from_seed(&[44; 32]).unwrap();
+        let printed = authority::kit_admin(&recovery_seed().kit_code()).unwrap();
+        founder
+            .sequence(
+                &printed,
+                Entry::SetRole(SetRole::Recovery {
+                    recovery_admin_key: rotated.public_key(),
+                }),
+            )
+            .await;
+        founder
+            .sequence(
+                &founder.admin,
+                Entry::SetRole(SetRole::Recovery {
+                    recovery_admin_key: installed.public_key(),
+                }),
+            )
+            .await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor(root, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+            let server = enroll_and_upload(&founder, &code).await;
+            let view = wait_for_anchor(root, &server).await;
+            assert_eq!(view.kit_admin_key, rotated.public_key());
+            assert_eq!(view.recovery_admin_key, installed.public_key());
+
+            let fresh = printed_code(root, &endpoint);
+            let connection = open_setup(&fresh, APP_VERSION, None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            let space = connection.identity().space.clone().expect("active space");
+            assert_eq!(
+                space.kit_admin_key,
+                encode_sync_admin_key(&rotated.public_key()),
+                "the answer names the key of the kit that holds the lineage"
+            );
+            assert_eq!(
+                space.recovery_admin_key,
+                encode_sync_admin_key(&installed.public_key()),
+                "the answer names the recovery key the anchor admits"
+            );
+            assert_ne!(space.kit_admin_key, space.recovery_admin_key);
         })
         .await;
     });

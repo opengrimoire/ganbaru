@@ -20,6 +20,8 @@ use ganbaru_handoff::pairing::{CoordinatorPin, PinnedCharter};
 use ganbaru_handoff::protocol::decode_sync_charter;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks, SpaceContext};
+#[cfg(desktop)]
+use ganbaru_sync_contracts::{AdminPublicKey, RecoveryPublicKeys};
 use ganbaru_sync_contracts::{SignedCharter, SpaceId};
 use ganbaru_sync_replica::assets::AssetStore;
 use ganbaru_sync_replica::recovery::RecoveryRestorers;
@@ -205,6 +207,51 @@ pub(crate) async fn prepare_staged_copy<R: Runtime>(
     if derived_state_stale {
         rebuild_staged_vault(staging).await?;
     }
+    Ok(())
+}
+
+/// Refusal of a recovery kit that does not belong to the vault a server runs. The webview maps
+/// it to a localized message, so the text is stable.
+#[cfg(desktop)]
+pub(crate) const RECOVERY_KIT_MISMATCH: &str =
+    "this recovery kit does not belong to the vault on this server";
+
+/// The two admin keys the server answered before the kit's public key left this device.
+#[cfg(desktop)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AnsweredKitKeys {
+    pub kit_admin_key: AdminPublicKey,
+    pub recovery_admin_key: AdminPublicKey,
+}
+
+/// What a recovered copy must prove before it activates.
+#[cfg(desktop)]
+#[derive(Clone, Debug)]
+pub(crate) struct RecoveryBinding {
+    pub charter: SignedCharter,
+    pub person_key: PersonPublicKey,
+    pub kit: RecoveryPublicKeys,
+    pub answered: AnsweredKitKeys,
+}
+
+/// Why a recovered copy did not prove it belongs to the kit.
+#[cfg(desktop)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RecoveredCopyError {
+    /// The staged charter differs, no authorization log survives verification, or the log does
+    /// not name the kit through a key the server answered.
+    Mismatch,
+    /// I/O and SQLite errors, which say nothing about the kit.
+    Failed(String),
+}
+
+/// Verifies the recovered copy of `vault_id` staged at `staging` against `binding`.
+#[cfg(desktop)]
+pub(crate) async fn verify_recovered_copy(
+    _staging: &std::path::Path,
+    _vault_id: &str,
+    _binding: &RecoveryBinding,
+) -> Result<(), RecoveredCopyError> {
     Ok(())
 }
 

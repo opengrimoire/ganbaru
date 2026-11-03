@@ -34,6 +34,11 @@ use ganbaru_sync_replica::{assets, writer};
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
+#[cfg(desktop)]
+pub(crate) use host::{
+    AnsweredKitKeys, RECOVERY_KIT_MISMATCH, RecoveredCopyError, RecoveryBinding,
+    verify_recovered_copy,
+};
 pub(crate) use host::{CharterTrust, pinned_trust, prepare_staged_copy, rebuild_staged_vault};
 pub(crate) use peers::reported_members;
 pub(crate) use service::{

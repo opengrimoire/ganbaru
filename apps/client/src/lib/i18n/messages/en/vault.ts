@@ -153,6 +153,7 @@ export const vaultHandoff = {
       rejected: "The server refused this recovery kit. It may belong to another vault.",
       noVault: "This server runs no vault yet.",
       alreadyOpen: "This vault is already open on this device.",
+      wrongKit: "This recovery kit does not belong to the vault on this server. Check the kit and the setup code.",
       failed: "The vault could not be recovered. Check that the server is running, then try again with a new setup code and the same kit.",
     },
   },

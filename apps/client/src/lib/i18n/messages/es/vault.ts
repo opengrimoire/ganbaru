@@ -161,6 +161,7 @@ export const vaultHandoff = {
       rejected: "El servidor rechazó este kit de recuperación. Puede pertenecer a otra bóveda.",
       noVault: "Este servidor aún no ejecuta ninguna bóveda.",
       alreadyOpen: "Esta bóveda ya está abierta en este dispositivo.",
+      wrongKit: "Este kit de recuperación no pertenece a la bóveda de este servidor. Revisa el kit y el código de configuración.",
       failed: "No se pudo recuperar la bóveda. Comprueba que el servidor esté en marcha e inténtalo de nuevo con un código de configuración nuevo y el mismo kit.",
     },
   },

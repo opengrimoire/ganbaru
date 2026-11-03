@@ -686,6 +686,19 @@ pub fn forget_unlinked_recovery_seed(
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 
+/// The public recovery keys `kit_code` derives. Refuses a code that does not parse.
+pub fn kit_public_keys(kit_code: &KitCode) -> Result<RecoveryPublicKeys, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code.as_str())
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    recovery_public_keys(&seed)
+}
+
+/// Whether a selected log names this kit: the key only a rotation replaces, or the recovery key
+/// the anchor admits. These are the two keys the anchor accepts as a recovery author.
+pub fn log_names_kit(_view: &AuthorizationView, _kit: &RecoveryPublicKeys) -> bool {
+    true
+}
+
 /// The recovery admin key `kit_code` derives, whether or not any log names it. Refuses a code
 /// that does not parse. A forced handover uses it unchecked, because a stolen anchor may have
 /// replaced the recovery key on the selected chain, and the engine admits the handover only

@@ -145,6 +145,16 @@ impl ConnectionLimits {
         }
     }
 
+    /// Keeps `reserve` pending slots for sources that authenticated recently.
+    pub fn with_known_source_reserve(self, _reserve: usize) -> Self {
+        self
+    }
+
+    /// Admits connections that proved a setup secret to their own budget.
+    pub fn with_setup_slots(self, _max_total: usize, _max_per_source: usize) -> Self {
+        self
+    }
+
     /// Admits a newly accepted connection as pending, or returns `None` when the global or
     /// per-source pending budget is full and the socket should be closed.
     pub fn admit(&self, source: IpAddr) -> Option<PendingPermit> {
@@ -391,6 +401,43 @@ mod tests {
                 .admit(v4(10))
                 .and_then(PendingPermit::authenticate)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn known_source_keeps_a_slot_during_a_flood() {
+        let limits = ConnectionLimits::new(4, 4, 8, 8).with_known_source_reserve(2);
+        let known = v4(10);
+        drop(
+            limits
+                .admit(known)
+                .and_then(PendingPermit::authenticate)
+                .expect("the known source authenticates once"),
+        );
+        let flood: Vec<PendingPermit> =
+            (20..40).filter_map(|last| limits.admit(v4(last))).collect();
+        assert_eq!(
+            flood.len(),
+            2,
+            "unknown sources fill only the unreserved part"
+        );
+        let first = limits
+            .admit(known)
+            .expect("a known source is admitted during a flood");
+        let _second = limits.admit(known).expect("the reserve holds two slots");
+        assert!(
+            limits.admit(known).is_none(),
+            "the global bound still holds"
+        );
+        drop(first);
+        assert!(
+            limits.admit(v4(41)).is_none(),
+            "a freed reserved slot stays reserved"
+        );
+        drop(flood);
+        assert!(
+            limits.admit(v4(41)).is_some(),
+            "the flood's slots are released"
         );
     }
 

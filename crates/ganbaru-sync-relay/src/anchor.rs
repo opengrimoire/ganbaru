@@ -16,6 +16,7 @@ pub mod state;
 mod tests;
 
 use crate::config::{AnchorBackupConfig, AnchorConfig, AnchorSetupConfig};
+use crate::limits::{anchor_connection_limits, anchor_pre_auth_policy};
 use crate::lock_data_dir;
 use crate::server::unix_time_ms;
 use crate::setup::render_qr;
@@ -30,7 +31,7 @@ use ganbaru_sync_replica::peers::admission::MemberAdmission;
 use ganbaru_sync_replica::serve::bundles::MemberBundles;
 use ganbaru_sync_replica::serve::limits::ConnectionLimits;
 use ganbaru_sync_replica::serve::{
-    CoordinatorListener, MemberAdmissionSource, ServerServices, serve_server,
+    CoordinatorListener, MemberAdmissionSource, PreAuthPolicy, ServerServices, serve_server,
 };
 use ganbaru_sync_replica::service::{
     self, ServiceStart, SyncRuntime, member_admission_source, server_hub,
@@ -111,6 +112,24 @@ pub async fn serve_on(
     data_dir: &Path,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), String> {
+    serve_with(
+        listener,
+        data_dir,
+        shutdown,
+        anchor_connection_limits(),
+        anchor_pre_auth_policy(),
+    )
+    .await
+}
+
+/// Serves the anchor in `data_dir` on `listener` with the given connection budget.
+async fn serve_with(
+    listener: TcpListener,
+    data_dir: &Path,
+    shutdown: oneshot::Receiver<()>,
+    limits: ConnectionLimits,
+    policy: PreAuthPolicy,
+) -> Result<(), String> {
     let paths = DataPaths::new(data_dir.to_path_buf());
     ganbaru_atomic_files::create_private_directories(paths.root())
         .map_err(|error| format!("create {}: {error}", paths.root().display()))?;
@@ -161,7 +180,8 @@ pub async fn serve_on(
     println!("Ganbaru anchor listening on {address} with certificate fingerprint {fingerprint}");
     serve_server(
         CoordinatorListener::from(listener),
-        ConnectionLimits::default(),
+        limits,
+        policy,
         pairing,
         services,
         shutdown,

@@ -4,6 +4,8 @@
 //! also reserve their frame bytes from one global budget, so the relay's buffer memory stays
 //! bounded however many connections are open.
 
+use ganbaru_sync_replica::serve::PreAuthPolicy;
+use ganbaru_sync_replica::serve::limits::ConnectionLimits as AnchorConnectionLimits;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -39,6 +41,19 @@ pub const PRE_AUTH_DEADLINE: Duration = Duration::from_secs(30);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest a response write may take.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The connection budget of the anchor listener.
+pub fn anchor_connection_limits() -> AnchorConnectionLimits {
+    AnchorConnectionLimits::default()
+}
+
+/// How long a connection to the anchor listener may take before it authenticates.
+pub fn anchor_pre_auth_policy() -> PreAuthPolicy {
+    PreAuthPolicy {
+        tls_timeout: TLS_HANDSHAKE_TIMEOUT,
+        deadline: PRE_AUTH_DEADLINE,
+    }
+}
 
 /// The unit a per-source budget counts: an IPv4 address or an IPv6 /64.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -251,6 +266,34 @@ mod tests {
         drop(a);
         assert_eq!(budget.in_use(), 2);
         assert!(budget.try_acquire(first).is_some());
+    }
+
+    #[test]
+    fn anchor_limits_exceed_the_lan_default() {
+        use ganbaru_sync_replica::serve::limits::{
+            MAX_PENDING_CONNECTIONS as LAN_MAX_PENDING, PendingPermit,
+        };
+        let limits = anchor_connection_limits();
+        let source = |index: u16| {
+            let [high, low] = index.to_be_bytes();
+            IpAddr::V4(Ipv4Addr::new(203, 0, high, low))
+        };
+        let one_source: Vec<PendingPermit> =
+            (0..64).filter_map(|_| limits.admit(source(0))).collect();
+        assert!(
+            one_source.len() <= MAX_PENDING_CONNECTIONS_PER_SOURCE,
+            "one Internet source holds at most the relay's per-source bound"
+        );
+        let many: Vec<PendingPermit> = (1..1_024)
+            .filter_map(|index| limits.admit(source(index)))
+            .collect();
+        assert!(
+            one_source.len() + many.len() > LAN_MAX_PENDING * 4,
+            "the anchor admits far more pending connections than a LAN listener"
+        );
+        let policy = anchor_pre_auth_policy();
+        assert!(policy.deadline <= PRE_AUTH_DEADLINE);
+        assert!(policy.tls_timeout <= policy.deadline);
     }
 
     #[test]

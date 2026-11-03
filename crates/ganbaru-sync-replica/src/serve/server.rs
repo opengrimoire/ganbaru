@@ -9,14 +9,15 @@
 use super::limits::{ConnectionLimits, PendingPermit};
 use super::member::{HandshakeAdmission, MemberAdmissionSource, MemberConfigCache, refuse};
 use super::{
-    COORDINATOR_BUSY_CODE, CoordinatorListener, Peer, Routes, TLS_HANDSHAKE_TIMEOUT,
-    accept_connections, send_error, timeout_control,
+    COORDINATOR_BUSY_CODE, CoordinatorListener, Peer, Routes, accept_connections, send_error,
+    timeout_control,
 };
 use crate::hub::SyncHub;
 use ganbaru_handoff::pairing::{PairingManager, certificate_fingerprint};
 use ganbaru_handoff::protocol::{self, ControlMessage, read_control_limited, write_control};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
@@ -40,10 +41,20 @@ pub fn is_setup_request(request: &ControlMessage) -> bool {
     matches!(request, ControlMessage::AnchorHello { .. })
 }
 
+/// How long a connection may take before it authenticates.
+#[derive(Clone, Copy, Debug)]
+pub struct PreAuthPolicy {
+    /// Longest the TLS handshake may take.
+    pub tls_timeout: Duration,
+    /// Longest from accept until the peer authenticates or proves a setup secret.
+    pub deadline: Duration,
+}
+
 /// Serves `listener` as a server listener until shutdown.
 pub async fn serve_server<R: Routes>(
     listener: CoordinatorListener,
     limits: ConnectionLimits,
+    policy: PreAuthPolicy,
     manager: PairingManager,
     services: ServerServices<R>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
@@ -70,6 +81,7 @@ pub async fn serve_server<R: Routes>(
                     configs: &configs,
                     handshakes: &handshakes,
                     limits: &limits,
+                    policy,
                     source: source.ip(),
                 };
                 if let Err(error) = handle_connection(socket, &connection, permit).await {
@@ -88,6 +100,7 @@ struct ServerConnection<'a, R> {
     configs: &'a MemberConfigCache,
     handshakes: &'a HandshakeAdmission,
     limits: &'a ConnectionLimits,
+    policy: PreAuthPolicy,
     source: IpAddr,
 }
 
@@ -107,7 +120,7 @@ async fn handle_connection<R: Routes>(
         .current(connection.manager, fingerprints, false)
         .await?;
     let mut stream = tokio::time::timeout(
-        TLS_HANDSHAKE_TIMEOUT,
+        connection.policy.tls_timeout,
         TlsAcceptor::from(config).accept(socket),
     )
     .await

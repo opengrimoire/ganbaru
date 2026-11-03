@@ -16,18 +16,21 @@ use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKeyPair, DeviceKind, DeviceRole, RecoverySeed, SignedCertificate,
     SignedCharter, WriterCertificate, WriterKeyPair, sign_certificate, sign_charter,
 };
-use ganbaru_sync_replica::anchor_link::local_compatibility;
-use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup};
+use ganbaru_sync_replica::anchor_link::{dial_server, local_compatibility, request_on};
+use ganbaru_sync_replica::anchor_setup::{AnchorSetupError, open_setup, setup_target};
 use ganbaru_sync_replica::assets::STALE_STAGING_AGE;
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Enrollment, Founding, charter_hash, ensure_charter,
 };
 use ganbaru_sync_replica::backup::{ArchiveGate, DATABASE_FILE, create_snapshot_archive};
+use ganbaru_sync_replica::serve::PreAuthPolicy;
+use ganbaru_sync_replica::serve::limits::ConnectionLimits;
 use sqlx::SqlitePool;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
-use tokio::net::TcpListener;
+use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 const VAULT_ID: &str = "vault-anchor-test";
@@ -229,10 +232,29 @@ async fn with_anchor<F, T>(data_dir: &Path, scenario: impl FnOnce(String) -> F) 
 where
     F: Future<Output = T>,
 {
+    with_anchor_budget(
+        data_dir,
+        crate::limits::anchor_connection_limits(),
+        crate::limits::anchor_pre_auth_policy(),
+        scenario,
+    )
+    .await
+}
+
+/// Runs `scenario` against an anchor with the given connection budget.
+async fn with_anchor_budget<F, T>(
+    data_dir: &Path,
+    limits: ConnectionLimits,
+    policy: PreAuthPolicy,
+    scenario: impl FnOnce(String) -> F,
+) -> T
+where
+    F: Future<Output = T>,
+{
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = listener.local_addr().unwrap().to_string();
     let (_stop, shutdown) = oneshot::channel();
-    let server = super::serve_on(listener, data_dir, shutdown);
+    let server = super::serve_with(listener, data_dir, shutdown, limits, policy);
     let scenario = scenario(endpoint);
     tokio::pin!(server);
     tokio::pin!(scenario);
@@ -362,6 +384,78 @@ fn a_proven_desktop_activates_a_server_that_takes_the_anchor() {
                 .err()
                 .expect("a used code should be refused");
             assert!(is_refused(&refused), "{refused}");
+        })
+        .await;
+    });
+}
+
+#[test]
+fn the_pre_auth_deadline_closes_a_stalled_connection_and_spares_an_upload() {
+    // Well below the TLS and control frame timeouts, so only the deadline closes a stall early.
+    const STALL_LIMIT: Duration = Duration::from_secs(5);
+    let deadline = Duration::from_millis(800);
+    let policy = PreAuthPolicy {
+        tls_timeout: crate::limits::TLS_HANDSHAKE_TIMEOUT,
+        deadline,
+    };
+    // One pending slot, so a proven connection that kept it would lock out the next one.
+    let limits = ConnectionLimits::new(1, 1, 8, 8).with_setup_slots(2, 2);
+    block_on(async {
+        let founder = Founder::new().await;
+        let data = TempDir::new();
+        let root = data.path();
+        with_anchor_budget(root, limits, policy, |endpoint| async move {
+            let code = printed_code(root, &endpoint);
+
+            let mut silent = TcpStream::connect(&endpoint).await.unwrap();
+            let started = Instant::now();
+            let mut byte = [0_u8; 1];
+            let read = tokio::time::timeout(STALL_LIMIT, silent.read(&mut byte)).await;
+            assert!(
+                matches!(read, Ok(Ok(0) | Err(_))),
+                "a socket that never starts TLS is closed at the deadline"
+            );
+            assert!(started.elapsed() < STALL_LIMIT);
+
+            let mut stalled = dial_server(&setup_target(&code), None, LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            let hello = protocol::ControlMessage::AnchorHello {
+                protocol_version: protocol::PROTOCOL_VERSION,
+                compatibility: local_compatibility(APP_VERSION),
+                client_nonce: protocol::relay::encode_relay_bytes(
+                    &protocol::anchor::anchor_nonce().unwrap(),
+                ),
+            };
+            let challenge = request_on(&mut stalled, &hello).await.unwrap();
+            assert!(matches!(
+                challenge,
+                protocol::ControlMessage::AnchorChallenge { .. }
+            ));
+            let started = Instant::now();
+            let next =
+                tokio::time::timeout(STALL_LIMIT, protocol::read_control(&mut stalled)).await;
+            assert!(
+                matches!(next, Ok(Err(_))),
+                "a client that greets and never proves is closed at the deadline"
+            );
+            assert!(started.elapsed() < STALL_LIMIT);
+
+            let server = enroll_server(&founder, &code).await;
+            let (metadata, archive) = founder.snapshot().await;
+            let proven = open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .unwrap();
+            tokio::time::sleep(deadline * 3).await;
+            let other = open_setup(&code, APP_VERSION, Some(VAULT_ID), LoopbackPolicy::Allow)
+                .await
+                .expect("a proven connection gives its pending slot back");
+            drop(other);
+            proven
+                .upload(metadata, &archive, founder.pinned(), true)
+                .await
+                .expect("an upload that runs past the deadline finishes");
+            wait_for_anchor(root, &server).await;
         })
         .await;
     });

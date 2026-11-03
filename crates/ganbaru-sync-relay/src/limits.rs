@@ -42,16 +42,45 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest a response write may take.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Unauthenticated connections the anchor listener holds at once. The anchor is reached over
+/// the Internet, so its budget is sized for many sources rather than one household LAN.
+pub const ANCHOR_MAX_PENDING: usize = 256;
+/// Unauthenticated connections from one source on the anchor listener, as on the relay.
+pub const ANCHOR_MAX_PENDING_PER_SOURCE: usize = MAX_PENDING_CONNECTIONS_PER_SOURCE;
+/// Authenticated connections the anchor listener holds at once.
+pub const ANCHOR_MAX_AUTHENTICATED: usize = MAX_AUTHENTICATED_CONNECTIONS;
+/// Authenticated connections from one source on the anchor listener.
+pub const ANCHOR_MAX_AUTHENTICATED_PER_SOURCE: usize = MAX_AUTHENTICATED_CONNECTIONS_PER_SOURCE;
+/// Pending slots only a source that recently authenticated or proved a setup secret may take,
+/// so enrolled devices keep connecting while unknown sources fill the rest.
+pub const ANCHOR_KNOWN_SOURCE_RESERVE: usize = 64;
+/// Connections past a setup proof, such as snapshot uploads, the anchor holds at once.
+pub const ANCHOR_SETUP_CONNECTIONS: usize = 16;
+/// Connections past a setup proof from one source.
+pub const ANCHOR_SETUP_CONNECTIONS_PER_SOURCE: usize = 2;
+/// Longest from accept until an anchor connection authenticates or proves a setup secret.
+pub const ANCHOR_PRE_AUTH_DEADLINE: Duration = PRE_AUTH_DEADLINE;
+
 /// The connection budget of the anchor listener.
 pub fn anchor_connection_limits() -> AnchorConnectionLimits {
-    AnchorConnectionLimits::default()
+    AnchorConnectionLimits::new(
+        ANCHOR_MAX_PENDING,
+        ANCHOR_MAX_PENDING_PER_SOURCE,
+        ANCHOR_MAX_AUTHENTICATED,
+        ANCHOR_MAX_AUTHENTICATED_PER_SOURCE,
+    )
+    .with_known_source_reserve(ANCHOR_KNOWN_SOURCE_RESERVE)
+    .with_setup_slots(
+        ANCHOR_SETUP_CONNECTIONS,
+        ANCHOR_SETUP_CONNECTIONS_PER_SOURCE,
+    )
 }
 
 /// How long a connection to the anchor listener may take before it authenticates.
 pub fn anchor_pre_auth_policy() -> PreAuthPolicy {
     PreAuthPolicy {
         tls_timeout: TLS_HANDSHAKE_TIMEOUT,
-        deadline: PRE_AUTH_DEADLINE,
+        deadline: ANCHOR_PRE_AUTH_DEADLINE,
     }
 }
 

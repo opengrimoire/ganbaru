@@ -18,7 +18,9 @@ use ganbaru_sync_replica::anchor_link::local_compatibility;
 use ganbaru_sync_replica::authority::ensure_admin_key;
 use ganbaru_sync_replica::hub::SyncHub;
 use ganbaru_sync_replica::serve::bundles::MemberBundles;
-use ganbaru_sync_replica::serve::{Peer, Routes, ServerStream, send_error, timeout_control};
+use ganbaru_sync_replica::serve::{
+    COORDINATOR_BUSY_CODE, Peer, PreAuthGate, Routes, ServerStream, send_error, timeout_control,
+};
 use ganbaru_sync_replica::service::{SyncHost, blocking};
 use ganbaru_sync_replica::writer::ensure_device_key;
 use sha2::{Digest, Sha256};
@@ -77,7 +79,7 @@ impl Routes for AnchorRoutes {
             let enrolled = peer.certificate.is_some();
             return self
                 .setup
-                .converse(stream, enrolled, &compatibility, &client_nonce)
+                .converse(stream, enrolled, &compatibility, &client_nonce, None)
                 .await;
         }
         let (Some(admission), Some(recheck), Some(certificate)) =
@@ -97,17 +99,42 @@ impl Routes for AnchorRoutes {
             )
             .await
     }
+
+    async fn serve_unauthenticated(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+        gate: &PreAuthGate,
+    ) -> Result<(), String> {
+        let ControlMessage::AnchorHello {
+            compatibility,
+            client_nonce,
+            ..
+        } = request
+        else {
+            return self.serve(stream, peer, request).await;
+        };
+        self.setup
+            .converse(stream, false, &compatibility, &client_nonce, Some(gate))
+            .await
+    }
 }
 
 impl SetupRoute {
     /// Answers a setup greeting. An enrolled device that greets is asking which protocol this
     /// server speaks, so it gets the challenge alone, as does a peer that cannot continue.
+    ///
+    /// A peer without a certificate comes with its `gate`. A proof that holds moves it off the
+    /// pre-authentication deadline and budget, or turns it away as busy when the setup budget
+    /// is full.
     async fn converse(
         &self,
         stream: &mut ServerStream,
         enrolled: bool,
         compatibility: &protocol::HandoffCompatibility,
         client_nonce: &str,
+        gate: Option<&PreAuthGate>,
     ) -> Result<(), String> {
         let local = local_compatibility(self.version);
         let server_nonce = anchor::anchor_nonce()?;
@@ -132,6 +159,15 @@ impl SetupRoute {
         };
         if !self.proof_holds(&server_nonce, &client_nonce, &proof)? {
             return refuse_setup(stream, "this setup code is wrong, used, or expired").await;
+        }
+        if gate.is_some_and(|gate| !gate.setup_proven()) {
+            return send_error(
+                stream,
+                COORDINATOR_BUSY_CODE,
+                "this server is handling too many setups; retry shortly",
+                true,
+            )
+            .await;
         }
         let vault_id = match self.proven_vault(vault_id)? {
             Ok(vault_id) => vault_id,

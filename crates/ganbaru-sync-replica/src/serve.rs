@@ -26,7 +26,7 @@ pub mod server;
 pub use admission::LanAdmission;
 pub use listener::CoordinatorListener;
 pub use member::{MemberAdmissionSource, MemberServices, serve_member};
-pub use server::{PreAuthPolicy, ServerServices, serve_server};
+pub use server::{PreAuthGate, PreAuthPolicy, ServerServices, serve_server};
 
 use crate::peers::admission::MemberAdmission;
 use limits::ConnectionLimits;
@@ -75,6 +75,21 @@ pub trait Routes: Clone + Send + Sync + 'static {
         peer: Peer<'_>,
         request: ControlMessage,
     ) -> impl Future<Output = Result<(), String>> + Send;
+
+    /// Answers a setup `request` from a server listener peer without a client certificate.
+    /// `gate` carries the peer's pre-authentication deadline and budget slot; a route that
+    /// verifies a setup proof calls [`PreAuthGate::setup_proven`] once it holds. The default
+    /// ignores the gate and calls [`Routes::serve`], so the deadline covers the whole request.
+    fn serve_unauthenticated(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+        gate: &PreAuthGate,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        let _ = gate;
+        self.serve(stream, peer, request)
+    }
 }
 
 /// Routes that answer nothing, for listeners that serve sync alone.
@@ -109,6 +124,23 @@ impl<R: Routes> Routes for Option<R> {
     ) -> Result<(), String> {
         match self {
             Some(routes) => routes.serve(stream, peer, request).await,
+            None => Err("no route serves this request".to_string()),
+        }
+    }
+
+    async fn serve_unauthenticated(
+        &self,
+        stream: &mut ServerStream,
+        peer: Peer<'_>,
+        request: ControlMessage,
+        gate: &PreAuthGate,
+    ) -> Result<(), String> {
+        match self {
+            Some(routes) => {
+                routes
+                    .serve_unauthenticated(stream, peer, request, gate)
+                    .await
+            }
             None => Err("no route serves this request".to_string()),
         }
     }

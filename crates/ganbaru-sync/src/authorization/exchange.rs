@@ -149,27 +149,29 @@ pub struct RecordAdmission {
 }
 
 /// Stored envelope bytes and envelope count of the record store, in total and by the device
-/// each writer's certificate names.
+/// whose enrolled key certified each writer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthorizationStorage {
     /// Bytes of every stored envelope and refetch hash.
     pub bytes: u64,
     /// Stored envelopes and refetch hashes, each refetch hash counted as one envelope.
     pub envelopes: u64,
-    /// Bytes each certified device carries, largest first. Envelopes of writers without a
-    /// stored certificate are counted in the totals only.
+    /// Bytes each device carries, largest first, counting the writers whose verified
+    /// certificate names the device together with the device key the selected chain enrolls
+    /// for it. Envelopes of any other writer are counted in the totals only.
     pub by_device: Vec<(String, u64)>,
-    /// Writers with more than one stored certificate or two envelopes at one sequence.
+    /// Writers with two verified envelopes at one sequence, two verified certificates
+    /// included.
     pub forked_writers: Vec<ForkedWriter>,
 }
 
-/// A writer of the record store with two envelopes at one sequence or two certificates.
+/// A writer of the record store with two verified envelopes at one sequence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForkedWriter {
     /// The writer.
     pub writer: WriterId,
-    /// The device a stored certificate of the writer names, the lowest device id when several
-    /// do, or `None` without a stored certificate.
+    /// The device a verified certificate of the writer names with that device's enrolled key,
+    /// the lowest device id when several do, or `None` when no such certificate is stored.
     pub device_id: Option<String>,
 }
 
@@ -942,11 +944,20 @@ impl Engine {
         .bind(space)
         .fetch_one(&mut *conn)
         .await?;
+        // A writer is charged to a device only through a verified certificate that names the
+        // device together with the key the selected chain enrolls for it, the pair the Live
+        // class also requires, so a certificate naming another device's id under a foreign key
+        // charges nothing to that device. A removed device keeps its row and its attribution.
         let by_device: Vec<(String, i64)> = sqlx::query_as(
             "SELECT c.device_id, sum(length(e.envelope)) AS carried
              FROM sync_auth_envelopes e
-             JOIN (SELECT DISTINCT writer_id, device_id FROM sync_auth_envelopes
-                   WHERE space_id = ?1 AND role = 'certificate') c
+             JOIN (SELECT DISTINCT a.writer_id, a.device_id
+                   FROM sync_auth_envelopes a
+                   JOIN sync_devices d
+                     ON d.space_id = a.space_id
+                    AND d.device_id = a.device_id
+                    AND d.device_key = a.device_key
+                   WHERE a.space_id = ?1 AND a.role = 'certificate' AND a.verified = 1) c
                ON c.writer_id = e.writer_id
              WHERE e.space_id = ?1
              GROUP BY c.device_id ORDER BY carried DESC, c.device_id",
@@ -954,11 +965,19 @@ impl Engine {
         .bind(space)
         .fetch_all(&mut *conn)
         .await?;
+        // Only verified envelopes prove a fork: pending copies are unchecked and may be junk.
         let forked: Vec<(Vec<u8>, Option<String>)> = sqlx::query_as(
             "SELECT f.writer_id,
-                    (SELECT min(c.device_id) FROM sync_auth_envelopes c
-                     WHERE c.space_id = ?1 AND c.role = 'certificate' AND c.writer_id = f.writer_id)
-             FROM (SELECT DISTINCT writer_id FROM sync_auth_envelopes WHERE space_id = ?1
+                    (SELECT min(c.device_id)
+                     FROM sync_auth_envelopes c
+                     JOIN sync_devices d
+                       ON d.space_id = c.space_id
+                      AND d.device_id = c.device_id
+                      AND d.device_key = c.device_key
+                     WHERE c.space_id = ?1 AND c.role = 'certificate' AND c.verified = 1
+                       AND c.writer_id = f.writer_id)
+             FROM (SELECT DISTINCT writer_id FROM sync_auth_envelopes
+                   WHERE space_id = ?1 AND verified = 1
                    GROUP BY writer_id, seq HAVING count(*) > 1) f
              ORDER BY f.writer_id",
         )
@@ -1086,10 +1105,10 @@ fn light(row: &sqlx::sqlite::SqliteRow) -> SyncResult<Light> {
 
 /// The classes of the local selected head: the records the kit key signs that [`Binding`] binds
 /// and their ancestors, yields and objections, and the writers certified by the enrolled key of a
-/// live device that is not held. `needed` names further entry hashes whose state on the selected chain the binding should
-/// read, the parents of records a peer sends. With `yields` set, the stored yields whose parent
-/// on the selected chain admits them and whose author is an admin at the selected head join
-/// [`Classes::priority`].
+/// live device that is not held. `needed` names further entry hashes whose state on the selected
+/// chain the binding should read, the parents of records a peer sends. With `yields` set, the
+/// stored yields whose parent on the selected chain admits them and whose author is an admin at
+/// the selected head join [`Classes::priority`].
 async fn classes(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,

@@ -415,12 +415,25 @@ impl SyncHub {
             if let Some(refusal) = view.as_ref().and_then(|view| log_refusal(view, &device_id)) {
                 return Err(HubError::rejected(refusal.code(), refusal.describe()));
             }
-            Engine::vault()
+            let read =
+                |error: SyncError| HubError::failed(format!("read sync authorization: {error}"));
+            let engine = Engine::vault();
+            if engine
                 .device_held(&mut conn, &ctx, &device_id)
                 .await
-                .map_err(|error| HubError::failed(format!("read sync authorization: {error}")))?
+                .map_err(read)?
+            {
+                Some(
+                    engine
+                        .device_writers(&mut conn, &ctx, &device_id)
+                        .await
+                        .map_err(read)?,
+                )
+            } else {
+                None
+            }
         };
-        if held
+        if held.is_some()
             && matches!(
                 request,
                 ControlMessage::SyncAssetGet { .. } | ControlMessage::SyncAssetPut { .. }
@@ -587,14 +600,14 @@ impl SyncHub {
                 != Some(&token);
             if superseded || hub.servable(known, &stored).await? {
                 break hub
-                    .state_message(&stored, None, bootstrap_required, report)
+                    .state_message(&stored, known, None, bootstrap_required, report)
                     .await;
             }
             match tokio::time::timeout_at(deadline, changes.changed()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) | Err(_) => {
                     break hub
-                        .state_message(&stored, None, bootstrap_required, report)
+                        .state_message(&stored, known, None, bootstrap_required, report)
                         .await;
                 }
             }
@@ -781,12 +794,42 @@ struct HubSession {
     pool: SqlitePool,
     ctx: SpaceContext,
     quarantined: BTreeSet<String>,
-    /// Whether the selected chain holds the requesting peer for data: it is then served
-    /// authorization records only, and no assets.
-    held: bool,
+    /// The requesting peer's writers while the selected chain holds it for data. A held peer
+    /// is then served authorization records only, no assets, and nothing about the writers of
+    /// other devices.
+    held: Option<BTreeSet<WriterId>>,
 }
 
 impl HubSession {
+    /// Whether the peer is held and `writer` is not one of its own.
+    fn hidden(&self, writer: &WriterId) -> bool {
+        self.held.as_ref().is_some_and(|own| !own.contains(writer))
+    }
+
+    /// The stored vector a peer may read: all of `stored` unless it is held, and then its own
+    /// writers at the hub's value and every other writer the hub stores at the value of
+    /// `claimed`, so the answer tells it nothing it did not say. Those echoed values are not
+    /// what the hub stores, so a held device records no anchor marks from them, see
+    /// `client::record_anchor_marks`. A writer the hub stores
+    /// nothing of reads as absent, so a new writer of the peer, whose genesis the hub has not
+    /// stored yet, is pushed from its start; which writers exist travels in the authorization
+    /// records a held peer is served anyway.
+    fn visible_stored(&self, stored: &VersionVector, claimed: &VersionVector) -> VersionVector {
+        let Some(own) = self.held.as_ref() else {
+            return stored.clone();
+        };
+        let mut visible = VersionVector::new();
+        for (writer, seq) in claimed.iter() {
+            if stored.get(&writer) > 0 {
+                visible.set(writer, seq);
+            }
+        }
+        for writer in own {
+            visible.set(*writer, stored.get(writer));
+        }
+        visible
+    }
+
     /// Whether a pull from `known` would return any operation: anything the hub stored past it,
     /// or for a held peer an operation before the first row change of some writer's chain.
     async fn servable(
@@ -794,7 +837,7 @@ impl HubSession {
         known: &VersionVector,
         stored: &VersionVector,
     ) -> Result<bool, HubError> {
-        if !self.held || known.dominates(stored) {
+        if self.held.is_none() || known.dominates(stored) {
             return Ok(!known.dominates(stored));
         }
         let mut conn = acquire(&self.pool).await?;
@@ -828,36 +871,47 @@ impl HubSession {
             .map_err(|error| HubError::failed(format!("read sync log: {error}")))
     }
 
+    /// The state answer for a peer that claimed to store `claimed`. A held peer reads only its
+    /// own writers: no stability, no fresh copy it would be refused, and no foreign fork.
     async fn state_message(
         &self,
         stored: &VersionVector,
+        claimed: &VersionVector,
         probe_hash: Option<String>,
         bootstrap_required: bool,
         report: StateReport,
     ) -> Result<ControlMessage, HubError> {
-        let mut stable = report.stable;
+        let held = self.held.is_some();
+        let mut stable = if held {
+            VersionVector::new()
+        } else {
+            report.stable
+        };
         stable.meet(stored);
-        let forked = {
+        let mut forked = {
             let mut conn = acquire(&self.pool).await?;
             self.engine
                 .forked_writers(&mut conn, &self.ctx)
                 .await
                 .map_err(|error| HubError::failed(format!("read fork evidence: {error}")))?
         };
+        forked.retain(|(writer, _)| !self.hidden(writer));
         Ok(ControlMessage::SyncState {
             manifest_version: self.engine.manifest().version,
-            stored: vector_to_wire(stored),
+            stored: vector_to_wire(&self.visible_stored(stored, claimed)),
             probe_hash,
             members: report.contact.members,
             stable: vector_to_wire(&stable),
-            bootstrap_required,
+            bootstrap_required: bootstrap_required && !held,
             forked: forked_to_wire(&forked),
         })
     }
 
     /// Stores what a peer offers as fork evidence of `writer` and answers the pair the hub then
     /// holds. A single operation becomes evidence when the hub holds a different one at its
-    /// sequence. Returns whether the hub stored new evidence.
+    /// sequence. A held peer's offer is stored too, since evidence is self-authenticating, but
+    /// it is answered a pair only for its own writers. Returns whether the hub stored new
+    /// evidence.
     async fn fork_evidence(
         &self,
         writer: WriterId,
@@ -904,13 +958,16 @@ impl HubSession {
                 }
             }
         }
-        let evidence = self
-            .engine
-            .fork_evidence(&mut conn, &self.ctx, writer)
-            .await
-            .map_err(failed)?
-            .map(|evidence| ops_to_wire(&[evidence.first, evidence.second]))
-            .unwrap_or_default();
+        let evidence = if self.hidden(&writer) {
+            Vec::new()
+        } else {
+            self.engine
+                .fork_evidence(&mut conn, &self.ctx, writer)
+                .await
+                .map_err(failed)?
+                .map(|evidence| ops_to_wire(&[evidence.first, evidence.second]))
+                .unwrap_or_default()
+        };
         Ok((ControlMessage::SyncForkPair { evidence }, stored))
     }
 
@@ -924,7 +981,7 @@ impl HubSession {
     ) -> Result<ControlMessage, HubError> {
         let bootstrap_required = self.bootstrap_required(peer).await?;
         let stored = self.stored().await?;
-        let probe_hash = match probe {
+        let probe_hash = match probe.filter(|(writer, _)| !self.hidden(writer)) {
             Some((writer, seq)) => {
                 let mut conn = acquire(&self.pool).await?;
                 self.engine
@@ -937,13 +994,14 @@ impl HubSession {
             }
             None => None,
         };
-        self.state_message(&stored, probe_hash, bootstrap_required, report)
+        self.state_message(&stored, peer, probe_hash, bootstrap_required, report)
             .await
     }
 
     /// Stores pushed operations up to the first refusal. Unless `relay_geneses`, a genesis of a
     /// writer the hub does not hold is accepted only when its certificate names the pushing
-    /// device.
+    /// device. A held peer reads back every writer of another device at the highest sequence of
+    /// it in the page, so its next page moves on without learning what the hub stores.
     async fn push(
         &self,
         device_id: &str,
@@ -992,9 +1050,17 @@ impl HubSession {
             }
         }
         let stored = self.stored().await?;
+        let mut pushed = VersionVector::new();
+        if self.held.is_some() {
+            for op in ops {
+                if let Ok(envelope) = Envelope::decode(op) {
+                    pushed.advance(envelope.writer, envelope.seq);
+                }
+            }
+        }
         Ok((
             ControlMessage::SyncPushResult {
-                stored: vector_to_wire(&stored),
+                stored: vector_to_wire(&self.visible_stored(&stored, &pushed)),
                 refusal,
             },
             stored_any,
@@ -1007,7 +1073,7 @@ impl HubSession {
         max_bytes: usize,
     ) -> Result<ControlMessage, HubError> {
         let mut conn = acquire(&self.pool).await?;
-        let page = if self.held {
+        let page = if self.held.is_some() {
             self.engine
                 .authorization_ops_after(&mut conn, &self.ctx, known, max_bytes)
                 .await
@@ -1028,12 +1094,17 @@ impl HubSession {
         })
     }
 
+    /// Consecutive operation hashes of `writer` from `from_seq`, none for a held peer asking
+    /// about a writer of another device.
     async fn hashes(
         &self,
         writer: WriterId,
         from_seq: u64,
         limit: u32,
     ) -> Result<ControlMessage, HubError> {
+        if self.hidden(&writer) {
+            return Ok(ControlMessage::SyncHashList { hashes: Vec::new() });
+        }
         let mut conn = acquire(&self.pool).await?;
         let hashes = self
             .engine

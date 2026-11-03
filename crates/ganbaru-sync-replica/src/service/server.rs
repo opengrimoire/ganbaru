@@ -169,6 +169,7 @@ impl ServiceState {
                 &session.engine,
                 &session.pool,
                 &session.ctx,
+                &ids.device_id,
                 &authorization,
                 &done,
             )

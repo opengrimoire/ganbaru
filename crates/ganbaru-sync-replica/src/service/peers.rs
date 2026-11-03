@@ -372,8 +372,15 @@ pub async fn exchange_with_members<H: SyncHost>(
                 outcome.pulled += done.pulled;
                 if device_id == view.anchor_device_id {
                     anchor_answered = true;
-                    record_direct_anchor_marks(pass.engine, pass.pool, pass.ctx, &view, &done)
-                        .await?;
+                    record_direct_anchor_marks(
+                        pass.engine,
+                        pass.pool,
+                        pass.ctx,
+                        &pass.ids.device_id,
+                        &view,
+                        &done,
+                    )
+                    .await?;
                     if done.problem.is_none() && !done.more && !done.bootstrap_required {
                         outcome.anchor_known = Some(done.known.clone());
                     }
@@ -414,10 +421,12 @@ pub async fn exchange_with_members<H: SyncHost>(
 
 /// Records what the log's anchor reported storing in a direct exchange as anchor marks, so
 /// displaced versions it covers are released without waiting for the coordinator to relay it.
+/// Nothing is recorded while `own_device_id` is held, see [`crate::client::record_anchor_marks`].
 pub(super) async fn record_direct_anchor_marks(
     engine: &Engine,
     pool: &SqlitePool,
     ctx: &SpaceContext,
+    own_device_id: &str,
     view: &AuthorizationView,
     done: &Exchanged,
 ) -> Result<(), String> {
@@ -425,10 +434,16 @@ pub(super) async fn record_direct_anchor_marks(
         .acquire()
         .await
         .map_err(|error| format!("acquire sync connection: {error}"))?;
-    engine
-        .record_anchor_marks(&mut conn, ctx, &view.anchor_device_id, &done.hub)
-        .await
-        .map_err(|error| format!("record anchor marks: {error}"))?;
+    crate::client::record_anchor_marks(
+        engine,
+        &mut conn,
+        ctx,
+        own_device_id,
+        &view.anchor_device_id,
+        &done.hub,
+    )
+    .await
+    .map_err(|error| format!("record anchor marks: {error}"))?;
     Ok(())
 }
 

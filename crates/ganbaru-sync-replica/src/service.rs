@@ -2162,16 +2162,16 @@ impl ServiceState {
                             .await
                             .map_err(|error| format!("record sync stability: {error}"))?;
                         if let Some(pin) = wait.transport.manager.coordinator_pin()? {
-                            session
-                                .engine
-                                .record_anchor_marks(
-                                    &mut conn,
-                                    &session.ctx,
-                                    &pin.device_id,
-                                    &done.hub,
-                                )
-                                .await
-                                .map_err(|error| format!("record anchor marks: {error}"))?;
+                            crate::client::record_anchor_marks(
+                                &session.engine,
+                                &mut conn,
+                                &session.ctx,
+                                &wait.ids.device_id,
+                                &pin.device_id,
+                                &done.hub,
+                            )
+                            .await
+                            .map_err(|error| format!("record anchor marks: {error}"))?;
                         }
                     }
                     if done.confirmed.is_some() {

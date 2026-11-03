@@ -78,7 +78,8 @@ pub struct Exchanged {
     /// still be re-sealed.
     pub confirmed: Option<(WriterId, Seq)>,
     /// The hub's stored vector as of its last answer to a hello or push. When the hub is the
-    /// anchor, it marks what the anchor stores, see `Engine::record_anchor_marks`.
+    /// anchor, it marks what the anchor stores, unless this device is held, when other
+    /// devices' writers carry this device's own claim; see [`record_anchor_marks`].
     pub hub: VersionVector,
     /// The member listener endpoints the hub reported in its sync state.
     pub members: Vec<MemberEndpoint>,
@@ -749,6 +750,27 @@ fn describe_refusal(side: &str, refusal: &SyncRefusal) -> String {
         "{side} refused an operation of writer {writer}: {:?}",
         refusal.code
     )
+}
+
+/// Records `stored`, what the anchor reported storing in an exchange with `own_device_id`, as
+/// anchor marks, unless the selected chain holds `own_device_id` for data: the anchor answers a
+/// held device with the device's own claim for other devices' writers, which says nothing about
+/// what the anchor stores. Returns whether the marks were recorded, see
+/// [`Engine::record_anchor_marks`].
+pub async fn record_anchor_marks(
+    engine: &Engine,
+    conn: &mut sqlx::SqliteConnection,
+    ctx: &SpaceContext,
+    own_device_id: &str,
+    anchor_device_id: &str,
+    stored: &VersionVector,
+) -> Result<bool, SyncError> {
+    if engine.device_held(conn, ctx, own_device_id).await? {
+        return Ok(false);
+    }
+    engine
+        .record_anchor_marks(conn, ctx, anchor_device_id, stored)
+        .await
 }
 
 /// Long poll: the hub's stored vector once it holds operations past `known`, or after its

@@ -24,7 +24,8 @@ mod relay;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Envelope, Field, RowKey, TableId, Value, VersionVector, WriterId,
+    Change, ChangeAction, Content, Entry, Envelope, Field, LateResolution, LateRow, ResolveLate,
+    RowKey, TableId, Value, VersionVector, WriterId,
 };
 
 use super::authorization::{seal_after, view};
@@ -34,7 +35,7 @@ use super::fixture::{
     MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, RESERVED, UNATTENDED, edge_key, membership_key,
     memo_tag_key, override_group, policy_rank,
 };
-use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, rank};
+use super::replica::{ENROLLED_DEVICES, Replica, START_MS, converge, device_id, quoted, rank};
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
@@ -45,8 +46,8 @@ use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::merge;
 use crate::stability::{CountedDevice, DeviceStanding};
 use crate::{
-    ApplyReport, EvidenceOutcome, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult,
-    compaction_limit,
+    ApplyReport, EvidenceOutcome, HoldReason, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
+    SyncError, SyncResult, compaction_limit,
 };
 
 const DEFAULT_SEEDS: u64 = 48;
@@ -2318,4 +2319,234 @@ fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_2() {
 #[test]
 fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_3() {
     run_shard(3);
+}
+
+/// Seeds of [`excluded_creates_converge`]. Half of them seal a burst past the excluded bound,
+/// which costs [`MAX_EXCLUDED_PER_WRITER`] seals each, so the run keeps fewer seeds than the
+/// main simulation.
+const EXCLUDED_CREATE_SEEDS: u64 = 8;
+/// Peers that receive what the removed device seals past its cutoff in a random way.
+const EXCLUDED_CREATE_PEERS: usize = 3;
+/// The row an honest member creates and the removed device signs a Create of past its cutoff,
+/// named as [`super::exclusion::late_create`] expects.
+const EXCLUDED_SHARED_NOTE: &str = "note-kept";
+
+/// How a peer meets the operations a removed device sealed past its cutoff.
+#[derive(Clone, Copy, Debug)]
+enum LateArrival {
+    /// Learns of the removal first, so it refuses what lies past the excluded bound.
+    RemovalFirst,
+    /// Stores and applies the operations, then learns of the removal.
+    OperationsFirst,
+    /// Stores and applies the operations, compacts their bodies, then learns of the removal.
+    CompactedFirst,
+}
+
+/// Seals what the removed device does past its cutoff: its own note, optional edits that fill
+/// or pass the excluded bound, and last a forged Create of [`EXCLUDED_SHARED_NOTE`] built from
+/// the honest creation. Returns the operations past `cutoff`.
+async fn seal_excluded_creates(
+    rng: &mut Rng,
+    removed: &mut Replica,
+    honest: &mut Replica,
+    cutoff: u64,
+) -> Vec<Vec<u8>> {
+    let edit_early = async |removed: &mut Replica, index: u64| {
+        super::exclusion::edit(
+            removed,
+            &format!("UPDATE quick_notes SET title = 'Early {index}' WHERE id = 'note-early'"),
+        )
+        .await;
+    };
+    let burst = rng.chance(50);
+    // A burst fills the bound before the forged Create, with the removed device's own note
+    // inside the bound or past it.
+    let (before, after) = if burst {
+        let own_past = rng.chance(50);
+        let total = if own_past {
+            MAX_EXCLUDED_PER_WRITER
+        } else {
+            MAX_EXCLUDED_PER_WRITER - 1
+        };
+        let before = if own_past {
+            total
+        } else {
+            rng.below(usize::try_from(total).unwrap() + 1) as u64
+        };
+        (before, total - before)
+    } else {
+        (rng.below(3) as u64, rng.below(3) as u64)
+    };
+    for index in 0..before {
+        edit_early(removed, index).await;
+    }
+    super::exclusion::edit(removed, &super::exclusion::note("note-own", "Own", 2)).await;
+    for index in 0..after {
+        edit_early(removed, before + index).await;
+    }
+    let forged = super::exclusion::late_create(removed, honest, EXCLUDED_SHARED_NOTE).await;
+    let mut past = removed.own_ops().await[usize::try_from(cutoff).unwrap()..].to_vec();
+    past.push(forged);
+    if burst {
+        assert!(past.len() as u64 > MAX_EXCLUDED_PER_WRITER);
+    }
+    past
+}
+
+/// Decides late changes on `anchor` in a random order, restoring or discarding each, and
+/// leaving the rest undecided when the draw stops.
+async fn decide_late_changes(rng: &mut Rng, anchor: &mut Replica, removal: u64) {
+    loop {
+        let listed = anchor
+            .engine
+            .late_changes(&mut anchor.conn, &anchor.ctx)
+            .await
+            .unwrap();
+        let Some(late) = rng.pick(&listed).cloned() else {
+            return;
+        };
+        if rng.chance(20) {
+            return;
+        }
+        let resolution = if late.restorable && rng.chance(50) {
+            anchor
+                .engine
+                .restore_late_change(
+                    &mut anchor.conn,
+                    &anchor.ctx,
+                    &late,
+                    &mut anchor.identity.local(),
+                    anchor.now_ms,
+                )
+                .await
+                .unwrap();
+            LateResolution::Restore
+        } else {
+            LateResolution::Discard
+        };
+        anchor
+            .sequence(Entry::ResolveLate(ResolveLate {
+                removal_revision: removal,
+                rows: vec![LateRow {
+                    table: late.table,
+                    row: RowKey::new(late.row_key.clone()).unwrap(),
+                    resolution,
+                }],
+            }))
+            .await
+            .unwrap()
+            .unwrap();
+        anchor.apply_all().await.unwrap();
+    }
+}
+
+/// One seed of [`excluded_creates_converge`].
+async fn excluded_creates_run(seed: u64) {
+    use super::exclusion::{deliver, edit, note, title};
+
+    let _guard = SeedGuard(seed);
+    let mut rng = Rng(seed);
+    let salt = 400 + seed;
+    let mut anchor = Replica::anchor(0, salt).await;
+    let mut removed = Replica::new(1, salt).await;
+    let mut honest = Replica::new(2, salt).await;
+    let mut peers = Vec::new();
+    for index in 0..EXCLUDED_CREATE_PEERS {
+        peers.push(Replica::new(3 + index, salt).await);
+    }
+    edit(&mut honest, &note(EXCLUDED_SHARED_NOTE, "Draft", 0)).await;
+    deliver(&mut anchor, &mut honest).await;
+    deliver(&mut removed, &mut anchor).await;
+    edit(&mut removed, &note("note-early", "Early", 1)).await;
+    deliver(&mut anchor, &mut removed).await;
+    deliver(&mut honest, &mut anchor).await;
+    for peer in &mut peers {
+        deliver(peer, &mut anchor).await;
+    }
+    let cutoff = anchor.stored_vector().await.get(&removed.writer());
+    let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
+    let past = seal_excluded_creates(&mut rng, &mut removed, &mut honest, cutoff).await;
+
+    let arrivals = [
+        LateArrival::RemovalFirst,
+        LateArrival::OperationsFirst,
+        LateArrival::CompactedFirst,
+    ];
+    for peer in &mut peers {
+        let arrival = *rng.pick(&arrivals).unwrap();
+        match arrival {
+            LateArrival::RemovalFirst => {
+                deliver(peer, &mut anchor).await;
+                peer.receive(&past).await;
+                peer.apply_all().await.unwrap();
+            }
+            LateArrival::OperationsFirst | LateArrival::CompactedFirst => {
+                peer.receive(&past).await;
+                peer.apply_all().await.unwrap();
+                if matches!(arrival, LateArrival::CompactedFirst) {
+                    let limit = peer.stored_vector().await;
+                    peer.compact(&limit, crate::COMPACTION_BATCH_OPS)
+                        .await
+                        .unwrap();
+                }
+                deliver(peer, &mut anchor).await;
+            }
+        }
+        assert_eq!(
+            title(peer, EXCLUDED_SHARED_NOTE).await.as_deref(),
+            Some("Draft"),
+            "peer {} lost the honest row arriving {arrival:?}",
+            peer.index
+        );
+    }
+    anchor.receive(&past).await;
+    anchor.apply_all().await.unwrap();
+    decide_late_changes(&mut rng, &mut anchor, removal).await;
+
+    let mut replicas = vec![anchor, honest];
+    replicas.extend(peers);
+    converge(&mut replicas).await;
+    let editor = rng.below(replicas.len());
+    edit(
+        &mut replicas[editor],
+        &format!(
+            "UPDATE quick_notes SET title = 'Edited' WHERE id = {}",
+            quoted(EXCLUDED_SHARED_NOTE)
+        ),
+    )
+    .await;
+    converge(&mut replicas).await;
+    let expected = replicas[0].dump().await;
+    for replica in &mut replicas {
+        assert_eq!(
+            title(replica, EXCLUDED_SHARED_NOTE).await.as_deref(),
+            Some("Edited"),
+            "replica {} lost the honest row",
+            replica.index
+        );
+        assert_eq!(
+            replica.dump().await,
+            expected,
+            "replica {} diverged",
+            replica.index
+        );
+        replica.check_invariants().await;
+    }
+}
+
+/// A removed device signs a Create of a row an honest member created, after edits that may
+/// pass its excluded bound. Peers meet those operations before or after the removal, with or
+/// without compacting them, and the anchor restores and discards late changes in a random
+/// order. Every replica keeps the honest row and ends with the same state.
+#[test]
+fn excluded_creates_converge() {
+    block_on(async {
+        let all = match number(SEED_VARIABLE) {
+            Some(seed) => seed..seed + 1,
+            None => 0..EXCLUDED_CREATE_SEEDS,
+        };
+        for seed in all {
+            excluded_creates_run(seed).await;
+        }
+    });
 }

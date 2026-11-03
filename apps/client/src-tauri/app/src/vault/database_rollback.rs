@@ -1197,6 +1197,7 @@ mod tests {
             enrolled_revision: 1,
             removed_revision,
             encryption_key: None,
+            held: false,
         }
     }
 

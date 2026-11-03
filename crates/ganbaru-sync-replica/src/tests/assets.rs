@@ -669,6 +669,30 @@ fn assets_sweep_spares_recent_touched_and_refused_files() {
 }
 
 #[test]
+fn asset_stage_and_commit_keep_their_grace() {
+    block_on(async {
+        let vault = SweepVault::new("assets-received-grace").await;
+        let in_flight = Arc::new(InFlightAssets::default());
+        let store = ContentAddressedStore::new(vault.root().to_path_buf())
+            .with_in_flight(Arc::clone(&in_flight));
+        let received = bytes(64, 33);
+        let asset = reference(&IMAGES_CLASS, &received);
+        receive(&store, &asset, &received).expect("receive");
+
+        // The operation that references the upload has not arrived when the sweep runs.
+        let later = SystemTime::now() + SWEEP_GRACE * 2;
+        assert_eq!(vault.sweep(&in_flight, later, admit_all).await, Ok(0));
+        assert_eq!(
+            entries(vault.root(), &IMAGES_CLASS),
+            vec![asset.file_name()]
+        );
+        let untouched = Arc::new(InFlightAssets::default());
+        assert_eq!(vault.sweep(&untouched, later, admit_all).await, Ok(1));
+        assert!(entries(vault.root(), &IMAGES_CLASS).is_empty());
+    });
+}
+
+#[test]
 fn assets_sweep_waits_for_an_archive_in_progress() {
     block_on(async {
         let vault = SweepVault::new("assets-gate").await;

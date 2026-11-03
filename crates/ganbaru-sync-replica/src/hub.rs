@@ -3,7 +3,7 @@
 
 use super::assets::{
     ASSET_UNAVAILABLE, AssetStore, AssetStoreError, INVALID_ASSET, STALE_STAGING_AGE, StagedAsset,
-    blocking, partition_held, write_staged,
+    blocking, partition_present, write_staged,
 };
 use super::records::{self, RecordExchange};
 use super::wire::{
@@ -436,7 +436,9 @@ impl SyncHub {
         if held.is_some()
             && matches!(
                 request,
-                ControlMessage::SyncAssetGet { .. } | ControlMessage::SyncAssetPut { .. }
+                ControlMessage::SyncAssetQuery { .. }
+                    | ControlMessage::SyncAssetGet { .. }
+                    | ControlMessage::SyncAssetPut { .. }
             )
         {
             let held = super::peers::admission::MemberRefusal::Held;
@@ -739,7 +741,8 @@ impl SyncHub {
     }
 }
 
-/// The queried assets the hub holds.
+/// The queried assets the hub holds. Answering records no transfer, so a query never renews
+/// the collection grace of a file nothing references.
 async fn asset_presence(
     store: &Arc<dyn AssetStore>,
     manifest: &Manifest,
@@ -750,7 +753,7 @@ async fn asset_presence(
         .map(|asset| asset_from_wire(asset, manifest))
         .collect::<Result<Vec<_>, _>>()
         .map_err(invalid)?;
-    let (held, _) = partition_held(store, references)
+    let held = partition_present(store, references)
         .await
         .map_err(store_failure)?;
     Ok(ControlMessage::SyncAssetPresence {

@@ -988,8 +988,15 @@ pub(crate) fn recover_interrupted_replacements(target: &Path) -> Result<(), Stri
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
-    recover_interrupted_restore(target, &parent.join(RESTORE_ROLLBACK_NAME))?;
-    recover_interrupted_refresh(target, &parent.join(HANDOFF_REFRESH_ROLLBACK_NAME))
+    let restore_rollback = parent.join(RESTORE_ROLLBACK_NAME);
+    // Android restores an independent copy in place, so its restore rollback can hold another
+    // vault. A desktop restore rollback beside the vault only ever holds the same vault, and
+    // another vault's one belongs to a sibling, such as the other build's vault.
+    #[cfg(target_os = "android")]
+    recover_interrupted_restore(target, &restore_rollback)?;
+    #[cfg(not(target_os = "android"))]
+    recover_same_vault_swap(target, &restore_rollback)?;
+    recover_same_vault_swap(target, &parent.join(HANDOFF_REFRESH_ROLLBACK_NAME))
 }
 
 /// Repairs interrupted swaps beside the selected vault at startup. Reads the selected path
@@ -1005,16 +1012,16 @@ pub(crate) fn recover_interrupted_replacements_for_app<R: Runtime>(
     recover_interrupted_replacements(Path::new(&target))
 }
 
-/// Finishes a fresh copy of the same vault an exit interrupted. A missing `target` gets
-/// `rollback` back, and a `target` that holds the same vault keeps it as a rollback copy. Any
-/// other `rollback` belongs to another vault sharing the parent folder, so it is left alone.
-fn recover_interrupted_refresh(target: &Path, rollback: &Path) -> Result<(), String> {
+/// Finishes a swap of the same vault an exit interrupted. A missing `target` gets `rollback`
+/// back, and a `target` that holds the same vault keeps it as a rollback copy. Any other
+/// `rollback` belongs to another vault sharing the parent folder, so it is left alone.
+fn recover_same_vault_swap(target: &Path, rollback: &Path) -> Result<(), String> {
     if !rollback.exists() {
         return Ok(());
     }
     if !target.exists() {
         return fs::rename(rollback, target)
-            .map_err(|error| format!("recover interrupted fresh copy: {error}"));
+            .map_err(|error| format!("recover interrupted vault replacement: {error}"));
     }
     match (vault_info_from_path(target), vault_info_from_path(rollback)) {
         (Ok(current), Ok(replaced)) if current.vault_id == replaced.vault_id => {

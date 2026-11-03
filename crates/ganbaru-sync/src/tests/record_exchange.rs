@@ -14,7 +14,7 @@ use super::authorization::{
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, anchor_device_key, device_admin, device_id,
-    enroll_entry, person, proposal,
+    device_key, enroll_entry, person, proposal,
 };
 use crate::{AuthorizationView, RecordClass, RecordCursor, RecordEnvelope, RecordRole};
 
@@ -1298,6 +1298,86 @@ fn evidence_whose_twin_is_purged_is_purged_when_the_writer_settles() {
                 .await
                 .iter()
                 .all(|(_, hash, _)| *hash != data_hash)
+        );
+    });
+}
+
+/// The genesis of `identity`, re-sealed from `genesis`, and a copy of the stored record `record`
+/// that its writer carries right after it.
+fn carried_by(identity: &Identity, genesis: &[u8], record: &[u8]) -> [Vec<u8>; 2] {
+    let certificate = genesis_of(genesis, identity);
+    let mut operation = Envelope::decode(record).unwrap().operation().unwrap();
+    operation.writer = identity.id();
+    operation.seq = 2;
+    operation.previous_hash = Envelope::decode(&certificate).unwrap().hash();
+    let carried = operation.seal(&identity.key).unwrap().into_bytes();
+    [certificate, carried]
+}
+
+/// The roles and classes a page serves the envelopes of `writer` in.
+fn classes_of(envelopes: &[RecordEnvelope], writer: WriterId) -> Vec<(RecordRole, RecordClass)> {
+    envelopes
+        .iter()
+        .filter(|envelope| Envelope::decode(&envelope.bytes).unwrap().writer == writer)
+        .map(|envelope| (envelope.role, envelope.class))
+        .collect()
+}
+
+/// A certificate that pairs a live device id with a key the chain does not enroll for that
+/// device puts its writer in the Rest class, whether the key is unknown or another device's,
+/// while a successor writer of a live device that names its enrolled key stays Live.
+#[test]
+fn a_certificate_pairing_a_live_id_with_another_key_stays_in_the_rest_class() {
+    block_on(async {
+        let mut hub = anchor_with_admins(94).await;
+        let hub_writer = hub.writer();
+        let genesis = genesis_of_writer(&mut hub, hub_writer).await;
+        let (envelopes, _) = all_pages(&mut hub, PAGE_ENVELOPES).await;
+        let record = envelopes
+            .iter()
+            .find(|envelope| {
+                envelope.role == RecordRole::Record
+                    && Envelope::decode(&envelope.bytes).unwrap().writer == hub_writer
+            })
+            .expect("the hub carries its records")
+            .bytes
+            .clone();
+
+        let stranger = DeviceKeyPair::from_seed(&[94; 32]).unwrap();
+        let unknown = Identity::new([95; 32], &stranger, &device_id(20), None);
+        let borrowed = Identity::new(
+            [96; 32],
+            &anchor_device_key(&person()),
+            &device_id(21),
+            None,
+        );
+        let successor = Identity::new(
+            [97; 32],
+            &device_key(&person(), 22),
+            &device_id(22),
+            None,
+        );
+        for identity in [&unknown, &borrowed, &successor] {
+            let admission = admit_bytes(&mut hub, &carried_by(identity, &genesis, &record)).await;
+            assert_eq!(admission.admitted, 2);
+        }
+
+        let (envelopes, _) = all_pages(&mut hub, PAGE_ENVELOPES).await;
+        for attacker in [&unknown, &borrowed] {
+            assert_eq!(
+                classes_of(&envelopes, attacker.id()),
+                [
+                    (RecordRole::Certificate, RecordClass::Rest),
+                    (RecordRole::Record, RecordClass::Rest),
+                ],
+                "a key the chain does not enroll for the named device earns no Live class"
+            );
+        }
+        let honest = classes_of(&envelopes, successor.id());
+        assert_eq!(honest.len(), 2);
+        assert!(
+            honest.iter().all(|(_, class)| *class == RecordClass::Live),
+            "the enrolled key keeps its writers Live: {honest:?}"
         );
     });
 }

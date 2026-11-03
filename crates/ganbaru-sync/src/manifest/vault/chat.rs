@@ -986,8 +986,9 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
 /// `chat_teammate_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
 /// revocation first, then the lower capability (an inherited one counting as the highest), then
 /// the stricter approval override, with no override counting as the least strict. Commands
-/// never rewrite the project or creation time, but the group stays a register because a derived
-/// key table admits only key columns in immutable groups, so concurrent creations converge.
+/// never rewrite the creation time, and rewrite the project only to the conversation's when a
+/// save reactivates a grant. The group stays a register because a derived key table admits only
+/// key columns in immutable groups, so concurrent creations converge.
 pub const FOLDER_GRANTS: TableSpec = TableSpec {
     id: FOLDER_GRANTS_TABLE,
     name: "chat_teammate_working_folder_grants",

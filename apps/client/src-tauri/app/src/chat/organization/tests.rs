@@ -3259,6 +3259,65 @@ fn grant_for_foreign_project_folder_is_not_listed() {
 }
 
 #[test]
+fn saving_a_grant_over_a_foreign_project_claim_restores_the_channel_project() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_foreign_project_grants(&pool).await;
+
+        let mut transaction = pool.begin().await.unwrap();
+        access::replace_folder_grants(
+            &mut transaction,
+            &ChatConversationId::new("conversation:review").unwrap(),
+            &ChatParticipantId::new("participant:review-agent").unwrap(),
+            "project:review",
+            &[
+                ChatFolderGrantInput {
+                    working_folder_id: ProjectWorkingFolderId::new("folder:review").unwrap(),
+                    capability: ChatFolderCapability::Execute,
+                    is_default: true,
+                    runtime_approval_override: None,
+                },
+                ChatFolderGrantInput {
+                    working_folder_id: ProjectWorkingFolderId::new("folder:same-project").unwrap(),
+                    capability: ChatFolderCapability::Execute,
+                    is_default: false,
+                    runtime_approval_override: None,
+                },
+            ],
+            ChatFolderCapability::Execute,
+            &UtcTimestamp::new("2026-08-04T18:00:00.000Z").unwrap(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let stored: String = sqlx::query_scalar(
+            "SELECT project_id FROM chat_teammate_working_folder_grants
+             WHERE sync_key = 'grant:foreign-label'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored, "project:review",
+            "the saved grant takes the channel's project"
+        );
+        let listed: Vec<String> = sqlx::query_scalar::<_, String>(ACTIVE_FOLDER_GRANTS_SQL)
+            .bind("conversation:review")
+            .bind("participant:review-agent")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            listed,
+            ["folder:review", "folder:same-project"],
+            "the folder the user saved carries authority"
+        );
+    });
+}
+
+#[test]
 fn acceptance_lapses_when_synced_instructions_or_grants_change() {
     tauri::async_runtime::block_on(async {
         for (accepted_state, change) in [

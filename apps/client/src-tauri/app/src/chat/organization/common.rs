@@ -150,7 +150,8 @@ pub(super) async fn insert_revision_attachments(
 /// context selection breaks the tie the same way.
 ///
 /// A synced grant outside the conversation's project carries no authority, so it is left out as
-/// if revoked, and saving the membership's access then revokes it.
+/// if revoked. Saving the membership's access revokes it, or rewrites its project to the
+/// conversation's when the user keeps that folder granted.
 pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
         folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
         (grant_row.is_default <> 0 AND NOT EXISTS (

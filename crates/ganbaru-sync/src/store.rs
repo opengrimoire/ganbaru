@@ -10,7 +10,7 @@ use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPA
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
     Change, Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
-    SignedCertificate, VersionVector, WriterId,
+    SignedCertificate, SpaceId, VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -99,7 +99,7 @@ pub enum StoreRefusal {
     /// authorization entry contiguous from it.
     Revoked,
     /// The genesis would exceed the writers its device or the space may have, and, for a removed
-    /// device, no higher surplus unnamed writer of it can make room.
+    /// device, no higher unnamed writer of it can make room.
     WriterLimit,
     /// Earlier operations of the writer are missing.
     Gap {
@@ -394,12 +394,12 @@ async fn store_genesis(
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
-    if !within_writer_limits(conn, ctx, &cert.device_id, selected).await? {
+    if !within_writer_limits(conn, ctx.space, &cert.device_id, selected).await? {
         // A removed device's writers all count toward the space's named writers, so displacing
         // one of them frees a slot under both bounds.
         let displaced = match removal {
             Some((_, cutoff)) => {
-                displace_surplus(conn, ctx, &cert.device_id, envelope.writer, cutoff).await?
+                displace_unnamed(conn, ctx, &cert.device_id, envelope.writer, cutoff).await?
             }
             None => false,
         };
@@ -897,9 +897,9 @@ pub(crate) const MAX_UNSELECTED_WRITERS_PER_SPACE: usize = 2 * MAX_WRITERS_PER_D
 /// [`MAX_WRITERS_PER_DEVICE`], and within [`MAX_UNSELECTED_WRITERS_PER_SPACE`] when `selected` is
 /// false, or the rest of [`MAX_WRITERS_PER_SPACE`] when it is true: whether the selected chain
 /// names the device.
-async fn within_writer_limits(
+pub(crate) async fn within_writer_limits(
     conn: &mut SqliteConnection,
-    ctx: &SpaceContext,
+    space: SpaceId,
     device_id: &str,
     selected: bool,
 ) -> SyncResult<bool> {
@@ -911,7 +911,7 @@ async fn within_writer_limits(
          FROM sync_writers w WHERE w.space_id = ?2",
     )
     .bind(device_id)
-    .bind(ctx.space.as_bytes().as_slice())
+    .bind(space.as_bytes().as_slice())
     .fetch_one(&mut *conn)
     .await?;
     let below = |count: i64, limit: usize| usize::try_from(count).is_ok_and(|count| count < limit);
@@ -926,36 +926,35 @@ async fn within_writer_limits(
     Ok(below(device, MAX_WRITERS_PER_DEVICE) && space)
 }
 
-/// Forgets the highest surplus unnamed writer of the removed device `device_id` so that the
-/// genesis of `writer`, whose removal cutoff is `cutoff`, fits the writer limits. Every replica
-/// then keeps the writers the removal names and the device's unnamed writers with the lowest ids,
-/// whatever order their geneses arrived in. A surplus writer keeps nothing past its genesis but
-/// authorization entries, whose records the record store keeps, so forgetting it loses no change.
+/// Forgets the highest unnamed writer, with cutoff 0, of the removed device `device_id` so that
+/// the genesis of `writer`, whose removal cutoff is `cutoff`, fits the writer limits. Every
+/// replica then keeps the writers the removal names and the device's unnamed writers with the
+/// lowest ids, whatever order their geneses arrived in. The anchor bounds the writers a removal
+/// names, so they alone never exceed the device limit. The changes the forgotten writer left are
+/// excluded everywhere, and the settle its successor's certificate triggers drops their late
+/// changes.
 ///
 /// An unnamed `writer` displaces only a higher writer. A writer whose operations are still
 /// applied, before the removal settles them, or one of the local device, is never forgotten, and
 /// the genesis is refused instead; the next exchange offers it again. Returns whether a writer
 /// was forgotten.
-async fn displace_surplus(
+async fn displace_unnamed(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     device_id: &str,
     writer: WriterId,
     cutoff: Seq,
 ) -> SyncResult<bool> {
-    let highest: Option<(Vec<u8>, i64, Option<String>)> =
-        sqlx::query_as(exclusion::surplus_unnamed_query!(
-            "SELECT w.writer_id, w.applied_seq, s.local_device_id
-             FROM sync_writers w JOIN sync_spaces s ON s.space_id = w.space_id
-             WHERE w.space_id = ?1 AND w.device_id = ?2 AND ",
-            3,
-            " ORDER BY w.writer_id DESC LIMIT 1"
-        ))
-        .bind(ctx.space.as_bytes().as_slice())
-        .bind(device_id)
-        .bind(exclusion::MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE)
-        .fetch_optional(&mut *conn)
-        .await?;
+    let highest: Option<(Vec<u8>, i64, Option<String>)> = sqlx::query_as(
+        "SELECT w.writer_id, w.applied_seq, s.local_device_id
+         FROM sync_writers w JOIN sync_spaces s ON s.space_id = w.space_id
+         WHERE w.space_id = ? AND w.device_id = ? AND w.removal_cutoff_seq = 0
+         ORDER BY w.writer_id DESC LIMIT 1",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(device_id)
+    .fetch_optional(&mut *conn)
+    .await?;
     let Some((highest, applied, local)) = highest else {
         return Ok(false);
     };
@@ -963,6 +962,16 @@ async fn displace_surplus(
     if applied != 0 || local.as_deref() == Some(device_id) || (cutoff == 0 && writer >= highest) {
         return Ok(false);
     }
+    // A re-offered genesis finds its certificate already walked; walking it again settles the
+    // exclusions without the forgotten writer.
+    sqlx::query(
+        "UPDATE sync_auth_envelopes SET walked = 0
+         WHERE space_id = ? AND role = 'certificate' AND writer_id = ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await?;
     for table in [
         "sync_ops",
         "sync_stable",

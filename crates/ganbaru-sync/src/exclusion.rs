@@ -49,8 +49,10 @@ pub const MAX_EXCLUDED_PER_WRITER: u64 = 1024;
 /// changes whatever order the writers arrived in. Each keeps up to [`MAX_EXCLUDED_PER_WRITER`]
 /// operations. A surplus writer keeps only its genesis and the authorization entries contiguous
 /// from it, and a lower one displaces the highest, so a removed device that mints writers stores
-/// a bounded amount anywhere. Every replica stores a surplus genesis, so a context covering it
-/// becomes ready everywhere.
+/// a bounded amount anywhere. Every replica stores a surplus genesis within the writer limits,
+/// so a context covering it becomes ready everywhere. Past those limits a lower unnamed genesis,
+/// or one the removal names, displaces the highest unnamed writer, and a context covering a
+/// writer the limits refuse for good is past the bound everywhere.
 pub const MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE: i64 = 2;
 
 /// A static query with, between `$before` and `$after`, the SQL condition on the writer row
@@ -72,7 +74,6 @@ macro_rules! surplus_unnamed_query {
         )
     };
 }
-pub(crate) use surplus_unnamed_query;
 
 /// Whether `writer` is a surplus unnamed writer of a removed device, see
 /// [`MAX_UNNAMED_WRITERS_PER_REMOVED_DEVICE`].
@@ -192,12 +193,13 @@ pub(crate) struct Removal {
     /// Last sequence of the writer stored here.
     pub(crate) stored: Seq,
     /// Last sequence of the writer outside authorization entries any replica keeps:
-    /// [`excluded_limit`] of the cutoff, or [`SURPLUS_LIMIT`] for a surplus unnamed writer.
+    /// [`excluded_limit`] of the cutoff, [`SURPLUS_LIMIT`] for a surplus unnamed writer, or 0
+    /// for an unnamed writer the writer limits refuse.
     pub(crate) limit: Seq,
 }
 
 /// Writers some of whose operations are excluded on this replica: every writer of a removed
-/// device but the local one, and every forked writer.
+/// device but the local one, stored or refused by the writer limits, and every forked writer.
 pub(crate) async fn excluding(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -233,6 +235,19 @@ pub(crate) async fn excluding(
             },
         );
     }
+    for writer in refused_unnamed(conn, space).await? {
+        excluding.insert(
+            writer,
+            Excluding {
+                removal: Some(Removal {
+                    cutoff: 0,
+                    stored: 0,
+                    limit: 0,
+                }),
+                fork: None,
+            },
+        );
+    }
     for (writer, keep) in crate::fork::shared_prefixes(conn, space).await? {
         excluding
             .entry(writer)
@@ -240,6 +255,47 @@ pub(crate) async fn excluding(
             .fork = Some(keep);
     }
     Ok(excluding)
+}
+
+/// Writers of a removed device but the local one whose certificate is stored but whose genesis
+/// the writer limits refuse for good: the removal does not name them, the device or the space is
+/// full, and no stored unnamed writer of the device has a higher id to displace. Every replica
+/// that stores the same geneses refuses them alike, so a context covering one is past the bound
+/// everywhere. A writer the limits would still admit is left out, and a context covering it
+/// waits for its genesis.
+async fn refused_unnamed(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Vec<WriterId>> {
+    let rows: Vec<(Vec<u8>, String)> = sqlx::query_as(
+        "SELECT DISTINCT e.writer_id, e.device_id
+         FROM sync_auth_envelopes e
+         JOIN sync_devices d
+            ON d.space_id = e.space_id AND d.device_id = e.device_id
+                AND d.device_key = e.device_key
+         JOIN sync_spaces s ON s.space_id = e.space_id
+         WHERE e.space_id = ?1 AND e.role = 'certificate' AND d.removed_revision IS NOT NULL
+            AND (s.local_device_id IS NULL OR e.device_id <> s.local_device_id)
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_writers w
+                WHERE w.space_id = e.space_id AND w.writer_id = e.writer_id
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_writers w
+                WHERE w.space_id = e.space_id AND w.device_id = e.device_id
+                    AND w.removal_cutoff_seq = 0 AND w.writer_id > e.writer_id
+            )",
+    )
+    .bind(space.as_bytes().as_slice())
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut refused = Vec::new();
+    for (writer, device) in rows {
+        let writer = log::writer_id(&writer)?;
+        if !store::within_writer_limits(conn, space, &device, true).await?
+            && authorization::removal_cutoff(conn, space, &device, writer).await? == 0
+        {
+            refused.push(writer);
+        }
+    }
+    Ok(refused)
 }
 
 /// Whether an operation with causal context `context` may apply after `applied`.
@@ -253,7 +309,8 @@ pub(crate) async fn excluding(
 ///   excluded operation is stored, or `s` is past the writer's [`Removal::limit`], where no
 ///   replica stores it. Storing the excluded operations first lets the late changes they leave
 ///   know the rows they created. A surplus unnamed writer's limit is its genesis, which every
-///   replica stores.
+///   replica stores within the writer limits. An unnamed writer those limits refuse for good,
+///   whose genesis no replica keeps, has limit 0.
 ///
 /// The excluded operations never apply, so waiting for them would hold an honest operation
 /// forever. A fork clamps `s` to the shared prefix before the removal rule applies.

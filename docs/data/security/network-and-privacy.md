@@ -103,6 +103,7 @@ Open follow-ups, rated medium or low and deferred:
 - A long-running coordinator stream, such as a bundle download, is not checked again after a removal.
 - Restoring a late change from an admin that is not the anchor may count the anchor's restated value as a newer edit, and released anchor marks are not kept across a vault restore.
 - Free disk space for the storage backstop is read only on Linux and Android; other targets rely on the byte and envelope bounds.
+- A flood of unauthenticated connections to an anchor server from many addresses can fill the share of its budget open to unknown sources, which delays enrolled devices on addresses the anchor has not seen recently, kit recovery, and new setups until it stops; addresses that recently authenticated keep a reserved share (see [Synchronization](../sync.md)).
 
 ## Data minimization
 

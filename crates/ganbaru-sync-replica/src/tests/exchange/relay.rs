@@ -1,8 +1,9 @@
 //! Full relay passes against an in-process relay server: devices converge only through the
 //! relay, a removed device opens nothing sealed after its removal, an admin repairs a wrong epoch
 //! registration, an admin that lags behind a rotation or a demotion leaves the relay alone, a
-//! stalled flush registers nothing, asset chunks round trip and a tampered chunk is refused, and
-//! an access proof bound to another connection is refused.
+//! stalled flush registers nothing, a rotation during a pass ends it without failure, asset
+//! chunks round trip and a tampered chunk is refused, and an access proof bound to another
+//! connection is refused.
 
 use super::flood::{authorization_record, operation_of, seal_next, throwaway_writer};
 use super::handover::{commit_sequenced, sequence_here};
@@ -10,6 +11,7 @@ use super::{
     HUB_DEVICE, PHONE_DEVICE, Replica, TABLET_DEVICE, block_on, device_key, done, hub, hub_keys,
     png,
 };
+use crate::assets::{AssetStore, AssetStoreError, StagedAsset};
 use crate::authority::{self, Enrollment};
 use crate::client::{MAX_EXCHANGE_BYTES, PeerIds};
 use crate::keys::SpaceKeys;
@@ -24,6 +26,7 @@ use ganbaru_handoff::protocol::relay::{
     RELAY_AUTH_DOMAIN, RELAY_EPOCH_DOMAIN, RELAY_SETUP_TOKEN_LIFETIME, RelayRefusalCode,
     RelayRequest, RelayResponse, RelaySetupToken, encode_relay_bytes,
 };
+use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::{AuthorizationView, RelayKeys};
 use ganbaru_sync_contracts::bounds::RELAY_ASSET_CHUNK_BYTES;
 use ganbaru_sync_contracts::{
@@ -37,8 +40,11 @@ use ganbaru_sync_relay::server::{ConnectionLimits, RelayServer, unix_time_ms};
 use ganbaru_sync_relay::store::{RelayStore, RetentionPolicy};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 
 /// A relay server running on a loopback port for one test.
 struct TestRelay {
@@ -926,6 +932,104 @@ fn a_device_whose_flush_stalls_does_not_register_the_next_epoch() {
         assert_eq!(relay_epoch(&pool).await, 1);
         pool.close().await;
         assert_eq!(phone.pass(&relay).await.epoch, 1);
+        hub_device.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+/// An asset store that hands control to the test once, from inside a relay pass, on the
+/// `fire_on`-th `holds` call, and resumes once the test answers.
+struct PausesMidPass {
+    inner: Arc<dyn AssetStore>,
+    calls: AtomicUsize,
+    fire_on: usize,
+    hook: Mutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl AssetStore for PausesMidPass {
+    fn holds(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.fire_on
+            && let Some((paused, resume)) = self.hook.lock().expect("hook").take()
+        {
+            paused.send(()).expect("signal the pause");
+            resume
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the test resumes the pass");
+        }
+        self.inner.holds(asset)
+    }
+
+    fn presence(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        self.inner.presence(asset)
+    }
+
+    fn read_chunk(
+        &self,
+        asset: &AssetRef,
+        offset: u32,
+        max_len: usize,
+    ) -> Result<Vec<u8>, AssetStoreError> {
+        self.inner.read_chunk(asset, offset, max_len)
+    }
+
+    fn stage(&self, asset: &AssetRef) -> Result<StagedAsset, AssetStoreError> {
+        self.inner.stage(asset)
+    }
+
+    fn commit(&self, staged: StagedAsset) -> Result<(), AssetStoreError> {
+        self.inner.commit(staged)
+    }
+}
+
+#[test]
+fn a_rotation_during_the_pass_ends_it_without_failure() {
+    block_on(async {
+        let relay = start_relay("relay-rotation-race").await;
+        let (mut hub_device, members) =
+            keyed_space("rotation-race", &[PHONE_DEVICE, TABLET_DEVICE]).await;
+        let mut members = members.into_iter();
+        let mut phone = members.next().expect("phone");
+        let tablet = members.next().expect("tablet");
+        hub_device.claim(&relay).await;
+        for keyed in [&hub_device, &phone, &tablet] {
+            assert_eq!(keyed.pass(&relay).await.problem, None);
+        }
+        // The phone references one asset it holds, so each pass asks its store twice: once
+        // before pushing and once before the closing State request.
+        add_note(&mut *acquire(&phone.replica.pool).await, "note-race").await;
+        phone.replica.add_image("note-race", 0, &png(64, 5)).await;
+        phone.replica.seal().await;
+        assert_eq!(phone.pass(&relay).await.uploaded, 1);
+        remove_and_rotate(&mut hub_device, TABLET_DEVICE).await;
+
+        // The hub registers epoch 2 while the phone's epoch 1 session is between its
+        // downloads and the closing State request.
+        let (paused, on_pause) = oneshot::channel();
+        let (resume, on_resume) = mpsc::channel();
+        let inner = Arc::clone(&phone.replica.assets);
+        phone.replica.assets = Arc::new(PausesMidPass {
+            inner,
+            calls: AtomicUsize::new(0),
+            fire_on: 2,
+            hook: Mutex::new(Some((paused, on_resume))),
+        });
+        let (raced, ()) = tokio::join!(phone.pass(&relay), async {
+            on_pause.await.expect("the pass pauses");
+            let rotated = hub_device.pass(&relay).await;
+            assert_eq!(rotated.registered, vec![2], "{rotated:?}");
+            resume.send(()).expect("resume the pass");
+        });
+        assert_eq!(raced.problem, None, "{raced:?}");
+        assert_eq!(raced.epoch, 1, "{raced:?}");
+        assert_eq!(raced.undelivered, None, "{raced:?}");
+        assert!(raced.more, "{raced:?}");
+
+        // The next pass reaches the new epoch.
+        let next = phone.pass(&relay).await;
+        assert_eq!(next.problem, None, "{next:?}");
+        assert_eq!(next.epoch, 2, "{next:?}");
+        assert_eq!(next.undelivered, Some(0), "{next:?}");
         hub_device.close().await;
         phone.close().await;
         tablet.close().await;

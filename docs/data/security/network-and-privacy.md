@@ -83,6 +83,8 @@ The relay never receives record content, asset content, or a key it can open. It
 - Whole authorization records for key epochs, which it receives as plain signed bytes, because members that lag behind fetch them before they can open anything. Each one shows the anchor device id, the author admin public key, the creation time, and the revision. A device id carries no name but encodes when the app first created it, so it reveals an install time. The key material, `wrapped_previous` included, stays sealed, but each record lists its recipients by opaque key id. An id stays the same for a device across epochs, so the relay can count recipients, the recovery key among them, and compare epochs to see when a device joined or was removed, without learning which device it is.
 - The admin public keys of the space, which it checks to accept admin commands.
 
+Relay credentials of old epochs never expire, because a member offline across a rotation catches up through them. A removed device that kept one keeps pulling the records sealed under that epoch, including ones members push before they learn the rotation, and keeps seeing key epoch records and when traffic arrives through waits. The relay refuses such a session the space state, so it does not see writer ranges, usage, or the admin set.
+
 An always-on anchor is outside this boundary, because it is a member that holds the keys and reads the whole vault. Revocation prevents future operations and key distribution but cannot erase plaintext already on an offline device or external provider. See [Synchronization](../sync.md).
 
 ## Sync security reviews

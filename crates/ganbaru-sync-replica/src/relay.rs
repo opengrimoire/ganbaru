@@ -143,8 +143,9 @@ pub struct RelayPass {
     /// Encrypted bytes the relay stores for the space, and its quota.
     pub stored_bytes: u64,
     pub quota_bytes: u64,
-    /// A direction stopped at its bound with more to move, or pulled records
-    /// may reference assets that become downloadable only after they apply.
+    /// A direction stopped at its bound with more to move, pulled records may reference assets
+    /// that become downloadable only after they apply, or a rotation registered during the pass
+    /// left its session behind the relay's epoch.
     pub more: bool,
     /// Why part of the pass stopped.
     pub problem: Option<RelayProblem>,
@@ -432,6 +433,12 @@ impl RelaySession<'_> {
                 let reached = relay_ranges(&writers)?;
                 pass.undelivered = Some(self.undelivered(&reached, &compacted).await?);
             }
+            // A rotation registered during this pass left the session stale: delivery stays
+            // unknown and the next pass runs at the new epoch.
+            RelayResponse::Refused {
+                code: RelayRefusalCode::StaleEpoch,
+                ..
+            } => pass.more = true,
             other => return Err(unexpected("State", &other)),
         }
         Ok(pass)
@@ -908,6 +915,14 @@ impl RelaySession<'_> {
                     .map(|key| decode_relay_admin_key(key))
                     .collect::<Result<BTreeSet<_>, _>>()?;
                 (held, admin_counter)
+            }
+            // A rotation registered during this pass; the next pass keeps the set.
+            RelayResponse::Refused {
+                code: RelayRefusalCode::StaleEpoch,
+                ..
+            } => {
+                pass.more = true;
+                return Ok(());
             }
             other => return Err(unexpected("State", &other)),
         };

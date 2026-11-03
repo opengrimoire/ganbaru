@@ -1671,6 +1671,87 @@ async fn a_wait_wakes_when_a_record_arrives() {
 }
 
 #[tokio::test]
+async fn a_stale_session_gets_no_state() {
+    let relay = start_relay(ConnectionLimits::default()).await;
+    let space = space_id(1);
+    let first = access(&space, 1);
+    let token = issue_token(&relay).await;
+    let mut rotating = Client::connect(&relay).await;
+    rotating.hello(space).await;
+    rotating.claim(space, &token, &first, &admin()).await;
+    rotating.auth(space, 1, &first).await;
+    let writer = writer_id(4);
+    let sealed = record(space, writer, 1, 1, 5, 40);
+    assert_eq!(
+        rotating.push(&sealed).await,
+        RelayResponse::Pushed {
+            outcomes: vec![RelayPushOutcome::Stored]
+        }
+    );
+    let mut stale = Client::connect(&relay).await;
+    stale.hello(space).await;
+    stale.auth(space, 1, &first).await;
+    assert!(matches!(
+        stale.send(&RelayRequest::State).await,
+        RelayResponse::State {
+            current_epoch: 1,
+            ..
+        }
+    ));
+    assert_eq!(
+        rotating.register(space, 2, &access(&space, 2)).await,
+        RelayResponse::EpochRegistered { epoch: 2 }
+    );
+
+    // A rotation makes the open session stale: it no longer sees writer ranges or admin keys.
+    assert_eq!(
+        refusal(&stale.send(&RelayRequest::State).await),
+        Some(RelayRefusalCode::StaleEpoch)
+    );
+    // A fresh session at the old epoch is stale from the start.
+    let mut removed = Client::connect(&relay).await;
+    removed.hello(space).await;
+    assert_eq!(
+        removed.auth(space, 1, &first).await,
+        RelayResponse::Authenticated {
+            epoch: 1,
+            current_epoch: 2,
+            stale: true
+        }
+    );
+    assert_eq!(
+        refusal(&removed.send(&RelayRequest::State).await),
+        Some(RelayRefusalCode::StaleEpoch)
+    );
+
+    // A lagging member still catches up through Pull, Epochs, and Wait.
+    let RelayResponse::Records { records, .. } =
+        removed.send(&RelayRequest::Pull { have: Vec::new() }).await
+    else {
+        panic!("expected records");
+    };
+    assert_eq!(records, vec![encode_relay_bytes(&sealed)]);
+    let RelayResponse::Epochs {
+        current_epoch,
+        entries,
+        ..
+    } = removed.send(&RelayRequest::Epochs { after: 1 }).await
+    else {
+        panic!("expected epochs");
+    };
+    assert_eq!((current_epoch, entries.len()), (2, 1));
+    assert_eq!(
+        removed.send(&RelayRequest::Wait { have: Vec::new() }).await,
+        RelayResponse::Waited { ready: true }
+    );
+    // The session stays usable after the refusal.
+    assert_eq!(
+        refusal(&removed.send(&RelayRequest::State).await),
+        Some(RelayRefusalCode::StaleEpoch)
+    );
+}
+
+#[tokio::test]
 async fn oversized_frames_before_authentication_close_the_connection() {
     let relay = start_relay(ConnectionLimits::default()).await;
     let mut client = Client::connect(&relay).await;

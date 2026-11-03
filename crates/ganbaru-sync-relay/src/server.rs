@@ -837,26 +837,36 @@ impl Session {
         let _generation = (!matches!(request, RelayRequest::Wait { .. })).then_some(current);
         let store = &self.shared.store;
         let result = match request {
-            RelayRequest::State => store.state(&space).await.map(|state| RelayResponse::State {
-                current_epoch: state.current_epoch,
-                writers: state
-                    .writers
-                    .iter()
-                    .map(|range| RelayWriterRange {
-                        writer: range.writer.to_hex(),
-                        floor: range.floor,
-                        next: range.next,
-                    })
-                    .collect(),
-                stored_bytes: state.stored_bytes,
-                quota_bytes: store.retention().quota_bytes,
-                admins: state
-                    .admins
-                    .iter()
-                    .map(|admin| encode_relay_bytes(admin.as_bytes()))
-                    .collect(),
-                admin_counter: state.admin_counter,
-            }),
+            // A session below the current epoch may still read what was sealed for it, but not
+            // the space's writer ranges, usage, or admin set.
+            RelayRequest::State => match store.state(&space).await {
+                Ok(state) if state.current_epoch > epoch => {
+                    return refused(
+                        RelayRefusalCode::StaleEpoch,
+                        "the space moved to a newer epoch; authenticate at it",
+                    );
+                }
+                result => result.map(|state| RelayResponse::State {
+                    current_epoch: state.current_epoch,
+                    writers: state
+                        .writers
+                        .iter()
+                        .map(|range| RelayWriterRange {
+                            writer: range.writer.to_hex(),
+                            floor: range.floor,
+                            next: range.next,
+                        })
+                        .collect(),
+                    stored_bytes: state.stored_bytes,
+                    quota_bytes: store.retention().quota_bytes,
+                    admins: state
+                        .admins
+                        .iter()
+                        .map(|admin| encode_relay_bytes(admin.as_bytes()))
+                        .collect(),
+                    admin_counter: state.admin_counter,
+                }),
+            },
             RelayRequest::Push { records } => {
                 let mut decoded = Vec::with_capacity(records.len());
                 for text in &records {

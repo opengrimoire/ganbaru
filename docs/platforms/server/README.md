@@ -1,224 +1,183 @@
 # Self-hosted server
 
-**Status: Implemented in source.** The `ganbaru-server` binary runs on a machine you control, and sync never needs it. Relay mode, anchor mode, and their Settings exist; physical acceptance is pending.
+**Status: Implemented in source.** The optional `ganbaru-server` program runs on a machine you control. Relay mode, anchor mode, and their Settings exist; physical acceptance is pending.
 
-This is the setup guide. [Sync](../../data/sync.md) owns the behavior and [Network and privacy](../../data/security/network-and-privacy.md) owns the security boundary.
+This is the setup guide. Every step is a command you can paste, so you can also hand this page to an AI assistant. [Sync](../../data/sync.md) owns the behavior and [Network and privacy](../../data/security/network-and-privacy.md) owns the security boundary.
 
 ## Do you need a server?
 
-Linked devices sync with each other on the same network, and over a private overlay network, without any server.
+| Your devices | What to do |
+| --- | --- |
+| On the same network | Nothing. Linked devices find each other. |
+| In different places, and a computer of the vault is usually on | Put every device on the same VPN (see [Reach it from other places](#reach-it-from-other-places)). Ganbaru reaches VPN addresses like local ones, with no server. |
+| Rarely online at the same time, or no computer stays on | Run a server. It also lets a new computer join the vault with only a code. |
 
-Tailscale alone is enough when every device runs it on the same tailnet and a desktop of the vault is on when the others sync. Ganbaru dials Tailscale addresses like local ones, so there is nothing to set up. Devices that are never online together still need a server, because each one can only hand changes to a device that is awake.
+## Anchor or relay
 
-Run a server when your devices are often apart and no desktop stays on, or when a phone should sync without a VPN. A server can also sit behind Tailscale: name its Tailscale address in the setup command and forward no port.
+Pick one mode per server, and one server per vault.
 
-## Relay or anchor
-
-Pick one mode for a data directory, and one server for a vault.
-
-| Mode | What it does | What the server can read | Run it on |
-| --- | --- | --- | --- |
-| Relay | Stores sealed records and asset chunks between devices that are not online together. | No record content and no key. It sees record size and timing, the space and writer they belong to, and when the vault's list of key recipients changes: how many there are and an opaque id for each, which show when a device joins or leaves. | A rented server or hardware you own. |
-| Anchor | Runs a full replica of one vault, serves every device, and takes the anchor role, so the vault keeps moving while your personal devices sleep. It also holds an admin key and sequences authority for the vault, and it is a backup. | The whole vault. It holds the space keys. | Hardware you own. |
-
-An anchor server keeps the vault in plaintext and holds its keys, so encryption does not protect the vault from that machine or from whoever runs it. Use relay mode on a rented server, and anchor mode on hardware you own. Disk encryption on the server protects an anchor only while the machine is off.
+- **Anchor** (recommended on hardware you own, such as a home server, NAS, or old PC): a full, always-on copy of the vault. It keeps every device syncing while your computers are off, takes the anchor role, and lets a new computer [join through it](#adding-a-desktop-through-the-server). It holds the vault keys and can read the whole vault, so encryption does not protect the vault from that machine.
+- **Relay** (for a rented server): stores encrypted changes until your devices pick them up. It cannot read them; it sees only sizes, timing, and opaque ids. It keeps at most 2 GiB per vault for 90 days (`--quota-mib`, `--max-age-days`).
 
 ## What you need
 
-- A small Linux machine that stays on. A relay fits the smallest virtual server you can rent. An anchor needs disk for a whole vault.
-- A data directory only the server user can read. All server state lives in that directory.
-- TCP port 43823 reachable from your devices, through a public address, a forwarded port, or a VPN address. Devices pin the server's certificate fingerprint, so no domain or certificate authority is needed. Do not put a proxy that terminates TLS in front of the server, because devices would refuse its certificate; plain TCP forwarding is fine.
-- A vault to serve. Add the server from an admin desktop; a desktop that is not linked to anything yet can add one too.
-- The [container image or the binary](#get-the-server) of the same version as your app.
+- A Linux machine that stays on, x86_64 or 64-bit ARM. A relay fits the smallest rented server; an anchor needs disk for the whole vault.
+- TCP port 43823 reachable from your devices, through a VPN or a forwarded port. No domain or certificate is needed: devices pin the server's certificate. Do not put a TLS-terminating proxy in front of it; plain TCP forwarding is fine.
+- The same version as your app. Ganbaru updates itself, so let the server update too ([Updates](#updates)).
 
-Commands below use `<version>` for that version and `<address>` for a name or address your devices can reach. Prefer a domain name that you control: the address is part of the setup code, so changing it later means removing the server and adding it again. `ganbaru-server help` lists every option.
+Below, `<address>` is an address your devices can reach, and `anchor` can be replaced by `relay`. `ganbaru-server help` lists every command.
 
-## Get the server
+## Run it with Podman
 
-Containers need nothing else. The image is `ghcr.io/opengrimoire/ganbaru-server:<version>`; stable releases also move `latest`. The release job summary records the digest. To be sure of what you run, use `ghcr.io/opengrimoire/ganbaru-server@sha256:<digest>` in place of the tag.
+Podman 5 or later is recommended: it runs the server without root and updates it automatically.
 
-For the bare binary, download it with the checksum files from the [release](../../operations/release/distribution.md#self-hosted-server). Use `linux_aarch64` in place of `linux_x86_64` on 64-bit ARM.
+1. Create the data folder and the service file:
 
-```sh
-base=https://github.com/opengrimoire/ganbaru/releases/download/app-v<version>
-curl -LO "$base/ganbaru-server_<version>_linux_x86_64"
-curl -LO "$base/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-sudo install -m 755 ganbaru-server_<version>_linux_x86_64 /usr/local/bin/ganbaru-server
-```
+   ```sh
+   mkdir -p -m 700 ~/ganbaru-server ~/.config/containers/systemd
+   cat > ~/.config/containers/systemd/ganbaru-server.container <<'EOF'
+   [Container]
+   ContainerName=ganbaru-server
+   Image=ghcr.io/opengrimoire/ganbaru-server:latest
+   Exec=anchor
+   PublishPort=43823:43823
+   Volume=%h/ganbaru-server:/data:Z
+   UserNS=keep-id:uid=65532,gid=65532
+   AutoUpdate=registry
 
-## Run it on a rented server with Docker
+   [Service]
+   Restart=always
 
-Use relay mode here.
+   [Install]
+   WantedBy=default.target
+   EOF
+   ```
 
-1. [Install Docker](https://docs.docker.com/engine/install/), and allow TCP 43823 in the provider's firewall and on the server, for example with `sudo ufw allow 43823/tcp`.
-2. Create the data directory. The container runs as user 65532, which must own it.
+2. Start it, keep it running after you log out, and turn on daily updates:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user start ganbaru-server
+   sudo loginctl enable-linger "$USER"
+   systemctl --user enable --now podman-auto-update.timer
+   ```
+
+3. Print a setup code, then [add the server to your vault](#add-the-server-to-your-vault):
+
+   ```sh
+   podman exec ganbaru-server /usr/local/bin/ganbaru-server anchor setup --endpoint <address>:43823
+   ```
+
+## Run it with Docker
+
+1. Create the data folder. The container runs as user 65532, which must own it:
 
    ```sh
    sudo install -d -o 65532 -g 65532 -m 700 /srv/ganbaru-server
    ```
 
-3. Start the relay. It comes back after a reboot.
+2. Start the server. It comes back after a reboot:
 
    ```sh
    sudo docker run -d --name ganbaru-server --restart unless-stopped \
      -p 43823:43823 -v /srv/ganbaru-server:/data \
-     ghcr.io/opengrimoire/ganbaru-server:<version> relay
+     ghcr.io/opengrimoire/ganbaru-server:latest anchor
    ```
 
-4. Print a setup code, then continue with [Relay mode](#relay-mode).
+3. Print a setup code, then [add the server to your vault](#add-the-server-to-your-vault):
 
    ```sh
-   sudo docker exec ganbaru-server /usr/local/bin/ganbaru-server \
-     relay setup --endpoint <address>:43823
+   sudo docker exec ganbaru-server /usr/local/bin/ganbaru-server anchor setup --endpoint <address>:43823
    ```
 
-On a distribution with SELinux, such as Fedora, add `:Z` to the end of the `-v` value.
-
-## Run it on a NAS or home server
-
-Use anchor mode here when you own the machine, or relay mode if you prefer.
-
-1. Give the machine a fixed address on your network in the router's settings.
-2. Forward TCP 43823 on the router to that address. Skip this if the devices reach the machine through Tailscale.
-3. If your home address changes, set up a dynamic DNS name and use it as `<address>`.
-4. Start the server with Docker as above, or the systemd unit below. A NAS with a container screen needs the same four settings: the image, port 43823, a folder mounted at `/data` and owned by user 65532, and the restart policy. For an anchor, add `anchor` after the image name:
-
-   ```sh
-   sudo docker run -d --name ganbaru-server --restart unless-stopped \
-     -p 43823:43823 -v /srv/ganbaru-server:/data \
-     ghcr.io/opengrimoire/ganbaru-server:<version> \
-     anchor
-   ```
-
-5. Print a setup code with both addresses, the local one first, because many routers cannot reach their own public address from inside. Then continue with [Relay mode](#relay-mode) or [Anchor mode](#anchor-mode).
-
-   ```sh
-   sudo docker exec ganbaru-server /usr/local/bin/ganbaru-server \
-     anchor setup --endpoint 192.168.1.20:43823 --endpoint <address>:43823
-   ```
-
-   For a relay, use `relay setup` in place of `anchor setup`. A code holds at most four addresses.
+On SELinux systems such as Fedora, add `:Z` to the end of the `-v` value. A NAS container screen needs the same settings: the image, the `anchor` or `relay` command, port 43823, a folder at `/data` owned by user 65532, and a restart policy.
 
 ## Run the binary with systemd
 
-1. Create a user for the server.
-
-   ```sh
-   sudo useradd --system --home-dir /var/lib/ganbaru-server --shell /usr/sbin/nologin ganbaru-server
-   ```
-
-2. Save this unit as `/etc/systemd/system/ganbaru-server.service`. For an anchor, replace `relay` with `anchor` in `ExecStart`.
-
-   ```ini
-   [Unit]
-   Description=Ganbaru sync server
-   After=network-online.target
-   Wants=network-online.target
-
-   [Service]
-   User=ganbaru-server
-   Group=ganbaru-server
-   StateDirectory=ganbaru-server
-   StateDirectoryMode=0700
-   ExecStart=/usr/local/bin/ganbaru-server relay --data-dir /var/lib/ganbaru-server
-   Restart=on-failure
-   NoNewPrivileges=true
-   PrivateTmp=true
-   ProtectHome=true
-   ProtectSystem=strict
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-
-3. Start it, and print a setup code as the same user.
-
-   ```sh
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now ganbaru-server
-   sudo -u ganbaru-server ganbaru-server relay setup --data-dir /var/lib/ganbaru-server --endpoint <address>:43823
-   ```
-
-   For an anchor, use `anchor setup` in place of `relay setup`.
-
-## Relay mode
-
-1. Print a setup code on the server, as shown above. The command prints a QR code and a text code. The code works once, for one vault, for 15 minutes.
-2. Keep the anchor desktop online, and enter the code in Settings > Data, in the server section of an admin desktop.
-3. Confirm that you understand the server encryption has not had an external security review yet, and add the server. It takes effect once the anchor confirms it.
-
-The relay keeps at most 2 GiB per vault for 90 days. Change that with `--quota-mib` (at least 64) and `--max-age-days` (at least 1) on `relay`. A device away for longer catches up from another device directly.
-
-`relay spaces` lists the vaults the relay stores, and `relay revoke-setup` cancels unused codes, or one with `--code`. Both work while the relay runs. `relay remove-space --space <id>` deletes one vault and needs a stopped relay, as in [Upgrades](#upgrades-and-stopped-commands).
-
-## Anchor mode
-
-An anchor serves one vault. The desktop that adds it must be an admin.
-
-1. Print a setup code on the server, as shown above, naming each address your devices can reach; a phone away from home needs a public or VPN address. The code stays valid for 15 minutes and for one vault: the first vault a desktop proves it for binds it, and the server refuses it for any other. A retry for the same vault works, and a newer code replaces an older one, so run it again whenever a code expires or another vault took it. If the desktop reports that the server already runs another vault, delete the server's data directory and print a new code.
-2. Enter the code in Settings > Data, in the server section of an admin desktop, and confirm that this server can read your whole vault. The desktop proves the code, learns the server's keys, proposes the server's enrollment as an admin, and uploads a copy of the vault. No admin key or person key leaves the desktop, and the server dials nobody.
-3. Keep the default to let the server take the anchor, or choose to keep the current anchor. If the anchor desktop is off, the desktop waits for it; once it has run, enter the same code again, or a new one if it expired.
-
-Every linked device learns the server from the log and dials it from any network. Two dials happen before that: the desktop adding the server dials the endpoints in the setup code, which may be public, and a desktop [joining through the server](#adding-a-desktop-through-the-server) dials them before it has the vault, from any network. Every other new device links to a desktop first, on the LAN.
-
-An anchor accepts at most 256 connections that have not yet authenticated, 4 from one address (an IPv4 address or an IPv6 /64), and closes any that does not authenticate or prove a setup code within 30 seconds. It keeps 64 of those slots for addresses your devices used recently, so a flood from unknown addresses does not lock your devices out, though it can delay a device connecting from a new address, or a new setup, until it stops. A device turned away for a full budget retries on its next pass.
-
-Two limits apply today. A server takes the anchor only as part of being added, so once a desktop takes the anchor from it, or you kept the anchor on a desktop, the anchor cannot go to that server: it keeps running its vault and refuses a second upload with "this server already runs a vault". To return to a server anchor, [remove the server](#removing-a-server) and add it again with a fresh setup on an empty data directory. The recovery kit also cannot be regenerated while a server anchors, so take the anchor to a desktop, regenerate the kit there, and return the same way.
-
-## Upgrades and stopped commands
-
-Keep the server on the same version as the app. An older server asks for an update when you add it, and one that lags behind keeps serving the records it holds until the handoff protocol itself changes. For a relay, Settings shows when the server and the device speak different protocol versions; an anchor server is not probed for this. The data directory stays across upgrades, and the server upgrades it when it starts, so an older binary cannot be put back afterwards. The server never updates itself.
-
-With Docker, stop and remove the container, then run the same `docker run` command with the new version:
+Download the binary for your release with its checksums (use `linux_aarch64` on 64-bit ARM), then create a user and a service:
 
 ```sh
-sudo docker stop ganbaru-server
-sudo docker rm ganbaru-server
+base=https://github.com/opengrimoire/ganbaru/releases/download/app-v<version>
+curl -LO "$base/ganbaru-server_<version>_linux_x86_64" -LO "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+sudo install -m 755 ganbaru-server_<version>_linux_x86_64 /usr/local/bin/ganbaru-server
+sudo useradd --system --home-dir /var/lib/ganbaru-server --shell /usr/sbin/nologin ganbaru-server
+sudo tee /etc/systemd/system/ganbaru-server.service >/dev/null <<'EOF'
+[Unit]
+Description=Ganbaru server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ganbaru-server
+StateDirectory=ganbaru-server
+StateDirectoryMode=0700
+Environment=GANBARU_SERVER_DATA_DIR=/var/lib/ganbaru-server
+ExecStart=/usr/local/bin/ganbaru-server anchor
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now ganbaru-server
+sudo -u ganbaru-server GANBARU_SERVER_DATA_DIR=/var/lib/ganbaru-server ganbaru-server anchor setup --endpoint <address>:43823
 ```
 
-With systemd, replace the binary as in [Get the server](#get-the-server), then run `sudo systemctl restart ganbaru-server`.
+## Reach it from other places
 
-Commands that need a stopped server run the same way. With Docker, stop the container and start a temporary one that shares the folder, then start the server again:
+- **A VPN (safest, recommended).** Put the server and every device on the same VPN, and use the server's VPN address as `<address>`. No port is open to the Internet. [Tailscale](https://tailscale.com) is the easiest. [Headscale](https://headscale.net) (a self-hosted Tailscale server) and [NetBird](https://netbird.io) are fully open and self-hostable, and plain [WireGuard](https://www.wireguard.com) works too. All are fast. Phones need the VPN app on. If the server has a firewall, allow the port on the VPN, for example `sudo ufw allow in on tailscale0 to any port 43823 proto tcp`.
+- **A forwarded port.** Forward TCP 43823 on your router to the server, or open it on a rented server, for example with `sudo ufw allow 43823/tcp`. Use a domain name you control, or a dynamic DNS name if your home address changes. Traffic stays encrypted and pinned, and the server limits connections from unknown addresses ([details](../../data/security/network-and-privacy.md)).
 
-```sh
-sudo docker stop ganbaru-server
-sudo docker run --rm -v /srv/ganbaru-server:/data ghcr.io/opengrimoire/ganbaru-server:<version> \
-  relay remove-space --space <id>
-sudo docker start ganbaru-server
-```
+A setup code holds up to four addresses. Give the local one first, because many routers cannot reach their own public address from inside: `--endpoint 192.168.1.20:43823 --endpoint <address>:43823`. The addresses are part of the code, so changing them later means removing the server and adding it again.
 
-With systemd, use `sudo systemctl stop ganbaru-server`, run the command with `sudo -u ganbaru-server`, then `sudo systemctl start ganbaru-server`.
+## Add the server to your vault
 
-## Backups
+A setup code works for 15 minutes and one vault. Print a new one when it expires.
 
-A relay holds only copies of what your devices hold, so a backup is optional. To keep its identity, copy the data directory while the relay is stopped, for example with `sudo tar -czf ganbaru-server.tar.gz -C /srv ganbaru-server`, and restore it with its owner. Without a copy, run a fresh relay, remove the old one in Settings, and add the new one.
+1. On a desktop that is an admin of the vault, open Settings > Data, paste the code in the server section, and confirm the warning. A desktop linked to nothing can add one too.
+2. For an anchor, keep **Make this server the anchor** checked. If the current anchor device is off, the desktop waits for it; once it is on, enter the same code again, or a new one if it expired.
 
-For an anchor, stop the server and write a backup file. With Docker:
+Every linked device then learns the server and dials it from any network.
 
-```sh
-sudo docker stop ganbaru-server
-sudo docker run --rm -v /srv/ganbaru-server:/data ghcr.io/opengrimoire/ganbaru-server:<version> \
-  anchor backup --out /data/vault.ganbaru-backup
-sudo docker start ganbaru-server
-```
-
-With systemd, stop the service and run `sudo -u ganbaru-server ganbaru-server anchor backup --data-dir /var/lib/ganbaru-server --out /var/lib/ganbaru-server/vault.ganbaru-backup`. Copy the file off the server and delete it there. The vault needs a recovery kit. The file is encrypted to that kit and restores on any new device, like a backup made in the app.
-
-Copying an anchor's data directory is not a backup of the vault for another machine, because its keys identify this server, and it holds the vault in plaintext. Copy it only to move the server: stop the old one, copy the whole directory with its owner, and never start the old one again. Two copies running at once sign with the same keys, and devices treat that as a fork. Do not put an older copy back over a server that devices still use.
+An anchor takes the anchor role only when it is added. If a desktop later takes the anchor, or you kept it on a desktop, the server keeps serving but cannot take it back: remove the server and add it again on an empty data folder. The recovery kit also cannot be regenerated while a server is the anchor; take the anchor to a desktop first.
 
 ## Adding a desktop through the server
 
-A desktop that has no vault yet, such as a new work computer or one replacing every lost device, joins through an anchor server without meeting another device. The server must hold the anchor role.
+A new computer, such as a work PC or one replacing every lost device, can join through an anchor server without meeting another device.
 
 1. Run `anchor setup` on the server for a fresh code.
-2. On the new desktop, choose **or connect this computer to another computer or a server** on the first launch, or **Connect to a computer or server** in Settings > Data, open **A server**, and paste the code. The server enrolls the desktop as an admin, signed with the server's own admin key, and the desktop copies the vault into a new folder.
-3. If the server refuses to add the desktop, for example because its admin key was removed, choose **Use the recovery kit instead** and enter the kit too. The desktop derives the recovery admin key in memory and enrolls itself with it.
+2. On the new computer, choose **or connect this computer to another computer or a server** on the first launch, or **Connect to a computer or server** in Settings > Data. Open **A server** and paste the code. The server adds the computer as an admin and it copies the vault.
+3. If the server refuses, for example because its admin key was removed, choose **Use the recovery kit instead** and enter the kit too.
 
-Proving a fresh code takes a shell on the server, which already reads the whole vault and holds an admin key, so the code alone is enough authority to join. The desktop opens the copy only when its log enrolls this desktop's own keys, and with the kit, only when the log names that kit. The kit check proves only that the server knew the kit's public keys, not that it runs your vault: a server that already learned them, such as from an earlier recovery attempt, can pass it.
+The code alone is enough because printing it takes a shell on the server, which can already read the vault. The new computer opens the copy only when the vault's log adds this computer's own keys. Until a linked device shares the person key with it, it cannot sign contact cards or requests. If the copy fails, repeat with a fresh code.
 
-The person key does not travel this way: a linked device that still holds it can share it again, and until then this desktop cannot sign contact cards or requests. If the copy fails after the enrollment, repeat the steps with a fresh code.
+## Updates
+
+The app updates itself, and a server that falls behind stops working with it once the sync format changes, so keep the server updating too:
+
+- **Podman** with the file above checks `latest` every day, and returns to the previous image if the new one does not start.
+- **Docker:** `sudo docker pull ghcr.io/opengrimoire/ganbaru-server:latest`, then `docker stop`, `docker rm`, and the same `docker run`.
+- **Binary:** replace it as in [Run the binary with systemd](#run-the-binary-with-systemd) and `sudo systemctl restart ganbaru-server`.
+
+To choose when you update, use `:<version>` or `@sha256:<digest>` (from the release job summary) in place of `:latest`.
+
+Each start upgrades the data folder in one transaction per step, so a failed upgrade leaves it as it was. After a newer version has run, an older one cannot use the folder. Do not restore an old copy of an anchor's folder over one your devices used: it signs with the same keys, and devices treat that as a fork. To recover from a bad release, update to the fixed one.
+
+## Stopped commands
+
+`relay remove-space` and `anchor backup` need a stopped server. Run them in a temporary container that shares the folder (Podman: `systemctl --user stop ganbaru-server`, then `podman run --rm -v ~/ganbaru-server:/data:Z --userns keep-id:uid=65532,gid=65532 ghcr.io/opengrimoire/ganbaru-server:latest <command>`, then start it again; Docker: the same with `sudo docker` and `/srv/ganbaru-server`; systemd: stop the service and run the command as `ganbaru-server` with `GANBARU_SERVER_DATA_DIR` set). `relay setup`, `relay spaces`, and `relay revoke-setup` work while it runs.
+
+## Backups
+
+An anchor's vault also lives on your devices. For a file that restores on any new device with the recovery kit, run `anchor backup --out /data/vault.ganbaru-backup` as a stopped command, copy the file off the server, and delete it there. A copy of the data folder is not a backup for another machine; copy it only to move the server, and never run both copies.
+
+A relay holds only copies of what your devices hold. Without its folder, run a fresh relay, remove the old one in Settings, and add the new one.
 
 ## Removing a server
 
-On an admin desktop, take the anchor first if the server holds it. Then remove the server in Settings > Data, remove an anchor from the device list, stop the process, and delete the data directory. A relay deletes what it stores for the vault when the desktop can reach it; otherwise run `relay remove-space`, or delete the data directory.
+On an admin desktop, take the anchor first if the server holds it. Remove the server in Settings > Data, and remove an anchor from the device list too. Then stop the server and delete its data folder. A relay deletes what it stores for the vault when the desktop can reach it.

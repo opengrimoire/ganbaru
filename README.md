@@ -49,6 +49,10 @@ Arch-based distro users can install with `yay -S ganbaru-bin` or another AUR hel
 
 Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. `SHA256SUMS.asc` is its signature by the package repository key. The `.sig` files and `latest.json` are used by Ganbaru's built-in updater, not files you need to download.
 
+### Sync your devices (optional)
+
+Devices on the same network sync once linked. In different places, put them on the same VPN, such as [Tailscale](https://tailscale.com), or the fully self-hostable [Headscale](https://headscale.net) or [NetBird](https://netbird.io). For syncing while every computer is off, or adding a new computer with only a code, run the optional server, an always-on copy on a machine you own or an encrypted relay on a rented one: `ghcr.io/opengrimoire/ganbaru-server:latest` with Podman or Docker, or the `ganbaru-server` binary from the release. The [server guide](docs/platforms/server/README.md) has copy-paste steps.
+
 ## Features
 
 These statuses describe the current repository head. The latest published release can lag behind them.
@@ -66,7 +70,8 @@ These statuses describe the current repository head. The latest published releas
 | **Themes and localization** | Custom themes plus typed English and Spanish interface catalogs | Partial |
 | **Android** | Adaptive Calendar, Projects, Notes, Chat, Pomodoro, Music, Settings, backup, notifications, and distraction blocker surfaces | Pre-release |
 | **Diary, sleep, and work environments** | Missing parts of the planned anti-burnout and context-preparation loop | Planned |
-| **Sync and BYOK assistants** | User-provisioned collaboration, external assistants, and explicit external access | Planned |
+| **Sync** | Linked devices on the same network or VPN, with an optional self-hosted relay or always-on anchor server; physical multi-device testing is pending | Partial |
+| **BYOK assistants** | User-configured external assistants and explicit external access | Planned |
 | **Gamification** | Ethical progress systems that protect recovery and avoid paid chance mechanics | Deferred |
 
 See the [documentation index](docs/README.md), [feature index](docs/features/README.md), and [roadmap](docs/ROADMAP.md) for detailed status and product direction.

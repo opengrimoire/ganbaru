@@ -27,7 +27,7 @@
     onAdded?: () => void;
   } = $props();
 
-  /** The setup guide for a self-hosted server; each mode links to its own section. */
+  /** The self-hosted server guide, which also explains syncing devices in different places. */
   const SERVER_GUIDE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/docs/platforms/server/README.md";
   /** The text every anchor server setup code starts with. */
   const ANCHOR_CODE_PREFIX = "ganbaru-anchor:";
@@ -203,11 +203,11 @@
   {/if}
 
   <div class="flex flex-wrap gap-x-4 gap-y-1 px-1">
-    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide(`${SERVER_GUIDE_URL}#relay-mode`)}>
-      {t("sync.server.guide")}
+    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide(`${SERVER_GUIDE_URL}#do-you-need-a-server`)}>
+      {t("sync.server.placesGuide")}
     </button>
-    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide(`${SERVER_GUIDE_URL}#anchor-mode`)}>
-      {t("sync.server.anchorGuide")}
+    <button type="button" class="text-[0.8rem] text-muted-foreground underline underline-offset-2" onclick={() => void openGuide(`${SERVER_GUIDE_URL}#anchor-or-relay`)}>
+      {t("sync.server.guide")}
     </button>
   </div>
 

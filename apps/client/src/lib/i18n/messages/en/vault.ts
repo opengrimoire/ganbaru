@@ -145,7 +145,7 @@ export const vaultHandoff = {
     server: "A server",
   },
   serverConnect: {
-    description: "Print a setup code on your Ganbaru server and paste it here. This computer joins the vault the server runs, in a new folder.",
+    description: "On your Ganbaru server, run ganbaru-server anchor setup and paste the code it prints. This computer joins the vault the server runs, in a new folder.",
     codeLabel: "Server setup code",
     useKit: "Use the recovery kit instead",
     kitDescription: "Only needed when the server refuses to add this computer on its own.",

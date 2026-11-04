@@ -98,6 +98,7 @@ Hosted and local BYOK assistants through the same agent, permission, and provena
 - macOS and iOS after Apple hardware and release infrastructure are available.
 - Firefox after shared browser-rule semantics and native-host packaging are stable.
 - Broader iCalendar conformance backed by fixtures and evidence.
+- A command line for everyday use of a vault, as subcommands of the desktop `ganbaru` binary. `ganbaru-server` stays the separate self-hosted server program.
 
 See [Platforms](platforms/README.md) and [iCalendar compatibility](interop/icalendar/README.md).
 
